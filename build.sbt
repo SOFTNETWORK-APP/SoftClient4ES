@@ -70,6 +70,16 @@ lazy val rest = project.in(file("rest"))
   .configs(IntegrationTest)
   .settings(Defaults.itSettings)
   .dependsOn(
+    client % "compile->compile;test->test;it->it"
+  )
+
+lazy val restPersistence = project.in(file("rest/persistence"))
+  .configs(IntegrationTest)
+  .settings(Defaults.itSettings)
+  .dependsOn(
+    rest % "compile->compile;test->test;it->it",
+  )
+  .dependsOn(
     persistence % "compile->compile;test->test;it->it"
   )
 
@@ -81,10 +91,10 @@ lazy val testKit = project.in(file("testkit"))
   )
   .enablePlugins(BuildInfoPlugin)
   .dependsOn(
-    rest % "compile->compile;test->test;it->it"
+    restPersistence % "compile->compile;test->test;it->it"
   )
 
 lazy val root = project.in(file("."))
   .configs(IntegrationTest)
   .settings(Defaults.itSettings, Publish.noPublishSettings)
-  .aggregate(sql, client, persistence, rest, testKit)
+  .aggregate(sql, client, rest, persistence, restPersistence, testKit)

@@ -20,13 +20,24 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   protected val elasticDocuments: ElasticDocuments = new ElasticDocuments() {}
 
-  override def toggleRefresh(index: String, enable: Boolean): Unit = {}
+  override def toggleRefresh(index: String, enable: Boolean): Boolean = true
 
-  override def setReplicas(index: String, replicas: Int): Unit = {}
+  override def setReplicas(index: String, replicas: Int): Boolean = true
 
   override def updateSettings(index: String, settings: String) = true
 
   override def addAlias(index: String, alias: String): Boolean = true
+
+  /** Remove an alias from the given index.
+    *
+    * @param index
+    *   - the name of the index
+    * @param alias
+    *   - the name of the alias
+    * @return
+    *   true if the alias was removed successfully, false otherwise
+    */
+  override def removeAlias(index: String, alias: String): Boolean = true
 
   override def createIndex(index: String, settings: String): Boolean = true
 
@@ -37,6 +48,29 @@ trait MockElasticClientApi extends ElasticClientApi {
   override def closeIndex(index: String): Boolean = true
 
   override def openIndex(index: String): Boolean = true
+
+  /** Reindex from source index to target index.
+    *
+    * @param sourceIndex
+    *   - the name of the source index
+    * @param targetIndex
+    *   - the name of the target index
+    * @param refresh
+    *   - true to refresh the target index after reindexing, false otherwise
+    * @return
+    *   true if the reindexing was successful, false otherwise
+    */
+  override def reindex(sourceIndex: String, targetIndex: String, refresh: Boolean = true): Boolean =
+    true
+
+  /** Check if an index exists.
+    *
+    * @param index
+    *   - the name of the index to check
+    * @return
+    *   true if the index exists, false otherwise
+    */
+  override def indexExists(index: String): Boolean = false
 
   override def count(jsonQuery: JSONQuery): Option[Double] =
     throw new UnsupportedOperationException
@@ -137,7 +171,8 @@ trait MockElasticClientApi extends ElasticClientApi {
   ): Future[Seq[SingleValueAggregateResult]] =
     throw new UnsupportedOperationException
 
-  override def loadSettings(): String = throw new UnsupportedOperationException
+  override def loadSettings(index: String): String =
+    throw new UnsupportedOperationException
 }
 
 trait ElasticDocuments {
