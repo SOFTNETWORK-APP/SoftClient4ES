@@ -64,7 +64,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     *   whether the operation is successful or not
     */
   override def createDocument(document: T)(implicit t: ClassTag[T]): Boolean = {
-    Try(index(document, Some(index), Some(_type))) match {
+    Try(index(document, Some(index), Some("_doc"))) match {
       case Success(_) => refresh(index)
       case Failure(f) =>
         logger.error(f.getMessage, f)
@@ -85,7 +85,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     *   whether the operation is successful or not
     */
   override def updateDocument(document: T, upsert: Boolean)(implicit t: ClassTag[T]): Boolean = {
-    Try(update(document, Some(index), Some(_type), upsert)) match {
+    Try(update(document, Some(index), Some("_doc"), upsert)) match {
       case Success(_) => refresh(index)
       case Failure(f) =>
         logger.error(f.getMessage, f)
@@ -102,7 +102,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     */
   override def deleteDocument(uuid: String): Boolean = {
     Try(
-      delete(uuid, index, _type)
+      delete(uuid, index, "_doc")
     ) match {
       case Success(value) => value && refresh(index)
       case Failure(f) =>
@@ -127,7 +127,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     Try(
       update(
         index,
-        _type,
+        "_doc",
         uuid,
         data,
         upsert = true
@@ -148,7 +148,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     *   the document retrieved, None otherwise
     */
   override def loadDocument(uuid: String)(implicit m: Manifest[T], formats: Formats): Option[T] = {
-    Try(get(uuid, Some(index), Some(_type))) match {
+    Try(get(uuid, Some(index), Some("_doc"))) match {
       case Success(s) => s
       case Failure(f) =>
         logger.error(f.getMessage, f)
