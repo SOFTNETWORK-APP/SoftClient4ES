@@ -8,12 +8,14 @@ import app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.{ElasticSearchRequest, SQLQuery}
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
+import com.google.gson.{Gson, JsonParser}
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
 import io.searchbox.core.search.aggregation.RootAggregation
 import io.searchbox.indices._
 import io.searchbox.indices.aliases.{AddAliasMapping, ModifyAliases, RemoveAliasMapping}
 import io.searchbox.indices.mapping.{GetMapping, PutMapping}
+import io.searchbox.indices.reindex.Reindex
 import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 import io.searchbox.params.Parameters
 import org.json4s.Formats
@@ -42,39 +44,121 @@ trait JestClientApi
     with JestSearchApi
     with JestBulkApi
 
-trait JestIndicesApi extends IndicesApi with JestClientCompanion {
+trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientCompanion {
   override def createIndex(index: String, settings: String = defaultSettings): Boolean =
-    apply().execute(new CreateIndex.Builder(index).settings(settings).build()).isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new CreateIndex.Builder(index).settings(settings).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 
   override def deleteIndex(index: String): Boolean =
-    apply().execute(new DeleteIndex.Builder(index).build()).isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new DeleteIndex.Builder(index).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 
   override def closeIndex(index: String): Boolean =
-    apply().execute(new CloseIndex.Builder(index).build()).isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new CloseIndex.Builder(index).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 
   override def openIndex(index: String): Boolean =
-    apply().execute(new OpenIndex.Builder(index).build()).isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new OpenIndex.Builder(index).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
+
+  /** Reindex from source index to target index.
+    *
+    * @param sourceIndex
+    *   - the name of the source index
+    * @param targetIndex
+    *   - the name of the target index
+    * @param refresh
+    *   - true to refresh the target index after reindexing, false otherwise
+    * @return
+    *   true if the reindexing was successful, false otherwise
+    */
+  override def reindex(sourceIndex: String, targetIndex: String, refresh: Boolean): Boolean = {
+    tryOrElse(
+      {
+        apply()
+          .execute(
+            new Reindex.Builder(s"""{"index": "$sourceIndex"}""", s"""{"index": "$targetIndex"}""")
+              .build()
+          )
+          .isSucceeded && {
+          if (refresh) {
+            this.refresh(targetIndex)
+          } else {
+            true
+          }
+        }
+      },
+      false
+    )(logger)
+  }
+
+  /** Check if an index exists.
+    *
+    * @param index
+    *   - the name of the index to check
+    * @return
+    *   true if the index exists, false otherwise
+    */
+  override def indexExists(index: String): Boolean =
+    tryOrElse(
+      apply()
+        .execute(
+          new IndicesExists.Builder(index).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 }
 
 trait JestAliasApi extends AliasApi with JestClientCompanion {
   override def addAlias(index: String, alias: String): Boolean = {
-    apply()
-      .execute(
-        new ModifyAliases.Builder(
-          new AddAliasMapping.Builder(index, alias).build()
-        ).build()
-      )
-      .isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new ModifyAliases.Builder(
+            new AddAliasMapping.Builder(index, alias).build()
+          ).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
   }
 
   override def removeAlias(index: String, alias: String): Boolean = {
-    apply()
-      .execute(
-        new ModifyAliases.Builder(
-          new RemoveAliasMapping.Builder(index, alias).build()
-        ).build()
-      )
-      .isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new ModifyAliases.Builder(
+            new RemoveAliasMapping.Builder(index, alias).build()
+          ).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
   }
 }
 
@@ -82,35 +166,96 @@ trait JestSettingsApi extends SettingsApi with JestClientCompanion {
   _: IndicesApi =>
   override def updateSettings(index: String, settings: String = defaultSettings): Boolean =
     closeIndex(index) &&
-    apply().execute(new UpdateSettings.Builder(settings).addIndex(index).build()).isSucceeded &&
+    tryOrElse(
+      apply()
+        .execute(
+          new UpdateSettings.Builder(settings).addIndex(index).build()
+        )
+        .isSucceeded,
+      false
+    )(logger) &&
     openIndex(index)
 
-  override def loadSettings(): String =
-    apply().execute(new GetSettings.Builder().build()).getJsonString
+  override def loadSettings(index: String): String =
+    tryOrElse(
+      apply()
+        .execute(
+          new GetSettings.Builder().addIndex(index).build()
+        )
+        .getJsonString,
+      s"""{"$index": {"settings": {"index": {}}}}"""
+    )(logger)
 }
 
 trait JestMappingApi extends MappingApi with JestClientCompanion {
   _: IndicesApi =>
-  override def setMapping(index: String, indexType: String, mapping: String): Boolean =
-    apply().execute(new PutMapping.Builder(index, indexType, mapping).build()).isSucceeded
+  override def setMapping(index: String, mapping: String): Boolean =
+    tryOrElse(
+      apply()
+        .execute(
+          new PutMapping.Builder(index, "_doc", mapping).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 
-  override def getMapping(index: String, indexType: String): String =
-    apply()
-      .execute(new GetMapping.Builder().addIndex(index).addType(indexType).build())
-      .getJsonString
+  override def getMapping(index: String): String =
+    tryOrElse(
+      apply()
+        .execute(
+          new GetMapping.Builder().addIndex(index).addType("_doc").build()
+        )
+        .getJsonString,
+      s""""{$index: {"mappings": {"_doc":{"properties": {}}}}}""" // empty mapping
+    )(logger)
+
+  /** Get the mapping properties of an index.
+    *
+    * @param index
+    *   - the name of the index to get the mapping properties for
+    * @return
+    *   the mapping properties of the index as a JSON string
+    */
+  override def getMappingProperties(index: String): String = {
+    tryOrElse(
+      new Gson().toJson(
+        new JsonParser()
+          .parse(getMapping(index))
+          .getAsJsonObject
+          .get(index)
+          .getAsJsonObject
+          .get("mappings")
+          .getAsJsonObject
+          .get("_doc")
+          .getAsJsonObject
+      ),
+      "{\"properties\": {}}"
+    )(logger)
+  }
 }
 
 trait JestRefreshApi extends RefreshApi with JestClientCompanion {
   override def refresh(index: String): Boolean =
-    apply().execute(new Refresh.Builder().addIndex(index).build()).isSucceeded
+    tryOrElse(
+      apply()
+        .execute(
+          new Refresh.Builder().addIndex(index).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 }
 
 trait JestFlushApi extends FlushApi with JestClientCompanion {
-  override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean = apply()
-    .execute(
-      new Flush.Builder().addIndex(index).force(force).waitIfOngoing(wait).build()
-    )
-    .isSucceeded
+  override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean =
+    tryOrElse(
+      apply()
+        .execute(
+          new Flush.Builder().addIndex(index).force(force).waitIfOngoing(wait).build()
+        )
+        .isSucceeded,
+      false
+    )(logger)
 }
 
 trait JestCountApi extends CountApi with JestClientCompanion {
@@ -140,10 +285,17 @@ trait JestCountApi extends CountApi with JestClientCompanion {
     val count = new Count.Builder().query(query)
     for (indice <- indices) count.addIndex(indice)
     for (t      <- types) count.addType(t)
-    val result = apply().execute(count.build())
-    if (!result.isSucceeded)
-      logger.error(result.getErrorMessage)
-    Option(result.getCount)
+    Try {
+      apply().execute(count.build())
+    } match {
+      case Success(result) =>
+        if (!result.isSucceeded)
+          logger.error(result.getErrorMessage)
+        Option(result.getCount)
+      case Failure(f) =>
+        logger.error(f.getMessage, f)
+        None
+    }
   }
 }
 
@@ -352,13 +504,20 @@ trait JestUpdateApi extends UpdateApi with JestClientCompanion {
 trait JestDeleteApi extends DeleteApi with JestClientCompanion {
   _: RefreshApi =>
   override def delete(uuid: String, index: String, indexType: String): Boolean = {
-    val result = apply().execute(
-      new Delete.Builder(uuid).index(index).`type`(indexType).build()
-    )
-    if (!result.isSucceeded) {
-      logger.error(result.getErrorMessage)
+    Try(
+      apply()
+        .execute(
+          new Delete.Builder(uuid).index(index).`type`(indexType).build()
+        )
+    ) match {
+      case Success(result) =>
+        if (!result.isSucceeded)
+          logger.error(result.getErrorMessage)
+        result.isSucceeded && this.refresh(index)
+      case Failure(f) =>
+        logger.error(f.getMessage, f)
+        false
     }
-    result.isSucceeded && this.refresh(index)
   }
 
   override def deleteAsync(uuid: String, index: String, _type: String)(implicit
@@ -495,15 +654,13 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    val result = apply().execute(jsonQuery.search)
-    (if (result.isSucceeded) {
-       Some(result)
-     } else {
-       logger.error(result.getErrorMessage)
-       None
-     }) match {
-      case Some(searchResult) =>
-        Try(searchResult.getJsonObject ~> [U, I] innerField) match {
+    Try(apply().execute(jsonQuery.search)).toOption match {
+      case Some(result) =>
+        if (!result.isSucceeded) {
+          logger.error(result.getErrorMessage)
+          return List.empty
+        }
+        Try(result.getJsonObject ~> [U, I] innerField) match {
           case Success(s) => s
           case Failure(f) =>
             logger.error(f.getMessage, f)
@@ -516,15 +673,20 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
   override def multiSearch[U](
     jsonQueries: JSONQueries
   )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    val searches: List[Search] = jsonQueries.queries.map(_.search)
-    val multiSearchResult = apply().execute(new MultiSearch.Builder(searches.asJava).build())
-    multiSearchResult.getResponses.asScala
-      .map(searchResponse =>
-        searchResponse.searchResult.getSourceAsStringList.asScala
-          .map(source => serialization.read[U](source))
+    tryOrElse(
+      {
+        val multiSearchResult =
+          apply().execute(new MultiSearch.Builder(jsonQueries.queries.map(_.search).asJava).build())
+        multiSearchResult.getResponses.asScala
+          .map(searchResponse =>
+            searchResponse.searchResult.getSourceAsStringList.asScala
+              .map(source => serialization.read[U](source))
+              .toList
+          )
           .toList
-      )
-      .toList
+      },
+      List.empty
+    )(logger)
   }
 
   override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
@@ -533,14 +695,23 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     formats: Formats
   ): List[List[(U, List[I])]] = {
     val multiSearch = new MultiSearch.Builder(jsonQueries.queries.map(_.search).asJava).build()
-    val multiSearchResult = apply().execute(multiSearch)
-    if (multiSearchResult.isSucceeded) {
-      multiSearchResult.getResponses.asScala
-        .map(searchResponse => searchResponse.searchResult.getJsonObject ~> [U, I] innerField)
-        .toList
-    } else {
-      logger.error(multiSearchResult.getErrorMessage)
-      List.empty
+    Try(apply().execute(multiSearch)).toOption match {
+      case Some(multiSearchResult) =>
+        if (!multiSearchResult.isSucceeded) {
+          logger.error(multiSearchResult.getErrorMessage)
+          return List.empty
+        }
+        multiSearchResult.getResponses.asScala
+          .map(searchResponse => {
+            Try(searchResponse.searchResult.getJsonObject ~> [U, I] innerField) match {
+              case Success(s) => s
+              case Failure(f) =>
+                logger.error(f.getMessage, f)
+                List.empty[(U, List[I])]
+            }
+          })
+          .toList
+      case _ => List.empty
     }
   }
 

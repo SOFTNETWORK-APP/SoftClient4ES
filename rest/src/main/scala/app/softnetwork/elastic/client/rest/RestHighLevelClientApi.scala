@@ -25,9 +25,14 @@ import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
 import org.elasticsearch.action.search.{MultiSearchRequest, SearchRequest, SearchResponse}
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest}
-import org.elasticsearch.client.RequestOptions
+import org.elasticsearch.client.{Request, RequestOptions}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
-import org.elasticsearch.client.indices.{CreateIndexRequest, GetMappingsRequest, PutMappingRequest}
+import org.elasticsearch.client.indices.{
+  CreateIndexRequest,
+  GetIndexRequest,
+  GetMappingsRequest,
+  PutMappingRequest
+}
 import org.elasticsearch.common.io.stream.InputStreamStreamInput
 import org.elasticsearch.common.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
@@ -43,6 +48,7 @@ import org.elasticsearch.search.builder.SearchSourceBuilder
 import org.json4s.Formats
 
 import java.io.ByteArrayInputStream
+import scala.collection.JavaConverters.mapAsScalaMapConverter
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -66,59 +72,125 @@ trait RestHighLevelClientApi
 
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientCompanion {
   override def createIndex(index: String, settings: String): Boolean = {
-    apply()
-      .indices()
-      .create(
-        new CreateIndexRequest(index)
-          .settings(settings, XContentType.JSON),
-        RequestOptions.DEFAULT
-      )
-      .isAcknowledged
+    tryOrElse(
+      apply()
+        .indices()
+        .create(
+          new CreateIndexRequest(index)
+            .settings(settings, XContentType.JSON),
+          RequestOptions.DEFAULT
+        )
+        .isAcknowledged,
+      false
+    )(logger)
   }
 
   override def deleteIndex(index: String): Boolean = {
-    apply().indices().delete(new DeleteIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged
+    tryOrElse(
+      apply()
+        .indices()
+        .delete(new DeleteIndexRequest(index), RequestOptions.DEFAULT)
+        .isAcknowledged,
+      false
+    )(logger)
   }
 
   override def openIndex(index: String): Boolean = {
-    apply().indices().open(new OpenIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged
+    tryOrElse(
+      apply().indices().open(new OpenIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged,
+      false
+    )(logger)
   }
 
   override def closeIndex(index: String): Boolean = {
-    apply().indices().close(new CloseIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged
+    tryOrElse(
+      apply().indices().close(new CloseIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged,
+      false
+    )(logger)
+  }
+
+  /** Reindex from source index to target index.
+    *
+    * @param sourceIndex
+    *   - the name of the source index
+    * @param targetIndex
+    *   - the name of the target index
+    * @param refresh
+    *   - true to refresh the target index after reindexing, false otherwise
+    * @return
+    *   true if the reindexing was successful, false otherwise
+    */
+  override def reindex(sourceIndex: String, targetIndex: String, refresh: Boolean): Boolean = {
+    val request = new Request("POST", s"/_reindex?refresh=$refresh")
+    request.setJsonEntity(
+      s"""
+         |{
+         |  "source": {
+         |    "index": "$sourceIndex"
+         |  },
+         |  "dest": {
+         |    "index": "$targetIndex"
+         |  }
+         |}
+       """.stripMargin
+    )
+    tryOrElse(
+      apply().getLowLevelClient.performRequest(request).getStatusLine.getStatusCode < 400,
+      false
+    )(logger)
+  }
+
+  /** Check if an index exists.
+    *
+    * @param index
+    *   - the name of the index to check
+    * @return
+    *   true if the index exists, false otherwise
+    */
+  override def indexExists(index: String): Boolean = {
+    tryOrElse(
+      apply().indices().exists(new GetIndexRequest(index), RequestOptions.DEFAULT),
+      false
+    )(logger)
   }
 
 }
 
 trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientCompanion {
   override def addAlias(index: String, alias: String): Boolean = {
-    apply()
-      .indices()
-      .updateAliases(
-        new IndicesAliasesRequest()
-          .addAliasAction(
-            new AliasActions(AliasActions.Type.ADD)
-              .index(index)
-              .alias(alias)
-          ),
-        RequestOptions.DEFAULT
-      )
-      .isAcknowledged
+    tryOrElse(
+      apply()
+        .indices()
+        .updateAliases(
+          new IndicesAliasesRequest()
+            .addAliasAction(
+              new AliasActions(AliasActions.Type.ADD)
+                .index(index)
+                .alias(alias)
+            ),
+          RequestOptions.DEFAULT
+        )
+        .isAcknowledged,
+      false
+    )(logger)
   }
 
   override def removeAlias(index: String, alias: String): Boolean = {
-    apply()
-      .indices()
-      .updateAliases(
-        new IndicesAliasesRequest()
-          .addAliasAction(
-            new AliasActions(AliasActions.Type.REMOVE)
-              .index(index)
-              .alias(alias)
-          ),
-        RequestOptions.DEFAULT
-      )
-      .isAcknowledged
+    tryOrElse(
+      apply()
+        .indices()
+        .updateAliases(
+          new IndicesAliasesRequest()
+            .addAliasAction(
+              new AliasActions(AliasActions.Type.REMOVE)
+                .index(index)
+                .alias(alias)
+            ),
+          RequestOptions.DEFAULT
+        )
+        .isAcknowledged,
+      false
+    )(logger)
   }
 }
 
@@ -126,72 +198,93 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
   _: RestHighLevelClientIndicesApi =>
 
   override def updateSettings(index: String, settings: String): Boolean = {
-    apply()
-      .indices()
-      .putSettings(
-        new UpdateSettingsRequest(index)
-          .settings(settings, XContentType.JSON),
-        RequestOptions.DEFAULT
-      )
-      .isAcknowledged
+    tryOrElse(
+      apply()
+        .indices()
+        .putSettings(
+          new UpdateSettingsRequest(index)
+            .settings(settings, XContentType.JSON),
+          RequestOptions.DEFAULT
+        )
+        .isAcknowledged,
+      false
+    )(logger)
   }
 
-  override def loadSettings(): String = {
-    apply()
-      .indices()
-      .getSettings(
-        new GetSettingsRequest().indices("*"),
-        RequestOptions.DEFAULT
-      )
-      .toString
+  override def loadSettings(index: String): String = {
+    tryOrElse(
+      apply()
+        .indices()
+        .getSettings(
+          new GetSettingsRequest().indices(index),
+          RequestOptions.DEFAULT
+        )
+        .toString,
+      s"""{"$index": {"settings": {"index": {}}}}"""
+    )(logger)
   }
 }
 
 trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientCompanion {
-  override def setMapping(index: String, indexType: String, mapping: String): Boolean = {
-    apply()
-      .indices()
-      .putMapping(
-        new PutMappingRequest(index)
-          .source(mapping, XContentType.JSON),
-        RequestOptions.DEFAULT
-      )
-      .isAcknowledged
+  override def setMapping(index: String, mapping: String): Boolean = {
+    tryOrElse(
+      apply()
+        .indices()
+        .putMapping(
+          new PutMappingRequest(index)
+            .source(mapping, XContentType.JSON),
+          RequestOptions.DEFAULT
+        )
+        .isAcknowledged,
+      false
+    )(logger)
   }
 
-  override def getMapping(index: String, indexType: String): String = {
-    apply()
-      .indices()
-      .getMapping(
-        new GetMappingsRequest().indices(index),
-        RequestOptions.DEFAULT
-      )
-      .toString
+  override def getMapping(index: String): String = {
+    tryOrElse(
+      apply()
+        .indices()
+        .getMapping(
+          new GetMappingsRequest().indices(index),
+          RequestOptions.DEFAULT
+        )
+        .mappings()
+        .asScala
+        .get(index)
+        .map(metadata => metadata.source().string()),
+      None
+    )(logger).getOrElse(s""""{$index: {"mappings": {}}}""")
   }
 }
 
 trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientCompanion {
   override def refresh(index: String): Boolean = {
-    apply()
-      .indices()
-      .refresh(
-        new RefreshRequest(index),
-        RequestOptions.DEFAULT
-      )
-      .getStatus
-      .getStatus < 400
+    tryOrElse(
+      apply()
+        .indices()
+        .refresh(
+          new RefreshRequest(index),
+          RequestOptions.DEFAULT
+        )
+        .getStatus
+        .getStatus < 400,
+      false
+    )(logger)
   }
 }
 
 trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientCompanion {
   override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean = {
-    apply()
-      .indices()
-      .flush(
-        new FlushRequest(index).force(force).waitIfOngoing(wait),
-        RequestOptions.DEFAULT
-      )
-      .getStatus == RestStatus.OK
+    tryOrElse(
+      apply()
+        .indices()
+        .flush(
+          new FlushRequest(index).force(force).waitIfOngoing(wait),
+          RequestOptions.DEFAULT
+        )
+        .getStatus == RestStatus.OK,
+      false
+    )(logger)
   }
 }
 
@@ -214,15 +307,18 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompa
   }
 
   override def count(query: client.JSONQuery): Option[Double] = {
-    Option(
-      apply()
-        .count(
-          new CountRequest().indices(query.indices: _*).types(query.types: _*),
-          RequestOptions.DEFAULT
-        )
-        .getCount
-        .toDouble
-    )
+    tryOrElse(
+      Option(
+        apply()
+          .count(
+            new CountRequest().indices(query.indices: _*).types(query.types: _*),
+            RequestOptions.DEFAULT
+          )
+          .getCount
+          .toDouble
+      ),
+      None
+    )(logger)
   }
 }
 
@@ -342,23 +438,30 @@ trait RestHighLevelClientSingleValueAggregateApi
 
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompanion {
   _: RestHighLevelClientRefreshApi =>
-  override def index(index: String, _type: String, id: String, source: String): Boolean = {
-    apply()
-      .index(
-        new IndexRequest(index, _type, id)
-          .source(source, XContentType.JSON),
-        RequestOptions.DEFAULT
-      )
-      .status()
-      .getStatus < 400
+  override def index(index: String, indexType: String, id: String, source: String): Boolean = {
+    tryOrElse(
+      apply()
+        .index(
+          new IndexRequest(index)
+            .`type`(indexType)
+            .id(id)
+            .source(source, XContentType.JSON),
+          RequestOptions.DEFAULT
+        )
+        .status()
+        .getStatus < 400,
+      false
+    )(logger)
   }
 
-  override def indexAsync(index: String, _type: String, id: String, source: String)(implicit
+  override def indexAsync(index: String, indexType: String, id: String, source: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
     val promise: Promise[Boolean] = Promise()
     apply().indexAsync(
-      new IndexRequest(index, _type, id)
+      new IndexRequest(index)
+        .`type`(indexType)
+        .id(id)
         .source(source, XContentType.JSON),
       RequestOptions.DEFAULT,
       new ActionListener[IndexResponse] {
@@ -376,32 +479,35 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientCom
   _: RestHighLevelClientRefreshApi =>
   override def update(
     index: String,
-    _type: String,
+    indexType: String,
     id: String,
     source: String,
     upsert: Boolean
   ): Boolean = {
-    apply()
-      .update(
-        new UpdateRequest(index, _type, id)
-          .doc(source, XContentType.JSON)
-          .docAsUpsert(upsert),
-        RequestOptions.DEFAULT
-      )
-      .status()
-      .getStatus < 400
+    tryOrElse(
+      apply()
+        .update(
+          new UpdateRequest(index, indexType, id)
+            .doc(source, XContentType.JSON)
+            .docAsUpsert(upsert),
+          RequestOptions.DEFAULT
+        )
+        .status()
+        .getStatus < 400,
+      false
+    )(logger)
   }
 
   override def updateAsync(
     index: String,
-    _type: String,
+    indexType: String,
     id: String,
     source: String,
     upsert: Boolean
   )(implicit ec: ExecutionContext): Future[Boolean] = {
     val promise: Promise[Boolean] = Promise()
     apply().updateAsync(
-      new UpdateRequest(index, _type, id)
+      new UpdateRequest(index, indexType, id)
         .doc(source, XContentType.JSON)
         .docAsUpsert(upsert),
       RequestOptions.DEFAULT,
@@ -419,22 +525,25 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientCom
 trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientCompanion {
   _: RestHighLevelClientRefreshApi =>
 
-  override def delete(uuid: String, index: String, _type: String): Boolean = {
-    apply()
-      .delete(
-        new DeleteRequest(index, _type, uuid),
-        RequestOptions.DEFAULT
-      )
-      .status()
-      .getStatus < 400
+  override def delete(uuid: String, index: String, indexType: String): Boolean = {
+    tryOrElse(
+      apply()
+        .delete(
+          new DeleteRequest(index, indexType, uuid),
+          RequestOptions.DEFAULT
+        )
+        .status()
+        .getStatus < 400,
+      false
+    )(logger)
   }
 
-  override def deleteAsync(uuid: String, index: String, _type: String)(implicit
+  override def deleteAsync(uuid: String, index: String, indexType: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
     val promise: Promise[Boolean] = Promise()
     apply().deleteAsync(
-      new DeleteRequest(index, _type, uuid),
+      new DeleteRequest(index, indexType, uuid),
       RequestOptions.DEFAULT,
       new ActionListener[DeleteResponse] {
         override def onResponse(response: DeleteResponse): Unit =

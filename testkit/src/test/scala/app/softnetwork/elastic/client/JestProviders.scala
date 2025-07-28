@@ -1,9 +1,9 @@
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.client.jest.JestProvider
 import app.softnetwork.elastic.model.{Binary, Parent, Sample}
 import app.softnetwork.persistence.ManifestWrapper
 import app.softnetwork.persistence.person.model.Person
+import app.softnetwork.persistence.query.JestProvider
 import com.typesafe.config.Config
 import io.searchbox.client.JestClient
 

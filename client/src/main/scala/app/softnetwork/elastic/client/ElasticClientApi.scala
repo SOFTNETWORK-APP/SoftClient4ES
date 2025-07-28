@@ -9,14 +9,17 @@ import akka.stream.scaladsl._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
 import app.softnetwork.elastic.sql.SQLQuery
+import com.sksamuel.exts.Logging
 import com.typesafe.config.{Config, ConfigFactory}
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods._
 
+import java.util.UUID
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
 import scala.language.{implicitConversions, postfixOps}
 import scala.reflect.ClassTag
+import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 28/06/2018.
   */
@@ -42,6 +45,10 @@ trait ElasticClientApi
 }
 
 trait IndicesApi {
+
+  /** Default settings for indices. This is used when creating an index without providing specific
+    * settings. It includes ngram tokenizer and analyzer, as well as some default limits.
+    */
   val defaultSettings: String =
     """
       |{
@@ -86,22 +93,95 @@ trait IndicesApi {
       |}
     """.stripMargin
 
+  /** Create an index with the provided name and settings.
+    * @param index
+    *   - the name of the index to create
+    * @param settings
+    *   - the settings to apply to the index (default is defaultSettings)
+    * @return
+    *   true if the index was created successfully, false otherwise
+    */
   def createIndex(index: String, settings: String = defaultSettings): Boolean
 
+  /** Delete an index with the provided name.
+    * @param index
+    *   - the name of the index to delete
+    * @return
+    *   true if the index was deleted successfully, false otherwise
+    */
   def deleteIndex(index: String): Boolean
 
+  /** Close an index with the provided name.
+    * @param index
+    *   - the name of the index to close
+    * @return
+    *   true if the index was closed successfully, false otherwise
+    */
   def closeIndex(index: String): Boolean
 
+  /** Open an index with the provided name.
+    * @param index
+    *   - the name of the index to open
+    * @return
+    *   true if the index was opened successfully, false otherwise
+    */
   def openIndex(index: String): Boolean
+
+  /** Reindex from source index to target index.
+    * @param sourceIndex
+    *   - the name of the source index
+    * @param targetIndex
+    *   - the name of the target index
+    * @param refresh
+    *   - true to refresh the target index after reindexing, false otherwise
+    * @return
+    *   true if the reindexing was successful, false otherwise
+    */
+  def reindex(sourceIndex: String, targetIndex: String, refresh: Boolean = true): Boolean
+
+  /** Check if an index exists.
+    * @param index
+    *   - the name of the index to check
+    * @return
+    *   true if the index exists, false otherwise
+    */
+  def indexExists(index: String): Boolean
 }
 
 trait AliasApi {
+
+  /** Add an alias to the given index.
+    * @param index
+    *   - the name of the index
+    * @param alias
+    *   - the name of the alias
+    * @return
+    *   true if the alias was added successfully, false otherwise
+    */
   def addAlias(index: String, alias: String): Boolean
+
+  /** Remove an alias from the given index.
+    * @param index
+    *   - the name of the index
+    * @param alias
+    *   - the name of the alias
+    * @return
+    *   true if the alias was removed successfully, false otherwise
+    */
   def removeAlias(index: String, alias: String): Boolean
 }
 
 trait SettingsApi { _: IndicesApi =>
-  def toggleRefresh(index: String, enable: Boolean): Unit = {
+
+  /** Toggle the refresh interval of an index.
+    * @param index
+    *   - the name of the index
+    * @param enable
+    *   - true to enable the refresh interval, false to disable it
+    * @return
+    *   true if the settings were updated successfully, false otherwise
+    */
+  def toggleRefresh(index: String, enable: Boolean): Boolean = {
     updateSettings(
       index,
       if (!enable) """{"index" : {"refresh_interval" : -1} }"""
@@ -109,29 +189,272 @@ trait SettingsApi { _: IndicesApi =>
     )
   }
 
-  def setReplicas(index: String, replicas: Int): Unit = {
+  /** Set the number of replicas for an index.
+    * @param index
+    *   - the name of the index
+    * @param replicas
+    *   - the number of replicas to set
+    * @return
+    *   true if the settings were updated successfully, false otherwise
+    */
+  def setReplicas(index: String, replicas: Int): Boolean = {
     updateSettings(index, s"""{"index" : {"number_of_replicas" : $replicas} }""")
   }
 
+  /** Update the settings of an index.
+    * @param index
+    *   - the name of the index
+    * @param settings
+    *   - the settings to apply to the index (default is defaultSettings)
+    * @return
+    *   true if the settings were updated successfully, false otherwise
+    */
   def updateSettings(index: String, settings: String = defaultSettings): Boolean
 
-  def loadSettings(): String
+  /** Load the settings of an index.
+    * @param index
+    *   - the name of the index to load the settings for
+    * @return
+    *   the settings of the index as a JSON string
+    */
+  def loadSettings(index: String): String
 }
 
-trait MappingApi {
-  def setMapping(index: String, indexType: String, mapping: String): Boolean
-  def getMapping(index: String, indexType: String): String
+trait MappingApi extends IndicesApi with RefreshApi with Logging {
+
+  /** Set the mapping of an index.
+    * @param index
+    *   - the name of the index to set the mapping for
+    * @param mapping
+    *   - the mapping to set on the index
+    * @return
+    *   true if the mapping was set successfully, false otherwise
+    */
+  def setMapping(index: String, mapping: String): Boolean
+
+  /** Get the mapping of an index.
+    * @param index
+    *   - the name of the index to get the mapping for
+    * @return
+    *   the mapping of the index as a JSON string
+    */
+  def getMapping(index: String): String
+
+  /** Get the mapping properties of an index.
+    * @param index
+    *   - the name of the index to get the mapping properties for
+    * @return
+    *   the mapping properties of the index as a JSON string
+    */
+  def getMappingProperties(index: String): String = {
+    tryOrElse(getMapping(index), "{\"properties\": {}}")(logger)
+  }
+
+  /** Check if the mapping of an index is different from the provided mapping.
+    * @param index
+    *   - the name of the index to check
+    * @param mapping
+    *   - the mapping to compare with the current mapping of the index
+    * @return
+    *   true if the mapping is different, false otherwise
+    */
+  def shouldUpdateMapping(
+    index: String,
+    mapping: String
+  ): Boolean = {
+    MappingComparator.isMappingDifferent(this.getMappingProperties(index), mapping)
+  }
+
+  /** Update the mapping of an index to a new mapping.
+    * @param index
+    *   - the name of the index to migrate
+    * @param mapping
+    *   - the new mapping to set on the index
+    * @param settings
+    *   - the settings to apply to the index (default is defaultSettings)
+    * @return
+    *   true if the mapping was updated successfully, false otherwise
+    */
+  def updateMapping(
+    index: String,
+    mapping: String,
+    settings: String = defaultSettings
+  ): Boolean = {
+    // Check if the index exists
+    if (!tryOrElse(this.indexExists(index), false)(logger)) {
+      if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
+        logger.error(s"Failed to create index: $index")
+        return false
+      }
+      logger.info(s"Index $index created successfully.")
+      if (!tryOrElse(this.setMapping(index, mapping), false)(logger)) {
+        logger.error(s"Failed to set mapping for index: $index")
+        return false
+      }
+      logger.info(s"Mapping for index $index set successfully.")
+      true
+    }
+    // Check if the mapping needs to be updated
+    else if (shouldUpdateMapping(index, mapping)) {
+      val tempIndex = index + "_tmp_" + UUID.randomUUID()
+      var tempCreated = false
+      var originalDeleted = false
+      logger.info("--- Starting dynamic mapping migration ---")
+      logger.info("Target index: " + index)
+      logger.info("Temporary index: " + tempIndex)
+      def migrate(): Boolean = {
+        // Create a temporary index with the new mapping
+        tempCreated = tryOrElse(this.createIndex(tempIndex, settings), false)(logger)
+        if (tempCreated) {
+          logger.info(s"Temporary index $tempIndex created successfully.")
+          // Set the new mapping on the temporary index
+          if (!tryOrElse(this.setMapping(tempIndex, mapping), false)(logger)) {
+            logger.error(s"Failed to set mapping for temporary index: $tempIndex")
+            return false
+          }
+          logger.info(s"Mapping for temporary index $tempIndex set successfully.")
+          // Reindex from the original index to the temporary index
+          if (!tryOrElse(this.reindex(index, tempIndex), false)(logger)) {
+            logger.error(
+              s"Failed to reindex from original index: $index to temporary index: $tempIndex"
+            )
+            return false
+          }
+          logger.info(
+            s"Reindexing from original index $index to temporary index $tempIndex completed successfully."
+          )
+          // Delete the original index
+          originalDeleted = this.deleteIndex(index)
+          if (originalDeleted) {
+            logger.info(s"Original index $index deleted successfully.")
+            // Rename the temporary index to the original index name
+            if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
+              logger.error(s"Failed to recreate original index: $index")
+              return false
+            }
+            logger.info(s"Original index $index recreated successfully.")
+            if (!tryOrElse(this.setMapping(index, mapping), false)(logger)) {
+              logger.error(s"Failed to set mapping for original index: $index")
+              return false
+            }
+            logger.info(s"Mapping for original index $index set successfully.")
+            if (!tryOrElse(this.reindex(tempIndex, index), false)(logger)) {
+              logger.error(
+                s"Failed to reindex from temporary index: $tempIndex to original index: $index"
+              )
+              return false
+            }
+            logger.info(
+              s"Reindexing from temporary index $tempIndex to original index $index completed successfully."
+            )
+            if (!tryOrElse(this.openIndex(index), false)(logger)) {
+              logger.error(s"Failed to open original index: $index")
+              return false
+            }
+            logger.info(s"Original index $index opened successfully.")
+            logger.info("Dynamic mapping migration completed successfully.")
+            true
+          } else {
+            logger.error(s"Failed to delete original index: $index")
+            false
+          }
+        } else {
+          logger.error(s"Failed to create temporary index: $tempIndex")
+          false
+        }
+      }
+      val migration = Try(migrate()) match {
+        case Success(result) => result
+        case Failure(exception) =>
+          logger.error("Exception during dynamic mapping migration", exception)
+          false
+      }
+      if (!migration) {
+        logger.error("Error during dynamic mapping migration")
+        if (originalDeleted) {
+          // If the original index was deleted, we need to recreate it
+          if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
+            logger.error(s"Failed to recreate original index: $index")
+          } else {
+            logger.info(s"Original index $index recreated successfully.")
+            // Set the original mapping back
+            if (!tryOrElse(this.setMapping(index, mapping), false)(logger)) {
+              logger.error(s"Failed to set mapping for original index: $index")
+            } else {
+              logger.info(s"Mapping for original index $index set successfully.")
+              if (!tryOrElse(this.reindex(tempIndex, index), false)(logger)) {
+                logger.error(
+                  s"Failed to reindex from temporary index $tempIndex to original index $index"
+                )
+              } else {
+                logger.info(
+                  s"Reindexing from temporary index $tempIndex to original index $index completed successfully."
+                )
+                if (!tryOrElse(this.refresh(index), false)(logger)) {
+                  logger.error(s"Failed to refresh original index: $index")
+                } else {
+                  logger.info(s"Original index $index refreshed successfully.")
+                }
+              }
+            }
+          }
+        }
+      }
+      if (tempCreated) {
+        // Clean up the temporary index if it was created
+        if (!tryOrElse(this.deleteIndex(tempIndex), false)(logger)) {
+          logger.error(s"Failed to delete temporary index: $tempIndex")
+        } else {
+          logger.info(s"Temporary index $tempIndex deleted successfully.")
+        }
+      } else {
+        logger.error(s"Temporary index $tempIndex was not created, skipping deletion.")
+      }
+      migration
+    } else {
+      false
+    }
+  }
 }
 
 trait RefreshApi {
+
+  /** Refresh the index to make sure all documents are indexed and searchable.
+    * @param index
+    *   - the name of the index to refresh
+    * @return
+    *   true if the index was refreshed successfully, false otherwise
+    */
   def refresh(index: String): Boolean
 }
 
 trait FlushApi {
+
+  /** Flush the index to make sure all operations are written to disk.
+    * @param index
+    *   - the name of the index to flush
+    * @param force
+    *   - true to force the flush, false otherwise
+    * @param wait
+    *   - true to wait for the flush to complete, false otherwise
+    * @return
+    *   true if the index was flushed successfully, false otherwise
+    */
   def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean
 }
 
 trait IndexApi { _: RefreshApi =>
+
+  /** Index an entity in the given index.
+    * @param entity
+    *   - the entity to index
+    * @param index
+    *   - the name of the index to index the entity in (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @return
+    *   true if the entity was indexed successfully, false otherwise
+    */
   def index[U <: Timestamped](
     entity: U,
     index: Option[String] = None,
@@ -146,8 +469,30 @@ trait IndexApi { _: RefreshApi =>
     )
   }
 
+  /** Index an entity in the given index.
+    * @param index
+    *   - the name of the index to index the entity in
+    * @param indexType
+    *   - the type of the index
+    * @param id
+    *   - the id of the entity to index
+    * @param source
+    *   - the source of the entity to index in JSON format
+    * @return
+    *   true if the entity was indexed successfully, false otherwise
+    */
   def index(index: String, indexType: String, id: String, source: String): Boolean
 
+  /** Index an entity in the given index asynchronously.
+    * @param entity
+    *   - the entity to index
+    * @param index
+    *   - the name of the index to index the entity in (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @return
+    *   a Future that completes with true if the entity was indexed successfully, false otherwise
+    */
   def indexAsync[U <: Timestamped](
     entity: U,
     index: Option[String] = None,
@@ -157,6 +502,18 @@ trait IndexApi { _: RefreshApi =>
     indexAsync(index.getOrElse(indexType), indexType, entity.uuid, serialization.write[U](entity))
   }
 
+  /** Index an entity in the given index asynchronously.
+    * @param index
+    *   - the name of the index to index the entity in
+    * @param indexType
+    *   - the type of the index
+    * @param id
+    *   - the id of the entity to index
+    * @param source
+    *   - the source of the entity to index in JSON format
+    * @return
+    *   a Future that completes with true if the entity was indexed successfully, false otherwise
+    */
   def indexAsync(index: String, indexType: String, id: String, source: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
@@ -167,6 +524,19 @@ trait IndexApi { _: RefreshApi =>
 }
 
 trait UpdateApi { _: RefreshApi =>
+
+  /** Update an entity in the given index.
+    * @param entity
+    *   - the entity to update
+    * @param index
+    *   - the name of the index to update the entity in (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @param upsert
+    *   - true to upsert the entity if it does not exist, false otherwise
+    * @return
+    *   true if the entity was updated successfully, false otherwise
+    */
   def update[U <: Timestamped](
     entity: U,
     index: Option[String] = None,
@@ -183,14 +553,34 @@ trait UpdateApi { _: RefreshApi =>
     )
   }
 
-  def update(
-    index: String,
-    indexType: String,
-    id: String,
-    source: String,
-    upsert: Boolean
-  ): Boolean
+  /** Update an entity in the given index.
+    * @param index
+    *   - the name of the index to update the entity in
+    * @param indexType
+    *   - the type of the index
+    * @param id
+    *   - the id of the entity to update
+    * @param source
+    *   - the source of the entity to update in JSON format
+    * @param upsert
+    *   - true to upsert the entity if it does not exist, false otherwise
+    * @return
+    *   true if the entity was updated successfully, false otherwise
+    */
+  def update(index: String, indexType: String, id: String, source: String, upsert: Boolean): Boolean
 
+  /** Update an entity in the given index asynchronously.
+    * @param entity
+    *   - the entity to update
+    * @param index
+    *   - the name of the index to update the entity in (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @param upsert
+    *   - true to upsert the entity if it does not exist, false otherwise
+    * @return
+    *   a Future that completes with true if the entity was updated successfully, false otherwise
+    */
   def updateAsync[U <: Timestamped](
     entity: U,
     index: Option[String] = None,
@@ -208,6 +598,20 @@ trait UpdateApi { _: RefreshApi =>
       )
   }
 
+  /** Update an entity in the given index asynchronously.
+    * @param index
+    *   - the name of the index to update the entity in
+    * @param indexType
+    *   - the type of the index
+    * @param id
+    *   - the id of the entity to update
+    * @param source
+    *   - the source of the entity to update in JSON format
+    * @param upsert
+    *   - true to upsert the entity if it does not exist, false otherwise
+    * @return
+    *   a Future that completes with true if the entity was updated successfully, false otherwise
+    */
   def updateAsync(index: String, indexType: String, id: String, source: String, upsert: Boolean)(
     implicit ec: ExecutionContext
   ): Future[Boolean] = {
@@ -218,6 +622,17 @@ trait UpdateApi { _: RefreshApi =>
 }
 
 trait DeleteApi { _: RefreshApi =>
+
+  /** Delete an entity from the given index.
+    * @param entity
+    *   - the entity to delete
+    * @param index
+    *   - the name of the index to delete the entity from (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @return
+    *   true if the entity was deleted successfully, false otherwise
+    */
   def delete[U <: Timestamped](
     entity: U,
     index: Option[String] = None,
@@ -227,8 +642,26 @@ trait DeleteApi { _: RefreshApi =>
     delete(entity.uuid, index.getOrElse(indexType), indexType)
   }
 
+  /** Delete an entity from the given index.
+    * @param uuid
+    *   - the id of the entity to delete
+    * @param index
+    *   - the name of the index to delete the entity from
+    * @return
+    *   true if the entity was deleted successfully, false otherwise
+    */
   def delete(uuid: String, index: String, indexType: String): Boolean
 
+  /** Delete an entity from the given index asynchronously.
+    * @param entity
+    *   - the entity to delete
+    * @param index
+    *   - the name of the index to delete the entity from (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @return
+    *   a Future that completes with true if the entity was deleted successfully, false otherwise
+    */
   def deleteAsync[U <: Timestamped](
     entity: U,
     index: Option[String] = None,
@@ -238,6 +671,16 @@ trait DeleteApi { _: RefreshApi =>
     deleteAsync(entity.uuid, index.getOrElse(indexType), indexType)
   }
 
+  /** Delete an entity from the given index asynchronously.
+    * @param uuid
+    *   - the id of the entity to delete
+    * @param index
+    *   - the name of the index to delete the entity from
+    * @param indexType
+    *   - the type of the index
+    * @return
+    *   a Future that completes with true if the entity was deleted successfully, false otherwise
+    */
   def deleteAsync(uuid: String, index: String, indexType: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
@@ -467,17 +910,37 @@ trait BulkApi { _: RefreshApi with SettingsApi =>
 }
 
 trait CountApi {
+
+  /** Count the number of documents matching the given JSON query asynchronously.
+    * @param query
+    *   - the query to count the documents for
+    * @return
+    *   the number of documents matching the query, or None if the count could not be determined
+    */
   def countAsync(query: JSONQuery)(implicit ec: ExecutionContext): Future[Option[Double]] = {
-    Future(
+    Future {
       this.count(query)
-    )
+    }
   }
 
+  /** Count the number of documents matching the given JSON query.
+    * @param query
+    *   - the query to count the documents for
+    * @return
+    *   the number of documents matching the query, or None if the count could not be determined
+    */
   def count(query: JSONQuery): Option[Double]
 
 }
 
 trait AggregateApi[T <: AggregateResult] {
+
+  /** Aggregate the results of the given SQL query.
+    * @param sqlQuery
+    *   - the query to aggregate the results for
+    * @return
+    *   a sequence of aggregated results
+    */
   def aggregate(sqlQuery: SQLQuery)(implicit
     ec: ExecutionContext
   ): Future[_root_.scala.collection.Seq[T]]
@@ -486,12 +949,33 @@ trait AggregateApi[T <: AggregateResult] {
 trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult]
 
 trait GetApi {
+
+  /** Get an entity by its id from the given index.
+    * @param id
+    *   - the id of the entity to get
+    * @param index
+    *   - the name of the index to get the entity from (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @return
+    *   an Option containing the entity if it was found, None otherwise
+    */
   def get[U <: Timestamped](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
   )(implicit m: Manifest[U], formats: Formats): Option[U]
 
+  /** Get an entity by its id from the given index asynchronously.
+    * @param id
+    *   - the id of the entity to get
+    * @param index
+    *   - the name of the index to get the entity from (default is the entity type name)
+    * @param maybeType
+    *   - the type of the entity (default is the entity class name in lowercase)
+    * @return
+    *   a Future that completes with an Option containing the entity if it was found, None otherwise
+    */
   def getAsync[U <: Timestamped](
     id: String,
     index: Option[String] = None,
@@ -503,8 +987,28 @@ trait GetApi {
 
 trait SearchApi {
 
+  /** Search for entities matching the given JSON query.
+    * @param jsonQuery
+    *   - the query to search for
+    * @param m
+    *   - the manifest of the type to search for
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of entities matching the query
+    */
   def search[U](jsonQuery: JSONQuery)(implicit m: Manifest[U], formats: Formats): List[U]
 
+  /** Search for entities matching the given SQL query.
+    * @param sqlQuery
+    *   - the SQL query to search for
+    * @param m
+    *   - the manifest of the type to search for
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of entities matching the query
+    */
   def search[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
     sqlQuery.search match {
       case Some(searchRequest) =>
@@ -517,12 +1021,36 @@ trait SearchApi {
     }
   }
 
+  /** Search for entities matching the given SQL query asynchronously.
+    * @param sqlQuery
+    *   - the SQL query to search for
+    * @param m
+    *   - the manifest of the type to search for
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a Future that completes with a list of entities matching the query
+    */
   def searchAsync[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = Future(
     this.search[U](sqlQuery)
   )
 
+  /** Search for entities matching the given JSON query with inner hits.
+    * @param sqlQuery
+    *   - the SQL query to search for
+    * @param innerField
+    *   - the field to use for inner hits
+    * @param m1
+    *   - the manifest of the type to search for
+    * @param m2
+    *   - the manifest of the inner hit type
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of tuples containing the main entity and a list of inner hits
+    */
   def searchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
@@ -540,12 +1068,36 @@ trait SearchApi {
     }
   }
 
+  /** Search for entities matching the given JSON query with inner hits.
+    * @param sqlQuery
+    *   - the SQL query to search for
+    * @param innerField
+    *   - the field to use for inner hits
+    * @param m1
+    *   - the manifest of the type to search for
+    * @param m2
+    *   - the manifest of the inner hit type
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of tuples containing the main entity and a list of inner hits
+    */
   def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])]
 
+  /** Perform a multi-search operation with the given SQL query.
+    * @param sqlQuery
+    *   - the SQL query to perform the multi-search for
+    * @param m
+    *   - the manifest of the type to search for
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of lists of entities matching the queries in the multi-search request
+    */
   def multiSearch[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
@@ -566,10 +1118,34 @@ trait SearchApi {
     }
   }
 
+  /** Perform a multi-search operation with the given JSON queries.
+    * @param jsonQueries
+    *   - the JSON queries to perform the multi-search for
+    * @param m
+    *   - the manifest of the type to search for
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of lists of entities matching the queries in the multi-search request
+    */
   def multiSearch[U](
     jsonQueries: JSONQueries
   )(implicit m: Manifest[U], formats: Formats): List[List[U]]
 
+  /** Perform a multi-search operation with the given SQL query and inner hits.
+    * @param sqlQuery
+    *   - the SQL query to perform the multi-search for
+    * @param innerField
+    *   - the field to use for inner hits
+    * @param m1
+    *   - the manifest of the type to search for
+    * @param m2
+    *   - the manifest of the inner hit type
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of lists of tuples containing the main entity and a list of inner hits
+    */
   def multiSearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
@@ -592,6 +1168,20 @@ trait SearchApi {
     }
   }
 
+  /** Perform a multi-search operation with the given JSON queries and inner hits.
+    * @param jsonQueries
+    *   - the JSON queries to perform the multi-search for
+    * @param innerField
+    *   - the field to use for inner hits
+    * @param m1
+    *   - the manifest of the type to search for
+    * @param m2
+    *   - the manifest of the inner hit type
+    * @param formats
+    *   - the formats to use for serialization/deserialization
+    * @return
+    *   a list of lists of tuples containing the main entity and a list of inner hits
+    */
   def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
