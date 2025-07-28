@@ -1,8 +1,5 @@
 package app.softnetwork.elastic.client
 
-import java.io.ByteArrayInputStream
-import java.util.concurrent.TimeUnit
-import java.util.UUID
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.sql.SQLQuery
 import com.fasterxml.jackson.core.JsonParseException
@@ -15,19 +12,28 @@ import app.softnetwork.elastic.model._
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.EmbeddedElasticTestKit
 import app.softnetwork.persistence.person.model.Person
+import com.google.gson.JsonParser
+import com.sksamuel.exts.Logging
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.nio.file.{Files, Paths}
+import _root_.java.io.ByteArrayInputStream
+import _root_.java.nio.file.{Files, Paths}
+import _root_.java.time.format.DateTimeFormatter
+import _root_.java.util.concurrent.TimeUnit
+import _root_.java.util.UUID
 import java.time.{LocalDate, LocalDateTime, ZoneOffset}
-import java.time.format.DateTimeFormatter
 import scala.concurrent.{Await, ExecutionContextExecutor}
 import scala.concurrent.duration.Duration
 import scala.util.{Failure, Success}
 
 /** Created by smanciot on 28/06/2018.
   */
-trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with Matchers {
+trait ElasticClientSpec
+    extends AnyFlatSpecLike
+    with EmbeddedElasticTestKit
+    with Matchers
+    with Logging {
 
   lazy val log: Logger = LoggerFactory getLogger getClass.getName
 
@@ -56,57 +62,6 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
     super.afterAll()
   }
 
-  "Creating an index and then delete it" should "work fine" in {
-    pClient.createIndex("create_delete")
-    blockUntilIndexExists("create_delete")
-    "create_delete" should beCreated
-
-    pClient.deleteIndex("create_delete")
-    blockUntilIndexNotExists("create_delete")
-    "create_delete" should not(beCreated())
-  }
-
-  "Adding an alias" should "work" in {
-    pClient.addAlias("person", "person_alias")
-
-    doesAliasExists("person_alias") shouldBe true
-  }
-
-  private def settings: Map[String, String] = {
-    elasticClient.execute {
-      getSettings("person")
-    } complete () match {
-      case Success(s) => s.result.settingsForIndex("person")
-      case Failure(f) => throw f
-    }
-  }
-
-  "Toggle refresh" should "work" in {
-    pClient.toggleRefresh("person", enable = false)
-
-    settings.getOrElse("index.refresh_interval", "") shouldBe "-1"
-
-    pClient.toggleRefresh("person", enable = true)
-    settings.getOrElse("index.refresh_interval", "") shouldBe "1s"
-  }
-
-  "Updating number of replicas" should "work" in {
-    pClient.setReplicas("person", 3)
-    settings.getOrElse("index.number_of_replicas", "") shouldBe "3"
-
-    pClient.setReplicas("person", 0)
-    settings.getOrElse("index.number_of_replicas", "") shouldBe "0"
-  }
-
-  "Opening an index and then closing it" should "work" in {
-    pClient.openIndex("person")
-
-    isIndexOpened("person") shouldBe true
-
-    pClient.closeIndex("person")
-    isIndexClosed("person") shouldBe true
-  }
-
   val persons: List[String] = List(
     """ { "uuid": "A12", "name": "Homer Simpson", "birthDate": "1967-11-21", "childrenCount": 0} """,
     """ { "uuid": "A14", "name": "Moe Szyslak",   "birthDate": "1967-11-21", "childrenCount": 0} """,
@@ -120,6 +75,249 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
     """ { "parentId": "A16", "name": "Steve Gumble", "birthDate": "1999-05-09"} """,
     """ { "parentId": "A16", "name": "Josh Gumble", "birthDate": "1999-05-09"} """
   )
+
+  "Creating an index and then delete it" should "work fine" in {
+    pClient.createIndex("create_delete")
+    blockUntilIndexExists("create_delete")
+    "create_delete" should beCreated
+
+    pClient.deleteIndex("create_delete")
+    blockUntilIndexNotExists("create_delete")
+    "create_delete" should not(beCreated())
+  }
+
+  "Adding an alias and then removing it" should "work" in {
+    pClient.addAlias("person", "person_alias")
+
+    doesAliasExists("person_alias") shouldBe true
+
+    pClient.removeAlias("person", "person_alias")
+
+    doesAliasExists("person_alias") shouldBe false
+  }
+
+  private def settings: Map[String, String] = {
+    elasticClient.execute {
+      getSettings("person")
+    } complete () match {
+      case Success(s) => s.result.settingsForIndex("person")
+      case Failure(f) => throw f
+    }
+  }
+
+  "Toggle refresh" should "work" in {
+    pClient.toggleRefresh("person", enable = false)
+    new JsonParser()
+      .parse(pClient.loadSettings("person"))
+      .getAsJsonObject
+      .get("person")
+      .getAsJsonObject
+      .get("settings")
+      .getAsJsonObject
+      .get("index")
+      .getAsJsonObject
+      .get("refresh_interval")
+      .getAsString shouldBe "-1"
+    // settings.getOrElse("index.refresh_interval", "") shouldBe "-1"
+
+    pClient.toggleRefresh("person", enable = true)
+    //    settings.getOrElse("index.refresh_interval", "") shouldBe "1s"
+    new JsonParser()
+      .parse(pClient.loadSettings("person"))
+      .getAsJsonObject
+      .get("person")
+      .getAsJsonObject
+      .get("settings")
+      .getAsJsonObject
+      .get("index")
+      .getAsJsonObject
+      .get("refresh_interval")
+      .getAsString shouldBe "1s"
+  }
+
+  "Opening an index and then closing it" should "work" in {
+    pClient.openIndex("person")
+
+    isIndexOpened("person") shouldBe true
+
+    pClient.closeIndex("person")
+    isIndexClosed("person") shouldBe true
+  }
+
+  "Updating number of replicas" should "work" in {
+    pClient.setReplicas("person", 3)
+    settings.getOrElse("index.number_of_replicas", "") shouldBe "3"
+
+    pClient.setReplicas("person", 0)
+    settings.getOrElse("index.number_of_replicas", "") shouldBe "0"
+  }
+
+  "Setting a mapping" should "work" in {
+    pClient.createIndex("person_mapping")
+    blockUntilIndexExists("person_mapping")
+    "person_mapping" should beCreated
+
+    val mapping =
+      """{
+        |    "properties": {
+        |        "birthDate": {
+        |            "type": "date"
+        |        },
+        |        "uuid": {
+        |            "type": "keyword"
+        |        },
+        |        "name": {
+        |            "type": "text",
+        |            "analyzer": "ngram_analyzer",
+        |            "search_analyzer": "search_analyzer",
+        |            "fields": {
+        |                "raw": {
+        |                    "type": "keyword"
+        |                },
+        |                "fr": {
+        |                    "type": "text",
+        |                    "analyzer": "french"
+        |                }
+        |            }
+        |        }
+        |    }
+        |}""".stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    pClient.setMapping("person_mapping", mapping) shouldBe true
+
+    val properties = pClient.getMappingProperties("person_mapping")
+    logger.info(s"properties: $properties")
+    MappingComparator.isMappingDifferent(
+      properties,
+      mapping
+    ) shouldBe false
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping", "_doc", 1000)
+    val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
+    refresh(indices)
+    pClient.flush("person_mapping")
+
+    indices should contain only "person_mapping"
+
+    blockUntilCount(3, "person_mapping")
+
+    "person_mapping" should haveCount(3)
+
+    pClient.search[Person]("select * from person_mapping") match {
+      case r if r.size == 3 =>
+        r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
+      case other => fail(other.toString)
+    }
+
+    pClient.search[Person]("select * from person_mapping where uuid = 'A16'") match {
+      case r if r.size == 1 =>
+        r.map(_.uuid) should contain only "A16"
+      case other => fail(other.toString)
+    }
+
+    pClient.search[Person]("select * from person_mapping where match(name, 'gum')") match {
+      case r if r.size == 1 =>
+        r.map(_.uuid) should contain only "A16"
+      case other => fail(other.toString)
+    }
+
+    pClient.search[Person](
+      "select * from person_mapping where uuid <> 'A16' and match(name, 'gum')"
+    ) match {
+      case r if r.isEmpty =>
+      case other          => fail(other.toString)
+    }
+  }
+
+  "Updating a mapping" should "work" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "name": {
+        |      "type": "keyword"
+        |    },
+        |    "birthDate": {
+        |      "type": "date"
+        |    },
+        |    "uuid": {
+        |      "type": "keyword"
+        |    },
+        |    "childrenCount": {
+        |      "type": "integer"
+        |    }
+        |  }
+        |}
+      """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    pClient.updateMapping("person_migration", mapping) shouldBe true
+    blockUntilIndexExists("person_migration")
+    "person_migration" should beCreated
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_migration", "_doc", 1000)
+    val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
+    refresh(indices)
+    pClient.flush("person_migration")
+
+    indices should contain only "person_migration"
+
+    blockUntilCount(3, "person_migration")
+
+    "person_migration" should haveCount(3)
+
+    pClient.search[Person]("select * from person_migration where match(name, 'gum')") match {
+      case r if r.isEmpty =>
+      case other          => fail(other.toString)
+    }
+
+    val newMapping =
+      """{
+        |  "properties": {
+        |    "birthDate": {
+        |      "type": "date"
+        |    },
+        |    "uuid": {
+        |      "type": "keyword"
+        |    },
+        |    "name": {
+        |      "type": "text",
+        |      "analyzer": "ngram_analyzer",
+        |      "search_analyzer": "search_analyzer",
+        |      "fields": {
+        |        "raw": {
+        |          "type": "keyword"
+        |        },
+        |        "fr": {
+        |          "type": "text",
+        |          "analyzer": "french"
+        |        }
+        |      }
+        |    },
+        |    "childrenCount": {
+        |      "type": "integer"
+        |    },
+        |    "children": {
+        |      "type": "nested",
+        |      "include_in_parent": true,
+        |      "properties": {
+        |        "name": {
+        |          "type": "keyword"
+        |        },
+        |        "birthDate": {
+        |          "type": "date"
+        |        }
+        |      }
+        |    }
+        |  }
+        |}
+      """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    pClient.shouldUpdateMapping("person_migration", newMapping) shouldBe true
+    pClient.updateMapping("person_migration", newMapping) shouldBe true
+
+    pClient.search[Person]("select * from person_migration where match(name, 'gum')") match {
+      case r if r.size == 1 =>
+        r.map(_.uuid) should contain only "A16"
+      case other => fail(other.toString)
+    }
+
+  }
 
   "Bulk index valid json without id key and suffix key" should "work" in {
     implicit val bulkOptions: BulkOptions = BulkOptions("person1", "person", 2)
@@ -155,6 +353,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
     implicit val bulkOptions: BulkOptions = BulkOptions("person2", "person", 1000)
     val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
     refresh(indices)
+    pClient.flush("person2")
 
     indices should contain only "person2"
 
@@ -175,19 +374,6 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
         _.sourceField("name")
       ) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
 
-    // FIXME elastic >= v 6.x no more multiple Parent / Child relationship allowed within the same index
-//    val childIndices =
-//      pClient.bulk[String](children.iterator, identity, None, None, None, None, None, Some("parentId"))(
-//        jclient,
-//        BulkOptions("person2", "child", 1000),
-//        system)
-//    pClient.refresh("person2")
-//
-//    childIndices should contain only "person2"
-//
-//    blockUntilCount(2, "person2", "child")
-//
-//    "person2" should haveCount(5)
   }
 
   "Bulk index valid json with an id key and a suffix key" should "work" in {
@@ -445,6 +631,11 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
     val result2 = sClient.delete(sample.uuid, Some("sample"), Some("sample"))
     result2 shouldBe true
 
+    /*FIXME sClient.deleteAsync(sample.uuid, Some("sample")) complete () match {
+      case Success(r) => r shouldBe true
+      case Failure(f) => fail(f.getMessage)
+    }*/
+
     val result3 = sClient.get[Sample](uuid)
     result3.isEmpty shouldBe true
   }
@@ -473,7 +664,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
         |    }
         |}
       """.stripMargin
-    bClient.setMapping("binaries", "test", mapping) shouldBe true
+    bClient.setMapping("binaries", mapping) shouldBe true
     for (uuid <- Seq("png", "jpg", "pdf")) {
       val path =
         Paths.get(Thread.currentThread().getContextClassLoader.getResource(s"avatar.$uuid").getPath)
@@ -533,7 +724,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
         |}
       """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
     logger.info(s"mapping: $mapping")
-    pClient.setMapping("person10", "_doc", mapping) shouldBe true
+    pClient.setMapping("person10", mapping) shouldBe true
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person10", "_doc", 1000)
     val indices =
@@ -651,7 +842,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with EmbeddedElasticTestKit with
         |}
     """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
     logger.info(s"mapping: $mapping")
-    parentClient.setMapping("parent", "_doc", mapping) shouldBe true
+    parentClient.setMapping("parent", mapping) shouldBe true
 
     implicit val bulkOptions: BulkOptions = BulkOptions("parent", "_doc", 1000)
     val indices =

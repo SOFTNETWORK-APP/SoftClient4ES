@@ -44,9 +44,9 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     Try {
       createIndex(index)
       addAlias(index, alias)
-      setMapping(index, _type, loadMapping(mappingPath))
+      setMapping(index, loadMapping(mappingPath))
     } match {
-      case Success(_) => logger.info(s"index:$index type:${_type} alias:$alias created")
+      case Success(_) => logger.info(s"index:$index alias:$alias created")
       case Failure(f) =>
         logger.error(s"!!!!! index:$index type:${_type} alias:$alias -> ${f.getMessage}", f)
     }
