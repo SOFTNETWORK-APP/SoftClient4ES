@@ -96,6 +96,59 @@ lazy val persistence = project.in(file("persistence"))
     core % "compile->compile;test->test;it->it"
   )
 
+lazy val es8java = project.in(file("es8/java"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es8,
+  )
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
+  )
+
+lazy val es8javap = project.in(file("es8/java/persistence"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es8,
+  )
+  .dependsOn(
+    persistence % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es8java % "compile->compile;test->test;it->it"
+  )
+
+lazy val es8testkit = project.in(file("es8/testkit"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    app.softnetwork.Info.infoSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es8,
+    buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value)
+  )
+  .enablePlugins(BuildInfoPlugin)
+  .dependsOn(
+    es8javap % "compile->compile;test->test;it->it"
+  )
+
+lazy val es8 = project.in(file("es8"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    Publish.noPublishSettings,
+    crossScalaVersions := Nil,
+    elasticSearchVersion := Versions.es8
+  )
+  .aggregate(
+    es8java,
+    es8javap,
+    es8testkit
+  )
+
 lazy val es9java = project.in(file("es9/java"))
   .configs(IntegrationTest)
   .settings(
@@ -103,6 +156,7 @@ lazy val es9java = project.in(file("es9/java"))
     moduleSettings,
     scalaVersion := scala213,
     crossScalaVersions := Seq(scala213),
+    elasticSearchVersion := Versions.es9,
     javacOptions ++= Seq("-source", "17", "-target", "17")
   )
   .dependsOn(
@@ -116,6 +170,7 @@ lazy val es9javap = project.in(file("es9/java/persistence"))
     moduleSettings,
     scalaVersion := scala213,
     crossScalaVersions := Seq(scala213),
+    elasticSearchVersion := Versions.es9,
     javacOptions ++= Seq("-source", "17", "-target", "17")
   )
   .dependsOn(
@@ -133,6 +188,7 @@ lazy val es9testkit = project.in(file("es9/testkit"))
     moduleSettings,
     scalaVersion := scala213,
     crossScalaVersions := Seq(scala213),
+    elasticSearchVersion := Versions.es9,
     javacOptions ++= Seq("-source", "17", "-target", "17"),
     buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value)
   )
@@ -146,7 +202,8 @@ lazy val es9 = project.in(file("es9"))
   .settings(
     Defaults.itSettings,
     Publish.noPublishSettings,
-    crossScalaVersions := Nil
+    crossScalaVersions := Nil,
+    elasticSearchVersion := Versions.es9
   )
   .aggregate(
     es9java,
@@ -165,5 +222,6 @@ lazy val root = project.in(file("."))
     sql,
     core,
     persistence,
+    es8,
     es9
   )

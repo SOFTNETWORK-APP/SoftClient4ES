@@ -40,6 +40,10 @@ trait SoftClient4es {
 
   def elastic4sDependencies(esVersion: String): Seq[ModuleID] = {
     elasticSearchMajorVersion(esVersion) match {
+      case 8 =>
+        Seq(
+          "nl.gn0s1s" %% "elastic4s-core" % Versions.elastic84s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
+        )
       case 9 =>
         Seq(
           "nl.gn0s1s" %% "elastic4s-core" % Versions.elastic94s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
@@ -51,7 +55,11 @@ trait SoftClient4es {
   def elastic4sTestkitDependencies(esVersion: String): Seq[ModuleID] = {
     elastic4sDependencies(esVersion) ++
     (elasticSearchMajorVersion(esVersion) match {
-      case 8 | 9 =>
+      case 8 =>
+        Seq(
+          "nl.gn0s1s" %% "elastic4s-testkit" % Versions.elastic84s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
+        )
+      case 9 =>
         Seq(
           "nl.gn0s1s" %% "elastic4s-testkit" % Versions.elastic94s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
         )

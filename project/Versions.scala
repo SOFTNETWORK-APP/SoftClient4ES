@@ -20,9 +20,11 @@ object Versions {
 
   val log4s = "1.8.2"
 
-  val es9 = "9.0.3"
+  val es8 = "8.18.3"
 
-  val elasticSearch = "9.0.3"
+  val elastic84s = "8.18.2"
+
+  val es9 = "9.0.3"
 
   val elastic94s = "9.0.0"
 
