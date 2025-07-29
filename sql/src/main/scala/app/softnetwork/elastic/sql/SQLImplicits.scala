@@ -24,17 +24,6 @@ object SQLImplicits {
     }
   }
 
-  implicit def requestToElasticSearchRequest(request: SQLSearchRequest): ElasticSearchRequest =
-    ElasticSearchRequest(
-      request.select.fields,
-      request.select.except,
-      request.sources,
-      request.where.flatMap(_.criteria),
-      request.limit.map(_.limit),
-      request.searchRequest,
-      request.aggregations
-    )
-
   implicit def sqllikeToRegex(value: String): Regex = toRegex(value).r
 
 }

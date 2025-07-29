@@ -1,4 +1,5 @@
+import SoftClient4es._
+
 organization := "app.softnetwork.elastic"
 
-name := "elastic-persistence"
-
+name := "softclient4es-persistence"

@@ -1,11 +1,12 @@
+import SoftClient4es.*
 import app.softnetwork.*
 
 /////////////////////////////////
 // Defaults
 /////////////////////////////////
 
+lazy val scala212 = "2.12.20"
 lazy val scala213 = "2.13.16"
-lazy val javacCompilerVersion = "17"
 lazy val scalacCompilerOptions = Seq(
   "-deprecation",
   "-feature",
@@ -14,9 +15,9 @@ lazy val scalacCompilerOptions = Seq(
 
 ThisBuild / organization := "app.softnetwork"
 
-name := "elastic"
+name := "softclient4es"
 
-ThisBuild / version := Versions.elasticSearch
+ThisBuild / version := "0.1-SNAPSHOT"
 
 ThisBuild / scalaVersion := scala213
 
@@ -28,7 +29,7 @@ ThisBuild / dependencyOverrides ++= Seq(
 )
 
 lazy val moduleSettings = Seq(
-  crossScalaVersions := Seq(scala213),
+  crossScalaVersions := Seq(scala212, scala213),
   scalacOptions ++= {
     CrossVersion.partialVersion(scalaVersion.value) match {
       case Some((2, 12)) => scalacCompilerOptions :+ "-Ypartial-unification"
@@ -38,7 +39,7 @@ lazy val moduleSettings = Seq(
   }
 )
 
-ThisBuild / javacOptions ++= Seq("-source", javacCompilerVersion, "-target", javacCompilerVersion)
+ThisBuild / javacOptions ++= Seq("-source", "1.8", "-target", "1.8")
 
 ThisBuild / resolvers ++= Seq(
   "Softnetwork Server" at "https://softnetwork.jfrog.io/artifactory/releases/",
@@ -53,14 +54,6 @@ val logging = Seq(
   "org.slf4j"                  % "slf4j-api"      % Versions.slf4j,
   "org.slf4j"                  % "jcl-over-slf4j" % Versions.slf4j,
   "org.slf4j"                  % "jul-to-slf4j"   % Versions.slf4j
-)
-
-val jacksonExclusions = Seq(
-  ExclusionRule(organization = "com.fasterxml.jackson.core"),
-  ExclusionRule(organization = "com.fasterxml.jackson.dataformat"),
-  ExclusionRule(organization = "com.fasterxml.jackson.datatype"),
-  ExclusionRule(organization = "com.fasterxml.jackson.module"),
-  ExclusionRule(organization = "org.codehaus.jackson")
 )
 
 val json4s = Seq(
@@ -78,9 +71,12 @@ Test / parallelExecution := false
 
 lazy val sql = project.in(file("sql"))
   .configs(IntegrationTest)
-  .settings(Defaults.itSettings)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+  )
 
-lazy val client = project.in(file("client"))
+lazy val core = project.in(file("core"))
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
@@ -97,39 +93,65 @@ lazy val persistence = project.in(file("persistence"))
     moduleSettings
   )
   .dependsOn(
-    client % "compile->compile;test->test;it->it"
+    core % "compile->compile;test->test;it->it"
   )
 
-lazy val java = project.in(file("java"))
+lazy val es9java = project.in(file("es9/java"))
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
-    moduleSettings
+    moduleSettings,
+    scalaVersion := scala213,
+    crossScalaVersions := Seq(scala213),
+    javacOptions ++= Seq("-source", "17", "-target", "17")
   )
   .dependsOn(
-    client % "compile->compile;test->test;it->it"
+    core % "compile->compile;test->test;it->it"
   )
 
-lazy val javaPersistence = project.in(file("java/persistence"))
+lazy val es9javap = project.in(file("es9/java/persistence"))
   .configs(IntegrationTest)
-  .settings(Defaults.itSettings)
-  .dependsOn(
-    java % "compile->compile;test->test;it->it",
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    scalaVersion := scala213,
+    crossScalaVersions := Seq(scala213),
+    javacOptions ++= Seq("-source", "17", "-target", "17")
   )
   .dependsOn(
     persistence % "compile->compile;test->test;it->it"
   )
+  .dependsOn(
+    es9java % "compile->compile;test->test;it->it"
+  )
 
-lazy val testKit = project.in(file("testkit"))
+lazy val es9testkit = project.in(file("es9/testkit"))
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
     app.softnetwork.Info.infoSettings,
-    moduleSettings
+    moduleSettings,
+    scalaVersion := scala213,
+    crossScalaVersions := Seq(scala213),
+    javacOptions ++= Seq("-source", "17", "-target", "17"),
+    buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value)
   )
   .enablePlugins(BuildInfoPlugin)
   .dependsOn(
-    javaPersistence % "compile->compile;test->test;it->it"
+    es9javap % "compile->compile;test->test;it->it"
+  )
+
+lazy val es9 = project.in(file("es9"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    Publish.noPublishSettings,
+    crossScalaVersions := Nil
+  )
+  .aggregate(
+    es9java,
+    es9javap,
+    es9testkit
   )
 
 lazy val root = project.in(file("."))
@@ -139,4 +161,9 @@ lazy val root = project.in(file("."))
     Publish.noPublishSettings,
     crossScalaVersions := Nil
   )
-  .aggregate(sql, client, persistence, java, javaPersistence, testKit)
+  .aggregate(
+    sql,
+    core,
+    persistence,
+    es9
+  )
