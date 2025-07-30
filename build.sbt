@@ -96,6 +96,59 @@ lazy val persistence = project.in(file("persistence"))
     core % "compile->compile;test->test;it->it"
   )
 
+lazy val es7rest = project.in(file("es7/rest"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es7,
+  )
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
+  )
+
+lazy val es7restp = project.in(file("es7/rest/persistence"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es7,
+  )
+  .dependsOn(
+    persistence % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es7rest % "compile->compile;test->test;it->it"
+  )
+
+lazy val es7testkit = project.in(file("es7/testkit"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    app.softnetwork.Info.infoSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es7,
+    buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value)
+  )
+  .enablePlugins(BuildInfoPlugin)
+  .dependsOn(
+    es7restp % "compile->compile;test->test;it->it"
+  )
+
+lazy val es7 = project.in(file("es7"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    Publish.noPublishSettings,
+    crossScalaVersions := Nil,
+    elasticSearchVersion := Versions.es7
+  )
+  .aggregate(
+    es7rest,
+    es7restp,
+    es7testkit
+  )
+
 lazy val es8java = project.in(file("es8/java"))
   .configs(IntegrationTest)
   .settings(

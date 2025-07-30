@@ -20,6 +20,10 @@ object Versions {
 
   val log4s = "1.8.2"
 
+  val es7 = "7.17.29"
+
+  val elastic74s = "7.17.4"
+
   val es8 = "8.18.3"
 
   val elastic84s = "8.18.2"
