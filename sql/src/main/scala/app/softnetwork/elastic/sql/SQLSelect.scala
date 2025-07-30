@@ -1,18 +1,5 @@
 package app.softnetwork.elastic.sql
 
-import com.sksamuel.elastic4s.ElasticApi.{
-  avgAgg,
-  cardinalityAgg,
-  filterAgg,
-  matchAllQuery,
-  maxAgg,
-  minAgg,
-  nestedAggregation,
-  sumAgg,
-  valueCountAgg
-}
-import com.sksamuel.elastic4s.requests.searches.aggs.Aggregation
-
 case object Select extends SQLExpr("select") with SQLRegex
 
 case class SQLField(
@@ -60,84 +47,6 @@ class SQLAggregate(
   override def sql: String = s"$function($identifier)${asString(alias)}"
   override def update(request: SQLSearchRequest): SQLAggregate =
     new SQLAggregate(function, identifier.update(request), alias, filter.map(_.update(request)))
-
-  def asAggregation(): ElasticAggregation = {
-    val sourceField = identifier.columnName
-
-    val field = alias match {
-      case Some(alias) => alias.alias
-      case _           => sourceField
-    }
-
-    val distinct = identifier.distinct.isDefined
-
-    val agg =
-      if (distinct)
-        s"${function}_distinct_${sourceField.replace(".", "_")}"
-      else
-        s"${function}_${sourceField.replace(".", "_")}"
-
-    var aggPath = Seq[String]()
-
-    val _agg =
-      function match {
-        case Count =>
-          if (distinct)
-            cardinalityAgg(agg, sourceField)
-          else {
-            valueCountAgg(agg, sourceField)
-          }
-        case Min => minAgg(agg, sourceField)
-        case Max => maxAgg(agg, sourceField)
-        case Avg => avgAgg(agg, sourceField)
-        case Sum => sumAgg(agg, sourceField)
-      }
-
-    def _filtered: Aggregation = filter match {
-      case Some(f) =>
-        val boolQuery = Option(ElasticBoolQuery(group = true))
-        val filteredAgg = s"filtered_agg"
-        aggPath ++= Seq(filteredAgg)
-        filterAgg(
-          filteredAgg,
-          f.criteria
-            .map(
-              _.asFilter(boolQuery)
-                .query(Set(identifier.innerHitsName).flatten, boolQuery)
-            )
-            .getOrElse(matchAllQuery())
-        ) subaggs {
-          aggPath ++= Seq(agg)
-          _agg
-        }
-      case _ =>
-        aggPath ++= Seq(agg)
-        _agg
-    }
-
-    val aggregation =
-      if (identifier.nested) {
-        val path = sourceField.split("\\.").head
-        val nestedAgg = s"nested_$agg"
-        aggPath ++= Seq(nestedAgg)
-        nestedAggregation(nestedAgg, path) subaggs {
-          _filtered
-        }
-      } else {
-        _filtered
-      }
-
-    ElasticAggregation(
-      aggPath.mkString("."),
-      field,
-      sourceField,
-      distinct = distinct,
-      nested = identifier.nested,
-      filtered = filter.nonEmpty,
-      aggType = function,
-      agg = aggregation
-    )
-  }
 }
 
 case class SQLSelect(

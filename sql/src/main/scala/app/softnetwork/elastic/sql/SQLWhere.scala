@@ -1,8 +1,5 @@
 package app.softnetwork.elastic.sql
 
-import com.sksamuel.elastic4s.ElasticApi._
-import com.sksamuel.elastic4s.requests.searches.queries.Query
-
 case object Where extends SQLExpr("where") with SQLRegex
 
 sealed trait SQLCriteria extends Updateable {
@@ -29,14 +26,6 @@ sealed trait SQLCriteria extends Updateable {
       case Some(q)                      => boolQuery.copy(filtered = q.filtered && !matchCriteria)
       case _                            => boolQuery // FIXME should never be the case
     }
-  }
-
-  def asQuery(group: Boolean = true, innerHitsNames: Set[String] = Set.empty): Query = {
-    val query = boolQuery.copy(group = group)
-    query
-      .filter(this.asFilter(Option(query)))
-      .unfilteredMatchCriteria()
-      .query(innerHitsNames, Option(query))
   }
 
 }
@@ -97,12 +86,7 @@ case class SQLPredicate(
   override def matchCriteria: Boolean = leftCriteria.matchCriteria || rightCriteria.matchCriteria
 }
 
-sealed trait ElasticFilter {
-  def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query
-}
+sealed trait ElasticFilter
 
 sealed trait SQLCriteriaWithIdentifier extends SQLCriteria {
   def identifier: SQLIdentifier
@@ -146,19 +130,6 @@ case class ElasticBoolQuery(
     this
   }
 
-  def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    import com.sksamuel.elastic4s.ElasticApi._
-    bool(
-      mustFilters.map(_.query(innerHitsNames, currentQuery)),
-      shouldFilters.map(_.query(innerHitsNames, currentQuery)),
-      notFilters.map(_.query(innerHitsNames, currentQuery))
-    )
-      .filter(innerFilters.map(_.query(innerHitsNames, currentQuery)))
-  }
-
   def unfilteredMatchCriteria(): ElasticBoolQuery = {
     val query = ElasticBoolQuery().copy(
       mustFilters = this.mustFilters,
@@ -196,132 +167,6 @@ case class SQLExpression(
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    value match {
-      case n: SQLNumeric[Any] @unchecked =>
-        operator match {
-          case _: Ge.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) lt n.sql
-              case _ =>
-                rangeQuery(identifier.columnName) gte n.sql
-            }
-          case _: Gt.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) lte n.sql
-              case _ =>
-                rangeQuery(identifier.columnName) gt n.sql
-            }
-          case _: Le.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) gt n.sql
-              case _ =>
-                rangeQuery(identifier.columnName) lte n.sql
-            }
-          case _: Lt.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) gte n.sql
-              case _ =>
-                rangeQuery(identifier.columnName) lt n.sql
-            }
-          case _: Eq.type =>
-            maybeNot match {
-              case Some(_) =>
-                not(termQuery(identifier.columnName, n.sql))
-              case _ =>
-                termQuery(identifier.columnName, n.sql)
-            }
-          case _: Ne.type =>
-            maybeNot match {
-              case Some(_) =>
-                termQuery(identifier.columnName, n.sql)
-              case _ =>
-                not(termQuery(identifier.columnName, n.sql))
-            }
-          case _ => matchAllQuery
-        }
-      case l: SQLLiteral =>
-        operator match {
-          case _: Like.type =>
-            maybeNot match {
-              case Some(_) =>
-                not(regexQuery(identifier.columnName, toRegex(l.value)))
-              case _ =>
-                regexQuery(identifier.columnName, toRegex(l.value))
-            }
-          case _: Ge.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) lt l.value
-              case _ =>
-                rangeQuery(identifier.columnName) gte l.value
-            }
-          case _: Gt.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) lte l.value
-              case _ =>
-                rangeQuery(identifier.columnName) gt l.value
-            }
-          case _: Le.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) gt l.value
-              case _ =>
-                rangeQuery(identifier.columnName) lte l.value
-            }
-          case _: Lt.type =>
-            maybeNot match {
-              case Some(_) =>
-                rangeQuery(identifier.columnName) gte l.value
-              case _ =>
-                rangeQuery(identifier.columnName) lt l.value
-            }
-          case _: Eq.type =>
-            maybeNot match {
-              case Some(_) =>
-                not(termQuery(identifier.columnName, l.value))
-              case _ =>
-                termQuery(identifier.columnName, l.value)
-            }
-          case _: Ne.type =>
-            maybeNot match {
-              case Some(_) =>
-                termQuery(identifier.columnName, l.value)
-              case _ =>
-                not(termQuery(identifier.columnName, l.value))
-            }
-          case _ => matchAllQuery
-        }
-      case b: SQLBoolean =>
-        operator match {
-          case _: Eq.type =>
-            maybeNot match {
-              case Some(_) =>
-                not(termQuery(identifier.columnName, b.value))
-              case _ =>
-                termQuery(identifier.columnName, b.value)
-            }
-          case _: Ne.type =>
-            maybeNot match {
-              case Some(_) =>
-                termQuery(identifier.columnName, b.value)
-              case _ =>
-                not(termQuery(identifier.columnName, b.value))
-            }
-          case _ => matchAllQuery
-        }
-      case _ => matchAllQuery
-    }
-  }
 }
 
 case class SQLIsNull(identifier: SQLIdentifier)
@@ -338,13 +183,6 @@ case class SQLIsNull(identifier: SQLIdentifier)
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    not(existsQuery(identifier.columnName))
-  }
 }
 
 case class SQLIsNotNull(identifier: SQLIdentifier)
@@ -361,13 +199,6 @@ case class SQLIsNotNull(identifier: SQLIdentifier)
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    existsQuery(identifier.columnName)
-  }
 }
 
 case class SQLIn[R, +T <: SQLValue[R]](
@@ -388,27 +219,6 @@ case class SQLIn[R, +T <: SQLValue[R]](
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    val _values: Seq[Any] = values.innerValues
-    val t =
-      _values.headOption match {
-        case Some(_: Double) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Double]])
-        case Some(_: Integer) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Integer]])
-        case Some(_: Long) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Long]])
-        case _ => termsQuery(identifier.columnName, _values.map(_.toString))
-      }
-    maybeNot match {
-      case Some(_) => not(t)
-      case _       => t
-    }
-  }
 }
 
 case class SQLBetween(
@@ -430,17 +240,6 @@ case class SQLBetween(
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    val r = rangeQuery(identifier.columnName) gte from.value lte to.value
-    maybeNot match {
-      case Some(_) => not(r)
-      case _       => r
-    }
-  }
 }
 
 case class ElasticGeoDistance(
@@ -456,13 +255,6 @@ case class ElasticGeoDistance(
     this.copy(identifier = identifier.update(request))
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    geoDistanceQuery(identifier.columnName, lat.value, lon.value) distance distance.value
-  }
 }
 
 case class ElasticMatch(
@@ -478,13 +270,6 @@ case class ElasticMatch(
     this.copy(identifier = identifier.update(request))
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    matchQuery(identifier.columnName, value.value)
-  }
 
   override def matchCriteria: Boolean = true
 }
@@ -526,59 +311,18 @@ case class ElasticNested(override val criteria: SQLCriteria, override val limit:
   }
 
   lazy val innerHitsName: Option[String] = name(criteria)
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
-    if (innerHitsNames.contains(innerHitsName.getOrElse(""))) {
-      criteria.asFilter(currentQuery).query(innerHitsNames, currentQuery)
-    } else {
-      val boolQuery = Option(ElasticBoolQuery(group = true))
-      nestedQuery(
-        relationType.getOrElse(""),
-        criteria
-          .asFilter(boolQuery)
-          .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
-      ) /*.scoreMode(ScoreMode.None)*/
-        .inner(
-          innerHits(innerHitsName.getOrElse("")).from(0).size(limit.map(_.limit).getOrElse(3))
-        )
-    }
-  }
 }
 
 case class ElasticChild(override val criteria: SQLCriteria)
     extends ElasticRelation(criteria, Child) {
   override def update(request: SQLSearchRequest): ElasticChild =
     this.copy(criteria = criteria.update(request))
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query =
-    hasChildQuery(
-      relationType.getOrElse(""),
-      //        criteria.asFilter(currentQuery).query(innerHitsNames, currentQuery),
-      criteria.asQuery(group = group, innerHitsNames = innerHitsNames)
-    )
 }
 
 case class ElasticParent(override val criteria: SQLCriteria)
     extends ElasticRelation(criteria, Parent) {
   override def update(request: SQLSearchRequest): ElasticParent =
     this.copy(criteria = criteria.update(request))
-
-  override def query(
-    innerHitsNames: Set[String] = Set.empty,
-    currentQuery: Option[ElasticBoolQuery]
-  ): Query =
-    hasParentQuery(
-      relationType.getOrElse(""),
-      //        criteria.asFilter(currentQuery).query(innerHitsNames, currentQuery),
-      criteria.asQuery(group = group, innerHitsNames = innerHitsNames),
-      score = false
-    )
 }
 
 case class SQLWhere(criteria: Option[SQLCriteria]) extends Updateable {
@@ -589,7 +333,4 @@ case class SQLWhere(criteria: Option[SQLCriteria]) extends Updateable {
   def update(request: SQLSearchRequest): SQLWhere =
     this.copy(criteria = criteria.map(_.update(request)))
 
-  def asQuery(group: Boolean = true, innerHitsNames: Set[String] = Set.empty): Query = criteria
-    .map(_.asQuery(group = group, innerHitsNames = innerHitsNames))
-    .getOrElse(matchAllQuery)
 }

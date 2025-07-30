@@ -16,7 +16,7 @@ import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 16/05/2020.
   */
-trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] with StrictLogging {
+trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] {
   _: ElasticClientApi with ManifestWrapper[T] =>
 
   implicit def formats: Formats = commonFormats
@@ -121,9 +121,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] w
     *   whether the operation is successful or not
     */
   override def upsertDocument(uuid: String, data: String): Boolean = {
-    logger.whenDebugEnabled {
-      logger.debug(s"Upserting document $uuid for index $index with $data")
-    }
+    logger.debug(s"Upserting document $uuid for index $index with $data")
     Try(
       update(
         index,
