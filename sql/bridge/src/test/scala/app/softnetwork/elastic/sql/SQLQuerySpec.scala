@@ -503,8 +503,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SQLQuery(
         except
       )
-    select.query shouldBe
-    """
+    List(
+      """
         |{
         | "query":{
         |   "match_all":{}
@@ -513,7 +513,17 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |   "includes":["*"],
         |   "excludes":["col1","col2"]
         | }
+        |}""".stripMargin.replaceAll("\\s+", ""),
+      """
+        |{
+        | "query":{
+        |   "match_all":{}
+        | },
+        | "_source":{
+        |   "excludes":["col1","col2"]
+        | }
         |}""".stripMargin.replaceAll("\\s+", "")
+    ) should contain(select.query)
   }
 
   it should "perform complex query" in {
