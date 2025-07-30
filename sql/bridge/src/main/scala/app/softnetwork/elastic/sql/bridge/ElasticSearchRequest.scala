@@ -20,5 +20,5 @@ case class ElasticSearchRequest(
   }
 
   def query: String =
-    SearchBodyBuilderFn(search).string().replace("\"version\":true,", "") /*FIXME*/
+    SearchBodyBuilderFn(search).string.replace("\"version\":true,", "") /*FIXME*/
 }
