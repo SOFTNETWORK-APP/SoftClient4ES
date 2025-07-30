@@ -7,3 +7,5 @@ target
 *.log
 .bsp
 .bloop
+actions-runner
+target-es*
