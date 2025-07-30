@@ -578,7 +578,7 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
               m.runtimeClass.getSimpleName.toLowerCase
             )
           ),
-          maybeType.getOrElse("_all"),
+          "_doc",
           id
         ),
         RequestOptions.DEFAULT
@@ -628,7 +628,7 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
             m.runtimeClass.getSimpleName.toLowerCase
           )
         ),
-        maybeType.getOrElse("_all"),
+        "_doc",
         id
       ),
       RequestOptions.DEFAULT,
