@@ -6,9 +6,10 @@ import app.softnetwork.elastic.client.BulkAction.BulkAction
 import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
 import com.typesafe.config.{Config, ConfigFactory}
-import com.typesafe.scalalogging.{Logger, StrictLogging}
+import com.typesafe.scalalogging.StrictLogging
 import configs.ConfigReader
 import org.json4s.Formats
+import org.slf4j.Logger
 
 import scala.collection.immutable.Seq
 import scala.collection.mutable

@@ -1,7 +1,6 @@
 package app.softnetwork.elastic.client.rest
 
 import app.softnetwork.elastic.client.ElasticConfig
-import com.typesafe.scalalogging.StrictLogging
 import org.apache.http.HttpHost
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
@@ -11,8 +10,11 @@ import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.xcontent.NamedXContentRegistry
 import org.elasticsearch.plugins.SearchPlugin
 import org.elasticsearch.search.SearchModule
+import org.slf4j.{Logger, LoggerFactory}
 
-trait RestHighLevelClientCompanion extends StrictLogging {
+trait RestHighLevelClientCompanion {
+
+  val logger: Logger = LoggerFactory getLogger getClass.getName
 
   def elasticConfig: ElasticConfig
 

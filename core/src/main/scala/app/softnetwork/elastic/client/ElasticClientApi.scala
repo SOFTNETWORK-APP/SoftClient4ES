@@ -11,9 +11,9 @@ import app.softnetwork.serialization._
 import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
-import com.typesafe.scalalogging.StrictLogging
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods._
+import org.slf4j.Logger
 
 import java.util.UUID
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -221,7 +221,9 @@ trait SettingsApi { _: IndicesApi =>
   def loadSettings(index: String): String
 }
 
-trait MappingApi extends IndicesApi with RefreshApi with StrictLogging {
+trait MappingApi extends IndicesApi with RefreshApi {
+
+  protected def logger: Logger
 
   /** Set the mapping of an index.
     * @param index

@@ -4,7 +4,7 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.client.sql.bridge._
+import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.{client, sql}
 import app.softnetwork.persistence.model.Timestamped
@@ -378,7 +378,7 @@ trait ElasticsearchClientSingleValueAggregateApi
             )
           ) match {
             case Success(response) =>
-              logger.whenDebugEnabled(
+              logger.debug(
                 s"Aggregation response: ${response.toString}"
               )
               val agg = aggName.split("\\.").last
@@ -594,7 +594,7 @@ trait ElasticsearchClientGetApi extends GetApi with ElasticsearchClientCompanion
       case Success(response) =>
         if (response.found()) {
           val source = mapper.writeValueAsString(response.source())
-          logger.whenDebugEnabled(s"Deserializing response $source for id: $id, index: ${index
+          logger.debug(s"Deserializing response $source for id: $id, index: ${index
             .getOrElse("default")}, type: ${maybeType.getOrElse("_all")}")
           // Deserialize the source string to the expected type
           // Note: This assumes that the source is a valid JSON representation of U
@@ -645,7 +645,7 @@ trait ElasticsearchClientGetApi extends GetApi with ElasticsearchClientCompanion
     ).flatMap {
       case response if response.found() =>
         val source = mapper.writeValueAsString(response.source())
-        logger.whenDebugEnabled(s"Deserializing response $source for id: $id, index: ${index
+        logger.debug(s"Deserializing response $source for id: $id, index: ${index
           .getOrElse("default")}, type: ${maybeType.getOrElse("_all")}")
         // Deserialize the source string to the expected type
         // Note: This assumes that the source is a valid JSON representation of U
@@ -693,7 +693,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
         .asScala
         .flatMap { hit =>
           val source = mapper.writeValueAsString(hit.source())
-          logger.whenDebugEnabled(s"Deserializing hit: $source")
+          logger.debug(s"Deserializing hit: $source")
           Try(serialization.read[U](source)).toOption.orElse {
             logger.error(
               s"Failed to deserialize hit: $source"
@@ -730,7 +730,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
             .asScala
             .map { hit =>
               val source = mapper.writeValueAsString(hit.source())
-              logger.whenDebugEnabled(s"Deserializing hit: $source")
+              logger.debug(s"Deserializing hit: $source")
               serialization.read[U](source)
             }
             .toList
@@ -771,7 +771,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
         Option(hitSource)
           .map(mapper.writeValueAsString)
           .flatMap { source =>
-            logger.whenDebugEnabled(s"Deserializing hit: $source")
+            logger.debug(s"Deserializing hit: $source")
             Try(serialization.read[U](source)) match {
               case Success(mainObject) =>
                 Some(mainObject)
@@ -797,7 +797,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
               mapper.serialize(innerHit, generator)
               generator.close()
               val innerSource = writer.toString
-              logger.whenDebugEnabled(s"Processing inner hit: $innerSource")
+              logger.debug(s"Processing inner hit: $innerSource")
               val json = new JsonParser().parse(innerSource).getAsJsonObject
               val gson = new Gson()
               Try(serialization.read[I](gson.toJson(json.get("_source")))) match {

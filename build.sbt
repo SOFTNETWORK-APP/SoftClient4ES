@@ -96,6 +96,118 @@ lazy val persistence = project.in(file("persistence"))
     core % "compile->compile;test->test;it->it"
   )
 
+lazy val es6bridge = project.in(file("es6/sql-bridge"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es6,
+  )
+  .dependsOn(
+    sql % "compile->compile;test->test;it->it"
+  )
+
+lazy val es6rest = project.in(file("es6/rest"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es6,
+  )
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es6bridge % "compile->compile;test->test;it->it"
+  )
+
+lazy val es6restp = project.in(file("es6/rest/persistence"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es6,
+  )
+  .dependsOn(
+    persistence % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es6rest % "compile->compile;test->test;it->it"
+  )
+
+lazy val es6jest = project.in(file("es6/jest"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es6,
+  )
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es6bridge % "compile->compile;test->test;it->it"
+  )
+
+lazy val es6jestp = project.in(file("es6/jest/persistence"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es6,
+  )
+  .dependsOn(
+    persistence % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es6jest % "compile->compile;test->test;it->it"
+  )
+
+lazy val es6testkit = project.in(file("es6/testkit"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    app.softnetwork.Info.infoSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es6,
+    buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value)
+  )
+  .enablePlugins(BuildInfoPlugin)
+  .dependsOn(
+    es6restp % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es6jestp % "compile->compile;test->test;it->it"
+  )
+
+lazy val es6 = project.in(file("es6"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    Publish.noPublishSettings,
+    crossScalaVersions := Nil,
+    elasticSearchVersion := Versions.es6
+  )
+  .aggregate(
+    es6bridge,
+    es6rest,
+    es6restp,
+    es6jest,
+    es6jestp,
+    es6testkit
+  )
+
+lazy val es7bridge = project.in(file("sql/bridge"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es7,
+  )
+  .dependsOn(
+    sql % "compile->compile;test->test;it->it"
+  )
+
 lazy val es7rest = project.in(file("es7/rest"))
   .configs(IntegrationTest)
   .settings(
@@ -105,6 +217,9 @@ lazy val es7rest = project.in(file("es7/rest"))
   )
   .dependsOn(
     core % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es7bridge % "compile->compile;test->test;it->it"
   )
 
 lazy val es7restp = project.in(file("es7/rest/persistence"))
@@ -144,9 +259,21 @@ lazy val es7 = project.in(file("es7"))
     elasticSearchVersion := Versions.es7
   )
   .aggregate(
+    es7bridge,
     es7rest,
     es7restp,
     es7testkit
+  )
+
+lazy val es8bridge = project.in(file("sql/bridge"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es8,
+  )
+  .dependsOn(
+    sql % "compile->compile;test->test;it->it"
   )
 
 lazy val es8java = project.in(file("es8/java"))
@@ -158,6 +285,9 @@ lazy val es8java = project.in(file("es8/java"))
   )
   .dependsOn(
     core % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es8bridge % "compile->compile;test->test;it->it"
   )
 
 lazy val es8javap = project.in(file("es8/java/persistence"))
@@ -197,9 +327,24 @@ lazy val es8 = project.in(file("es8"))
     elasticSearchVersion := Versions.es8
   )
   .aggregate(
+    es8bridge,
     es8java,
     es8javap,
     es8testkit
+  )
+
+lazy val es9bridge = project.in(file("sql/bridge"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings,
+    scalaVersion := scala213,
+    crossScalaVersions := Seq(scala213),
+    elasticSearchVersion := Versions.es9,
+    javacOptions ++= Seq("-source", "17", "-target", "17")
+  )
+  .dependsOn(
+    sql % "compile->compile;test->test;it->it"
   )
 
 lazy val es9java = project.in(file("es9/java"))
@@ -214,6 +359,9 @@ lazy val es9java = project.in(file("es9/java"))
   )
   .dependsOn(
     core % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    es9bridge % "compile->compile;test->test;it->it"
   )
 
 lazy val es9javap = project.in(file("es9/java/persistence"))
@@ -259,6 +407,7 @@ lazy val es9 = project.in(file("es9"))
     elasticSearchVersion := Versions.es9
   )
   .aggregate(
+    es9bridge,
     es9java,
     es9javap,
     es9testkit

@@ -1,6 +1,6 @@
 object Versions {
 
-//  val akka = "2.6.20"
+  // val akka = "2.6.20" // TODO 2.6.20 -> 2.8.3
 
   val scalatest = "3.2.19"
 
@@ -19,6 +19,12 @@ object Versions {
   val slf4j = "1.7.36"
 
   val log4s = "1.8.2"
+
+  val es6 = "6.8.23"
+
+  val elastic64s = "6.7.8"
+
+  val jest = "6.3.1"
 
   val es7 = "7.17.29"
 
