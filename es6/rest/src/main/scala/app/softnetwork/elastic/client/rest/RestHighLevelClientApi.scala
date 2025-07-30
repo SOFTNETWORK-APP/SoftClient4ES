@@ -256,6 +256,14 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientC
       None
     )(logger).getOrElse(s""""{$index: {"mappings": {}}}""")
   }
+
+  override def getMappingProperties(index: String): String = {
+    tryOrElse(
+      getMapping(index),
+      "{\"properties\": {}}"
+    )(logger)
+  }
+
 }
 
 trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientCompanion {
