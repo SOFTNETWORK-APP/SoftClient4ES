@@ -17,7 +17,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.1-SNAPSHOT"
+ThisBuild / version := "0.1.0"
 
 ThisBuild / scalaVersion := scala213
 
@@ -424,6 +424,8 @@ lazy val root = project.in(file("."))
     sql,
     core,
     persistence,
+    es6,
+    es7,
     es8,
     es9
   )
