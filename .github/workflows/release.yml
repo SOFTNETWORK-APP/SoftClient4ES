@@ -48,9 +48,9 @@ jobs:
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:
-        files: sql/target/scala-2.13/coverage-report/cobertura.xml,client/testkit/target/scala-2.13/coverage-report/cobertura.xml,persistence/target/scala-2.13/coverage-report/cobertura.xml,java/target/scala-2.13/coverage-report/cobertura.xml,java/persistence/target/scala-2.13/coverage-report/cobertura.xml,teskit/target/scala-2.13/coverage-report/cobertura.xml
+        files: sql/target/scala-2.13/coverage-report/cobertura.xml,core/target/scala-2.13/coverage-report/cobertura.xml,persistence/target/scala-2.13/coverage-report/cobertura.xml,es6/sql-bridge/target/scala-2.13/coverage-report/cobertura.xml,es6/jest/target/scala-2.13/coverage-report/cobertura.xml,es6/jest/persistence/target/scala-2.13/coverage-report/cobertura.xml,es6/rest/target/scala-2.13/coverage-report/cobertura.xml,es6/rest/persistence/target/scala-2.13/coverage-report/cobertura.xml,es6/teskit/target/scala-2.13/coverage-report/cobertura.xml,sql/bridge/target-es7/scala-2.13/coverage-report/cobertura.xml,es7/rest/target/scala-2.13/coverage-report/cobertura.xml,es7/rest/persistence/target/scala-2.13/coverage-report/cobertura.xml,es7/teskit/target/scala-2.13/coverage-report/cobertura.xml,sql/bridge/target-es8/scala-2.13/coverage-report/cobertura.xml,es8/java/target/scala-2.13/coverage-report/cobertura.xml,es8/java/persistence/target/scala-2.13/coverage-report/cobertura.xml,es8/teskit/target/scala-2.13/coverage-report/cobertura.xml,sql/bridge/target-es9/scala-2.13/coverage-report/cobertura.xml,es9/java/target/scala-2.13/coverage-report/cobertura.xml,es9/java/persistence/target/scala-2.13/coverage-report/cobertura.xml,es9/teskit/target/scala-2.13/coverage-report/cobertura.xml
         flags: unittests
         fail_ci_if_error: false
         verbose: true
     - name: Publish
-      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt publish
+      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt '+ publish'
