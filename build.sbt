@@ -17,7 +17,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.1.0"
+ThisBuild / version := "0.1.1"
 
 ThisBuild / scalaVersion := scala213
 
@@ -34,6 +34,13 @@ lazy val moduleSettings = Seq(
     CrossVersion.partialVersion(scalaVersion.value) match {
       case Some((2, 12)) => scalacCompilerOptions :+ "-Ypartial-unification"
       case Some((2, 13)) => scalacCompilerOptions
+      case _             => Seq.empty
+    }
+  },
+  dependencyOverrides ++= {
+    CrossVersion.partialVersion(scalaVersion.value) match {
+      case Some((2, 12)) => Seq("com.github.kxbmap" %% "configs" % Versions.kxbmap_scala2_12)
+      case Some((2, 13)) => Seq("com.github.kxbmap" %% "configs" % Versions.kxbmap)
       case _             => Seq.empty
     }
   }

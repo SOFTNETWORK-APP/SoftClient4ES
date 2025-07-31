@@ -86,7 +86,7 @@ trait SoftClient4es {
         Seq(
           "com.sksamuel.elastic4s" %% "elastic4s-testkit" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"),
           "com.sksamuel.elastic4s" %% "elastic4s-embedded" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch"),
-          "pl.allegro.tech" % "embedded-elasticsearch" % "2.10.0" excludeAll (jacksonExclusions: _*)
+          "pl.allegro.tech" % "embedded-elasticsearch" % "2.10.0" excludeAll (jacksonExclusions *)
         )
       case 7 =>
         Seq(
@@ -108,8 +108,8 @@ trait SoftClient4es {
     elasticSearchMajorVersion(esVersion) match {
       case 6 | 7 | 8 | 9 =>
         Seq(
-          "org.elasticsearch" % "elasticsearch" % esVersion exclude ("org.apache.logging.log4j", "log4j-api") exclude ("org.slf4j", "slf4j-api") excludeAll (jacksonExclusions: _*)
-        ).map(_.excludeAll(jacksonExclusions: _*))
+          "org.elasticsearch" % "elasticsearch" % esVersion exclude ("org.apache.logging.log4j", "log4j-api") exclude ("org.slf4j", "slf4j-api") excludeAll (jacksonExclusions *)
+        ).map(_.excludeAll(jacksonExclusions *))
       case _ => Seq.empty
     }
   }
@@ -120,7 +120,7 @@ trait SoftClient4es {
       case 6 | 7 | 8 | 9 =>
         Seq(
           "org.elasticsearch.client" % "elasticsearch-rest-client" % esVersion
-        ).map(_.excludeAll(jacksonExclusions: _*))
+        ).map(_.excludeAll(jacksonExclusions *))
       case _ => Seq.empty
     })
   }
@@ -131,7 +131,7 @@ trait SoftClient4es {
       case 8 | 9 =>
         Seq(
           "co.elastic.clients" % "elasticsearch-java" % esVersion exclude ("org.elasticsearch", "elasticsearch")
-        ).map(_.excludeAll(jacksonExclusions: _*))
+        ).map(_.excludeAll(jacksonExclusions *))
       case _ => Seq.empty
     })
   }
@@ -142,7 +142,7 @@ trait SoftClient4es {
       case 6 | 7 =>
         Seq(
           "org.elasticsearch.client" % "elasticsearch-rest-high-level-client" % esVersion exclude ("org.elasticsearch", "elasticsearch")
-        ).map(_.excludeAll(jacksonExclusions: _*))
+        ).map(_.excludeAll(jacksonExclusions *))
       case _ => Seq.empty
     })
   }
@@ -153,7 +153,7 @@ trait SoftClient4es {
       case 6 =>
         Seq(
           "io.searchbox" % "jest" % Versions.jest
-        ).map(_.excludeAll(httpComponentsExclusions ++ Seq(guavaExclusion): _*))
+        ).map(_.excludeAll((httpComponentsExclusions ++ Seq(guavaExclusion)) *))
       case _ => Seq.empty
     })
   }

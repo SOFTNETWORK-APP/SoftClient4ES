@@ -5,9 +5,6 @@ import akka.stream.stage.{GraphStage, GraphStageLogic}
 import app.softnetwork.elastic.client.BulkAction.BulkAction
 import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
-import com.typesafe.config.{Config, ConfigFactory}
-import com.typesafe.scalalogging.StrictLogging
-import configs.ConfigReader
 import org.json4s.Formats
 import org.slf4j.Logger
 
@@ -15,6 +12,8 @@ import scala.collection.immutable.Seq
 import scala.collection.mutable
 import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
+
+import scala.collection.JavaConverters._
 
 /** Created by smanciot on 30/06/2018.
   */
@@ -25,25 +24,6 @@ package object client {
     username: String = "",
     password: String = ""
   )
-
-  case class ElasticConfig(
-    credentials: ElasticCredentials = ElasticCredentials(),
-    multithreaded: Boolean = true,
-    discoveryEnabled: Boolean = false
-  )
-
-  object ElasticConfig extends StrictLogging {
-    def apply(config: Config): ElasticConfig = {
-      ConfigReader[ElasticConfig]
-        .read(config.withFallback(ConfigFactory.load("softnetwork-elastic.conf")), "elastic")
-        .toEither match {
-        case Left(configError) =>
-          logger.error(s"Something went wrong with the provided arguments $configError")
-          throw configError.configException
-        case Right(r) => r
-      }
-    }
-  }
 
   object BulkAction extends Enumeration {
     type BulkAction = Value
@@ -118,7 +98,6 @@ package object client {
   def docAsUpsert(doc: String): String = s"""{"doc":$doc,"doc_as_upsert":true}"""
 
   implicit class InnerHits(searchResult: JsonObject) {
-    import scala.jdk.CollectionConverters._
     def ~>[M, I](
       innerField: String
     )(implicit formats: Formats, m: Manifest[M], i: Manifest[I]): List[(M, List[I])] = {

@@ -6,6 +6,8 @@ object Versions {
 
   val typesafeConfig = "1.4.2"
 
+  val kxbmap_scala2_12 = "0.4.4"
+
   val kxbmap = "0.6.1"
 
   val jackson = "2.19.0" // 2.13.3 -> 2.19.0
