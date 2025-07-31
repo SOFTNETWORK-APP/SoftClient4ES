@@ -179,12 +179,25 @@ trait JestSettingsApi extends SettingsApi with JestClientCompanion {
 
   override def loadSettings(index: String): String =
     tryOrElse(
-      apply()
-        .execute(
-          new GetSettings.Builder().addIndex(index).build()
-        )
-        .getJsonString,
-      s"""{"$index": {"settings": {"index": {}}}}"""
+      {
+        new JsonParser()
+          .parse(
+            apply()
+              .execute(
+                new GetSettings.Builder().addIndex(index).build()
+              )
+              .getJsonString
+          )
+          .getAsJsonObject
+          .get(index)
+          .getAsJsonObject
+          .get("settings")
+          .getAsJsonObject
+          .get("index")
+          .getAsJsonObject
+          .toString
+      },
+      "{}"
     )(logger)
 }
 
@@ -202,12 +215,25 @@ trait JestMappingApi extends MappingApi with JestClientCompanion {
 
   override def getMapping(index: String): String =
     tryOrElse(
-      apply()
-        .execute(
-          new GetMapping.Builder().addIndex(index).addType("_doc").build()
-        )
-        .getJsonString,
-      s""""{$index: {"mappings": {"_doc":{"properties": {}}}}}""" // empty mapping
+      {
+        new JsonParser()
+          .parse(
+            apply()
+              .execute(
+                new GetMapping.Builder().addIndex(index).addType("_doc").build()
+              )
+              .getJsonString
+          )
+          .getAsJsonObject
+          .get(index)
+          .getAsJsonObject
+          .get("mappings")
+          .getAsJsonObject
+          .get("_doc")
+          .getAsJsonObject
+          .toString
+      },
+      s""""{"properties": {}}""" // empty mapping
     )(logger)
 
   /** Get the mapping properties of an index.
@@ -219,17 +245,7 @@ trait JestMappingApi extends MappingApi with JestClientCompanion {
     */
   override def getMappingProperties(index: String): String = {
     tryOrElse(
-      new Gson().toJson(
-        new JsonParser()
-          .parse(getMapping(index))
-          .getAsJsonObject
-          .get(index)
-          .getAsJsonObject
-          .get("mappings")
-          .getAsJsonObject
-          .get("_doc")
-          .getAsJsonObject
-      ),
+      getMapping(index),
       "{\"properties\": {}}"
     )(logger)
   }

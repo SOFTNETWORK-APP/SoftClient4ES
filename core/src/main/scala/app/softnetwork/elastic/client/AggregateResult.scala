@@ -30,4 +30,14 @@ case class SingleValueAggregateResult(
     case StringValue(v) => Some(v)
     case _              => None
   }
+
+  def isDouble: Boolean = value match {
+    case NumericValue(_) => true
+    case _               => false
+  }
+
+  def isString: Boolean = value match {
+    case StringValue(_) => true
+    case _              => false
+  }
 }

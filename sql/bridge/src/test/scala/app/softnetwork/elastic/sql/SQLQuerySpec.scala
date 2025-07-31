@@ -18,7 +18,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     sqlQuery.request match {
       case Some(Left(value)) =>
         value.copy(score = sqlQuery.score)
-      case None =>
+      case _ =>
         throw new IllegalArgumentException(
           s"SQL query ${sqlQuery.query} does not contain a valid search request"
         )

@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.scalatest
 
 import app.softnetwork.concurrent.scalatest.CompletionTestKit
-import app.softnetwork.elastic.Softclient4es6TestkitBuildInfo
+import app.softnetwork.elastic.SoftClient4esCoreTestkitBuildInfo
 import com.sksamuel.elastic4s.{IndexAndTypes, Indexes}
 import com.sksamuel.elastic4s.http.index.admin.RefreshIndexResponse
 import com.sksamuel.elastic4s.http.{ElasticClient, ElasticDsl, ElasticProperties}
@@ -21,7 +21,7 @@ trait ElasticTestKit extends ElasticDsl with CompletionTestKit with BeforeAndAft
 
   def log: Logger
 
-  def elasticVersion: String = Softclient4es6TestkitBuildInfo.elasticVersion
+  def elasticVersion: String = SoftClient4esCoreTestkitBuildInfo.elasticVersion
 
   def elasticURL: String
 

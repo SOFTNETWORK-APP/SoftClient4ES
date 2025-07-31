@@ -42,7 +42,7 @@ package object client {
 
   case class BulkOptions(
     index: String,
-    documentType: String,
+    documentType: String = "_doc",
     maxBulkSize: Int = 100,
     balance: Int = 1,
     disableRefresh: Boolean = false

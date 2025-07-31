@@ -209,14 +209,27 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
 
   override def loadSettings(index: String): String = {
     tryOrElse(
-      apply()
-        .indices()
-        .getSettings(
-          new GetSettingsRequest().indices(index),
-          RequestOptions.DEFAULT
-        )
-        .toString,
-      s"""{"$index": {"settings": {"index": {}}}}"""
+      {
+        new JsonParser()
+          .parse(
+            apply()
+              .indices()
+              .getSettings(
+                new GetSettingsRequest().indices(index),
+                RequestOptions.DEFAULT
+              )
+              .toString
+          )
+          .getAsJsonObject
+          .get(index)
+          .getAsJsonObject
+          .get("settings")
+          .getAsJsonObject
+          .get("index")
+          .getAsJsonObject
+          .toString
+      },
+      "{}"
     )(logger)
   }
 }
