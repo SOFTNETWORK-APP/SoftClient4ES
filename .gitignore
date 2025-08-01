@@ -9,3 +9,11 @@ target
 .bloop
 actions-runner
 target-es*
+es6/core/testkit
+es7/core/testkit
+es8/core/testkit
+es9/core/testkit
+es6/sql/bridge
+es7/sql/bridge
+es8/sql/bridge
+es9/sql/bridge

@@ -1,18 +1,15 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
-import app.softnetwork.elastic.model._
+import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.SQLQuery
 import app.softnetwork.persistence._
 import app.softnetwork.persistence.person.model.Person
-import app.softnetwork.serialization._
 import com.fasterxml.jackson.core.JsonParseException
 import com.google.gson.JsonParser
-import com.sksamuel.elastic4s.requests.searches.queries.matches.MatchAllQuery
-import com.typesafe.scalalogging.StrictLogging
-import org.json4s.Formats
+import org.json4s.JArray
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -20,30 +17,22 @@ import org.slf4j.{Logger, LoggerFactory}
 import _root_.java.io.ByteArrayInputStream
 import _root_.java.nio.file.{Files, Paths}
 import _root_.java.time.format.DateTimeFormatter
-import _root_.java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
+import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, ExecutionContext, ExecutionContextExecutor}
+import scala.concurrent.{Await, ExecutionContextExecutor}
 import scala.util.{Failure, Success}
 
 /** Created by smanciot on 28/06/2018.
   */
-trait ElasticClientSpec
-    extends AnyFlatSpecLike
-    with ElasticDockerTestKit
-    with Matchers
-    with StrictLogging {
+trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
   lazy val log: Logger = LoggerFactory getLogger getClass.getName
 
   implicit val system: ActorSystem = ActorSystem(generateUUID())
 
   implicit val executionContext: ExecutionContextExecutor = system.dispatcher
-
-  override implicit def ec: ExecutionContext = executionContext
-
-  implicit val formats: Formats = commonFormats
 
   def pClient: ElasticProvider[Person] with ElasticClientApi
   def sClient: ElasticProvider[Sample] with ElasticClientApi
@@ -64,7 +53,7 @@ trait ElasticClientSpec
     super.afterAll()
   }
 
-  val persons: List[String] = List(
+  private val persons: List[String] = List(
     """ { "uuid": "A12", "name": "Homer Simpson", "birthDate": "1967-11-21", "childrenCount": 0} """,
     """ { "uuid": "A14", "name": "Moe Szyslak",   "birthDate": "1967-11-21", "childrenCount": 0} """,
     """ { "uuid": "A16", "name": "Barney Gumble", "birthDate": "1969-05-09", "childrenCount": 0} """
@@ -81,7 +70,7 @@ trait ElasticClientSpec
   "Creating an index and then delete it" should "work fine" in {
     pClient.createIndex("create_delete")
     blockUntilIndexExists("create_delete")
-    "create_delete" should beCreated()
+    "create_delete" should beCreated
 
     pClient.deleteIndex("create_delete")
     blockUntilIndexNotExists("create_delete")
@@ -98,17 +87,6 @@ trait ElasticClientSpec
     doesAliasExists("person_alias") shouldBe false
   }
 
-  private def settings: Map[String, String] = {
-    elasticClient
-      .execute {
-        getSettings("person")
-      }
-      .complete() match {
-      case Success(s) => s.result.settingsForIndex("person")
-      case Failure(f) => throw f
-    }
-  }
-
   "Toggle refresh" should "work" in {
     pClient.toggleRefresh("person", enable = false)
     new JsonParser()
@@ -116,10 +94,8 @@ trait ElasticClientSpec
       .getAsJsonObject
       .get("refresh_interval")
       .getAsString shouldBe "-1"
-    // settings.getOrElse("index.refresh_interval", "") shouldBe "-1"
 
     pClient.toggleRefresh("person", enable = true)
-    //    settings.getOrElse("index.refresh_interval", "") shouldBe "1s"
     new JsonParser()
       .parse(pClient.loadSettings("person"))
       .getAsJsonObject
@@ -138,10 +114,19 @@ trait ElasticClientSpec
 
   "Updating number of replicas" should "work" in {
     pClient.setReplicas("person", 3)
-    settings.getOrElse("index.number_of_replicas", "") shouldBe "3"
+
+    new JsonParser()
+      .parse(pClient.loadSettings("person"))
+      .getAsJsonObject
+      .get("number_of_replicas")
+      .getAsString shouldBe "3"
 
     pClient.setReplicas("person", 0)
-    settings.getOrElse("index.number_of_replicas", "") shouldBe "0"
+    new JsonParser()
+      .parse(pClient.loadSettings("person"))
+      .getAsJsonObject
+      .get("number_of_replicas")
+      .getAsString shouldBe "0"
   }
 
   "Setting a mapping" should "work" in {
@@ -177,7 +162,7 @@ trait ElasticClientSpec
     pClient.setMapping("person_mapping", mapping) shouldBe true
 
     val properties = pClient.getMappingProperties("person_mapping")
-    logger.info(s"properties: $properties")
+    log.info(s"properties: $properties")
     MappingComparator.isMappingDifferent(
       properties,
       mapping
@@ -185,7 +170,7 @@ trait ElasticClientSpec
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping", "_doc", 1000)
     val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     pClient.flush("person_mapping")
 
     indices should contain only "person_mapping"
@@ -245,7 +230,7 @@ trait ElasticClientSpec
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_migration", "_doc", 1000)
     val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     pClient.flush("person_migration")
 
     indices should contain only "person_migration"
@@ -333,7 +318,7 @@ trait ElasticClientSpec
   "Bulk index valid json with an id key but no suffix key" should "work" in {
     implicit val bulkOptions: BulkOptions = BulkOptions("person2", "person", 1000)
     val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     pClient.flush("person2")
 
     indices should contain only "person2"
@@ -349,14 +334,12 @@ trait ElasticClientSpec
       case other => fail(other.toString)
     }
 
-    val response = elasticClient
-      .execute {
-        search("person2").query(MatchAllQuery())
-      }
-      .complete()
-
-    response.result.hits.hits.foreach { h =>
-      h.id shouldBe h.sourceField("uuid")
+    searchAll(Set("person2")) \ "hits" \ "hits" match {
+      case JArray(hits) =>
+        hits.foreach { h =>
+          (h \ "_id").extract[String] shouldBe (h \ "_source" \ "uuid").extract[String]
+        }
+      case other => fail(s"Unexpected result: $other")
     }
 
   }
@@ -365,7 +348,7 @@ trait ElasticClientSpec
     implicit val bulkOptions: BulkOptions = BulkOptions("person", "person", 1000)
     val indices =
       pClient.bulk[String](persons.iterator, identity, Some("uuid"), Some("birthDate"), None, None)
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain allOf ("person-1967-11-21", "person-1969-05-09")
 
@@ -382,14 +365,12 @@ trait ElasticClientSpec
       case other => fail(other.toString)
     }
 
-    val response = elasticClient
-      .execute {
-        search("person-1967-11-21", "person-1969-05-09").query(MatchAllQuery())
-      }
-      .complete()
-
-    response.result.hits.hits.foreach { h =>
-      h.id shouldBe h.sourceField("uuid")
+    searchAll(Set("person-1967-11-21", "person-1969-05-09")) \ "hits" \ "hits" match {
+      case JArray(hits) =>
+        hits.foreach { h =>
+          (h \ "_id").extract[String] shouldBe (h \ "_source" \ "uuid").extract[String]
+        }
+      case other => fail(s"Unexpected result: $other")
     }
 
   }
@@ -407,7 +388,7 @@ trait ElasticClientSpec
     val indices =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person4"
 
@@ -422,16 +403,12 @@ trait ElasticClientSpec
       case other => fail(other.toString)
     }
 
-    val response = elasticClient
-      .execute {
-        search("person4").query(MatchAllQuery())
-      }
-      .complete()
-
-    logger.info(s"response: ${response.result.hits.hits.mkString("\n")}")
-
-    response.result.hits.hits.foreach { h =>
-      h.id shouldBe h.sourceAsMap.getOrElse("uuid", "")
+    searchAll(Set("person4")) \ "hits" \ "hits" match {
+      case JArray(hits) =>
+        hits.foreach { h =>
+          (h \ "_id").extract[String] shouldBe (h \ "_source" \ "uuid").extract[String]
+        }
+      case other => fail(s"Unexpected result: $other")
     }
 
   }
@@ -446,7 +423,7 @@ trait ElasticClientSpec
       None,
       Some(true)
     )
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain allOf ("person5-1967-11-21", "person5-1969-05-09")
 
@@ -463,14 +440,12 @@ trait ElasticClientSpec
       case other => fail(other.toString)
     }
 
-    val response = elasticClient
-      .execute {
-        search("person5-1967-11-21", "person5-1969-05-09").query(MatchAllQuery())
-      }
-      .complete()
-
-    response.result.hits.hits.foreach { h =>
-      h.id shouldBe h.sourceAsMap.getOrElse("uuid", "")
+    searchAll(Set("person5-1967-11-21", "person5-1969-05-09")) \ "hits" \ "hits" match {
+      case JArray(hits) =>
+        hits.foreach { h =>
+          (h \ "_id").extract[String] shouldBe (h \ "_source" \ "uuid").extract[String]
+        }
+      case other => fail(s"Unexpected result: $other")
     }
 
   }
@@ -480,7 +455,7 @@ trait ElasticClientSpec
     val indices =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person6"
 
@@ -506,7 +481,7 @@ trait ElasticClientSpec
     val indices =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person7"
 
@@ -542,7 +517,7 @@ trait ElasticClientSpec
     val indices =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person8"
 
@@ -561,7 +536,7 @@ trait ElasticClientSpec
     val indices =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person9"
 
@@ -630,7 +605,7 @@ trait ElasticClientSpec
     val result = sClient.index(sample, Some(index))
     result shouldBe true
 
-    sClient.delete(sample.uuid, Some(index)) shouldBe true
+    sClient.delete(sample.uuid, index) shouldBe true
 
     //blockUntilEmpty(index)
 
@@ -645,7 +620,7 @@ trait ElasticClientSpec
     val result = sClient.index(sample, Some(index))
     result shouldBe true
 
-    sClient.deleteAsync(sample.uuid, Some(index)).complete() match {
+    sClient.deleteAsync(sample.uuid, index).complete() match {
       case Success(r) => r shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -738,14 +713,14 @@ trait ElasticClientSpec
         |  }
         |}
       """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
-    logger.info(s"mapping: $mapping")
+    log.info(s"mapping: $mapping")
     pClient.setMapping("person10", mapping) shouldBe true
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person10", "_doc", 1000)
     val indices =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     pClient.flush("person10")
 
     indices should contain only "person10"
@@ -788,7 +763,7 @@ trait ElasticClientSpec
             )
           case Some(value) if value.isString =>
             value.asStringOption.getOrElse("") should ===("1969-05-09T00:00:00.000Z")
-          case _ => fail("No result found for max aggregation")
+          case None => fail("No result found for max aggregation")
         }
       case Failure(f) => fail(f.getMessage)
     }
@@ -804,7 +779,7 @@ trait ElasticClientSpec
             )
           case Some(value) if value.isString =>
             value.asStringOption.getOrElse("") should ===("1967-11-21T00:00:00.000Z")
-          case _ => fail("No result found for min aggregation")
+          case None => fail("No result found for min aggregation")
         }
       case Failure(f) => fail(f.getMessage)
     }
@@ -823,7 +798,7 @@ trait ElasticClientSpec
             )
           case Some(value) if value.isString =>
             value.asStringOption.getOrElse("") should ===("1968-05-17T08:00:00.000Z")
-          case _ => fail("No result found for avg aggregation")
+          case None => fail("No result found for avg aggregation")
         }
       case Failure(f) => fail(f.getMessage)
     }
@@ -881,14 +856,14 @@ trait ElasticClientSpec
         |  }
         |}
     """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
-    logger.info(s"mapping: $mapping")
+    log.info(s"mapping: $mapping")
     parentClient.setMapping("parent", mapping) shouldBe true
 
     implicit val bulkOptions: BulkOptions = BulkOptions("parent", "_doc", 1000)
     val indices =
       parentClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
-    refresh(indices)
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     parentClient.flush("parent")
     parentClient.refresh("parent")
 
