@@ -157,6 +157,8 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       elasticSearchVersion := esVersion,
       organization := "app.softnetwork.elastic",
       name := projectId,
+      libraryDependencies ++= elasticDependencies(elasticSearchVersion.value) ++
+      elastic4sDependencies(elasticSearchVersion.value),
       Compile / compile := (Compile / compile).dependsOn(copyBridge(esVersion)).value
     )
     .settings(ss: _*)
