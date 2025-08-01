@@ -134,7 +134,7 @@ lazy val es6rest = project.in(file("es6/rest"))
     es6bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es6testkit % "compile->compile;test->test;it->it"
+    es6testkit % "test->test;it->it"
   )
 
 lazy val es6jest = project.in(file("es6/jest"))
@@ -151,7 +151,7 @@ lazy val es6jest = project.in(file("es6/jest"))
     es6bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es6testkit % "compile->compile;test->test;it->it"
+    es6testkit % "test->test;it->it"
   )
 
 lazy val es6 = project.in(file("es6"))
@@ -209,7 +209,7 @@ lazy val es7rest = project.in(file("es7/rest"))
     es7bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es7testkit % "compile->compile;test->test;it->it"
+    es7testkit % "test->test;it->it"
   )
 
 lazy val es7 = project.in(file("es7"))
@@ -266,7 +266,7 @@ lazy val es8java = project.in(file("es8/java"))
     es8bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es8testkit % "compile->compile;test->test;it->it"
+    es8testkit % "test->test;it->it"
   )
 
 lazy val es8 = project.in(file("es8"))
@@ -332,7 +332,7 @@ lazy val es9java = project.in(file("es9/java"))
     es9bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es9testkit % "compile->compile;test->test;it->it"
+    es9testkit % "test->test;it->it"
   )
 
 lazy val es9 = project.in(file("es9"))

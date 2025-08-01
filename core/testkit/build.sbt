@@ -6,8 +6,7 @@ name := s"softclient4es${elasticSearchMajorVersion(elasticSearchVersion.value)}-
 
 target := baseDirectory.value / s"target-es${elasticSearchMajorVersion(elasticSearchVersion.value)}"
 
-libraryDependencies ++= elasticDependencies(elasticSearchVersion.value) ++
-elastic4sTestkitDependencies(elasticSearchVersion.value) ++ Seq(
+libraryDependencies ++= elasticClientDependencies(elasticSearchVersion.value) ++ Seq(
   "org.apache.logging.log4j" % "log4j-api" % Versions.log4j,
   //  "org.apache.logging.log4j" % "log4j-slf4j-impl"  % Versions.log4j,
   "org.apache.logging.log4j" % "log4j-core" % Versions.log4j,
