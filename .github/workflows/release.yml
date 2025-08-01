@@ -44,7 +44,7 @@ jobs:
     - name: Set vm.max_map_count
       run: sudo sysctl -w vm.max_map_count=262144
     - name: Run tests & Coverage Report
-      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt coverage test coverageReport coverageAggregate
+      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt compile coverage test coverageReport coverageAggregate
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:
