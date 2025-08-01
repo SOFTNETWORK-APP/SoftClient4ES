@@ -22,7 +22,7 @@ import _root_.java.util.concurrent.TimeUnit
 import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor}
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 28/06/2018.
   */
@@ -656,27 +656,32 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     bClient.setMapping("binaries", mapping) shouldBe true
     bClient.shouldUpdateMapping("binaries", mapping) shouldBe false
     for (uuid <- Seq("png", "jpg", "pdf")) {
-      val path =
+      Try(
         Paths.get(Thread.currentThread().getContextClassLoader.getResource(s"avatar.$uuid").getPath)
-      import app.softnetwork.utils.Base64Tools._
-      import app.softnetwork.utils.HashTools._
-      import app.softnetwork.utils.ImageTools._
-      val encoded = encodeImageBase64(path).getOrElse("")
-      val binary = Binary(
-        uuid,
-        content = encoded,
-        md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
-      )
-      bClient.index(binary) shouldBe true
-      bClient.get[Binary](uuid) match {
-        case Some(result) =>
-          val decoded = decodeBase64(result.content)
-          val out = Paths.get(s"/tmp/${path.getFileName}")
-          val fos = Files.newOutputStream(out)
-          fos.write(decoded)
-          fos.close()
-          hashFile(out).getOrElse("") shouldBe binary.md5
-        case _ => fail("no result found for \"" + uuid + "\"")
+      ) match {
+        case Success(path) =>
+          import app.softnetwork.utils.Base64Tools._
+          import app.softnetwork.utils.HashTools._
+          import app.softnetwork.utils.ImageTools._
+          val encoded = encodeImageBase64(path).getOrElse("")
+          val binary = Binary(
+            uuid,
+            content = encoded,
+            md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
+          )
+          bClient.index(binary) shouldBe true
+          bClient.get[Binary](uuid) match {
+            case Some(result) =>
+              val decoded = decodeBase64(result.content)
+              val out = Paths.get(s"/tmp/${path.getFileName}")
+              val fos = Files.newOutputStream(out)
+              fos.write(decoded)
+              fos.close()
+              hashFile(out).getOrElse("") shouldBe binary.md5
+            case _ => fail("no result found for \"" + uuid + "\"")
+          }
+        case _ =>
+          fail(s"Resource avatar.$uuid not found")
       }
     }
   }

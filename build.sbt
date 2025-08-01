@@ -103,7 +103,6 @@ def copyTestkit(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
   streams.value.log.info(
     s"Copying testkit template sources for ES ${elasticSearchMajorVersion(esVersion)}..."
   )
-  IO.copyFile(src / "build.sbt", target / "build.sbt")
   IO.copyDirectory(src / "src", target / "src")
 }
 
@@ -143,7 +142,6 @@ def copyBridge(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
   streams.value.log.info(
     s"Copying bridge template sources for ES ${elasticSearchMajorVersion(esVersion)}..."
   )
-  IO.copyFile(src / "build.sbt", target / "build.sbt")
   IO.copyDirectory(src / "src", target / "src")
 }
 
