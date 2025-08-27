@@ -7,7 +7,9 @@ import app.softnetwork.elastic.sql.{
   ElasticBoolQuery,
   Max,
   Min,
-  SQLAggregate,
+  SQLBucket,
+  SQLCriteria,
+  SQLField,
   Sum
 }
 import com.sksamuel.elastic4s.ElasticApi.{
@@ -19,6 +21,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   minAgg,
   nestedAggregation,
   sumAgg,
+  termsAgg,
   valueCountAgg
 }
 import com.sksamuel.elastic4s.requests.searches.aggs.Aggregation
@@ -39,7 +42,7 @@ case class ElasticAggregation(
 )
 
 object ElasticAggregation {
-  def apply(sqlAgg: SQLAggregate): ElasticAggregation = {
+  def apply(sqlAgg: SQLField, filter: Option[SQLCriteria]): ElasticAggregation = {
     import sqlAgg._
     val sourceField = identifier.columnName
 
@@ -48,7 +51,7 @@ object ElasticAggregation {
       case _           => sourceField
     }
 
-    val distinct = identifier.distinct.isDefined
+    val distinct = identifier.distinct
 
     val agg =
       if (distinct)
@@ -116,5 +119,19 @@ object ElasticAggregation {
       aggType = function,
       agg = aggregation
     )
+  }
+
+  def apply(buckets: Seq[SQLBucket], current: Option[Aggregation]): Option[Aggregation] = {
+    buckets match {
+      case Nil => current
+      case bucket +: tail =>
+        val agg = termsAgg(bucket.name, bucket.sourceBucket)
+        current match {
+          case Some(a) =>
+            a.addSubagg(agg)
+            apply(tail, Some(agg))
+          case _ => apply(tail, Some(agg))
+        }
+    }
   }
 }

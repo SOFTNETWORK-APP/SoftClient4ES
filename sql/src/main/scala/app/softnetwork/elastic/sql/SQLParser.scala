@@ -122,7 +122,7 @@ trait SQLSelectParser {
   }
 
   def select: Parser[SQLSelect] =
-    Select.regex ~ rep1sep(aggregate | field, separator) ~ except.? ^^ { case _ ~ fields ~ e =>
+    Select.regex ~ rep1sep(field, separator) ~ except.? ^^ { case _ ~ fields ~ e =>
       SQLSelect(fields, e)
     }
 
@@ -157,17 +157,6 @@ trait SQLWhereParser {
   private def eq: Parser[SQLExpressionOperator] = Eq.sql ^^ (_ => Eq)
 
   private def ne: Parser[SQLExpressionOperator] = Ne.sql ^^ (_ => Ne)
-
-  def filter: Parser[SQLFilter] = Filter.regex ~> "[" ~> whereCriteria <~ "]" ^^ { rawTokens =>
-    SQLFilter(
-      processTokens(rawTokens)
-    )
-  }
-
-  def aggregate: Parser[SQLAggregate] =
-    aggregateFunction ~ start ~ identifier ~ end ~ alias.? ~ filter.? ^^ {
-      case agg ~ _ ~ i ~ _ ~ a ~ f => new SQLAggregate(agg, i, a, f)
-    }
 
   private def equality: Parser[SQLExpression] =
     not.? ~ (identifierWithFunction | identifier) ~ (eq | ne) ~ (boolean | literal | double | int) ^^ {

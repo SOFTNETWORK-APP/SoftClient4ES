@@ -20,15 +20,9 @@ case class SQLSearchRequest(
     updated.copy(select = select.update(updated), where = where.map(_.update(updated)))
   }
 
-  lazy val fields: Seq[String] =
-    select.fields
-      .filterNot {
-        case _: SQLAggregate => true
-        case _               => false
-      }
-      .map(_.sourceField)
+  lazy val fields: Seq[String] = select.fields.filterNot(_.aggregation).map(_.sourceField)
 
-  lazy val aggregates: Seq[SQLAggregate] = select.fields.collect { case a: SQLAggregate => a }
+  lazy val aggregates: Seq[SQLField] = select.fields.filter(_.aggregation)
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 

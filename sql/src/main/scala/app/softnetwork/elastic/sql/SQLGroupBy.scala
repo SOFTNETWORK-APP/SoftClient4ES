@@ -34,4 +34,5 @@ case class SQLBucket(
     } else {
       identifier.columnName
     }
+  lazy val name: String = identifier.alias.getOrElse(sourceBucket.replace(".", "_"))
 }
