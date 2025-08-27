@@ -6,23 +6,35 @@ sealed trait SQLSource extends Updateable {
   def update(request: SQLSearchRequest): SQLSource
 }
 
-case object Distinct extends SQLExpr("distinct") with SQLRegex
-
 case class SQLIdentifier(
   columnName: String,
   alias: Option[String] = None,
-  distinct: Option[String] = None,
+  distinct: Boolean = false,
   nested: Boolean = false,
-  limit: Option[SQLLimit] = None
+  limit: Option[SQLLimit] = None,
+  function: Option[SQLFunction] = None
 ) extends SQLExpr({
       var parts: Seq[String] = columnName.split("\\.").toSeq
       alias match {
         case Some(a) => parts = a +: parts
         case _       =>
       }
-      s"${distinct.getOrElse("")} ${parts.mkString(".")}".trim
+      val sql = {
+        if (distinct) {
+          s"$Distinct ${parts.mkString(".")}".trim
+        } else {
+          parts.mkString(".").trim
+        }
+      }
+      function match {
+        case Some(f) => s"$f($sql)"
+        case _       => sql
+      }
     })
-    with SQLSource {
+    with SQLSource
+    with SQLTokenWithFunction {
+
+  lazy val aggregationName: Option[String] = if (aggregation) alias else None
 
   lazy val nestedType: Option[String] = if (nested) Some(columnName.split('.').head) else None
 

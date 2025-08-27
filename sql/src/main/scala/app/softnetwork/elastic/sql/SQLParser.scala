@@ -16,18 +16,21 @@ object SQLParser
     with SQLSelectParser
     with SQLFromParser
     with SQLWhereParser
+    with SQLGroupByParser
     with SQLOrderByParser
     with SQLLimitParser {
 
   def request: Parser[SQLSearchRequest] = {
-    phrase(select ~ from ~ where.? ~ limit.?) ^^ { case s ~ f ~ w ~ l =>
-      SQLSearchRequest(s, f, w.map(_._1), w.flatMap(_._2), l).update()
+    phrase(select ~ from ~ where.? ~ groupBy.? ~ orderBy.? ~ limit.?) ^^ {
+      case s ~ f ~ w ~ g ~ o ~ l =>
+        SQLSearchRequest(s, f, w, g, o, l)
+          .update()
     }
   }
 
   def union: Parser[Union.type] = Union.regex ^^ (_ => Union)
 
-  def requests: Parser[List[SQLSearchRequest]] = rep1sep(request, union) ^^ { case s => s }
+  def requests: Parser[List[SQLSearchRequest]] = rep1sep(request, union) ^^ (s => s)
 
   def apply(
     query: String
@@ -47,6 +50,7 @@ object SQLParser
 }
 
 trait SQLCompilationError
+
 case class SQLParserError(msg: String) extends SQLCompilationError
 
 trait SQLParser extends RegexParsers {
@@ -61,57 +65,61 @@ trait SQLParser extends RegexParsers {
   def boolean: Parser[SQLBoolean] = """(true|false)""".r ^^ (bool => SQLBoolean(bool.toBoolean))
 
   def start: Parser[SQLDelimiter] = "(" ^^ (_ => StartPredicate)
+
   def end: Parser[SQLDelimiter] = ")" ^^ (_ => EndPredicate)
+
   def separator: Parser[SQLDelimiter] = "," ^^ (_ => Separator)
 
-  val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
+  def count: Parser[AggregateFunction] = Count.regex ^^ (_ => Count)
+
+  def min: Parser[AggregateFunction] = Min.regex ^^ (_ => Min)
+
+  def max: Parser[AggregateFunction] = Max.regex ^^ (_ => Max)
+
+  def avg: Parser[AggregateFunction] = Avg.regex ^^ (_ => Avg)
+
+  def sum: Parser[AggregateFunction] = Sum.regex ^^ (_ => Sum)
+
+  def aggregateFunction: Parser[AggregateFunction] = count | min | max | avg | sum
+
+  def distanceFunction: Parser[SQLFunction] = Distance.regex ^^ (_ => Distance)
+
+  def sqlFunction: Parser[SQLFunction] = aggregateFunction | distanceFunction
+
+  private val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
+
+  def identifierWithFunction: Parser[SQLIdentifier] = sqlFunction ~ start ~ identifier ~ end ^^ {
+    case f ~ _ ~ i ~ _ =>
+      i.copy(function = Some(f))
+  }
 
   def identifier: Parser[SQLIdentifier] =
     Distinct.regex.? ~ regexIdentifier.r ^^ { case d ~ i =>
       SQLIdentifier(
         i,
         None,
-        d
+        d.isDefined
       )
     }
 
-  val regexAlias =
-    """\b(?!(?i)except\b)\b(?!(?i)where\b)\b(?!(?i)filter\b)\b(?!(?i)from\b)\b(?!(?i)order\b)[a-zA-Z0-9_]*"""
+  private val regexAlias =
+    """\b(?!(?i)except\b)\b(?!(?i)where\b)\b(?!(?i)filter\b)\b(?!(?i)from\b)\b(?!(?i)group\b)\b(?!(?i)having\b)\b(?!(?i)order\b)\b(?!(?i)limit\b)[a-zA-Z0-9_]*"""
 
   def alias: Parser[SQLAlias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => SQLAlias(b) }
 
-}
-
-trait SQLSelectParser { self: SQLParser with SQLWhereParser =>
-
-  def filter: Parser[SQLFilter] = Filter.regex ~> "[" ~> whereCriteria <~ "]" ^^ { case rawTokens =>
-    SQLFilter(
-      processTokens(rawTokens) match {
-        case (Some(c), _) => Some(c)
-        case _            => None
-      }
-    )
-  }
-
-  def field: Parser[SQLField] = identifier ~ alias.? ^^ { case i ~ a =>
+  def field: Parser[SQLField] = (identifierWithFunction | identifier) ~ alias.? ^^ { case i ~ a =>
     SQLField(i, a)
   }
+
+}
+
+trait SQLSelectParser {
+  self: SQLParser with SQLWhereParser =>
 
   def except: Parser[SQLExcept] = Except.regex ~ start ~ rep1sep(field, separator) ~ end ^^ {
     case _ ~ _ ~ e ~ _ =>
       SQLExcept(e)
   }
-
-  def count: Parser[AggregateFunction] = Count.regex ^^ (_ => Count)
-  def min: Parser[AggregateFunction] = Min.regex ^^ (_ => Min)
-  def max: Parser[AggregateFunction] = Max.regex ^^ (_ => Max)
-  def avg: Parser[AggregateFunction] = Avg.regex ^^ (_ => Avg)
-  def sum: Parser[AggregateFunction] = Sum.regex ^^ (_ => Sum)
-
-  def aggregate: Parser[SQLAggregate] =
-    (min | max | avg | sum | count) ~ start ~ identifier ~ end ~ alias.? ~ filter.? ^^ {
-      case agg ~ _ ~ i ~ _ ~ a ~ f => new SQLAggregate(agg, i, a, f)
-    }
 
   def select: Parser[SQLSelect] =
     Select.regex ~ rep1sep(aggregate | field, separator) ~ except.? ^^ { case _ ~ fields ~ e =>
@@ -120,7 +128,8 @@ trait SQLSelectParser { self: SQLParser with SQLWhereParser =>
 
 }
 
-trait SQLFromParser { self: SQLParser with SQLLimitParser =>
+trait SQLFromParser {
+  self: SQLParser with SQLLimitParser =>
 
   def unnest: Parser[SQLTable] = Unnest.regex ~ start ~ identifier ~ limit.? ~ end ~ alias ^^ {
     case _ ~ _ ~ i ~ l ~ _ ~ a =>
@@ -136,7 +145,8 @@ trait SQLFromParser { self: SQLParser with SQLLimitParser =>
 
 }
 
-trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
+trait SQLWhereParser {
+  self: SQLParser with SQLGroupByParser with SQLOrderByParser =>
 
   def isNull: Parser[SQLCriteria] = identifier ~ IsNull.regex ^^ { case i ~ _ => SQLIsNull(i) }
 
@@ -144,44 +154,78 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
     SQLIsNotNull(i)
   }
 
-  def eq: Parser[SQLExpressionOperator] = Eq.sql ^^ (_ => Eq)
-  def ne: Parser[SQLExpressionOperator] = Ne.sql ^^ (_ => Ne)
-  def equality: Parser[SQLExpression] =
-    not.? ~ identifier ~ (eq | ne) ~ (boolean | literal | double | int) ^^ { case n ~ i ~ o ~ v =>
-      SQLExpression(i, o, v, n)
-    }
+  private def eq: Parser[SQLExpressionOperator] = Eq.sql ^^ (_ => Eq)
 
-  def like: Parser[SQLExpression] = identifier ~ not.? ~ Like.regex ~ literal ^^ {
-    case i ~ n ~ _ ~ v =>
-      SQLExpression(i, Like, v, n)
+  private def ne: Parser[SQLExpressionOperator] = Ne.sql ^^ (_ => Ne)
+
+  def filter: Parser[SQLFilter] = Filter.regex ~> "[" ~> whereCriteria <~ "]" ^^ { rawTokens =>
+    SQLFilter(
+      processTokens(rawTokens)
+    )
   }
 
-  def ge: Parser[SQLExpressionOperator] = Ge.sql ^^ (_ => Ge)
+  def aggregate: Parser[SQLAggregate] =
+    aggregateFunction ~ start ~ identifier ~ end ~ alias.? ~ filter.? ^^ {
+      case agg ~ _ ~ i ~ _ ~ a ~ f => new SQLAggregate(agg, i, a, f)
+    }
+
+  private def equality: Parser[SQLExpression] =
+    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne) ~ (boolean | literal | double | int) ^^ {
+      case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
+    }
+
+  def like: Parser[SQLExpression] =
+    (identifierWithFunction | identifier) ~ not.? ~ Like.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
+      SQLExpression(i, Like, v, n)
+    }
+
+  private def ge: Parser[SQLExpressionOperator] = Ge.sql ^^ (_ => Ge)
+
   def gt: Parser[SQLExpressionOperator] = Gt.sql ^^ (_ => Gt)
-  def le: Parser[SQLExpressionOperator] = Le.sql ^^ (_ => Le)
+
+  private def le: Parser[SQLExpressionOperator] = Le.sql ^^ (_ => Le)
+
   def lt: Parser[SQLExpressionOperator] = Lt.sql ^^ (_ => Lt)
-  def comparison: Parser[SQLExpression] =
-    not.? ~ identifier ~ (ge | gt | le | lt) ~ (double | int | literal) ^^ { case n ~ i ~ o ~ v =>
-      SQLExpression(i, o, v, n)
+
+  private def comparison: Parser[SQLExpression] =
+    not.? ~ (identifierWithFunction | identifier) ~ (ge | gt | le | lt) ~ (double | int | literal) ^^ {
+      case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
     }
 
   def in: Parser[SQLExpressionOperator] = In.regex ^^ (_ => In)
-  def inLiteral: Parser[SQLCriteria] =
+
+  private def inLiteral: Parser[SQLCriteria] =
     identifier ~ not.? ~ in ~ start ~ rep1(literal ~ separator.?) ~ end ^^ {
-      case i ~ n ~ _ ~ _ ~ v ~ _ => SQLIn(i, SQLLiteralValues(v map { _._1 }), n)
+      case i ~ n ~ _ ~ _ ~ v ~ _ =>
+        SQLIn(
+          i,
+          SQLLiteralValues(v map {
+            _._1
+          }),
+          n
+        )
     }
-  def inNumerical: Parser[SQLCriteria] =
-    identifier ~ not.? ~ in ~ start ~ rep1((double | int) ~ separator.?) ~ end ^^ {
-      case i ~ n ~ _ ~ _ ~ v ~ _ => SQLIn(i, SQLNumericValues(v map { _._1 }), n)
+
+  private def inNumerical: Parser[SQLCriteria] =
+    (identifierWithFunction | identifier) ~ not.? ~ in ~ start ~ rep1(
+      (double | int) ~ separator.?
+    ) ~ end ^^ { case i ~ n ~ _ ~ _ ~ v ~ _ =>
+      SQLIn(
+        i,
+        SQLNumericValues(v map {
+          _._1
+        }),
+        n
+      )
     }
 
   def between: Parser[SQLCriteria] =
-    identifier ~ not.? ~ Between.regex ~ literal ~ and ~ literal ^^ {
+    (identifierWithFunction | identifier) ~ not.? ~ Between.regex ~ literal ~ and ~ literal ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, from, to, n)
     }
 
   def distance: Parser[SQLCriteria] =
-    Distance.regex ~ start ~ identifier ~ separator ~ start ~ double ~ separator ~ double ~ end ~ end ~ le ~ literal ^^ {
+    distanceFunction ~ start ~ identifier ~ separator ~ start ~ double ~ separator ~ double ~ end ~ end ~ le ~ literal ^^ {
       case _ ~ _ ~ i ~ _ ~ _ ~ lat ~ _ ~ lon ~ _ ~ _ ~ _ ~ d => ElasticGeoDistance(i, d, lat, lon)
     }
 
@@ -191,7 +235,9 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
     }
 
   def and: Parser[SQLPredicateOperator] = And.regex ^^ (_ => And)
+
   def or: Parser[SQLPredicateOperator] = Or.regex ^^ (_ => Or)
+
   def not: Parser[Not.type] = Not.regex ^^ (_ => Not)
 
   def criteria: Parser[SQLCriteria] =
@@ -206,6 +252,7 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
   def nestedCriteria: Parser[ElasticRelation] = Nested.regex ~ start.? ~ criteria ~ end.? ^^ {
     case _ ~ _ ~ c ~ _ => ElasticNested(c, None)
   }
+
   def nestedPredicate: Parser[ElasticRelation] = Nested.regex ~ start ~ predicate ~ end ^^ {
     case _ ~ _ ~ p ~ _ => ElasticNested(p, None)
   }
@@ -213,6 +260,7 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
   def childCriteria: Parser[ElasticRelation] = Child.regex ~ start.? ~ criteria ~ end.? ^^ {
     case _ ~ _ ~ c ~ _ => ElasticChild(c)
   }
+
   def childPredicate: Parser[ElasticRelation] = Child.regex ~ start ~ predicate ~ end ^^ {
     case _ ~ _ ~ p ~ _ => ElasticChild(p)
   }
@@ -220,25 +268,25 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
   def parentCriteria: Parser[ElasticRelation] = Parent.regex ~ start.? ~ criteria ~ end.? ^^ {
     case _ ~ _ ~ c ~ _ => ElasticParent(c)
   }
+
   def parentPredicate: Parser[ElasticRelation] = Parent.regex ~ start ~ predicate ~ end ^^ {
     case _ ~ _ ~ p ~ _ => ElasticParent(p)
   }
 
-  def allPredicate: Parser[SQLCriteria] =
+  private def allPredicate: Parser[SQLCriteria] =
     nestedPredicate | childPredicate | parentPredicate | predicate
 
-  def allCriteria: Parser[SQLToken] =
-    orderBy | nestedCriteria | childCriteria | parentCriteria | criteria
+  private def allCriteria: Parser[SQLToken] =
+    nestedCriteria | childCriteria | parentCriteria | criteria
 
   def whereCriteria: Parser[List[SQLToken]] = rep1(
     allPredicate | allCriteria | start | or | and | end
   )
 
-  def where: Parser[(SQLWhere, Option[SQLOrderBy])] = Where.regex ~ whereCriteria ^^ {
-    case _ ~ rawTokens =>
-      val tuple = processTokens(rawTokens)
-      (SQLWhere(tuple._1), tuple._2)
-  }
+  def where: Parser[SQLWhere] =
+    Where.regex ~ whereCriteria ^^ { case _ ~ rawTokens =>
+      SQLWhere(processTokens(rawTokens))
+    }
 
   import scala.annotation.tailrec
 
@@ -277,21 +325,17 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
   @tailrec
   private def processTokensHelper(
     tokens: List[SQLToken],
-    stack: List[SQLToken],
-    orderBy: Option[SQLOrderBy] = None
-  ): (Option[SQLCriteria], Option[SQLOrderBy]) = {
+    stack: List[SQLToken]
+  ): Option[SQLCriteria] = {
     tokens match {
       case Nil =>
         stack match {
           case (right: SQLCriteria) :: (op: SQLPredicateOperator) :: (left: SQLCriteria) :: Nil =>
-            (
-              Option(
-                SQLPredicate(left, op, right)
-              ),
-              orderBy
+            Option(
+              SQLPredicate(left, op, right)
             )
           case _ =>
-            (stack.headOption.collect { case c: SQLCriteria => c }, orderBy)
+            stack.headOption.collect { case c: SQLCriteria => c }
         }
       case (_: StartDelimiter) :: rest =>
         val (subTokens, remainingTokens) = extractSubTokens(rest, 1)
@@ -328,9 +372,7 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
         }
       case (_: EndDelimiter) :: rest =>
         processTokensHelper(rest, stack) // Ignore and move on
-      case (orderBy: SQLOrderBy) :: Nil => // We only expect order by clause after all other tokens
-        processTokensHelper(Nil, stack, Some(orderBy))
-      case _ => throw new IllegalStateException("Unexpected token type")
+      case _ => processTokensHelper(Nil, stack)
     }
   }
 
@@ -338,9 +380,12 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
     * tokens.
     *
     * @param tokens
+    *   - list of SQL tokens
     * @return
     */
-  protected def processTokens(tokens: List[SQLToken]): (Option[SQLCriteria], Option[SQLOrderBy]) = {
+  protected def processTokens(
+    tokens: List[SQLToken]
+  ): Option[SQLCriteria] = {
     processTokensHelper(tokens, Nil)
   }
 
@@ -349,10 +394,11 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
     * criteria is found.
     *
     * @param tokens
+    *   - list of SQL tokens
     * @return
     */
   private def processSubTokens(tokens: List[SQLToken]): SQLCriteria = {
-    processTokensHelper(tokens, Nil)._1.getOrElse(
+    processTokensHelper(tokens, Nil).getOrElse(
       throw new IllegalStateException("Empty sub-expression")
     )
   }
@@ -362,8 +408,11 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
     * of open and closed delimiters and correctly construct the list of extracted subtokens.
     *
     * @param tokens
+    *   - list of SQL tokens
     * @param openCount
+    *   - count of open delimiters
     * @param subTokens
+    *   - list of extracted subtokens
     * @return
     */
   @tailrec
@@ -385,15 +434,43 @@ trait SQLWhereParser { self: SQLParser with SQLOrderByParser =>
   }
 }
 
-trait SQLOrderByParser { self: SQLParser =>
+trait SQLGroupByParser {
+  self: SQLParser with SQLWhereParser =>
+
+  private def having: Parser[SQLHaving] = Having.regex ~> whereCriteria ^^ { rawTokens =>
+    SQLHaving(
+      processTokens(rawTokens)
+    )
+  }
+
+  def bucket: Parser[SQLBucket] = identifier ^^ (i => SQLBucket(i))
+
+  def groupBy: Parser[SQLGroupBy] = GroupBy.regex ~ rep1sep(bucket, separator) ~ having.? ^^ {
+    case _ ~ buckets ~ having => SQLGroupBy(buckets, having)
+  }
+
+}
+
+trait SQLOrderByParser {
+  self: SQLParser =>
 
   def asc: Parser[Asc.type] = Asc.regex ^^ (_ => Asc)
 
   def desc: Parser[Desc.type] = Desc.regex ^^ (_ => Desc)
 
+  private def fieldName: Parser[String] =
+    """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
+
+  def fieldWithFunction: Parser[(String, SQLFunction)] = sqlFunction ~ start ~ fieldName ~ end ^^ {
+    case f ~ _ ~ n ~ _ => (n, f)
+  }
+
   def sort: Parser[SQLFieldSort] =
-    """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ~ (asc | desc).? ^^ { case f ~ o =>
-      SQLFieldSort(f, o)
+    (fieldWithFunction | fieldName) ~ (asc | desc).? ^^ { case f ~ o =>
+      f match {
+        case i: (String, SQLFunction) => SQLFieldSort(i._1, o, Some(i._2))
+        case s: String                => SQLFieldSort(s, o, None)
+      }
     }
 
   def orderBy: Parser[SQLOrderBy] = OrderBy.regex ~ rep1sep(sort, separator) ^^ { case _ ~ s =>
@@ -402,7 +479,8 @@ trait SQLOrderByParser { self: SQLParser =>
 
 }
 
-trait SQLLimitParser { self: SQLParser =>
+trait SQLLimitParser {
+  self: SQLParser =>
 
   def limit: Parser[SQLLimit] = Limit.regex ~ int ^^ { case _ ~ i => SQLLimit(i.value) }
 

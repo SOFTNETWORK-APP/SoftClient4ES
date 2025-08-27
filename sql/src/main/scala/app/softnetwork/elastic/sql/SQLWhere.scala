@@ -84,15 +84,17 @@ case class SQLPredicate(
   override def nested: Boolean = leftCriteria.nested && rightCriteria.nested
 
   override def matchCriteria: Boolean = leftCriteria.matchCriteria || rightCriteria.matchCriteria
+
 }
 
 sealed trait ElasticFilter
 
-sealed trait SQLCriteriaWithIdentifier extends SQLCriteria {
+sealed trait SQLCriteriaWithIdentifier extends SQLCriteria with SQLTokenWithFunction {
   def identifier: SQLIdentifier
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false
   override lazy val limit: Option[SQLLimit] = identifier.limit
+  override val function: Option[SQLFunction] = identifier.function
 }
 
 case class ElasticBoolQuery(
@@ -206,9 +208,14 @@ case class SQLIn[R, +T <: SQLValue[R]](
   values: SQLValues[R, T],
   maybeNot: Option[Not.type] = None
 ) extends SQLCriteriaWithIdentifier
+    with SQLTokenWithFunction
     with ElasticFilter { this: SQLIn[R, T] =>
+  private[this] lazy val id = function match {
+    case Some(f) => s"$f($identifier)"
+    case _       => s"$identifier"
+  }
   override def sql =
-    s"$identifier ${maybeNot.map(_ => "not ").getOrElse("")}$operator $values"
+    s"$id ${maybeNot.map(_ => "not ").getOrElse("")}$operator $values"
   override def operator: SQLOperator = In
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -227,9 +234,14 @@ case class SQLBetween(
   to: SQLLiteral,
   maybeNot: Option[Not.type]
 ) extends SQLCriteriaWithIdentifier
+    with SQLTokenWithFunction
     with ElasticFilter {
+  private[this] lazy val id = function match {
+    case Some(f) => s"$f($identifier)"
+    case _       => s"$identifier"
+  }
   override def sql =
-    s"$identifier ${maybeNot.map(_ => "not ").getOrElse("")}$operator $from and $to"
+    s"$id ${maybeNot.map(_ => "not ").getOrElse("")}$operator $from and $to"
   override def operator: SQLOperator = Between
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))

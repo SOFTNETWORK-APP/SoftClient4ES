@@ -21,11 +21,24 @@ package object sql {
     override def toString: String = sql
   }
 
+  trait SQLTokenWithFunction extends SQLToken {
+    def function: Option[SQLFunction]
+
+    lazy val aggregateFunction: Option[AggregateFunction] = function match {
+      case Some(af: AggregateFunction) => Some(af)
+      case _                           => None
+    }
+
+    lazy val aggregation: Boolean = aggregateFunction.isDefined
+  }
+
   trait Updateable extends SQLToken {
     def update(request: SQLSearchRequest): Updateable
   }
 
   abstract class SQLExpr(override val sql: String) extends SQLToken
+
+  case object Distinct extends SQLExpr("distinct") with SQLRegex
 
   abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T]) extends SQLToken {
     def choose[R >: T](
