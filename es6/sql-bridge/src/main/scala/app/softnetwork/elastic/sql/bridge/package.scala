@@ -19,12 +19,12 @@ package object bridge {
       request.where.flatMap(_.criteria),
       request.limit.map(_.limit),
       request,
-      request.aggregates.map(ElasticAggregation(_))
+      request.aggregates.map(ElasticAggregation(_, None))
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
-    val aggregations = aggregates.map(ElasticAggregation(_))
+    val aggregations = aggregates.map(ElasticAggregation(_, None))
     var _search: SearchRequest = search("") query {
       where.flatMap(_.criteria.map(_.asQuery())).getOrElse(matchAllQuery())
     } sourceInclude fields
@@ -272,7 +272,7 @@ package object bridge {
       .map {
         case Left(l) =>
           l.aggregates
-            .map(ElasticAggregation(_))
+            .map(ElasticAggregation(_, None))
             .map(aggregation => {
               val queryFiltered =
                 l.where
