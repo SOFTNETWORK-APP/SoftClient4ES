@@ -12,12 +12,17 @@ case class SQLSearchRequest(
   override def sql: String =
     s"$select$from${asString(where)}${asString(groupBy)}${asString(orderBy)}${asString(limit)}"
 
-  lazy val aliases: Seq[String] = from.aliases
+  lazy val fieldAliases: Map[String, String] = select.fieldAliases
+  lazy val tableAliases: Map[String, String] = from.tableAliases
   lazy val unnests: Seq[(String, String, Option[SQLLimit])] = from.unnests
 
   def update(): SQLSearchRequest = {
     val updated = this.copy(from = from.update(this))
-    updated.copy(select = select.update(updated), where = where.map(_.update(updated)))
+    updated.copy(
+      select = select.update(updated),
+      where = where.map(_.update(updated)),
+      groupBy = groupBy.map(_.update(updated))
+    )
   }
 
   lazy val fields: Seq[String] = select.fields.filterNot(_.aggregation).map(_.sourceField)

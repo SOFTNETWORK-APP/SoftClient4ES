@@ -76,44 +76,44 @@ package object bridge {
           case _: Ge.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lt n.sql
+                rangeQuery(identifier.name) lt n.sql
               case _ =>
-                rangeQuery(identifier.columnName) gte n.sql
+                rangeQuery(identifier.name) gte n.sql
             }
           case _: Gt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lte n.sql
+                rangeQuery(identifier.name) lte n.sql
               case _ =>
-                rangeQuery(identifier.columnName) gt n.sql
+                rangeQuery(identifier.name) gt n.sql
             }
           case _: Le.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gt n.sql
+                rangeQuery(identifier.name) gt n.sql
               case _ =>
-                rangeQuery(identifier.columnName) lte n.sql
+                rangeQuery(identifier.name) lte n.sql
             }
           case _: Lt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gte n.sql
+                rangeQuery(identifier.name) gte n.sql
               case _ =>
-                rangeQuery(identifier.columnName) lt n.sql
+                rangeQuery(identifier.name) lt n.sql
             }
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.columnName, n.sql))
+                not(termQuery(identifier.name, n.sql))
               case _ =>
-                termQuery(identifier.columnName, n.sql)
+                termQuery(identifier.name, n.sql)
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.columnName, n.sql)
+                termQuery(identifier.name, n.sql)
               case _ =>
-                not(termQuery(identifier.columnName, n.sql))
+                not(termQuery(identifier.name, n.sql))
             }
           case _ => matchAllQuery()
         }
@@ -122,51 +122,51 @@ package object bridge {
           case _: Like.type =>
             maybeNot match {
               case Some(_) =>
-                not(regexQuery(identifier.columnName, toRegex(l.value)))
+                not(regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
-                regexQuery(identifier.columnName, toRegex(l.value))
+                regexQuery(identifier.name, toRegex(l.value))
             }
           case _: Ge.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lt l.value
+                rangeQuery(identifier.name) lt l.value
               case _ =>
-                rangeQuery(identifier.columnName) gte l.value
+                rangeQuery(identifier.name) gte l.value
             }
           case _: Gt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lte l.value
+                rangeQuery(identifier.name) lte l.value
               case _ =>
-                rangeQuery(identifier.columnName) gt l.value
+                rangeQuery(identifier.name) gt l.value
             }
           case _: Le.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gt l.value
+                rangeQuery(identifier.name) gt l.value
               case _ =>
-                rangeQuery(identifier.columnName) lte l.value
+                rangeQuery(identifier.name) lte l.value
             }
           case _: Lt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gte l.value
+                rangeQuery(identifier.name) gte l.value
               case _ =>
-                rangeQuery(identifier.columnName) lt l.value
+                rangeQuery(identifier.name) lt l.value
             }
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.columnName, l.value))
+                not(termQuery(identifier.name, l.value))
               case _ =>
-                termQuery(identifier.columnName, l.value)
+                termQuery(identifier.name, l.value)
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.columnName, l.value)
+                termQuery(identifier.name, l.value)
               case _ =>
-                not(termQuery(identifier.columnName, l.value))
+                not(termQuery(identifier.name, l.value))
             }
           case _ => matchAllQuery()
         }
@@ -175,16 +175,16 @@ package object bridge {
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.columnName, b.value))
+                not(termQuery(identifier.name, b.value))
               case _ =>
-                termQuery(identifier.columnName, b.value)
+                termQuery(identifier.name, b.value)
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.columnName, b.value)
+                termQuery(identifier.name, b.value)
               case _ =>
-                not(termQuery(identifier.columnName, b.value))
+                not(termQuery(identifier.name, b.value))
             }
           case _ => matchAllQuery()
         }
@@ -196,14 +196,14 @@ package object bridge {
     isNull: SQLIsNull
   ): Query = {
     import isNull._
-    not(existsQuery(identifier.columnName))
+    not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullToQuery(
     isNotNull: SQLIsNotNull
   ): Query = {
     import isNotNull._
-    existsQuery(identifier.columnName)
+    existsQuery(identifier.name)
   }
 
   implicit def inToQuery[R, T <: SQLValue[R]](in: SQLIn[R, T]): Query = {
@@ -212,12 +212,12 @@ package object bridge {
     val t =
       _values.headOption match {
         case Some(_: Double) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Double]])
+          termsQuery(identifier.name, _values.asInstanceOf[Seq[Double]])
         case Some(_: Integer) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Integer]])
+          termsQuery(identifier.name, _values.asInstanceOf[Seq[Integer]])
         case Some(_: Long) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Long]])
-        case _ => termsQuery(identifier.columnName, _values.map(_.toString))
+          termsQuery(identifier.name, _values.asInstanceOf[Seq[Long]])
+        case _ => termsQuery(identifier.name, _values.map(_.toString))
       }
     maybeNot match {
       case Some(_) => not(t)
@@ -229,7 +229,7 @@ package object bridge {
     between: SQLBetween
   ): Query = {
     import between._
-    val r = rangeQuery(identifier.columnName) gte from.value lte to.value
+    val r = rangeQuery(identifier.name) gte from.value lte to.value
     maybeNot match {
       case Some(_) => not(r)
       case _       => r
@@ -240,14 +240,14 @@ package object bridge {
     geoDistance: ElasticGeoDistance
   ): Query = {
     import geoDistance._
-    geoDistanceQuery(identifier.columnName, lat.value, lon.value) distance distance.value
+    geoDistanceQuery(identifier.name, lat.value, lon.value) distance distance.value
   }
 
   implicit def matchToQuery(
     matchExpression: ElasticMatch
   ): Query = {
     import matchExpression._
-    matchQuery(identifier.columnName, value.value)
+    matchQuery(identifier.name, value.value)
   }
 
   implicit def criteriaToElasticCriteria(

@@ -294,7 +294,7 @@ sealed abstract class ElasticRelation(val criteria: SQLCriteria, val operator: E
   private[this] def rtype(criteria: SQLCriteria): Option[String] = criteria match {
     case SQLPredicate(left, _, right, _, _) => rtype(left).orElse(rtype(right))
     case c: SQLCriteriaWithIdentifier =>
-      c.identifier.nestedType.orElse(c.identifier.columnName.split('.').headOption)
+      c.identifier.nestedType.orElse(c.identifier.name.split('.').headOption)
     case relation: ElasticRelation => relation.relationType
     case _                         => None
   }
@@ -317,7 +317,7 @@ case class ElasticNested(override val criteria: SQLCriteria, override val limit:
   private[this] def name(criteria: SQLCriteria): Option[String] = criteria match {
     case SQLPredicate(left, _, right, _, _) => name(left).orElse(name(right))
     case c: SQLCriteriaWithIdentifier =>
-      c.identifier.innerHitsName.orElse(c.identifier.columnName.split('.').headOption)
+      c.identifier.innerHitsName.orElse(c.identifier.name.split('.').headOption)
     case n: ElasticNested => name(n.criteria)
     case _                => None
   }

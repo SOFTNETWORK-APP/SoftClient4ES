@@ -28,11 +28,11 @@ case class SQLBucket(
     this.copy(identifier = identifier.update(request))
   lazy val sourceBucket: String =
     if (identifier.nested) {
-      identifier.alias
+      identifier.tableAlias
         .map(a => s"$a.")
-        .getOrElse("") + identifier.columnName.split("\\.").tail.mkString(".")
+        .getOrElse("") + identifier.name.split("\\.").tail.mkString(".")
     } else {
-      identifier.columnName
+      identifier.name
     }
-  lazy val name: String = identifier.alias.getOrElse(sourceBucket.replace(".", "_"))
+  lazy val name: String = identifier.fieldAlias.getOrElse(sourceBucket.replace(".", "_"))
 }

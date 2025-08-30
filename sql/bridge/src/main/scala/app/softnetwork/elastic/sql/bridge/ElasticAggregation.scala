@@ -44,9 +44,9 @@ case class ElasticAggregation(
 object ElasticAggregation {
   def apply(sqlAgg: SQLField, filter: Option[SQLCriteria]): ElasticAggregation = {
     import sqlAgg._
-    val sourceField = identifier.columnName
+    val sourceField = identifier.name
 
-    val field = alias match {
+    val field = fieldAlias match {
       case Some(alias) => alias.alias
       case _           => sourceField
     }
