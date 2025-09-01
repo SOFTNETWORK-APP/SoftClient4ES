@@ -34,12 +34,7 @@ package object bridge {
       aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
     var _search: SearchRequest = search("") query {
       where.flatMap(_.criteria.map(_.asQuery())).getOrElse(matchAllQuery())
-    } sourceInclude fields
-
-    _search = excludes match {
-      case Nil      => _search
-      case excludes => _search sourceExclude excludes
-    }
+    } sourceFiltering (fields, excludes)
 
     _search = if (nestedAggregations.nonEmpty) {
       _search aggregations {

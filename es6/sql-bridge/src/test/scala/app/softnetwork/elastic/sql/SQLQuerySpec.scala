@@ -510,6 +510,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |   "match_all":{}
         | },
         | "_source":{
+        |   "includes":["*"],
         |   "excludes":["col1","col2"]
         | }
         |}""".stripMargin.replaceAll("\\s+", "")
