@@ -147,7 +147,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"regexp" : {
         |      "identifier" : {
-        |        "value" : ".*?un.*?"
+        |        "value" : ".*un.*"
         |      }
         |    }
         |  }
@@ -161,7 +161,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |      "filter":[{"bool":{"must_not": [{
         |        "regexp": {
         |          "identifier": {
-        |            "value": ".*?un.*?"
+        |            "value": ".*un.*"
         |          }
         |        }
         |      }]

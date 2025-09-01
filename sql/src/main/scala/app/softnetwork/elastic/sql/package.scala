@@ -187,7 +187,7 @@ package object sql {
         value.substring(0, value.length - 1)
       else
         value
-    s"""${if (startWith) ".*?"}$v${if (endWith) ".*?"}"""
+    s"""${if (startWith) ".*"}$v${if (endWith) ".*"}"""
   }
 
   case object Alias extends SQLExpr("as") with SQLRegex

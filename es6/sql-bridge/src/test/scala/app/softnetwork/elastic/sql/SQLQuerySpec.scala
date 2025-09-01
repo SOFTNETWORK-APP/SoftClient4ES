@@ -558,35 +558,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |{
         |  "query": {
         |    "bool": {
-        |      "must": [
-        |        {
-        |          "match": {
-        |            "products.name": {
-        |              "query": "lasagnes"
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "bool": {
-        |            "should": [
-        |              {
-        |                "match": {
-        |                  "products.description": {
-        |                    "query": "lasagnes"
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "match": {
-        |                  "products.ingredients": {
-        |                    "query": "lasagnes"
-        |                  }
-        |                }
-        |              }
-        |            ]
-        |          }
-        |        }
-        |      ],
         |      "filter": [
         |        {
         |          "bool": {
@@ -626,7 +597,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    {
         |                      "regexp": {
         |                        "blockedCustomers": {
-        |                          "value": ".*?uuid.*?"
+        |                          "value": ".*uuid.*"
         |                        }
         |                      }
         |                    }
@@ -669,43 +640,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    }
         |                  ]
         |                }
-        |              },
-        |              {
-        |                "nested": {
-        |                  "path": "products",
-        |                  "query": {
-        |                    "bool": {
-        |                      "filter": [
-        |                        {
-        |                          "term": {
-        |                            "products.deleted": {
-        |                              "value": false
-        |                            }
-        |                          }
-        |                        },
-        |                        {
-        |                          "term": {
-        |                            "products.upForSale": {
-        |                              "value": true
-        |                            }
-        |                          }
-        |                        },
-        |                        {
-        |                          "range": {
-        |                            "products.stock": {
-        |                              "gt": "0"
-        |                            }
-        |                          }
-        |                        }
-        |                      ]
-        |                    }
-        |                  },
-        |                  "inner_hits": {
-        |                    "name": "inner_products",
-        |                    "from": 0,
-        |                    "size": 10
-        |                  }
-        |                }
         |              }
         |            ]
         |          }
@@ -713,8 +647,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      ]
         |    }
         |  },
-        |  "from": 0,
-        |  "size": 100,
+        |  "size": 0,
         |  "min_score": 1.0,
         |  "sort": [
         |    {
@@ -728,27 +661,93 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  ],
-        |  "_source": {
-        |    "includes": [
-        |      "inner_products.name",
-        |      "inner_products.category",
-        |      "inner_products.price"
-        |    ]
-        |  },
+        |  "_source": true,
         |  "aggs": {
         |    "nested_products": {
         |      "nested": {
         |        "path": "products"
         |      },
         |      "aggs": {
-        |        "min_price": {
-        |          "min": {
-        |            "field": "products.price"
-        |          }
-        |        },
-        |        "max_price": {
-        |          "max": {
-        |            "field": "products.price"
+        |        "filtered_agg": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "term": {
+        |                    "products.deleted": {
+        |                      "value": false
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.upForSale": {
+        |                      "value": true
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "range": {
+        |                    "products.stock": {
+        |                      "gt": "0"
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "match": {
+        |                    "products.name": {
+        |                      "query": "lasagnes"
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "should": [
+        |                      {
+        |                        "match": {
+        |                          "products.description": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.ingredients": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                }
+        |              ]
+        |            }
+        |          },
+        |          "aggs": {
+        |            "category": {
+        |              "terms": {
+        |                "field": "products.category.keyword"
+        |              },
+        |              "aggs": {
+        |                "productName": {
+        |                  "terms": {
+        |                    "field": "products.name.keyword"
+        |                  },
+        |                  "aggs": {
+        |                    "min_price": {
+        |                      "min": {
+        |                        "field": "products.price"
+        |                      }
+        |                    },
+        |                    "max_price": {
+        |                      "max": {
+        |                        "field": "products.price"
+        |                      }
+        |                    }
+        |                  }
+        |                }
+        |              }
+        |            }
         |          }
         |        }
         |      }

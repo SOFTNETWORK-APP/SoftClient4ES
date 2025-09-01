@@ -159,7 +159,7 @@ case class SQLExpression(
 ) extends SQLCriteriaWithIdentifier
     with ElasticFilter {
   override def sql =
-    s"${maybeNot.map(_ => "not ").getOrElse("")}$identifier $operator $value"
+    s"$identifier ${maybeNot.map(_ => "not ").getOrElse("")}$operator $value"
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
