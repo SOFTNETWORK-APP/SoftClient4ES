@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
+import com.sksamuel.elastic4s.requests.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.requests.searches.queries.Query
 import com.sksamuel.elastic4s.requests.searches.sort.FieldSort
 import com.sksamuel.elastic4s.requests.searches.{
@@ -21,12 +22,16 @@ package object bridge {
       request.where.flatMap(_.criteria),
       request.limit.map(_.limit),
       request,
-      request.aggregates.map(ElasticAggregation(_))
+      request.buckets,
+      request.aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
-    val aggregations = aggregates.map(ElasticAggregation(_))
+    val aggregations = aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+    val notNestedAggregations = aggregations.filterNot(_.nested)
+    val nestedAggregations =
+      aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
     var _search: SearchRequest = search("") query {
       where.flatMap(_.criteria.map(_.asQuery())).getOrElse(matchAllQuery())
     } sourceInclude fields
@@ -36,9 +41,22 @@ package object bridge {
       case excludes => _search sourceExclude excludes
     }
 
-    _search = aggregations match {
+    _search = if (nestedAggregations.nonEmpty) {
+      _search aggregations {
+        nestedAggregations.map { case (_, aggs) =>
+          val first = aggs.head
+          val filtered: Option[Aggregation] =
+            first.filteredAgg.map(filtered => filtered.subAggregations(aggs.map(_.agg)))
+          first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(aggs.map(_.agg)))
+        }
+      }
+    } else {
+      _search
+    }
+
+    _search = notNestedAggregations match {
       case Nil => _search
-      case _   => _search aggregations { aggregations.map(_.agg) }
+      case _   => _search aggregations { notNestedAggregations.map(_.agg) }
     }
 
     _search = orderBy match {
@@ -63,8 +81,8 @@ package object bridge {
   }
 
   implicit def requestToMultiSearchRequest(
-    request: SQLMultiSearchRequest
-  ): MultiSearchRequest = {
+                                            request: SQLMultiSearchRequest
+                                          ): MultiSearchRequest = {
     MultiSearchRequest(
       request.requests.map(implicitly[SearchRequest](_))
     )
@@ -195,15 +213,15 @@ package object bridge {
   }
 
   implicit def isNullToQuery(
-    isNull: SQLIsNull
-  ): Query = {
+                              isNull: SQLIsNull
+                            ): Query = {
     import isNull._
     not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullToQuery(
-    isNotNull: SQLIsNotNull
-  ): Query = {
+                                 isNotNull: SQLIsNotNull
+                               ): Query = {
     import isNotNull._
     existsQuery(identifier.name)
   }
@@ -228,8 +246,8 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-    between: SQLBetween
-  ): Query = {
+                               between: SQLBetween
+                             ): Query = {
     import between._
     val r = rangeQuery(identifier.name) gte from.value lte to.value
     maybeNot match {
@@ -239,42 +257,42 @@ package object bridge {
   }
 
   implicit def geoDistanceToQuery(
-    geoDistance: ElasticGeoDistance
-  ): Query = {
+                                   geoDistance: ElasticGeoDistance
+                                 ): Query = {
     import geoDistance._
     geoDistanceQuery(identifier.name, lat.value, lon.value) distance distance.value
   }
 
   implicit def matchToQuery(
-    matchExpression: ElasticMatch
-  ): Query = {
+                             matchExpression: ElasticMatch
+                           ): Query = {
     import matchExpression._
     matchQuery(identifier.name, value.value)
   }
 
   implicit def criteriaToElasticCriteria(
-    criteria: SQLCriteria
-  ): ElasticCriteria = {
+                                          criteria: SQLCriteria
+                                        ): ElasticCriteria = {
     ElasticCriteria(
       criteria
     )
   }
 
   implicit def filterToQuery(
-    filter: ElasticFilter
-  ): ElasticQuery = {
+                              filter: ElasticFilter
+                            ): ElasticQuery = {
     ElasticQuery(filter)
   }
 
   implicit def sqlQueryToAggregations(
-    query: SQLQuery
-  ): Seq[ElasticAggregation] = {
+                                       query: SQLQuery
+                                     ): Seq[ElasticAggregation] = {
     import query._
     request
       .map {
         case Left(l) =>
           l.aggregates
-            .map(ElasticAggregation(_))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria)))
             .map(aggregation => {
               val queryFiltered =
                 l.where
@@ -296,10 +314,18 @@ package object bridge {
                         ElasticApi.search("") query {
                           queryFiltered
                         }
-                        aggregations {
-                          aggregation.agg
+                          aggregations {
+                          val filtered =
+                            aggregation.filteredAgg match {
+                              case Some(filtered) => filtered.subAggregations(aggregation.agg)
+                              case _              => aggregation.agg
+                            }
+                          aggregation.nestedAgg match {
+                            case Some(nested) => nested.subAggregations(filtered)
+                            case _            => filtered
+                          }
                         }
-                        size 0
+                          size 0
                       )
                   }).string.replace("\"version\":true,", "") /*FIXME*/
                 )

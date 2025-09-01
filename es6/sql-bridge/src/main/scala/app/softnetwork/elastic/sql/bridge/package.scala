@@ -4,6 +4,7 @@ import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
+import com.sksamuel.elastic4s.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.searches.queries.Query
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
 import com.sksamuel.elastic4s.searches.sort.FieldSort
@@ -19,12 +20,16 @@ package object bridge {
       request.where.flatMap(_.criteria),
       request.limit.map(_.limit),
       request,
-      request.aggregates.map(ElasticAggregation(_, None))
+      request.buckets,
+      request.aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
-    val aggregations = aggregates.map(ElasticAggregation(_, None))
+    val aggregations = aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+    val notNestedAggregations = aggregations.filterNot(_.nested)
+    val nestedAggregations =
+      aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
     var _search: SearchRequest = search("") query {
       where.flatMap(_.criteria.map(_.asQuery())).getOrElse(matchAllQuery())
     } sourceInclude fields
@@ -34,9 +39,22 @@ package object bridge {
       case excludes => _search sourceExclude excludes
     }
 
-    _search = aggregations match {
+    _search = if (nestedAggregations.nonEmpty) {
+      _search aggregations {
+        nestedAggregations.map { case (_, aggs) =>
+          val first = aggs.head
+          val filtered: Option[Aggregation] =
+            first.filteredAgg.map(filtered => filtered.subAggregations(aggs.map(_.agg)))
+          first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(aggs.map(_.agg)))
+        }
+      }
+    } else {
+      _search
+    }
+
+    _search = notNestedAggregations match {
       case Nil => _search
-      case _   => _search aggregations { aggregations.map(_.agg) }
+      case _   => _search aggregations { notNestedAggregations.map(_.agg) }
     }
 
     _search = orderBy match {
@@ -272,7 +290,7 @@ package object bridge {
       .map {
         case Left(l) =>
           l.aggregates
-            .map(ElasticAggregation(_, None))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria)))
             .map(aggregation => {
               val queryFiltered =
                 l.where
@@ -295,7 +313,15 @@ package object bridge {
                           queryFiltered
                         }
                         aggregations {
-                          aggregation.agg
+                          val filtered =
+                            aggregation.filteredAgg match {
+                              case Some(filtered) => filtered.subAggregations(aggregation.agg)
+                              case _              => aggregation.agg
+                            }
+                          aggregation.nestedAgg match {
+                            case Some(nested) => nested.subAggregations(filtered)
+                            case _            => filtered
+                          }
                         }
                         size 0
                       )

@@ -60,7 +60,8 @@ object Queries {
   val geoDistanceCriteria =
     "select * from Table where distance(profile.location,(-70.0,40.0)) <= \"5km\""
   val except = "select * except(col1,col2) from Table"
-  val matchCriteria = "select * from Table where match(identifier,\"value\",\"options\")"
+  val matchCriteria =
+    "select * from Table where match (identifier1,identifier2,identifier3) against (\"value\")"
   val groupBy =
     "select identifier,count(identifier) from Table where identifier is not null group by identifier"
   val orderBy = "select * from Table order by identifier desc"

@@ -269,6 +269,38 @@ case class ElasticGeoDistance(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
+case class SQLMatch(
+  identifiers: Seq[SQLIdentifier],
+  value: SQLLiteral
+) extends SQLCriteria {
+  override def sql: String =
+    s"$operator (${identifiers.mkString(",")}) $Against ($value)"
+  override def operator: SQLOperator = Match
+  override def update(request: SQLSearchRequest): SQLCriteria =
+    this.copy(identifiers = identifiers.map(_.update(request)))
+
+  lazy val criteria: SQLCriteria = {
+    identifiers.map(id => ElasticMatch(id, value, None)) match {
+      case Nil           => throw new IllegalArgumentException("No identifiers for MATCH")
+      case single :: Nil => single
+      case first :: second :: rest =>
+        val initial: SQLCriteria = SQLPredicate(first, Or, second)
+        rest.foldLeft(initial) { (acc, next) =>
+          SQLPredicate(acc, Or, next)
+        }
+    }
+  }
+
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = criteria match {
+    case predicate: SQLPredicate => predicate.copy(group = true).asFilter(currentQuery)
+    case _                       => criteria.asFilter(currentQuery)
+  }
+
+  override def matchCriteria: Boolean = true
+
+  override def group: Boolean = false
+}
+
 case class ElasticMatch(
   identifier: SQLIdentifier,
   value: SQLLiteral,

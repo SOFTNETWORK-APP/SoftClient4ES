@@ -21,6 +21,9 @@ case object Between extends SQLExpr("between") with SQLLogicalOperator
 case object IsNull extends SQLExpr("is null") with SQLLogicalOperator
 case object IsNotNull extends SQLExpr("is not null") with SQLLogicalOperator
 case object Not extends SQLExpr("not") with SQLLogicalOperator
+case object Match extends SQLExpr("match") with SQLLogicalOperator
+
+case object Against extends SQLExpr("against") with SQLRegex
 
 sealed trait SQLPredicateOperator extends SQLLogicalOperator
 
@@ -33,4 +36,3 @@ sealed trait ElasticOperator extends SQLOperator with SQLRegex
 case object Nested extends SQLExpr("nested") with ElasticOperator
 case object Child extends SQLExpr("child") with ElasticOperator
 case object Parent extends SQLExpr("parent") with ElasticOperator
-case object Match extends SQLExpr("match") with ElasticOperator

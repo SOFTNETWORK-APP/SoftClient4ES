@@ -5,12 +5,13 @@ case class SQLSearchRequest(
   from: SQLFrom,
   where: Option[SQLWhere],
   groupBy: Option[SQLGroupBy] = None,
+  having: Option[SQLHaving] = None,
   orderBy: Option[SQLOrderBy] = None,
   limit: Option[SQLLimit] = None,
   score: Option[Double] = None
 ) extends SQLToken {
   override def sql: String =
-    s"$select$from${asString(where)}${asString(groupBy)}${asString(orderBy)}${asString(limit)}"
+    s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}"
 
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
@@ -21,7 +22,8 @@ case class SQLSearchRequest(
     updated.copy(
       select = select.update(updated),
       where = where.map(_.update(updated)),
-      groupBy = groupBy.map(_.update(updated))
+      groupBy = groupBy.map(_.update(updated)),
+      having = having.map(_.update(updated))
     )
   }
 
@@ -35,5 +37,5 @@ case class SQLSearchRequest(
     source.sql
   }
 
-  lazy val buckets: Option[Seq[SQLBucket]] = groupBy.map(_.buckets)
+  lazy val buckets: Seq[SQLBucket] = groupBy.map(_.buckets).getOrElse(Seq.empty)
 }
