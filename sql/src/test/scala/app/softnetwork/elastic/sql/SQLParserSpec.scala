@@ -79,6 +79,40 @@ object Queries {
       |GROUP BY Country,City
       |HAVING Country <> "USA" AND City <> "Berlin" AND COUNT(CustomerID) > 1
       |ORDER BY COUNT(CustomerID) DESC,Country asc""".stripMargin.replaceAll("\n", " ").toLowerCase
+
+  val complexQuery: String =
+    """SELECT
+      | inner_products.category as category,
+      |inner_products.name as productName,
+      |min(inner_products.price) as min_price,
+      |max(inner_products.price) as max_price
+      | FROM
+      | stores as store,
+      |UNNEST(store.products LIMIT 10) as inner_products
+      | WHERE
+      | (
+      |firstName is not null AND
+      | lastName is not null AND
+      | description is not null AND
+      | preparationTime <= 120 AND
+      | store.deliveryPeriods.dayOfWeek = 6 AND
+      | not blockedCustomers like "%uuid%" AND
+      | NOT receiptOfOrdersDisabled = true AND
+      | (
+      |distance(pickup.location,(0.0,0.0)) <= "7000m" OR
+      | distance(withdrawals.location,(0.0,0.0)) <= "7000m"
+      |)
+      |)
+      | GROUP BY
+      | inner_products.category,
+      |inner_products.name
+      | HAVING inner_products.deleted = false AND
+      | inner_products.upForSale = true AND
+      | inner_products.stock > 0 AND
+      | match (inner_products.name) against ("lasagnes") AND
+      | match (inner_products.description, inner_products.ingredients) against ("lasagnes")
+      | ORDER BY preparationTime ASC, nbOrders DESC
+      | LIMIT 100""".stripMargin.replaceAll("\n", "").toLowerCase
 }
 
 /** Created by smanciot on 15/02/17.
@@ -341,5 +375,10 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse group by with having" in {
     val result = SQLParser(groupByWithHaving)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupByWithHaving)
+  }
+
+  it should "parse complex query" in {
+    val result = SQLParser(complexQuery)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(complexQuery)
   }
 }

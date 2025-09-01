@@ -28,6 +28,8 @@ package object bridge {
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
+    val notNestedBuckets = buckets.filterNot(_.identifier.nested)
+    val nestedBuckets = buckets.filter(_.identifier.nested).groupBy(_.nestedBucket.getOrElse(""))
     val aggregations = aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
     val notNestedAggregations = aggregations.filterNot(_.nested)
     val nestedAggregations =
@@ -43,11 +45,19 @@ package object bridge {
 
     _search = if (nestedAggregations.nonEmpty) {
       _search aggregations {
-        nestedAggregations.map { case (_, aggs) =>
+        nestedAggregations.map { case (nested, aggs) =>
           val first = aggs.head
+          val aggregations = aggs.map(_.agg)
+          val buckets = ElasticAggregation.buildBuckets(
+            nestedBuckets.getOrElse(nested, Seq.empty),
+            aggregations
+          ) match {
+            case Some(b) => Seq(b)
+            case _       => aggregations
+          }
           val filtered: Option[Aggregation] =
-            first.filteredAgg.map(filtered => filtered.subAggregations(aggs.map(_.agg)))
-          first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(aggs.map(_.agg)))
+            first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
+          first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(buckets))
         }
       }
     } else {
@@ -56,7 +66,20 @@ package object bridge {
 
     _search = notNestedAggregations match {
       case Nil => _search
-      case _   => _search aggregations { notNestedAggregations.map(_.agg) }
+      case _   => _search aggregations {
+        val first = notNestedAggregations.head
+        val aggregations = notNestedAggregations.map(_.agg)
+        val buckets = ElasticAggregation.buildBuckets(
+          notNestedBuckets,
+          aggregations
+        ) match {
+          case Some(b) => Seq(b)
+          case _       => aggregations
+        }
+        val filtered: Option[Aggregation] =
+          first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
+        filtered.map(Seq(_)).getOrElse(buckets)
+      }
     }
 
     _search = orderBy match {

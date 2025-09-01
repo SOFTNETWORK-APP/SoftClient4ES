@@ -27,7 +27,12 @@ case class SQLSearchRequest(
     )
   }
 
-  lazy val fields: Seq[String] = select.fields.filterNot(_.aggregation).map(_.sourceField)
+  lazy val fields: Seq[String] = {
+    if (aggregates.isEmpty && buckets.isEmpty)
+      select.fields.map(_.sourceField).filterNot(f => excludes.contains(f))
+    else
+      Seq.empty
+  }
 
   lazy val aggregates: Seq[SQLField] = select.fields.filter(_.aggregation)
 

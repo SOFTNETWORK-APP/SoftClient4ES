@@ -519,9 +519,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val select: ElasticSearchRequest =
       SQLQuery(
         s"""SELECT
-           |  inner_products.name,
-           |  inner_products.category,
-           |  inner_products.price,
+           |  inner_products.category as category,
+           |  inner_products.name as productName,
            |  min(inner_products.price) as min_price,
            |  max(inner_products.price) as max_price
            |FROM
@@ -539,17 +538,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |    (
            |      distance(pickup.location,(0.0,0.0)) <= "7000m" OR
            |      distance(withdrawals.location,(0.0,0.0)) <= "7000m"
-           |    ) AND
-           |    (
-           |      inner_products.deleted=false AND
-           |      inner_products.upForSale=true AND
-           |      inner_products.stock > 0
            |    )
-           |  ) AND
-           |  (
-           |    match (products.name) against ("lasagnes") AND
-           |    match (products.description, products.ingredients) against ("lasagnes")
            |  )
+           |GROUP BY
+           |  inner_products.category,
+           |  inner_products.name
+           |HAVING inner_products.deleted=false AND
+           |  inner_products.upForSale=true AND
+           |  inner_products.stock > 0 AND
+           |  match (inner_products.name) against ("lasagnes") AND
+           |  match (inner_products.description, inner_products.ingredients) against ("lasagnes")
            |ORDER BY preparationTime ASC, nbOrders DESC
            |LIMIT 100""".stripMargin
       ).minScore(1.0)

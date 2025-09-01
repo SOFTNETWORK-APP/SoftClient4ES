@@ -22,5 +22,8 @@ case class SQLBucket(
     } else {
       identifier.name
     }
+  lazy val nestedBucket: Option[String] =
+    identifier.nestedType.map(t => s"nested_$t")
+
   lazy val name: String = identifier.fieldAlias.getOrElse(sourceBucket.replace(".", "_"))
 }

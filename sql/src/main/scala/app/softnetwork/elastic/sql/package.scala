@@ -214,7 +214,7 @@ package object sql {
   ) extends SQLExpr({
         var parts: Seq[String] = name.split("\\.").toSeq
         tableAlias match {
-          case Some(a) => parts = a +: parts
+          case Some(a) => parts = a +: (if (nested) parts.tail else parts)
           case _       =>
         }
         val sql = {
@@ -254,18 +254,20 @@ package object sql {
               tableAlias = Some(parts.head),
               name = s"${tuple._2}.${parts.tail.mkString(".")}",
               nested = true,
-              limit = tuple._3
+              limit = tuple._3,
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
             )
           case _ =>
             this.copy(
               tableAlias = Some(parts.head),
-              name = parts.tail.mkString(".")
+              name = parts.tail.mkString("."),
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
             )
         }
-      } else if (request.fieldAliases.contains(identifierName)) {
-        this.copy(fieldAlias = Some(request.fieldAliases(identifierName)))
       } else {
-        this
+        this.copy(
+          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+        )
       }
     }
   }

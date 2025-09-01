@@ -23,7 +23,12 @@ import com.sksamuel.elastic4s.ElasticApi.{
   termsAgg,
   valueCountAgg
 }
-import com.sksamuel.elastic4s.searches.aggs.{Aggregation, FilterAggregation, NestedAggregation}
+import com.sksamuel.elastic4s.searches.aggs.{
+  Aggregation,
+  FilterAggregation,
+  NestedAggregation,
+  TermsAggregation
+}
 
 import scala.language.implicitConversions
 
@@ -134,17 +139,41 @@ object ElasticAggregation {
     )
   }
 
-  def apply(buckets: Seq[SQLBucket], current: Option[Aggregation]): Option[Aggregation] = {
+  /*
+  def apply(
+    buckets: Seq[SQLBucket],
+    aggregations: Seq[Aggregation],
+    current: Option[TermsAggregation]
+  ): Option[TermsAggregation] = {
     buckets match {
-      case Nil => current
+      case Nil =>
+        current.map(_.copy(subaggs = aggregations))
       case bucket +: tail =>
-        val agg = termsAgg(bucket.name, bucket.sourceBucket)
+        val agg = termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
         current match {
           case Some(a) =>
-            a.addSubagg(agg)
-            apply(tail, Some(agg))
-          case _ => apply(tail, Some(agg))
+            apply(tail, aggregations, Some(agg)) match {
+              case Some(subAgg) =>
+                Some(a.copy(subaggs = a.subaggs :+ subAgg))
+              case _ => Some(a)
+            }
+          case None =>
+            apply(tail, aggregations, Some(agg))
         }
+    }
+  }
+   */
+
+  def buildBuckets(
+    buckets: Seq[SQLBucket],
+    aggregations: Seq[Aggregation]
+  ): Option[TermsAggregation] = {
+    buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
+      val agg = termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+      current match {
+        case Some(subAgg) => Some(agg.copy(subaggs = Seq(subAgg)))
+        case None         => Some(agg.copy(subaggs = aggregations))
+      }
     }
   }
 }
