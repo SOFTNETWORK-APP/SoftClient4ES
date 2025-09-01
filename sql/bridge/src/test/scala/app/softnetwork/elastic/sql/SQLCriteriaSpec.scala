@@ -2,7 +2,8 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
 import com.sksamuel.elastic4s.ElasticApi.matchAllQuery
-import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
+import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
+import com.sksamuel.elastic4s.searches.SearchRequest
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -146,7 +147,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"regexp" : {
         |      "identifier" : {
-        |        "value" : ".*?un.*?"
+        |        "value" : ".*un.*"
         |      }
         |    }
         |  }
@@ -160,7 +161,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |      "filter":[{"bool":{"must_not": [{
         |        "regexp": {
         |          "identifier": {
-        |            "value": ".*?un.*?"
+        |            "value": ".*un.*"
         |          }
         |        }
         |      }]
@@ -781,10 +782,24 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
     """{
         | "query":{
         |   "bool":{
-        |     "filter":[
+        |     "should":[
         |       {
         |         "match":{
-        |           "identifier":{
+        |           "identifier1":{
+        |             "query":"value"
+        |           }
+        |         }
+        |       },
+        |       {
+        |         "match":{
+        |           "identifier2":{
+        |             "query":"value"
+        |           }
+        |         }
+        |       },
+        |       {
+        |         "match":{
+        |           "identifier3":{
         |             "query":"value"
         |           }
         |         }

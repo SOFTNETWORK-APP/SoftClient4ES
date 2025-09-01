@@ -191,14 +191,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       case other => fail(other.toString)
     }
 
-    pClient.search[Person]("select * from person_mapping where match(name, 'gum')") match {
+    pClient.search[Person]("select * from person_mapping where match (name) against ('gum')") match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
     pClient.search[Person](
-      "select * from person_mapping where uuid <> 'A16' and match(name, 'gum')"
+      "select * from person_mapping where uuid <> 'A16' and match (name) against ('gum')"
     ) match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
@@ -239,7 +239,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_migration" should haveCount(3)
 
-    pClient.search[Person]("select * from person_migration where match(name, 'gum')") match {
+    pClient.search[Person]("select * from person_migration where match (name) against ('gum')") match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
     }
@@ -288,7 +288,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.shouldUpdateMapping("person_migration", newMapping) shouldBe true
     pClient.updateMapping("person_migration", newMapping) shouldBe true
 
-    pClient.search[Person]("select * from person_migration where match(name, 'gum')") match {
+    pClient.search[Person]("select * from person_migration where match (name) against ('gum')") match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
