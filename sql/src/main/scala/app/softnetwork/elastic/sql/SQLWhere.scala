@@ -269,6 +269,40 @@ case class ElasticGeoDistance(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
+case class SQLMatch(
+  identifiers: Seq[SQLIdentifier],
+  value: SQLLiteral
+) extends SQLCriteria {
+  override def sql: String =
+    s"$operator (${identifiers.mkString(",")}) $Against ($value)"
+  override def operator: SQLOperator = Match
+  override def update(request: SQLSearchRequest): SQLCriteria =
+    this.copy(identifiers = identifiers.map(_.update(request)))
+
+  override lazy val nested: Boolean = identifiers.forall(_.nested)
+
+  lazy val criteria: SQLCriteria = {
+    identifiers.map(id => ElasticMatch(id, value, None)) match {
+      case Nil           => throw new IllegalArgumentException("No identifiers for MATCH")
+      case single :: Nil => single
+      case first :: second :: rest =>
+        val initial: SQLCriteria = SQLPredicate(first, Or, second)
+        rest.foldLeft(initial) { (acc, next) =>
+          SQLPredicate(acc, Or, next)
+        }
+    }
+  }
+
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = criteria match {
+    case predicate: SQLPredicate => predicate.copy(group = true).asFilter(currentQuery)
+    case _                       => criteria.asFilter(currentQuery)
+  }
+
+  override def matchCriteria: Boolean = true
+
+  override def group: Boolean = false
+}
+
 case class ElasticMatch(
   identifier: SQLIdentifier,
   value: SQLLiteral,
@@ -294,7 +328,7 @@ sealed abstract class ElasticRelation(val criteria: SQLCriteria, val operator: E
   private[this] def rtype(criteria: SQLCriteria): Option[String] = criteria match {
     case SQLPredicate(left, _, right, _, _) => rtype(left).orElse(rtype(right))
     case c: SQLCriteriaWithIdentifier =>
-      c.identifier.nestedType.orElse(c.identifier.columnName.split('.').headOption)
+      c.identifier.nestedType.orElse(c.identifier.name.split('.').headOption)
     case relation: ElasticRelation => relation.relationType
     case _                         => None
   }
@@ -317,7 +351,7 @@ case class ElasticNested(override val criteria: SQLCriteria, override val limit:
   private[this] def name(criteria: SQLCriteria): Option[String] = criteria match {
     case SQLPredicate(left, _, right, _, _) => name(left).orElse(name(right))
     case c: SQLCriteriaWithIdentifier =>
-      c.identifier.innerHitsName.orElse(c.identifier.columnName.split('.').headOption)
+      c.identifier.innerHitsName.orElse(c.identifier.name.split('.').headOption)
     case n: ElasticNested => name(n.criteria)
     case _                => None
   }

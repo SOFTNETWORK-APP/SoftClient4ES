@@ -18,7 +18,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     sqlQuery.request match {
       case Some(Left(value)) =>
         value.copy(score = sqlQuery.score)
-      case _ =>
+      case None =>
         throw new IllegalArgumentException(
           s"SQL query ${sqlQuery.query} does not contain a valid search request"
         )
@@ -32,7 +32,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe false
     result.distinct shouldBe false
-    result.aggName shouldBe "count_id"
+    result.aggName shouldBe "c2"
     result.field shouldBe "c2"
     result.sources shouldBe Seq[String]("Table")
     result.query.getOrElse("") shouldBe
@@ -52,7 +52,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "count_id": {
+        |    "c2": {
         |      "value_count": {
         |        "field": "id"
         |      }
@@ -68,7 +68,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe false
     result.distinct shouldBe true
-    result.aggName shouldBe "count_distinct_id"
+    result.aggName shouldBe "c2"
     result.field shouldBe "c2"
     result.sources shouldBe Seq[String]("Table")
     result.query.getOrElse("") shouldBe
@@ -88,7 +88,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "count_distinct_id": {
+        |    "c2": {
         |      "cardinality": {
         |        "field": "id"
         |      }
@@ -106,7 +106,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_count_emails_value.count_emails_value"
+    result.aggName shouldBe "nested_emails.email"
     result.field shouldBe "email"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -126,12 +126,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "nested_count_emails_value": {
+        |    "nested_emails": {
         |      "nested": {
         |        "path": "emails"
         |      },
         |      "aggs": {
-        |        "count_emails_value": {
+        |        "email": {
         |          "value_count": {
         |            "field": "emails.value"
         |          }
@@ -151,7 +151,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_count_emails_value.count_emails_value"
+    result.aggName shouldBe "nested_emails.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -185,12 +185,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "nested_count_emails_value": {
+        |    "nested_emails": {
         |      "nested": {
         |        "path": "emails"
         |      },
         |      "aggs": {
-        |        "count_emails_value": {
+        |        "count_emails": {
         |          "value_count": {
         |            "field": "emails.value"
         |          }
@@ -204,13 +204,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count with filter" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as count_emails filter[inner_emails.context = \"profile\"] from index, unnest(emails) as inner_emails, unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
+        "select count(inner_emails.value) as count_emails from index, unnest(emails) as inner_emails, unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
       )
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_count_emails_value.filtered_agg.count_emails_value"
+    result.aggName shouldBe "nested_emails.filtered_agg.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -244,7 +244,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "nested_count_emails_value": {
+        |    "nested_emails": {
         |      "nested": {
         |        "path": "emails"
         |      },
@@ -258,7 +258,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            }
         |          },
         |          "aggs": {
-        |            "count_emails_value": {
+        |            "count_emails": {
         |              "value_count": {
         |                "field": "emails.value"
         |              }
@@ -280,7 +280,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe true
-    result.aggName shouldBe "nested_count_distinct_emails_value.count_distinct_emails_value"
+    result.aggName shouldBe "nested_emails.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -330,12 +330,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "nested_count_distinct_emails_value": {
+        |    "nested_emails": {
         |      "nested": {
         |        "path": "emails"
         |      },
         |      "aggs": {
-        |        "count_distinct_emails_value": {
+        |        "count_emails": {
         |          "cardinality": {
         |            "field": "emails.value"
         |          }
@@ -356,7 +356,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe true
-    result.aggName shouldBe "nested_count_distinct_emails_value.count_distinct_emails_value"
+    result.aggName shouldBe "nested_emails.count_distinct_emails"
     result.field shouldBe "count_distinct_emails"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -399,12 +399,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    },
       |    "size": 0,
       |    "aggs": {
-      |        "nested_count_distinct_emails_value": {
+      |        "nested_emails": {
       |            "nested": {
       |                "path": "emails"
       |            },
       |            "aggs": {
-      |                "count_distinct_emails_value": {
+      |                "count_distinct_emails": {
       |                    "cardinality": {
       |                        "field": "emails.value"
       |                    }
@@ -503,8 +503,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SQLQuery(
         except
       )
-    List(
-      """
+    select.query shouldBe
+    """
         |{
         | "query":{
         |   "match_all":{}
@@ -513,26 +513,15 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |   "includes":["*"],
         |   "excludes":["col1","col2"]
         | }
-        |}""".stripMargin.replaceAll("\\s+", ""),
-      """
-        |{
-        | "query":{
-        |   "match_all":{}
-        | },
-        | "_source":{
-        |   "excludes":["col1","col2"]
-        | }
         |}""".stripMargin.replaceAll("\\s+", "")
-    ) should contain(select.query)
   }
 
   it should "perform complex query" in {
     val select: ElasticSearchRequest =
       SQLQuery(
         s"""SELECT
-           |  inner_products.name,
-           |  inner_products.category,
-           |  inner_products.price,
+           |  inner_products.category as category,
+           |  inner_products.name as productName,
            |  min(inner_products.price) as min_price,
            |  max(inner_products.price) as max_price
            |FROM
@@ -550,20 +539,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |    (
            |      distance(pickup.location,(0.0,0.0)) <= "7000m" OR
            |      distance(withdrawals.location,(0.0,0.0)) <= "7000m"
-           |    ) AND
-           |    (
-           |      inner_products.deleted=false AND
-           |      inner_products.upForSale=true AND
-           |      inner_products.stock > 0
-           |    )
-           |  ) AND
-           |  (
-           |    match(products.name, "lasagnes") AND
-           |    (
-           |      match(products.description, "lasagnes") OR
-           |      match(products.ingredients, "lasagnes")
            |    )
            |  )
+           |GROUP BY
+           |  inner_products.category,
+           |  inner_products.name
+           |HAVING inner_products.deleted=false AND
+           |  inner_products.upForSale=true AND
+           |  inner_products.stock > 0 AND
+           |  match (inner_products.name) against ("lasagnes") AND
+           |  match (inner_products.description, inner_products.ingredients) against ("lasagnes")
            |ORDER BY preparationTime ASC, nbOrders DESC
            |LIMIT 100""".stripMargin
       ).minScore(1.0)
@@ -574,35 +559,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |{
         |  "query": {
         |    "bool": {
-        |      "must": [
-        |        {
-        |          "match": {
-        |            "products.name": {
-        |              "query": "lasagnes"
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "bool": {
-        |            "should": [
-        |              {
-        |                "match": {
-        |                  "products.description": {
-        |                    "query": "lasagnes"
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "match": {
-        |                  "products.ingredients": {
-        |                    "query": "lasagnes"
-        |                  }
-        |                }
-        |              }
-        |            ]
-        |          }
-        |        }
-        |      ],
         |      "filter": [
         |        {
         |          "bool": {
@@ -642,7 +598,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    {
         |                      "regexp": {
         |                        "blockedCustomers": {
-        |                          "value": ".*?uuid.*?"
+        |                          "value": ".*uuid.*"
         |                        }
         |                      }
         |                    }
@@ -685,43 +641,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    }
         |                  ]
         |                }
-        |              },
-        |              {
-        |                "nested": {
-        |                  "path": "products",
-        |                  "query": {
-        |                    "bool": {
-        |                      "filter": [
-        |                        {
-        |                          "term": {
-        |                            "products.deleted": {
-        |                              "value": false
-        |                            }
-        |                          }
-        |                        },
-        |                        {
-        |                          "term": {
-        |                            "products.upForSale": {
-        |                              "value": true
-        |                            }
-        |                          }
-        |                        },
-        |                        {
-        |                          "range": {
-        |                            "products.stock": {
-        |                              "gt": "0"
-        |                            }
-        |                          }
-        |                        }
-        |                      ]
-        |                    }
-        |                  },
-        |                  "inner_hits": {
-        |                    "name": "inner_products",
-        |                    "from": 0,
-        |                    "size": 10
-        |                  }
-        |                }
         |              }
         |            ]
         |          }
@@ -729,8 +648,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      ]
         |    }
         |  },
-        |  "from": 0,
-        |  "size": 100,
+        |  "size": 0,
         |  "min_score": 1.0,
         |  "sort": [
         |    {
@@ -744,34 +662,93 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  ],
-        |  "_source": {
-        |    "includes": [
-        |      "inner_products.name",
-        |      "inner_products.category",
-        |      "inner_products.price"
-        |    ]
-        |  },
+        |  "_source": true,
         |  "aggs": {
-        |    "nested_min_products_price": {
+        |    "nested_products": {
         |      "nested": {
         |        "path": "products"
         |      },
         |      "aggs": {
-        |        "min_products_price": {
-        |          "min": {
-        |            "field": "products.price"
-        |          }
-        |        }
-        |      }
-        |    },
-        |    "nested_max_products_price": {
-        |      "nested": {
-        |        "path": "products"
-        |      },
-        |      "aggs": {
-        |        "max_products_price": {
-        |          "max": {
-        |            "field": "products.price"
+        |        "filtered_agg": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "term": {
+        |                    "products.deleted": {
+        |                      "value": false
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.upForSale": {
+        |                      "value": true
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "range": {
+        |                    "products.stock": {
+        |                      "gt": "0"
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "match": {
+        |                    "products.name": {
+        |                      "query": "lasagnes"
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "should": [
+        |                      {
+        |                        "match": {
+        |                          "products.description": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.ingredients": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                }
+        |              ]
+        |            }
+        |          },
+        |          "aggs": {
+        |            "category": {
+        |              "terms": {
+        |                "field": "products.category.keyword"
+        |              },
+        |              "aggs": {
+        |                "productName": {
+        |                  "terms": {
+        |                    "field": "products.name.keyword"
+        |                  },
+        |                  "aggs": {
+        |                    "min_price": {
+        |                      "min": {
+        |                        "field": "products.price"
+        |                      }
+        |                    },
+        |                    "max_price": {
+        |                      "max": {
+        |                        "field": "products.price"
+        |                      }
+        |                    }
+        |                  }
+        |                }
+        |              }
+        |            }
         |          }
         |        }
         |      }

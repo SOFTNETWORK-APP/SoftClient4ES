@@ -7,21 +7,28 @@ import app.softnetwork.elastic.sql.{
   ElasticBoolQuery,
   Max,
   Min,
-  SQLAggregate,
+  SQLBucket,
+  SQLCriteria,
+  SQLField,
   Sum
 }
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
   cardinalityAgg,
   filterAgg,
-  matchAllQuery,
   maxAgg,
   minAgg,
   nestedAggregation,
   sumAgg,
+  termsAgg,
   valueCountAgg
 }
-import com.sksamuel.elastic4s.searches.aggs.Aggregation
+import com.sksamuel.elastic4s.searches.aggs.{
+  Aggregation,
+  FilterAggregation,
+  NestedAggregation,
+  TermsAggregation
+}
 
 import scala.language.implicitConversions
 
@@ -32,78 +39,92 @@ case class ElasticAggregation(
   sources: Seq[String] = Seq.empty,
   query: Option[String] = None,
   distinct: Boolean = false,
-  nested: Boolean = false,
-  filtered: Boolean = false,
+  nestedAgg: Option[NestedAggregation] = None,
+  filteredAgg: Option[FilterAggregation] = None,
   aggType: AggregateFunction,
   agg: Aggregation
-)
+) {
+  val nested: Boolean = nestedAgg.nonEmpty
+  val filtered: Boolean = filteredAgg.nonEmpty
+}
 
 object ElasticAggregation {
-  def apply(sqlAgg: SQLAggregate): ElasticAggregation = {
+  def apply(sqlAgg: SQLField, filter: Option[SQLCriteria]): ElasticAggregation = {
     import sqlAgg._
-    val sourceField = identifier.columnName
+    val sourceField = identifier.name
 
-    val field = alias match {
+    val field = fieldAlias match {
       case Some(alias) => alias.alias
       case _           => sourceField
     }
 
-    val distinct = identifier.distinct.isDefined
+    val distinct = identifier.distinct
 
-    val agg =
-      if (distinct)
-        s"${function}_distinct_${sourceField.replace(".", "_")}"
+    val aggType = aggregateFunction.getOrElse(
+      throw new IllegalArgumentException("Aggregation function is required")
+    )
+
+    val aggName = {
+      if (fieldAlias.isDefined)
+        field
+      else if (distinct)
+        s"${aggType}_distinct_${sourceField.replace(".", "_")}"
       else
-        s"${function}_${sourceField.replace(".", "_")}"
+        s"${aggType}_${sourceField.replace(".", "_")}"
+    }
 
     var aggPath = Seq[String]()
 
     val _agg =
-      function match {
+      aggType match {
         case Count =>
           if (distinct)
-            cardinalityAgg(agg, sourceField)
+            cardinalityAgg(aggName, sourceField)
           else {
-            valueCountAgg(agg, sourceField)
+            valueCountAgg(aggName, sourceField)
           }
-        case Min => minAgg(agg, sourceField)
-        case Max => maxAgg(agg, sourceField)
-        case Avg => avgAgg(agg, sourceField)
-        case Sum => sumAgg(agg, sourceField)
+        case Min => minAgg(aggName, sourceField)
+        case Max => maxAgg(aggName, sourceField)
+        case Avg => avgAgg(aggName, sourceField)
+        case Sum => sumAgg(aggName, sourceField)
       }
 
-    def _filtered: Aggregation = filter match {
-      case Some(f) =>
-        val boolQuery = Option(ElasticBoolQuery(group = true))
-        val filteredAgg = s"filtered_agg"
-        aggPath ++= Seq(filteredAgg)
-        filterAgg(
-          filteredAgg,
-          f.criteria
-            .map(
-              _.asFilter(boolQuery)
+    val filteredAggName = "filtered_agg"
+
+    val filteredAgg: Option[FilterAggregation] =
+      filter match {
+        case Some(f) =>
+          val boolQuery = Option(ElasticBoolQuery(group = true))
+          Some(
+            filterAgg(
+              filteredAggName,
+              f.asFilter(boolQuery)
                 .query(Set(identifier.innerHitsName).flatten, boolQuery)
             )
-            .getOrElse(matchAllQuery())
-        ) subaggs {
-          aggPath ++= Seq(agg)
-          _agg
-        }
-      case _ =>
-        aggPath ++= Seq(agg)
-        _agg
-    }
+          )
+        case _ =>
+          None
+      }
 
-    val aggregation =
+    def filtered(): Unit =
+      filteredAgg match {
+        case Some(_) =>
+          aggPath ++= Seq(filteredAggName)
+          aggPath ++= Seq(aggName)
+        case _ =>
+          aggPath ++= Seq(aggName)
+      }
+
+    val nestedAgg =
       if (identifier.nested) {
         val path = sourceField.split("\\.").head
-        val nestedAgg = s"nested_$agg"
+        val nestedAgg = s"nested_${identifier.nestedType.getOrElse(aggName)}"
         aggPath ++= Seq(nestedAgg)
-        nestedAggregation(nestedAgg, path) subaggs {
-          _filtered
-        }
+        filtered()
+        Some(nestedAggregation(nestedAgg, path))
       } else {
-        _filtered
+        filtered()
+        None
       }
 
     ElasticAggregation(
@@ -111,10 +132,48 @@ object ElasticAggregation {
       field,
       sourceField,
       distinct = distinct,
-      nested = identifier.nested,
-      filtered = filter.nonEmpty,
-      aggType = function,
-      agg = aggregation
+      nestedAgg = nestedAgg,
+      filteredAgg = filteredAgg,
+      aggType = aggType,
+      agg = _agg
     )
+  }
+
+  /*
+  def apply(
+    buckets: Seq[SQLBucket],
+    aggregations: Seq[Aggregation],
+    current: Option[TermsAggregation]
+  ): Option[TermsAggregation] = {
+    buckets match {
+      case Nil =>
+        current.map(_.copy(subaggs = aggregations))
+      case bucket +: tail =>
+        val agg = termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+        current match {
+          case Some(a) =>
+            apply(tail, aggregations, Some(agg)) match {
+              case Some(subAgg) =>
+                Some(a.copy(subaggs = a.subaggs :+ subAgg))
+              case _ => Some(a)
+            }
+          case None =>
+            apply(tail, aggregations, Some(agg))
+        }
+    }
+  }
+   */
+
+  def buildBuckets(
+    buckets: Seq[SQLBucket],
+    aggregations: Seq[Aggregation]
+  ): Option[TermsAggregation] = {
+    buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
+      val agg = termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+      current match {
+        case Some(subAgg) => Some(agg.copy(subaggs = Seq(subAgg)))
+        case None         => Some(agg.copy(subaggs = aggregations))
+      }
+    }
   }
 }

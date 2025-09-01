@@ -187,7 +187,7 @@ package object sql {
         value.substring(0, value.length - 1)
       else
         value
-    s"""${if (startWith) ".*?"}$v${if (endWith) ".*?"}"""
+    s"""${if (startWith) ".*"}$v${if (endWith) ".*"}"""
   }
 
   case object Alias extends SQLExpr("as") with SQLRegex
@@ -196,5 +196,79 @@ package object sql {
 
   trait SQLRegex extends SQLToken {
     lazy val regex: Regex = s"\\b(?i)$sql\\b".r
+  }
+
+  trait SQLSource extends Updateable {
+    def name: String
+    def update(request: SQLSearchRequest): SQLSource
+  }
+
+  case class SQLIdentifier(
+    name: String,
+    tableAlias: Option[String] = None,
+    distinct: Boolean = false,
+    nested: Boolean = false,
+    limit: Option[SQLLimit] = None,
+    function: Option[SQLFunction] = None,
+    fieldAlias: Option[String] = None
+  ) extends SQLExpr({
+        var parts: Seq[String] = name.split("\\.").toSeq
+        tableAlias match {
+          case Some(a) => parts = a +: (if (nested) parts.tail else parts)
+          case _       =>
+        }
+        val sql = {
+          if (distinct) {
+            s"$Distinct ${parts.mkString(".")}".trim
+          } else {
+            parts.mkString(".").trim
+          }
+        }
+        function match {
+          case Some(f) => s"$f($sql)"
+          case _       => sql
+        }
+      })
+      with SQLSource
+      with SQLTokenWithFunction {
+
+    lazy val aggregationName: Option[String] =
+      if (aggregation) fieldAlias.orElse(Option(name)) else None
+
+    lazy val identifierName: String =
+      (function match {
+        case Some(f) => s"${f.sql}($name)"
+        case _       => name
+      }).toLowerCase
+
+    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
+
+    lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
+
+    def update(request: SQLSearchRequest): SQLIdentifier = {
+      val parts: Seq[String] = name.split("\\.").toSeq
+      if (request.tableAliases.values.toSeq.contains(parts.head)) {
+        request.unnests.find(_._1 == parts.head) match {
+          case Some(tuple) =>
+            this.copy(
+              tableAlias = Some(parts.head),
+              name = s"${tuple._2}.${parts.tail.mkString(".")}",
+              nested = true,
+              limit = tuple._3,
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+            )
+          case _ =>
+            this.copy(
+              tableAlias = Some(parts.head),
+              name = parts.tail.mkString("."),
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+            )
+        }
+      } else {
+        this.copy(
+          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+        )
+      }
+    }
   }
 }

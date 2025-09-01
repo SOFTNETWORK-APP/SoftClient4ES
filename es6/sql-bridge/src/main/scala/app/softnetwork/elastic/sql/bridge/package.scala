@@ -4,6 +4,7 @@ import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
+import com.sksamuel.elastic4s.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.searches.queries.Query
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
 import com.sksamuel.elastic4s.searches.sort.FieldSort
@@ -19,24 +20,60 @@ package object bridge {
       request.where.flatMap(_.criteria),
       request.limit.map(_.limit),
       request,
-      request.aggregates.map(ElasticAggregation(_))
+      request.buckets,
+      request.aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
-    val aggregations = aggregates.map(ElasticAggregation(_))
+    val notNestedBuckets = buckets.filterNot(_.identifier.nested)
+    val nestedBuckets = buckets.filter(_.identifier.nested).groupBy(_.nestedBucket.getOrElse(""))
+    val aggregations = aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+    val notNestedAggregations = aggregations.filterNot(_.nested)
+    val nestedAggregations =
+      aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
     var _search: SearchRequest = search("") query {
       where.flatMap(_.criteria.map(_.asQuery())).getOrElse(matchAllQuery())
-    } sourceInclude fields
+    } sourceFiltering (fields, excludes)
 
-    _search = excludes match {
-      case Nil      => _search
-      case excludes => _search sourceExclude excludes
+    _search = if (nestedAggregations.nonEmpty) {
+      _search aggregations {
+        nestedAggregations.map { case (nested, aggs) =>
+          val first = aggs.head
+          val aggregations = aggs.map(_.agg)
+          val buckets = ElasticAggregation.buildBuckets(
+            nestedBuckets.getOrElse(nested, Seq.empty),
+            aggregations
+          ) match {
+            case Some(b) => Seq(b)
+            case _       => aggregations
+          }
+          val filtered: Option[Aggregation] =
+            first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
+          first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(buckets))
+        }
+      }
+    } else {
+      _search
     }
 
-    _search = aggregations match {
+    _search = notNestedAggregations match {
       case Nil => _search
-      case _   => _search aggregations { aggregations.map(_.agg) }
+      case _ =>
+        _search aggregations {
+          val first = notNestedAggregations.head
+          val aggregations = notNestedAggregations.map(_.agg)
+          val buckets = ElasticAggregation.buildBuckets(
+            notNestedBuckets,
+            aggregations
+          ) match {
+            case Some(b) => Seq(b)
+            case _       => aggregations
+          }
+          val filtered: Option[Aggregation] =
+            first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
+          filtered.map(Seq(_)).getOrElse(buckets)
+        }
     }
 
     _search = orderBy match {
@@ -50,7 +87,7 @@ package object bridge {
       case _ => _search
     }
 
-    if (aggregations.nonEmpty && fields.isEmpty) {
+    if (aggregations.nonEmpty || buckets.nonEmpty) {
       _search size 0
     } else {
       limit match {
@@ -76,44 +113,44 @@ package object bridge {
           case _: Ge.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lt n.sql
+                rangeQuery(identifier.name) lt n.sql
               case _ =>
-                rangeQuery(identifier.columnName) gte n.sql
+                rangeQuery(identifier.name) gte n.sql
             }
           case _: Gt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lte n.sql
+                rangeQuery(identifier.name) lte n.sql
               case _ =>
-                rangeQuery(identifier.columnName) gt n.sql
+                rangeQuery(identifier.name) gt n.sql
             }
           case _: Le.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gt n.sql
+                rangeQuery(identifier.name) gt n.sql
               case _ =>
-                rangeQuery(identifier.columnName) lte n.sql
+                rangeQuery(identifier.name) lte n.sql
             }
           case _: Lt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gte n.sql
+                rangeQuery(identifier.name) gte n.sql
               case _ =>
-                rangeQuery(identifier.columnName) lt n.sql
+                rangeQuery(identifier.name) lt n.sql
             }
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.columnName, n.sql))
+                not(termQuery(identifier.name, n.sql))
               case _ =>
-                termQuery(identifier.columnName, n.sql)
+                termQuery(identifier.name, n.sql)
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.columnName, n.sql)
+                termQuery(identifier.name, n.sql)
               case _ =>
-                not(termQuery(identifier.columnName, n.sql))
+                not(termQuery(identifier.name, n.sql))
             }
           case _ => matchAllQuery()
         }
@@ -122,51 +159,51 @@ package object bridge {
           case _: Like.type =>
             maybeNot match {
               case Some(_) =>
-                not(regexQuery(identifier.columnName, toRegex(l.value)))
+                not(regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
-                regexQuery(identifier.columnName, toRegex(l.value))
+                regexQuery(identifier.name, toRegex(l.value))
             }
           case _: Ge.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lt l.value
+                rangeQuery(identifier.name) lt l.value
               case _ =>
-                rangeQuery(identifier.columnName) gte l.value
+                rangeQuery(identifier.name) gte l.value
             }
           case _: Gt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) lte l.value
+                rangeQuery(identifier.name) lte l.value
               case _ =>
-                rangeQuery(identifier.columnName) gt l.value
+                rangeQuery(identifier.name) gt l.value
             }
           case _: Le.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gt l.value
+                rangeQuery(identifier.name) gt l.value
               case _ =>
-                rangeQuery(identifier.columnName) lte l.value
+                rangeQuery(identifier.name) lte l.value
             }
           case _: Lt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.columnName) gte l.value
+                rangeQuery(identifier.name) gte l.value
               case _ =>
-                rangeQuery(identifier.columnName) lt l.value
+                rangeQuery(identifier.name) lt l.value
             }
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.columnName, l.value))
+                not(termQuery(identifier.name, l.value))
               case _ =>
-                termQuery(identifier.columnName, l.value)
+                termQuery(identifier.name, l.value)
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.columnName, l.value)
+                termQuery(identifier.name, l.value)
               case _ =>
-                not(termQuery(identifier.columnName, l.value))
+                not(termQuery(identifier.name, l.value))
             }
           case _ => matchAllQuery()
         }
@@ -175,16 +212,16 @@ package object bridge {
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.columnName, b.value))
+                not(termQuery(identifier.name, b.value))
               case _ =>
-                termQuery(identifier.columnName, b.value)
+                termQuery(identifier.name, b.value)
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.columnName, b.value)
+                termQuery(identifier.name, b.value)
               case _ =>
-                not(termQuery(identifier.columnName, b.value))
+                not(termQuery(identifier.name, b.value))
             }
           case _ => matchAllQuery()
         }
@@ -196,14 +233,14 @@ package object bridge {
     isNull: SQLIsNull
   ): Query = {
     import isNull._
-    not(existsQuery(identifier.columnName))
+    not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullToQuery(
     isNotNull: SQLIsNotNull
   ): Query = {
     import isNotNull._
-    existsQuery(identifier.columnName)
+    existsQuery(identifier.name)
   }
 
   implicit def inToQuery[R, T <: SQLValue[R]](in: SQLIn[R, T]): Query = {
@@ -212,12 +249,12 @@ package object bridge {
     val t =
       _values.headOption match {
         case Some(_: Double) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Double]])
+          termsQuery(identifier.name, _values.asInstanceOf[Seq[Double]])
         case Some(_: Integer) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Integer]])
+          termsQuery(identifier.name, _values.asInstanceOf[Seq[Integer]])
         case Some(_: Long) =>
-          termsQuery(identifier.columnName, _values.asInstanceOf[Seq[Long]])
-        case _ => termsQuery(identifier.columnName, _values.map(_.toString))
+          termsQuery(identifier.name, _values.asInstanceOf[Seq[Long]])
+        case _ => termsQuery(identifier.name, _values.map(_.toString))
       }
     maybeNot match {
       case Some(_) => not(t)
@@ -229,7 +266,7 @@ package object bridge {
     between: SQLBetween
   ): Query = {
     import between._
-    val r = rangeQuery(identifier.columnName) gte from.value lte to.value
+    val r = rangeQuery(identifier.name) gte from.value lte to.value
     maybeNot match {
       case Some(_) => not(r)
       case _       => r
@@ -240,14 +277,14 @@ package object bridge {
     geoDistance: ElasticGeoDistance
   ): Query = {
     import geoDistance._
-    geoDistanceQuery(identifier.columnName, lat.value, lon.value) distance distance.value
+    geoDistanceQuery(identifier.name, lat.value, lon.value) distance distance.value
   }
 
   implicit def matchToQuery(
     matchExpression: ElasticMatch
   ): Query = {
     import matchExpression._
-    matchQuery(identifier.columnName, value.value)
+    matchQuery(identifier.name, value.value)
   }
 
   implicit def criteriaToElasticCriteria(
@@ -272,7 +309,7 @@ package object bridge {
       .map {
         case Left(l) =>
           l.aggregates
-            .map(ElasticAggregation(_))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria)))
             .map(aggregation => {
               val queryFiltered =
                 l.where
@@ -295,7 +332,15 @@ package object bridge {
                           queryFiltered
                         }
                         aggregations {
-                          aggregation.agg
+                          val filtered =
+                            aggregation.filteredAgg match {
+                              case Some(filtered) => filtered.subAggregations(aggregation.agg)
+                              case _              => aggregation.agg
+                            }
+                          aggregation.nestedAgg match {
+                            case Some(nested) => nested.subAggregations(filtered)
+                            case _            => filtered
+                          }
                         }
                         size 0
                       )
