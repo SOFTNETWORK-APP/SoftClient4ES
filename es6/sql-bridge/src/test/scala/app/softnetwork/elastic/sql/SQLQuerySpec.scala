@@ -456,7 +456,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                                    {
       |                                        "range": {
       |                                            "profiles.birthYear": {
-      |                                                "lte": "2000"
+      |                                                "lte": 2000
       |                                            }
       |                                        }
       |                                    }
@@ -514,6 +514,93 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |   "excludes":["col1","col2"]
         | }
         |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform query with group by and having" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(groupByWithHaving)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "sort": [
+      |    {
+      |      "customerid": {
+      |        "order": "desc"
+      |      }
+      |    },
+      |    {
+      |      "country": {
+      |        "order": "asc"
+      |      }
+      |    }
+      |  ],
+      |  "_source": true,
+      |  "aggs": {
+      |    "filtered_agg": {
+      |      "filter": {
+      |        "bool": {
+      |          "filter": [
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "country": {
+      |                        "value": "usa"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "city": {
+      |                        "value": "berlin"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "match_all": {}
+      |            }
+      |          ]
+      |        }
+      |      },
+      |      "aggs": {
+      |        "country": {
+      |          "terms": {
+      |            "field": "country.keyword"
+      |          },
+      |          "aggs": {
+      |            "city": {
+      |              "terms": {
+      |                "field": "city.keyword"
+      |              },
+      |              "aggs": {
+      |                "cnt": {
+      |                  "value_count": {
+      |                    "field": "customerid"
+      |                  }
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
   }
 
   it should "perform complex query" in {
@@ -581,14 +668,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              {
         |                "range": {
         |                  "preparationTime": {
-        |                    "lte": "120"
+        |                    "lte": 120
         |                  }
         |                }
         |              },
         |              {
         |                "term": {
         |                  "deliveryPeriods.dayOfWeek": {
-        |                    "value": "6"
+        |                    "value": 6
         |                  }
         |                }
         |              },
@@ -690,7 +777,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                {
         |                  "range": {
         |                    "products.stock": {
-        |                      "gt": "0"
+        |                      "gt": 0
         |                    }
         |                  }
         |                },

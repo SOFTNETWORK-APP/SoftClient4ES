@@ -64,7 +64,9 @@ case class ElasticQuery(filter: ElasticFilter) {
       case isNull: SQLIsNull               => isNull
       case isNotNull: SQLIsNotNull         => isNotNull
       case in: SQLIn[_, _]                 => in
-      case between: SQLBetween             => between
+      case between: SQLBetween[String]     => between
+      case between: SQLBetween[Long]       => between
+      case between: SQLBetween[Double]     => between
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
       case other =>

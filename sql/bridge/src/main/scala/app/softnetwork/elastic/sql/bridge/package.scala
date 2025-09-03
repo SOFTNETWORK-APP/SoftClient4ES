@@ -106,56 +106,97 @@ package object bridge {
     )
   }
 
+  def applyNumericOp[A](n: SQLNumeric[_])(
+    longOp: Long => A,
+    doubleOp: Double => A
+  ): A = n.toEither.fold(longOp, doubleOp)
+
   implicit def expressionToQuery(expression: SQLExpression): Query = {
     import expression._
     value match {
-      case n: SQLNumeric[Any] @unchecked =>
+      case n: SQLNumeric[_] if !aggregation =>
         operator match {
           case _: Ge.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) lt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lt l,
+                  d => rangeQuery(identifier.name) lt d
+                )
               case _ =>
-                rangeQuery(identifier.name) gte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gte l,
+                  d => rangeQuery(identifier.name) gte d
+                )
             }
           case _: Gt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) lte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lte l,
+                  d => rangeQuery(identifier.name) lte d
+                )
               case _ =>
-                rangeQuery(identifier.name) gt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gt l,
+                  d => rangeQuery(identifier.name) gt d
+                )
             }
           case _: Le.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) gt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gt l,
+                  d => rangeQuery(identifier.name) gt d
+                )
               case _ =>
-                rangeQuery(identifier.name) lte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lte l,
+                  d => rangeQuery(identifier.name) lte d
+                )
             }
           case _: Lt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) gte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gte l,
+                  d => rangeQuery(identifier.name) gte d
+                )
               case _ =>
-                rangeQuery(identifier.name) lt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lt l,
+                  d => rangeQuery(identifier.name) lt d
+                )
             }
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.name, n.sql))
+                applyNumericOp(n)(
+                  l => not(termQuery(identifier.name, l)),
+                  d => not(termQuery(identifier.name, d))
+                )
               case _ =>
-                termQuery(identifier.name, n.sql)
+                applyNumericOp(n)(
+                  l => termQuery(identifier.name, l),
+                  d => termQuery(identifier.name, d)
+                )
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.name, n.sql)
+                applyNumericOp(n)(
+                  l => termQuery(identifier.name, l),
+                  d => termQuery(identifier.name, d)
+                )
               case _ =>
-                not(termQuery(identifier.name, n.sql))
+                applyNumericOp(n)(
+                  l => not(termQuery(identifier.name, l)),
+                  d => not(termQuery(identifier.name, d))
+                )
             }
           case _ => matchAllQuery()
         }
-      case l: SQLLiteral =>
+      case l: SQLLiteral if !aggregation =>
         operator match {
           case _: Like.type =>
             maybeNot match {
@@ -208,7 +249,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case b: SQLBoolean =>
+      case b: SQLBoolean if !aggregation =>
         operator match {
           case _: Eq.type =>
             maybeNot match {
@@ -264,10 +305,32 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-                               between: SQLBetween
+                               between: SQLBetween[String]
                              ): Query = {
     import between._
-    val r = rangeQuery(identifier.name) gte from.value lte to.value
+    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
+    maybeNot match {
+      case Some(_) => not(r)
+      case _       => r
+    }
+  }
+
+  implicit def betweenLongsToQuery(
+                                   between: SQLBetween[Long]
+                                 ): Query = {
+    import between._
+    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
+    maybeNot match {
+      case Some(_) => not(r)
+      case _       => r
+    }
+  }
+
+  implicit def betweenDoublesToQuery(
+                                      between: SQLBetween[Double]
+                                    ): Query = {
+    import between._
+    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
     maybeNot match {
       case Some(_) => not(r)
       case _       => r

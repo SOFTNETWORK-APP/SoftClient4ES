@@ -62,7 +62,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
   def literal: PackratParser[SQLLiteral] =
     """"[^"]*"|'[^']*'""".r ^^ (str => SQLLiteral(str.substring(1, str.length - 1)))
 
-  def int: PackratParser[SQLInt] = """(-)?(0|[1-9]\d*)""".r ^^ (str => SQLInt(str.toInt))
+  def long: PackratParser[SQLLong] = """(-)?(0|[1-9]\d*)""".r ^^ (str => SQLLong(str.toLong))
 
   def double: PackratParser[SQLDouble] = """(-)?(\d+\.\d+)""".r ^^ (str => SQLDouble(str.toDouble))
 
@@ -167,7 +167,7 @@ trait SQLWhereParser {
   private def ne: PackratParser[SQLExpressionOperator] = Ne.sql ^^ (_ => Ne)
 
   private def equality: PackratParser[SQLExpression] =
-    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne) ~ (boolean | literal | double | int) ^^ {
+    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne) ~ (boolean | literal | double | long) ^^ {
       case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
     }
 
@@ -185,40 +185,59 @@ trait SQLWhereParser {
   def lt: PackratParser[SQLExpressionOperator] = Lt.sql ^^ (_ => Lt)
 
   private def comparison: PackratParser[SQLExpression] =
-    not.? ~ (identifierWithFunction | identifier) ~ (ge | gt | le | lt) ~ (double | int | literal) ^^ {
+    not.? ~ (identifierWithFunction | identifier) ~ (ge | gt | le | lt) ~ (double | long | literal) ^^ {
       case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
     }
 
   def in: PackratParser[SQLExpressionOperator] = In.regex ^^ (_ => In)
 
   private def inLiteral: PackratParser[SQLCriteria] =
-    identifier ~ not.? ~ in ~ start ~ rep1(literal ~ separator.?) ~ end ^^ {
+    identifier ~ not.? ~ in ~ start ~ rep1sep(literal, separator) ~ end ^^ {
       case i ~ n ~ _ ~ _ ~ v ~ _ =>
         SQLIn(
           i,
-          SQLLiteralValues(v map {
-            _._1
-          }),
+          SQLLiteralValues(v),
           n
         )
     }
 
-  private def inNumerical: PackratParser[SQLCriteria] =
-    (identifierWithFunction | identifier) ~ not.? ~ in ~ start ~ rep1(
-      (double | int) ~ separator.?
+  private def inDoubles: PackratParser[SQLCriteria] =
+    (identifierWithFunction | identifier) ~ not.? ~ in ~ start ~ rep1sep(
+      double,
+      separator
     ) ~ end ^^ { case i ~ n ~ _ ~ _ ~ v ~ _ =>
       SQLIn(
         i,
-        SQLNumericValues(v map {
-          _._1
-        }),
+        SQLDoubleValues(v),
+        n
+      )
+    }
+
+  private def inLongs: PackratParser[SQLCriteria] =
+    (identifierWithFunction | identifier) ~ not.? ~ in ~ start ~ rep1sep(
+      long,
+      separator
+    ) ~ end ^^ { case i ~ n ~ _ ~ _ ~ v ~ _ =>
+      SQLIn(
+        i,
+        SQLLongValues(v),
         n
       )
     }
 
   def between: PackratParser[SQLCriteria] =
     (identifierWithFunction | identifier) ~ not.? ~ Between.regex ~ literal ~ and ~ literal ^^ {
-      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, from, to, n)
+      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLLiteralFromTo(from, to), n)
+    }
+
+  def betweenLongs: PackratParser[SQLCriteria] =
+    (identifierWithFunction | identifier) ~ not.? ~ Between.regex ~ long ~ and ~ long ^^ {
+      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLLongFromTo(from, to), n)
+    }
+
+  def betweenDoubles: PackratParser[SQLCriteria] =
+    (identifierWithFunction | identifier) ~ not.? ~ Between.regex ~ double ~ and ~ double ^^ {
+      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLDoubleFromTo(from, to), n)
     }
 
   def distance: PackratParser[SQLCriteria] =
@@ -241,7 +260,7 @@ trait SQLWhereParser {
   def not: PackratParser[Not.type] = Not.regex ^^ (_ => Not)
 
   def criteria: PackratParser[SQLCriteria] =
-    (equality | like | comparison | inLiteral | inNumerical | between | isNotNull | isNull | distance | matchCriteria) ^^ (
+    (equality | like | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | distance | matchCriteria) ^^ (
       c => c
     )
 
@@ -498,6 +517,8 @@ trait SQLOrderByParser {
 trait SQLLimitParser {
   self: SQLParser =>
 
-  def limit: PackratParser[SQLLimit] = Limit.regex ~ int ^^ { case _ ~ i => SQLLimit(i.value) }
+  def limit: PackratParser[SQLLimit] = Limit.regex ~ long ^^ { case _ ~ i =>
+    SQLLimit(i.value.toInt)
+  }
 
 }
