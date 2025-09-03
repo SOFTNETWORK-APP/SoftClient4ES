@@ -59,6 +59,12 @@ package object sql {
           case _                => values.headOption
         }
     }
+    def painlessValue: String = value match {
+      case s: String  => s""""$s""""
+      case b: Boolean => b.toString
+      case n: Number  => n.toString
+      case _          => value.toString
+    }
   }
 
   case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
@@ -249,7 +255,8 @@ package object sql {
     nested: Boolean = false,
     limit: Option[SQLLimit] = None,
     function: Option[SQLFunction] = None,
-    fieldAlias: Option[String] = None
+    fieldAlias: Option[String] = None,
+    bucket: Option[SQLBucket] = None
   ) extends SQLExpr({
         var parts: Seq[String] = name.split("\\.").toSeq
         tableAlias match {
@@ -294,18 +301,21 @@ package object sql {
               name = s"${tuple._2}.${parts.tail.mkString(".")}",
               nested = true,
               limit = tuple._3,
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )
           case _ =>
             this.copy(
               tableAlias = Some(parts.head),
               name = parts.tail.mkString("."),
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )
         }
       } else {
         this.copy(
-          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+          bucket = request.bucketNames.get(identifierName).orElse(bucket)
         )
       }
     }

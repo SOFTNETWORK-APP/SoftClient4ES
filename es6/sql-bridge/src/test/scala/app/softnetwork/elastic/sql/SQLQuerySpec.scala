@@ -527,18 +527,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "size": 0,
-      |  "sort": [
-      |    {
-      |      "customerid": {
-      |        "order": "desc"
-      |      }
-      |    },
-      |    {
-      |      "country": {
-      |        "order": "asc"
-      |      }
-      |    }
-      |  ],
       |  "_source": true,
       |  "aggs": {
       |    "filtered_agg": {
@@ -580,17 +568,33 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "aggs": {
       |        "country": {
       |          "terms": {
-      |            "field": "country.keyword"
+      |            "field": "country.keyword",
+      |            "order": {
+      |              "country": "asc"
+      |            }
       |          },
       |          "aggs": {
       |            "city": {
       |              "terms": {
-      |                "field": "city.keyword"
+      |                "field": "city.keyword",
+      |                "order": {
+      |                  "cnt": "desc"
+      |                }
       |              },
       |              "aggs": {
       |                "cnt": {
       |                  "value_count": {
       |                    "field": "customerid"
+      |                  }
+      |                },
+      |                "having_filter": {
+      |                  "bucket_selector": {
+      |                    "buckets_path": {
+      |                      "cnt": "cnt"
+      |                    },
+      |                    "script": {
+      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1"
+      |                    }
       |                  }
       |                }
       |              }
@@ -600,15 +604,18 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      }
       |    }
       |  }
-      |}""".stripMargin.replaceAll("\\s+", "")
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
   }
 
   it should "perform complex query" in {
     val select: ElasticSearchRequest =
       SQLQuery(
         s"""SELECT
-           |  inner_products.category as category,
-           |  inner_products.name as productName,
+           |  inner_products.category as cat,
            |  min(inner_products.price) as min_price,
            |  max(inner_products.price) as max_price
            |FROM
@@ -629,15 +636,15 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |    )
            |  )
            |GROUP BY
-           |  inner_products.category,
-           |  inner_products.name
+           |  inner_products.category
            |HAVING inner_products.deleted=false AND
            |  inner_products.upForSale=true AND
            |  inner_products.stock > 0 AND
            |  match (inner_products.name) against ("lasagnes") AND
-           |  match (inner_products.description, inner_products.ingredients) against ("lasagnes")
-           |ORDER BY preparationTime ASC, nbOrders DESC
-           |LIMIT 100""".stripMargin
+           |  match (inner_products.description, inner_products.ingredients) against ("lasagnes") AND
+           |  min(inner_products.price) > 5.0 AND
+           |  max(inner_products.price) < 50.0 AND
+           |  inner_products.category <> "coffee"""".stripMargin
       ).minScore(1.0)
     val query = select.query
     println(query)
@@ -737,18 +744,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "min_score": 1.0,
-        |  "sort": [
-        |    {
-        |      "preparationTime": {
-        |        "order": "asc"
-        |      }
-        |    },
-        |    {
-        |      "nbOrders": {
-        |        "order": "desc"
-        |      }
-        |    }
-        |  ],
         |  "_source": true,
         |  "aggs": {
         |    "nested_products": {
@@ -807,30 +802,53 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                      }
         |                    ]
         |                  }
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "must_not": [
+        |                      {
+        |                        "term": {
+        |                          "products.category": {
+        |                            "value": "coffee"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
         |                }
         |              ]
         |            }
         |          },
         |          "aggs": {
-        |            "category": {
+        |            "cat": {
         |              "terms": {
         |                "field": "products.category.keyword"
         |              },
         |              "aggs": {
-        |                "productName": {
-        |                  "terms": {
-        |                    "field": "products.name.keyword"
-        |                  },
-        |                  "aggs": {
-        |                    "min_price": {
-        |                      "min": {
-        |                        "field": "products.price"
-        |                      }
+        |                "min_price": {
+        |                  "min": {
+        |                    "field": "products.price"
+        |                  }
+        |                },
+        |                "max_price": {
+        |                  "max": {
+        |                    "field": "products.price"
+        |                  }
+        |                },
+        |                "having_filter": {
+        |                  "bucket_selector": {
+        |                    "buckets_path": {
+        |                      "min_price": "min_price",
+        |                      "max_price": "max_price"
         |                    },
-        |                    "max_price": {
-        |                      "max": {
-        |                        "field": "products.price"
-        |                      }
+        |                    "script": {
+        |                      "source": "1 == 1 && 1 == 1 && 1 == 1 && 1 == 1 && 1 == 1 && params.min_price > 5.0 && params.max_price < 50.0 && 1 == 1"
         |                    }
         |                  }
         |                }
@@ -841,7 +859,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll("<", " < ")
+      .replaceAll(">", " > ")
+
   }
 
 }

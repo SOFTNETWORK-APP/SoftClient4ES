@@ -16,6 +16,9 @@ case class SQLSearchRequest(
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
   lazy val unnests: Seq[(String, String, Option[SQLLimit])] = from.unnests
+  lazy val bucketNames: Map[String, SQLBucket] = groupBy.map(_.bucketNames).getOrElse(Map.empty)
+  lazy val sorts: Map[String, SortOrder] =
+    orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
 
   def update(): SQLSearchRequest = {
     val updated = this.copy(from = from.update(this))

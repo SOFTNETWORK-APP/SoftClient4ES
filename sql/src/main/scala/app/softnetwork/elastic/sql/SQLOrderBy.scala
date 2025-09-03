@@ -17,7 +17,9 @@ case class SQLFieldSort(
     case Some(f) => s"$f($field)"
     case _       => field
   }
-  override def sql: String = s"$fieldWithFunction ${order.getOrElse(Asc)}"
+  lazy val direction: SortOrder = order.getOrElse(Asc)
+  lazy val name: String = fieldWithFunction
+  override def sql: String = s"$name $direction"
 }
 
 case class SQLOrderBy(sorts: Seq[SQLFieldSort]) extends SQLToken {

@@ -21,14 +21,17 @@ package object bridge {
       request.limit.map(_.limit),
       request,
       request.buckets,
-      request.aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+      request.aggregates.map(
+        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+      )
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
     val notNestedBuckets = buckets.filterNot(_.identifier.nested)
     val nestedBuckets = buckets.filter(_.identifier.nested).groupBy(_.nestedBucket.getOrElse(""))
-    val aggregations = aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+    val aggregations =
+      aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts))
     val notNestedAggregations = aggregations.filterNot(_.nested)
     val nestedAggregations =
       aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
@@ -41,13 +44,22 @@ package object bridge {
         nestedAggregations.map { case (nested, aggs) =>
           val first = aggs.head
           val aggregations = aggs.map(_.agg)
-          val buckets = ElasticAggregation.buildBuckets(
-            nestedBuckets.getOrElse(nested, Seq.empty),
-            aggregations
-          ) match {
-            case Some(b) => Seq(b)
-            case _       => aggregations
-          }
+          val aggregationDirections: Map[String, SortOrder] =
+            aggs
+              .filter(_.direction.isDefined)
+              .map(agg => agg.agg.name -> agg.direction.getOrElse(Asc))
+              .toMap
+          val buckets =
+            ElasticAggregation.buildBuckets(
+              nestedBuckets.getOrElse(nested, Seq.empty),
+              request.sorts -- aggregationDirections.keys,
+              aggregations,
+              aggregationDirections,
+              request.having.flatMap(_.criteria)
+            ) match {
+              case Some(b) => Seq(b)
+              case _       => aggregations
+            }
           val filtered: Option[Aggregation] =
             first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
           first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(buckets))
@@ -62,10 +74,17 @@ package object bridge {
       case _ =>
         _search aggregations {
           val first = notNestedAggregations.head
+          val aggregationDirections: Map[String, SortOrder] = notNestedAggregations
+            .filter(_.direction.isDefined)
+            .map(agg => agg.agg.name -> agg.direction.get)
+            .toMap
           val aggregations = notNestedAggregations.map(_.agg)
           val buckets = ElasticAggregation.buildBuckets(
             notNestedBuckets,
-            aggregations
+            request.sorts -- aggregationDirections.keys,
+            aggregations,
+            aggregationDirections,
+            request.having.flatMap(_.criteria)
           ) match {
             case Some(b) => Seq(b)
             case _       => aggregations
@@ -77,7 +96,7 @@ package object bridge {
     }
 
     _search = orderBy match {
-      case Some(o) =>
+      case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
         _search sortBy o.sorts.map(sort =>
           sort.order match {
             case Some(Desc) => FieldSort(sort.field).desc()
@@ -372,7 +391,7 @@ package object bridge {
       .map {
         case Left(l) =>
           l.aggregates
-            .map(ElasticAggregation(_, l.having.flatMap(_.criteria)))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts))
             .map(aggregation => {
               val queryFiltered =
                 l.where
