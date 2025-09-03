@@ -151,15 +151,22 @@ case class ElasticBoolQuery(
 
 }
 
+trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter {
+  def maybeValue: Option[SQLToken]
+  def maybeNot: Option[Not.type]
+  def notAsString: String = maybeNot.map(v => s"$v ").getOrElse("")
+  def valueAsString: String = maybeValue.map(v => s" $v").getOrElse("")
+  override def sql = s"$identifier $notAsString$operator$valueAsString"
+}
+
 case class SQLExpression(
   identifier: SQLIdentifier,
   operator: SQLExpressionOperator,
   value: SQLToken,
   maybeNot: Option[Not.type] = None
-) extends SQLCriteriaWithIdentifier
-    with ElasticFilter {
-  override def sql =
-    s"$identifier ${maybeNot.map(_ => "not ").getOrElse("")}$operator $value"
+) extends Expression {
+  override def maybeValue: Option[SQLToken] = Option(value)
+
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -171,11 +178,13 @@ case class SQLExpression(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class SQLIsNull(identifier: SQLIdentifier)
-    extends SQLCriteriaWithIdentifier
-    with ElasticFilter {
+case class SQLIsNull(identifier: SQLIdentifier) extends Expression {
   override val operator: SQLOperator = IsNull
-  override def sql = s"$identifier $operator"
+
+  override def maybeValue: Option[SQLToken] = None
+
+  override def maybeNot: Option[Not.type] = None
+
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -187,11 +196,13 @@ case class SQLIsNull(identifier: SQLIdentifier)
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class SQLIsNotNull(identifier: SQLIdentifier)
-    extends SQLCriteriaWithIdentifier
-    with ElasticFilter {
+case class SQLIsNotNull(identifier: SQLIdentifier) extends Expression {
   override val operator: SQLOperator = IsNotNull
-  override def sql = s"$identifier $operator"
+
+  override def maybeValue: Option[SQLToken] = None
+
+  override def maybeNot: Option[Not.type] = None
+
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -207,15 +218,13 @@ case class SQLIn[R, +T <: SQLValue[R]](
   identifier: SQLIdentifier,
   values: SQLValues[R, T],
   maybeNot: Option[Not.type] = None
-) extends SQLCriteriaWithIdentifier
-    with SQLTokenWithFunction
-    with ElasticFilter { this: SQLIn[R, T] =>
+) extends Expression { this: SQLIn[R, T] =>
   private[this] lazy val id = function match {
     case Some(f) => s"$f($identifier)"
     case _       => s"$identifier"
   }
   override def sql =
-    s"$id ${maybeNot.map(_ => "not ").getOrElse("")}$operator $values"
+    s"$id $notAsString$operator $values"
   override def operator: SQLOperator = In
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -225,23 +234,22 @@ case class SQLIn[R, +T <: SQLValue[R]](
       updated
   }
 
+  override def maybeValue: Option[SQLToken] = Some(values)
+
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class SQLBetween(
+case class SQLBetween[+T](
   identifier: SQLIdentifier,
-  from: SQLLiteral,
-  to: SQLLiteral,
+  fromTo: SQLFromTo[T],
   maybeNot: Option[Not.type]
-) extends SQLCriteriaWithIdentifier
-    with SQLTokenWithFunction
-    with ElasticFilter {
+) extends Expression {
   private[this] lazy val id = function match {
     case Some(f) => s"$f($identifier)"
     case _       => s"$identifier"
   }
   override def sql =
-    s"$id ${maybeNot.map(_ => "not ").getOrElse("")}$operator $from and $to"
+    s"$id $notAsString$operator $fromTo"
   override def operator: SQLOperator = Between
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -251,6 +259,8 @@ case class SQLBetween(
       updated
   }
 
+  override def maybeValue: Option[SQLToken] = Some(fromTo)
+
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
@@ -259,12 +269,16 @@ case class ElasticGeoDistance(
   distance: SQLLiteral,
   lat: SQLDouble,
   lon: SQLDouble
-) extends SQLCriteriaWithIdentifier
-    with ElasticFilter {
-  override def sql = s"$operator($identifier,($lat,$lon)) <= $distance"
-  override def operator: SQLOperator = Distance
+) extends Expression {
+  override def sql = s"$Distance($identifier,($lat,$lon)) $operator $distance"
+  override val function: Option[SQLFunction] = Some(Distance)
+  override def operator: SQLOperator = Le
   override def update(request: SQLSearchRequest): ElasticGeoDistance =
     this.copy(identifier = identifier.update(request))
+
+  override def maybeValue: Option[SQLToken] = Some(distance)
+
+  override def maybeNot: Option[Not.type] = None
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
@@ -307,13 +321,16 @@ case class ElasticMatch(
   identifier: SQLIdentifier,
   value: SQLLiteral,
   options: Option[String]
-) extends SQLCriteriaWithIdentifier
-    with ElasticFilter {
+) extends Expression {
   override def sql: String =
     s"$operator($identifier,$value${options.map(o => s""","$o"""").getOrElse("")})"
   override def operator: SQLOperator = Match
   override def update(request: SQLSearchRequest): SQLCriteria =
     this.copy(identifier = identifier.update(request))
+
+  override def maybeValue: Option[SQLToken] = Some(value)
+
+  override def maybeNot: Option[Not.type] = None
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
@@ -327,7 +344,7 @@ sealed abstract class ElasticRelation(val criteria: SQLCriteria, val operator: E
 
   private[this] def rtype(criteria: SQLCriteria): Option[String] = criteria match {
     case SQLPredicate(left, _, right, _, _) => rtype(left).orElse(rtype(right))
-    case c: SQLCriteriaWithIdentifier =>
+    case c: Expression =>
       c.identifier.nestedType.orElse(c.identifier.name.split('.').headOption)
     case relation: ElasticRelation => relation.relationType
     case _                         => None

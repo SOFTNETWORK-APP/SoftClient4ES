@@ -59,10 +59,16 @@ package object sql {
           case _                => values.headOption
         }
     }
+    def painlessValue: String = value match {
+      case s: String  => s""""$s""""
+      case b: Boolean => b.toString
+      case n: Number  => n.toString
+      case _          => value.toString
+    }
   }
 
-  case class SQLBoolean(value: Boolean) extends SQLToken {
-    override def sql: String = s"$value"
+  case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
+    override def sql: String = value.toString
   }
 
   case class SQLLiteral(override val value: String) extends SQLValue[String](value) {
@@ -93,9 +99,10 @@ package object sql {
     }
   }
 
-  abstract class SQLNumeric[+T](override val value: T)(implicit ev$1: T => Ordered[T])
-      extends SQLValue[T](value) {
-    override def sql: String = s"$value"
+  sealed abstract class SQLNumeric[T: Numeric](override val value: T)(implicit
+    ev$1: T => Ordered[T]
+  ) extends SQLValue[T](value) {
+    override def sql: String = value.toString
     override def choose[R >: T](
       values: Seq[R],
       operator: Option[SQLExpressionOperator],
@@ -106,27 +113,60 @@ package object sql {
         case _    => super.choose(values, operator, separator)
       }
     }
-  }
-
-  case class SQLInt(override val value: Int) extends SQLNumeric[Int](value) {
-    def max: Seq[Int] => Int = x => Try(x.max).getOrElse(0)
-    def min: Seq[Int] => Int = x => Try(x.min).getOrElse(0)
-    def eq: Seq[Int] => Boolean = {
+    private[this] val num: Numeric[T] = implicitly[Numeric[T]]
+    def toDouble: Double = num.toDouble(value)
+    def toEither: Either[Long, Double] = value match {
+      case l: Long   => Left(l)
+      case i: Int    => Left(i.toLong)
+      case d: Double => Right(d)
+      case f: Float  => Right(f.toDouble)
+      case _         => Right(toDouble)
+    }
+    def max: Seq[T] => T = x => Try(x.max).getOrElse(num.zero)
+    def min: Seq[T] => T = x => Try(x.min).getOrElse(num.zero)
+    def eq: Seq[T] => Boolean = {
       _.exists { _ == value }
     }
-    def ne: Seq[Int] => Boolean = {
+    def ne: Seq[T] => Boolean = {
       _.forall { _ != value }
     }
   }
 
-  case class SQLDouble(override val value: Double) extends SQLNumeric[Double](value) {
-    def max: Seq[Double] => Double = x => Try(x.max).getOrElse(0)
-    def min: Seq[Double] => Double = x => Try(x.min).getOrElse(0)
-    def eq: Seq[Double] => Boolean = {
-      _.exists { _ == value }
+  case class SQLLong(override val value: Long) extends SQLNumeric[Long](value)
+
+  case class SQLDouble(override val value: Double) extends SQLNumeric[Double](value)
+
+  sealed abstract class SQLFromTo[+T](val from: SQLValue[T], val to: SQLValue[T]) extends SQLToken {
+    override def sql = s"${from.sql} and ${to.sql}"
+  }
+
+  case class SQLLiteralFromTo(override val from: SQLLiteral, override val to: SQLLiteral)
+      extends SQLFromTo[String](from, to) {
+    def between: Seq[String] => Boolean = {
+      _.exists { s => s >= from.value && s <= to.value }
     }
-    def ne: Seq[Double] => Boolean = {
-      _.forall { _ != value }
+    def notBetween: Seq[String] => Boolean = {
+      _.forall { s => s < from.value || s > to.value }
+    }
+  }
+
+  case class SQLLongFromTo(override val from: SQLLong, override val to: SQLLong)
+      extends SQLFromTo[Long](from, to) {
+    def between: Seq[Long] => Boolean = {
+      _.exists { n => n >= from.value && n <= to.value }
+    }
+    def notBetween: Seq[Long] => Boolean = {
+      _.forall { n => n < from.value || n > to.value }
+    }
+  }
+
+  case class SQLDoubleFromTo(override val from: SQLDouble, override val to: SQLDouble)
+      extends SQLFromTo[Double](from, to) {
+    def between: Seq[Double] => Boolean = {
+      _.exists { n => n >= from.value && n <= to.value }
+    }
+    def notBetween: Seq[Double] => Boolean = {
+      _.forall { n => n < from.value || n > to.value }
     }
   }
 
@@ -146,7 +186,7 @@ package object sql {
     }
   }
 
-  case class SQLNumericValues[R: TypeTag](override val values: Seq[SQLNumeric[R]])
+  class SQLNumericValues[R: TypeTag](override val values: Seq[SQLNumeric[R]])
       extends SQLValues[R, SQLNumeric[R]](values) {
     def eq: Seq[R] => Boolean = {
       _.exists { n => innerValues.contains(n) }
@@ -155,6 +195,11 @@ package object sql {
       _.forall { n => !innerValues.contains(n) }
     }
   }
+
+  case class SQLLongValues(override val values: Seq[SQLLong]) extends SQLNumericValues[Long](values)
+
+  case class SQLDoubleValues(override val values: Seq[SQLDouble])
+      extends SQLNumericValues[Double](values)
 
   def choose[T](
     values: Seq[T],
@@ -210,7 +255,8 @@ package object sql {
     nested: Boolean = false,
     limit: Option[SQLLimit] = None,
     function: Option[SQLFunction] = None,
-    fieldAlias: Option[String] = None
+    fieldAlias: Option[String] = None,
+    bucket: Option[SQLBucket] = None
   ) extends SQLExpr({
         var parts: Seq[String] = name.split("\\.").toSeq
         tableAlias match {
@@ -255,18 +301,21 @@ package object sql {
               name = s"${tuple._2}.${parts.tail.mkString(".")}",
               nested = true,
               limit = tuple._3,
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )
           case _ =>
             this.copy(
               tableAlias = Some(parts.head),
               name = parts.tail.mkString("."),
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )
         }
       } else {
         this.copy(
-          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias)
+          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+          bucket = request.bucketNames.get(identifierName).orElse(bucket)
         )
       }
     }

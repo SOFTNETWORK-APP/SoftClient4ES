@@ -2,7 +2,9 @@ package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.{
   AggregateFunction,
+  Asc,
   Avg,
+  BucketSelectorScript,
   Count,
   ElasticBoolQuery,
   Max,
@@ -10,10 +12,12 @@ import app.softnetwork.elastic.sql.{
   SQLBucket,
   SQLCriteria,
   SQLField,
+  SortOrder,
   Sum
 }
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
+  bucketSelectorAggregation,
   cardinalityAgg,
   filterAgg,
   maxAgg,
@@ -23,11 +27,13 @@ import com.sksamuel.elastic4s.ElasticApi.{
   termsAgg,
   valueCountAgg
 }
+import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.searches.aggs.{
   Aggregation,
   FilterAggregation,
   NestedAggregation,
-  TermsAggregation
+  TermsAggregation,
+  TermsOrder
 }
 
 import scala.language.implicitConversions
@@ -42,16 +48,23 @@ case class ElasticAggregation(
   nestedAgg: Option[NestedAggregation] = None,
   filteredAgg: Option[FilterAggregation] = None,
   aggType: AggregateFunction,
-  agg: Aggregation
+  agg: Aggregation,
+  direction: Option[SortOrder] = None
 ) {
   val nested: Boolean = nestedAgg.nonEmpty
   val filtered: Boolean = filteredAgg.nonEmpty
 }
 
 object ElasticAggregation {
-  def apply(sqlAgg: SQLField, filter: Option[SQLCriteria]): ElasticAggregation = {
+  def apply(
+    sqlAgg: SQLField,
+    having: Option[SQLCriteria],
+    bucketsDirection: Map[String, SortOrder]
+  ): ElasticAggregation = {
     import sqlAgg._
     val sourceField = identifier.name
+
+    val direction = bucketsDirection.get(identifier.identifierName)
 
     val field = fieldAlias match {
       case Some(alias) => alias.alias
@@ -92,7 +105,7 @@ object ElasticAggregation {
     val filteredAggName = "filtered_agg"
 
     val filteredAgg: Option[FilterAggregation] =
-      filter match {
+      having match {
         case Some(f) =>
           val boolQuery = Option(ElasticBoolQuery(group = true))
           Some(
@@ -135,44 +148,60 @@ object ElasticAggregation {
       nestedAgg = nestedAgg,
       filteredAgg = filteredAgg,
       aggType = aggType,
-      agg = _agg
+      agg = _agg,
+      direction = direction
     )
   }
 
-  /*
-  def apply(
-    buckets: Seq[SQLBucket],
-    aggregations: Seq[Aggregation],
-    current: Option[TermsAggregation]
-  ): Option[TermsAggregation] = {
-    buckets match {
-      case Nil =>
-        current.map(_.copy(subaggs = aggregations))
-      case bucket +: tail =>
-        val agg = termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
-        current match {
-          case Some(a) =>
-            apply(tail, aggregations, Some(agg)) match {
-              case Some(subAgg) =>
-                Some(a.copy(subaggs = a.subaggs :+ subAgg))
-              case _ => Some(a)
-            }
-          case None =>
-            apply(tail, aggregations, Some(agg))
-        }
-    }
-  }
-   */
-
   def buildBuckets(
     buckets: Seq[SQLBucket],
-    aggregations: Seq[Aggregation]
+    bucketsDirection: Map[String, SortOrder],
+    aggregations: Seq[Aggregation],
+    aggregationsDirection: Map[String, SortOrder],
+    having: Option[SQLCriteria]
   ): Option[TermsAggregation] = {
+    Console.println(bucketsDirection)
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
-      val agg = termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+      val agg = {
+        bucketsDirection.get(bucket.identifier.identifierName) match {
+          case Some(direction) =>
+            termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+              .order(Seq(direction match {
+                case Asc => TermsOrder(bucket.name, asc = true)
+                case _   => TermsOrder(bucket.name, asc = false)
+              }))
+          case None =>
+            termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+        }
+      }
       current match {
         case Some(subAgg) => Some(agg.copy(subaggs = Seq(subAgg)))
-        case None         => Some(agg.copy(subaggs = aggregations))
+        case None =>
+          val aggregationsWithOrder: Seq[TermsOrder] = aggregationsDirection.toSeq.map { kv =>
+            kv._2 match {
+              case Asc => TermsOrder(kv._1, asc = true)
+              case _   => TermsOrder(kv._1, asc = false)
+            }
+          }
+          val withAggregationOrders =
+            if (aggregationsWithOrder.nonEmpty)
+              agg.order(aggregationsWithOrder)
+            else
+              agg
+          val withHaving = having match {
+            case Some(criteria) =>
+              import BucketSelectorScript._
+              val script = toPainless(criteria)
+              val bucketsPath = extractBucketsPath(criteria)
+
+              val bucketSelector =
+                bucketSelectorAggregation("having_filter", Script(script), bucketsPath)
+
+              withAggregationOrders.copy(subaggs = aggregations :+ bucketSelector)
+
+            case None => withAggregationOrders.copy(subaggs = aggregations)
+          }
+          Some(withHaving)
       }
     }
   }

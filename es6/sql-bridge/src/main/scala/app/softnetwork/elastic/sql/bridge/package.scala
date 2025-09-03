@@ -21,14 +21,17 @@ package object bridge {
       request.limit.map(_.limit),
       request,
       request.buckets,
-      request.aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+      request.aggregates.map(
+        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+      )
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
     val notNestedBuckets = buckets.filterNot(_.identifier.nested)
     val nestedBuckets = buckets.filter(_.identifier.nested).groupBy(_.nestedBucket.getOrElse(""))
-    val aggregations = aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria)))
+    val aggregations =
+      aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts))
     val notNestedAggregations = aggregations.filterNot(_.nested)
     val nestedAggregations =
       aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
@@ -41,13 +44,22 @@ package object bridge {
         nestedAggregations.map { case (nested, aggs) =>
           val first = aggs.head
           val aggregations = aggs.map(_.agg)
-          val buckets = ElasticAggregation.buildBuckets(
-            nestedBuckets.getOrElse(nested, Seq.empty),
-            aggregations
-          ) match {
-            case Some(b) => Seq(b)
-            case _       => aggregations
-          }
+          val aggregationDirections: Map[String, SortOrder] =
+            aggs
+              .filter(_.direction.isDefined)
+              .map(agg => agg.agg.name -> agg.direction.getOrElse(Asc))
+              .toMap
+          val buckets =
+            ElasticAggregation.buildBuckets(
+              nestedBuckets.getOrElse(nested, Seq.empty),
+              request.sorts -- aggregationDirections.keys,
+              aggregations,
+              aggregationDirections,
+              request.having.flatMap(_.criteria)
+            ) match {
+              case Some(b) => Seq(b)
+              case _       => aggregations
+            }
           val filtered: Option[Aggregation] =
             first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
           first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(buckets))
@@ -62,10 +74,17 @@ package object bridge {
       case _ =>
         _search aggregations {
           val first = notNestedAggregations.head
+          val aggregationDirections: Map[String, SortOrder] = notNestedAggregations
+            .filter(_.direction.isDefined)
+            .map(agg => agg.agg.name -> agg.direction.get)
+            .toMap
           val aggregations = notNestedAggregations.map(_.agg)
           val buckets = ElasticAggregation.buildBuckets(
             notNestedBuckets,
-            aggregations
+            request.sorts -- aggregationDirections.keys,
+            aggregations,
+            aggregationDirections,
+            request.having.flatMap(_.criteria)
           ) match {
             case Some(b) => Seq(b)
             case _       => aggregations
@@ -77,7 +96,7 @@ package object bridge {
     }
 
     _search = orderBy match {
-      case Some(o) =>
+      case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
         _search sortBy o.sorts.map(sort =>
           sort.order match {
             case Some(Desc) => FieldSort(sort.field).desc()
@@ -105,56 +124,97 @@ package object bridge {
     )
   }
 
+  def applyNumericOp[A](n: SQLNumeric[_])(
+    longOp: Long => A,
+    doubleOp: Double => A
+  ): A = n.toEither.fold(longOp, doubleOp)
+
   implicit def expressionToQuery(expression: SQLExpression): Query = {
     import expression._
     value match {
-      case n: SQLNumeric[Any] @unchecked =>
+      case n: SQLNumeric[_] if !aggregation =>
         operator match {
           case _: Ge.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) lt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lt l,
+                  d => rangeQuery(identifier.name) lt d
+                )
               case _ =>
-                rangeQuery(identifier.name) gte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gte l,
+                  d => rangeQuery(identifier.name) gte d
+                )
             }
           case _: Gt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) lte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lte l,
+                  d => rangeQuery(identifier.name) lte d
+                )
               case _ =>
-                rangeQuery(identifier.name) gt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gt l,
+                  d => rangeQuery(identifier.name) gt d
+                )
             }
           case _: Le.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) gt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gt l,
+                  d => rangeQuery(identifier.name) gt d
+                )
               case _ =>
-                rangeQuery(identifier.name) lte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lte l,
+                  d => rangeQuery(identifier.name) lte d
+                )
             }
           case _: Lt.type =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) gte n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) gte l,
+                  d => rangeQuery(identifier.name) gte d
+                )
               case _ =>
-                rangeQuery(identifier.name) lt n.sql
+                applyNumericOp(n)(
+                  l => rangeQuery(identifier.name) lt l,
+                  d => rangeQuery(identifier.name) lt d
+                )
             }
           case _: Eq.type =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.name, n.sql))
+                applyNumericOp(n)(
+                  l => not(termQuery(identifier.name, l)),
+                  d => not(termQuery(identifier.name, d))
+                )
               case _ =>
-                termQuery(identifier.name, n.sql)
+                applyNumericOp(n)(
+                  l => termQuery(identifier.name, l),
+                  d => termQuery(identifier.name, d)
+                )
             }
           case _: Ne.type =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.name, n.sql)
+                applyNumericOp(n)(
+                  l => termQuery(identifier.name, l),
+                  d => termQuery(identifier.name, d)
+                )
               case _ =>
-                not(termQuery(identifier.name, n.sql))
+                applyNumericOp(n)(
+                  l => not(termQuery(identifier.name, l)),
+                  d => not(termQuery(identifier.name, d))
+                )
             }
           case _ => matchAllQuery()
         }
-      case l: SQLLiteral =>
+      case l: SQLLiteral if !aggregation =>
         operator match {
           case _: Like.type =>
             maybeNot match {
@@ -207,7 +267,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case b: SQLBoolean =>
+      case b: SQLBoolean if !aggregation =>
         operator match {
           case _: Eq.type =>
             maybeNot match {
@@ -263,10 +323,32 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-    between: SQLBetween
+    between: SQLBetween[String]
   ): Query = {
     import between._
-    val r = rangeQuery(identifier.name) gte from.value lte to.value
+    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
+    maybeNot match {
+      case Some(_) => not(r)
+      case _       => r
+    }
+  }
+
+  implicit def betweenLongsToQuery(
+    between: SQLBetween[Long]
+  ): Query = {
+    import between._
+    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
+    maybeNot match {
+      case Some(_) => not(r)
+      case _       => r
+    }
+  }
+
+  implicit def betweenDoublesToQuery(
+    between: SQLBetween[Double]
+  ): Query = {
+    import between._
+    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
     maybeNot match {
       case Some(_) => not(r)
       case _       => r
@@ -309,7 +391,7 @@ package object bridge {
       .map {
         case Left(l) =>
           l.aggregates
-            .map(ElasticAggregation(_, l.having.flatMap(_.criteria)))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts))
             .map(aggregation => {
               val queryFiltered =
                 l.where
