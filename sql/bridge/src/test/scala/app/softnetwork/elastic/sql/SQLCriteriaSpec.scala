@@ -30,7 +30,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"term" : {
         |      "identifier" : {
-        |        "value" : "1.0"
+        |        "value" : 1.0
         |      }
         |    }
         |  }
@@ -46,7 +46,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |         {
         |           "term":{
         |             "identifier":{
-        |               "value":"1"
+        |               "value":1
         |             }
         |           }
         |         }
@@ -62,7 +62,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"range" : {
         |      "identifier" : {
-        |        "lt" : "1"
+        |        "lt" : 1
         |      }
         |    }
         |  }
@@ -75,7 +75,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"range" : {
         |      "identifier" : {
-        |        "lte" : "1"
+        |        "lte" : 1
         |      }
         |    }
         |  }
@@ -88,7 +88,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"range" : {
         |      "identifier" : {
-        |        "gt" : "1"
+        |        "gt" : 1
         |      }
         |    }
         |  }
@@ -101,7 +101,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"range" : {
         |      "identifier" : {
-        |        "gte" : "1"
+        |        "gte" : 1
         |      }
         |    }
         |  }
@@ -192,14 +192,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term" : {
         |            "identifier1" : {
-        |              "value" : "1"
+        |              "value" : 1
         |            }
         |          }
         |        },
         |        {
         |          "range" : {
         |            "identifier2" : {
-        |              "gt" : "2"
+        |              "gt" : 2
         |            }
         |          }
         |        }
@@ -218,14 +218,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term" : {
         |            "identifier1" : {
-        |              "value" : "1"
+        |              "value" : 1
         |            }
         |          }
         |        },
         |        {
         |          "range" : {
         |            "identifier2" : {
-        |              "gt" : "2"
+        |              "gt" : 2
         |            }
         |          }
         |        }
@@ -247,14 +247,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              {
         |                "term" : {
         |                  "identifier1" : {
-        |                    "value" : "1"
+        |                    "value" : 1
         |                  }
         |                }
         |              },
         |              {
         |                "range" : {
         |                  "identifier2" : {
-        |                    "gt" : "2"
+        |                    "gt" : 2
         |                  }
         |                }
         |              }
@@ -264,7 +264,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term" : {
         |            "identifier3" : {
-        |              "value" : "3"
+        |              "value" : 3
         |            }
         |          }
         |        }
@@ -283,7 +283,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term" : {
         |            "identifier1" : {
-        |              "value" : "1"
+        |              "value" : 1
         |            }
         |          }
         |        },
@@ -293,14 +293,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              {
         |                "range" : {
         |                  "identifier2" : {
-        |                    "gt" : "2"
+        |                    "gt" : 2
         |                  }
         |                }
         |              },
         |              {
         |                "term" : {
         |                  "identifier3" : {
-        |                    "value" : "3"
+        |                    "value" : 3
         |                  }
         |                }
         |              }
@@ -325,14 +325,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              {
         |                "term" : {
         |                  "identifier1" : {
-        |                    "value" : "1"
+        |                    "value" : 1
         |                  }
         |                }
         |              },
         |              {
         |                "range" : {
         |                  "identifier2" : {
-        |                    "gt" : "2"
+        |                    "gt" : 2
         |                  }
         |                }
         |              }
@@ -345,14 +345,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              {
         |                "term" : {
         |                  "identifier3" : {
-        |                    "value" : "3"
+        |                    "value" : 3
         |                  }
         |                }
         |              },
         |              {
         |                "term" : {
         |                  "identifier4" : {
-        |                    "value" : "4"
+        |                    "value" : 4
         |                  }
         |                }
         |              }
@@ -419,7 +419,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term" : {
         |            "identifier1" : {
-        |              "value" : "1"
+        |              "value" : 1
         |            }
         |          }
         |        },
@@ -432,14 +432,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |                  {
         |                    "range" : {
         |                      "nested.identifier2" : {
-        |                        "gt" : "2"
+        |                        "gt" : 2
         |                      }
         |                    }
         |                  },
         |                  {
         |                    "term" : {
         |                      "nested.identifier3" : {
-        |                        "value" : "3"
+        |                        "value" : 3
         |                      }
         |                    }
         |                  }
@@ -464,7 +464,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term" : {
         |            "identifier1" : {
-        |              "value" : "1"
+        |              "value" : 1
         |            }
         |          }
         |        },
@@ -474,7 +474,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |            "query" : {
         |              "term" : {
         |                "nested.identifier3" : {
-        |                  "value" : "3"
+        |                  "value" : 3
         |                }
         |              }
         |            },
@@ -497,7 +497,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term": {
         |            "identifier1": {
-        |              "value": "1"
+        |              "value": 1
         |            }
         |          }
         |        },
@@ -514,14 +514,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |                        {
         |                          "range": {
         |                            "child.identifier2": {
-        |                              "gt": "2"
+        |                              "gt": 2
         |                            }
         |                          }
         |                        },
         |                        {
         |                          "term": {
         |                            "child.identifier3": {
-        |                              "value": "3"
+        |                              "value": 3
         |                            }
         |                          }
         |                        }
@@ -549,7 +549,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term": {
         |            "identifier1": {
-        |              "value": "1"
+        |              "value": 1
         |            }
         |          }
         |        },
@@ -563,7 +563,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |                  {
         |                    "term": {
         |                      "child.identifier3": {
-        |                        "value": "3"
+        |                        "value": 3
         |                      }
         |                    }
         |                  }
@@ -588,7 +588,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term": {
         |            "identifier1": {
-        |              "value": "1"
+        |              "value": 1
         |            }
         |          }
         |        },
@@ -604,14 +604,14 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |                        {
         |                          "range": {
         |                            "parent.identifier2": {
-        |                              "gt": "2"
+        |                              "gt": 2
         |                            }
         |                          }
         |                        },
         |                        {
         |                          "term": {
         |                            "parent.identifier3": {
-        |                              "value": "3"
+        |                              "value": 3
         |                            }
         |                          }
         |                        }
@@ -639,7 +639,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |        {
         |          "term": {
         |            "identifier1": {
-        |              "value": "1"
+        |              "value": 1
         |            }
         |          }
         |        },
@@ -652,7 +652,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |                  {
         |                    "term": {
         |                      "parent.identifier3": {
-        |                        "value": "3"
+        |                        "value": 3
         |                      }
         |                    }
         |                  }
@@ -687,7 +687,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |            {
         |              "term" : {
         |                "ciblage.statutComportement" : {
-        |                  "value" : "1"
+        |                  "value" : 1
         |                }
         |              }
         |            }
@@ -834,7 +834,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              {
         |                "term": {
         |                  "identifier": {
-        |                    "value": "1"
+        |                    "value": 1
         |                  }
         |                }
         |              }
@@ -861,7 +861,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |                    {
         |                      "range": {
         |                        "identifier2": {
-        |                          "gt": "2"
+        |                          "gt": 2
         |                        }
         |                      }
         |                    }
@@ -871,7 +871,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              {
         |                "term": {
         |                  "identifier3": {
-        |                    "value": "3"
+        |                    "value": 3
         |                  }
         |                }
         |              }
