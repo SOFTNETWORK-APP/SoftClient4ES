@@ -29,7 +29,7 @@ Elastic Client provides tools to analyze and compare existing mappings with new 
 Bulk operations leverage the power of Akka Streams to efficiently process and index large volumes of data. This stream-based approach improves performance, resilience, and backpressure handling, especially for real-time or high-throughput indexing scenarios.
 
 **Akka Persistence Integration**  
-The project offers seamless integration with Akka Persistence. This enables Elasticsearch indices to be updated reactively based on persistent events, offering a robust pattern for event-sourced systems.
+The project offers seamless integration with Akka Persistence. This enables Elasticsearch indices to be updated reactively based on persistent events, offering a robust pattern for [event-sourced systems](https://github.com/SOFTNETWORK-APP/generic-persistence-api).
 
 ## Roadmap
 
