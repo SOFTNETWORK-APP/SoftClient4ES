@@ -315,7 +315,7 @@ package object bridge {
           case Lt => rangeQuery(identifier.name) lt script
           case Le => rangeQuery(identifier.name) lte script
           case Eq => rangeQuery(identifier.name) gte script lte script
-          case Ne => rangeQuery(identifier.name) lt script gt script
+          case Ne => not(rangeQuery(identifier.name) gte script lte script)
         }
     }
   }
