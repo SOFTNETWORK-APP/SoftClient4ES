@@ -889,6 +889,117 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "includes": ["identifier"]
         |  }
         |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
 
+  it should "filter with date time and interval" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(filterWithDateTimeAndInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "range": {
+        |            "createdAt": {
+        |              "lt": "now"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "range": {
+        |            "createdAt": {
+        |              "gte": "now-10d"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "filter with date and interval" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(filterWithDateAndInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "range": {
+        |            "createdAt": {
+        |              "lt": "now/d"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "range": {
+        |            "createdAt": {
+        |              "gte": "now-10d/d"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "filter with time and interval" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(filterWithTimeAndInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "script": {
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "return doc['createdAt'].value.toLocalTime() < LocalTime.now();"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "script": {
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "return doc['createdAt'].value.toLocalTime() >= LocalTime.now().minus(10, ChronoUnit.MINUTE);"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s", "")
+        .replaceAll("ChronoUnit", " ChronoUnit")
+        .replaceAll(">=", " >= ")
+        .replaceAll("<", " < ")
+        .replaceAll("return", "return ")
   }
 }

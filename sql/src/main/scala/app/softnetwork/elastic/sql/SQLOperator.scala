@@ -13,7 +13,22 @@ case object Modulo extends SQLExpr("%") with ArithmeticOperator
 
 sealed trait SQLExpressionOperator extends SQLOperator
 
-sealed trait SQLComparisonOperator extends SQLExpressionOperator
+sealed trait SQLComparisonOperator extends SQLExpressionOperator with PainlessScript {
+  override def painless: String = this match {
+    case Eq    => "=="
+    case Ne    => "!="
+    case other => other.sql
+  }
+
+  def not: SQLComparisonOperator = this match {
+    case Eq => Ne
+    case Ne => Eq
+    case Ge => Lt
+    case Gt => Le
+    case Le => Gt
+    case Lt => Ge
+  }
+}
 
 case object Eq extends SQLExpr("=") with SQLComparisonOperator
 case object Ne extends SQLExpr("<>") with SQLComparisonOperator

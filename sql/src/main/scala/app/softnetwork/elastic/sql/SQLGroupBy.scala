@@ -55,7 +55,7 @@ object BucketSelectorScript {
     not: Boolean
   ): String = {
     operator match {
-      case _: SQLComparisonOperator =>
+      case o: SQLComparisonOperator =>
         val valueStr =
           value match {
             case v: SQLBoolean => v.painless
@@ -67,32 +67,10 @@ object BucketSelectorScript {
                 s"Unsupported value type in bucket_selector: $value"
               )
           }
-        if (not) {
-          operator match {
-            case Eq => s"$param != $valueStr"
-            case Ne => s"$param == $valueStr"
-            case Gt => s"$param <= $valueStr"
-            case Ge => s"$param < $valueStr"
-            case Lt => s"$param >= $valueStr"
-            case Le => s"$param > $valueStr"
-            case _ =>
-              throw new IllegalArgumentException(
-                s"Unsupported comparison operator in bucket_selector: $operator"
-              )
-          }
-        } else
-          operator match {
-            case Eq => s"$param == $valueStr"
-            case Ne => s"$param != $valueStr"
-            case Gt => s"$param > $valueStr"
-            case Ge => s"$param >= $valueStr"
-            case Lt => s"$param < $valueStr"
-            case Le => s"$param <= $valueStr"
-            case _ =>
-              throw new IllegalArgumentException(
-                s"Unsupported comparison operator in bucket_selector: $operator"
-              )
-          }
+        if (not)
+          s"$param ${o.not.painless} $valueStr"
+        else
+          s"$param ${o.painless} $valueStr"
       case In =>
         value match {
           case SQLDoubleValues(vals)  => painlessIn(param, vals, not)

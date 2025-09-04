@@ -317,6 +317,56 @@ case class SQLMatch(
   override def group: Boolean = false
 }
 
+case class SQLComparisonDateMath(
+  identifier: SQLIdentifier,
+  operator: SQLComparisonOperator, // Gt, Ge, Lt, Le, Eq, ...
+  dateTimeFunction: CurrentDateTimeFunction, // CurrentDate, Now, CurrentTimestamp, CurrentTime, ...
+  arithmeticOperator: Option[ArithmeticOperator] =
+    None, // Plus or Minus between dateTimeFunction and interval
+  interval: Option[TimeInterval] = None, // optional interval
+  maybeNot: Option[Not.type] = None
+) extends Expression
+    with MathScript {
+  override def sql: String = {
+    s"$identifier ${operator.sql} $dateTimeFunction${asString(arithmeticOperator)}${asString(interval)}"
+  }
+  override def update(request: SQLSearchRequest): SQLCriteria =
+    this.copy(identifier = identifier.update(request))
+
+  override def maybeValue: Option[SQLToken] = Some(dateTimeFunction)
+
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+
+  override def script: String = {
+    dateTimeFunction match {
+      case _: CurrentTimeFunction =>
+        val painlessOp = (if (maybeNot.isDefined) operator.not else operator).painless
+        (arithmeticOperator, interval) match {
+          case (Some(Plus), Some(i)) => // compare doc time with now + interval
+            s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now().plus(${i.value}, ${i.unit.painless});"
+
+          case (Some(Minus), Some(i)) => // compare doc time with now
+            s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now().minus(${i.value}, ${i.unit.painless});"
+
+          case _ =>
+            s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now();"
+        }
+      case _ =>
+        val base = s"${dateTimeFunction.script}"
+        val dateMath =
+          (arithmeticOperator, interval) match {
+            case (Some(Plus), Some(i))  => s"$base+${i.script}"
+            case (Some(Minus), Some(i)) => s"$base-${i.script}"
+            case _                      => base
+          }
+        dateTimeFunction match {
+          case _: CurrentDateFunction => s"$dateMath/d"
+          case _                      => dateMath
+        }
+    }
+  }
+}
+
 case class ElasticMatch(
   identifier: SQLIdentifier,
   value: SQLLiteral,

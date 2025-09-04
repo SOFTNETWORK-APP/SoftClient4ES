@@ -25,6 +25,10 @@ package object sql {
     def painless: String
   }
 
+  trait MathScript extends SQLToken {
+    def script: String
+  }
+
   trait SQLTokenWithFunction extends SQLToken {
     def function: Option[SQLFunction]
 

@@ -83,8 +83,12 @@ object Queries {
     "select current_timestamp() - interval 3 day as ct, current_date as cd, current_time as t, now as n from dual"
   val fieldsWithInterval: String =
     "select createdAt - interval 35 minute as ct, identifier from Table"
-
-  //TODO "select * from Table where createdAt <= current_timestamp() and createdAt >= current_timestamp() - interval 35 minute"
+  val filterWithDateTimeAndInterval: String =
+    "select * from Table where createdAt < current_timestamp() and createdAt >= current_timestamp() - interval 10 day"
+  val filterWithDateAndInterval: String =
+    "select * from Table where createdAt < current_date and createdAt >= current_date() - interval 10 day"
+  val filterWithTimeAndInterval: String =
+    "select * from Table where createdAt < current_time and createdAt >= current_time() - interval 10 minute"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -359,5 +363,26 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse fields with interval" in {
     val result = SQLParser(fieldsWithInterval)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(fieldsWithInterval)
+  }
+
+  it should "parse filter with date time and interval" in {
+    val result = SQLParser(filterWithDateTimeAndInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      filterWithDateTimeAndInterval
+    )
+  }
+
+  it should "parse filter with date and interval" in {
+    val result = SQLParser(filterWithDateAndInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      filterWithDateAndInterval
+    )
+  }
+
+  it should "parse filter with time and interval" in {
+    val result = SQLParser(filterWithTimeAndInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      filterWithTimeAndInterval
+    )
   }
 }

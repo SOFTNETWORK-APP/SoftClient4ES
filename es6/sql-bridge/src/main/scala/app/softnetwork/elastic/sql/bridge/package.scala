@@ -301,6 +301,24 @@ package object bridge {
     }
   }
 
+  implicit def dateMathToQuery(dateMath: SQLComparisonDateMath): Query = {
+    import dateMath._
+    dateTimeFunction match {
+      case _: CurrentTimeFunction =>
+        scriptQuery(Script(script = script).lang("painless").scriptType("source"))
+      case _ =>
+        val op = if (maybeNot.isDefined) operator.not else operator
+        op match {
+          case Gt => rangeQuery(identifier.name) gt script
+          case Ge => rangeQuery(identifier.name) gte script
+          case Lt => rangeQuery(identifier.name) lt script
+          case Le => rangeQuery(identifier.name) lte script
+          case Eq => rangeQuery(identifier.name) gte script lte script
+          case Ne => rangeQuery(identifier.name) lt script gt script
+        }
+    }
+  }
+
   implicit def isNullToQuery(
     isNull: SQLIsNull
   ): Query = {
