@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
+import com.sksamuel.elastic4s.requests.script.Script
 import com.sksamuel.elastic4s.requests.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.requests.searches.queries.Query
 import com.sksamuel.elastic4s.requests.searches.sort.FieldSort
@@ -94,6 +95,17 @@ package object bridge {
           first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
         filtered.map(Seq(_)).getOrElse(buckets)
       }
+    }
+
+    _search = scriptFields match {
+      case Nil => _search
+      case _ =>
+        _search scriptfields scriptFields.map { field =>
+          scriptField(
+            field.name,
+            Script(script = field.painless).lang("painless").scriptType("source")
+          )
+        }
     }
 
     _search = orderBy match {

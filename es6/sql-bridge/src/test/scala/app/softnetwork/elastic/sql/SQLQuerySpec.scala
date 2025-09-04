@@ -6,7 +6,7 @@ import com.google.gson.{JsonArray, JsonObject, JsonParser, JsonPrimitive}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 /** Created by smanciot on 13/04/17.
   */
@@ -868,4 +868,28 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   }
 
+  it should "add script fields" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(fieldsWithInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "ct": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['createdAt'].value.minus(35, ChronoUnit.MINUTE)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": ["identifier"]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+
+  }
 }

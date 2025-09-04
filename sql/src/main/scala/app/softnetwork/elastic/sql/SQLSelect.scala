@@ -12,9 +12,14 @@ sealed trait Field extends Updateable with SQLTokenWithFunction {
       identifier.tableAlias
         .orElse(fieldAlias.map(_.alias))
         .map(a => s"$a.")
-        .getOrElse("") + identifier.name.split("\\.").tail.mkString(".")
+        .getOrElse("") + identifier.name
+        .replace("(", "")
+        .replace(")", "")
+        .split("\\.")
+        .tail
+        .mkString(".")
     } else {
-      identifier.name
+      identifier.name.replace("(", "").replace(")", "")
     }
 
   override def function: Option[SQLFunction] = identifier.function
@@ -34,6 +39,8 @@ sealed trait ScriptField extends Field with PainlessScript {
   override def isScriptField: Boolean = true
 
   def update(request: SQLSearchRequest): ScriptField
+
+  lazy val name: String = fieldAlias.map(_.alias).getOrElse(sourceField)
 }
 
 case class SQLDateTimeField(

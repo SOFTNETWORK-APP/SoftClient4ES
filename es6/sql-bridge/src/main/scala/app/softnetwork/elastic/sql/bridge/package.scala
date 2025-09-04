@@ -4,6 +4,7 @@ import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
+import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.searches.queries.Query
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
@@ -92,6 +93,17 @@ package object bridge {
           val filtered: Option[Aggregation] =
             first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
           filtered.map(Seq(_)).getOrElse(buckets)
+        }
+    }
+
+    _search = scriptFields match {
+      case Nil => _search
+      case _ =>
+        _search scriptfields scriptFields.map { field =>
+          scriptField(
+            field.name,
+            Script(script = field.painless).lang("painless").scriptType("source")
+          )
         }
     }
 
