@@ -304,6 +304,8 @@ package object bridge {
 
   implicit def dateMathToQuery(dateMath: SQLComparisonDateMath): Query = {
     import dateMath._
+    if (aggregation)
+      return matchAllQuery()
     dateTimeFunction match {
       case _: CurrentTimeFunction =>
         scriptQuery(Script(script = script).lang("painless").scriptType("source"))

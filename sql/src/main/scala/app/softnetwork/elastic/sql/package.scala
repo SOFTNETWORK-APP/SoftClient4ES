@@ -301,6 +301,8 @@ package object sql {
 
     lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
 
+    lazy val aliasOrName: String = fieldAlias.getOrElse(name)
+
     def update(request: SQLSearchRequest): SQLIdentifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
       if (request.tableAliases.values.toSeq.contains(parts.head)) {

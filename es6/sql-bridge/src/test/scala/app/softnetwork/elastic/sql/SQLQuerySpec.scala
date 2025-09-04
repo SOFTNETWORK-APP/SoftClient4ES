@@ -1003,4 +1003,161 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("<", " < ")
       .replaceAll("return", "return ")
   }
+
+  it should "handle having with date functions" in {
+    val select: ElasticSearchRequest =
+      SQLQuery("""SELECT userId, MAX(createdAt) as lastSeen
+                 |FROM table
+                 |GROUP BY userId
+                 |HAVING MAX(createdAt) > now - interval 7 day""".stripMargin)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "filtered_agg": {
+      |      "filter": {
+      |        "match_all": {}
+      |      },
+      |      "aggs": {
+      |        "userId": {
+      |          "terms": {
+      |            "field": "userId.keyword"
+      |          },
+      |          "aggs": {
+      |            "lastSeen": {
+      |              "max": {
+      |                "field": "createdAt"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "lastSeen": "lastSeen"
+      |                },
+      |                "script": {
+      |                  "source": "(params.lastSeen != null) && (params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAY).toInstant().toEpochMilli())"
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
+  it should "handle group by with having and date time functions" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(groupByWithHavingAndDateTimeFunctions)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "filtered_agg": {
+      |      "filter": {
+      |        "bool": {
+      |          "filter": [
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "Country": {
+      |                        "value": "USA"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "City": {
+      |                        "value": "Berlin"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "match_all": {}
+      |            },
+      |            {
+      |              "range": {
+      |                "lastSeen": {
+      |                  "gt": "now-7d"
+      |                }
+      |              }
+      |            }
+      |          ]
+      |        }
+      |      },
+      |      "aggs": {
+      |        "Country": {
+      |          "terms": {
+      |            "field": "Country.keyword"
+      |          },
+      |          "aggs": {
+      |            "City": {
+      |              "terms": {
+      |                "field": "City.keyword"
+      |              },
+      |              "aggs": {
+      |                "cnt": {
+      |                  "value_count": {
+      |                    "field": "CustomerID"
+      |                  }
+      |                },
+      |                "lastSeen": {
+      |                  "max": {
+      |                    "field": "createdAt"
+      |                  }
+      |                },
+      |                "having_filter": {
+      |                  "bucket_selector": {
+      |                    "buckets_path": {
+      |                      "cnt": "cnt"
+      |                    },
+      |                    "script": {
+      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1 && 1 == 1"
+      |                    }
+      |                  }
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
 }

@@ -89,6 +89,12 @@ object Queries {
     "select * from Table where createdAt < current_date and createdAt >= current_date() - interval 10 day"
   val filterWithTimeAndInterval: String =
     "select * from Table where createdAt < current_time and createdAt >= current_time() - interval 10 minute"
+  val groupByWithHavingAndDateTimeFunctions: String =
+    """select count(CustomerID) as cnt, City, Country, max(createdAt) as lastSeen
+      |from Table
+      |group by Country,City
+      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
+      |""".stripMargin.replaceAll("\n", " ")
 }
 
 /** Created by smanciot on 15/02/17.
@@ -383,6 +389,13 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(filterWithTimeAndInterval)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       filterWithTimeAndInterval
+    )
+  }
+
+  it should "parse group by with having and date time functions" in {
+    val result = SQLParser(groupByWithHavingAndDateTimeFunctions)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      groupByWithHavingAndDateTimeFunctions
     )
   }
 }
