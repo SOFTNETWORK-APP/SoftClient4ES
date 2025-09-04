@@ -87,7 +87,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
 
   def year: PackratParser[TimeUnit] = Year.regex ^^ (_ => Year)
 
-  def month: PackratParser[TimeUnit] = Month.regex ^^ (_ => Year)
+  def month: PackratParser[TimeUnit] = Month.regex ^^ (_ => Month)
 
   def quarter: PackratParser[TimeUnit] = Quarter.regex ^^ (_ => Quarter)
 
