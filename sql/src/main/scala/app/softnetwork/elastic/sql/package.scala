@@ -12,13 +12,17 @@ package object sql {
   import scala.language.implicitConversions
 
   implicit def asString(token: Option[_ <: SQLToken]): String = token match {
-    case Some(t) => t.sql
+    case Some(t) => t.toString
     case _       => ""
   }
 
   trait SQLToken extends Serializable {
     def sql: String
     override def toString: String = sql
+  }
+
+  trait PainlessScript extends SQLToken {
+    def painless: String
   }
 
   trait SQLTokenWithFunction extends SQLToken {
@@ -40,7 +44,9 @@ package object sql {
 
   case object Distinct extends SQLExpr("distinct") with SQLRegex
 
-  abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T]) extends SQLToken {
+  abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T])
+      extends SQLToken
+      with PainlessScript {
     def choose[R >: T](
       values: Seq[R],
       operator: Option[SQLExpressionOperator],
@@ -59,7 +65,7 @@ package object sql {
           case _                => values.headOption
         }
     }
-    def painlessValue: String = value match {
+    def painless: String = value match {
       case s: String  => s""""$s""""
       case b: Boolean => b.toString
       case n: Number  => n.toString

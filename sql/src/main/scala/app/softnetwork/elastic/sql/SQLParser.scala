@@ -85,6 +85,63 @@ trait SQLParser extends RegexParsers with PackratParsers {
 
   def sum: PackratParser[AggregateFunction] = Sum.regex ^^ (_ => Sum)
 
+  def year: PackratParser[TimeUnit] = Year.regex ^^ (_ => Year)
+
+  def month: PackratParser[TimeUnit] = Month.regex ^^ (_ => Year)
+
+  def quarter: PackratParser[TimeUnit] = Quarter.regex ^^ (_ => Quarter)
+
+  def week: PackratParser[TimeUnit] = Week.regex ^^ (_ => Week)
+
+  def day: PackratParser[TimeUnit] = Day.regex ^^ (_ => Day)
+
+  def hour: PackratParser[TimeUnit] = Hour.regex ^^ (_ => Hour)
+
+  def minute: PackratParser[TimeUnit] = Minute.regex ^^ (_ => Minute)
+
+  def second: PackratParser[TimeUnit] = Second.regex ^^ (_ => Second)
+
+  def interval: PackratParser[TimeInterval] =
+    Interval.regex ~ long ~ (year | month | quarter | week | day | hour | minute | second) ^^ {
+      case _ ~ l ~ u =>
+        TimeInterval(l.value.toInt, u)
+    }
+
+  def current_date: PackratParser[DateTimeFunction] = CurrentDate.regex ~ start.? ~ end.? ^^ {
+    case _ ~ s ~ t =>
+      if (s.isDefined && t.isDefined) CurentDateWithParens else CurrentDate
+  }
+
+  def current_time: PackratParser[DateTimeFunction] = CurrentTime.regex ~ start.? ~ end.? ^^ {
+    case _ ~ s ~ t =>
+      if (s.isDefined && t.isDefined) CurrentTimeWithParens else CurrentTime
+  }
+
+  def current_timestamp: PackratParser[DateTimeFunction] =
+    CurrentTimestamp.regex ~ start.? ~ end.? ^^ { case _ ~ s ~ t =>
+      if (s.isDefined && t.isDefined) CurrentTimestampWithParens else CurrentTimestamp
+    }
+
+  def now: PackratParser[DateTimeFunction] = Now.regex ~ start.? ~ end.? ^^ { case _ ~ s ~ t =>
+    if (s.isDefined && t.isDefined) NowWithParens else Now
+  }
+
+  def plus: PackratParser[ArithmeticOperator] = Plus.sql ^^ (_ => Plus)
+
+  def minus: PackratParser[ArithmeticOperator] = Minus.sql ^^ (_ => Minus)
+
+  def arithmeticOperator: PackratParser[ArithmeticOperator] = plus | minus
+
+  def dateTimeWithInterval: PackratParser[SQLDateTimeField] =
+    (current_date | current_time | current_timestamp | now) ~ arithmeticOperator.? ~ interval.? ^^ {
+      case f ~ o ~ i =>
+        SQLDateTimeField(
+          SQLIdentifier(f.sql),
+          o,
+          i
+        )
+    }
+
   def aggregateFunction: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
   def distanceFunction: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
@@ -107,16 +164,29 @@ trait SQLParser extends RegexParsers with PackratParsers {
       )
     }
 
+  def identifierWithInterval: PackratParser[SQLDateTimeField] =
+    identifier ~ arithmeticOperator ~ interval ^^ { case f ~ o ~ i =>
+      SQLDateTimeField(
+        f,
+        Some(o),
+        Some(i)
+      )
+    }
+
   private val regexAlias =
     """\b(?!(?i)as\b)\b(?!(?i)except\b)\b(?!(?i)where\b)\b(?!(?i)filter\b)\b(?!(?i)from\b)\b(?!(?i)group\b)\b(?!(?i)having\b)\b(?!(?i)order\b)\b(?!(?i)limit\b)[a-zA-Z0-9_]*"""
 
   def alias: PackratParser[SQLAlias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => SQLAlias(b) }
 
-  def field: PackratParser[SQLField] = (identifierWithFunction | identifier) ~ alias.? ^^ {
+  def field: PackratParser[Field] = (identifierWithFunction | identifier) ~ alias.? ^^ {
     case i ~ a =>
       SQLField(i, a)
   }
 
+  def scriptField: PackratParser[ScriptField] =
+    (dateTimeWithInterval | identifierWithInterval) ~ alias.? ^^ { case d ~ a =>
+      d.copy(fieldAlias = a)
+    }
 }
 
 trait SQLSelectParser {
@@ -128,7 +198,7 @@ trait SQLSelectParser {
   }
 
   def select: PackratParser[SQLSelect] =
-    Select.regex ~ rep1sep(field, separator) ~ except.? ^^ { case _ ~ fields ~ e =>
+    Select.regex ~ rep1sep(scriptField | field, separator) ~ except.? ^^ { case _ ~ fields ~ e =>
       SQLSelect(fields, e)
     }
 

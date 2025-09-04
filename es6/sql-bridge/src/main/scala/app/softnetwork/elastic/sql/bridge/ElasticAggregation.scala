@@ -7,11 +7,11 @@ import app.softnetwork.elastic.sql.{
   BucketSelectorScript,
   Count,
   ElasticBoolQuery,
+  Field,
   Max,
   Min,
   SQLBucket,
   SQLCriteria,
-  SQLField,
   SortOrder,
   Sum
 }
@@ -57,7 +57,7 @@ case class ElasticAggregation(
 
 object ElasticAggregation {
   def apply(
-    sqlAgg: SQLField,
+    sqlAgg: Field,
     having: Option[SQLCriteria],
     bucketsDirection: Map[String, SortOrder]
   ): ElasticAggregation = {

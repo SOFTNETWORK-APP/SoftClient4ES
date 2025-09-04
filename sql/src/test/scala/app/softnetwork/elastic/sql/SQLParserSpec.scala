@@ -4,7 +4,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 object Queries {
-  val numericalEq = "select t.col1,t.col2 from Table as t where t.identifier = 1.0"
+  val numericalEq = "select t.col1, t.col2 from Table as t where t.identifier = 1.0"
   val numericalLt = "select * from Table where identifier < 1"
   val numericalLe = "select * from Table where identifier <= 1"
   val numericalGt = "select * from Table where identifier > 1"
@@ -63,22 +63,28 @@ object Queries {
   val matchCriteria =
     "select * from Table where match (identifier1,identifier2,identifier3) against (\"value\")"
   val groupBy =
-    "select identifier,count(identifier) from Table where identifier is not null group by identifier"
+    "select identifier, count(identifier2) from Table where identifier2 is not null group by identifier"
   val orderBy = "select * from Table order by identifier desc"
   val limit = "select * from Table limit 10"
   val groupByWithOrderByAndLimit: String =
-    """select identifier,count(identifier)
+    """select identifier, count(identifier2)
       |from Table
       |where identifier is not null
       |group by identifier
-      |order by identifier desc
+      |order by identifier2 desc
       |limit 10""".stripMargin.replaceAll("\n", " ")
   val groupByWithHaving: String =
-    """SELECT COUNT(CustomerID) as cnt,City,Country
+    """SELECT COUNT(CustomerID) as cnt, City, Country
       |FROM Customers
       |GROUP BY Country,City
       |HAVING Country <> "USA" AND City <> "Berlin" AND COUNT(CustomerID) > 1
       |ORDER BY COUNT(CustomerID) DESC,Country asc""".stripMargin.replaceAll("\n", " ").toLowerCase
+  val dateTimeWithIntervalFields: String =
+    "select current_timestamp() - interval 3 day as ct, current_date as cd, current_time as t, now as n from dual"
+  val fieldsWithInterval: String =
+    "select createdAt - interval 35 minute as ct, identifier from Table"
+
+  //TODO "select * from Table where createdAt <= current_timestamp() and createdAt >= current_timestamp() - interval 35 minute"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -343,4 +349,15 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupByWithHaving)
   }
 
+  it should "parse date time fields" in {
+    val result = SQLParser(dateTimeWithIntervalFields)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateTimeWithIntervalFields
+    )
+  }
+
+  it should "parse fields with interval" in {
+    val result = SQLParser(fieldsWithInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(fieldsWithInterval)
+  }
 }

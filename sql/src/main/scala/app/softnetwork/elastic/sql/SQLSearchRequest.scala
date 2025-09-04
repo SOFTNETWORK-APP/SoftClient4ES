@@ -37,7 +37,7 @@ case class SQLSearchRequest(
       Seq.empty
   }
 
-  lazy val aggregates: Seq[SQLField] = select.fields.filter(_.aggregation)
+  lazy val aggregates: Seq[Field] = select.fields.filter(_.aggregation)
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 

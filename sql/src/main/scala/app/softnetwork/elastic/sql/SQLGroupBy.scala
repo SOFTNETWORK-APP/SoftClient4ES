@@ -34,7 +34,7 @@ case class SQLBucket(
 object BucketSelectorScript {
 
   private[this] def painlessIn(param: String, values: Seq[SQLValue[_]], not: Boolean): String = {
-    val ret = s"[${values.map { _.painlessValue }.mkString(", ")}].contains($param)"
+    val ret = s"[${values.map { _.painless }.mkString(", ")}].contains($param)"
     if (not) s"!$ret" else ret
   }
 
@@ -44,7 +44,7 @@ object BucketSelectorScript {
     upper: SQLValue[_],
     not: Boolean
   ): String = {
-    val ret = s"($param >= ${lower.painlessValue} && $param <= ${upper.painlessValue})"
+    val ret = s"($param >= ${lower.painless} && $param <= ${upper.painless})"
     if (not) s"!$ret" else ret
   }
 
@@ -58,10 +58,10 @@ object BucketSelectorScript {
       case _: SQLComparisonOperator =>
         val valueStr =
           value match {
-            case v: SQLBoolean => v.painlessValue
-            case v: SQLDouble  => v.painlessValue
-            case v: SQLLiteral => v.painlessValue
-            case v: SQLLong    => v.painlessValue
+            case v: SQLBoolean => v.painless
+            case v: SQLDouble  => v.painless
+            case v: SQLLiteral => v.painless
+            case v: SQLLong    => v.painless
             case _ =>
               throw new IllegalArgumentException(
                 s"Unsupported value type in bucket_selector: $value"

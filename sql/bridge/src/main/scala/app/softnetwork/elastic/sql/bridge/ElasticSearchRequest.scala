@@ -1,10 +1,10 @@
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.{SQLBucket, SQLCriteria, SQLExcept, SQLField}
+import app.softnetwork.elastic.sql.{SQLBucket, SQLCriteria, SQLExcept, Field}
 import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
 
 case class ElasticSearchRequest(
-  fields: Seq[SQLField],
+  fields: Seq[Field],
   except: Option[SQLExcept],
   sources: Seq[String],
   criteria: Option[SQLCriteria],
