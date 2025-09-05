@@ -1256,7 +1256,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, LocalDateTime::from).truncatedTo(ChronoUnit.MINUTES)"
+        |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, LocalDateTime::from).truncatedTo(ChronoUnit.MINUTES).get(ChronoUnit.YEARS)"
         |            }
         |          }
         |        }
