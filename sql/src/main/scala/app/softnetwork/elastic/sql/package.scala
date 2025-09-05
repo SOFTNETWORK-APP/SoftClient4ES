@@ -334,4 +334,6 @@ package object sql {
       }
     }
   }
+
+  case class SQLScript(script: String) extends SQLExpr(script)
 }
