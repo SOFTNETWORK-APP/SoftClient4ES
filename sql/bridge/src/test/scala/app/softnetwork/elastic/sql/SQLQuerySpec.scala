@@ -1265,7 +1265,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("ChronoUnit", " ChronoUnit")
         .replaceAll("==", " == ")
         .replaceAll("!=", " != ")
         .replaceAll("&&", " && ")
