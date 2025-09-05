@@ -538,8 +538,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                "must_not": [
       |                  {
       |                    "term": {
-      |                      "country": {
-      |                        "value": "usa"
+      |                      "Country": {
+      |                        "value": "USA"
       |                      }
       |                    }
       |                  }
@@ -551,8 +551,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                "must_not": [
       |                  {
       |                    "term": {
-      |                      "city": {
-      |                        "value": "berlin"
+      |                      "City": {
+      |                        "value": "Berlin"
       |                      }
       |                    }
       |                  }
@@ -566,17 +566,17 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        }
       |      },
       |      "aggs": {
-      |        "country": {
+      |        "Country": {
       |          "terms": {
-      |            "field": "country.keyword",
+      |            "field": "Country.keyword",
       |            "order": {
-      |              "country": "asc"
+      |              "Country": "asc"
       |            }
       |          },
       |          "aggs": {
-      |            "city": {
+      |            "City": {
       |              "terms": {
-      |                "field": "city.keyword",
+      |                "field": "City.keyword",
       |                "order": {
       |                  "cnt": "desc"
       |                }
@@ -584,7 +584,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "aggs": {
       |                "cnt": {
       |                  "value_count": {
-      |                    "field": "customerid"
+      |                    "field": "CustomerID"
       |                  }
       |                },
       |                "having_filter": {
@@ -1117,7 +1117,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "aggs": {
       |        "Country": {
       |          "terms": {
-      |            "field": "Country.keyword"
+      |            "field": "Country.keyword",
+      |            "order": {
+      |              "Country": "asc"
+      |            }
       |          },
       |          "aggs": {
       |            "City": {

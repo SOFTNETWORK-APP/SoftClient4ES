@@ -534,13 +534,9 @@ trait SQLWhereParser {
 trait SQLGroupByParser {
   self: SQLParser with SQLWhereParser =>
 
-  private def having: PackratParser[SQLHaving] = Having.regex ~> whereCriteria ^^ { rawTokens =>
-    SQLHaving(
-      processTokens(rawTokens)
-    )
+  def bucket: PackratParser[SQLBucket] = identifier ^^ { i =>
+    SQLBucket(i)
   }
-
-  def bucket: PackratParser[SQLBucket] = identifier ^^ (i => SQLBucket(i))
 
   def groupBy: PackratParser[SQLGroupBy] =
     GroupBy.regex ~ rep1sep(bucket, separator) ^^ { case _ ~ buckets =>

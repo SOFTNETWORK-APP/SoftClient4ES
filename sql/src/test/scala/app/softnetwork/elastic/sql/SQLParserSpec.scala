@@ -74,11 +74,11 @@ object Queries {
       |order by identifier2 desc
       |limit 10""".stripMargin.replaceAll("\n", " ")
   val groupByWithHaving: String =
-    """SELECT COUNT(CustomerID) as cnt, City, Country
-      |FROM Customers
-      |GROUP BY Country,City
-      |HAVING Country <> "USA" AND City <> "Berlin" AND COUNT(CustomerID) > 1
-      |ORDER BY COUNT(CustomerID) DESC,Country asc""".stripMargin.replaceAll("\n", " ").toLowerCase
+    """select count(CustomerID) as cnt, City, Country
+      |from Customers
+      |group by Country, City
+      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1
+      |order by count(CustomerID) desc, Country asc""".stripMargin.replaceAll("\n", " ")
   val dateTimeWithIntervalFields: String =
     "select current_timestamp() - interval 3 day as ct, current_date as cd, current_time as t, now as n from dual"
   val fieldsWithInterval: String =
@@ -92,8 +92,9 @@ object Queries {
   val groupByWithHavingAndDateTimeFunctions: String =
     """select count(CustomerID) as cnt, City, Country, max(createdAt) as lastSeen
       |from Table
-      |group by Country,City
-      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day""".stripMargin
+      |group by Country, City
+      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
+      |order by Country asc""".stripMargin
       .replaceAll("\n", " ")
 }
 

@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql
 case object GroupBy extends SQLExpr("group by") with SQLRegex
 
 case class SQLGroupBy(buckets: Seq[SQLBucket]) extends Updateable {
-  override def sql: String = s" $GroupBy ${buckets.mkString(",")}"
+  override def sql: String = s" $GroupBy ${buckets.mkString(", ")}"
   def update(request: SQLSearchRequest): SQLGroupBy =
     this.copy(buckets = buckets.map(_.update(request)))
   lazy val bucketNames: Map[String, SQLBucket] = buckets.map { b =>

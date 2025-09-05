@@ -23,5 +23,5 @@ case class SQLFieldSort(
 }
 
 case class SQLOrderBy(sorts: Seq[SQLFieldSort]) extends SQLToken {
-  override def sql: String = s" $OrderBy ${sorts.mkString(",")}"
+  override def sql: String = s" $OrderBy ${sorts.mkString(", ")}"
 }

@@ -288,14 +288,11 @@ package object sql {
       with SQLSource
       with SQLTokenWithFunction {
 
-    lazy val aggregationName: Option[String] =
-      if (aggregation) fieldAlias.orElse(Option(name)) else None
-
     lazy val identifierName: String =
-      (function match {
+      function match {
         case Some(f) => s"${f.sql}($name)"
         case _       => name
-      }).toLowerCase
+      }
 
     lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
 
