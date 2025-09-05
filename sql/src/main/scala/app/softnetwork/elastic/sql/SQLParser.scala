@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import scala.util.parsing.combinator.{PackratParsers, RegexParsers}
 import scala.util.parsing.input.CharSequenceReader
+import TimeUnit._
 
 /** Created by smanciot on 27/06/2018.
   *
@@ -101,10 +102,12 @@ trait SQLParser extends RegexParsers with PackratParsers {
 
   def second: PackratParser[TimeUnit] = Second.regex ^^ (_ => Second)
 
+  def time_unit: PackratParser[TimeUnit] =
+    year | month | quarter | week | day | hour | minute | second
+
   def interval: PackratParser[TimeInterval] =
-    Interval.regex ~ long ~ (year | month | quarter | week | day | hour | minute | second) ^^ {
-      case _ ~ l ~ u =>
-        TimeInterval(l.value.toInt, u)
+    Interval.regex ~ long ~ time_unit ^^ { case _ ~ l ~ u =>
+      TimeInterval(l.value.toInt, u)
     }
 
   def current_date: PackratParser[CurrentDateTimeFunction] =
@@ -143,9 +146,66 @@ trait SQLParser extends RegexParsers with PackratParsers {
         )
     }
 
-  def parse_date: PackratParser[DateTimeFunction] =
+  def date_trunc: PackratParser[SQLTypedFunction[SQLTemporal, SQLTemporal]] =
+    "(?i)date_trunc".r ~ start ~ time_unit ~ end ^^ { case _ ~ _ ~ u ~ _ =>
+      DateTrunc(u)
+    }
+
+  def extract: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    "(?i)extract".r ~ start ~ time_unit ~ end ^^ { case _ ~ _ ~ u ~ _ =>
+      Extract(u)
+    }
+
+  def extract_year: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    Year.regex ^^ (_ => YEAR)
+
+  def extract_month: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    Month.regex ^^ (_ => MONTH)
+
+  def extract_day: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] = Day.regex ^^ (_ => DAY)
+
+  def extract_hour: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    Hour.regex ^^ (_ => HOUR)
+
+  def extract_minute: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    Minute.regex ^^ (_ => MINUTE)
+
+  def extract_second: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    Second.regex ^^ (_ => SECOND)
+
+  def extractors: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+    extract | extract_year | extract_month | extract_day | extract_hour | extract_minute | extract_second
+
+  def date_add: PackratParser[DateFunction] =
+    "(?i)date_add".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
+      DateAdd(i)
+    }
+
+  def date_sub: PackratParser[DateFunction] =
+    "(?i)date_sub".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
+      DateSub(i)
+    }
+
+  def parse_date: PackratParser[DateFunction] =
     "(?i)parse_date".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
       ParseDate(f.value)
+    }
+
+  def format_date: PackratParser[DateFunction] =
+    "(?i)format_date".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
+      FormatDate(f.value)
+    }
+
+  def date_functions: PackratParser[DateFunction] = date_add | date_sub | parse_date | format_date
+
+  def datetime_add: PackratParser[DateTimeFunction] =
+    "(?i)datetime_add".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
+      DateTimeAdd(i)
+    }
+
+  def datetime_sub: PackratParser[DateTimeFunction] =
+    "(?i)datetime_sub".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
+      DateTimeSub(i)
     }
 
   def parse_datetime: PackratParser[DateTimeFunction] =
@@ -153,18 +213,29 @@ trait SQLParser extends RegexParsers with PackratParsers {
       ParseDateTime(f.value)
     }
 
-  def date_functions: PackratParser[DateTimeFunction] = parse_date | parse_datetime
+  def format_datetime: PackratParser[DateTimeFunction] =
+    "(?i)format_datetime".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
+      FormatDateTime(f.value)
+    }
+
+  def datetime_functions: PackratParser[DateTimeFunction] =
+    datetime_add | datetime_sub | parse_datetime | format_datetime
 
   def aggregates: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
   def distance: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
 
-  def sql_functions: PackratParser[SQLFunction] = aggregates | distance | date_functions
+  def sql_functions: PackratParser[SQLFunction] =
+    aggregates | distance | date_trunc | extractors | date_functions | datetime_functions
 
   private val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
 
   def identifierWithFunction: PackratParser[SQLIdentifier] =
     rep1sep(sql_functions, start) ~ start.? ~ identifier ~ rep1(end) ^^ { case f ~ _ ~ i ~ _ =>
+      SQLValidator.validateChain(f) match {
+        case Left(error) => throw new IllegalArgumentException(error)
+        case _           =>
+      }
       i.copy(functions = f)
     }
 
@@ -580,6 +651,10 @@ trait SQLOrderByParser {
 
   def fieldWithFunction: PackratParser[(String, List[SQLFunction])] =
     rep1sep(sql_functions, start) ~ start.? ~ fieldName ~ rep1(end) ^^ { case f ~ _ ~ n ~ _ =>
+      SQLValidator.validateChain(f) match {
+        case Left(error) => throw new IllegalArgumentException(error)
+        case _           =>
+      }
       (n, f)
     }
 

@@ -99,7 +99,7 @@ object Queries {
   val parseDate =
     "select identifier, count(identifier2) as ct, max(parse_date('yyyy-MM-dd')(createdAt)) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
   val parseDateTime =
-    "select identifier, count(identifier2) as ct, max(parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(createdAt)) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
+    "select identifier, count(identifier2) as ct, max(date_trunc(minute)(parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(createdAt))) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
 
 }
 

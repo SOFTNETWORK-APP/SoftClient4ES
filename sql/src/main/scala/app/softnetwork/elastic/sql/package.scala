@@ -40,6 +40,11 @@ package object sql {
     }
 
     lazy val aggregation: Boolean = aggregateFunction.isDefined
+
+    def validate(): Either[String, Unit] = {
+      SQLValidator.validateChain(functions)
+    }
+
   }
 
   trait Updateable extends SQLToken {

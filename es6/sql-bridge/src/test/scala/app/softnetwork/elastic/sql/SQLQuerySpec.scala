@@ -882,7 +882,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "ct": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "doc['createdAt'].value.minus(35, ChronoUnit.MINUTE)"
+      |        "source": "doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)"
       |      }
       |    }
       |  },
@@ -984,7 +984,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "return doc['createdAt'].value.toLocalTime() >= LocalTime.now().minus(10, ChronoUnit.MINUTE);"
+        |              "source": "return doc['createdAt'].value.toLocalTime() >= LocalTime.now().minus(10, ChronoUnit.MINUTES);"
         |            }
         |          }
         |        }
@@ -1041,7 +1041,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                  "lastSeen": "lastSeen"
       |                },
       |                "script": {
-      |                  "source": "(params.lastSeen != null) && (params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAY).toInstant().toEpochMilli())"
+      |                  "source": "(params.lastSeen != null) && (params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli())"
       |                }
       |              }
       |            }
@@ -1212,7 +1212,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
-      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(",ChronoUnit", ", ChronoUnit")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
@@ -1259,7 +1259,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, LocalDateTime::from)"
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, LocalDateTime::from).truncatedTo(ChronoUnit.MINUTES)"
       |            }
       |          }
       |        }
@@ -1268,7 +1268,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
-      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(",ChronoUnit", ", ChronoUnit")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
