@@ -2,7 +2,21 @@ package app.softnetwork.elastic.sql
 
 import scala.util.matching.Regex
 
-sealed trait SQLFunction extends SQLRegex
+sealed trait SQLFunction extends SQLRegex {
+  def toSQL(base: String): String = s"$sql($base)"
+}
+
+sealed trait SQLTransformFunction extends SQLFunction {
+  def toPainless(base: String): String
+}
+
+sealed trait ParametrizedFunction extends SQLFunction {
+  def params: Seq[String]
+  override def toSQL(base: String): String = {
+    val paramsStr = params.map(p => s"'$p'").mkString(", ")
+    s"$sql($paramsStr)($base)"
+  }
+}
 
 sealed trait AggregateFunction extends SQLFunction
 case object Count extends SQLExpr("count") with AggregateFunction
@@ -118,4 +132,23 @@ case class DateSub(interval: TimeInterval) extends SQLExpr("date_sub") with Date
 case class DateTrunc(unit: TimeUnit) extends SQLExpr("date_trunc") with DateTimeFunction
 case class Extract(unit: TimeUnit) extends SQLExpr("extract") with DateTimeFunction
 case class FormatDate(format: String) extends SQLExpr("format_date") with DateTimeFunction
-case class ParseDate(format: String) extends SQLExpr("parse_date") with DateTimeFunction
+
+case class ParseDate(format: String)
+    extends SQLExpr("parse_date")
+    with DateTimeFunction
+    with SQLTransformFunction
+    with ParametrizedFunction {
+  override def params: Seq[String] = Seq(format)
+  override def toPainless(base: String): String =
+    s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDate::from)"
+}
+
+case class ParseDateTime(format: String)
+    extends SQLExpr("parse_datetime")
+    with DateTimeFunction
+    with SQLTransformFunction
+    with ParametrizedFunction {
+  override def params: Seq[String] = Seq(format)
+  override def toPainless(base: String): String =
+    s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDateTime::from)"
+}

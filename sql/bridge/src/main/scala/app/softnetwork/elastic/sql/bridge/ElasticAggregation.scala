@@ -12,6 +12,7 @@ import app.softnetwork.elastic.sql.{
   Min,
   SQLBucket,
   SQLCriteria,
+  SQLTransformFunction,
   SortOrder,
   Sum
 }
@@ -87,6 +88,30 @@ object ElasticAggregation {
 
     var aggPath = Seq[String]()
 
+    val (aggFuncs, transformFuncs) = identifier.functions.partition {
+      case _: AggregateFunction => true
+      case _                    => false
+    }
+
+    require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
+
+    def aggWithFieldOrScript(
+                              buildField: (String, String) => Aggregation,
+                              buildScript: (String, Script) => Aggregation
+                            ): Aggregation = {
+      if (transformFuncs.nonEmpty) {
+        val base = s"doc['$sourceField'].value"
+        val scriptSrc = transformFuncs.foldLeft(base) {
+          case (expr, f: SQLTransformFunction) => f.toPainless(expr)
+          case (expr, f)                       => f.toSQL(expr) // fallback
+        }
+        val script = Script(scriptSrc).lang("painless")
+        buildScript(aggName, script)
+      } else {
+        buildField(aggName, sourceField)
+      }
+    }
+
     val _agg =
       aggType match {
         case Count =>
@@ -95,10 +120,10 @@ object ElasticAggregation {
           else {
             valueCountAgg(aggName, sourceField)
           }
-        case Min => minAgg(aggName, sourceField)
-        case Max => maxAgg(aggName, sourceField)
-        case Avg => avgAgg(aggName, sourceField)
-        case Sum => sumAgg(aggName, sourceField)
+        case Min => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
+        case Max => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
+        case Avg => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
+        case Sum => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
       }
 
     val filteredAggName = "filtered_agg"

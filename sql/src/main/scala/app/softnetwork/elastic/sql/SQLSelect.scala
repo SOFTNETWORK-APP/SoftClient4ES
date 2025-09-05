@@ -22,7 +22,7 @@ sealed trait Field extends Updateable with SQLTokenWithFunction {
       identifier.name.replace("(", "").replace(")", "")
     }
 
-  override def function: Option[SQLFunction] = identifier.function
+  override def functions: List[SQLFunction] = identifier.functions
 
   def update(request: SQLSearchRequest): Field
 }
@@ -54,7 +54,7 @@ case class SQLDateTimeField(
   def update(request: SQLSearchRequest): SQLDateTimeField =
     this.copy(identifier = identifier.update(request))
   override def painless: String = {
-    val base = identifier.function match {
+    val base = identifier.functions.headOption match { // FIXME
       case f @ Some(CurrentDate | CurrentTime | CurrentTimestamp | Now) =>
         f.asInstanceOf[PainlessScript].painless
       case _ => s"doc['$sourceField'].value"

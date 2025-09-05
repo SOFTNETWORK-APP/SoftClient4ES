@@ -96,6 +96,11 @@ object Queries {
       |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
       |order by Country asc""".stripMargin
       .replaceAll("\n", " ")
+  val parseDate =
+    "select identifier, count(identifier2) as ct, max(parse_date('yyyy-MM-dd')(createdAt)) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
+  val parseDateTime =
+    "select identifier, count(identifier2) as ct, max(parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(createdAt)) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
+
 }
 
 /** Created by smanciot on 15/02/17.
@@ -397,6 +402,20 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(groupByWithHavingAndDateTimeFunctions)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       groupByWithHavingAndDateTimeFunctions
+    )
+  }
+
+  it should "parse parse_date function" in {
+    val result = SQLParser(parseDate)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      parseDate
+    )
+  }
+
+  it should "parse parse_date_time function" in {
+    val result = SQLParser(parseDateTime)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      parseDateTime
     )
   }
 }

@@ -94,7 +94,7 @@ sealed trait SQLCriteriaWithIdentifier extends SQLCriteria with SQLTokenWithFunc
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false
   override lazy val limit: Option[SQLLimit] = identifier.limit
-  override val function: Option[SQLFunction] = identifier.function
+  override val functions: List[SQLFunction] = identifier.functions
 }
 
 case class ElasticBoolQuery(
@@ -219,7 +219,7 @@ case class SQLIn[R, +T <: SQLValue[R]](
   values: SQLValues[R, T],
   maybeNot: Option[Not.type] = None
 ) extends Expression { this: SQLIn[R, T] =>
-  private[this] lazy val id = function match {
+  private[this] lazy val id = functions.headOption match {
     case Some(f) => s"$f($identifier)"
     case _       => s"$identifier"
   }
@@ -244,7 +244,7 @@ case class SQLBetween[+T](
   fromTo: SQLFromTo[T],
   maybeNot: Option[Not.type]
 ) extends Expression {
-  private[this] lazy val id = function match {
+  private[this] lazy val id = functions.headOption match {
     case Some(f) => s"$f($identifier)"
     case _       => s"$identifier"
   }
@@ -271,7 +271,7 @@ case class ElasticGeoDistance(
   lon: SQLDouble
 ) extends Expression {
   override def sql = s"$Distance($identifier,($lat,$lon)) $operator $distance"
-  override val function: Option[SQLFunction] = Some(Distance)
+  override val functions: List[SQLFunction] = List(Distance)
   override def operator: SQLOperator = Le
   override def update(request: SQLSearchRequest): ElasticGeoDistance =
     this.copy(identifier = identifier.update(request))
@@ -333,7 +333,7 @@ case class SQLComparisonDateMath(
   override def update(request: SQLSearchRequest): SQLCriteria =
     this.copy(identifier = identifier.update(request))
 
-  override def maybeValue: Option[SQLToken] = Some(dateTimeFunction)
+  override def maybeValue: Option[SQLToken] = Some(SQLScript(script))
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 

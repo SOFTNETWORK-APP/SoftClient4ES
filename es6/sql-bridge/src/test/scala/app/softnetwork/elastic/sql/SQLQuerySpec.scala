@@ -1163,4 +1163,116 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
   }
+
+  it should "handle parse_date function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(parseDate)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "identifier": {
+      |      "terms": {
+      |        "field": "identifier.keyword",
+      |        "order": {
+      |          "ct": "desc"
+      |        }
+      |      },
+      |      "aggs": {
+      |        "ct": {
+      |          "value_count": {
+      |            "field": "identifier2"
+      |          }
+      |        },
+      |        "lastSeen": {
+      |          "max": {
+      |            "field": "createdAt",
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, LocalDate::from)"
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+      .replaceAll(",LocalDate", ", LocalDate")
+  }
+
+  it should "handle parse_datetime function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(parseDateTime)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "identifier": {
+      |      "terms": {
+      |        "field": "identifier.keyword",
+      |        "order": {
+      |          "ct": "desc"
+      |        }
+      |      },
+      |      "aggs": {
+      |        "ct": {
+      |          "value_count": {
+      |            "field": "identifier2"
+      |          }
+      |        },
+      |        "lastSeen": {
+      |          "max": {
+      |            "field": "createdAt",
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, LocalDateTime::from)"
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+      .replaceAll(",LocalDate", ", LocalDate")
+  }
 }

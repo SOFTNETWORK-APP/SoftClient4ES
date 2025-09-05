@@ -11,12 +11,13 @@ case object Asc extends SQLExpr("asc") with SortOrder
 case class SQLFieldSort(
   field: String,
   order: Option[SortOrder],
-  function: Option[SQLFunction] = None
+  functions: List[SQLFunction] = List.empty
 ) extends SQLTokenWithFunction {
-  private[this] lazy val fieldWithFunction: String = function match {
-    case Some(f) => s"$f($field)"
-    case _       => field
-  }
+  private[this] lazy val fieldWithFunction: String =
+    functions.foldLeft(field)((expr, fun) => {
+      fun.toSQL(expr)
+    })
+
   lazy val direction: SortOrder = order.getOrElse(Asc)
   lazy val name: String = fieldWithFunction
   override def sql: String = s"$name $direction"

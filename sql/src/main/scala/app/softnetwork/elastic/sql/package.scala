@@ -30,11 +30,13 @@ package object sql {
   }
 
   trait SQLTokenWithFunction extends SQLToken {
-    def function: Option[SQLFunction]
+    def functions: List[SQLFunction]
 
-    lazy val aggregateFunction: Option[AggregateFunction] = function match {
+    lazy val aggregateFunction: Option[AggregateFunction] = functions.headOption match {
       case Some(af: AggregateFunction) => Some(af)
-      case _                           => None
+      case other =>
+        Console.println(this)
+        None
     }
 
     lazy val aggregation: Boolean = aggregateFunction.isDefined
@@ -264,7 +266,7 @@ package object sql {
     distinct: Boolean = false,
     nested: Boolean = false,
     limit: Option[SQLLimit] = None,
-    function: Option[SQLFunction] = None,
+    functions: List[SQLFunction] = List.empty,
     fieldAlias: Option[String] = None,
     bucket: Option[SQLBucket] = None
   ) extends SQLExpr({
@@ -280,19 +282,17 @@ package object sql {
             parts.mkString(".").trim
           }
         }
-        function match {
-          case Some(f) => s"$f($sql)"
-          case _       => sql
-        }
+        functions.reverse.foldLeft(sql)((expr, fun) => {
+          fun.toSQL(expr)
+        })
       })
       with SQLSource
       with SQLTokenWithFunction {
 
     lazy val identifierName: String =
-      function match {
-        case Some(f) => s"${f.sql}($name)"
-        case _       => name
-      }
+      functions.reverse.foldLeft(name)((expr, fun) => {
+        fun.toSQL(expr)
+      })
 
     lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
 

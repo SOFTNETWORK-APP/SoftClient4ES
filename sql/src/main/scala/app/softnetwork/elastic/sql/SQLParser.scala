@@ -143,17 +143,29 @@ trait SQLParser extends RegexParsers with PackratParsers {
         )
     }
 
-  def aggregateFunction: PackratParser[AggregateFunction] = count | min | max | avg | sum
+  def parse_date: PackratParser[DateTimeFunction] =
+    "(?i)parse_date".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
+      ParseDate(f.value)
+    }
 
-  def distanceFunction: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
+  def parse_datetime: PackratParser[DateTimeFunction] =
+    "(?i)parse_datetime".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
+      ParseDateTime(f.value)
+    }
 
-  def sqlFunction: PackratParser[SQLFunction] = aggregateFunction | distanceFunction
+  def date_functions: PackratParser[DateTimeFunction] = parse_date | parse_datetime
+
+  def aggregates: PackratParser[AggregateFunction] = count | min | max | avg | sum
+
+  def distance: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
+
+  def sql_functions: PackratParser[SQLFunction] = aggregates | distance | date_functions
 
   private val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
 
   def identifierWithFunction: PackratParser[SQLIdentifier] =
-    sqlFunction ~ start ~ identifier ~ end ^^ { case f ~ _ ~ i ~ _ =>
-      i.copy(function = Some(f))
+    rep1sep(sql_functions, start) ~ start.? ~ identifier ~ rep1(end) ^^ { case f ~ _ ~ i ~ _ =>
+      i.copy(functions = f)
     }
 
   def identifier: PackratParser[SQLIdentifier] =
@@ -311,8 +323,8 @@ trait SQLWhereParser {
       case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLDoubleFromTo(from, to), n)
     }
 
-  def distance: PackratParser[SQLCriteria] =
-    distanceFunction ~ start ~ identifier ~ separator ~ start ~ double ~ separator ~ double ~ end ~ end ~ le ~ literal ^^ {
+  def sql_distance: PackratParser[SQLCriteria] =
+    distance ~ start ~ identifier ~ separator ~ start ~ double ~ separator ~ double ~ end ~ end ~ le ~ literal ^^ {
       case _ ~ _ ~ i ~ _ ~ _ ~ lat ~ _ ~ lon ~ _ ~ _ ~ _ ~ d => ElasticGeoDistance(i, d, lat, lon)
     }
 
@@ -336,7 +348,7 @@ trait SQLWhereParser {
   def not: PackratParser[Not.type] = Not.regex ^^ (_ => Not)
 
   def criteria: PackratParser[SQLCriteria] =
-    (equality | like | dateTimeComparison | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | distance | matchCriteria) ^^ (
+    (equality | like | dateTimeComparison | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | sql_distance | matchCriteria) ^^ (
       c => c
     )
 
@@ -566,16 +578,16 @@ trait SQLOrderByParser {
   private def fieldName: PackratParser[String] =
     """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
 
-  def fieldWithFunction: PackratParser[(String, SQLFunction)] =
-    sqlFunction ~ start ~ fieldName ~ end ^^ { case f ~ _ ~ n ~ _ =>
+  def fieldWithFunction: PackratParser[(String, List[SQLFunction])] =
+    rep1sep(sql_functions, start) ~ start.? ~ fieldName ~ rep1(end) ^^ { case f ~ _ ~ n ~ _ =>
       (n, f)
     }
 
   def sort: PackratParser[SQLFieldSort] =
     (fieldWithFunction | fieldName) ~ (asc | desc).? ^^ { case f ~ o =>
       f match {
-        case i: (String, SQLFunction) => SQLFieldSort(i._1, o, Some(i._2))
-        case s: String                => SQLFieldSort(s, o, None)
+        case i: (String, List[SQLFunction]) => SQLFieldSort(i._1, o, i._2)
+        case s: String                      => SQLFieldSort(s, o, List.empty)
       }
     }
 
