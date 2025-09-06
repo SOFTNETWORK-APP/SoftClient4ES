@@ -12,14 +12,9 @@ case class SQLFieldSort(
   field: String,
   order: Option[SortOrder],
   functions: List[SQLFunction] = List.empty
-) extends SQLTokenWithFunction {
-  private[this] lazy val fieldWithFunction: String =
-    functions.foldLeft(field)((expr, fun) => {
-      fun.toSQL(expr)
-    })
-
+) extends SQLFunctionChain {
   lazy val direction: SortOrder = order.getOrElse(Asc)
-  lazy val name: String = fieldWithFunction
+  lazy val name: String = toSQL(field)
   override def sql: String = s"$name $direction"
 }
 

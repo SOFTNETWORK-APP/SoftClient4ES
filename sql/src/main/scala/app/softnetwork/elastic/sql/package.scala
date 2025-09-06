@@ -29,24 +29,6 @@ package object sql {
     def script: String
   }
 
-  trait SQLTokenWithFunction extends SQLToken {
-    def functions: List[SQLFunction]
-
-    lazy val aggregateFunction: Option[AggregateFunction] = functions.headOption match {
-      case Some(af: AggregateFunction) => Some(af)
-      case other =>
-        Console.println(this)
-        None
-    }
-
-    lazy val aggregation: Boolean = aggregateFunction.isDefined
-
-    def validate(): Either[String, Unit] = {
-      SQLValidator.validateChain(functions)
-    }
-
-  }
-
   trait Updateable extends SQLToken {
     def update(request: SQLSearchRequest): Updateable
   }
@@ -292,7 +274,8 @@ package object sql {
         })
       })
       with SQLSource
-      with SQLTokenWithFunction {
+      with SQLFunctionChain
+      with PainlessScript {
 
     lazy val identifierName: String =
       functions.reverse.foldLeft(name)((expr, fun) => {
@@ -304,6 +287,8 @@ package object sql {
     lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
+
+    override def painless: String = s"doc['$name'].value"
 
     def update(request: SQLSearchRequest): SQLIdentifier = {
       val parts: Seq[String] = name.split("\\.").toSeq

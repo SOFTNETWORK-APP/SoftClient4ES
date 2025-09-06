@@ -2,7 +2,7 @@ package app.softnetwork.elastic.sql
 
 case object Select extends SQLExpr("select") with SQLRegex
 
-sealed trait Field extends Updateable with SQLTokenWithFunction {
+sealed trait Field extends Updateable with SQLFunctionChain {
   def identifier: SQLIdentifier
   def fieldAlias: Option[SQLAlias]
   def isScriptField: Boolean = false
@@ -41,6 +41,22 @@ sealed trait ScriptField extends Field with PainlessScript {
   def update(request: SQLSearchRequest): ScriptField
 
   lazy val name: String = fieldAlias.map(_.alias).getOrElse(sourceField)
+}
+
+case class SQLFunctionField(
+  override val functions: List[SQLFunction],
+  fieldAlias: Option[SQLAlias] = None
+) extends ScriptField
+    with SQLFunctionChain {
+
+  override def update(request: SQLSearchRequest): SQLFunctionField =
+    this // TODO update SQLAlias if needed
+
+  override def identifier: SQLIdentifier = SQLIdentifier("", functions = functions)
+
+  override def painless: String = SQLFunctionUtils.buildPainless(functions)
+
+  override lazy val sourceField: String = toSQL("").replace("(", "").replace(")", "")
 }
 
 case class SQLDateTimeField(

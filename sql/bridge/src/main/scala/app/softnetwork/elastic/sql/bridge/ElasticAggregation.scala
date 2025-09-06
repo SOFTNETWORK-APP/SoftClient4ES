@@ -12,7 +12,7 @@ import app.softnetwork.elastic.sql.{
   Min,
   SQLBucket,
   SQLCriteria,
-  SQLTransformFunction,
+  SQLFunctionUtils,
   SortOrder,
   Sum
 }
@@ -100,12 +100,7 @@ object ElasticAggregation {
                               buildScript: (String, Script) => Aggregation
                             ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val base = s"doc['$sourceField'].value"
-        val orderedTransforms = transformFuncs.reverse
-        val scriptSrc = orderedTransforms.foldLeft(base) {
-          case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
-          case (expr, f)                             => f.toSQL(expr) // fallback
-        }
+        val scriptSrc = SQLFunctionUtils.buildPainless(Option(identifier), transformFuncs)
         val script = Script(scriptSrc).lang("painless")
         buildScript(aggName, script)
       } else {

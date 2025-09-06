@@ -89,7 +89,7 @@ case class SQLPredicate(
 
 sealed trait ElasticFilter
 
-sealed trait SQLCriteriaWithIdentifier extends SQLCriteria with SQLTokenWithFunction {
+sealed trait SQLCriteriaWithIdentifier extends SQLCriteria with SQLFunctionChain {
   def identifier: SQLIdentifier
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false

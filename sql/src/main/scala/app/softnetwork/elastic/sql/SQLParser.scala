@@ -146,34 +146,34 @@ trait SQLParser extends RegexParsers with PackratParsers {
         )
     }
 
-  def date_trunc: PackratParser[SQLTypedFunction[SQLTemporal, SQLTemporal]] =
+  def date_trunc: PackratParser[SQLUnaryFunction[SQLTemporal, SQLTemporal]] =
     "(?i)date_trunc".r ~ start ~ time_unit ~ end ^^ { case _ ~ _ ~ u ~ _ =>
       DateTrunc(u)
     }
 
-  def extract: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extract: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     "(?i)extract".r ~ start ~ time_unit ~ end ^^ { case _ ~ _ ~ u ~ _ =>
       Extract(u)
     }
 
-  def extract_year: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extract_year: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     Year.regex ^^ (_ => YEAR)
 
-  def extract_month: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extract_month: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     Month.regex ^^ (_ => MONTH)
 
-  def extract_day: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] = Day.regex ^^ (_ => DAY)
+  def extract_day: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] = Day.regex ^^ (_ => DAY)
 
-  def extract_hour: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extract_hour: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     Hour.regex ^^ (_ => HOUR)
 
-  def extract_minute: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extract_minute: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     Minute.regex ^^ (_ => MINUTE)
 
-  def extract_second: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extract_second: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     Second.regex ^^ (_ => SECOND)
 
-  def extractors: PackratParser[SQLTypedFunction[SQLTemporal, SQLNumber]] =
+  def extractors: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     extract | extract_year | extract_month | extract_day | extract_hour | extract_minute | extract_second
 
   def date_add: PackratParser[DateFunction] =
@@ -225,15 +225,35 @@ trait SQLParser extends RegexParsers with PackratParsers {
 
   def distance: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
 
+  def date_painless: PackratParser[PainlessScript] =
+    repsep(
+      date_trunc | extractors | date_functions | datetime_functions,
+      start
+    ) ~ start.? ~ identifier.? ~ rep(end) ^^ { case f ~ _ ~ i ~ _ =>
+      SQLValidator.validateChain(f) match {
+        case Left(error) => throw SQLValidationError(error)
+        case _           =>
+      }
+      i match {
+        case Some(id) => id.copy(functions = f)
+        case None     => SQLIdentifier("", functions = f)
+      }
+    }
+
+  def date_diff: PackratParser[DateDiff] =
+    "(?i)date_diff".r ~ start ~ (date_painless | identifier) ~ separator ~ (date_painless | identifier) ~ separator ~ time_unit ~ end ^^ {
+      case _ ~ _ ~ d1 ~ _ ~ d2 ~ _ ~ u ~ _ => DateDiff(d1, d2, u)
+    }
+
   def sql_functions: PackratParser[SQLFunction] =
-    aggregates | distance | date_trunc | extractors | date_functions | datetime_functions
+    aggregates | distance | date_diff | date_trunc | extractors | date_functions | datetime_functions
 
   private val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
 
   def identifierWithFunction: PackratParser[SQLIdentifier] =
     rep1sep(sql_functions, start) ~ start.? ~ identifier ~ rep1(end) ^^ { case f ~ _ ~ i ~ _ =>
       SQLValidator.validateChain(f) match {
-        case Left(error) => throw new IllegalArgumentException(error)
+        case Left(error) => throw SQLValidationError(error)
         case _           =>
       }
       i.copy(functions = f)
@@ -271,6 +291,20 @@ trait SQLParser extends RegexParsers with PackratParsers {
     (dateTimeWithInterval | identifierWithInterval) ~ alias.? ^^ { case d ~ a =>
       d.copy(fieldAlias = a)
     }
+
+  def date_diff_field: PackratParser[SQLFunctionField] = date_diff ~ alias.? ^^ { case d ~ a =>
+    SQLFunctionField(d :: Nil, a)
+  }
+
+  def functionField: PackratParser[SQLFunctionField] =
+    rep1sep(sql_functions, start) ~ start.? ~ rep1(end) ~ alias.? ^^ { case f ~ _ ~ _ ~ a =>
+      SQLValidator.validateChain(f) match {
+        case Left(error) => throw SQLValidationError(error)
+        case _           =>
+      }
+      SQLFunctionField(f, a)
+    }
+
 }
 
 trait SQLSelectParser {
@@ -282,7 +316,10 @@ trait SQLSelectParser {
   }
 
   def select: PackratParser[SQLSelect] =
-    Select.regex ~ rep1sep(scriptField | field, separator) ~ except.? ^^ { case _ ~ fields ~ e =>
+    Select.regex ~ rep1sep(
+      date_diff_field | functionField | scriptField | field,
+      separator
+    ) ~ except.? ^^ { case _ ~ fields ~ e =>
       SQLSelect(fields, e)
     }
 
@@ -550,7 +587,7 @@ trait SQLWhereParser {
           case _ :: Nil =>
             processTokensHelper(rest, op :: stack)
           case _ =>
-            throw new IllegalStateException("Invalid stack state for predicate creation")
+            throw SQLValidationError("Invalid stack state for predicate creation")
         }
       case (_: EndDelimiter) :: rest =>
         processTokensHelper(rest, stack) // Ignore and move on
@@ -581,7 +618,7 @@ trait SQLWhereParser {
     */
   private def processSubTokens(tokens: List[SQLToken]): SQLCriteria = {
     processTokensHelper(tokens, Nil).getOrElse(
-      throw new IllegalStateException("Empty sub-expression")
+      throw SQLValidationError("Empty sub-expression")
     )
   }
 
@@ -604,7 +641,7 @@ trait SQLWhereParser {
     subTokens: List[SQLToken] = Nil
   ): (List[SQLToken], List[SQLToken]) = {
     tokens match {
-      case Nil => throw new IllegalStateException("Unbalanced parentheses")
+      case Nil => throw SQLValidationError("Unbalanced parentheses")
       case (start: StartDelimiter) :: rest =>
         extractSubTokens(rest, openCount + 1, start :: subTokens)
       case (end: EndDelimiter) :: rest =>
@@ -654,7 +691,7 @@ trait SQLOrderByParser {
   def fieldWithFunction: PackratParser[(String, List[SQLFunction])] =
     rep1sep(sql_functions, start) ~ start.? ~ fieldName ~ rep1(end) ^^ { case f ~ _ ~ n ~ _ =>
       SQLValidator.validateChain(f) match {
-        case Left(error) => throw new IllegalArgumentException(error)
+        case Left(error) => throw SQLValidationError(error)
         case _           =>
       }
       (n, f)

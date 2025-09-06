@@ -6,23 +6,62 @@ sealed trait SQLFunction extends SQLRegex {
   def toSQL(base: String): String = s"$sql($base)"
 }
 
-trait SQLTypedFunction[In <: SQLType, Out <: SQLType] extends SQLFunction {
-  def inputType: In
-  def outputType: Out
-  def from(other: SQLTypedFunction[_, _]): Boolean =
-    inputType.typeId == other.outputType.asInstanceOf[SQLType].typeId ||
-    (inputType.typeId == "temporal" && Set("date", "datetime").contains(
-      other.outputType.asInstanceOf[SQLType].typeId
-    ))
-  def to(other: SQLTypedFunction[_, _]): Boolean =
-    outputType.typeId == other.inputType.asInstanceOf[SQLType].typeId ||
-    (outputType.typeId == "temporal" && Set("date", "datetime").contains(
-      other.inputType.asInstanceOf[SQLType].typeId
-    ))
+object SQLFunctionUtils {
+  def buildPainless(functions: List[SQLFunction]): String =
+    buildPainless(None, functions)
+
+  def buildPainless(
+    painless: Option[PainlessScript] = None,
+    functions: List[SQLFunction]
+  ): String = {
+    val base = painless.map(_.painless).getOrElse("")
+    val orderedFunctions = functions.reverse
+    orderedFunctions.foldLeft(base) {
+      case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
+      case (_, f: PainlessScript)                => f.painless
+      case (expr, f)                             => f.toSQL(expr) // fallback
+    }
+  }
 }
 
-sealed trait SQLTransformFunction[In <: SQLType, Out <: SQLType] extends SQLTypedFunction[In, Out] {
-  def toPainless(base: String): String
+trait SQLFunctionChain extends SQLFunction with SQLValidation {
+  def functions: List[SQLFunction]
+
+  override def validate(): Either[String, Unit] =
+    SQLValidator.validateChain(functions)
+
+  override def toSQL(base: String): String =
+    functions.reverse.foldLeft(base)((expr, fun) => {
+      fun.toSQL(expr)
+    })
+
+  lazy val aggregateFunction: Option[AggregateFunction] = functions.headOption match {
+    case Some(af: AggregateFunction) => Some(af)
+    case _                           => None
+  }
+
+  lazy val aggregation: Boolean = aggregateFunction.isDefined
+}
+
+sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
+    extends SQLFunction
+    with PainlessScript {
+  def inputType: In
+  def outputType: Out
+}
+
+trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
+    extends SQLUnaryFunction[SQLAny, Out] { self: SQLFunction =>
+
+  override def inputType: SQLAny = SQLTypes.Any
+
+  def left: PainlessScript
+  def right: PainlessScript
+
+}
+
+sealed trait SQLTransformFunction[In <: SQLType, Out <: SQLType] extends SQLUnaryFunction[In, Out] {
+  def toPainless(base: String): String = s"$base$painless"
 }
 
 sealed trait ParametrizedFunction extends SQLFunction {
@@ -162,7 +201,7 @@ case class DateTrunc(unit: TimeUnit)
   override def inputType: SQLTemporal = SQLTypes.Temporal // par défaut
   override def outputType: SQLTemporal = SQLTypes.Temporal // idem
   override def params: Seq[String] = Seq(unit.sql)
-  override def toPainless(base: String): String = s"$base.truncatedTo(${unit.painless})"
+  override def painless: String = s".truncatedTo(${unit.painless})"
 }
 
 case class Extract(unit: TimeUnit, override val sql: String = "extract")
@@ -173,7 +212,7 @@ case class Extract(unit: TimeUnit, override val sql: String = "extract")
   override def inputType: SQLTemporal = SQLTypes.Temporal
   override def outputType: SQLNumber = SQLTypes.Number
   override def params: Seq[String] = Seq(unit.sql)
-  override def toPainless(base: String): String = s"$base.get(${unit.painless})"
+  override def painless: String = s".get(${unit.painless})"
 }
 
 object YEAR extends Extract(Year, Year.sql) {
@@ -200,6 +239,20 @@ object SECOND extends Extract(Second, Second.sql) {
   override def params: Seq[String] = Seq.empty
 }
 
+case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
+    extends SQLExpr("date_diff")
+    with DateTimeFunction
+    with SQLBinaryFunction[SQLDateTime, SQLDateTime, SQLNumber]
+    with PainlessScript {
+  override def outputType: SQLNumber = SQLTypes.Number
+  override def left: PainlessScript = end
+  override def right: PainlessScript = start
+  override def toSQL(base: String): String = {
+    s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
+  }
+  override def painless: String = s"${unit.painless}.between(${start.painless}, ${end.painless})"
+}
+
 case class DateAdd(interval: TimeInterval)
     extends SQLExpr("date_add")
     with DateFunction
@@ -208,7 +261,7 @@ case class DateAdd(interval: TimeInterval)
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLDate = SQLTypes.Date
   override def params: Seq[String] = Seq(interval.sql)
-  override def toPainless(base: String): String = s"$base.plus(${interval.painless})"
+  override def painless: String = s".plus(${interval.painless})"
 }
 
 case class DateSub(interval: TimeInterval)
@@ -219,7 +272,7 @@ case class DateSub(interval: TimeInterval)
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLDate = SQLTypes.Date
   override def params: Seq[String] = Seq(interval.sql)
-  override def toPainless(base: String): String = s"$base.minus(${interval.painless})"
+  override def painless: String = s".minus(${interval.painless})"
 }
 
 case class ParseDate(format: String)
@@ -230,6 +283,7 @@ case class ParseDate(format: String)
   override def inputType: SQLString = SQLTypes.String
   override def outputType: SQLDate = SQLTypes.Date
   override def params: Seq[String] = Seq(s"'$format'")
+  override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDate::from)"
 }
@@ -242,6 +296,7 @@ case class FormatDate(format: String)
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLString = SQLTypes.String
   override def params: Seq[String] = Seq(s"'$format'")
+  override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').format($base)"
 }
@@ -254,7 +309,7 @@ case class DateTimeAdd(interval: TimeInterval)
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
   override def params: Seq[String] = Seq(interval.sql)
-  override def toPainless(base: String): String = s"$base.plus(${interval.painless})"
+  override def painless: String = s".plus(${interval.painless})"
 }
 
 case class DateTimeSub(interval: TimeInterval)
@@ -265,7 +320,7 @@ case class DateTimeSub(interval: TimeInterval)
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
   override def params: Seq[String] = Seq(interval.sql)
-  override def toPainless(base: String): String = s"$base.minus(${interval.painless})"
+  override def painless: String = s".minus(${interval.painless})"
 }
 
 case class ParseDateTime(format: String)
@@ -276,6 +331,7 @@ case class ParseDateTime(format: String)
   override def inputType: SQLString = SQLTypes.String
   override def outputType: SQLDateTime = SQLTypes.DateTime
   override def params: Seq[String] = Seq(s"'$format'")
+  override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDateTime::from)"
 }
@@ -288,6 +344,7 @@ case class FormatDateTime(format: String)
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLString = SQLTypes.String
   override def params: Seq[String] = Seq(s"'$format'")
+  override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').format($base)"
 }

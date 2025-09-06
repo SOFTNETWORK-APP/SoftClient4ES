@@ -39,7 +39,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
       (transforms.head.toPainless(base), transforms.head.outputType.asInstanceOf[SQLType])
 
     val (finalExpr, _) = transforms.tail.foldLeft(initial) {
-      case ((expr, currentType), t: SQLTypedFunction[_, _]) =>
+      case ((expr, currentType), t: SQLUnaryFunction[_, _]) =>
         if (!currentType.getClass.isAssignableFrom(t.inputType.getClass)) {
           throw new IllegalArgumentException(
             s"Type mismatch: expected ${currentType.getClass.getSimpleName}, got ${t.inputType.getClass.getSimpleName}"
