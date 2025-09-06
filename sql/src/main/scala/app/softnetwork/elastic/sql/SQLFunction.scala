@@ -9,12 +9,12 @@ sealed trait SQLFunction extends SQLRegex {
 trait SQLTypedFunction[In <: SQLType, Out <: SQLType] extends SQLFunction {
   def inputType: In
   def outputType: Out
-  def in(other: SQLTypedFunction[_, _]): Boolean =
+  def from(other: SQLTypedFunction[_, _]): Boolean =
     inputType.typeId == other.outputType.asInstanceOf[SQLType].typeId ||
     (inputType.typeId == "temporal" && Set("date", "datetime").contains(
       other.outputType.asInstanceOf[SQLType].typeId
     ))
-  def out(other: SQLTypedFunction[_, _]): Boolean =
+  def to(other: SQLTypedFunction[_, _]): Boolean =
     outputType.typeId == other.inputType.asInstanceOf[SQLType].typeId ||
     (outputType.typeId == "temporal" && Set("date", "datetime").contains(
       other.inputType.asInstanceOf[SQLType].typeId
@@ -153,8 +153,6 @@ case object CurrentTimestampWithParens
 case object Now extends SQLExpr("now") with CurrentDateTimeFunction
 
 case object NowWithParens extends SQLExpr("now()") with CurrentDateTimeFunction
-
-// case class DateDiff(interval: TimeInterval) extends SQLExpr("date_diff") with DateTimeFunction
 
 case class DateTrunc(unit: TimeUnit)
     extends SQLExpr("date_trunc")

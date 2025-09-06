@@ -93,7 +93,7 @@ object Queries {
     """select count(CustomerID) as cnt, City, Country, max(createdAt) as lastSeen
       |from Table
       |group by Country, City
-      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
+      |having Country <> "USA" and City != "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
       |order by Country asc""".stripMargin
       .replaceAll("\n", " ")
   val parseDate =

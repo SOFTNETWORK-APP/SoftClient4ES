@@ -8,7 +8,7 @@ object SQLValidator {
       .sliding(2)
       .foreach {
         case Seq(f1, f2) =>
-          if (!f1.in(f2)) {
+          if (!f1.from(f2)) {
             return Left(s"Type mismatch: ${f2.outputType} -> ${f1.inputType}")
           }
         case _ => // ok

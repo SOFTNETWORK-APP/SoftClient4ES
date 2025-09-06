@@ -320,8 +320,10 @@ trait SQLWhereParser {
 
   private def ne: PackratParser[SQLComparisonOperator] = Ne.sql ^^ (_ => Ne)
 
+  private def diff: PackratParser[SQLComparisonOperator] = Diff.sql ^^ (_ => Diff)
+
   private def equality: PackratParser[SQLExpression] =
-    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne) ~ (boolean | literal | double | long) ^^ {
+    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne | diff) ~ (boolean | literal | double | long) ^^ {
       case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
     }
 
@@ -408,7 +410,7 @@ trait SQLWhereParser {
     }
 
   private def dateTimeComparison: PackratParser[SQLComparisonDateMath] =
-    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne | ge | gt | le | lt) ~ (current_date | current_time | current_timestamp | now) ~ arithmeticOperator.? ~ interval.? ^^ {
+    not.? ~ (identifierWithFunction | identifier) ~ (eq | ne | diff | ge | gt | le | lt) ~ (current_date | current_time | current_timestamp | now) ~ arithmeticOperator.? ~ interval.? ^^ {
       case n ~ i ~ o ~ dt ~ ao ~ it => SQLComparisonDateMath(i, o, dt, ao, it, n)
     }
 

@@ -21,17 +21,18 @@ sealed trait SQLComparisonOperator extends SQLExpressionOperator with PainlessSc
   }
 
   def not: SQLComparisonOperator = this match {
-    case Eq => Ne
-    case Ne => Eq
-    case Ge => Lt
-    case Gt => Le
-    case Le => Gt
-    case Lt => Ge
+    case Eq        => Ne
+    case Ne | Diff => Eq
+    case Ge        => Lt
+    case Gt        => Le
+    case Le        => Gt
+    case Lt        => Ge
   }
 }
 
 case object Eq extends SQLExpr("=") with SQLComparisonOperator
 case object Ne extends SQLExpr("<>") with SQLComparisonOperator
+case object Diff extends SQLExpr("!=") with SQLComparisonOperator
 case object Ge extends SQLExpr(">=") with SQLComparisonOperator
 case object Gt extends SQLExpr(">") with SQLComparisonOperator
 case object Le extends SQLExpr("<=") with SQLComparisonOperator

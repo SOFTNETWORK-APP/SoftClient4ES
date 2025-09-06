@@ -67,13 +67,13 @@ package object sql {
         None
       else
         operator match {
-          case Some(_: Eq.type) => values.find(_ == value)
-          case Some(_: Ne.type) => values.find(_ != value)
-          case Some(_: Ge.type) => values.filter(_ >= value).sorted.reverse.headOption
-          case Some(_: Gt.type) => values.filter(_ > value).sorted.reverse.headOption
-          case Some(_: Le.type) => values.filter(_ <= value).sorted.headOption
-          case Some(_: Lt.type) => values.filter(_ < value).sorted.headOption
-          case _                => values.headOption
+          case Some(Eq)        => values.find(_ == value)
+          case Some(Ne | Diff) => values.find(_ != value)
+          case Some(Ge)        => values.filter(_ >= value).sorted.reverse.headOption
+          case Some(Gt)        => values.filter(_ > value).sorted.reverse.headOption
+          case Some(Le)        => values.filter(_ <= value).sorted.headOption
+          case Some(Lt)        => values.filter(_ < value).sorted.headOption
+          case _               => values.headOption
         }
     }
     def painless: String = value match {
@@ -107,11 +107,11 @@ package object sql {
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
-        case Some(_: Eq.type)   => values.find(v => v.toString contentEquals value)
-        case Some(_: Ne.type)   => values.find(v => !(v.toString contentEquals value))
-        case Some(_: Like.type) => values.find(v => pattern.matcher(v.toString).matches())
-        case None               => Some(values.mkString(separator))
-        case _                  => super.choose(values, operator, separator)
+        case Some(Eq)        => values.find(v => v.toString contentEquals value)
+        case Some(Ne | Diff) => values.find(v => !(v.toString contentEquals value))
+        case Some(Like)      => values.find(v => pattern.matcher(v.toString).matches())
+        case None            => Some(values.mkString(separator))
+        case _               => super.choose(values, operator, separator)
       }
     }
   }
@@ -228,10 +228,10 @@ package object sql {
         value.choose[T](values, Some(operator))
       case _ =>
         function match {
-          case Some(_: Min.type) => Some(values.min)
-          case Some(_: Max.type) => Some(values.max)
-          // FIXME        case Some(_: SQLSum.type) => Some(values.sum)
-          // FIXME        case Some(_: SQLAvg.type) => Some(values.sum / values.length  )
+          case Some(Min) => Some(values.min)
+          case Some(Max) => Some(values.max)
+          // FIXME        case Some(SQLSum) => Some(values.sum)
+          // FIXME        case Some(SQLAvg) => Some(values.sum / values.length  )
           case _ => values.headOption
         }
     }

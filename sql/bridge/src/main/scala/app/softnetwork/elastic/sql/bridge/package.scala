@@ -147,7 +147,7 @@ package object bridge {
     value match {
       case n: SQLNumeric[_] if !aggregation =>
         operator match {
-          case _: Ge.type =>
+          case Ge =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -160,7 +160,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) gte d
                 )
             }
-          case _: Gt.type =>
+          case Gt =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -173,7 +173,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) gt d
                 )
             }
-          case _: Le.type =>
+          case Le =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -186,7 +186,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) lte d
                 )
             }
-          case _: Lt.type =>
+          case Lt =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -199,7 +199,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) lt d
                 )
             }
-          case _: Eq.type =>
+          case Eq =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -212,7 +212,7 @@ package object bridge {
                   d => termQuery(identifier.name, d)
                 )
             }
-          case _: Ne.type =>
+          case Ne | Diff =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -229,49 +229,49 @@ package object bridge {
         }
       case l: SQLLiteral if !aggregation =>
         operator match {
-          case _: Like.type =>
+          case Like =>
             maybeNot match {
               case Some(_) =>
                 not(regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
                 regexQuery(identifier.name, toRegex(l.value))
             }
-          case _: Ge.type =>
+          case Ge =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) lt l.value
               case _ =>
                 rangeQuery(identifier.name) gte l.value
             }
-          case _: Gt.type =>
+          case Gt =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) lte l.value
               case _ =>
                 rangeQuery(identifier.name) gt l.value
             }
-          case _: Le.type =>
+          case Le =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) gt l.value
               case _ =>
                 rangeQuery(identifier.name) lte l.value
             }
-          case _: Lt.type =>
+          case Lt =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) gte l.value
               case _ =>
                 rangeQuery(identifier.name) lt l.value
             }
-          case _: Eq.type =>
+          case Eq =>
             maybeNot match {
               case Some(_) =>
                 not(termQuery(identifier.name, l.value))
               case _ =>
                 termQuery(identifier.name, l.value)
             }
-          case _: Ne.type =>
+          case Ne | Diff =>
             maybeNot match {
               case Some(_) =>
                 termQuery(identifier.name, l.value)
@@ -282,14 +282,14 @@ package object bridge {
         }
       case b: SQLBoolean if !aggregation =>
         operator match {
-          case _: Eq.type =>
+          case Eq =>
             maybeNot match {
               case Some(_) =>
                 not(termQuery(identifier.name, b.value))
               case _ =>
                 termQuery(identifier.name, b.value)
             }
-          case _: Ne.type =>
+          case Ne | Diff =>
             maybeNot match {
               case Some(_) =>
                 termQuery(identifier.name, b.value)
@@ -317,7 +317,7 @@ package object bridge {
           case Lt => rangeQuery(identifier.name) lt script
           case Le => rangeQuery(identifier.name) lte script
           case Eq => rangeQuery(identifier.name) gte script lte script
-          case Ne => not(rangeQuery(identifier.name) gte script lte script)
+          case Ne | Diff => not(rangeQuery(identifier.name) gte script lte script)
         }
     }
   }
