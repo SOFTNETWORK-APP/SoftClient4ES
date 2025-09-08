@@ -114,10 +114,10 @@ object Queries {
       .replaceAll("\\( ", "(")
       .replaceAll(" \\)", ")")
 
-  val dateDiff = "select date_diff(createdAt, updatedAt, day) as diff from Table"
+  val dateDiff = "select date_diff(createdAt, updatedAt, day) as diff, identifier from Table"
 
-  val dateDiffWithAggregation =
-    "select max(date_diff(parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(createdAt), updatedAt, day)) as max_diff from Table"
+  val aggregationWithDateDiff =
+    "select max(date_diff(parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(createdAt), updatedAt, day)) as max_diff from Table group by identifier"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -444,9 +444,9 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "parse date_diff function with aggregation" in {
-    val result = SQLParser(dateDiffWithAggregation)
+    val result = SQLParser(aggregationWithDateDiff)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateDiffWithAggregation
+      aggregationWithDateDiff
     )
   }
 }

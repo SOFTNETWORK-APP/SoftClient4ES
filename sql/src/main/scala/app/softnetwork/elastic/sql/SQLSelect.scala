@@ -5,8 +5,7 @@ case object Select extends SQLExpr("select") with SQLRegex
 sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript {
   def identifier: Identifier
   def fieldAlias: Option[SQLAlias]
-  def isScriptField: Boolean =
-    identifier.name.isEmpty || (functions.nonEmpty && !aggregation && identifier.bucket.isEmpty)
+  def isScriptField: Boolean = functions.nonEmpty && !aggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String =
     if (identifier.nested) {

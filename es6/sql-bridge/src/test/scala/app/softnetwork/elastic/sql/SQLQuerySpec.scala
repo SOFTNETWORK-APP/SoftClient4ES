@@ -1274,4 +1274,67 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">", " > ")
       .replaceAll(",LocalDate", ", LocalDate")
   }
+
+  it should "handle date_diff function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateDiff)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "diff": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, doc['createdAt'].value)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll(",doc", ", doc")
+  }
+
+  it should "handle aggregation with date_diff function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(aggregationWithDateDiff)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "identifier": {
+      |      "terms": {
+      |        "field": "identifier.keyword"
+      |      },
+      |      "aggs": {
+      |        "max_diff": {
+      |          "max": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, doc['createdAt'].value)"
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll(",doc", ", doc")
+  }
+
 }
