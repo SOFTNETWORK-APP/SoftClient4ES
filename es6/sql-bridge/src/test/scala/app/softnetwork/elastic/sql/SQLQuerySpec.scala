@@ -1203,7 +1203,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, LocalDate::from)"
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, ZonedDateTime::from)"
       |            }
       |          }
       |        }
@@ -1217,7 +1217,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
-      .replaceAll(",LocalDate", ", LocalDate")
+      .replaceAll(",ZonedDateTime", ", ZonedDateTime")
   }
 
   it should "handle parse_datetime function" in {
@@ -1325,7 +1325,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "max": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, doc['createdAt'].value)"
+      |              "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, ZonedDateTime::from))"
       |            }
       |          }
       |        }
@@ -1335,6 +1335,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll(",doc", ", doc")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+      .replaceAll("ZonedDateTime", " ZonedDateTime")
   }
 
 }

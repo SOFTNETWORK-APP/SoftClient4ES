@@ -287,7 +287,15 @@ case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
   override def toSQL(base: String): String = {
     s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
   }
-  override def painless: String = s"${unit.painless}.between(${start.painless}, ${end.painless})"
+  lazy val startPainless: String = start match {
+    case i: Identifier => SQLFunctionUtils.buildPainless(i)
+    case _             => start.painless
+  }
+  lazy val endPainless: String = end match {
+    case i: Identifier => SQLFunctionUtils.buildPainless(i)
+    case _             => end.painless
+  }
+  override def painless: String = s"${unit.painless}.between($startPainless, $endPainless)"
 }
 
 case class DateAdd(interval: TimeInterval)
@@ -370,7 +378,7 @@ case class ParseDateTime(format: String)
   override def params: Seq[String] = Seq(s"'$format'")
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
-    s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDateTime::from)"
+    s"DateTimeFormatter.ofPattern('$format').parse($base, ZonedDateTime::from)"
 }
 
 case class FormatDateTime(format: String)
