@@ -129,9 +129,9 @@ object BucketSelectorScript {
 
       // build the RHS as a Painless ZonedDateTime (apply +/- interval using TimeInterval.painless)
       val rightBase = (arithOp, interval) match {
-        case (Some(Plus), Some(i))  => s"$now.plus(${i.painless})"
-        case (Some(Minus), Some(i)) => s"$now.minus(${i.painless})"
-        case _                      => now
+        case (Some(Add), Some(i))       => s"$now.plus(${i.painless})"
+        case (Some(Subtract), Some(i)) => s"$now.minus(${i.painless})"
+        case _                          => now
       }
 
       val rightZdt = dateFunc match {

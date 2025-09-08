@@ -30,10 +30,7 @@ case class SQLSearchRequest(
     )
   }
 
-  lazy val scriptFields: Seq[ScriptField] = select.fields.flatMap {
-    case s: ScriptField => Some(s)
-    case _              => None
-  }
+  lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)
 
   lazy val fields: Seq[String] = {
     if (aggregates.isEmpty && buckets.isEmpty)

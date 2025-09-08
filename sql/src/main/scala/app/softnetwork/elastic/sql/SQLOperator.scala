@@ -2,11 +2,12 @@ package app.softnetwork.elastic.sql
 
 trait SQLOperator extends SQLToken
 
-sealed trait ArithmeticOperator extends SQLOperator {
+sealed trait ArithmeticOperator extends SQLOperator with MathScript {
   override def toString: String = s" $sql "
+  override def script: String = sql
 }
-case object Plus extends SQLExpr("+") with ArithmeticOperator
-case object Minus extends SQLExpr("-") with ArithmeticOperator
+case object Add extends SQLExpr("+") with ArithmeticOperator
+case object Subtract extends SQLExpr("-") with ArithmeticOperator
 case object Multiply extends SQLExpr("*") with ArithmeticOperator
 case object Divide extends SQLExpr("/") with ArithmeticOperator
 case object Modulo extends SQLExpr("%") with ArithmeticOperator

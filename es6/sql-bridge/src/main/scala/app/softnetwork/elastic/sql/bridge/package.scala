@@ -101,7 +101,7 @@ package object bridge {
       case _ =>
         _search scriptfields scriptFields.map { field =>
           scriptField(
-            field.name,
+            field.scriptName,
             Script(script = field.painless).lang("painless").scriptType("source")
           )
         }

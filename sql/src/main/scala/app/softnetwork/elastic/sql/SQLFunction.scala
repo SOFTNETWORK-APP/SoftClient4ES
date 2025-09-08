@@ -3,22 +3,31 @@ package app.softnetwork.elastic.sql
 import scala.util.matching.Regex
 
 sealed trait SQLFunction extends SQLRegex {
-  def toSQL(base: String): String = s"$sql($base)"
+  def toSQL(base: String): String = if (base.nonEmpty) s"$sql($base)" else sql
 }
 
 object SQLFunctionUtils {
-  def buildPainless(functions: List[SQLFunction]): String =
-    buildPainless(None, functions)
+  def aggregateAndTransformFunctions(
+    identifier: Identifier
+  ): (List[SQLFunction], List[SQLFunction]) = {
+    identifier.functions.partition {
+      case _: AggregateFunction => true
+      case _                    => false
+    }
+  }
+
+  def transformFunctions(identifier: Identifier): List[SQLFunction] = {
+    aggregateAndTransformFunctions(identifier)._2
+  }
 
   def buildPainless(
-    painless: Option[PainlessScript] = None,
-    functions: List[SQLFunction]
+    identifier: Identifier
   ): String = {
-    val base = painless.map(_.painless).getOrElse("")
-    val orderedFunctions = functions.reverse
+    val base = identifier.painless
+    val orderedFunctions = transformFunctions(identifier).reverse
     orderedFunctions.foldLeft(base) {
       case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
-      case (_, f: PainlessScript)                => f.painless
+      case (expr, f: PainlessScript)             => s"$expr${f.painless}"
       case (expr, f)                             => f.toSQL(expr) // fallback
     }
   }
@@ -50,7 +59,7 @@ sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
   def outputType: Out
 }
 
-trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
+sealed trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
     extends SQLUnaryFunction[SQLAny, Out] { self: SQLFunction =>
 
   override def inputType: SQLAny = SQLTypes.Any
@@ -62,6 +71,12 @@ trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
 
 sealed trait SQLTransformFunction[In <: SQLType, Out <: SQLType] extends SQLUnaryFunction[In, Out] {
   def toPainless(base: String): String = s"$base$painless"
+}
+
+sealed trait SQLArithmeticFunction[In <: SQLType, Out <: SQLType]
+    extends SQLTransformFunction[In, Out] {
+  def operator: ArithmeticOperator
+  override def toSQL(base: String): String = s"$base$operator$sql"
 }
 
 sealed trait ParametrizedFunction extends SQLFunction {
@@ -153,6 +168,28 @@ object TimeInterval {
     case CalendarInterval(v, u)       => s"$v${u.script}"
     case FixedInterval(v, u)          => s"$v${u.script}"
   }
+}
+
+case class SQLAddInterval(interval: TimeInterval)
+    extends SQLExpr(interval.sql)
+    with SQLArithmeticFunction[SQLDateTime, SQLDateTime]
+    with MathScript {
+  override def operator: ArithmeticOperator = Add
+  override def inputType: SQLDateTime = SQLTypes.DateTime
+  override def outputType: SQLDateTime = SQLTypes.DateTime
+  override def painless: String = s".plus(${interval.painless})"
+  override def script: String = s"${operator.script}${interval.script}"
+}
+
+case class SQLSubstractInterval(interval: TimeInterval)
+    extends SQLExpr(interval.sql)
+    with SQLArithmeticFunction[SQLDateTime, SQLDateTime]
+    with MathScript {
+  override def operator: ArithmeticOperator = Subtract
+  override def inputType: SQLDateTime = SQLTypes.DateTime
+  override def outputType: SQLDateTime = SQLTypes.DateTime
+  override def painless: String = s".minus(${interval.painless})"
+  override def script: String = s"${operator.script}${interval.script}"
 }
 
 sealed trait DateTimeFunction extends SQLFunction

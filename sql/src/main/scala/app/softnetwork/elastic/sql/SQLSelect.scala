@@ -2,10 +2,11 @@ package app.softnetwork.elastic.sql
 
 case object Select extends SQLExpr("select") with SQLRegex
 
-sealed trait Field extends Updateable with SQLFunctionChain {
-  def identifier: SQLIdentifier
+sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript {
+  def identifier: Identifier
   def fieldAlias: Option[SQLAlias]
-  def isScriptField: Boolean = false
+  def isScriptField: Boolean =
+    identifier.name.isEmpty || (functions.nonEmpty && !aggregation && identifier.bucket.isEmpty)
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String =
     if (identifier.nested) {
@@ -25,6 +26,10 @@ sealed trait Field extends Updateable with SQLFunctionChain {
   override def functions: List[SQLFunction] = identifier.functions
 
   def update(request: SQLSearchRequest): Field
+
+  def painless: String = SQLFunctionUtils.buildPainless(identifier)
+
+  lazy val scriptName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
 }
 
 case class SQLField(
@@ -33,54 +38,6 @@ case class SQLField(
 ) extends Field {
   def update(request: SQLSearchRequest): SQLField =
     this.copy(identifier = identifier.update(request))
-}
-
-sealed trait ScriptField extends Field with PainlessScript {
-  override def isScriptField: Boolean = true
-
-  def update(request: SQLSearchRequest): ScriptField
-
-  lazy val name: String = fieldAlias.map(_.alias).getOrElse(sourceField)
-}
-
-case class SQLFunctionField(
-  override val functions: List[SQLFunction],
-  fieldAlias: Option[SQLAlias] = None
-) extends ScriptField
-    with SQLFunctionChain {
-
-  override def update(request: SQLSearchRequest): SQLFunctionField =
-    this // TODO update SQLAlias if needed
-
-  override def identifier: SQLIdentifier = SQLIdentifier("", functions = functions)
-
-  override def painless: String = SQLFunctionUtils.buildPainless(functions)
-
-  override lazy val sourceField: String = toSQL("").replace("(", "").replace(")", "")
-}
-
-case class SQLDateTimeField(
-  identifier: SQLIdentifier,
-  operator: Option[ArithmeticOperator] = None,
-  interval: Option[TimeInterval],
-  fieldAlias: Option[SQLAlias] = None
-) extends ScriptField {
-  override def sql: String =
-    s"$identifier${asString(operator)}${asString(interval)}${asString(fieldAlias)}"
-  def update(request: SQLSearchRequest): SQLDateTimeField =
-    this.copy(identifier = identifier.update(request))
-  override def painless: String = {
-    val base = identifier.functions.headOption match { // FIXME
-      case f @ Some(CurrentDate | CurrentTime | CurrentTimestamp | Now) =>
-        f.asInstanceOf[PainlessScript].painless
-      case _ => s"doc['$sourceField'].value"
-    }
-    (operator, interval) match {
-      case (Some(Minus), Some(i)) => s"$base.minus(${i.painless})"
-      case (Some(Plus), Some(i))  => s"$base.plus(${i.painless})"
-      case _                      => base
-    }
-  }
 }
 
 case object Except extends SQLExpr("except") with SQLRegex

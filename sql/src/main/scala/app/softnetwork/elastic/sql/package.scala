@@ -247,6 +247,30 @@ package object sql {
     def update(request: SQLSearchRequest): SQLSource
   }
 
+  trait Identifier extends SQLToken with SQLSource with SQLFunctionChain with PainlessScript {
+    def name: String
+
+    def tableAlias: Option[String]
+    def distinct: Boolean
+    def nested: Boolean
+    def fieldAlias: Option[String]
+    def bucket: Option[SQLBucket]
+
+    lazy val identifierName: String =
+      functions.reverse.foldLeft(name)((expr, fun) => {
+        fun.toSQL(expr)
+      })
+
+    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
+
+    lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
+
+    lazy val aliasOrName: String = fieldAlias.getOrElse(name)
+
+    override def painless: String = if (name.nonEmpty) s"doc['$name'].value" else ""
+
+  }
+
   case class SQLIdentifier(
     name: String,
     tableAlias: Option[String] = None,
@@ -273,22 +297,7 @@ package object sql {
           fun.toSQL(expr)
         })
       })
-      with SQLSource
-      with SQLFunctionChain
-      with PainlessScript {
-
-    lazy val identifierName: String =
-      functions.reverse.foldLeft(name)((expr, fun) => {
-        fun.toSQL(expr)
-      })
-
-    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
-
-    lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
-
-    lazy val aliasOrName: String = fieldAlias.getOrElse(name)
-
-    override def painless: String = s"doc['$name'].value"
+      with Identifier {
 
     def update(request: SQLSearchRequest): SQLIdentifier = {
       val parts: Seq[String] = name.split("\\.").toSeq

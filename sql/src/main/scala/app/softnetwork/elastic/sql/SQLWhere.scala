@@ -151,7 +151,7 @@ case class ElasticBoolQuery(
 
 }
 
-trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter {
+sealed trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter {
   def maybeValue: Option[SQLToken]
   def maybeNot: Option[Not.type]
   def notAsString: String = maybeNot.map(v => s"$v ").getOrElse("")
@@ -342,10 +342,10 @@ case class SQLComparisonDateMath(
       case _: CurrentTimeFunction =>
         val painlessOp = (if (maybeNot.isDefined) operator.not else operator).painless
         (arithmeticOperator, interval) match {
-          case (Some(Plus), Some(i)) => // compare doc time with now + interval
+          case (Some(Add), Some(i)) => // compare doc time with now + interval
             s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now().plus(${i.value}, ${i.unit.painless});"
 
-          case (Some(Minus), Some(i)) => // compare doc time with now
+          case (Some(Subtract), Some(i)) => // compare doc time with now
             s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now().minus(${i.value}, ${i.unit.painless});"
 
           case _ =>
@@ -355,9 +355,9 @@ case class SQLComparisonDateMath(
         val base = s"${dateTimeFunction.script}"
         val dateMath =
           (arithmeticOperator, interval) match {
-            case (Some(Plus), Some(i))  => s"$base+${i.script}"
-            case (Some(Minus), Some(i)) => s"$base-${i.script}"
-            case _                      => base
+            case (Some(Add), Some(i))       => s"$base+${i.script}"
+            case (Some(Subtract), Some(i)) => s"$base-${i.script}"
+            case _                          => base
           }
         dateTimeFunction match {
           case _: CurrentDateFunction => s"$dateMath/d"

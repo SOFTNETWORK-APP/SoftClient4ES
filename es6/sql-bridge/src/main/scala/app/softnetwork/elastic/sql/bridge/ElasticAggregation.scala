@@ -89,10 +89,7 @@ object ElasticAggregation {
 
     var aggPath = Seq[String]()
 
-    val (aggFuncs, transformFuncs) = identifier.functions.partition {
-      case _: AggregateFunction => true
-      case _                    => false
-    }
+    val (aggFuncs, transformFuncs) = SQLFunctionUtils.aggregateAndTransformFunctions(identifier)
 
     require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
 
@@ -101,7 +98,7 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val scriptSrc = SQLFunctionUtils.buildPainless(Option(identifier), transformFuncs)
+        val scriptSrc = SQLFunctionUtils.buildPainless(identifier)
         val script = Script(scriptSrc).lang("painless")
         buildScript(aggName, script)
       } else {
