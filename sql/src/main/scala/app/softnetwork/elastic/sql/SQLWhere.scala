@@ -178,6 +178,33 @@ case class SQLExpression(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
+sealed trait BinaryExpression extends Expression {
+  def left: SQLIdentifier
+  def right: SQLIdentifier
+  override def identifier: SQLIdentifier = left
+  override def maybeValue: Option[SQLToken] = Some(right)
+  override lazy val aggregation: Boolean = left.aggregation || right.aggregation
+}
+
+case class SQLBinaryExpression(
+  left: SQLIdentifier,
+  operator: SQLComparisonOperator, // Gt, Ge, Lt, Le, Eq, ...
+  right: SQLIdentifier,
+  maybeNot: Option[Not.type] = None
+) extends BinaryExpression
+    with PainlessScript {
+  override def update(request: SQLSearchRequest): SQLCriteria =
+    this.copy(left = left.update(request), right = right.update(request))
+
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+
+  override def painless: String = {
+    val painlessOp = (if (maybeNot.isDefined) operator.not else operator).painless
+    s"${left.painless} $painlessOp ${right.painless}"
+  }
+
+}
+
 case class SQLIsNull(identifier: SQLIdentifier) extends Expression {
   override val operator: SQLOperator = IsNull
 
@@ -355,9 +382,9 @@ case class SQLComparisonDateMath(
         val base = s"${dateTimeFunction.script}"
         val dateMath =
           (arithmeticOperator, interval) match {
-            case (Some(Add), Some(i))       => s"$base+${i.script}"
+            case (Some(Add), Some(i))      => s"$base+${i.script}"
             case (Some(Subtract), Some(i)) => s"$base-${i.script}"
-            case _                          => base
+            case _                         => base
           }
         dateTimeFunction match {
           case _: CurrentDateFunction => s"$dateMath/d"

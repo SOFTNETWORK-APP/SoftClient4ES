@@ -95,8 +95,16 @@ object BucketSelectorScript {
       extractBucketsPath(left) ++ extractBucketsPath(right)
     case relation: ElasticRelation => extractBucketsPath(relation.criteria)
     case _: SQLMatch               => Map.empty //MATCH is not supported in bucket_selector
-    case SQLComparisonDateMath(identifier, _, _, _, _, _) if identifier.aggregation =>
-      Map(identifier.aliasOrName -> identifier.aliasOrName)
+    case b: BinaryExpression =>
+      import b._
+      if (left.aggregation && right.aggregation)
+        Map(left.aliasOrName -> left.aliasOrName, right.aliasOrName -> right.aliasOrName)
+      else if (left.aggregation)
+        Map(left.aliasOrName -> left.aliasOrName)
+      else if (right.aggregation)
+        Map(right.aliasOrName -> right.aliasOrName)
+      else
+        Map.empty
     case e: Expression if e.aggregation =>
       import e._
       Map(identifier.aliasOrName -> identifier.aliasOrName)
@@ -129,9 +137,9 @@ object BucketSelectorScript {
 
       // build the RHS as a Painless ZonedDateTime (apply +/- interval using TimeInterval.painless)
       val rightBase = (arithOp, interval) match {
-        case (Some(Add), Some(i))       => s"$now.plus(${i.painless})"
+        case (Some(Add), Some(i))      => s"$now.plus(${i.painless})"
         case (Some(Subtract), Some(i)) => s"$now.minus(${i.painless})"
-        case _                          => now
+        case _                         => now
       }
 
       val rightZdt = dateFunc match {
