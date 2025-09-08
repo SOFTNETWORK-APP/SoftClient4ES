@@ -1339,4 +1339,140 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("ZonedDateTime", " ZonedDateTime")
   }
 
+  it should "handle date_add function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateAdd)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle date_sub function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateSub)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle datetime_add function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateTimeAdd)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle datetime_sub function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateTimeSub)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
 }

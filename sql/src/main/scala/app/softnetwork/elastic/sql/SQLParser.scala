@@ -162,9 +162,10 @@ trait SQLParser extends RegexParsers with PackratParsers {
         }
     }
 
-  def date_trunc: PackratParser[SQLUnaryFunction[SQLTemporal, SQLTemporal]] =
-    "(?i)date_trunc".r ~ start ~ time_unit ~ end ^^ { case _ ~ _ ~ u ~ _ =>
-      DateTrunc(u)
+  def date_trunc: PackratParser[SQLFunctionWithIdentifier] =
+    "(?i)date_trunc".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ time_unit ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ u ~ _ =>
+        DateTrunc(i, u)
     }
 
   def extract: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
@@ -192,46 +193,54 @@ trait SQLParser extends RegexParsers with PackratParsers {
   def extractors: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
     extract | extract_year | extract_month | extract_day | extract_hour | extract_minute | extract_second
 
-  def date_add: PackratParser[DateFunction] =
-    "(?i)date_add".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
-      DateAdd(i)
+  def date_add: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+    "(?i)date_add".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ interval ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ t ~ _ =>
+        DateAdd(i, t)
     }
 
-  def date_sub: PackratParser[DateFunction] =
-    "(?i)date_sub".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
-      DateSub(i)
+  def date_sub: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+    "(?i)date_sub".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ interval ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ t ~ _ =>
+        DateSub(i, t)
     }
 
-  def parse_date: PackratParser[DateFunction] =
-    "(?i)parse_date".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
-      ParseDate(f.value)
+  def parse_date: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+    "(?i)parse_date".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ literal ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ f ~ _ =>
+        ParseDate(i, f.value)
     }
 
-  def format_date: PackratParser[DateFunction] =
-    "(?i)format_date".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
-      FormatDate(f.value)
+  def format_date: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+    "(?i)format_date".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ literal ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ f ~ _ =>
+        FormatDate(i, f.value)
     }
 
   def date_functions: PackratParser[DateFunction] = date_add | date_sub | parse_date | format_date
 
-  def datetime_add: PackratParser[DateTimeFunction] =
-    "(?i)datetime_add".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
-      DateTimeAdd(i)
+  def datetime_add: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+    "(?i)datetime_add".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ interval ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ t ~ _ =>
+        DateTimeAdd(i, t)
     }
 
-  def datetime_sub: PackratParser[DateTimeFunction] =
-    "(?i)datetime_sub".r ~ start ~ interval ~ end ^^ { case _ ~ _ ~ i ~ _ =>
-      DateTimeSub(i)
+  def datetime_sub: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+    "(?i)datetime_sub".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ interval ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ t ~ _ =>
+        DateTimeSub(i, t)
     }
 
-  def parse_datetime: PackratParser[DateTimeFunction] =
-    "(?i)parse_datetime".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
-      ParseDateTime(f.value)
+  def parse_datetime: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+    "(?i)parse_datetime".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ literal ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ f ~ _ =>
+        ParseDateTime(i, f.value)
     }
 
-  def format_datetime: PackratParser[DateTimeFunction] =
-    "(?i)format_datetime".r ~ start ~ literal ~ end ^^ { case _ ~ _ ~ f ~ _ =>
-      FormatDateTime(f.value)
+  def format_datetime: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+    "(?i)format_datetime".r ~ start ~ (painless_identifier | identifierWithSystemFunction | identifierWithArithmeticFunction | identifier) ~ separator ~ literal ~ end ^^ {
+      case _ ~ _ ~ i ~ _ ~ f ~ _ =>
+        FormatDateTime(i, f.value)
     }
 
   def datetime_functions: PackratParser[DateTimeFunction] =
@@ -241,7 +250,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
 
   def distance: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
 
-  def painless_identifier: PackratParser[Identifier] =
+  def painless_identifier: PackratParser[SQLIdentifier] =
     repsep(
       date_trunc | extractors | date_functions | datetime_functions,
       start
@@ -254,7 +263,12 @@ trait SQLParser extends RegexParsers with PackratParsers {
       }
       i match {
         case Some(id) => id.copy(functions = id.functions ++ f)
-        case None     => SQLIdentifier("", functions = f)
+        case None =>
+          f.lastOption match {
+            case Some(fi: SQLFunctionWithIdentifier) =>
+              fi.identifier.copy(functions = f ++ fi.identifier.functions)
+            case _ => SQLIdentifier("", functions = f)
+          }
       }
     }
 
@@ -281,6 +295,19 @@ trait SQLParser extends RegexParsers with PackratParsers {
       )
     }
 
+  private[this] def dateFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+    (parse_date | format_date | date_add | date_sub) ^^ { t =>
+      t.identifier.copy(functions = t +: t.identifier.functions)
+    }
+
+  private[this] def dateTimeFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+    (date_trunc | parse_datetime | format_datetime | datetime_add | datetime_sub) ^^ { t =>
+      t.identifier.copy(functions = t +: t.identifier.functions)
+    }
+
+  def identifierWithTransformation: PackratParser[SQLIdentifier] =
+    dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier
+
   def identifierWithArithmeticFunction: PackratParser[SQLIdentifier] =
     (identifierWithFunction | identifier) ~ arithmeticFunction ^^ { case i ~ af =>
       i.copy(functions = af +: i.functions)
@@ -304,7 +331,12 @@ trait SQLParser extends RegexParsers with PackratParsers {
         case _           =>
       }
       i match {
-        case None     => SQLIdentifier("", functions = f)
+        case None =>
+          f.lastOption match {
+            case Some(fi: SQLFunctionWithIdentifier) =>
+              fi.identifier.copy(functions = f ++ fi.identifier.functions)
+            case _ => SQLIdentifier("", functions = f)
+          }
         case Some(id) => id.copy(functions = id.functions ++ f)
       }
     }
@@ -315,7 +347,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
   def alias: PackratParser[SQLAlias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => SQLAlias(b) }
 
   def field: PackratParser[Field] =
-    (identifierWithAggregation | identifierWithSystemFunction | identifierWithArithmeticFunction | identifierWithFunction | date_diff_identifier | identifier) ~ alias.? ^^ {
+    (identifierWithAggregation | identifierWithSystemFunction | identifierWithArithmeticFunction | identifierWithFunction | identifierWithTransformation | date_diff_identifier | identifier) ~ alias.? ^^ {
       case i ~ a =>
         SQLField(i, a)
     }

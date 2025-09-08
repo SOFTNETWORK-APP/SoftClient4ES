@@ -97,15 +97,16 @@ object Queries {
       |order by Country asc""".stripMargin
       .replaceAll("\n", " ")
   val parseDate =
-    "select identifier, count(identifier2) as ct, max(parse_date('yyyy-MM-dd')(createdAt)) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
+    "select identifier, count(identifier2) as ct, max(parse_date(createdAt, 'yyyy-MM-dd')) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
   val parseDateTime: String =
     """select identifier, count(identifier2) as ct,
       |max(
       |year(
-      |date_trunc(minute)(
-      |parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(
-      |createdAt
-      |)))) as lastSeen
+      |date_trunc(
+      |parse_datetime(
+      |createdAt,
+      |'yyyy-MM-ddTHH:mm:ssZ'
+      |), minute))) as lastSeen
       |from Table
       |where identifier2 is not null
       |group by identifier
@@ -117,7 +118,21 @@ object Queries {
   val dateDiff = "select date_diff(createdAt, updatedAt, day) as diff, identifier from Table"
 
   val aggregationWithDateDiff =
-    "select max(date_diff(parse_datetime('yyyy-MM-ddTHH:mm:ssZ')(createdAt), updatedAt, day)) as max_diff from Table group by identifier"
+    "select max(date_diff(parse_datetime(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, day)) as max_diff from Table group by identifier"
+
+  val formatDate =
+    "select identifier, format_date(date_trunc(lastUpdated, month), 'yyyy-MM-dd') as lastSeen from Table where identifier2 is not null"
+  val formatDateTime =
+    "select identifier, format_datetime(date_trunc(lastUpdated, month), 'yyyy-MM-ddThh:mm:ssZ') as lastSeen from Table where identifier2 is not null"
+  val dateAdd =
+    "select identifier, date_add(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+  val dateSub =
+    "select identifier, date_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+  val dateTimeAdd =
+    "select identifier, datetime_add(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+  val dateTimeSub =
+    "select identifier, datetime_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+
 }
 
 /** Created by smanciot on 15/02/17.
@@ -447,6 +462,48 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(aggregationWithDateDiff)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       aggregationWithDateDiff
+    )
+  }
+
+  it should "parse format_date function" in {
+    val result = SQLParser(formatDate)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      formatDate
+    )
+  }
+
+  it should "parse format_datetime function" in {
+    val result = SQLParser(formatDateTime)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      formatDateTime
+    )
+  }
+
+  it should "parse date_add function" in {
+    val result = SQLParser(dateAdd)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateAdd
+    )
+  }
+
+  it should "parse date_sub function" in {
+    val result = SQLParser(dateSub)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateSub
+    )
+  }
+
+  it should "parse datetime_add function" in {
+    val result = SQLParser(dateTimeAdd)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateTimeAdd
+    )
+  }
+
+  it should "parse datetime_sub function" in {
+    val result = SQLParser(dateTimeSub)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateTimeSub
     )
   }
 }

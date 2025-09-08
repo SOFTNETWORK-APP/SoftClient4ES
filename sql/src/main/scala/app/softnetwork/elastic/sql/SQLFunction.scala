@@ -6,6 +6,10 @@ sealed trait SQLFunction extends SQLRegex {
   def toSQL(base: String): String = if (base.nonEmpty) s"$sql($base)" else sql
 }
 
+sealed trait SQLFunctionWithIdentifier extends SQLFunction {
+  def identifier: SQLIdentifier
+}
+
 object SQLFunctionUtils {
   def aggregateAndTransformFunctions(
     identifier: Identifier
@@ -219,14 +223,16 @@ case object Now extends SQLExpr("now") with CurrentDateTimeFunction
 
 case object NowWithParens extends SQLExpr("now()") with CurrentDateTimeFunction
 
-case class DateTrunc(unit: TimeUnit)
+case class DateTrunc(identifier: SQLIdentifier, unit: TimeUnit)
     extends SQLExpr("date_trunc")
     with DateTimeFunction
     with SQLTransformFunction[SQLTemporal, SQLTemporal]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLTemporal = SQLTypes.Temporal // par défaut
   override def outputType: SQLTemporal = SQLTypes.Temporal // idem
-  override def params: Seq[String] = Seq(unit.sql)
+  override def toSQL(base: String): String = {
+    s"$sql($base, ${unit.sql})"
+  }
   override def painless: String = s".truncatedTo(${unit.painless})"
 }
 
@@ -279,97 +285,113 @@ case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
   override def painless: String = s"${unit.painless}.between(${start.painless}, ${end.painless})"
 }
 
-case class DateAdd(interval: TimeInterval)
+case class DateAdd(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("date_add")
     with DateFunction
     with SQLTransformFunction[SQLDate, SQLDate]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLDate = SQLTypes.Date
-  override def params: Seq[String] = Seq(interval.sql)
+  override def toSQL(base: String): String = {
+    s"$sql($base, ${interval.sql})"
+  }
   override def painless: String = s".plus(${interval.painless})"
 }
 
-case class DateSub(interval: TimeInterval)
+case class DateSub(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("date_sub")
     with DateFunction
     with SQLTransformFunction[SQLDate, SQLDate]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLDate = SQLTypes.Date
-  override def params: Seq[String] = Seq(interval.sql)
+  override def toSQL(base: String): String = {
+    s"$sql($base, ${interval.sql})"
+  }
   override def painless: String = s".minus(${interval.painless})"
 }
 
-case class ParseDate(format: String)
+case class ParseDate(identifier: SQLIdentifier, format: String)
     extends SQLExpr("parse_date")
     with DateFunction
     with SQLTransformFunction[SQLString, SQLDate]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLString = SQLTypes.String
   override def outputType: SQLDate = SQLTypes.Date
-  override def params: Seq[String] = Seq(s"'$format'")
+  override def toSQL(base: String): String = {
+    s"$sql($base, '$format')"
+  }
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDate::from)"
 }
 
-case class FormatDate(format: String)
+case class FormatDate(identifier: SQLIdentifier, format: String)
     extends SQLExpr("format_date")
     with DateFunction
     with SQLTransformFunction[SQLDate, SQLString]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLString = SQLTypes.String
-  override def params: Seq[String] = Seq(s"'$format'")
+  override def toSQL(base: String): String = {
+    s"$sql($base, '$format')"
+  }
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').format($base)"
 }
 
-case class DateTimeAdd(interval: TimeInterval)
+case class DateTimeAdd(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("datetime_add")
     with DateTimeFunction
     with SQLTransformFunction[SQLDateTime, SQLDateTime]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
-  override def params: Seq[String] = Seq(interval.sql)
+  override def toSQL(base: String): String = {
+    s"$sql($base, ${interval.sql})"
+  }
   override def painless: String = s".plus(${interval.painless})"
 }
 
-case class DateTimeSub(interval: TimeInterval)
+case class DateTimeSub(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("datetime_sub")
     with DateTimeFunction
     with SQLTransformFunction[SQLDateTime, SQLDateTime]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
-  override def params: Seq[String] = Seq(interval.sql)
+  override def toSQL(base: String): String = {
+    s"$sql($base, ${interval.sql})"
+  }
   override def painless: String = s".minus(${interval.painless})"
 }
 
-case class ParseDateTime(format: String)
+case class ParseDateTime(identifier: SQLIdentifier, format: String)
     extends SQLExpr("parse_datetime")
     with DateTimeFunction
     with SQLTransformFunction[SQLString, SQLDateTime]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLString = SQLTypes.String
   override def outputType: SQLDateTime = SQLTypes.DateTime
-  override def params: Seq[String] = Seq(s"'$format'")
+  override def toSQL(base: String): String = {
+    s"$sql($base, '$format')"
+  }
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').parse($base, ZonedDateTime::from)"
 }
 
-case class FormatDateTime(format: String)
+case class FormatDateTime(identifier: SQLIdentifier, format: String)
     extends SQLExpr("format_datetime")
     with DateTimeFunction
     with SQLTransformFunction[SQLDateTime, SQLString]
-    with ParametrizedFunction {
+    with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLString = SQLTypes.String
-  override def params: Seq[String] = Seq(s"'$format'")
+  override def toSQL(base: String): String = {
+    s"$sql($base, '$format')"
+  }
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').format($base)"
