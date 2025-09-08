@@ -1203,7 +1203,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, ZonedDateTime::from)"
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, LocalDate::from)"
       |            }
       |          }
       |        }
@@ -1217,7 +1217,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
-      .replaceAll(",ZonedDateTime", ", ZonedDateTime")
+      .replaceAll(",LocalDate", ", LocalDate")
   }
 
   it should "handle parse_datetime function" in {
@@ -1259,7 +1259,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, LocalDateTime::from).truncatedTo(ChronoUnit.MINUTES).get(ChronoUnit.YEARS)"
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, ZonedDateTime::from).truncatedTo(ChronoUnit.MINUTES).get(ChronoUnit.YEARS)"
       |            }
       |          }
       |        }
@@ -1272,7 +1272,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
-      .replaceAll(",LocalDate", ", LocalDate")
+      .replaceAll(",ZonedDateTime", ", ZonedDateTime")
   }
 
   it should "handle date_diff function as script field" in {

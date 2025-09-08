@@ -267,7 +267,15 @@ package object sql {
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
-    override def painless: String = if (name.nonEmpty) s"doc['$name'].value" else ""
+    override def painless: String = {
+      val base = if (name.nonEmpty) s"doc['$name'].value" else ""
+      val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
+      orderedFunctions.foldLeft(base) {
+        case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
+        case (expr, f: PainlessScript)             => s"$expr${f.painless}"
+        case (expr, f)                             => f.toSQL(expr) // fallback
+      }
+    }
 
   }
 

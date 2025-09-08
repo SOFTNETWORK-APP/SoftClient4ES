@@ -20,17 +20,6 @@ object SQLFunctionUtils {
     aggregateAndTransformFunctions(identifier)._2
   }
 
-  def buildPainless(
-    identifier: Identifier
-  ): String = {
-    val base = identifier.painless
-    val orderedFunctions = transformFunctions(identifier).reverse
-    orderedFunctions.foldLeft(base) {
-      case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
-      case (expr, f: PainlessScript)             => s"$expr${f.painless}"
-      case (expr, f)                             => f.toSQL(expr) // fallback
-    }
-  }
 }
 
 trait SQLFunctionChain extends SQLFunction with SQLValidation {
@@ -287,15 +276,7 @@ case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
   override def toSQL(base: String): String = {
     s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
   }
-  lazy val startPainless: String = start match {
-    case i: Identifier => SQLFunctionUtils.buildPainless(i)
-    case _             => start.painless
-  }
-  lazy val endPainless: String = end match {
-    case i: Identifier => SQLFunctionUtils.buildPainless(i)
-    case _             => end.painless
-  }
-  override def painless: String = s"${unit.painless}.between($startPainless, $endPainless)"
+  override def painless: String = s"${unit.painless}.between(${start.painless}, ${end.painless})"
 }
 
 case class DateAdd(interval: TimeInterval)

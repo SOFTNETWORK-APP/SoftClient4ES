@@ -26,7 +26,7 @@ sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript 
 
   def update(request: SQLSearchRequest): Field
 
-  def painless: String = SQLFunctionUtils.buildPainless(identifier)
+  def painless: String = identifier.painless
 
   lazy val scriptName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
 }

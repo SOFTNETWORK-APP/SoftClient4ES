@@ -97,7 +97,7 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val scriptSrc = SQLFunctionUtils.buildPainless(identifier)
+        val scriptSrc = identifier.painless
         val script = Script(scriptSrc).lang("painless")
         buildScript(aggName, script)
       } else {
