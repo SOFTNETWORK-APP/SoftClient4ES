@@ -11,17 +11,13 @@ case object Asc extends SQLExpr("asc") with SortOrder
 case class SQLFieldSort(
   field: String,
   order: Option[SortOrder],
-  function: Option[SQLFunction] = None
-) extends SQLTokenWithFunction {
-  private[this] lazy val fieldWithFunction: String = function match {
-    case Some(f) => s"$f($field)"
-    case _       => field
-  }
+  functions: List[SQLFunction] = List.empty
+) extends SQLFunctionChain {
   lazy val direction: SortOrder = order.getOrElse(Asc)
-  lazy val name: String = fieldWithFunction
+  lazy val name: String = toSQL(field)
   override def sql: String = s"$name $direction"
 }
 
 case class SQLOrderBy(sorts: Seq[SQLFieldSort]) extends SQLToken {
-  override def sql: String = s" $OrderBy ${sorts.mkString(",")}"
+  override def sql: String = s" $OrderBy ${sorts.mkString(", ")}"
 }

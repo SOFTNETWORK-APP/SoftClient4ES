@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql
 case object GroupBy extends SQLExpr("group by") with SQLRegex
 
 case class SQLGroupBy(buckets: Seq[SQLBucket]) extends Updateable {
-  override def sql: String = s" $GroupBy ${buckets.mkString(",")}"
+  override def sql: String = s" $GroupBy ${buckets.mkString(", ")}"
   def update(request: SQLSearchRequest): SQLGroupBy =
     this.copy(buckets = buckets.map(_.update(request)))
   lazy val bucketNames: Map[String, SQLBucket] = buckets.map { b =>
@@ -34,7 +34,7 @@ case class SQLBucket(
 object BucketSelectorScript {
 
   private[this] def painlessIn(param: String, values: Seq[SQLValue[_]], not: Boolean): String = {
-    val ret = s"[${values.map { _.painlessValue }.mkString(", ")}].contains($param)"
+    val ret = s"[${values.map { _.painless }.mkString(", ")}].contains($param)"
     if (not) s"!$ret" else ret
   }
 
@@ -44,7 +44,7 @@ object BucketSelectorScript {
     upper: SQLValue[_],
     not: Boolean
   ): String = {
-    val ret = s"($param >= ${lower.painlessValue} && $param <= ${upper.painlessValue})"
+    val ret = s"($param >= ${lower.painless} && $param <= ${upper.painless})"
     if (not) s"!$ret" else ret
   }
 
@@ -55,44 +55,22 @@ object BucketSelectorScript {
     not: Boolean
   ): String = {
     operator match {
-      case _: SQLComparisonOperator =>
+      case o: SQLComparisonOperator =>
         val valueStr =
           value match {
-            case v: SQLBoolean => v.painlessValue
-            case v: SQLDouble  => v.painlessValue
-            case v: SQLLiteral => v.painlessValue
-            case v: SQLLong    => v.painlessValue
+            case v: SQLBoolean => v.painless
+            case v: SQLDouble  => v.painless
+            case v: SQLLiteral => v.painless
+            case v: SQLLong    => v.painless
             case _ =>
               throw new IllegalArgumentException(
                 s"Unsupported value type in bucket_selector: $value"
               )
           }
-        if (not) {
-          operator match {
-            case Eq => s"$param != $valueStr"
-            case Ne => s"$param == $valueStr"
-            case Gt => s"$param <= $valueStr"
-            case Ge => s"$param < $valueStr"
-            case Lt => s"$param >= $valueStr"
-            case Le => s"$param > $valueStr"
-            case _ =>
-              throw new IllegalArgumentException(
-                s"Unsupported comparison operator in bucket_selector: $operator"
-              )
-          }
-        } else
-          operator match {
-            case Eq => s"$param == $valueStr"
-            case Ne => s"$param != $valueStr"
-            case Gt => s"$param > $valueStr"
-            case Ge => s"$param >= $valueStr"
-            case Lt => s"$param < $valueStr"
-            case Le => s"$param <= $valueStr"
-            case _ =>
-              throw new IllegalArgumentException(
-                s"Unsupported comparison operator in bucket_selector: $operator"
-              )
-          }
+        if (not)
+          s"$param ${o.not.painless} $valueStr"
+        else
+          s"$param ${o.painless} $valueStr"
       case In =>
         value match {
           case SQLDoubleValues(vals)  => painlessIn(param, vals, not)
@@ -117,17 +95,20 @@ object BucketSelectorScript {
       extractBucketsPath(left) ++ extractBucketsPath(right)
     case relation: ElasticRelation => extractBucketsPath(relation.criteria)
     case _: SQLMatch               => Map.empty //MATCH is not supported in bucket_selector
-    case e: Expression =>
+    case b: BinaryExpression =>
+      import b._
+      if (left.aggregation && right.aggregation)
+        Map(left.aliasOrName -> left.aliasOrName, right.aliasOrName -> right.aliasOrName)
+      else if (left.aggregation)
+        Map(left.aliasOrName -> left.aliasOrName)
+      else if (right.aggregation)
+        Map(right.aliasOrName -> right.aliasOrName)
+      else
+        Map.empty
+    case e: Expression if e.aggregation =>
       import e._
-      val name = identifier.fieldAlias.getOrElse(identifier.name)
-      if (e.aggregation) {
-        Map(name -> name)
-      } /*else if (e.identifier.bucket.isDefined) {
-        Map(name -> "_key")
-      }*/
-      else {
-        Map.empty // for performance, we only allow aggregation here
-      }
+      Map(identifier.aliasOrName -> identifier.aliasOrName)
+    case _ => Map.empty
   }
 
   def toPainless(expr: SQLCriteria): String = expr match {
@@ -147,26 +128,46 @@ object BucketSelectorScript {
 
     case relation: ElasticRelation => toPainless(relation.criteria)
 
-    case _: SQLMatch => "1 == 1" //MATCH is not supported in bucket_selector
+    case SQLComparisonDateMath(identifier, op, dateFunc, arithOp, interval, maybeNot)
+        if identifier.aggregation =>
+      val painlessOp = if (maybeNot.nonEmpty) op.not.painless else op.painless
+      val paramName = identifier.aliasOrName
+      // always use a correct "now" creation
+      val now = "ZonedDateTime.now(ZoneId.of('Z'))"
 
-    case e: Expression =>
-      if (e.aggregation /*|| e.identifier.bucket.isDefined*/ ) { // for performance, we only allow aggregation here
-        val param =
-          s"params.${e.identifier.fieldAlias.getOrElse(e.identifier.name)}"
-        e.maybeValue match {
-          case Some(v) => toPainless(param, e.operator, v, e.maybeNot.nonEmpty)
-          case None =>
-            e.operator match {
-              case IsNull    => s"$param == null"
-              case IsNotNull => s"$param != null"
-              case _ =>
-                throw new IllegalArgumentException(s"Operator ${e.operator} requires a value")
-            }
-        }
-      } else {
-        "1 == 1"
+      // build the RHS as a Painless ZonedDateTime (apply +/- interval using TimeInterval.painless)
+      val rightBase = (arithOp, interval) match {
+        case (Some(Add), Some(i))      => s"$now.plus(${i.painless})"
+        case (Some(Subtract), Some(i)) => s"$now.minus(${i.painless})"
+        case _                         => now
       }
 
-    case _ => throw new IllegalArgumentException(s"Unsupported SQLCriteria type: $expr")
+      val rightZdt = dateFunc match {
+        // truncate only after arithmetic for CurrentDate
+        case _: CurrentDateFunction => s"$rightBase.truncatedTo(ChronoUnit.DAYS)"
+        case _: CurrentTimeFunction => s"$rightBase.truncatedTo(ChronoUnit.SECONDS)"
+        case _                      => rightBase
+      }
+
+      // protect against null params and compare epoch millis
+      s"(params.$paramName != null) && (params.$paramName $painlessOp $rightZdt.toInstant().toEpochMilli())"
+
+    case _: SQLMatch => "1 == 1" //MATCH is not supported in bucket_selector
+
+    case e: Expression if e.aggregation =>
+      val param =
+        s"params.${e.identifier.aliasOrName}"
+      e.maybeValue match {
+        case Some(v) => toPainless(param, e.operator, v, e.maybeNot.nonEmpty)
+        case None =>
+          e.operator match {
+            case IsNull    => s"$param == null"
+            case IsNotNull => s"$param != null"
+            case _ =>
+              throw new IllegalArgumentException(s"Operator ${e.operator} requires a value")
+          }
+      }
+
+    case _ => "1 == 1" //throw new IllegalArgumentException(s"Unsupported SQLCriteria type: $expr")
   }
 }

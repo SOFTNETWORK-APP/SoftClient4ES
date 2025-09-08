@@ -9,12 +9,13 @@ import app.softnetwork.elastic.sql.{
   ElasticNested,
   ElasticParent,
   SQLBetween,
+  SQLComparisonDateMath,
   SQLExpression,
   SQLIn,
   SQLIsNotNull,
   SQLIsNull
 }
-import com.sksamuel.elastic4s.ElasticApi.{bool, _}
+import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.searches.queries.Query
 
 case class ElasticQuery(filter: ElasticFilter) {
@@ -69,6 +70,7 @@ case class ElasticQuery(filter: ElasticFilter) {
       case between: SQLBetween[Double]     => between
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
+      case dateMath: SQLComparisonDateMath => dateMath
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }

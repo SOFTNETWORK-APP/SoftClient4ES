@@ -30,14 +30,19 @@ case class SQLSearchRequest(
     )
   }
 
+  lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)
+
   lazy val fields: Seq[String] = {
     if (aggregates.isEmpty && buckets.isEmpty)
-      select.fields.map(_.sourceField).filterNot(f => excludes.contains(f))
+      select.fields
+        .filterNot(_.isScriptField)
+        .map(_.sourceField)
+        .filterNot(f => excludes.contains(f))
     else
       Seq.empty
   }
 
-  lazy val aggregates: Seq[SQLField] = select.fields.filter(_.aggregation)
+  lazy val aggregates: Seq[Field] = select.fields.filter(_.aggregation)
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 

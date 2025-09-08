@@ -4,7 +4,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 object Queries {
-  val numericalEq = "select t.col1,t.col2 from Table as t where t.identifier = 1.0"
+  val numericalEq = "select t.col1, t.col2 from Table as t where t.identifier = 1.0"
   val numericalLt = "select * from Table where identifier < 1"
   val numericalLe = "select * from Table where identifier <= 1"
   val numericalGt = "select * from Table where identifier > 1"
@@ -63,22 +63,76 @@ object Queries {
   val matchCriteria =
     "select * from Table where match (identifier1,identifier2,identifier3) against (\"value\")"
   val groupBy =
-    "select identifier,count(identifier) from Table where identifier is not null group by identifier"
+    "select identifier, count(identifier2) from Table where identifier2 is not null group by identifier"
   val orderBy = "select * from Table order by identifier desc"
   val limit = "select * from Table limit 10"
   val groupByWithOrderByAndLimit: String =
-    """select identifier,count(identifier)
+    """select identifier, count(identifier2)
       |from Table
       |where identifier is not null
       |group by identifier
-      |order by identifier desc
+      |order by identifier2 desc
       |limit 10""".stripMargin.replaceAll("\n", " ")
   val groupByWithHaving: String =
-    """SELECT COUNT(CustomerID) as cnt,City,Country
-      |FROM Customers
-      |GROUP BY Country,City
-      |HAVING Country <> "USA" AND City <> "Berlin" AND COUNT(CustomerID) > 1
-      |ORDER BY COUNT(CustomerID) DESC,Country asc""".stripMargin.replaceAll("\n", " ").toLowerCase
+    """select count(CustomerID) as cnt, City, Country
+      |from Customers
+      |group by Country, City
+      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1
+      |order by count(CustomerID) desc, Country asc""".stripMargin.replaceAll("\n", " ")
+  val dateTimeWithIntervalFields: String =
+    "select current_timestamp() - interval 3 day as ct, current_date as cd, current_time as t, now as n from dual"
+  val fieldsWithInterval: String =
+    "select createdAt - interval 35 minute as ct, identifier from Table"
+  val filterWithDateTimeAndInterval: String =
+    "select * from Table where createdAt < current_timestamp() and createdAt >= current_timestamp() - interval 10 day"
+  val filterWithDateAndInterval: String =
+    "select * from Table where createdAt < current_date and createdAt >= current_date() - interval 10 day"
+  val filterWithTimeAndInterval: String =
+    "select * from Table where createdAt < current_time and createdAt >= current_time() - interval 10 minute"
+  val groupByWithHavingAndDateTimeFunctions: String =
+    """select count(CustomerID) as cnt, City, Country, max(createdAt) as lastSeen
+      |from Table
+      |group by Country, City
+      |having Country <> "USA" and City != "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
+      |order by Country asc""".stripMargin
+      .replaceAll("\n", " ")
+  val parseDate =
+    "select identifier, count(identifier2) as ct, max(parse_date(createdAt, 'yyyy-MM-dd')) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
+  val parseDateTime: String =
+    """select identifier, count(identifier2) as ct,
+      |max(
+      |year(
+      |date_trunc(
+      |parse_datetime(
+      |createdAt,
+      |'yyyy-MM-ddTHH:mm:ssZ'
+      |), minute))) as lastSeen
+      |from Table
+      |where identifier2 is not null
+      |group by identifier
+      |order by count(identifier2) desc""".stripMargin
+      .replaceAll("\n", " ")
+      .replaceAll("\\( ", "(")
+      .replaceAll(" \\)", ")")
+
+  val dateDiff = "select date_diff(createdAt, updatedAt, day) as diff, identifier from Table"
+
+  val aggregationWithDateDiff =
+    "select max(date_diff(parse_datetime(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, day)) as max_diff from Table group by identifier"
+
+  val formatDate =
+    "select identifier, format_date(date_trunc(lastUpdated, month), 'yyyy-MM-dd') as lastSeen from Table where identifier2 is not null"
+  val formatDateTime =
+    "select identifier, format_datetime(date_trunc(lastUpdated, month), 'yyyy-MM-ddThh:mm:ssZ') as lastSeen from Table where identifier2 is not null"
+  val dateAdd =
+    "select identifier, date_add(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+  val dateSub =
+    "select identifier, date_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+  val dateTimeAdd =
+    "select identifier, datetime_add(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+  val dateTimeSub =
+    "select identifier, datetime_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+
 }
 
 /** Created by smanciot on 15/02/17.
@@ -343,4 +397,113 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupByWithHaving)
   }
 
+  it should "parse date time fields" in {
+    val result = SQLParser(dateTimeWithIntervalFields)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateTimeWithIntervalFields
+    )
+  }
+
+  it should "parse fields with interval" in {
+    val result = SQLParser(fieldsWithInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(fieldsWithInterval)
+  }
+
+  it should "parse filter with date time and interval" in {
+    val result = SQLParser(filterWithDateTimeAndInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      filterWithDateTimeAndInterval
+    )
+  }
+
+  it should "parse filter with date and interval" in {
+    val result = SQLParser(filterWithDateAndInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      filterWithDateAndInterval
+    )
+  }
+
+  it should "parse filter with time and interval" in {
+    val result = SQLParser(filterWithTimeAndInterval)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      filterWithTimeAndInterval
+    )
+  }
+
+  it should "parse group by with having and date time functions" in {
+    val result = SQLParser(groupByWithHavingAndDateTimeFunctions)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      groupByWithHavingAndDateTimeFunctions
+    )
+  }
+
+  it should "parse parse_date function" in {
+    val result = SQLParser(parseDate)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      parseDate
+    )
+  }
+
+  it should "parse parse_date_time function" in {
+    val result = SQLParser(parseDateTime)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      parseDateTime
+    )
+  }
+
+  it should "parse date_diff function" in {
+    val result = SQLParser(dateDiff)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateDiff
+    )
+  }
+
+  it should "parse date_diff function with aggregation" in {
+    val result = SQLParser(aggregationWithDateDiff)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      aggregationWithDateDiff
+    )
+  }
+
+  it should "parse format_date function" in {
+    val result = SQLParser(formatDate)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      formatDate
+    )
+  }
+
+  it should "parse format_datetime function" in {
+    val result = SQLParser(formatDateTime)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      formatDateTime
+    )
+  }
+
+  it should "parse date_add function" in {
+    val result = SQLParser(dateAdd)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateAdd
+    )
+  }
+
+  it should "parse date_sub function" in {
+    val result = SQLParser(dateSub)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateSub
+    )
+  }
+
+  it should "parse datetime_add function" in {
+    val result = SQLParser(dateTimeAdd)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateTimeAdd
+    )
+  }
+
+  it should "parse datetime_sub function" in {
+    val result = SQLParser(dateTimeSub)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      dateTimeSub
+    )
+  }
 }

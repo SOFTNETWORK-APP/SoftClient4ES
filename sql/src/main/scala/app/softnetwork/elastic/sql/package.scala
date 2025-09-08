@@ -12,7 +12,7 @@ package object sql {
   import scala.language.implicitConversions
 
   implicit def asString(token: Option[_ <: SQLToken]): String = token match {
-    case Some(t) => t.sql
+    case Some(t) => t.toString
     case _       => ""
   }
 
@@ -21,15 +21,12 @@ package object sql {
     override def toString: String = sql
   }
 
-  trait SQLTokenWithFunction extends SQLToken {
-    def function: Option[SQLFunction]
+  trait PainlessScript extends SQLToken {
+    def painless: String
+  }
 
-    lazy val aggregateFunction: Option[AggregateFunction] = function match {
-      case Some(af: AggregateFunction) => Some(af)
-      case _                           => None
-    }
-
-    lazy val aggregation: Boolean = aggregateFunction.isDefined
+  trait MathScript extends SQLToken {
+    def script: String
   }
 
   trait Updateable extends SQLToken {
@@ -40,7 +37,9 @@ package object sql {
 
   case object Distinct extends SQLExpr("distinct") with SQLRegex
 
-  abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T]) extends SQLToken {
+  abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T])
+      extends SQLToken
+      with PainlessScript {
     def choose[R >: T](
       values: Seq[R],
       operator: Option[SQLExpressionOperator],
@@ -50,16 +49,16 @@ package object sql {
         None
       else
         operator match {
-          case Some(_: Eq.type) => values.find(_ == value)
-          case Some(_: Ne.type) => values.find(_ != value)
-          case Some(_: Ge.type) => values.filter(_ >= value).sorted.reverse.headOption
-          case Some(_: Gt.type) => values.filter(_ > value).sorted.reverse.headOption
-          case Some(_: Le.type) => values.filter(_ <= value).sorted.headOption
-          case Some(_: Lt.type) => values.filter(_ < value).sorted.headOption
-          case _                => values.headOption
+          case Some(Eq)        => values.find(_ == value)
+          case Some(Ne | Diff) => values.find(_ != value)
+          case Some(Ge)        => values.filter(_ >= value).sorted.reverse.headOption
+          case Some(Gt)        => values.filter(_ > value).sorted.reverse.headOption
+          case Some(Le)        => values.filter(_ <= value).sorted.headOption
+          case Some(Lt)        => values.filter(_ < value).sorted.headOption
+          case _               => values.headOption
         }
     }
-    def painlessValue: String = value match {
+    def painless: String = value match {
       case s: String  => s""""$s""""
       case b: Boolean => b.toString
       case n: Number  => n.toString
@@ -90,11 +89,11 @@ package object sql {
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
-        case Some(_: Eq.type)   => values.find(v => v.toString contentEquals value)
-        case Some(_: Ne.type)   => values.find(v => !(v.toString contentEquals value))
-        case Some(_: Like.type) => values.find(v => pattern.matcher(v.toString).matches())
-        case None               => Some(values.mkString(separator))
-        case _                  => super.choose(values, operator, separator)
+        case Some(Eq)        => values.find(v => v.toString contentEquals value)
+        case Some(Ne | Diff) => values.find(v => !(v.toString contentEquals value))
+        case Some(Like)      => values.find(v => pattern.matcher(v.toString).matches())
+        case None            => Some(values.mkString(separator))
+        case _               => super.choose(values, operator, separator)
       }
     }
   }
@@ -211,10 +210,10 @@ package object sql {
         value.choose[T](values, Some(operator))
       case _ =>
         function match {
-          case Some(_: Min.type) => Some(values.min)
-          case Some(_: Max.type) => Some(values.max)
-          // FIXME        case Some(_: SQLSum.type) => Some(values.sum)
-          // FIXME        case Some(_: SQLAvg.type) => Some(values.sum / values.length  )
+          case Some(Min) => Some(values.min)
+          case Some(Max) => Some(values.max)
+          // FIXME        case Some(SQLSum) => Some(values.sum)
+          // FIXME        case Some(SQLAvg) => Some(values.sum / values.length  )
           case _ => values.headOption
         }
     }
@@ -248,13 +247,45 @@ package object sql {
     def update(request: SQLSearchRequest): SQLSource
   }
 
+  trait Identifier extends SQLToken with SQLSource with SQLFunctionChain with PainlessScript {
+    def name: String
+
+    def tableAlias: Option[String]
+    def distinct: Boolean
+    def nested: Boolean
+    def fieldAlias: Option[String]
+    def bucket: Option[SQLBucket]
+
+    lazy val identifierName: String =
+      functions.reverse.foldLeft(name)((expr, fun) => {
+        fun.toSQL(expr)
+      })
+
+    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
+
+    lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
+
+    lazy val aliasOrName: String = fieldAlias.getOrElse(name)
+
+    override def painless: String = {
+      val base = if (name.nonEmpty) s"doc['$name'].value" else ""
+      val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
+      orderedFunctions.foldLeft(base) {
+        case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
+        case (expr, f: PainlessScript)             => s"$expr${f.painless}"
+        case (expr, f)                             => f.toSQL(expr) // fallback
+      }
+    }
+
+  }
+
   case class SQLIdentifier(
     name: String,
     tableAlias: Option[String] = None,
     distinct: Boolean = false,
     nested: Boolean = false,
     limit: Option[SQLLimit] = None,
-    function: Option[SQLFunction] = None,
+    functions: List[SQLFunction] = List.empty,
     fieldAlias: Option[String] = None,
     bucket: Option[SQLBucket] = None
   ) extends SQLExpr({
@@ -270,26 +301,11 @@ package object sql {
             parts.mkString(".").trim
           }
         }
-        function match {
-          case Some(f) => s"$f($sql)"
-          case _       => sql
-        }
+        functions.reverse.foldLeft(sql)((expr, fun) => {
+          fun.toSQL(expr)
+        })
       })
-      with SQLSource
-      with SQLTokenWithFunction {
-
-    lazy val aggregationName: Option[String] =
-      if (aggregation) fieldAlias.orElse(Option(name)) else None
-
-    lazy val identifierName: String =
-      (function match {
-        case Some(f) => s"${f.sql}($name)"
-        case _       => name
-      }).toLowerCase
-
-    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
-
-    lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
+      with Identifier {
 
     def update(request: SQLSearchRequest): SQLIdentifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
@@ -320,4 +336,6 @@ package object sql {
       }
     }
   }
+
+  case class SQLScript(script: String) extends SQLExpr(script)
 }

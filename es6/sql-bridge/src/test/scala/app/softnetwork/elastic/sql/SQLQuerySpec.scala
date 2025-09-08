@@ -6,7 +6,7 @@ import com.google.gson.{JsonArray, JsonObject, JsonParser, JsonPrimitive}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 /** Created by smanciot on 13/04/17.
   */
@@ -538,8 +538,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                "must_not": [
       |                  {
       |                    "term": {
-      |                      "country": {
-      |                        "value": "usa"
+      |                      "Country": {
+      |                        "value": "USA"
       |                      }
       |                    }
       |                  }
@@ -551,8 +551,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                "must_not": [
       |                  {
       |                    "term": {
-      |                      "city": {
-      |                        "value": "berlin"
+      |                      "City": {
+      |                        "value": "Berlin"
       |                      }
       |                    }
       |                  }
@@ -566,17 +566,17 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        }
       |      },
       |      "aggs": {
-      |        "country": {
+      |        "Country": {
       |          "terms": {
-      |            "field": "country.keyword",
+      |            "field": "Country.keyword",
       |            "order": {
-      |              "country": "asc"
+      |              "Country": "asc"
       |            }
       |          },
       |          "aggs": {
-      |            "city": {
+      |            "City": {
       |              "terms": {
-      |                "field": "city.keyword",
+      |                "field": "City.keyword",
       |                "order": {
       |                  "cnt": "desc"
       |                }
@@ -584,7 +584,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "aggs": {
       |                "cnt": {
       |                  "value_count": {
-      |                    "field": "customerid"
+      |                    "field": "CustomerID"
       |                  }
       |                },
       |                "having_filter": {
@@ -866,6 +866,613 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("<", " < ")
       .replaceAll(">", " > ")
 
+  }
+
+  it should "add script fields" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(fieldsWithInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "ct": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": ["identifier"]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "filter with date time and interval" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(filterWithDateTimeAndInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "range": {
+      |            "createdAt": {
+      |              "lt": "now"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "range": {
+      |            "createdAt": {
+      |              "gte": "now-10d"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "*"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "filter with date and interval" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(filterWithDateAndInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "range": {
+        |            "createdAt": {
+        |              "lt": "now/d"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "range": {
+        |            "createdAt": {
+        |              "gte": "now-10d/d"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "filter with time and interval" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(filterWithTimeAndInterval)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "script": {
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "return doc['createdAt'].value.toLocalTime() < LocalTime.now();"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "script": {
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "return doc['createdAt'].value.toLocalTime() >= LocalTime.now().minus(10, ChronoUnit.MINUTES);"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(">=", " >= ")
+      .replaceAll("<", " < ")
+      .replaceAll("return", "return ")
+  }
+
+  it should "handle having with date functions" in {
+    val select: ElasticSearchRequest =
+      SQLQuery("""SELECT userId, MAX(createdAt) as lastSeen
+                 |FROM table
+                 |GROUP BY userId
+                 |HAVING MAX(createdAt) > now - interval 7 day""".stripMargin)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "filtered_agg": {
+      |      "filter": {
+      |        "match_all": {}
+      |      },
+      |      "aggs": {
+      |        "userId": {
+      |          "terms": {
+      |            "field": "userId.keyword"
+      |          },
+      |          "aggs": {
+      |            "lastSeen": {
+      |              "max": {
+      |                "field": "createdAt"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "lastSeen": "lastSeen"
+      |                },
+      |                "script": {
+      |                  "source": "(params.lastSeen != null) && (params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli())"
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
+  it should "handle group by with having and date time functions" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(groupByWithHavingAndDateTimeFunctions)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "filtered_agg": {
+      |      "filter": {
+      |        "bool": {
+      |          "filter": [
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "Country": {
+      |                        "value": "USA"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "City": {
+      |                        "value": "Berlin"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "match_all": {}
+      |            },
+      |            {
+      |              "range": {
+      |                "lastSeen": {
+      |                  "gt": "now-7d"
+      |                }
+      |              }
+      |            }
+      |          ]
+      |        }
+      |      },
+      |      "aggs": {
+      |        "Country": {
+      |          "terms": {
+      |            "field": "Country.keyword",
+      |            "order": {
+      |              "Country": "asc"
+      |            }
+      |          },
+      |          "aggs": {
+      |            "City": {
+      |              "terms": {
+      |                "field": "City.keyword"
+      |              },
+      |              "aggs": {
+      |                "cnt": {
+      |                  "value_count": {
+      |                    "field": "CustomerID"
+      |                  }
+      |                },
+      |                "lastSeen": {
+      |                  "max": {
+      |                    "field": "createdAt"
+      |                  }
+      |                },
+      |                "having_filter": {
+      |                  "bucket_selector": {
+      |                    "buckets_path": {
+      |                      "cnt": "cnt"
+      |                    },
+      |                    "script": {
+      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1 && 1 == 1"
+      |                    }
+      |                  }
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
+  it should "handle parse_date function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(parseDate)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "identifier": {
+      |      "terms": {
+      |        "field": "identifier.keyword",
+      |        "order": {
+      |          "ct": "desc"
+      |        }
+      |      },
+      |      "aggs": {
+      |        "ct": {
+      |          "value_count": {
+      |            "field": "identifier2"
+      |          }
+      |        },
+      |        "lastSeen": {
+      |          "max": {
+      |            "field": "createdAt",
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, LocalDate::from)"
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll(",ChronoUnit", ", ChronoUnit")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+      .replaceAll(",LocalDate", ", LocalDate")
+  }
+
+  it should "handle parse_datetime function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(parseDateTime)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "identifier": {
+      |      "terms": {
+      |        "field": "identifier.keyword",
+      |        "order": {
+      |          "ct": "desc"
+      |        }
+      |      },
+      |      "aggs": {
+      |        "ct": {
+      |          "value_count": {
+      |            "field": "identifier2"
+      |          }
+      |        },
+      |        "lastSeen": {
+      |          "max": {
+      |            "field": "createdAt",
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, ZonedDateTime::from).truncatedTo(ChronoUnit.MINUTES).get(ChronoUnit.YEARS)"
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+      .replaceAll(",ZonedDateTime", ", ZonedDateTime")
+  }
+
+  it should "handle date_diff function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateDiff)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "diff": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, doc['createdAt'].value)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll(",doc", ", doc")
+  }
+
+  it should "handle aggregation with date_diff function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(aggregationWithDateDiff)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "identifier": {
+      |      "terms": {
+      |        "field": "identifier.keyword"
+      |      },
+      |      "aggs": {
+      |        "max_diff": {
+      |          "max": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, ZonedDateTime::from))"
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll(",doc", ", doc")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+      .replaceAll("ZonedDateTime", " ZonedDateTime")
+  }
+
+  it should "handle date_add function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateAdd)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle date_sub function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateSub)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle datetime_add function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateTimeAdd)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle datetime_sub function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateTimeSub)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
   }
 
 }

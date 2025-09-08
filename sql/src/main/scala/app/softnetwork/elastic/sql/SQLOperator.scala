@@ -2,12 +2,38 @@ package app.softnetwork.elastic.sql
 
 trait SQLOperator extends SQLToken
 
+sealed trait ArithmeticOperator extends SQLOperator with MathScript {
+  override def toString: String = s" $sql "
+  override def script: String = sql
+}
+case object Add extends SQLExpr("+") with ArithmeticOperator
+case object Subtract extends SQLExpr("-") with ArithmeticOperator
+case object Multiply extends SQLExpr("*") with ArithmeticOperator
+case object Divide extends SQLExpr("/") with ArithmeticOperator
+case object Modulo extends SQLExpr("%") with ArithmeticOperator
+
 sealed trait SQLExpressionOperator extends SQLOperator
 
-sealed trait SQLComparisonOperator extends SQLExpressionOperator
+sealed trait SQLComparisonOperator extends SQLExpressionOperator with PainlessScript {
+  override def painless: String = this match {
+    case Eq    => "=="
+    case Ne    => "!="
+    case other => other.sql
+  }
+
+  def not: SQLComparisonOperator = this match {
+    case Eq        => Ne
+    case Ne | Diff => Eq
+    case Ge        => Lt
+    case Gt        => Le
+    case Le        => Gt
+    case Lt        => Ge
+  }
+}
 
 case object Eq extends SQLExpr("=") with SQLComparisonOperator
 case object Ne extends SQLExpr("<>") with SQLComparisonOperator
+case object Diff extends SQLExpr("!=") with SQLComparisonOperator
 case object Ge extends SQLExpr(">=") with SQLComparisonOperator
 case object Gt extends SQLExpr(">") with SQLComparisonOperator
 case object Le extends SQLExpr("<=") with SQLComparisonOperator
