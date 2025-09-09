@@ -7,15 +7,18 @@ object SQLValidator {
     val unaryFuncs = functions.collect { case f: SQLUnaryFunction[_, _] => f }
     unaryFuncs.sliding(2).foreach {
       case Seq(f1, f2) =>
-        if (!SQLTypeCompatibility.matches(f2.outputType, f1.inputType)) {
-          return Left(
-            s"Type mismatch: output '${f2.outputType.typeId}' of `${f2.sql}` " +
-            s"is not compatible with input '${f1.inputType.typeId}' of `${f1.sql}`"
-          )
-        }
+        validateTypesMatching(f2.outputType, f1.inputType)
       case _ => // ok
     }
     Right(())
+  }
+
+  def validateTypesMatching(out: SQLType, in: SQLType): Either[String, Unit] = {
+    if (SQLTypeCompatibility.matches(out, in)) {
+      Right(())
+    } else {
+      Left(s"Type mismatch: output '${out.typeId}' is not compatible with input '${in.typeId}'")
+    }
   }
 }
 

@@ -133,6 +133,10 @@ object Queries {
   val dateTimeSub =
     "select identifier, datetime_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
 
+  val isnull = "select isnull(identifier) as flag from Table"
+  val isnotnull = "select identifier, isnotnull(identifier2) as flag from Table"
+  val isNullCriteria = "select * from Table where isnull(identifier)"
+  val isNotNullCriteria = "select * from Table where isnotnull(identifier)"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -504,6 +508,34 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(dateTimeSub)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateTimeSub
+    )
+  }
+
+  it should "parse isnull function" in {
+    val result = SQLParser(isnull)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      isnull
+    )
+  }
+
+  it should "parse isnotnull function" in {
+    val result = SQLParser(isnotnull)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      isnotnull
+    )
+  }
+
+  it should "parse isnull criteria" in {
+    val result = SQLParser(isNullCriteria)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      isNullCriteria
+    )
+  }
+
+  it should "parse isnotnull criteria" in {
+    val result = SQLParser(isNotNullCriteria)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      isNotNullCriteria
     )
   }
 }

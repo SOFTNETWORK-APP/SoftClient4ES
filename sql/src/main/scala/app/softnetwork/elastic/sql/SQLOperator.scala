@@ -1,6 +1,13 @@
 package app.softnetwork.elastic.sql
 
-trait SQLOperator extends SQLToken
+trait SQLOperator extends SQLToken with PainlessScript {
+  override def painless: String = this match {
+    case And => "&&"
+    case Or  => "||"
+    case Not => "!"
+    case _   => sql
+  }
+}
 
 sealed trait ArithmeticOperator extends SQLOperator with MathScript {
   override def toString: String = s" $sql "

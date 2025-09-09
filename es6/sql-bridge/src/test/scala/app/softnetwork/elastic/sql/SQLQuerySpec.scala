@@ -1475,4 +1475,109 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
   }
 
+  it should "handle is_null function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isnull)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "flag": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(doc['identifier'].value == null)"
+      |      }
+      |    }
+      |  },
+      |  "_source": true
+      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("==", " == ")
+  }
+
+  it should "handle is_notnull function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isnotnull)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "script_fields": {
+        |    "flag": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(doc['identifier2'].value != null)"
+        |      }
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "identifier"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "").replaceAll("!=", " != ")
+  }
+
+  it should "handle is_null criteria as must_not exists" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isNullCriteria)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "bool": {
+        |            "must_not": [
+        |              {
+        |                "exists": {
+        |                  "field": "identifier"
+        |                }
+        |              }
+        |            ]
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "handle is_notnull criteria as exists" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isNotNullCriteria)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
 }

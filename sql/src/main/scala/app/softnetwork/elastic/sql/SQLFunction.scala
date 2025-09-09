@@ -4,6 +4,7 @@ import scala.util.matching.Regex
 
 sealed trait SQLFunction extends SQLRegex {
   def toSQL(base: String): String = if (base.nonEmpty) s"$sql($base)" else sql
+  def system: Boolean = false
 }
 
 sealed trait SQLFunctionWithIdentifier extends SQLFunction {
@@ -26,7 +27,7 @@ object SQLFunctionUtils {
 
 }
 
-trait SQLFunctionChain extends SQLFunction with SQLValidation {
+trait SQLFunctionChain extends SQLFunction {
   def functions: List[SQLFunction]
 
   override def validate(): Either[String, Unit] =
@@ -43,6 +44,10 @@ trait SQLFunctionChain extends SQLFunction with SQLValidation {
   }
 
   lazy val aggregation: Boolean = aggregateFunction.isDefined
+
+  override def in: SQLType = functions.lastOption.map(_.in).getOrElse(super.in)
+
+  override def out: SQLType = functions.headOption.map(_.out).getOrElse(super.out)
 }
 
 sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
@@ -50,6 +55,8 @@ sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
     with PainlessScript {
   def inputType: In
   def outputType: Out
+  override def in: SQLType = inputType
+  override def out: SQLType = outputType
 }
 
 sealed trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
@@ -174,7 +181,7 @@ case class SQLAddInterval(interval: TimeInterval)
   override def script: String = s"${operator.script}${interval.script}"
 }
 
-case class SQLSubstractInterval(interval: TimeInterval)
+case class SQLSubtractInterval(interval: TimeInterval)
     extends SQLExpr(interval.sql)
     with SQLArithmeticFunction[SQLDateTime, SQLDateTime]
     with MathScript {
@@ -191,18 +198,29 @@ sealed trait DateFunction extends DateTimeFunction
 
 sealed trait TimeFunction extends DateTimeFunction
 
-sealed trait CurrentDateTimeFunction extends DateTimeFunction with PainlessScript with MathScript {
+sealed trait SystemFunction extends SQLFunction {
+  override def system: Boolean = true
+}
+
+sealed trait CurrentDateTimeFunction
+    extends DateTimeFunction
+    with PainlessScript
+    with MathScript
+    with SystemFunction {
   override def painless: String =
     "ZonedDateTime.of(LocalDateTime.now(), ZoneId.of('Z')).toLocalDateTime()"
   override def script: String = "now"
+  override def out: SQLType = SQLTypes.DateTime
 }
 
 sealed trait CurrentDateFunction extends CurrentDateTimeFunction with DateFunction {
   override def painless: String = "ZonedDateTime.of(LocalDate.now(), ZoneId.of('Z')).toLocalDate()"
+  override def out: SQLType = SQLTypes.Date
 }
 
 sealed trait CurrentTimeFunction extends CurrentDateTimeFunction with TimeFunction {
   override def painless: String = "ZonedDateTime.of(LocalDate.now(), ZoneId.of('Z')).toLocalTime()"
+  override def out: SQLType = SQLTypes.Time
 }
 
 case object CurrentDate extends SQLExpr("current_date") with CurrentDateFunction
@@ -395,4 +413,28 @@ case class FormatDateTime(identifier: SQLIdentifier, format: String)
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String): String =
     s"DateTimeFormatter.ofPattern('$format').format($base)"
+}
+
+sealed trait SQLLogicalFunction[In <: SQLType]
+    extends SQLTransformFunction[In, SQLBool]
+    with SQLFunctionWithIdentifier {
+  def operator: SQLLogicalOperator
+  override def outputType: SQLBool = SQLTypes.Boolean
+  override def toPainless(base: String): String = s"($base$painless)"
+}
+
+case class SQLIsNullFunction(identifier: SQLIdentifier)
+    extends SQLExpr("isnull")
+    with SQLLogicalFunction[SQLAny] {
+  override def operator: SQLLogicalOperator = IsNull
+  override def inputType: SQLAny = SQLTypes.Any
+  override def painless: String = s" == null"
+}
+
+case class SQLIsNotNullFunction(identifier: SQLIdentifier)
+    extends SQLExpr("isnotnull")
+    with SQLLogicalFunction[SQLAny] {
+  override def operator: SQLLogicalOperator = IsNotNull
+  override def inputType: SQLAny = SQLTypes.Any
+  override def painless: String = s" != null"
 }

@@ -85,6 +85,11 @@ case class SQLPredicate(
 
   override def matchCriteria: Boolean = leftCriteria.matchCriteria || rightCriteria.matchCriteria
 
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- leftCriteria.validate()
+      _ <- rightCriteria.validate()
+    } yield ()
 }
 
 sealed trait ElasticFilter
@@ -95,6 +100,7 @@ sealed trait SQLCriteriaWithIdentifier extends SQLCriteria with SQLFunctionChain
   override def group: Boolean = false
   override lazy val limit: Option[SQLLimit] = identifier.limit
   override val functions: List[SQLFunction] = identifier.functions
+  override def validate(): Either[String, Unit] = identifier.validate()
 }
 
 case class ElasticBoolQuery(
@@ -151,12 +157,77 @@ case class ElasticBoolQuery(
 
 }
 
-sealed trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter {
+sealed trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter with PainlessScript {
   def maybeValue: Option[SQLToken]
   def maybeNot: Option[Not.type]
   def notAsString: String = maybeNot.map(v => s"$v ").getOrElse("")
   def valueAsString: String = maybeValue.map(v => s" $v").getOrElse("")
   override def sql = s"$identifier $notAsString$operator$valueAsString"
+
+  override lazy val aggregation: Boolean = maybeValue match {
+    case Some(v: SQLFunctionChain) => identifier.aggregation || v.aggregation
+    case _                         => identifier.aggregation
+  }
+
+  def painlessNot: String = operator match {
+    case _: SQLComparisonOperator => ""
+    case _                        => maybeNot.map(_.painless).getOrElse("")
+  }
+
+  def painlessOp: String = operator match {
+    case o: SQLComparisonOperator if maybeNot.isDefined => o.not.painless
+    case _                                              => operator.painless
+  }
+
+  def painlessValue: String = maybeValue
+    .map {
+      case v: SQLValue[_]     => v.painless
+      case v: SQLValues[_, _] => v.painless
+      case v: SQLIdentifier   => v.painless
+      case v                  => v.sql
+    }
+    .getOrElse {
+      operator match {
+        case IsNull | IsNotNull => "null"
+        case _                  => ""
+      }
+    }
+
+  override def painless: String = s"$painlessNot${identifier.painless} $painlessOp $painlessValue"
+
+  def maybeScript: Option[SQLScript] = if (
+    identifier.functions.nonEmpty || maybeValue.exists {
+      case v: SQLFunctionChain => v.functions.nonEmpty
+      case _                   => false
+    }
+  ) {
+    Some(SQLScript(painless))
+  } else None
+
+  def isScript: Boolean = maybeScript.isDefined
+
+  override def out: SQLType = identifier.out
+
+  override def validate(): Either[String, Unit] = {
+    for {
+      _ <- identifier.validate()
+      _ <- maybeValue match {
+        case Some(v) =>
+          v.validate() match {
+            case Left(err) => Left(s"$err in expression: $this")
+            case Right(_) =>
+              SQLValidator.validateTypesMatching(out, v.out) match {
+                case Left(_) =>
+                  Left(
+                    s"Type mismatch: '${out.typeId}' is not compatible with '${v.out.typeId}' in expression: $this"
+                  )
+                case Right(_) => Right(())
+              }
+          }
+        case _ => Right(())
+      }
+    } yield ()
+  }
 }
 
 case class SQLExpression(
@@ -168,7 +239,12 @@ case class SQLExpression(
   override def maybeValue: Option[SQLToken] = Option(value)
 
   override def update(request: SQLSearchRequest): SQLCriteria = {
-    val updated = this.copy(identifier = identifier.update(request))
+    val updated =
+      value match {
+        case id: SQLIdentifier =>
+          this.copy(identifier = identifier.update(request), value = id.update(request))
+        case _ => this.copy(identifier = identifier.update(request))
+      }
     if (updated.nested) {
       ElasticNested(updated, limit)
     } else
@@ -176,33 +252,6 @@ case class SQLExpression(
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-}
-
-sealed trait BinaryExpression extends Expression {
-  def left: SQLIdentifier
-  def right: SQLIdentifier
-  override def identifier: SQLIdentifier = left
-  override def maybeValue: Option[SQLToken] = Some(right)
-  override lazy val aggregation: Boolean = left.aggregation || right.aggregation
-}
-
-case class SQLBinaryExpression(
-  left: SQLIdentifier,
-  operator: SQLComparisonOperator, // Gt, Ge, Lt, Le, Eq, ...
-  right: SQLIdentifier,
-  maybeNot: Option[Not.type] = None
-) extends BinaryExpression
-    with PainlessScript {
-  override def update(request: SQLSearchRequest): SQLCriteria =
-    this.copy(left = left.update(request), right = right.update(request))
-
-  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def painless: String = {
-    val painlessOp = (if (maybeNot.isDefined) operator.not else operator).painless
-    s"${left.painless} $painlessOp ${right.painless}"
-  }
-
 }
 
 case class SQLIsNull(identifier: SQLIdentifier) extends Expression {
@@ -239,6 +288,49 @@ case class SQLIsNotNull(identifier: SQLIdentifier) extends Expression {
   }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+}
+
+sealed trait SQLCriteriaWithLogicalFunction[In <: SQLType] extends Expression {
+  def logicalFunction: SQLLogicalFunction[In]
+  override def maybeValue: Option[SQLToken] = None
+  override def maybeNot: Option[Not.type] = None
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+  override val functions: List[SQLFunction] = List(logicalFunction)
+  override def sql = s"${logicalFunction.sql}($identifier)"
+}
+
+object SQLLogicalFunctionAsCriteria {
+  def unapply(f: SQLLogicalFunction[_]): Option[SQLCriteria] = f match {
+    case SQLIsNullFunction(id)    => Some(SQLIsNullCriteria(id))
+    case SQLIsNotNullFunction(id) => Some(SQLIsNotNullCriteria(id))
+    case _                        => None
+  }
+}
+
+case class SQLIsNullCriteria(identifier: SQLIdentifier)
+    extends SQLCriteriaWithLogicalFunction[SQLAny] {
+  override val logicalFunction: SQLLogicalFunction[SQLAny] = SQLIsNullFunction(identifier)
+  override val operator: SQLOperator = IsNull
+  override def update(request: SQLSearchRequest): SQLCriteria = {
+    val updated = this.copy(identifier = identifier.update(request))
+    if (updated.nested) {
+      ElasticNested(updated, limit)
+    } else
+      updated
+  }
+}
+
+case class SQLIsNotNullCriteria(identifier: SQLIdentifier)
+    extends SQLCriteriaWithLogicalFunction[SQLAny] {
+  override val logicalFunction: SQLLogicalFunction[SQLAny] = SQLIsNotNullFunction(identifier)
+  override val operator: SQLOperator = IsNotNull
+  override def update(request: SQLSearchRequest): SQLCriteria = {
+    val updated = this.copy(identifier = identifier.update(request))
+    if (updated.nested) {
+      ElasticNested(updated, limit)
+    } else
+      updated
+  }
 }
 
 case class SQLIn[R, +T <: SQLValue[R]](
@@ -392,6 +484,9 @@ case class SQLComparisonDateMath(
         }
     }
   }
+
+  override def maybeScript: Option[SQLScript] = Some(SQLScript(script))
+
 }
 
 case class ElasticMatch(
@@ -472,5 +567,10 @@ case class SQLWhere(criteria: Option[SQLCriteria]) extends Updateable {
   }
   def update(request: SQLSearchRequest): SQLWhere =
     this.copy(criteria = criteria.map(_.update(request)))
+
+  override def validate(): Either[String, Unit] = criteria match {
+    case Some(c) => c.validate()
+    case _       => Right(())
+  }
 
 }

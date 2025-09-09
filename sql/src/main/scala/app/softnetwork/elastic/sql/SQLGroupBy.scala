@@ -9,6 +9,14 @@ case class SQLGroupBy(buckets: Seq[SQLBucket]) extends Updateable {
   lazy val bucketNames: Map[String, SQLBucket] = buckets.map { b =>
     b.identifier.identifierName -> b
   }.toMap
+
+  override def validate(): Either[String, Unit] = {
+    if (buckets.isEmpty) {
+      Left("At least one bucket is required in GROUP BY clause")
+    } else {
+      Right(())
+    }
+  }
 }
 
 case class SQLBucket(
@@ -95,19 +103,13 @@ object BucketSelectorScript {
       extractBucketsPath(left) ++ extractBucketsPath(right)
     case relation: ElasticRelation => extractBucketsPath(relation.criteria)
     case _: SQLMatch               => Map.empty //MATCH is not supported in bucket_selector
-    case b: BinaryExpression =>
-      import b._
-      if (left.aggregation && right.aggregation)
-        Map(left.aliasOrName -> left.aliasOrName, right.aliasOrName -> right.aliasOrName)
-      else if (left.aggregation)
-        Map(left.aliasOrName -> left.aliasOrName)
-      else if (right.aggregation)
-        Map(right.aliasOrName -> right.aliasOrName)
-      else
-        Map.empty
     case e: Expression if e.aggregation =>
       import e._
-      Map(identifier.aliasOrName -> identifier.aliasOrName)
+      maybeValue match {
+        case Some(v: SQLIdentifier) if v.aggregation =>
+          Map(identifier.aliasOrName -> identifier.aliasOrName, v.aliasOrName -> v.aliasOrName)
+        case _ => Map(identifier.aliasOrName -> identifier.aliasOrName)
+      }
     case _ => Map.empty
   }
 
@@ -155,18 +157,7 @@ object BucketSelectorScript {
     case _: SQLMatch => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
-      val param =
-        s"params.${e.identifier.aliasOrName}"
-      e.maybeValue match {
-        case Some(v) => toPainless(param, e.operator, v, e.maybeNot.nonEmpty)
-        case None =>
-          e.operator match {
-            case IsNull    => s"$param == null"
-            case IsNotNull => s"$param != null"
-            case _ =>
-              throw new IllegalArgumentException(s"Operator ${e.operator} requires a value")
-          }
-      }
+      e.painless
 
     case _ => "1 == 1" //throw new IllegalArgumentException(s"Unsupported SQLCriteria type: $expr")
   }

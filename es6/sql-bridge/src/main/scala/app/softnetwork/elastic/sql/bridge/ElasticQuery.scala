@@ -13,7 +13,9 @@ import app.softnetwork.elastic.sql.{
   SQLExpression,
   SQLIn,
   SQLIsNotNull,
-  SQLIsNull
+  SQLIsNotNullCriteria,
+  SQLIsNull,
+  SQLIsNullCriteria
 }
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.searches.queries.Query
@@ -71,6 +73,8 @@ case class ElasticQuery(filter: ElasticFilter) {
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
       case dateMath: SQLComparisonDateMath => dateMath
+      case isNull: SQLIsNullCriteria       => isNull
+      case isNotNull: SQLIsNotNullCriteria => isNotNull
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }

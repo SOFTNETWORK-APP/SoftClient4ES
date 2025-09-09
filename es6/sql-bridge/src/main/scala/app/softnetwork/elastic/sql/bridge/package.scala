@@ -335,6 +335,20 @@ package object bridge {
     existsQuery(identifier.name)
   }
 
+  implicit def isNullCriteriaToQuery(
+    isNull: SQLIsNullCriteria
+  ): Query = {
+    import isNull._
+    not(existsQuery(identifier.name))
+  }
+
+  implicit def isNotNullCriteriaToQuery(
+    isNotNull: SQLIsNotNullCriteria
+  ): Query = {
+    import isNotNull._
+    existsQuery(identifier.name)
+  }
+
   implicit def inToQuery[R, T <: SQLValue[R]](in: SQLIn[R, T]): Query = {
     import in._
     val _values: Seq[Any] = values.innerValues

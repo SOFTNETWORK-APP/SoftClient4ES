@@ -16,9 +16,11 @@ package object sql {
     case _       => ""
   }
 
-  trait SQLToken extends Serializable {
+  trait SQLToken extends Serializable with SQLValidation {
     def sql: String
     override def toString: String = sql
+    def in: SQLType = SQLTypes.Any
+    def out: SQLType = SQLTypes.Any
   }
 
   trait PainlessScript extends SQLToken {
@@ -68,6 +70,7 @@ package object sql {
 
   case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
     override def sql: String = value.toString
+    override def out: SQLType = SQLTypes.Boolean
   }
 
   case class SQLLiteral(override val value: String) extends SQLValue[String](value) {
@@ -96,6 +99,7 @@ package object sql {
         case _               => super.choose(values, operator, separator)
       }
     }
+    override def out: SQLType = SQLTypes.String
   }
 
   sealed abstract class SQLNumeric[T: Numeric](override val value: T)(implicit
@@ -129,6 +133,7 @@ package object sql {
     def ne: Seq[T] => Boolean = {
       _.forall { _ != value }
     }
+    override def out: SQLType = SQLTypes.Number
   }
 
   case class SQLLong(override val value: Long) extends SQLNumeric[Long](value)
@@ -170,8 +175,10 @@ package object sql {
   }
 
   sealed abstract class SQLValues[+R: TypeTag, +T <: SQLValue[R]](val values: Seq[T])
-      extends SQLToken {
+      extends SQLToken
+      with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
+    override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
   }
 
@@ -268,7 +275,10 @@ package object sql {
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
     override def painless: String = {
-      val base = if (name.nonEmpty) s"doc['$name'].value" else ""
+      val base =
+        if (aggregation && functions.size == 1) s"params.$aliasOrName"
+        else if (name.nonEmpty) s"doc['$name'].value"
+        else ""
       val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
       orderedFunctions.foldLeft(base) {
         case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
@@ -337,5 +347,5 @@ package object sql {
     }
   }
 
-  case class SQLScript(script: String) extends SQLExpr(script)
+  case class SQLScript(script: String) extends SQLExpr(script) with MathScript
 }
