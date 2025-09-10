@@ -72,11 +72,12 @@ trait SQLFunctionChain extends SQLFunction {
   override def in: SQLType = functions.lastOption.map(_.in).getOrElse(super.in)
 
   override def out: SQLType = {
-    val baseType = super.out
+    val baseType = functions.lastOption.map(_.in).getOrElse(super.baseType)
     functions.reverse.foldLeft(baseType) { (currentType, fun) =>
       fun.applyType(currentType)
     }
   }
+
 }
 
 sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
@@ -108,13 +109,7 @@ sealed trait SQLArithmeticFunction[In <: SQLType, Out <: SQLType]
     with MathScript {
   def operator: ArithmeticOperator
   override def toSQL(base: String): String = s"$base$operator$sql"
-  override def applyType(in: SQLType): SQLType = in /*match {
-    case SQLTypes.Date     => SQLTypes.Date     // a Date remains a Date
-    case SQLTypes.Time     => SQLTypes.Time     // a Time remains a Time
-    case SQLTypes.DateTime => SQLTypes.DateTime // a DateTime remains a DateTime
-    case SQLTypes.Number   => SQLTypes.Number // a Number remains a Number
-    case _                 => outputType // fallback
-  }*/
+  override def applyType(in: SQLType): SQLType = in
 }
 
 sealed trait ParametrizedFunction extends SQLFunction {

@@ -19,8 +19,9 @@ package object sql {
   trait SQLToken extends Serializable with SQLValidation {
     def sql: String
     override def toString: String = sql
-    def in: SQLType = SQLTypes.Any
-    def out: SQLType = SQLTypes.Any
+    def baseType: SQLType = SQLTypes.Any
+    def in: SQLType = baseType
+    def out: SQLType = baseType
   }
 
   trait PainlessScript extends SQLToken {
