@@ -274,11 +274,12 @@ package object sql {
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
-    override def painless: String = {
-      val base =
-        if (aggregation && functions.size == 1) s"params.$aliasOrName"
-        else if (name.nonEmpty) s"doc['$name'].value"
-        else ""
+    def paramName: String =
+      if (aggregation && functions.size == 1) s"params.$aliasOrName"
+      else if (name.nonEmpty) s"doc['$name'].value"
+      else ""
+
+    def toPainless(base: String): String = {
       val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
       orderedFunctions.foldLeft(base) {
         case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
@@ -286,6 +287,8 @@ package object sql {
         case (expr, f)                             => f.toSQL(expr) // fallback
       }
     }
+
+    override def painless: String = toPainless(paramName)
 
   }
 

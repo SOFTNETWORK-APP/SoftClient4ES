@@ -144,8 +144,13 @@ package object bridge {
 
   implicit def expressionToQuery(expression: SQLExpression): Query = {
     import expression._
+    if (aggregation)
+      return matchAllQuery()
+    if (identifier.functions.nonEmpty) {
+      return scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
+    }
     value match {
-      case n: SQLNumeric[_] if !aggregation =>
+      case n: SQLNumeric[_] =>
         operator match {
           case Ge =>
             maybeNot match {
@@ -227,7 +232,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case l: SQLLiteral if !aggregation =>
+      case l: SQLLiteral =>
         operator match {
           case Like =>
             maybeNot match {
@@ -280,7 +285,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case b: SQLBoolean if !aggregation =>
+      case b: SQLBoolean =>
         operator match {
           case Eq =>
             maybeNot match {
@@ -298,27 +303,27 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case _ => matchAllQuery()
-    }
-  }
-
-  implicit def dateMathToQuery(dateMath: SQLComparisonDateMath): Query = {
-    import dateMath._
-    if (aggregation)
-      return matchAllQuery()
-    dateTimeFunction match {
-      case _: CurrentTimeFunction =>
-        scriptQuery(Script(script = script).lang("painless").scriptType("source"))
-      case _ =>
-        val op = if (maybeNot.isDefined) operator.not else operator
-        op match {
-          case Gt => rangeQuery(identifier.name) gt script
-          case Ge => rangeQuery(identifier.name) gte script
-          case Lt => rangeQuery(identifier.name) lt script
-          case Le => rangeQuery(identifier.name) lte script
-          case Eq => rangeQuery(identifier.name) gte script lte script
-          case Ne | Diff => not(rangeQuery(identifier.name) gte script lte script)
+      case i: SQLIdentifier =>
+        operator match {
+          case op: SQLComparisonOperator =>
+            i.toScript match {
+              case Some(script) =>
+                val o = if (maybeNot.isDefined) op.not else op
+                o match {
+                  case Gt        => rangeQuery(identifier.name) gt script
+                  case Ge        => rangeQuery(identifier.name) gte script
+                  case Lt        => rangeQuery(identifier.name) lt script
+                  case Le        => rangeQuery(identifier.name) lte script
+                  case Eq        => rangeQuery(identifier.name) gte script lte script
+                  case Ne | Diff => not(rangeQuery(identifier.name) gte script lte script)
+                }
+              case _ =>
+                scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
+            }
+          case _ =>
+            scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
         }
+      case _ => matchAllQuery()
     }
   }
 

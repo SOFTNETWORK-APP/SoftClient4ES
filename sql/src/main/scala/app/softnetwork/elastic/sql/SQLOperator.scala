@@ -2,10 +2,12 @@ package app.softnetwork.elastic.sql
 
 trait SQLOperator extends SQLToken with PainlessScript {
   override def painless: String = this match {
-    case And => "&&"
-    case Or  => "||"
-    case Not => "!"
-    case _   => sql
+    case And          => "&&"
+    case Or           => "||"
+    case Not          => "!"
+    case In           => ".contains"
+    case Like | Match => ".matches"
+    case _            => sql
   }
 }
 

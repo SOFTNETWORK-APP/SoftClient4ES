@@ -118,9 +118,8 @@ object BucketSelectorScript {
       val leftStr = toPainless(left)
       val rightStr = toPainless(right)
       val opStr = op match {
-        case And => "&&"
-        case Or  => "||"
-        case _   => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
+        case And | Or => op.painless
+        case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
       if (group || not)
@@ -130,34 +129,21 @@ object BucketSelectorScript {
 
     case relation: ElasticRelation => toPainless(relation.criteria)
 
-    case SQLComparisonDateMath(identifier, op, dateFunc, arithOp, interval, maybeNot)
-        if identifier.aggregation =>
-      val painlessOp = if (maybeNot.nonEmpty) op.not.painless else op.painless
-      val paramName = identifier.aliasOrName
-      // always use a correct "now" creation
-      val now = "ZonedDateTime.now(ZoneId.of('Z'))"
-
-      // build the RHS as a Painless ZonedDateTime (apply +/- interval using TimeInterval.painless)
-      val rightBase = (arithOp, interval) match {
-        case (Some(Add), Some(i))      => s"$now.plus(${i.painless})"
-        case (Some(Subtract), Some(i)) => s"$now.minus(${i.painless})"
-        case _                         => now
-      }
-
-      val rightZdt = dateFunc match {
-        // truncate only after arithmetic for CurrentDate
-        case _: CurrentDateFunction => s"$rightBase.truncatedTo(ChronoUnit.DAYS)"
-        case _: CurrentTimeFunction => s"$rightBase.truncatedTo(ChronoUnit.SECONDS)"
-        case _                      => rightBase
-      }
-
-      // protect against null params and compare epoch millis
-      s"(params.$paramName != null) && (params.$paramName $painlessOp $rightZdt.toInstant().toEpochMilli())"
-
     case _: SQLMatch => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
-      e.painless
+      val paramName = e.identifier.paramName
+      e.out match {
+        case SQLTypes.Date if e.operator.isInstanceOf[SQLComparisonOperator] =>
+          // protect against null params and compare epoch millis
+          s"($paramName != null) && (${e.painless}.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli())"
+        case SQLTypes.Time if e.operator.isInstanceOf[SQLComparisonOperator] =>
+          s"($paramName != null) && (${e.painless}.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli())"
+        case SQLTypes.DateTime if e.operator.isInstanceOf[SQLComparisonOperator] =>
+          s"($paramName != null) && (${e.painless}.toInstant().toEpochMilli())"
+        case _ =>
+          e.painless
+      }
 
     case _ => "1 == 1" //throw new IllegalArgumentException(s"Unsupported SQLCriteria type: $expr")
   }

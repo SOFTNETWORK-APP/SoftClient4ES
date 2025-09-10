@@ -193,20 +193,27 @@ sealed trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter wit
       }
     }
 
-  override def painless: String = s"$painlessNot${identifier.painless} $painlessOp $painlessValue"
-
-  def maybeScript: Option[SQLScript] = if (
-    identifier.functions.nonEmpty || maybeValue.exists {
-      case v: SQLFunctionChain => v.functions.nonEmpty
-      case _                   => false
+  private[this] lazy val base: String =
+    out match {
+      case SQLTypes.Time if identifier.paramName.nonEmpty =>
+        s"${identifier.paramName}.toLocalTime()"
+      case _ => identifier.paramName
     }
-  ) {
-    Some(SQLScript(painless))
-  } else None
 
-  def isScript: Boolean = maybeScript.isDefined
+  override def painless: String =
+    s"$painlessNot${identifier.toPainless(base)} $painlessOp $painlessValue"
 
-  override def out: SQLType = identifier.out
+  override def out: SQLType =
+    (identifier.out, maybeValue) match {
+      case (idType, Some(v)) =>
+        v match {
+          case value: SQLValue[_]      => value.out
+          case values: SQLValues[_, _] => values.out
+          case id: SQLIdentifier       => id.out
+          case _                       => idType
+        }
+      case (idType, None) => idType
+    }
 
   override def validate(): Either[String, Unit] = {
     for {
@@ -356,6 +363,8 @@ case class SQLIn[R, +T <: SQLValue[R]](
   override def maybeValue: Option[SQLToken] = Some(values)
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+
+  override def painless: String = s"$painlessNot${identifier.painless} $painlessOp($painlessValue)"
 }
 
 case class SQLBetween[+T](
@@ -436,59 +445,6 @@ case class SQLMatch(
   override def group: Boolean = false
 }
 
-case class SQLComparisonDateMath(
-  identifier: SQLIdentifier,
-  operator: SQLComparisonOperator, // Gt, Ge, Lt, Le, Eq, ...
-  dateTimeFunction: CurrentDateTimeFunction, // CurrentDate, Now, CurrentTimestamp, CurrentTime, ...
-  arithmeticOperator: Option[ArithmeticOperator] =
-    None, // Plus or Minus between dateTimeFunction and interval
-  interval: Option[TimeInterval] = None, // optional interval
-  maybeNot: Option[Not.type] = None
-) extends Expression
-    with MathScript {
-  override def sql: String = {
-    s"$identifier ${operator.sql} $dateTimeFunction${asString(arithmeticOperator)}${asString(interval)}"
-  }
-  override def update(request: SQLSearchRequest): SQLCriteria =
-    this.copy(identifier = identifier.update(request))
-
-  override def maybeValue: Option[SQLToken] = Some(SQLScript(script))
-
-  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-
-  override def script: String = {
-    dateTimeFunction match {
-      case _: CurrentTimeFunction =>
-        val painlessOp = (if (maybeNot.isDefined) operator.not else operator).painless
-        (arithmeticOperator, interval) match {
-          case (Some(Add), Some(i)) => // compare doc time with now + interval
-            s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now().plus(${i.value}, ${i.unit.painless});"
-
-          case (Some(Subtract), Some(i)) => // compare doc time with now
-            s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now().minus(${i.value}, ${i.unit.painless});"
-
-          case _ =>
-            s"return doc['${identifier.name}'].value.toLocalTime() $painlessOp LocalTime.now();"
-        }
-      case _ =>
-        val base = s"${dateTimeFunction.script}"
-        val dateMath =
-          (arithmeticOperator, interval) match {
-            case (Some(Add), Some(i))      => s"$base+${i.script}"
-            case (Some(Subtract), Some(i)) => s"$base-${i.script}"
-            case _                         => base
-          }
-        dateTimeFunction match {
-          case _: CurrentDateFunction => s"$dateMath/d"
-          case _                      => dateMath
-        }
-    }
-  }
-
-  override def maybeScript: Option[SQLScript] = Some(SQLScript(script))
-
-}
-
 case class ElasticMatch(
   identifier: SQLIdentifier,
   value: SQLLiteral,
@@ -507,6 +463,8 @@ case class ElasticMatch(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
   override def matchCriteria: Boolean = true
+
+  override def painless: String = s"$painlessNot${identifier.painless} $painlessOp($painlessValue)"
 }
 
 sealed abstract class ElasticRelation(val criteria: SQLCriteria, val operator: ElasticOperator)

@@ -7,11 +7,6 @@ import TimeUnit._
 /** Created by smanciot on 27/06/2018.
   *
   * SQL Parser for ElasticSearch
-  *
-  * TODO implements SQL :
-  *   - JOIN,
-  *   - GROUP BY,
-  *   - HAVING, etc.
   */
 object SQLParser
     extends SQLParser
@@ -114,24 +109,23 @@ trait SQLParser extends RegexParsers with PackratParsers {
       TimeInterval(l.value.toInt, u)
     }
 
-  def current_date: PackratParser[CurrentDateTimeFunction] =
+  def current_date: PackratParser[CurrentFunction] =
     CurrentDate.regex ~ start.? ~ end.? ^^ { case _ ~ s ~ t =>
       if (s.isDefined && t.isDefined) CurentDateWithParens else CurrentDate
     }
 
-  def current_time: PackratParser[CurrentDateTimeFunction] =
+  def current_time: PackratParser[CurrentFunction] =
     CurrentTime.regex ~ start.? ~ end.? ^^ { case _ ~ s ~ t =>
       if (s.isDefined && t.isDefined) CurrentTimeWithParens else CurrentTime
     }
 
-  def current_timestamp: PackratParser[CurrentDateTimeFunction] =
+  def current_timestamp: PackratParser[CurrentFunction] =
     CurrentTimestamp.regex ~ start.? ~ end.? ^^ { case _ ~ s ~ t =>
       if (s.isDefined && t.isDefined) CurrentTimestampWithParens else CurrentTimestamp
     }
 
-  def now: PackratParser[CurrentDateTimeFunction] = Now.regex ~ start.? ~ end.? ^^ {
-    case _ ~ s ~ t =>
-      if (s.isDefined && t.isDefined) NowWithParens else Now
+  def now: PackratParser[CurrentFunction] = Now.regex ~ start.? ~ end.? ^^ { case _ ~ s ~ t =>
+    if (s.isDefined && t.isDefined) NowWithParens else Now
   }
 
   def add: PackratParser[ArithmeticOperator] = Add.sql ^^ (_ => Add)
@@ -424,7 +418,7 @@ trait SQLWhereParser {
     identifierWithTransformation | identifierWithAggregation | identifierWithSystemFunction | identifierWithArithmeticFunction | identifierWithFunction | date_diff_identifier | identifier
 
   private def equality: PackratParser[SQLExpression] =
-    not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | literal | double | long) ^^ {
+    not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | literal | double | long | any_identifier) ^^ {
       case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
     }
 
@@ -442,7 +436,7 @@ trait SQLWhereParser {
   def lt: PackratParser[SQLComparisonOperator] = Lt.sql ^^ (_ => Lt)
 
   private def comparison: PackratParser[SQLExpression] =
-    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | long | literal) ^^ {
+    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | long | literal | any_identifier) ^^ {
       case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
     }
 
@@ -510,11 +504,6 @@ trait SQLWhereParser {
       SQLMatch(i, l)
     }
 
-  private def dateTimeComparison: PackratParser[SQLComparisonDateMath] =
-    not.? ~ any_identifier ~ (eq | ne | diff | ge | gt | le | lt) ~ (current_date | current_time | current_timestamp | now) ~ arithmeticOperator.? ~ interval.? ^^ {
-      case n ~ i ~ o ~ dt ~ ao ~ it => SQLComparisonDateMath(i, o, dt, ao, it, n)
-    }
-
   def and: PackratParser[SQLPredicateOperator] = And.regex ^^ (_ => And)
 
   def or: PackratParser[SQLPredicateOperator] = Or.regex ^^ (_ => Or)
@@ -527,7 +516,7 @@ trait SQLWhereParser {
     }
 
   def criteria: PackratParser[SQLCriteria] =
-    (equality | like | dateTimeComparison | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | sql_distance | matchCriteria | logical_criteria) ^^ (
+    (equality | like | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | sql_distance | matchCriteria | logical_criteria) ^^ (
       c => c
     )
 

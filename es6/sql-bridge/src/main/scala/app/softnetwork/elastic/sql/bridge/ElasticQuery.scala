@@ -9,7 +9,6 @@ import app.softnetwork.elastic.sql.{
   ElasticNested,
   ElasticParent,
   SQLBetween,
-  SQLComparisonDateMath,
   SQLExpression,
   SQLIn,
   SQLIsNotNull,
@@ -72,7 +71,6 @@ case class ElasticQuery(filter: ElasticFilter) {
       case between: SQLBetween[Double]     => between
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
-      case dateMath: SQLComparisonDateMath => dateMath
       case isNull: SQLIsNullCriteria       => isNull
       case isNotNull: SQLIsNotNullCriteria => isNotNull
       case other =>

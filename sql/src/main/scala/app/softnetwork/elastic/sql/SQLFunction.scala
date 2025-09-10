@@ -5,6 +5,7 @@ import scala.util.matching.Regex
 sealed trait SQLFunction extends SQLRegex {
   def toSQL(base: String): String = if (base.nonEmpty) s"$sql($base)" else sql
   def system: Boolean = false
+  def applyType(in: SQLType): SQLType = out
 }
 
 sealed trait SQLFunctionWithIdentifier extends SQLFunction {
@@ -13,16 +14,16 @@ sealed trait SQLFunctionWithIdentifier extends SQLFunction {
 
 object SQLFunctionUtils {
   def aggregateAndTransformFunctions(
-    identifier: Identifier
+    chain: SQLFunctionChain
   ): (List[SQLFunction], List[SQLFunction]) = {
-    identifier.functions.partition {
+    chain.functions.partition {
       case _: AggregateFunction => true
       case _                    => false
     }
   }
 
-  def transformFunctions(identifier: Identifier): List[SQLFunction] = {
-    aggregateAndTransformFunctions(identifier)._2
+  def transformFunctions(chain: SQLFunctionChain): List[SQLFunction] = {
+    aggregateAndTransformFunctions(chain)._2
   }
 
 }
@@ -30,24 +31,52 @@ object SQLFunctionUtils {
 trait SQLFunctionChain extends SQLFunction {
   def functions: List[SQLFunction]
 
-  override def validate(): Either[String, Unit] =
-    SQLValidator.validateChain(functions)
+  override def validate(): Either[String, Unit] = {
+    if (aggregations.size > 1) {
+      Left("Only one aggregation function is allowed in a function chain")
+    } else if (aggregations.size == 1 && !functions.head.isInstanceOf[AggregateFunction]) {
+      Left("Aggregation function must be the first function in the chain")
+    } else {
+      SQLValidator.validateChain(functions)
+    }
+  }
 
   override def toSQL(base: String): String =
     functions.reverse.foldLeft(base)((expr, fun) => {
       fun.toSQL(expr)
     })
 
-  lazy val aggregateFunction: Option[AggregateFunction] = functions.headOption match {
-    case Some(af: AggregateFunction) => Some(af)
-    case _                           => None
+  def toScript: Option[String] = {
+    val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
+    orderedFunctions.foldLeft(Option("")) {
+      case (expr, f: MathScript) if expr.isDefined => Option(s"${expr.get}${f.script}")
+      case (_, _)                                  => None // ignore non math scripts
+    } match {
+      case Some(s) if s.nonEmpty =>
+        out match {
+          case SQLTypes.Date => Some(s"$s/d")
+          case _             => Some(s)
+        }
+      case _ => None
+    }
   }
+
+  private[this] lazy val aggregations = functions.collect { case af: AggregateFunction =>
+    af
+  }
+
+  lazy val aggregateFunction: Option[AggregateFunction] = aggregations.headOption
 
   lazy val aggregation: Boolean = aggregateFunction.isDefined
 
   override def in: SQLType = functions.lastOption.map(_.in).getOrElse(super.in)
 
-  override def out: SQLType = functions.headOption.map(_.out).getOrElse(super.out)
+  override def out: SQLType = {
+    val baseType = super.out
+    functions.reverse.foldLeft(baseType) { (currentType, fun) =>
+      fun.applyType(currentType)
+    }
+  }
 }
 
 sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
@@ -57,6 +86,7 @@ sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
   def outputType: Out
   override def in: SQLType = inputType
   override def out: SQLType = outputType
+  override def applyType(in: SQLType): SQLType = outputType
 }
 
 sealed trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
@@ -74,9 +104,17 @@ sealed trait SQLTransformFunction[In <: SQLType, Out <: SQLType] extends SQLUnar
 }
 
 sealed trait SQLArithmeticFunction[In <: SQLType, Out <: SQLType]
-    extends SQLTransformFunction[In, Out] {
+    extends SQLTransformFunction[In, Out]
+    with MathScript {
   def operator: ArithmeticOperator
   override def toSQL(base: String): String = s"$base$operator$sql"
+  override def applyType(in: SQLType): SQLType = in /*match {
+    case SQLTypes.Date     => SQLTypes.Date     // a Date remains a Date
+    case SQLTypes.Time     => SQLTypes.Time     // a Time remains a Time
+    case SQLTypes.DateTime => SQLTypes.DateTime // a DateTime remains a DateTime
+    case SQLTypes.Number   => SQLTypes.Number // a Number remains a Number
+    case _                 => outputType // fallback
+  }*/
 }
 
 sealed trait ParametrizedFunction extends SQLFunction {
@@ -172,8 +210,7 @@ object TimeInterval {
 
 case class SQLAddInterval(interval: TimeInterval)
     extends SQLExpr(interval.sql)
-    with SQLArithmeticFunction[SQLDateTime, SQLDateTime]
-    with MathScript {
+    with SQLArithmeticFunction[SQLDateTime, SQLDateTime] {
   override def operator: ArithmeticOperator = Add
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
@@ -183,8 +220,7 @@ case class SQLAddInterval(interval: TimeInterval)
 
 case class SQLSubtractInterval(interval: TimeInterval)
     extends SQLExpr(interval.sql)
-    with SQLArithmeticFunction[SQLDateTime, SQLDateTime]
-    with MathScript {
+    with SQLArithmeticFunction[SQLDateTime, SQLDateTime] {
   override def operator: ArithmeticOperator = Subtract
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
@@ -192,35 +228,37 @@ case class SQLSubtractInterval(interval: TimeInterval)
   override def script: String = s"${operator.script}${interval.script}"
 }
 
-sealed trait DateTimeFunction extends SQLFunction
+sealed trait DateTimeFunction extends SQLFunction {
+  def now: String = "ZonedDateTime.now(ZoneId.of('Z'))"
+  override def out: SQLType = SQLTypes.DateTime
+}
 
-sealed trait DateFunction extends DateTimeFunction
+sealed trait DateFunction extends DateTimeFunction {
+  override def out: SQLType = SQLTypes.Date
+}
 
-sealed trait TimeFunction extends DateTimeFunction
+sealed trait TimeFunction extends DateTimeFunction {
+  override def out: SQLType = SQLTypes.Time
+}
 
 sealed trait SystemFunction extends SQLFunction {
   override def system: Boolean = true
 }
 
-sealed trait CurrentDateTimeFunction
-    extends DateTimeFunction
-    with PainlessScript
-    with MathScript
-    with SystemFunction {
-  override def painless: String =
-    "ZonedDateTime.of(LocalDateTime.now(), ZoneId.of('Z')).toLocalDateTime()"
+sealed trait CurrentFunction extends SystemFunction with PainlessScript
+
+sealed trait CurrentDateTimeFunction extends DateTimeFunction with CurrentFunction with MathScript {
+  override def painless: String = now
   override def script: String = "now"
-  override def out: SQLType = SQLTypes.DateTime
 }
 
-sealed trait CurrentDateFunction extends CurrentDateTimeFunction with DateFunction {
-  override def painless: String = "ZonedDateTime.of(LocalDate.now(), ZoneId.of('Z')).toLocalDate()"
-  override def out: SQLType = SQLTypes.Date
+sealed trait CurrentDateFunction extends DateFunction with CurrentFunction with MathScript {
+  override def painless: String = s"$now.toLocalDate()"
+  override def script: String = "now"
 }
 
-sealed trait CurrentTimeFunction extends CurrentDateTimeFunction with TimeFunction {
-  override def painless: String = "ZonedDateTime.of(LocalDate.now(), ZoneId.of('Z')).toLocalTime()"
-  override def out: SQLType = SQLTypes.Time
+sealed trait CurrentTimeFunction extends TimeFunction with CurrentFunction {
+  override def painless: String = s"$now.toLocalTime()"
 }
 
 case object CurrentDate extends SQLExpr("current_date") with CurrentDateFunction

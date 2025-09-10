@@ -976,7 +976,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "return doc['createdAt'].value.toLocalTime() < LocalTime.now();"
+        |              "source": "doc['createdAt'].value.toLocalTime() < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
         |            }
         |          }
         |        },
@@ -984,7 +984,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "return doc['createdAt'].value.toLocalTime() >= LocalTime.now().minus(10, ChronoUnit.MINUTES);"
+        |              "source": "doc['createdAt'].value.toLocalTime() >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
         |            }
         |          }
         |        }
@@ -1001,7 +1001,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll(">=", " >= ")
       .replaceAll("<", " < ")
-      .replaceAll("return", "return ")
   }
 
   it should "handle having with date functions" in {
