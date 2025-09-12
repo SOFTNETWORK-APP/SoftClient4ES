@@ -4,6 +4,14 @@ object SQLValidator {
 
   def validateChain(functions: List[SQLFunction]): Either[String, Unit] = {
     // validate function chain type compatibility
+    functions match {
+      case Nil => return Right(())
+      case _   =>
+    }
+    functions.map(_.validate()).find(_.isLeft) match {
+      case Some(left) => return left
+      case None       =>
+    }
     val unaryFuncs = functions.collect { case f: SQLUnaryFunction[_, _] => f }
     unaryFuncs.sliding(2).foreach {
       case Seq(f1, f2) =>
@@ -14,7 +22,7 @@ object SQLValidator {
   }
 
   def validateTypesMatching(out: SQLType, in: SQLType): Either[String, Unit] = {
-    if (SQLTypeCompatibility.matches(out, in)) {
+    if (SQLTypeUtils.matches(out, in)) {
       Right(())
     } else {
       Left(s"Type mismatch: output '${out.typeId}' is not compatible with input '${in.typeId}'")

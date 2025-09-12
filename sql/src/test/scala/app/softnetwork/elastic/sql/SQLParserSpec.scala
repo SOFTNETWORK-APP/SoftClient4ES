@@ -10,17 +10,17 @@ object Queries {
   val numericalGt = "select * from Table where identifier > 1"
   val numericalGe = "select * from Table where identifier >= 1"
   val numericalNe = "select * from Table where identifier <> 1"
-  val literalEq = """select * from Table where identifier = "un""""
-  val literalLt = "select * from Table where createdAt < \"now-35M/M\""
-  val literalLe = "select * from Table where createdAt <= \"now-35M/M\""
-  val literalGt = "select * from Table where createdAt > \"now-35M/M\""
-  val literalGe = "select * from Table where createdAt >= \"now-35M/M\""
-  val literalNe = """select * from Table where identifier <> "un""""
+  val literalEq = """select * from Table where identifier = 'un'"""
+  val literalLt = "select * from Table where createdAt < 'now-35M/M'"
+  val literalLe = "select * from Table where createdAt <= 'now-35M/M'"
+  val literalGt = "select * from Table where createdAt > 'now-35M/M'"
+  val literalGe = "select * from Table where createdAt >= 'now-35M/M'"
+  val literalNe = """select * from Table where identifier <> 'un'"""
   val boolEq = """select * from Table where identifier = true"""
   val boolNe = """select * from Table where identifier <> false"""
-  val literalLike = """select * from Table where identifier like "%un%""""
-  val literalNotLike = """select * from Table where identifier not like "%un%""""
-  val betweenExpression = """select * from Table where identifier between "1" and "2""""
+  val literalLike = """select * from Table where identifier like '%un%'"""
+  val literalNotLike = """select * from Table where identifier not like '%un%'"""
+  val betweenExpression = """select * from Table where identifier between '1' and '2'"""
   val andPredicate = "select * from Table where identifier1 = 1 and identifier2 > 2"
   val orPredicate = "select * from Table where identifier1 = 1 or identifier2 > 2"
   val leftPredicate =
@@ -40,28 +40,28 @@ object Queries {
     "select * from Table where identifier1 = 1 and parent(parent.identifier2 > 2 or parent.identifier3 = 3)"
   val parentCriteria =
     "select * from Table where identifier1 = 1 and parent(parent.identifier3 = 3)"
-  val inLiteralExpression = "select * from Table where identifier in (\"val1\",\"val2\",\"val3\")"
+  val inLiteralExpression = "select * from Table where identifier in ('val1','val2','val3')"
   val inNumericalExpressionWithIntValues = "select * from Table where identifier in (1,2,3)"
   val inNumericalExpressionWithDoubleValues =
     "select * from Table where identifier in (1.0,2.1,3.4)"
   val notInLiteralExpression =
-    "select * from Table where identifier not in (\"val1\",\"val2\",\"val3\")"
+    "select * from Table where identifier not in ('val1','val2','val3')"
   val notInNumericalExpressionWithIntValues = "select * from Table where identifier not in (1,2,3)"
   val notInNumericalExpressionWithDoubleValues =
     "select * from Table where identifier not in (1.0,2.1,3.4)"
   val nestedWithBetween =
-    "select * from Table where nested(ciblage.Archivage_CreationDate between \"now-3M/M\" and \"now\" and ciblage.statutComportement = 1)"
-  val count = "select count(t.id) as c1 from Table as t where t.nom = \"Nom\""
-  val countDistinct = "select count(distinct t.id) as c2 from Table as t where t.nom = \"Nom\""
+    "select * from Table where nested(ciblage.Archivage_CreationDate between 'now-3M/M' and 'now' and ciblage.statutComportement = 1)"
+  val count = "select count(t.id) as c1 from Table as t where t.nom = 'Nom'"
+  val countDistinct = "select count(distinct t.id) as c2 from Table as t where t.nom = 'Nom'"
   val countNested =
-    "select count(email.value) as email from crmgp where profile.postalCode in (\"75001\",\"75002\")"
+    "select count(email.value) as email from crmgp where profile.postalCode in ('75001','75002')"
   val isNull = "select * from Table where identifier is null"
   val isNotNull = "select * from Table where identifier is not null"
   val geoDistanceCriteria =
-    "select * from Table where distance(profile.location,(-70.0,40.0)) <= \"5km\""
+    "select * from Table where distance(profile.location,(-70.0,40.0)) <= '5km'"
   val except = "select * except(col1,col2) from Table"
   val matchCriteria =
-    "select * from Table where match (identifier1,identifier2,identifier3) against (\"value\")"
+    "select * from Table where match (identifier1,identifier2,identifier3) against ('value')"
   val groupBy =
     "select identifier, count(identifier2) from Table where identifier2 is not null group by identifier"
   val orderBy = "select * from Table order by identifier desc"
@@ -77,7 +77,7 @@ object Queries {
     """select count(CustomerID) as cnt, City, Country
       |from Customers
       |group by Country, City
-      |having Country <> "USA" and City <> "Berlin" and count(CustomerID) > 1
+      |having Country <> 'USA' and City <> 'Berlin' and count(CustomerID) > 1
       |order by count(CustomerID) desc, Country asc""".stripMargin.replaceAll("\n", " ")
   val dateTimeWithIntervalFields: String =
     "select current_timestamp() - interval 3 day as ct, current_date as cd, current_time as t, now as n from dual"
@@ -93,7 +93,7 @@ object Queries {
     """select count(CustomerID) as cnt, City, Country, max(createdAt) as lastSeen
       |from Table
       |group by Country, City
-      |having Country <> "USA" and City != "Berlin" and count(CustomerID) > 1 and lastSeen > now - interval 7 day
+      |having Country <> 'USA' and City != 'Berlin' and count(CustomerID) > 1 and lastSeen > now - interval 7 day
       |order by Country asc""".stripMargin
       .replaceAll("\n", " ")
   val parseDate =
@@ -137,6 +137,10 @@ object Queries {
   val isnotnull = "select identifier, isnotnull(identifier2) as flag from Table"
   val isNullCriteria = "select * from Table where isnull(identifier)"
   val isNotNullCriteria = "select * from Table where isnotnull(identifier)"
+  val coalesce: String =
+    "select coalesce(createdAt - interval 35 minute, current_date) as c, identifier from Table"
+  val nullif: String =
+    "select coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd') - interval 2 day), current_date) as c, identifier from Table"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -536,6 +540,20 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(isNotNullCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       isNotNullCriteria
+    )
+  }
+
+  it should "parse coalesce function" in {
+    val result = SQLParser(coalesce)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      coalesce
+    )
+  }
+
+  it should "parse nullif function" in {
+    val result = SQLParser(nullif)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      nullif
     )
   }
 }

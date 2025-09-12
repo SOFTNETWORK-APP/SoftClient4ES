@@ -57,6 +57,10 @@ case object IsNull extends SQLExpr("is null") with SQLLogicalOperator
 case object IsNotNull extends SQLExpr("is not null") with SQLLogicalOperator
 case object Not extends SQLExpr("not") with SQLLogicalOperator
 case object Match extends SQLExpr("match") with SQLLogicalOperator
+case object Coalesce extends SQLExpr("coalesce") with SQLLogicalOperator
+case object NullIf extends SQLExpr("nullif") with SQLLogicalOperator
+case object Exists extends SQLExpr("exists") with SQLLogicalOperator
+case object Cast extends SQLExpr("cast") with SQLLogicalOperator
 
 case object Against extends SQLExpr("against") with SQLRegex
 

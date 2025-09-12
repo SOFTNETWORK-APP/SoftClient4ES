@@ -41,63 +41,6 @@ case class SQLBucket(
 
 object BucketSelectorScript {
 
-  private[this] def painlessIn(param: String, values: Seq[SQLValue[_]], not: Boolean): String = {
-    val ret = s"[${values.map { _.painless }.mkString(", ")}].contains($param)"
-    if (not) s"!$ret" else ret
-  }
-
-  private[this] def painlessBetween(
-    param: String,
-    lower: SQLValue[_],
-    upper: SQLValue[_],
-    not: Boolean
-  ): String = {
-    val ret = s"($param >= ${lower.painless} && $param <= ${upper.painless})"
-    if (not) s"!$ret" else ret
-  }
-
-  private[this] def toPainless(
-    param: String,
-    operator: SQLOperator,
-    value: SQLToken,
-    not: Boolean
-  ): String = {
-    operator match {
-      case o: SQLComparisonOperator =>
-        val valueStr =
-          value match {
-            case v: SQLBoolean => v.painless
-            case v: SQLDouble  => v.painless
-            case v: SQLLiteral => v.painless
-            case v: SQLLong    => v.painless
-            case _ =>
-              throw new IllegalArgumentException(
-                s"Unsupported value type in bucket_selector: $value"
-              )
-          }
-        if (not)
-          s"$param ${o.not.painless} $valueStr"
-        else
-          s"$param ${o.painless} $valueStr"
-      case In =>
-        value match {
-          case SQLDoubleValues(vals)  => painlessIn(param, vals, not)
-          case SQLLiteralValues(vals) => painlessIn(param, vals, not)
-          case SQLLongValues(vals)    => painlessIn(param, vals, not)
-          case _                      => throw new IllegalArgumentException("IN requires a list")
-        }
-      case Between =>
-        value match {
-          case SQLDoubleFromTo(lower, upper)  => painlessBetween(param, lower, upper, not)
-          case SQLLiteralFromTo(lower, upper) => painlessBetween(param, lower, upper, not)
-          case SQLLongFromTo(lower, upper)    => painlessBetween(param, lower, upper, not)
-          case _ => throw new IllegalArgumentException("BETWEEN requires two values")
-        }
-      case _ =>
-        throw new IllegalArgumentException(s"Unsupported operator in bucket_selector: $operator")
-    }
-  }
-
   def extractBucketsPath(criteria: SQLCriteria): Map[String, String] = criteria match {
     case SQLPredicate(left, _, right, _, _) =>
       extractBucketsPath(left) ++ extractBucketsPath(right)
