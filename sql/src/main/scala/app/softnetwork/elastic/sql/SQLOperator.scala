@@ -1,12 +1,14 @@
 package app.softnetwork.elastic.sql
 
-trait SQLOperator extends SQLToken with PainlessScript {
+trait SQLOperator extends SQLToken with PainlessScript with SQLRegex {
   override def painless: String = this match {
     case And          => "&&"
     case Or           => "||"
     case Not          => "!"
     case In           => ".contains"
     case Like | Match => ".matches"
+    case Eq           => "=="
+    case Ne           => "!="
     case _            => sql
   }
 }
@@ -24,12 +26,6 @@ case object Modulo extends SQLExpr("%") with ArithmeticOperator
 sealed trait SQLExpressionOperator extends SQLOperator
 
 sealed trait SQLComparisonOperator extends SQLExpressionOperator with PainlessScript {
-  override def painless: String = this match {
-    case Eq    => "=="
-    case Ne    => "!="
-    case other => other.sql
-  }
-
   def not: SQLComparisonOperator = this match {
     case Eq        => Ne
     case Ne | Diff => Eq
@@ -47,22 +43,31 @@ case object Ge extends SQLExpr(">=") with SQLComparisonOperator
 case object Gt extends SQLExpr(">") with SQLComparisonOperator
 case object Le extends SQLExpr("<=") with SQLComparisonOperator
 case object Lt extends SQLExpr("<") with SQLComparisonOperator
-
-sealed trait SQLLogicalOperator extends SQLExpressionOperator with SQLRegex
-
-case object In extends SQLExpr("in") with SQLLogicalOperator
-case object Like extends SQLExpr("like") with SQLLogicalOperator
-case object Between extends SQLExpr("between") with SQLLogicalOperator
-case object IsNull extends SQLExpr("is null") with SQLLogicalOperator
-case object IsNotNull extends SQLExpr("is not null") with SQLLogicalOperator
-case object Not extends SQLExpr("not") with SQLLogicalOperator
-case object Match extends SQLExpr("match") with SQLLogicalOperator
-case object Coalesce extends SQLExpr("coalesce") with SQLLogicalOperator
-case object NullIf extends SQLExpr("nullif") with SQLLogicalOperator
-case object Exists extends SQLExpr("exists") with SQLLogicalOperator
-case object Cast extends SQLExpr("cast") with SQLLogicalOperator
-
+case object In extends SQLExpr("in") with SQLComparisonOperator
+case object Like extends SQLExpr("like") with SQLComparisonOperator
+case object Between extends SQLExpr("between") with SQLComparisonOperator
+case object IsNull extends SQLExpr("is null") with SQLComparisonOperator with SQLConditionalOperator
+case object IsNotNull
+    extends SQLExpr("is not null")
+    with SQLComparisonOperator
+    with SQLConditionalOperator
+case object Match extends SQLExpr("match") with SQLComparisonOperator
 case object Against extends SQLExpr("against") with SQLRegex
+
+sealed trait SQLLogicalOperator extends SQLExpressionOperator
+
+case object Not extends SQLExpr("not") with SQLLogicalOperator
+
+sealed trait SQLConditionalOperator extends SQLExpressionOperator
+case object Coalesce extends SQLExpr("coalesce") with SQLConditionalOperator
+case object NullIf extends SQLExpr("nullif") with SQLConditionalOperator
+case object Exists extends SQLExpr("exists") with SQLConditionalOperator
+case object Cast extends SQLExpr("cast") with SQLConditionalOperator
+case object Case extends SQLExpr("case") with SQLConditionalOperator
+case object When extends SQLExpr("when") with SQLConditionalOperator
+case object Then extends SQLExpr("then") with SQLConditionalOperator
+case object Else extends SQLExpr("else") with SQLConditionalOperator
+case object End extends SQLExpr("end") with SQLConditionalOperator
 
 sealed trait SQLPredicateOperator extends SQLLogicalOperator
 

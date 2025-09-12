@@ -528,18 +528,18 @@ case class FormatDateTime(identifier: SQLIdentifier, format: String)
       s"DateTimeFormatter.ofPattern('$format').format($base)"
 }
 
-sealed trait SQLLogicalFunction[In <: SQLType]
+sealed trait SQLConditionalFunction[In <: SQLType]
     extends SQLTransformFunction[In, SQLBool]
     with SQLFunctionWithIdentifier {
-  def operator: SQLLogicalOperator
+  def operator: SQLConditionalOperator
   override def outputType: SQLBool = SQLTypes.Boolean
   override def toPainless(base: String, idx: Int): String = s"($base$painless)"
 }
 
 case class SQLIsNullFunction(identifier: SQLIdentifier)
     extends SQLExpr("isnull")
-    with SQLLogicalFunction[SQLAny] {
-  override def operator: SQLLogicalOperator = IsNull
+    with SQLConditionalFunction[SQLAny] {
+  override def operator: SQLConditionalOperator = IsNull
   override def inputType: SQLAny = SQLTypes.Any
   override def painless: String = s" == null"
   override def toPainless(base: String, idx: Int): String = {
@@ -552,8 +552,8 @@ case class SQLIsNullFunction(identifier: SQLIdentifier)
 
 case class SQLIsNotNullFunction(identifier: SQLIdentifier)
     extends SQLExpr("isnotnull")
-    with SQLLogicalFunction[SQLAny] {
-  override def operator: SQLLogicalOperator = IsNotNull
+    with SQLConditionalFunction[SQLAny] {
+  override def operator: SQLConditionalOperator = IsNotNull
   override def inputType: SQLAny = SQLTypes.Any
   override def painless: String = s" != null"
   override def toPainless(base: String, idx: Int): String = {
@@ -564,8 +564,8 @@ case class SQLIsNotNullFunction(identifier: SQLIdentifier)
   }
 }
 
-case class SQLCoalesce(values: List[PainlessScript]) extends SQLLogicalFunction[SQLAny] {
-  override def operator: SQLLogicalOperator = Coalesce
+case class SQLCoalesce(values: List[PainlessScript]) extends SQLConditionalFunction[SQLAny] {
+  override def operator: SQLConditionalOperator = Coalesce
 
   override def identifier: SQLIdentifier = SQLIdentifier("")
 
@@ -605,8 +605,8 @@ case class SQLCoalesce(values: List[PainlessScript]) extends SQLLogicalFunction[
 }
 
 case class SQLNullIf(expr1: PainlessScript, expr2: PainlessScript)
-    extends SQLLogicalFunction[SQLAny] {
-  override def operator: SQLLogicalOperator = NullIf
+    extends SQLConditionalFunction[SQLAny] {
+  override def operator: SQLConditionalOperator = NullIf
 
   override def identifier: SQLIdentifier = SQLIdentifier("")
 

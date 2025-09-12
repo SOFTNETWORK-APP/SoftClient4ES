@@ -290,12 +290,12 @@ trait SQLParser extends RegexParsers with PackratParsers {
     SQLIdentifier("", functions = dd :: Nil)
   }
 
-  def is_null: PackratParser[SQLLogicalFunction[_]] =
+  def is_null: PackratParser[SQLConditionalFunction[_]] =
     "(?i)isnull".r ~ start ~ (identifierWithTransformation | identifierWithArithmeticFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
       case _ ~ _ ~ i ~ _ => SQLIsNullFunction(i)
     }
 
-  def is_notnull: PackratParser[SQLLogicalFunction[_]] =
+  def is_notnull: PackratParser[SQLConditionalFunction[_]] =
     "(?i)isnotnull".r ~ start ~ (identifierWithTransformation | identifierWithArithmeticFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
       case _ ~ _ ~ i ~ _ => SQLIsNotNullFunction(i)
     }
@@ -610,7 +610,7 @@ trait SQLWhereParser {
   def not: PackratParser[Not.type] = Not.regex ^^ (_ => Not)
 
   def logical_criteria: PackratParser[SQLCriteria] =
-    (is_null | is_notnull) ^^ { case SQLLogicalFunctionAsCriteria(c) =>
+    (is_null | is_notnull) ^^ { case SQLConditionalFunctionAsCriteria(c) =>
       c
     }
 

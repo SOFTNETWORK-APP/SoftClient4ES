@@ -297,17 +297,17 @@ case class SQLIsNotNull(identifier: SQLIdentifier) extends Expression {
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-sealed trait SQLCriteriaWithLogicalFunction[In <: SQLType] extends Expression {
-  def logicalFunction: SQLLogicalFunction[In]
+sealed trait SQLCriteriaWithConditionalFunction[In <: SQLType] extends Expression {
+  def conditionalFunction: SQLConditionalFunction[In]
   override def maybeValue: Option[SQLToken] = None
   override def maybeNot: Option[Not.type] = None
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
-  override val functions: List[SQLFunction] = List(logicalFunction)
-  override def sql = s"${logicalFunction.sql}($identifier)"
+  override val functions: List[SQLFunction] = List(conditionalFunction)
+  override def sql = s"${conditionalFunction.sql}($identifier)"
 }
 
-object SQLLogicalFunctionAsCriteria {
-  def unapply(f: SQLLogicalFunction[_]): Option[SQLCriteria] = f match {
+object SQLConditionalFunctionAsCriteria {
+  def unapply(f: SQLConditionalFunction[_]): Option[SQLCriteria] = f match {
     case SQLIsNullFunction(id)    => Some(SQLIsNullCriteria(id))
     case SQLIsNotNullFunction(id) => Some(SQLIsNotNullCriteria(id))
     case _                        => None
@@ -315,8 +315,8 @@ object SQLLogicalFunctionAsCriteria {
 }
 
 case class SQLIsNullCriteria(identifier: SQLIdentifier)
-    extends SQLCriteriaWithLogicalFunction[SQLAny] {
-  override val logicalFunction: SQLLogicalFunction[SQLAny] = SQLIsNullFunction(identifier)
+    extends SQLCriteriaWithConditionalFunction[SQLAny] {
+  override val conditionalFunction: SQLConditionalFunction[SQLAny] = SQLIsNullFunction(identifier)
   override val operator: SQLOperator = IsNull
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -328,8 +328,10 @@ case class SQLIsNullCriteria(identifier: SQLIdentifier)
 }
 
 case class SQLIsNotNullCriteria(identifier: SQLIdentifier)
-    extends SQLCriteriaWithLogicalFunction[SQLAny] {
-  override val logicalFunction: SQLLogicalFunction[SQLAny] = SQLIsNotNullFunction(identifier)
+    extends SQLCriteriaWithConditionalFunction[SQLAny] {
+  override val conditionalFunction: SQLConditionalFunction[SQLAny] = SQLIsNotNullFunction(
+    identifier
+  )
   override val operator: SQLOperator = IsNotNull
   override def update(request: SQLSearchRequest): SQLCriteria = {
     val updated = this.copy(identifier = identifier.update(request))
