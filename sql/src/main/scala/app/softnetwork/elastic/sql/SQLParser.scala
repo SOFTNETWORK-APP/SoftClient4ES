@@ -379,7 +379,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
   private val identifierRegexStr =
     s"""(?i)(?!(?:${reservedKeywords.mkString(
       "|"
-    )})\\b)[\\*a-zA-Z_][a-zA-Z0-9_.\\[\\]\\*]*"""
+    )})\\b)[\\*a-zA-Z_\\-][a-zA-Z0-9_\\-.\\[\\]\\*]*"""
 
   private val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
 
