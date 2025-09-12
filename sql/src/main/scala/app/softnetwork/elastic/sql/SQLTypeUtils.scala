@@ -29,6 +29,8 @@ object SQLTypeUtils {
       .contains(
         out.typeId
       )) ||
+    (out.typeId == String.typeId && in.typeId == String.typeId) ||
+    (out.typeId == Boolean.typeId && in.typeId == Boolean.typeId) ||
     out.typeId == Any.typeId || in.typeId == Any.typeId ||
     out.typeId == Null.typeId || in.typeId == Null.typeId
 
@@ -37,29 +39,29 @@ object SQLTypeUtils {
     if (distinct.size == 1) return distinct.head
 
     // 1. String
-    if (distinct.exists(matches(SQLTypes.String, _))) return SQLTypes.String
+    if (distinct.contains(SQLTypes.String)) return SQLTypes.String
 
     // 2. Number
-    if (distinct.exists(matches(SQLTypes.Double, _))) return SQLTypes.Double
-    if (distinct.exists(matches(SQLTypes.Long, _))) return SQLTypes.Long
-    if (distinct.exists(matches(SQLTypes.Int, _))) return SQLTypes.Int
-    if (distinct.exists(matches(SQLTypes.Number, _))) return SQLTypes.Number
+    if (distinct.contains(SQLTypes.Double)) return SQLTypes.Double
+    if (distinct.contains(SQLTypes.Long)) return SQLTypes.Long
+    if (distinct.contains(SQLTypes.Int)) return SQLTypes.Int
+    if (distinct.contains(SQLTypes.Number)) return SQLTypes.Number
 
     // 3. Temporal
-    if (distinct.exists(matches(SQLTypes.Timestamp, _))) return SQLTypes.Timestamp
-    if (distinct.exists(matches(SQLTypes.DateTime, _))) return SQLTypes.DateTime
+    if (distinct.contains(SQLTypes.Timestamp)) return SQLTypes.Timestamp
+    if (distinct.contains(SQLTypes.DateTime)) return SQLTypes.DateTime
 
     // mixed case DATE + TIME → DATETIME
-    if (distinct.exists(matches(SQLTypes.Date, _)) && distinct.exists(matches(SQLTypes.Time, _)))
+    if (distinct.contains(SQLTypes.Date) && distinct.contains(SQLTypes.Time))
       return SQLTypes.DateTime
 
-    if (distinct.exists(matches(SQLTypes.Date, _))) return SQLTypes.Date
-    if (distinct.exists(matches(SQLTypes.Time, _))) return SQLTypes.Time
-    if (distinct.exists(matches(SQLTypes.Temporal, _))) return SQLTypes.Timestamp
+    if (distinct.contains(SQLTypes.Date)) return SQLTypes.Date
+    if (distinct.contains(SQLTypes.Time)) return SQLTypes.Time
+    if (distinct.contains(SQLTypes.Temporal)) return SQLTypes.Timestamp
 
     // 4. Null or Any
-    if (distinct.exists(matches(SQLTypes.Null, _))) return SQLTypes.Any
-    if (distinct.exists(matches(SQLTypes.Any, _))) return SQLTypes.Any
+    if (distinct.contains(SQLTypes.Null)) return SQLTypes.Any
+    if (distinct.contains(SQLTypes.Any)) return SQLTypes.Any
 
     // 5. Fallback
     SQLTypes.Any
@@ -68,6 +70,11 @@ object SQLTypeUtils {
   def coerce(in: PainlessScript, to: SQLType): String = {
     val expr = in.painless
     val from = in.out
+    val nullable = in.nullable
+    coerce(expr, from, to, nullable)
+  }
+
+  def coerce(expr: String, from: SQLType, to: SQLType, nullable: Boolean): String = {
     val ret = {
       (from, to) match {
         // ---- DATE & TIME ----
@@ -105,7 +112,7 @@ object SQLTypeUtils {
           return expr // fallback
       }
     }
-    if (!in.nullable)
+    if (!nullable)
       return ret
     s"($expr != null ? $ret : null)"
   }

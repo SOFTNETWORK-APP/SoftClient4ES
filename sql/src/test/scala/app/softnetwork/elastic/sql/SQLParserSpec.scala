@@ -141,6 +141,8 @@ object Queries {
     "select coalesce(createdAt - interval 35 minute, current_date) as c, identifier from Table"
   val nullif: String =
     "select coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd') - interval 2 day), current_date) as c, identifier from Table"
+  val cast: String =
+    "select cast(coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd')), current_date - interval 2 hour) long) as c, identifier from Table"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -554,6 +556,13 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(nullif)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       nullif
+    )
+  }
+
+  it should "parse cast function" in {
+    val result = SQLParser(cast)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      cast
     )
   }
 }

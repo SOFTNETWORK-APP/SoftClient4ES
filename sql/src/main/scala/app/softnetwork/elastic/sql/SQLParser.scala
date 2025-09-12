@@ -153,7 +153,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
       SQLSubtractInterval(it)
     }
 
-  def intervalFunction: PackratParser[SQLArithmeticFunction[SQLDateTime, SQLDateTime]] =
+  def intervalFunction: PackratParser[SQLArithmeticFunction[SQLTemporal, SQLTemporal]] =
     addInterval | substractInterval
 
   def identifierWithSystemFunction: PackratParser[SQLIdentifier] =
@@ -373,7 +373,31 @@ trait SQLParser extends RegexParsers with PackratParsers {
     "day",
     "hour",
     "minute",
-    "second"
+    "second",
+    "quarter",
+    "string",
+    "int",
+    "integer",
+    "long",
+    "double",
+    "boolean",
+    "time",
+    "date",
+    "datetime",
+    "timestamp",
+    "and",
+    "or",
+    "not",
+    "like",
+    "in",
+    "between",
+    "distinct",
+    "cast",
+    "count",
+    "min",
+    "max",
+    "avg",
+    "sum"
   )
 
   private val identifierRegexStr =
@@ -390,6 +414,36 @@ trait SQLParser extends RegexParsers with PackratParsers {
         None,
         d.isDefined
       )
+    }
+
+  def string_type: PackratParser[SQLTypes.String.type] = "(?i)string".r ^^ (_ => SQLTypes.String)
+
+  def date_type: PackratParser[SQLTypes.Date.type] = "(?i)date".r ^^ (_ => SQLTypes.Date)
+
+  def time_type: PackratParser[SQLTypes.Time.type] = "(?i)time".r ^^ (_ => SQLTypes.Time)
+
+  def datetime_type: PackratParser[SQLTypes.DateTime.type] =
+    "(?i)(datetime)".r ^^ (_ => SQLTypes.DateTime)
+
+  def timestamp_type: PackratParser[SQLTypes.Timestamp.type] =
+    "(?i)(timestamp)".r ^^ (_ => SQLTypes.Timestamp)
+
+  def boolean_type: PackratParser[SQLTypes.Boolean.type] =
+    "(?i)boolean".r ^^ (_ => SQLTypes.Boolean)
+
+  def long_type: PackratParser[SQLTypes.Long.type] = "(?i)long".r ^^ (_ => SQLTypes.Long)
+
+  def double_type: PackratParser[SQLTypes.Double.type] = "(?i)double".r ^^ (_ => SQLTypes.Double)
+
+  def int_type: PackratParser[SQLTypes.Int.type] = "(?i)(int|integer)".r ^^ (_ => SQLTypes.Int)
+
+  def sql_type: PackratParser[SQLType] =
+    string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | int_type
+
+  private[this] def castFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+    "(?i)cast".r ~ start ~ (identifierWithTransformation | identifierWithSystemFunction | identifierWithArithmeticFunction | identifierWithFunction | date_diff_identifier | identifier) ~ Alias.regex.? ~ sql_type ~ end ^^ {
+      case _ ~ _ ~ i ~ as ~ t ~ _ =>
+        i.copy(functions = SQLCast(i, targetType = t, as = as.isDefined) +: i.functions)
     }
 
   private[this] def dateFunctionWithIdentifier: PackratParser[SQLIdentifier] =
@@ -409,13 +463,13 @@ trait SQLParser extends RegexParsers with PackratParsers {
         }
     }
 
-  private[this] def logicalFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+  private[this] def conditionalFunctionWithIdentifier: PackratParser[SQLIdentifier] =
     (is_null | is_notnull | coalesce | nullif) ^^ { t =>
       t.identifier.copy(functions = t +: t.identifier.functions)
     }
 
   def identifierWithTransformation: PackratParser[SQLIdentifier] =
-    logicalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier
+    castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier
 
   def arithmeticFunction: PackratParser[SQLArithmeticFunction[_, _]] = intervalFunction
 

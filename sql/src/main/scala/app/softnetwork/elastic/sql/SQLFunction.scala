@@ -254,18 +254,29 @@ object TimeInterval {
   }
 }
 
-sealed trait SQLIntervalFunction extends SQLArithmeticFunction[SQLDateTime, SQLDateTime] {
+sealed trait SQLIntervalFunction extends SQLArithmeticFunction[SQLTemporal, SQLTemporal] {
   def interval: TimeInterval
-  override def inputType: SQLDateTime = SQLTypes.DateTime
-  override def outputType: SQLDateTime = SQLTypes.DateTime
+  override def inputType: SQLTemporal = SQLTypes.Temporal
+  override def outputType: SQLTemporal = SQLTypes.Temporal
   override def script: String = s"${operator.script}${interval.script}"
+  private[this] var _out: SQLType = outputType
+  override def out: SQLType = _out
 
-  override def applyType(in: SQLType): SQLType = interval.applyType(in).getOrElse(out)
+  override def applyType(in: SQLType): SQLType = {
+    _out = interval.applyType(in).getOrElse(out)
+    _out
+  }
 
   override def validate(): Either[String, Unit] = interval.applyType(out) match {
     case Left(err) => Left(err)
     case Right(_)  => Right(())
   }
+
+  override def toPainless(base: String, idx: Int): String =
+    if (nullable)
+      s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.out, out, nullable = false)}$painless : null)"
+    else
+      s"${SQLTypeUtils.coerce(base, expr.out, out, nullable = expr.nullable)}$painless"
 }
 
 case class SQLAddInterval(interval: TimeInterval)
@@ -636,5 +647,15 @@ case class SQLCast(value: PainlessScript, targetType: SQLType, as: Boolean = tru
   override def sql: String =
     s"$Cast(${value.sql} ${if (as) s"$Alias " else ""}${targetType.typeId})"
 
-  override def painless: String = SQLTypeUtils.coerce(value, targetType)
+  override def toSQL(base: String): String = sql
+
+  override def painless: String =
+    SQLTypeUtils.coerce(value, targetType)
+
+  override def toPainless(base: String, idx: Int): String =
+    SQLTypeUtils.coerce(base, value.out, targetType, value.nullable)
+  /*if (nullable)
+      s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", value.out, out, nullable = false)}$painless : null)"
+    else
+      s"${SQLTypeUtils.coerce(base, value.out, targetType, nullable = value.nullable)}$painless"*/
 }
