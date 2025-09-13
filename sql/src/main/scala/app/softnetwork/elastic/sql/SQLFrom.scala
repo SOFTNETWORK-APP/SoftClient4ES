@@ -27,4 +27,12 @@ case class SQLFrom(tables: Seq[SQLTable]) extends Updateable {
   }
   def update(request: SQLSearchRequest): SQLFrom =
     this.copy(tables = tables.map(_.update(request)))
+
+  override def validate(): Either[String, Unit] = {
+    if (tables.isEmpty) {
+      Left("At least one table is required in FROM clause")
+    } else {
+      Right(())
+    }
+  }
 }

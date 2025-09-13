@@ -16,13 +16,19 @@ package object sql {
     case _       => ""
   }
 
-  trait SQLToken extends Serializable {
+  trait SQLToken extends Serializable with SQLValidation {
     def sql: String
     override def toString: String = sql
+    def baseType: SQLType = SQLTypes.Any
+    def in: SQLType = baseType
+    def out: SQLType = baseType
+    def system: Boolean = false
+    def nullable: Boolean = !system
   }
 
   trait PainlessScript extends SQLToken {
     def painless: String
+    def nullValue: String = "null"
   }
 
   trait MathScript extends SQLToken {
@@ -37,9 +43,15 @@ package object sql {
 
   case object Distinct extends SQLExpr("distinct") with SQLRegex
 
+  case object Empty extends SQLExpr("") with PainlessScript {
+    override def painless: String = ""
+    override def nullable: Boolean = false
+  }
+
   abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T])
       extends SQLToken
-      with PainlessScript {
+      with PainlessScript
+      with SQLFunctionWithValue[T] {
     def choose[R >: T](
       values: Seq[R],
       operator: Option[SQLExpressionOperator],
@@ -58,20 +70,30 @@ package object sql {
           case _               => values.headOption
         }
     }
-    def painless: String = value match {
+    override def painless: String = value match {
       case s: String  => s""""$s""""
       case b: Boolean => b.toString
       case n: Number  => n.toString
       case _          => value.toString
     }
+
+    override def nullable: Boolean = false
+  }
+
+  case object SQLNull extends SQLValue[Null](null) {
+    override def sql: String = "null"
+    override def painless: String = "null"
+    override def nullable: Boolean = true
+    override def out: SQLType = SQLTypes.Null
   }
 
   case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
     override def sql: String = value.toString
+    override def out: SQLType = SQLTypes.Boolean
   }
 
   case class SQLLiteral(override val value: String) extends SQLValue[String](value) {
-    override def sql: String = s""""$value""""
+    override def sql: String = s"""'$value'"""
     import SQLImplicits._
     private lazy val pattern: Pattern = value.pattern
     def like: Seq[String] => Boolean = {
@@ -96,6 +118,7 @@ package object sql {
         case _               => super.choose(values, operator, separator)
       }
     }
+    override def out: SQLType = SQLTypes.String
   }
 
   sealed abstract class SQLNumeric[T: Numeric](override val value: T)(implicit
@@ -129,11 +152,16 @@ package object sql {
     def ne: Seq[T] => Boolean = {
       _.forall { _ != value }
     }
+    override def out: SQLType = SQLTypes.Number
   }
 
-  case class SQLLong(override val value: Long) extends SQLNumeric[Long](value)
+  case class SQLLong(override val value: Long) extends SQLNumeric[Long](value) {
+    override def out: SQLType = SQLTypes.Long
+  }
 
-  case class SQLDouble(override val value: Double) extends SQLNumeric[Double](value)
+  case class SQLDouble(override val value: Double) extends SQLNumeric[Double](value) {
+    override def out: SQLType = SQLTypes.Double
+  }
 
   sealed abstract class SQLFromTo[+T](val from: SQLValue[T], val to: SQLValue[T]) extends SQLToken {
     override def sql = s"${from.sql} and ${to.sql}"
@@ -170,9 +198,12 @@ package object sql {
   }
 
   sealed abstract class SQLValues[+R: TypeTag, +T <: SQLValue[R]](val values: Seq[T])
-      extends SQLToken {
+      extends SQLToken
+      with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
+    override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
+    override def nullable: Boolean = values.exists(_.nullable)
   }
 
   case class SQLLiteralValues(override val values: Seq[SQLLiteral])
@@ -256,6 +287,8 @@ package object sql {
     def fieldAlias: Option[String]
     def bucket: Option[SQLBucket]
 
+    applyTo(this)
+
     lazy val identifierName: String =
       functions.reverse.foldLeft(name)((expr, fun) => {
         fun.toSQL(expr)
@@ -267,16 +300,33 @@ package object sql {
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
-    override def painless: String = {
-      val base = if (name.nonEmpty) s"doc['$name'].value" else ""
+    def paramName: String =
+      if (aggregation && functions.size == 1) s"params.$aliasOrName"
+      else if (name.nonEmpty)
+        s"doc['$name'].value"
+      else ""
+
+    def toPainless(base: String): String = {
       val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
-      orderedFunctions.foldLeft(base) {
-        case (expr, f: SQLTransformFunction[_, _]) => f.toPainless(expr)
-        case (expr, f: PainlessScript)             => s"$expr${f.painless}"
-        case (expr, f)                             => f.toSQL(expr) // fallback
+      var expr = base
+      orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
+        f match {
+          case f: SQLTransformFunction[_, _] => expr = f.toPainless(expr, idx)
+          case f: PainlessScript             => expr = s"$expr${f.painless}"
+          case f                             => expr = f.toSQL(expr) // fallback
+        }
       }
+      expr
     }
 
+    override def painless: String = toPainless(
+      if (nullable)
+        s"(!doc.containsKey('$name') || doc['$name'].empty ? $nullValue : doc['$name'].value)"
+      else
+        paramName
+    )
+
+    override def nullable: Boolean = this.name.nonEmpty && (!aggregation || functions.size > 1)
   }
 
   case class SQLIdentifier(
@@ -337,5 +387,5 @@ package object sql {
     }
   }
 
-  case class SQLScript(script: String) extends SQLExpr(script)
+  case class SQLScript(script: String) extends SQLExpr(script) with MathScript
 }

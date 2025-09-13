@@ -5,4 +5,7 @@ case class SQLMultiSearchRequest(requests: Seq[SQLSearchRequest]) extends SQLTok
 
   def update(): SQLMultiSearchRequest = this.copy(requests = requests.map(_.update()))
 
+  override def validate(): Either[String, Unit] = {
+    requests.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+  }
 }
