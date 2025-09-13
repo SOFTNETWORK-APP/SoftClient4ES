@@ -80,6 +80,13 @@ package object sql {
     override def nullable: Boolean = false
   }
 
+  case object SQLNull extends SQLValue[Null](null) {
+    override def sql: String = "null"
+    override def painless: String = "null"
+    override def nullable: Boolean = true
+    override def out: SQLType = SQLTypes.Null
+  }
+
   case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
     override def sql: String = value.toString
     override def out: SQLType = SQLTypes.Boolean

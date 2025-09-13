@@ -6,7 +6,7 @@ import scala.util.matching.Regex
 sealed trait SQLFunction extends SQLRegex {
   def toSQL(base: String): String = if (base.nonEmpty) s"$sql($base)" else sql
   def applyType(in: SQLType): SQLType = out
-  var expr: SQLToken = _
+  var expr: SQLToken = SQLNull
   def applyTo(expr: SQLToken): Unit = {
     this.expr = expr
   }
