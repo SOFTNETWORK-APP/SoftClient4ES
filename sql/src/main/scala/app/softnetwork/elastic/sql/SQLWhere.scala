@@ -456,17 +456,19 @@ case class SQLMatch(
   private[this] def toCriteria(matches: List[ElasticMatch], curr: SQLCriteria): SQLCriteria =
     matches match {
       case Nil           => curr
-      case single :: Nil => SQLPredicate(curr, Or, single, group = true)
-      case first :: rest => toCriteria(rest, SQLPredicate(curr, Or, first, group = true))
+      case single :: Nil => SQLPredicate(curr, Or, single)
+      case first :: rest => toCriteria(rest, SQLPredicate(curr, Or, first))
     }
 
-  lazy val criteria: SQLCriteria = {
-    identifiers.map(id => ElasticMatch(id, value, None)) match {
+  lazy val criteria: SQLCriteria =
+    (identifiers.map(id => ElasticMatch(id, value, None)) match {
       case Nil           => throw new IllegalArgumentException("No identifiers for MATCH")
       case single :: Nil => single
       case first :: rest => toCriteria(rest, first)
+    }) match {
+      case p: SQLPredicate => p.copy(group = true)
+      case other           => other
     }
-  }
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = criteria match {
     case predicate: SQLPredicate => predicate.copy(group = true).asFilter(currentQuery)
