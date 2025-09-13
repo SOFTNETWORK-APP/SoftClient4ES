@@ -1,8 +1,10 @@
 package app.softnetwork.elastic.sql
 
+import scala.annotation.tailrec
+
 case object Where extends SQLExpr("where") with SQLRegex
 
-sealed trait SQLCriteria extends Updateable {
+sealed trait SQLCriteria extends Updateable with PainlessScript {
   def operator: SQLOperator
 
   def nested: Boolean = false
@@ -28,6 +30,28 @@ sealed trait SQLCriteria extends Updateable {
     }
   }
 
+  private[this] def asGroup(script: String): String = if (group) s"($script)" else script
+
+  override def out: SQLType = SQLTypes.Boolean
+
+  override def painless: String = this match {
+    case SQLPredicate(left, op, right, maybeNot, group) =>
+      val leftStr = left.painless
+      val rightStr = right.painless
+      val opStr = op match {
+        case And | Or => op.painless
+        case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
+      }
+      val not = maybeNot.nonEmpty
+      if (group || not)
+        s"${maybeNot.map(_.painless).getOrElse("")}($leftStr $opStr $rightStr)"
+      else
+        s"$leftStr $opStr $rightStr"
+    case relation: ElasticRelation => asGroup(relation.criteria.painless)
+    case m: SQLMatch               => asGroup(m.criteria.painless)
+    case expr: Expression          => asGroup(expr.painless)
+    case _ => throw new IllegalArgumentException(s"Unsupported criteria: $this")
+  }
 }
 
 case class SQLPredicate(
@@ -94,15 +118,6 @@ case class SQLPredicate(
 
 sealed trait ElasticFilter
 
-sealed trait SQLCriteriaWithIdentifier extends SQLCriteria with SQLFunctionChain {
-  def identifier: SQLIdentifier
-  override def nested: Boolean = identifier.nested
-  override def group: Boolean = false
-  override lazy val limit: Option[SQLLimit] = identifier.limit
-  override val functions: List[SQLFunction] = identifier.functions
-  override def validate(): Either[String, Unit] = identifier.validate()
-}
-
 case class ElasticBoolQuery(
   var innerFilters: Seq[ElasticFilter] = Nil,
   var mustFilters: Seq[ElasticFilter] = Nil,
@@ -157,7 +172,16 @@ case class ElasticBoolQuery(
 
 }
 
-sealed trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter with PainlessScript {
+sealed trait Expression
+    extends SQLCriteria
+    with SQLFunctionChain
+    with ElasticFilter
+    with PainlessScript {
+  def identifier: SQLIdentifier
+  override def nested: Boolean = identifier.nested
+  override def group: Boolean = false
+  override lazy val limit: Option[SQLLimit] = identifier.limit
+  override val functions: List[SQLFunction] = identifier.functions
   def maybeValue: Option[SQLToken]
   def maybeNot: Option[Not.type]
   def notAsString: String = maybeNot.map(v => s"$v ").getOrElse("")
@@ -193,27 +217,30 @@ sealed trait Expression extends SQLCriteriaWithIdentifier with ElasticFilter wit
       }
     }
 
-  private[this] lazy val base: String =
-    out match {
-      case SQLTypes.Time if identifier.paramName.nonEmpty =>
-        s"${identifier.paramName}.toLocalTime()"
-      case _ => identifier.paramName
-    }
-
-  override def painless: String =
-    s"$painlessNot${identifier.toPainless(base)} $painlessOp $painlessValue"
-
-  override def out: SQLType =
-    (identifier.out, maybeValue) match {
-      case (idType, Some(v)) =>
+  private[this] lazy val left: String = {
+    val targetedType = maybeValue match {
+      case Some(v) =>
         v match {
           case value: SQLValue[_]      => value.out
           case values: SQLValues[_, _] => values.out
-          case id: SQLIdentifier       => id.out
-          case _                       => idType
+          case other                   => other.out
         }
-      case (idType, None) => idType
+      case None => identifier.out
     }
+    SQLTypeUtils.coerce(identifier, targetedType)
+  }
+
+  private[this] lazy val check: String =
+    operator match {
+      case _: SQLComparisonOperator => s" $painlessOp $painlessValue"
+      case _                        => s"$painlessOp($painlessValue)"
+    }
+  override def painless: String = {
+    if (identifier.nullable) {
+      return s"def left = $left; left == null ? false : ${painlessNot}left$check"
+    }
+    s"$painlessNot$left$check"
+  }
 
   override def validate(): Either[String, Unit] = {
     for {
@@ -366,7 +393,7 @@ case class SQLIn[R, +T <: SQLValue[R]](
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
-  override def painless: String = s"$painlessNot${identifier.painless} $painlessOp($painlessValue)"
+  override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
 }
 
 case class SQLBetween[+T](
@@ -425,15 +452,19 @@ case class SQLMatch(
 
   override lazy val nested: Boolean = identifiers.forall(_.nested)
 
+  @tailrec
+  private[this] def toCriteria(matches: List[ElasticMatch], curr: SQLCriteria): SQLCriteria =
+    matches match {
+      case Nil           => curr
+      case single :: Nil => SQLPredicate(curr, Or, single, group = true)
+      case first :: rest => toCriteria(rest, SQLPredicate(curr, Or, first, group = true))
+    }
+
   lazy val criteria: SQLCriteria = {
     identifiers.map(id => ElasticMatch(id, value, None)) match {
       case Nil           => throw new IllegalArgumentException("No identifiers for MATCH")
       case single :: Nil => single
-      case first :: second :: rest =>
-        val initial: SQLCriteria = SQLPredicate(first, Or, second)
-        rest.foldLeft(initial) { (acc, next) =>
-          SQLPredicate(acc, Or, next)
-        }
+      case first :: rest => toCriteria(rest, first)
     }
   }
 
@@ -466,7 +497,7 @@ case class ElasticMatch(
 
   override def matchCriteria: Boolean = true
 
-  override def painless: String = s"$painlessNot${identifier.painless} $painlessOp($painlessValue)"
+  override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
 }
 
 sealed abstract class ElasticRelation(val criteria: SQLCriteria, val operator: ElasticOperator)
@@ -499,7 +530,7 @@ case class ElasticNested(override val criteria: SQLCriteria, override val limit:
 
   private[this] def name(criteria: SQLCriteria): Option[String] = criteria match {
     case SQLPredicate(left, _, right, _, _) => name(left).orElse(name(right))
-    case c: SQLCriteriaWithIdentifier =>
+    case c: Expression =>
       c.identifier.innerHitsName.orElse(c.identifier.name.split('.').headOption)
     case n: ElasticNested => name(n.criteria)
     case _                => None

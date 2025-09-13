@@ -211,7 +211,7 @@ sealed trait TimeInterval extends PainlessScript with MathScript {
 
   override def script: String = TimeInterval.script(this)
 
-  def applyType(in: SQLType): Either[String, SQLType] = {
+  def checkType(in: SQLType): Either[String, SQLType] = {
     import TimeUnit._
     in match {
       case SQLTypes.Date =>
@@ -254,20 +254,18 @@ object TimeInterval {
   }
 }
 
-sealed trait SQLIntervalFunction extends SQLArithmeticFunction[SQLTemporal, SQLTemporal] {
+sealed trait SQLIntervalFunction[IO <: SQLTemporal] extends SQLArithmeticFunction[IO, IO] {
   def interval: TimeInterval
-  override def inputType: SQLTemporal = SQLTypes.Temporal
-  override def outputType: SQLTemporal = SQLTypes.Temporal
   override def script: String = s"${operator.script}${interval.script}"
   private[this] var _out: SQLType = outputType
   override def out: SQLType = _out
 
   override def applyType(in: SQLType): SQLType = {
-    _out = interval.applyType(in).getOrElse(out)
+    _out = interval.checkType(in).getOrElse(out)
     _out
   }
 
-  override def validate(): Either[String, Unit] = interval.applyType(out) match {
+  override def validate(): Either[String, Unit] = interval.checkType(out) match {
     case Left(err) => Left(err)
     case Right(_)  => Right(())
   }
@@ -279,18 +277,28 @@ sealed trait SQLIntervalFunction extends SQLArithmeticFunction[SQLTemporal, SQLT
       s"${SQLTypeUtils.coerce(base, expr.out, out, nullable = expr.nullable)}$painless"
 }
 
-case class SQLAddInterval(interval: TimeInterval)
-    extends SQLExpr(interval.sql)
-    with SQLIntervalFunction {
+sealed trait AddInterval[IO <: SQLTemporal] extends SQLIntervalFunction[IO] {
   override def operator: ArithmeticOperator = Add
   override def painless: String = s".plus(${interval.painless})"
 }
 
-case class SQLSubtractInterval(interval: TimeInterval)
-    extends SQLExpr(interval.sql)
-    with SQLIntervalFunction {
+sealed trait SubtractInterval[IO <: SQLTemporal] extends SQLIntervalFunction[IO] {
   override def operator: ArithmeticOperator = Subtract
   override def painless: String = s".minus(${interval.painless})"
+}
+
+case class SQLAddInterval(interval: TimeInterval)
+    extends SQLExpr(interval.sql)
+    with AddInterval[SQLTemporal] {
+  override def inputType: SQLTemporal = SQLTypes.Temporal
+  override def outputType: SQLTemporal = SQLTypes.Temporal
+}
+
+case class SQLSubtractInterval(interval: TimeInterval)
+    extends SQLExpr(interval.sql)
+    with SubtractInterval[SQLTemporal] {
+  override def inputType: SQLTemporal = SQLTypes.Temporal
+  override def outputType: SQLTemporal = SQLTypes.Temporal
 }
 
 sealed trait DateTimeFunction extends SQLFunction {
@@ -418,6 +426,7 @@ case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
 case class DateAdd(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("date_add")
     with DateFunction
+    with AddInterval[SQLDate]
     with SQLTransformFunction[SQLDate, SQLDate]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
@@ -425,12 +434,12 @@ case class DateAdd(identifier: SQLIdentifier, interval: TimeInterval)
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
-  override def painless: String = s".plus(${interval.painless})"
 }
 
 case class DateSub(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("date_sub")
     with DateFunction
+    with SubtractInterval[SQLDate]
     with SQLTransformFunction[SQLDate, SQLDate]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
@@ -438,7 +447,6 @@ case class DateSub(identifier: SQLIdentifier, interval: TimeInterval)
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
-  override def painless: String = s".minus(${interval.painless})"
 }
 
 case class ParseDate(identifier: SQLIdentifier, format: String)
@@ -480,6 +488,7 @@ case class FormatDate(identifier: SQLIdentifier, format: String)
 case class DateTimeAdd(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("datetime_add")
     with DateTimeFunction
+    with AddInterval[SQLDateTime]
     with SQLTransformFunction[SQLDateTime, SQLDateTime]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
@@ -487,12 +496,12 @@ case class DateTimeAdd(identifier: SQLIdentifier, interval: TimeInterval)
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
-  override def painless: String = s".plus(${interval.painless})"
 }
 
 case class DateTimeSub(identifier: SQLIdentifier, interval: TimeInterval)
     extends SQLExpr("datetime_sub")
     with DateTimeFunction
+    with SubtractInterval[SQLDateTime]
     with SQLTransformFunction[SQLDateTime, SQLDateTime]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
@@ -500,7 +509,6 @@ case class DateTimeSub(identifier: SQLIdentifier, interval: TimeInterval)
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
-  override def painless: String = s".minus(${interval.painless})"
 }
 
 case class ParseDateTime(identifier: SQLIdentifier, format: String)

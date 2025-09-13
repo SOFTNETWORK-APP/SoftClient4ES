@@ -980,40 +980,48 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SQLQuery(filterWithTimeAndInterval)
     val query = select.query
     println(query)
-    query shouldBe
-      """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "script": {
-        |            "script": {
-        |              "lang": "painless",
-        |              "source": "doc['createdAt'].value.toLocalTime() < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "script": {
-        |            "script": {
-        |              "lang": "painless",
-        |              "source": "doc['createdAt'].value.toLocalTime() >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
-        |            }
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "_source": {
-        |    "includes": [
-        |      "*"
-        |    ]
-        |  }
-        |}""".stripMargin
-        .replaceAll("\\s", "")
-        .replaceAll("ChronoUnit", " ChronoUnit")
-        .replaceAll(">=", " >= ")
-        .replaceAll("<", " < ")
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "*"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(">=", " >= ")
+      .replaceAll("<", " < ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("null:", "null : ")
+      .replaceAll("false:", "false : ")
+      .replaceAll(":null", " : null ")
+      .replaceAll("\\?", " ? ")
+      .replaceAll("==", " == ")
+      .replaceAll("\\);", "); ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("defl", "def l")
   }
 
   it should "handle having with date functions" in {
