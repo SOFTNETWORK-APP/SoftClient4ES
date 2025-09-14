@@ -382,6 +382,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
     "int",
     "integer",
     "long",
+    "bigint",
     "double",
     "boolean",
     "time",
@@ -434,7 +435,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
   def boolean_type: PackratParser[SQLTypes.Boolean.type] =
     "(?i)boolean".r ^^ (_ => SQLTypes.Boolean)
 
-  def long_type: PackratParser[SQLTypes.BigInt.type] = "(?i)long".r ^^ (_ => SQLTypes.BigInt)
+  def long_type: PackratParser[SQLTypes.BigInt.type] = "(?i)long|bigint".r ^^ (_ => SQLTypes.BigInt)
 
   def double_type: PackratParser[SQLTypes.Double.type] = "(?i)double".r ^^ (_ => SQLTypes.Double)
 
