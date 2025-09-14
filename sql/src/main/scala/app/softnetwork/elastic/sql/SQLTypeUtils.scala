@@ -21,15 +21,29 @@ object SQLTypeUtils {
     ).contains(
       out.typeId
     )) ||
-    (out.typeId == Number.typeId && Set(Int.typeId, Long.typeId, Double.typeId, Float.typeId)
+    (out.typeId == Numeric.typeId && Set(
+      TinyInt.typeId,
+      SmallInt.typeId,
+      Int.typeId,
+      BigInt.typeId,
+      Double.typeId,
+      Real.typeId
+    )
       .contains(
         in.typeId
       )) ||
-    (in.typeId == Number.typeId && Set(Int.typeId, Long.typeId, Double.typeId, Float.typeId)
+    (in.typeId == Numeric.typeId && Set(
+      TinyInt.typeId,
+      SmallInt.typeId,
+      Int.typeId,
+      BigInt.typeId,
+      Double.typeId,
+      Real.typeId
+    )
       .contains(
         out.typeId
       )) ||
-    (out.typeId == String.typeId && in.typeId == String.typeId) ||
+    (out.typeId == Varchar.typeId && in.typeId == Varchar.typeId) ||
     (out.typeId == Boolean.typeId && in.typeId == Boolean.typeId) ||
     out.typeId == Any.typeId || in.typeId == Any.typeId ||
     out.typeId == Null.typeId || in.typeId == Null.typeId
@@ -39,13 +53,16 @@ object SQLTypeUtils {
     if (distinct.size == 1) return distinct.head
 
     // 1. String
-    if (distinct.contains(SQLTypes.String)) return SQLTypes.String
+    if (distinct.contains(SQLTypes.Varchar)) return SQLTypes.Varchar
 
     // 2. Number
     if (distinct.contains(SQLTypes.Double)) return SQLTypes.Double
-    if (distinct.contains(SQLTypes.Long)) return SQLTypes.Long
+    if (distinct.contains(SQLTypes.Real)) return SQLTypes.Real
+    if (distinct.contains(SQLTypes.BigInt)) return SQLTypes.BigInt
     if (distinct.contains(SQLTypes.Int)) return SQLTypes.Int
-    if (distinct.contains(SQLTypes.Number)) return SQLTypes.Number
+    if (distinct.contains(SQLTypes.SmallInt)) return SQLTypes.SmallInt
+    if (distinct.contains(SQLTypes.TinyInt)) return SQLTypes.TinyInt
+    if (distinct.contains(SQLTypes.Numeric)) return SQLTypes.Numeric
 
     // 3. Temporal
     if (distinct.contains(SQLTypes.Timestamp)) return SQLTypes.Timestamp
@@ -86,21 +103,21 @@ object SQLTypeUtils {
           s"($expr).toLocalTime()"
 
         // ---- NUMERIQUES ----
-        case (SQLTypes.Int, SQLTypes.Long) =>
+        case (SQLTypes.Int, SQLTypes.BigInt) =>
           s"((long) $expr)"
         case (SQLTypes.Int, SQLTypes.Double) =>
           s"((double) $expr)"
-        case (SQLTypes.Long, SQLTypes.Double) =>
+        case (SQLTypes.BigInt, SQLTypes.Double) =>
           s"((double) $expr)"
 
         // ---- NUMERIC <-> TEMPORAL ----
-        case (SQLTypes.Long, SQLTypes.Timestamp) =>
+        case (SQLTypes.BigInt, SQLTypes.Timestamp) =>
           s"Instant.ofEpochMilli($expr).atZone(ZoneId.of('Z'))"
-        case (SQLTypes.Timestamp, SQLTypes.Long) =>
+        case (SQLTypes.Timestamp, SQLTypes.BigInt) =>
           s"$expr.toInstant().toEpochMilli()"
 
         // ---- BOOLEEN -> NUMERIC ----
-        case (SQLTypes.Boolean, SQLTypes.Number) =>
+        case (SQLTypes.Boolean, SQLTypes.Numeric) =>
           s"($expr ? 1 : 0)"
 
         // ---- IDENTITY ----

@@ -136,7 +136,7 @@ package object bridge {
     )
   }
 
-  def applyNumericOp[A](n: SQLNumeric[_])(
+  def applyNumericOp[A](n: SQLNumericValue[_])(
     longOp: Long => A,
     doubleOp: Double => A
   ): A = n.toEither.fold(longOp, doubleOp)
@@ -149,7 +149,7 @@ package object bridge {
       return scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
     }
     value match {
-      case n: SQLNumeric[_] =>
+      case n: SQLNumericValue[_] =>
         operator match {
           case Ge =>
             maybeNot match {
@@ -231,7 +231,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case l: SQLLiteral =>
+      case l: SQLStringValue =>
         operator match {
           case Like =>
             maybeNot match {

@@ -59,12 +59,14 @@ case class SQLParserError(msg: String) extends SQLCompilationError
 
 trait SQLParser extends RegexParsers with PackratParsers {
 
-  def literal: PackratParser[SQLLiteral] =
-    """"[^"]*"|'[^']*'""".r ^^ (str => SQLLiteral(str.substring(1, str.length - 1)))
+  def literal: PackratParser[SQLStringValue] =
+    """"[^"]*"|'[^']*'""".r ^^ (str => SQLStringValue(str.substring(1, str.length - 1)))
 
-  def long: PackratParser[SQLLong] = """(-)?(0|[1-9]\d*)""".r ^^ (str => SQLLong(str.toLong))
+  def long: PackratParser[SQLLongValue] =
+    """(-)?(0|[1-9]\d*)""".r ^^ (str => SQLLongValue(str.toLong))
 
-  def double: PackratParser[SQLDouble] = """(-)?(\d+\.\d+)""".r ^^ (str => SQLDouble(str.toDouble))
+  def double: PackratParser[SQLDoubleValue] =
+    """(-)?(\d+\.\d+)""".r ^^ (str => SQLDoubleValue(str.toDouble))
 
   def boolean: PackratParser[SQLBoolean] =
     """(true|false)""".r ^^ (bool => SQLBoolean(bool.toBoolean))
@@ -171,29 +173,30 @@ trait SQLParser extends RegexParsers with PackratParsers {
         DateTrunc(i, u)
     }
 
-  def extract: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extract: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     "(?i)extract".r ~ start ~ time_unit ~ end ^^ { case _ ~ _ ~ u ~ _ =>
       Extract(u)
     }
 
-  def extract_year: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extract_year: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     Year.regex ^^ (_ => YEAR)
 
-  def extract_month: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extract_month: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     Month.regex ^^ (_ => MONTH)
 
-  def extract_day: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] = Day.regex ^^ (_ => DAY)
+  def extract_day: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
+    Day.regex ^^ (_ => DAY)
 
-  def extract_hour: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extract_hour: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     Hour.regex ^^ (_ => HOUR)
 
-  def extract_minute: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extract_minute: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     Minute.regex ^^ (_ => MINUTE)
 
-  def extract_second: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extract_second: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     Second.regex ^^ (_ => SECOND)
 
-  def extractors: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumber]] =
+  def extractors: PackratParser[SQLUnaryFunction[SQLTemporal, SQLNumeric]] =
     extract | extract_year | extract_month | extract_day | extract_hour | extract_minute | extract_second
 
   def date_add: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
@@ -212,7 +215,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
     "(?i)parse_date".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithArithmeticFunction | literal | identifier) ~ separator ~ literal ~ end ^^ {
       case _ ~ _ ~ li ~ _ ~ f ~ _ =>
         li match {
-          case l: SQLLiteral =>
+          case l: SQLStringValue =>
             ParseDate(SQLIdentifier("", functions = l :: Nil), f.value)
           case i: SQLIdentifier =>
             ParseDate(i, f.value)
@@ -416,7 +419,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
       )
     }
 
-  def string_type: PackratParser[SQLTypes.String.type] = "(?i)string".r ^^ (_ => SQLTypes.String)
+  def string_type: PackratParser[SQLTypes.Varchar.type] = "(?i)string".r ^^ (_ => SQLTypes.Varchar)
 
   def date_type: PackratParser[SQLTypes.Date.type] = "(?i)date".r ^^ (_ => SQLTypes.Date)
 
@@ -431,7 +434,7 @@ trait SQLParser extends RegexParsers with PackratParsers {
   def boolean_type: PackratParser[SQLTypes.Boolean.type] =
     "(?i)boolean".r ^^ (_ => SQLTypes.Boolean)
 
-  def long_type: PackratParser[SQLTypes.Long.type] = "(?i)long".r ^^ (_ => SQLTypes.Long)
+  def long_type: PackratParser[SQLTypes.BigInt.type] = "(?i)long".r ^^ (_ => SQLTypes.BigInt)
 
   def double_type: PackratParser[SQLTypes.Double.type] = "(?i)double".r ^^ (_ => SQLTypes.Double)
 
@@ -600,7 +603,7 @@ trait SQLWhereParser {
       case i ~ n ~ _ ~ _ ~ v ~ _ =>
         SQLIn(
           i,
-          SQLLiteralValues(v),
+          SQLStringValues(v),
           n
         )
     }

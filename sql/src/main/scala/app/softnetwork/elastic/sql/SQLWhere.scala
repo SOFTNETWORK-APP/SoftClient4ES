@@ -423,9 +423,9 @@ case class SQLBetween[+T](
 
 case class ElasticGeoDistance(
   identifier: SQLIdentifier,
-  distance: SQLLiteral,
-  lat: SQLDouble,
-  lon: SQLDouble
+  distance: SQLStringValue,
+  lat: SQLDoubleValue,
+  lon: SQLDoubleValue
 ) extends Expression {
   override def sql = s"$Distance($identifier,($lat,$lon)) $operator $distance"
   override val functions: List[SQLFunction] = List(Distance)
@@ -442,7 +442,7 @@ case class ElasticGeoDistance(
 
 case class SQLMatch(
   identifiers: Seq[SQLIdentifier],
-  value: SQLLiteral
+  value: SQLStringValue
 ) extends SQLCriteria {
   override def sql: String =
     s"$operator (${identifiers.mkString(",")}) $Against ($value)"
@@ -482,7 +482,7 @@ case class SQLMatch(
 
 case class ElasticMatch(
   identifier: SQLIdentifier,
-  value: SQLLiteral,
+  value: SQLStringValue,
   options: Option[String]
 ) extends Expression {
   override def sql: String =

@@ -368,10 +368,10 @@ case class DateTrunc(identifier: SQLIdentifier, unit: TimeUnit)
 case class Extract(unit: TimeUnit, override val sql: String = "extract")
     extends SQLExpr(sql)
     with DateTimeFunction
-    with SQLTransformFunction[SQLTemporal, SQLNumber]
+    with SQLTransformFunction[SQLTemporal, SQLNumeric]
     with ParametrizedFunction {
   override def inputType: SQLTemporal = SQLTypes.Temporal
-  override def outputType: SQLNumber = SQLTypes.Number
+  override def outputType: SQLNumeric = SQLTypes.Numeric
   override def params: Seq[String] = Seq(unit.sql)
   override def painless: String = s".get(${unit.painless})"
 }
@@ -403,9 +403,9 @@ object SECOND extends Extract(Second, Second.sql) {
 case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
     extends SQLExpr("date_diff")
     with DateTimeFunction
-    with SQLBinaryFunction[SQLDateTime, SQLDateTime, SQLNumber]
+    with SQLBinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
     with PainlessScript {
-  override def outputType: SQLNumber = SQLTypes.Number
+  override def outputType: SQLNumeric = SQLTypes.Numeric
   override def left: PainlessScript = end
   override def right: PainlessScript = start
   override def toSQL(base: String): String = {
@@ -452,9 +452,9 @@ case class DateSub(identifier: SQLIdentifier, interval: TimeInterval)
 case class ParseDate(identifier: SQLIdentifier, format: String)
     extends SQLExpr("parse_date")
     with DateFunction
-    with SQLTransformFunction[SQLString, SQLDate]
+    with SQLTransformFunction[SQLVarchar, SQLDate]
     with SQLFunctionWithIdentifier {
-  override def inputType: SQLString = SQLTypes.String
+  override def inputType: SQLVarchar = SQLTypes.Varchar
   override def outputType: SQLDate = SQLTypes.Date
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
@@ -470,10 +470,10 @@ case class ParseDate(identifier: SQLIdentifier, format: String)
 case class FormatDate(identifier: SQLIdentifier, format: String)
     extends SQLExpr("format_date")
     with DateFunction
-    with SQLTransformFunction[SQLDate, SQLString]
+    with SQLTransformFunction[SQLDate, SQLVarchar]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
-  override def outputType: SQLString = SQLTypes.String
+  override def outputType: SQLVarchar = SQLTypes.Varchar
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
   }
@@ -514,9 +514,9 @@ case class DateTimeSub(identifier: SQLIdentifier, interval: TimeInterval)
 case class ParseDateTime(identifier: SQLIdentifier, format: String)
     extends SQLExpr("parse_datetime")
     with DateTimeFunction
-    with SQLTransformFunction[SQLString, SQLDateTime]
+    with SQLTransformFunction[SQLVarchar, SQLDateTime]
     with SQLFunctionWithIdentifier {
-  override def inputType: SQLString = SQLTypes.String
+  override def inputType: SQLVarchar = SQLTypes.Varchar
   override def outputType: SQLDateTime = SQLTypes.DateTime
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
@@ -532,10 +532,10 @@ case class ParseDateTime(identifier: SQLIdentifier, format: String)
 case class FormatDateTime(identifier: SQLIdentifier, format: String)
     extends SQLExpr("format_datetime")
     with DateTimeFunction
-    with SQLTransformFunction[SQLDateTime, SQLString]
+    with SQLTransformFunction[SQLDateTime, SQLVarchar]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
-  override def outputType: SQLString = SQLTypes.String
+  override def outputType: SQLVarchar = SQLTypes.Varchar
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
   }

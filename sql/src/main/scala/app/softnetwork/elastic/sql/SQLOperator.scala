@@ -64,10 +64,10 @@ case object NullIf extends SQLExpr("nullif") with SQLConditionalOperator
 case object Exists extends SQLExpr("exists") with SQLConditionalOperator
 case object Cast extends SQLExpr("cast") with SQLConditionalOperator
 case object Case extends SQLExpr("case") with SQLConditionalOperator
-case object When extends SQLExpr("when") with SQLConditionalOperator
-case object Then extends SQLExpr("then") with SQLConditionalOperator
-case object Else extends SQLExpr("else") with SQLConditionalOperator
-case object End extends SQLExpr("end") with SQLConditionalOperator
+case object When extends SQLExpr("when") with SQLRegex
+case object Then extends SQLExpr("then") with SQLRegex
+case object Else extends SQLExpr("else") with SQLRegex
+case object End extends SQLExpr("end") with SQLRegex
 
 sealed trait SQLPredicateOperator extends SQLLogicalOperator
 
