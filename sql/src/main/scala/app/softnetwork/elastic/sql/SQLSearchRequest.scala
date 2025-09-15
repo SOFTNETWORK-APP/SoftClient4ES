@@ -51,4 +51,44 @@ case class SQLSearchRequest(
   }
 
   lazy val buckets: Seq[SQLBucket] = groupBy.map(_.buckets).getOrElse(Seq.empty)
+
+  override def validate(): Either[String, Unit] = {
+    for {
+      _ <- from.validate()
+      _ <- select.validate()
+      _ <- where.map(_.validate()).getOrElse(Right(()))
+      _ <- groupBy.map(_.validate()).getOrElse(Right(()))
+      _ <- having.map(_.validate()).getOrElse(Right(()))
+      _ <- orderBy.map(_.validate()).getOrElse(Right(()))
+      _ <- limit.map(_.validate()).getOrElse(Right(()))
+      /*_ <- {
+        // validate that having clauses are only applied when group by is present
+        if (having.isDefined && groupBy.isEmpty) {
+          Left("HAVING clauses can only be applied when GROUP BY is present")
+        } else {
+          Right(())
+        }
+      }*/
+      _ <- {
+        // validate that non-aggregated fields are not present when group by is present
+        if (groupBy.isDefined) {
+          val nonAggregatedFields = select.fields.filterNot(f => f.aggregation || f.isScriptField)
+          val invalidFields = nonAggregatedFields.filterNot(f =>
+            buckets.exists(b =>
+              b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField.replace(".", "_"))
+            )
+          )
+          if (invalidFields.nonEmpty) {
+            Left(
+              s"Non-aggregated fields ${invalidFields.map(_.sql).mkString(", ")} cannot be selected when GROUP BY is present"
+            )
+          } else {
+            Right(())
+          }
+        } else {
+          Right(())
+        }
+      }
+    } yield ()
+  }
 }

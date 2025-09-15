@@ -29,6 +29,8 @@ sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript 
   def painless: String = identifier.painless
 
   lazy val scriptName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
+
+  override def validate(): Either[String, Unit] = identifier.validate()
 }
 
 case class SQLField(
@@ -58,4 +60,11 @@ case class SQLSelect(
   }.toMap
   def update(request: SQLSearchRequest): SQLSelect =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))
+
+  override def validate(): Either[String, Unit] =
+    if (fields.isEmpty) {
+      Left("At least one field is required in SELECT clause")
+    } else {
+      fields.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+    }
 }

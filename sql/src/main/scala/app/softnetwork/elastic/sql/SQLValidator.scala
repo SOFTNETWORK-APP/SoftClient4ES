@@ -4,18 +4,29 @@ object SQLValidator {
 
   def validateChain(functions: List[SQLFunction]): Either[String, Unit] = {
     // validate function chain type compatibility
+    functions match {
+      case Nil => return Right(())
+      case _   =>
+    }
+    functions.map(_.validate()).find(_.isLeft) match {
+      case Some(left) => return left
+      case None       =>
+    }
     val unaryFuncs = functions.collect { case f: SQLUnaryFunction[_, _] => f }
     unaryFuncs.sliding(2).foreach {
       case Seq(f1, f2) =>
-        if (!SQLTypeCompatibility.matches(f2.outputType, f1.inputType)) {
-          return Left(
-            s"Type mismatch: output '${f2.outputType.typeId}' of `${f2.sql}` " +
-            s"is not compatible with input '${f1.inputType.typeId}' of `${f1.sql}`"
-          )
-        }
+        validateTypesMatching(f2.outputType, f1.inputType)
       case _ => // ok
     }
     Right(())
+  }
+
+  def validateTypesMatching(out: SQLType, in: SQLType): Either[String, Unit] = {
+    if (SQLTypeUtils.matches(out, in)) {
+      Right(())
+    } else {
+      Left(s"Type mismatch: output '${out.typeId}' is not compatible with input '${in.typeId}'")
+    }
   }
 }
 

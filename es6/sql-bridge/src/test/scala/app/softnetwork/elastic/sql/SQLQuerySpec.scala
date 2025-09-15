@@ -882,14 +882,29 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "ct": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.minus(35, ChronoUnit.MINUTES) : null)"
       |      }
       |    }
       |  },
       |  "_source": {
-      |    "includes": ["identifier"]
+      |    "includes": [
+      |      "identifier"
+      |    ]
       |  }
-      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("!=null", " != null")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
   it should "filter with date time and interval" in {
@@ -969,39 +984,47 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "script": {
-        |            "script": {
-        |              "lang": "painless",
-        |              "source": "return doc['createdAt'].value.toLocalTime() < LocalTime.now();"
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "script": {
-        |            "script": {
-        |              "lang": "painless",
-        |              "source": "return doc['createdAt'].value.toLocalTime() >= LocalTime.now().minus(10, ChronoUnit.MINUTES);"
-        |            }
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "_source": {
-        |    "includes": [
-        |      "*"
-        |    ]
-        |  }
-        |}""".stripMargin
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "*"
+      |    ]
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll(">=", " >= ")
       .replaceAll("<", " < ")
-      .replaceAll("return", "return ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("null:", "null : ")
+      .replaceAll("false:", "false : ")
+      .replaceAll(":null", " : null ")
+      .replaceAll("\\?", " ? ")
+      .replaceAll("==", " == ")
+      .replaceAll("\\);", "); ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("defl", "def l")
   }
 
   it should "handle having with date functions" in {
@@ -1041,7 +1064,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                  "lastSeen": "lastSeen"
       |                },
       |                "script": {
-      |                  "source": "(params.lastSeen != null) && (params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli())"
+      |                  "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)"
       |                }
       |              }
       |            }
@@ -1203,7 +1226,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(doc['createdAt'].value, LocalDate::from)"
+      |              "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(e0, LocalDate::from) : null)"
       |            }
       |          }
       |        }
@@ -1212,10 +1235,20 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
       .replaceAll(",ChronoUnit", ", ChronoUnit")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
       .replaceAll(">", " > ")
       .replaceAll(",LocalDate", ", LocalDate")
   }
@@ -1259,7 +1292,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, ZonedDateTime::from).truncatedTo(ChronoUnit.MINUTES).get(ChronoUnit.YEARS)"
+      |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoUnit.YEARS) : null)"
       |            }
       |          }
       |        }
@@ -1268,9 +1301,19 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
       .replaceAll(">", " > ")
       .replaceAll(",ZonedDateTime", ", ZonedDateTime")
   }
@@ -1289,7 +1332,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "diff": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, doc['createdAt'].value)"
+      |        "source": "(def s = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def e = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); s != null && e != null ? ChronoUnit.DAYS.between(s, e) : null)"
       |      }
       |    }
       |  },
@@ -1300,7 +1343,21 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
-      .replaceAll(",doc", ", doc")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
   }
 
   it should "handle aggregation with date_diff function" in {
@@ -1325,7 +1382,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "max": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "ChronoUnit.DAYS.between(doc['updatedAt'].value, DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(doc['createdAt'].value, ZonedDateTime::from))"
+      |              "source": "(def s = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def e = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); s != null && e != null ? ChronoUnit.DAYS.between(s, e) : null)"
       |            }
       |          }
       |        }
@@ -1334,8 +1391,21 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
-      .replaceAll(",doc", ", doc")
-      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
       .replaceAll("ZonedDateTime", " ZonedDateTime")
   }
 
@@ -1361,7 +1431,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "lastSeen": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)"
+      |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.plus(10, ChronoUnit.DAYS) : null)"
       |      }
       |    }
       |  },
@@ -1370,7 +1440,24 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "identifier"
       |    ]
       |  }
-      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
   it should "handle date_sub function as script field" in {
@@ -1395,7 +1482,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "lastSeen": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)"
+      |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.minus(10, ChronoUnit.DAYS) : null)"
       |      }
       |    }
       |  },
@@ -1404,7 +1491,24 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "identifier"
       |    ]
       |  }
-      |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
   it should "handle datetime_add function as script field" in {
@@ -1429,7 +1533,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "lastSeen": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)"
+      |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.plus(10, ChronoUnit.DAYS) : null)"
       |      }
       |    }
       |  },
@@ -1438,7 +1542,24 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "identifier"
       |    ]
       |  }
-      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
   it should "handle datetime_sub function as script field" in {
@@ -1463,7 +1584,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "lastSeen": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)"
+      |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.minus(10, ChronoUnit.DAYS) : null)"
       |      }
       |    }
       |  },
@@ -1472,7 +1593,472 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "identifier"
       |    ]
       |  }
-      |}""".stripMargin.replaceAll("\\s+", "").replaceAll("ChronoUnit", " ChronoUnit")
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle is_null function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isnull)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "flag": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); e0 == null)"
+      |      }
+      |    }
+      |  },
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+  }
+
+  it should "handle is_notnull function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isnotnull)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "flag": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defs", "def s")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+  }
+
+  it should "handle is_null criteria as must_not exists" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isNullCriteria)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "bool": {
+        |            "must_not": [
+        |              {
+        |                "exists": {
+        |                  "field": "identifier"
+        |                }
+        |              }
+        |            ]
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "handle is_notnull criteria as exists" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(isNotNullCriteria)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "*"
+        |    ]
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "handle coalesce function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(coalesce)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "c": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "{ def v0 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.minus(35, ChronoUnit.MINUTES) : null);if (v0 != null) return v0; return (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()).atStartOfDay(ZoneId.of('Z')); }"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll(";}", "; }")
+      .replaceAll(";e", "; e")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle nullif function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(nullif)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "c": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "{ def v0 = ({ def e1=(!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def e2=DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from).minus(2, ChronoUnit.DAYS); return e1 == e2 ? null : e1; });if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); }"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defe", " def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";def", "; def")
+      .replaceAll(";return", "; return")
+      .replaceAll("returnv", " return v")
+      .replaceAll("returne", " return e")
+      .replaceAll(";}", "; }")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(",LocalDate", ", LocalDate")
+      .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+      .replaceAll("ZonedDateTime", " ZonedDateTime")
+  }
+
+  it should "handle cast function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(cast)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "c": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "{ def v0 = ({ def e1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def e2 = DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from); return e1 == e2 ? null : e1; });if (v0 != null) return v0; return (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()).atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS); }.toInstant().toEpochMilli()"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defe", " def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(",LocalDate", ", LocalDate")
+      .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+  }
+
+  it should "handle case function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(caseWhen)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "c": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "{ if (def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)) return left; if (def left = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); left != null) return left.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defd", " def d")
+      .replaceAll("defe", " def e")
+      .replaceAll("defl", " def l")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("\\{if", "{ if")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("false:", "false : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll(";if", "; if")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll(">", " > ")
+      .replaceAll("if \\(\\s*def", "if (def")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle case with expression function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(caseWhenExpr)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "c": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def val0 = e0 != null ? (e0.minus(3, ChronoUnit.DAYS)).atStartOfDay(ZoneId.of('Z')) : null; if (expr == val0) return e0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defd", " def d")
+      .replaceAll("defe", " def e")
+      .replaceAll("defl", " def l")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("\\{if", "{ if")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("false:", "false : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll(";if", "; if")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll(">", " > ")
+      .replaceAll("if \\(\\s*def", "if (def")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+      .replaceAll("=e", " = e")
+  }
+
+  it should "handle extract function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(extract)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "day": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.DAYS) : null)"
+      |      }
+      |    },
+      |    "month": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MONTHS) : null)"
+      |      }
+      |    },
+      |    "year": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.YEARS) : null)"
+      |      }
+      |    },
+      |    "hour": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.HOURS) : null)"
+      |      }
+      |    },
+      |    "minute": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MINUTES) : null)"
+      |      }
+      |    },
+      |    "second": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.SECONDS) : null)"
+      |      }
+      |    }
+      |  },
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defe", "def e")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll(";if", "; if")
+      .replaceAll("==", " == ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll(">", " > ")
+      .replaceAll("if \\(\\s*def", "if (def")
   }
 
 }

@@ -9,4 +9,6 @@ case class SQLHaving(criteria: Option[SQLCriteria]) extends Updateable {
   }
   def update(request: SQLSearchRequest): SQLHaving =
     this.copy(criteria = criteria.map(_.update(request)))
+
+  override def validate(): Either[String, Unit] = criteria.map(_.validate()).getOrElse(Right(()))
 }
