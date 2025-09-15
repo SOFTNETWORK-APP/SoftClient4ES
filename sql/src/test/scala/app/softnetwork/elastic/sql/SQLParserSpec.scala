@@ -143,6 +143,8 @@ object Queries {
     "select coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd') - interval 2 day), current_date) as c, identifier from Table"
   val cast: String =
     "select cast(coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd')), current_date - interval 2 hour) bigint) as c, identifier from Table"
+  val allCasts =
+    "select cast(identifier as int) as c1, cast(identifier as bigint) as c2, cast(identifier as double) as c3, cast(identifier as real) as c4, cast(identifier as boolean) as c5, cast(identifier as char) as c6, cast(identifier as varchar) as c7, cast(createdAt as date) as c8, cast(createdAt as time) as c9, cast(createdAt as datetime) as c10, cast(createdAt as timestamp) as c11, cast(identifier as smallint) as c12, cast(identifier as tinyint) as c13 from Table"
   val caseWhen: String =
     "select case when lastUpdated > now - interval 7 day then lastUpdated when isnotnull(lastSeen) then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
   val caseWhenExpr: String =
@@ -570,6 +572,13 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(cast)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       cast
+    )
+  }
+
+  it should "parse all casts function" in {
+    val result = SQLParser(allCasts)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      allCasts
     )
   }
 

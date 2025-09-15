@@ -19,7 +19,7 @@ object SQLTypes {
   case object Int extends SQLInt { val typeId = "int" }
   case object BigInt extends SQLBigInt { val typeId = "bigint" }
   case object Double extends SQLDouble { val typeId = "double" }
-  case object Real extends SQLReal { val typeId = "float" }
+  case object Real extends SQLReal { val typeId = "real" }
 
   case object Literal extends SQLLiteral { val typeId = "literal" }
 
