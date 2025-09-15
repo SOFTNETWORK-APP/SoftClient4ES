@@ -363,9 +363,14 @@ package object sql {
       expr
     }
 
+    def checkNotNull: String =
+      if (name.isEmpty) ""
+      else
+        s"(!doc.containsKey('$name') || doc['$name'].empty ? $nullValue : doc['$name'].value)"
+
     override def painless: String = toPainless(
       if (nullable)
-        s"(!doc.containsKey('$name') || doc['$name'].empty ? $nullValue : doc['$name'].value)"
+        checkNotNull
       else
         paramName
     )

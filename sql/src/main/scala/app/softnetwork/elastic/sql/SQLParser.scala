@@ -483,9 +483,11 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | int_type
 
   private[this] def castFunctionWithIdentifier: PackratParser[SQLIdentifier] =
-    "(?i)cast".r ~ start ~ (identifierWithTransformation | identifierWithSystemFunction | identifierWithArithmeticFunction | identifierWithFunction | date_diff_identifier | identifier) ~ Alias.regex.? ~ sql_type ~ end ^^ {
-      case _ ~ _ ~ i ~ as ~ t ~ _ =>
-        i.copy(functions = SQLCast(i, targetType = t, as = as.isDefined) +: i.functions)
+    "(?i)cast".r ~ start ~ (identifierWithTransformation | identifierWithSystemFunction | identifierWithArithmeticFunction | identifierWithFunction | date_diff_identifier | identifier) ~ Alias.regex.? ~ sql_type ~ end ~ arithmeticFunction.? ^^ {
+      case _ ~ _ ~ i ~ as ~ t ~ _ ~ a =>
+        i.copy(functions =
+          (SQLCast(i, targetType = t, as = as.isDefined) +: i.functions) ++ a.toList
+        )
     }
 
   private[this] def dateFunctionWithIdentifier: PackratParser[SQLIdentifier] =

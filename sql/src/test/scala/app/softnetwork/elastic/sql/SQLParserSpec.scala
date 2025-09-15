@@ -144,9 +144,9 @@ object Queries {
   val cast: String =
     "select cast(coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd')), current_date - interval 2 hour) bigint) as c, identifier from Table"
   val caseWhen: String =
-    "select case when lastUpdated > now - interval 7 day then lastUpdated when isnotnull(lastSeen) then lastSeen else createdAt end as c, identifier from Table"
+    "select case when lastUpdated > now - interval 7 day then lastUpdated when isnotnull(lastSeen) then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
   val caseWhenExpr: String =
-    "select case now - interval 7 day when lastUpdated then lastUpdated when lastSeen then lastSeen else createdAt end as c, identifier from Table"
+    "select case current_date - interval 7 day when cast(lastUpdated as date) - interval 3 day then lastUpdated when lastSeen then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
 }
 
 /** Created by smanciot on 15/02/17.

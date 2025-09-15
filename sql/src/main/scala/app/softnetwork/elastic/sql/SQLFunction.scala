@@ -710,42 +710,42 @@ case class SQLCaseWhen(
         case _ => ""
       }
     val cases = conditions.zipWithIndex
-      .map { case ((cond, res), zindex) =>
+      .map { case ((cond, res), idx) =>
+        val name =
+          cond match {
+            case e: Expression =>
+              e.identifier.name
+            case i: Identifier =>
+              i.name
+            case _ => ""
+          }
         expression match {
           case Some(expr) =>
             val c = SQLTypeUtils.coerce(cond, expr.out)
             if (cond.sql == res.sql) {
-              s"def val$zindex = $c; if (expr == val$zindex) return val$zindex;"
+              s"def val$idx = $c; if (expr == val$idx) return val$idx;"
             } else {
-              val _res = {
-                res match {
-                  case i: Identifier =>
-                    val name = i.name
-                    cond match {
-                      case e: Expression if e.identifier.name == name =>
-                        e.identifier.nullable = false
-                        e
-                      case i: Identifier if i.name == name =>
-                        i.nullable = false
-                        i
-                      case _ => res
-                    }
-                  case _ => res
-                }
+              res match {
+                case i: Identifier if i.name == name && cond.isInstanceOf[Identifier] =>
+                  i.nullable = false
+                  if (cond.asInstanceOf[Identifier].functions.isEmpty)
+                    s"def val$idx = $c; if (expr == val$idx) return ${SQLTypeUtils.coerce(i.toPainless(s"val$idx"), i.out, out, nullable = false)};"
+                  else {
+                    cond.asInstanceOf[Identifier].nullable = false
+                    s"def e$idx = ${i.checkNotNull}; def val$idx = e$idx != null ? ${SQLTypeUtils.coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.out, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
+                      .coerce(i.toPainless(s"e$idx"), i.out, out, nullable = false)};"
+                  }
+                case _ =>
+                  s"if (expr == $c) return ${SQLTypeUtils.coerce(res, out)};"
               }
-              val r = SQLTypeUtils.coerce(_res, out)
-              s"if (expr == $c) return $r;"
             }
           case None =>
             val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean)
             val r =
-              cond match {
-                case e: Expression =>
-                  val name = e.identifier.name
-                  res match {
-                    case i: Identifier if i.name == name => "left"
-                    case _                               => SQLTypeUtils.coerce(res, out)
-                  }
+              res match {
+                case i: Identifier if i.name == name && cond.isInstanceOf[Expression] =>
+                  i.nullable = false
+                  SQLTypeUtils.coerce(i.toPainless("left"), i.out, out, nullable = false)
                 case _ => SQLTypeUtils.coerce(res, out)
               }
             s"if ($c) return $r;"
