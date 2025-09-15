@@ -172,11 +172,7 @@ case class ElasticBoolQuery(
 
 }
 
-sealed trait Expression
-    extends SQLCriteria
-    with SQLFunctionChain
-    with ElasticFilter
-    with PainlessScript {
+sealed trait Expression extends SQLFunctionChain with ElasticFilter with SQLCriteria { // to fix output type as Boolean
   def identifier: SQLIdentifier
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false
@@ -210,14 +206,14 @@ sealed trait Expression
       case v: SQLIdentifier   => v.painless
       case v                  => v.sql
     }
-    .getOrElse {
+    .getOrElse("") /*{
       operator match {
         case IsNull | IsNotNull => "null"
         case _                  => ""
       }
-    }
+    }*/
 
-  private[this] lazy val left: String = {
+  protected lazy val left: String = {
     val targetedType = maybeValue match {
       case Some(v) =>
         v match {
@@ -230,11 +226,12 @@ sealed trait Expression
     SQLTypeUtils.coerce(identifier, targetedType)
   }
 
-  private[this] lazy val check: String =
+  protected lazy val check: String =
     operator match {
       case _: SQLComparisonOperator => s" $painlessOp $painlessValue"
       case _                        => s"$painlessOp($painlessValue)"
     }
+
   override def painless: String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : ${painlessNot}left$check"
@@ -250,7 +247,7 @@ sealed trait Expression
           v.validate() match {
             case Left(err) => Left(s"$err in expression: $this")
             case Right(_) =>
-              SQLValidator.validateTypesMatching(out, v.out) match {
+              SQLValidator.validateTypesMatching(identifier.out, v.out) match {
                 case Left(_) =>
                   Left(
                     s"Type mismatch: '${out.typeId}' is not compatible with '${v.out.typeId}' in expression: $this"
@@ -352,6 +349,13 @@ case class SQLIsNullCriteria(identifier: SQLIdentifier)
     } else
       updated
   }
+  override def painless: String = {
+    if (identifier.nullable) {
+      return s"def left = $left; left == null"
+    }
+    s"$painlessNot$left$check"
+  }
+
 }
 
 case class SQLIsNotNullCriteria(identifier: SQLIdentifier)
@@ -367,6 +371,14 @@ case class SQLIsNotNullCriteria(identifier: SQLIdentifier)
     } else
       updated
   }
+
+  override def painless: String = {
+    if (identifier.nullable) {
+      return s"def left = $left; left != null"
+    }
+    s"$painlessNot$left$check"
+  }
+
 }
 
 case class SQLIn[R, +T <: SQLValue[R]](

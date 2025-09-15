@@ -1877,4 +1877,106 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(",LocalDate", ", LocalDate")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
   }
+
+  it should "handle case function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(caseWhen)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "script_fields": {
+        |    "c": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "{ if (def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)) return left; if (def left = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); left != null) return left; def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+        |      }
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "identifier"
+        |    ]
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s+", "")
+        .replaceAll("defv", " def v")
+        .replaceAll("defd", " def d")
+        .replaceAll("defe", " def e")
+        .replaceAll("defl", " def l")
+        .replaceAll("if\\(", "if (")
+        .replaceAll("\\{if", "{ if")
+        .replaceAll("=\\(", " = (")
+        .replaceAll("\\?", " ? ")
+        .replaceAll(":null", " : null")
+        .replaceAll("null:", "null : ")
+        .replaceAll("false:", "false : ")
+        .replaceAll("return", " return ")
+        .replaceAll("between\\(s,", "between(s, ")
+        .replaceAll(";", "; ")
+        .replaceAll(";if", "; if")
+        .replaceAll("==", " == ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll("\\|\\|", " || ")
+        .replaceAll(";\\s\\s", "; ")
+        .replaceAll(">", " > ")
+        .replaceAll("if \\(\\s*def", "if (def")
+        .replaceAll("ChronoUnit", " ChronoUnit")
+  }
+
+  it should "handle case with expression function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(caseWhenExpr)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "script_fields": {
+        |    "c": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def val0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); if (expr == val0) return val0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1; def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+        |      }
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "identifier"
+        |    ]
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s+", "")
+        .replaceAll("defv", " def v")
+        .replaceAll("defd", " def d")
+        .replaceAll("defe", " def e")
+        .replaceAll("defl", " def l")
+        .replaceAll("if\\(", "if (")
+        .replaceAll("\\{if", "{ if")
+        .replaceAll("=\\(", " = (")
+        .replaceAll("\\?", " ? ")
+        .replaceAll(":null", " : null")
+        .replaceAll("null:", "null : ")
+        .replaceAll("false:", "false : ")
+        .replaceAll("return", " return ")
+        .replaceAll("between\\(s,", "between(s, ")
+        .replaceAll(";", "; ")
+        .replaceAll(";if", "; if")
+        .replaceAll("==", " == ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll("\\|\\|", " || ")
+        .replaceAll(";\\s\\s", "; ")
+        .replaceAll(">", " > ")
+        .replaceAll("if \\(\\s*def", "if (def")
+        .replaceAll("ChronoUnit", " ChronoUnit")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+  }
+
 }

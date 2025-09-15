@@ -370,7 +370,15 @@ package object sql {
         paramName
     )
 
-    override def nullable: Boolean = this.name.nonEmpty && (!aggregation || functions.size > 1)
+    private[this] var _nullable =
+      this.name.nonEmpty && (!aggregation || functions.size > 1)
+
+    def nullable_=(b: Boolean): Unit = {
+      _nullable = b
+    }
+
+    override def nullable: Boolean = _nullable
+
   }
 
   case class SQLIdentifier(

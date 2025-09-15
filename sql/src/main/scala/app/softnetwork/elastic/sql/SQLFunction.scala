@@ -1,16 +1,16 @@
 package app.softnetwork.elastic.sql
 
-import scala.util.Try
 import scala.util.matching.Regex
 
 sealed trait SQLFunction extends SQLRegex {
   def toSQL(base: String): String = if (base.nonEmpty) s"$sql($base)" else sql
   def applyType(in: SQLType): SQLType = out
-  var expr: SQLToken = SQLNull
-  def applyTo(expr: SQLToken): Unit = {
-    this.expr = expr
+  private[this] var _expr: SQLToken = SQLNull
+  def expr_=(e: SQLToken): Unit = {
+    _expr = e
   }
-  override def nullable: Boolean = Try(expr.nullable).getOrElse(true)
+  def expr: SQLToken = _expr
+  override def nullable: Boolean = expr.nullable
 }
 
 sealed trait SQLFunctionWithIdentifier extends SQLFunction {
@@ -72,11 +72,10 @@ trait SQLFunctionChain extends SQLFunction {
 
   override def system: Boolean = functions.lastOption.exists(_.system)
 
-  override def applyTo(expr: SQLToken): Unit = {
-    super.applyTo(expr)
-    val orderedFunctions = functions.reverse
-    orderedFunctions.foldLeft(expr) { (currentExpr, fun) =>
-      fun.applyTo(currentExpr)
+  def applyTo(expr: SQLToken): Unit = {
+    this.expr = expr
+    functions.reverse.foldLeft(expr) { (currentExpr, fun) =>
+      fun.expr = currentExpr
       fun
     }
   }
@@ -662,8 +661,105 @@ case class SQLCast(value: PainlessScript, targetType: SQLType, as: Boolean = tru
 
   override def toPainless(base: String, idx: Int): String =
     SQLTypeUtils.coerce(base, value.out, targetType, value.nullable)
-  /*if (nullable)
-      s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", value.out, out, nullable = false)}$painless : null)"
-    else
-      s"${SQLTypeUtils.coerce(base, value.out, targetType, nullable = value.nullable)}$painless"*/
+}
+
+case class SQLCaseWhen(
+  expression: Option[PainlessScript],
+  conditions: List[(PainlessScript, PainlessScript)],
+  default: Option[PainlessScript]
+) extends SQLTransformFunction[SQLAny, SQLAny] {
+  override def inputType: SQLAny = SQLTypes.Any
+  override def outputType: SQLAny = SQLTypes.Any
+
+  override def sql: String = {
+    val exprPart = expression.map(e => s"$Case ${e.sql}").getOrElse(Case.sql)
+    val whenThen = conditions
+      .map { case (cond, res) => s"$When ${cond.sql} $Then ${res.sql}" }
+      .mkString(" ")
+    val elsePart = default.map(d => s" $Else ${d.sql}").getOrElse("")
+    s"$exprPart $whenThen$elsePart $End"
+  }
+
+  override def out: SQLType =
+    SQLTypeUtils.leastCommonSuperType(
+      conditions.map(_._2.out) ++ default.map(_.out).toList
+    )
+
+  override def applyType(in: SQLType): SQLType = out
+
+  override def validate(): Either[String, Unit] = {
+    if (conditions.isEmpty) Left("CASE WHEN requires at least one condition")
+    else if (
+      expression.isEmpty && conditions.exists { case (cond, _) => cond.out != SQLTypes.Boolean }
+    )
+      Left("CASE WHEN conditions must be of type BOOLEAN")
+    else if (
+      expression.isDefined && conditions.exists { case (cond, _) =>
+        !SQLTypeUtils.matches(cond.out, expression.get.out)
+      }
+    )
+      Left("CASE WHEN conditions must be of the same type as the expression")
+    else Right(())
+  }
+
+  override def painless: String = {
+    val base =
+      expression match {
+        case Some(expr) =>
+          s"def expr = ${SQLTypeUtils.coerce(expr, expr.out)}; "
+        case _ => ""
+      }
+    val cases = conditions.zipWithIndex
+      .map { case ((cond, res), zindex) =>
+        expression match {
+          case Some(expr) =>
+            val c = SQLTypeUtils.coerce(cond, expr.out)
+            if (cond.sql == res.sql) {
+              s"def val$zindex = $c; if (expr == val$zindex) return val$zindex;"
+            } else {
+              val _res = {
+                res match {
+                  case i: Identifier =>
+                    val name = i.name
+                    cond match {
+                      case e: Expression if e.identifier.name == name =>
+                        e.identifier.nullable = false
+                        e
+                      case i: Identifier if i.name == name =>
+                        i.nullable = false
+                        i
+                      case _ => res
+                    }
+                  case _ => res
+                }
+              }
+              val r = SQLTypeUtils.coerce(_res, out)
+              s"if (expr == $c) return $r;"
+            }
+          case None =>
+            val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean)
+            val r =
+              cond match {
+                case e: Expression =>
+                  val name = e.identifier.name
+                  res match {
+                    case i: Identifier if i.name == name => "left"
+                    case _                               => SQLTypeUtils.coerce(res, out)
+                  }
+                case _ => SQLTypeUtils.coerce(res, out)
+              }
+            s"if ($c) return $r;"
+        }
+      }
+      .mkString(" ")
+    val defaultCase = default
+      .map(d => s"def dval = ${SQLTypeUtils.coerce(d, out)}; return dval;")
+      .getOrElse("return null;")
+    s"{ $base$cases $defaultCase }"
+  }
+
+  override def toPainless(base: String, idx: Int): String = s"$base$painless"
+
+  override def nullable: Boolean =
+    conditions.exists { case (_, res) => res.nullable } || default.forall(_.nullable)
 }
