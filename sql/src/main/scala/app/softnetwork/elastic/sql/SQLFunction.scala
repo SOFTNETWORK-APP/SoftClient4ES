@@ -137,18 +137,6 @@ sealed trait SQLArithmeticFunction[In <: SQLType, Out <: SQLType]
   override def applyType(in: SQLType): SQLType = in
 }
 
-sealed trait ParametrizedFunction extends SQLFunction {
-  def params: Seq[String]
-  override def toSQL(base: String): String = {
-    params match {
-      case Nil => s"$sql($base)"
-      case _ =>
-        val paramsStr = params.mkString(", ")
-        s"$sql($paramsStr)($base)"
-    }
-  }
-}
-
 sealed trait AggregateFunction extends SQLFunction
 case object Count extends SQLExpr("count") with AggregateFunction
 case object Min extends SQLExpr("min") with AggregateFunction
@@ -367,36 +355,35 @@ case class DateTrunc(identifier: SQLIdentifier, unit: TimeUnit)
 case class Extract(unit: TimeUnit, override val sql: String = "extract")
     extends SQLExpr(sql)
     with DateTimeFunction
-    with SQLTransformFunction[SQLTemporal, SQLNumeric]
-    with ParametrizedFunction {
+    with SQLTransformFunction[SQLTemporal, SQLNumeric] {
   override def inputType: SQLTemporal = SQLTypes.Temporal
   override def outputType: SQLNumeric = SQLTypes.Numeric
-  override def params: Seq[String] = Seq(unit.sql)
+  override def toSQL(base: String): String = s"$sql(${unit.sql} from $base)"
   override def painless: String = s".get(${unit.painless})"
 }
 
 object YEAR extends Extract(Year, Year.sql) {
-  override def params: Seq[String] = Seq.empty
+  override def toSQL(base: String): String = s"$sql($base)"
 }
 
 object MONTH extends Extract(Month, Month.sql) {
-  override def params: Seq[String] = Seq.empty
+  override def toSQL(base: String): String = s"$sql($base)"
 }
 
 object DAY extends Extract(Day, Day.sql) {
-  override def params: Seq[String] = Seq.empty
+  override def toSQL(base: String): String = s"$sql($base)"
 }
 
 object HOUR extends Extract(Hour, Hour.sql) {
-  override def params: Seq[String] = Seq.empty
+  override def toSQL(base: String): String = s"$sql($base)"
 }
 
 object MINUTE extends Extract(Minute, Minute.sql) {
-  override def params: Seq[String] = Seq.empty
+  override def toSQL(base: String): String = s"$sql($base)"
 }
 
 object SECOND extends Extract(Second, Second.sql) {
-  override def params: Seq[String] = Seq.empty
+  override def toSQL(base: String): String = s"$sql($base)"
 }
 
 case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
@@ -732,7 +719,8 @@ case class SQLCaseWhen(
                     s"def val$idx = $c; if (expr == val$idx) return ${SQLTypeUtils.coerce(i.toPainless(s"val$idx"), i.out, out, nullable = false)};"
                   else {
                     cond.asInstanceOf[Identifier].nullable = false
-                    s"def e$idx = ${i.checkNotNull}; def val$idx = e$idx != null ? ${SQLTypeUtils.coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.out, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
+                    s"def e$idx = ${i.checkNotNull}; def val$idx = e$idx != null ? ${SQLTypeUtils
+                      .coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.out, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
                       .coerce(i.toPainless(s"e$idx"), i.out, out, nullable = false)};"
                   }
                 case _ =>

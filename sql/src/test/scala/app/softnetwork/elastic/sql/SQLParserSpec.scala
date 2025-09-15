@@ -147,6 +147,9 @@ object Queries {
     "select case when lastUpdated > now - interval 7 day then lastUpdated when isnotnull(lastSeen) then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
   val caseWhenExpr: String =
     "select case current_date - interval 7 day when cast(lastUpdated as date) - interval 3 day then lastUpdated when lastSeen then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
+
+  val extract: String =
+    "select extract(day from createdAt) as day, extract(month from createdAt) as month, extract(year from createdAt) as year, extract(hour from createdAt) as hour, extract(minute from createdAt) as minute, extract(second from createdAt) as second from Table"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -579,8 +582,17 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
 
   it should "parse case when with expression" in {
     val result = SQLParser(caseWhenExpr)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(caseWhenExpr) shouldBe true
+  }
+
+  it should "parse extract function" in {
+    val result = SQLParser(extract)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      caseWhenExpr
+      extract
     )
   }
+
 }

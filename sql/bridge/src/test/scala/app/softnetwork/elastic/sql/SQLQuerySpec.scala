@@ -1942,7 +1942,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def val0 = e0 != null ? ((e0).atStartOfDay(ZoneId.of('Z')).minus(3, ChronoUnit.DAYS)).atStartOfDay(ZoneId.of('Z')) : null; if (expr == val0) return e0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+        |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def val0 = e0 != null ? (e0.minus(3, ChronoUnit.DAYS)).atStartOfDay(ZoneId.of('Z')) : null; if (expr == val0) return e0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
         |      }
         |    }
         |  },
@@ -1978,6 +1978,76 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("ChronoUnit", " ChronoUnit")
         .replaceAll("=ZonedDateTime", " = ZonedDateTime")
         .replaceAll("=e", " = e")
+  }
+
+  it should "handle extract function as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(extract)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "script_fields": {
+        |    "day": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.DAYS) : null)"
+        |      }
+        |    },
+        |    "month": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MONTHS) : null)"
+        |      }
+        |    },
+        |    "year": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.YEARS) : null)"
+        |      }
+        |    },
+        |    "hour": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.HOURS) : null)"
+        |      }
+        |    },
+        |    "minute": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MINUTES) : null)"
+        |      }
+        |    },
+        |    "second": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.SECONDS) : null)"
+        |      }
+        |    }
+        |  },
+        |  "_source": true
+        |}""".stripMargin
+        .replaceAll("\\s+", "")
+        .replaceAll("defe", "def e")
+        .replaceAll("if\\(", "if (")
+        .replaceAll("=\\(", " = (")
+        .replaceAll("\\?", " ? ")
+        .replaceAll(":null", " : null")
+        .replaceAll("null:", "null : ")
+        .replaceAll("return", " return ")
+        .replaceAll("between\\(s,", "between(s, ")
+        .replaceAll(";", "; ")
+        .replaceAll(";if", "; if")
+        .replaceAll("==", " == ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll("\\|\\|", " || ")
+        .replaceAll(";\\s\\s", "; ")
+        .replaceAll(">", " > ")
+        .replaceAll("if \\(\\s*def", "if (def")
   }
 
 }
