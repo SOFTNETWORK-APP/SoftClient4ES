@@ -2061,4 +2061,90 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("if \\(\\s*def", "if (def")
   }
 
+  it should "handle arithmetic function as script field and condition" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(arithmetic.replace("as group1", ""))
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoUnit.YEARS) - 10)) > 10000"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "add": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 + 1)"
+      |      }
+      |    },
+      |    "sub": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 - 1)"
+      |      }
+      |    },
+      |    "mul": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * 2)"
+      |      }
+      |    },
+      |    "div": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 / 2)"
+      |      }
+      |    },
+      |    "mod": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 % 2)"
+      |      }
+      |    },
+      |    "identifier_mul_identifier2_minus_10": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((def lv1 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); def rv1 = ((!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value)); ( lv1 == null || rv1 == null ) ? null : (lv1 * rv1))); ( lv0 == null ) ? null : (lv0 - 10)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("defr", "def r")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll(">", " > ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll("%", " % ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("==", " == ")
+      .replaceAll("\\|\\|", " || ")
+  }
 }

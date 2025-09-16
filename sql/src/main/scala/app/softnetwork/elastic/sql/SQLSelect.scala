@@ -7,7 +7,7 @@ sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript 
   def fieldAlias: Option[SQLAlias]
   def isScriptField: Boolean = functions.nonEmpty && !aggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
-  lazy val sourceField: String =
+  lazy val sourceField: String = {
     if (identifier.nested) {
       identifier.tableAlias
         .orElse(fieldAlias.map(_.alias))
@@ -18,9 +18,14 @@ sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript 
         .split("\\.")
         .tail
         .mkString(".")
+    } else if (identifier.name.nonEmpty) {
+      identifier.name
+        .replace("(", "")
+        .replace(")", "")
     } else {
-      identifier.name.replace("(", "").replace(")", "")
+      AliasUtils.normalize(identifier.identifierName)
     }
+  }
 
   override def functions: List[SQLFunction] = identifier.functions
 

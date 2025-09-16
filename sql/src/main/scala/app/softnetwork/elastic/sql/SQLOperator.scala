@@ -17,8 +17,11 @@ sealed trait ArithmeticOperator extends SQLOperator with MathScript {
   override def toString: String = s" $sql "
   override def script: String = sql
 }
-case object Add extends SQLExpr("+") with ArithmeticOperator
-case object Subtract extends SQLExpr("-") with ArithmeticOperator
+
+sealed trait IntervalOperator extends ArithmeticOperator
+
+case object Add extends SQLExpr("+") with IntervalOperator
+case object Subtract extends SQLExpr("-") with IntervalOperator
 case object Multiply extends SQLExpr("*") with ArithmeticOperator
 case object Divide extends SQLExpr("/") with ArithmeticOperator
 case object Modulo extends SQLExpr("%") with ArithmeticOperator

@@ -152,6 +152,9 @@ object Queries {
 
   val extract: String =
     "select extract(day from createdAt) as day, extract(month from createdAt) as month, extract(year from createdAt) as year, extract(hour from createdAt) as hour, extract(minute from createdAt) as minute, extract(second from createdAt) as second from Table"
+
+  val arithmetic: String =
+    "select identifier, identifier + 1 as add, identifier - 1 as sub, identifier * 2 as mul, identifier / 2 as div, identifier % 2 as mod, (identifier * identifier2) - 10 as group1 from Table where identifier * (extract(year from current_date) - 10) > 10000"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -604,4 +607,10 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     )
   }
 
+  it should "parse arithmetic expressions" in {
+    val result = SQLParser(arithmetic)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      arithmetic
+    )
+  }
 }
