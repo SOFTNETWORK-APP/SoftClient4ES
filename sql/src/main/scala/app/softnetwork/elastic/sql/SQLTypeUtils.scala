@@ -43,6 +43,7 @@ object SQLTypeUtils {
       .contains(
         out.typeId
       )) ||
+    (out.isInstanceOf[SQLNumeric] && in.isInstanceOf[SQLNumeric]) ||
     (out.typeId == Varchar.typeId && in.typeId == Varchar.typeId) ||
     (out.typeId == Boolean.typeId && in.typeId == Boolean.typeId) ||
     out.typeId == Any.typeId || in.typeId == Any.typeId ||

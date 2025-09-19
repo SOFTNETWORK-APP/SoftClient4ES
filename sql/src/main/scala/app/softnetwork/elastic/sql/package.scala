@@ -1,5 +1,6 @@
 package app.softnetwork.elastic
 
+import java.security.MessageDigest
 import java.util.regex.Pattern
 import scala.reflect.runtime.universe._
 import scala.util.Try
@@ -179,6 +180,18 @@ package object sql {
     override def out: SQLNumeric = SQLTypes.Double
   }
 
+  case object SQLPiValue extends SQLValue[Double](Math.PI) {
+    override def sql: String = "pi"
+    override def painless: String = "Math.PI"
+    override def out: SQLNumeric = SQLTypes.Double
+  }
+
+  case object SQLEValue extends SQLValue[Double](Math.E) {
+    override def sql: String = "e"
+    override def painless: String = "Math.E"
+    override def out: SQLNumeric = SQLTypes.Double
+  }
+
   sealed abstract class SQLFromTo[+T](val from: SQLValue[T], val to: SQLValue[T]) extends SQLToken {
     override def sql = s"${from.sql} and ${to.sql}"
   }
@@ -313,6 +326,41 @@ package object sql {
 
   case class SQLAlias(alias: String) extends SQLExpr(s" ${Alias.sql} $alias")
 
+  object AliasUtils {
+    private val MaxAliasLength = 50
+
+    private val opMapping = Map(
+      "+" -> "plus",
+      "-" -> "minus",
+      "*" -> "mul",
+      "/" -> "div",
+      "%" -> "mod"
+    )
+
+    def normalize(expr: String): String = {
+      // Remplacer les opérateurs SQL par des noms lisibles
+      val replaced = opMapping.foldLeft(expr) { case (acc, (k, v)) =>
+        acc.replace(k, s"_${v}_")
+      }
+      // Nettoyer pour obtenir un identifiant valide
+      val normalized = replaced
+        .replaceAll("[^a-zA-Z0-9_]", "_") // caractères invalides -> "_"
+        .replaceAll("_+", "_") // compacter plusieurs "_"
+        .stripPrefix("_")
+        .stripSuffix("_")
+        .toLowerCase
+
+      // Tronquer si nécessaire
+      if (normalized.length > MaxAliasLength) {
+        val digest = MessageDigest.getInstance("MD5").digest(normalized.getBytes("UTF-8"))
+        val hash = digest.map("%02x".format(_)).mkString.take(8) // suffix court
+        normalized.take(MaxAliasLength - hash.length - 1) + "_" + hash
+      } else {
+        normalized
+      }
+    }
+  }
+
   trait SQLRegex extends SQLToken {
     lazy val regex: Regex = s"\\b(?i)$sql\\b".r
   }
@@ -330,13 +378,30 @@ package object sql {
     def nested: Boolean
     def fieldAlias: Option[String]
     def bucket: Option[SQLBucket]
+    override def sql: String = {
+      var parts: Seq[String] = name.split("\\.").toSeq
+      tableAlias match {
+        case Some(a) => parts = a +: (if (nested) parts.tail else parts)
+        case _       =>
+      }
+      val sql = {
+        if (distinct) {
+          s"$Distinct ${parts.mkString(".")}".trim
+        } else {
+          parts.mkString(".").trim
+        }
+      }
+      functions.reverse.foldLeft(sql)((expr, fun) => {
+        fun.toSQL(expr)
+      })
+    }
 
     applyTo(this)
 
     lazy val identifierName: String =
       functions.reverse.foldLeft(name)((expr, fun) => {
         fun.toSQL(expr)
-      })
+      }) // FIXME use AliasUtils.normalize?
 
     lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
 
@@ -395,24 +460,7 @@ package object sql {
     functions: List[SQLFunction] = List.empty,
     fieldAlias: Option[String] = None,
     bucket: Option[SQLBucket] = None
-  ) extends SQLExpr({
-        var parts: Seq[String] = name.split("\\.").toSeq
-        tableAlias match {
-          case Some(a) => parts = a +: (if (nested) parts.tail else parts)
-          case _       =>
-        }
-        val sql = {
-          if (distinct) {
-            s"$Distinct ${parts.mkString(".")}".trim
-          } else {
-            parts.mkString(".").trim
-          }
-        }
-        functions.reverse.foldLeft(sql)((expr, fun) => {
-          fun.toSQL(expr)
-        })
-      })
-      with Identifier {
+  ) extends Identifier {
 
     def update(request: SQLSearchRequest): SQLIdentifier = {
       val parts: Seq[String] = name.split("\\.").toSeq

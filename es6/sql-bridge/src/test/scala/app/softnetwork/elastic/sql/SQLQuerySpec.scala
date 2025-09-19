@@ -1332,7 +1332,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "diff": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def s = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def e = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); s != null && e != null ? ChronoUnit.DAYS.between(s, e) : null)"
+      |        "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
       |      }
       |    }
       |  },
@@ -1345,14 +1345,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\s", "")
       .replaceAll("defv", "def v")
       .replaceAll("defe", "def e")
-      .replaceAll("defs", "def s")
+      .replaceAll("defa", "def a")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
       .replaceAll(":null", " : null")
       .replaceAll("null:", "null : ")
       .replaceAll("return", " return ")
-      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(",a", ", a")
       .replaceAll(";", "; ")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
@@ -1382,7 +1382,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "max": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "(def s = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def e = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); s != null && e != null ? ChronoUnit.DAYS.between(s, e) : null)"
+      |              "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
       |            }
       |          }
       |        }
@@ -1393,14 +1393,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\s", "")
       .replaceAll("defv", "def v")
       .replaceAll("defe", "def e")
-      .replaceAll("defs", "def s")
+      .replaceAll("defa", "def a")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
       .replaceAll(":null", " : null")
       .replaceAll("null:", "null : ")
       .replaceAll("return", " return ")
-      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(",a", ", a")
       .replaceAll(";", "; ")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
@@ -1808,7 +1808,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "{ def v0 = ({ def e1=(!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def e2=DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from).minus(2, ChronoUnit.DAYS); return e1 == e2 ? null : e1; });if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); }"
+      |        "source": "{ def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from).minus(2, ChronoUnit.DAYS) ? null : arg0));if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); }"
       |      }
       |    }
       |  },
@@ -1820,7 +1820,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |}""".stripMargin
       .replaceAll("\\s+", "")
       .replaceAll("defv", " def v")
-      .replaceAll("defe", " def e")
+      .replaceAll("defa", "def a")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
@@ -1832,6 +1832,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("returnv", " return v")
       .replaceAll("returne", " return e")
       .replaceAll(";}", "; }")
+      .replaceAll(";\\(", "; (")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
@@ -1857,7 +1858,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "{ def v0 = ({ def e1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def e2 = DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from); return e1 == e2 ? null : e1; });if (v0 != null) return v0; return (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()).atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS); }.toInstant().toEpochMilli()"
+      |        "source": "{ def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from) ? null : arg0));if (v0 != null) return v0; return (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()).atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS); }.toInstant().toEpochMilli()"
       |      }
       |    }
       |  },
@@ -1869,7 +1870,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |}""".stripMargin
       .replaceAll("\\s+", "")
       .replaceAll("defv", " def v")
-      .replaceAll("defe", " def e")
+      .replaceAll("defa", "def a")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
@@ -2059,6 +2060,263 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(";\\s\\s", "; ")
       .replaceAll(">", " > ")
       .replaceAll("if \\(\\s*def", "if (def")
+  }
+
+  it should "handle arithmetic function as script field and condition" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(arithmetic.replace("as group1", ""))
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoUnit.YEARS) - 10)) > 10000"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "add": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 + 1)"
+      |      }
+      |    },
+      |    "sub": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 - 1)"
+      |      }
+      |    },
+      |    "mul": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * 2)"
+      |      }
+      |    },
+      |    "div": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 / 2)"
+      |      }
+      |    },
+      |    "mod": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 % 2)"
+      |      }
+      |    },
+      |    "identifier_mul_identifier2_minus_10": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def lv0 = ((def lv1 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); def rv1 = ((!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value)); ( lv1 == null || rv1 == null ) ? null : (lv1 * rv1))); ( lv0 == null ) ? null : (lv0 - 10)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replaceAll("defv", "def v")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("defr", "def r")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll(">", " > ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll("%", " % ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("==", " == ")
+      .replaceAll("\\|\\|", " || ")
+  }
+
+  it should "handle mathematic function as script field and condition" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(mathematical)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.sqrt(arg0)) > 100.0"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "abs_identifier_plus_1_0_mul_2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "((def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.abs(arg0)) + 1.0) * ((double) 2)"
+      |      }
+      |    },
+      |    "ceil_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.ceil(arg0))"
+      |      }
+      |    },
+      |    "floor_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.floor(arg0))"
+      |      }
+      |    },
+      |    "sqrt_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.sqrt(arg0))"
+      |      }
+      |    },
+      |    "exp_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.exp(arg0))"
+      |      }
+      |    },
+      |    "log_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.log(arg0))"
+      |      }
+      |    },
+      |    "log10_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.log10(arg0))"
+      |      }
+      |    },
+      |    "pow_identifier_3": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.pow(arg0, 3))"
+      |      }
+      |    },
+      |    "round_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : (def p = Math.pow(10, 0); Math.round((arg0 * p) / p)))"
+      |      }
+      |    },
+      |    "round_identifier_2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : (def p = Math.pow(10, 2); Math.round((arg0 * p) / p)))"
+      |      }
+      |    },
+      |    "sign_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); arg0 != null ? (arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)) : null)"
+      |      }
+      |    },
+      |    "cos_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.cos(arg0))"
+      |      }
+      |    },
+      |    "acos_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.acos(arg0))"
+      |      }
+      |    },
+      |    "sin_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.sin(arg0))"
+      |      }
+      |    },
+      |    "asin_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.asin(arg0))"
+      |      }
+      |    },
+      |    "tan_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.tan(arg0))"
+      |      }
+      |    },
+      |    "atan_identifier": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.atan(arg0))"
+      |      }
+      |    },
+      |    "atan2_identifier_3_0": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.atan2(arg0, 3.0))"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defp", "def p")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(":0", " : 0")
+      .replaceAll("=Math", " = Math")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll("between\\(s,", "between(s, ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">", " > ")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll("ChronoUnit", " ChronoUnit")
+      .replaceAll(",LocalDate", ", LocalDate")
+      .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+      .replaceAll("\\(double\\)(\\d)", "(double) $1")
   }
 
 }

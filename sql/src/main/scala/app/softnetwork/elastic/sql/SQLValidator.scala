@@ -12,8 +12,8 @@ object SQLValidator {
       case Some(left) => return left
       case None       =>
     }
-    val unaryFuncs = functions.collect { case f: SQLUnaryFunction[_, _] => f }
-    unaryFuncs.sliding(2).foreach {
+    val funcs = functions.collect { case f: SQLFunctionN[_, _] => f }
+    funcs.sliding(2).foreach {
       case Seq(f1, f2) =>
         validateTypesMatching(f2.outputType, f1.inputType)
       case _ => // ok
