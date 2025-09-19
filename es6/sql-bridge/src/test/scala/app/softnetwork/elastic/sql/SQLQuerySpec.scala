@@ -2219,7 +2219,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.pow(arg0, 3))"
       |      }
       |    },
-      |    "round_identifier_0": {
+      |    "round_identifier": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : (def p = Math.pow(10, 0); Math.round((arg0 * p) / p)))"

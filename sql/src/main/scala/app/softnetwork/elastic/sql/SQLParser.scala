@@ -465,7 +465,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   def roundFunction: PackratParser[MathematicalFunction] =
     round ~ start ~ valueExpr ~ separator.? ~ long.? ~ end ^^ { case _ ~ _ ~ v ~ _ ~ s ~ _ =>
-      SQLRound(v, s.map(_.value.toInt).getOrElse(0))
+      SQLRound(v, s.map(_.value.toInt))
     }
 
   private[this] def pow: PackratParser[UnaryArithmeticOperator] = Pow.regex ^^ (_ => Pow)

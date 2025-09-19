@@ -994,18 +994,14 @@ case class SQLPow(arg: PainlessScript, exponent: Int) extends MathematicalFuncti
   override def nullable: Boolean = arg.nullable
 }
 
-case class SQLRound(arg: PainlessScript, scale: Int = 0) extends MathematicalFunction {
+case class SQLRound(arg: PainlessScript, scale: Option[Int]) extends MathematicalFunction {
   override def operator: UnaryArithmeticOperator = Round
 
   override def args: List[PainlessScript] =
-    List(arg) :+ SQLIntValue(scale)
+    List(arg) ++ scale.map(SQLIntValue(_)).toList
 
   override def toPainlessCall(callArgs: List[String]): String =
-    callArgs match {
-      case List(arg0, arg1) =>
-        s"(def p = ${SQLPow(SQLIntValue(10), arg1.toInt).painless}; ${operator.painless}(($arg0 * p) / p))"
-      case _ => throw new IllegalArgumentException("ROUND requires one or two arguments")
-    }
+    s"(def p = ${SQLPow(SQLIntValue(10), scale.getOrElse(0)).painless}; ${operator.painless}((${callArgs.head} * p) / p))"
 }
 
 case class SQLSign(arg: PainlessScript) extends MathematicalFunction {
