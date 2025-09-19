@@ -327,7 +327,7 @@ sealed trait SQLCriteriaWithConditionalFunction[In <: SQLType] extends Expressio
   override def maybeNot: Option[Not.type] = None
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
   override val functions: List[SQLFunction] = List(conditionalFunction)
-  override def sql = s"${conditionalFunction.sql}($identifier)"
+  override def sql: String = conditionalFunction.sql
 }
 
 object SQLConditionalFunctionAsCriteria {

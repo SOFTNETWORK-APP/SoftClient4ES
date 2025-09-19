@@ -155,6 +155,9 @@ object Queries {
 
   val arithmetic: String =
     "select identifier, identifier + 1 as add, identifier - 1 as sub, identifier * 2 as mul, identifier / 2 as div, identifier % 2 as mod, (identifier * identifier2) - 10 as group1 from Table where identifier * (extract(year from current_date) - 10) > 10000"
+
+  val mathematical: String =
+    "select identifier, (abs(identifier) + 1.0) * 2, ceil(identifier), floor(identifier), sqrt(identifier), exp(identifier), log(identifier), log10(identifier), pow(identifier, 3), round(identifier), round(identifier, 2), sign(identifier), cos(identifier), acos(identifier), sin(identifier), asin(identifier), tan(identifier), atan(identifier), atan2(identifier, 3.0) from Table where sqrt(identifier) > 100.0"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -613,4 +616,12 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       arithmetic
     )
   }
+
+  it should "parse mathematical functions" in {
+    val result = SQLParser(mathematical)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      mathematical
+    )
+  }
+
 }

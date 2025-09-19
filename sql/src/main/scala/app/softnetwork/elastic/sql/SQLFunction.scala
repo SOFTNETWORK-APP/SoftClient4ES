@@ -14,7 +14,7 @@ sealed trait SQLFunction extends SQLRegex {
 }
 
 sealed trait SQLFunctionWithIdentifier extends SQLFunction {
-  def identifier: SQLIdentifier
+  def identifier: SQLIdentifier //= SQLIdentifier("", functions = this :: Nil)
 }
 
 trait SQLFunctionWithValue[+T] extends SQLFunction {
@@ -103,26 +103,69 @@ trait SQLFunctionChain extends SQLFunction {
   }
 }
 
-sealed trait SQLUnaryFunction[In <: SQLType, Out <: SQLType]
-    extends SQLFunction
-    with PainlessScript {
+sealed trait SQLFunctionN[In <: SQLType, Out <: SQLType] extends SQLFunction with PainlessScript {
+  def fun: Option[PainlessScript] = None
+
+  def args: List[PainlessScript]
+  def argsSeparator: String = ", "
+
   def inputType: In
   def outputType: Out
+
   override def in: SQLType = inputType
   override def out: SQLType = outputType
+
   override def applyType(in: SQLType): SQLType = outputType
+
+  override def sql: String =
+    s"${fun.map(_.sql).getOrElse("")}(${args.map(_.sql).mkString(argsSeparator)})"
+
+  override def toSQL(base: String): String = s"$base$sql"
+
+  override def painless: String = {
+    val nullCheck =
+      args.filter(_.nullable).zipWithIndex.map { case (_, i) => s"arg$i == null" }.mkString(" || ")
+
+    val assignments =
+      args
+        .filter(_.nullable)
+        .zipWithIndex
+        .map { case (a, i) => s"def arg$i = ${a.painless};" }
+        .mkString(" ")
+
+    val callArgs = args.zipWithIndex
+      .map { case (a, i) =>
+        if (a.nullable)
+          s"arg$i"
+        else
+          a.painless
+      }
+
+    if (args.exists(_.nullable))
+      s"($assignments ($nullCheck) ? null : ${toPainlessCall(callArgs)})"
+    else
+      s"${toPainlessCall(callArgs)}"
+  }
+
+  def toPainlessCall(callArgs: List[String]): String =
+    if (callArgs.nonEmpty)
+      s"${fun.map(_.painless).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
+    else
+      fun.map(_.painless).getOrElse("")
 }
 
 sealed trait SQLBinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType]
-    extends SQLUnaryFunction[In2, Out] { self: SQLFunction =>
+    extends SQLFunctionN[In2, Out] { self: SQLFunction =>
 
   def left: PainlessScript
   def right: PainlessScript
 
+  override def args: List[PainlessScript] = List(left, right)
+
   override def nullable: Boolean = left.nullable || right.nullable
 }
 
-sealed trait SQLTransformFunction[In <: SQLType, Out <: SQLType] extends SQLUnaryFunction[In, Out] {
+sealed trait SQLTransformFunction[In <: SQLType, Out <: SQLType] extends SQLFunctionN[In, Out] {
   def toPainless(base: String, idx: Int): String = {
     if (nullable && base.nonEmpty)
       s"(def e$idx = $base; e$idx != null ? e$idx$painless : null)"
@@ -144,6 +187,8 @@ sealed trait TimeUnit extends PainlessScript with MathScript {
   lazy val regex: Regex = s"\\b(?i)$sql(s)?\\b".r
 
   override def painless: String = s"ChronoUnit.${sql.toUpperCase()}S"
+
+  override def nullable: Boolean = false
 }
 
 sealed trait CalendarUnit extends TimeUnit
@@ -216,6 +261,8 @@ sealed trait TimeInterval extends PainlessScript with MathScript {
         Left(s"Intervals not supported for type $in")
     }
   }
+
+  override def nullable: Boolean = false
 }
 
 import TimeUnit._
@@ -239,10 +286,20 @@ sealed trait SQLIntervalFunction[IO <: SQLTemporal]
     extends SQLTransformFunction[IO, IO]
     with MathScript {
   def operator: IntervalOperator
-  override def toSQL(base: String): String = s"$base$operator$sql"
+
+  override def fun: Option[IntervalOperator] = Some(operator)
+
   def interval: TimeInterval
+
+  override def args: List[PainlessScript] = List(interval)
+
+  override def argsSeparator: String = " "
+  override def sql: String = s"$operator${args.map(_.sql).mkString(argsSeparator)}"
+
   override def script: String = s"${operator.script}${interval.script}"
+
   private[this] var _out: SQLType = outputType
+
   override def out: SQLType = _out
 
   override def applyType(in: SQLType): SQLType = {
@@ -263,25 +320,19 @@ sealed trait SQLIntervalFunction[IO <: SQLTemporal]
 }
 
 sealed trait AddInterval[IO <: SQLTemporal] extends SQLIntervalFunction[IO] {
-  override def operator: IntervalOperator = Add
-  override def painless: String = s".plus(${interval.painless})"
+  override def operator: IntervalOperator = Plus
 }
 
 sealed trait SubtractInterval[IO <: SQLTemporal] extends SQLIntervalFunction[IO] {
-  override def operator: IntervalOperator = Subtract
-  override def painless: String = s".minus(${interval.painless})"
+  override def operator: IntervalOperator = Minus
 }
 
-case class SQLAddInterval(interval: TimeInterval)
-    extends SQLExpr(interval.sql)
-    with AddInterval[SQLTemporal] {
+case class SQLAddInterval(interval: TimeInterval) extends AddInterval[SQLTemporal] {
   override def inputType: SQLTemporal = SQLTypes.Temporal
   override def outputType: SQLTemporal = SQLTypes.Temporal
 }
 
-case class SQLSubtractInterval(interval: TimeInterval)
-    extends SQLExpr(interval.sql)
-    with SubtractInterval[SQLTemporal] {
+case class SQLSubtractInterval(interval: TimeInterval) extends SubtractInterval[SQLTemporal] {
   override def inputType: SQLTemporal = SQLTypes.Temporal
   override def outputType: SQLTemporal = SQLTypes.Temporal
 }
@@ -337,27 +388,43 @@ case object Now extends SQLExpr("now") with CurrentDateTimeFunction
 
 case object NowWithParens extends SQLExpr("now()") with CurrentDateTimeFunction
 
+case object DateTrunc extends SQLExpr("date_trunc") with SQLRegex with PainlessScript {
+  override def painless: String = ".truncatedTo"
+}
+
 case class DateTrunc(identifier: SQLIdentifier, unit: TimeUnit)
-    extends SQLExpr("date_trunc")
-    with DateTimeFunction
+    extends DateTimeFunction
     with SQLTransformFunction[SQLTemporal, SQLTemporal]
     with SQLFunctionWithIdentifier {
+  override def fun: Option[PainlessScript] = Some(DateTrunc)
+
+  override def args: List[PainlessScript] = List(unit)
+
   override def inputType: SQLTemporal = SQLTypes.Temporal // par défaut
   override def outputType: SQLTemporal = SQLTypes.Temporal // idem
+
+  override def sql: String = DateTrunc.sql
   override def toSQL(base: String): String = {
     s"$sql($base, ${unit.sql})"
   }
-  override def painless: String = s".truncatedTo(${unit.painless})"
+}
+
+case object Extract extends SQLExpr("extract") with SQLRegex with PainlessScript {
+  override def painless: String = ".get"
 }
 
 case class Extract(unit: TimeUnit, override val sql: String = "extract")
-    extends SQLExpr(sql)
-    with DateTimeFunction
+    extends DateTimeFunction
     with SQLTransformFunction[SQLTemporal, SQLNumeric] {
+  override def fun: Option[PainlessScript] = Some(Extract)
+
+  override def args: List[PainlessScript] = List(unit)
+
   override def inputType: SQLTemporal = SQLTypes.Temporal
   override def outputType: SQLNumeric = SQLTypes.Numeric
+
   override def toSQL(base: String): String = s"$sql(${unit.sql} from $base)"
-  override def painless: String = s".get(${unit.painless})"
+
 }
 
 object YEAR extends Extract(Year, Year.sql) {
@@ -384,66 +451,80 @@ object SECOND extends Extract(Second, Second.sql) {
   override def toSQL(base: String): String = s"$sql($base)"
 }
 
-case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
-    extends SQLExpr("date_diff")
-    with DateTimeFunction
-    with SQLBinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
-    with PainlessScript {
-  override def inputType: SQLDateTime = SQLTypes.DateTime
-  override def outputType: SQLNumeric = SQLTypes.Numeric
-  override def left: PainlessScript = end
-  override def right: PainlessScript = start
-  override def toSQL(base: String): String = {
-    s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
-  }
-  override def painless: String = {
-    if (start.nullable && end.nullable)
-      s"(def s = ${start.painless}; def e = ${end.painless}; s != null && e != null ? ${unit.painless}.between(s, e) : null)"
-    else if (start.nullable)
-      s"(def s = ${start.painless}; s != null ? ${unit.painless}.between(s, ${end.painless}) : null)"
-    else if (end.nullable)
-      s"(def e = ${end.painless}; e != null ? ${unit.painless}.between(${start.painless}, e) : null)"
-    else
-      s"${unit.painless}.between(${start.painless}, ${end.painless})"
-  }
+case object DateDiff extends SQLExpr("date_diff") with SQLRegex with PainlessScript {
+  override def painless: String = ".between"
 }
 
+case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
+    extends DateTimeFunction
+    with SQLBinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
+    with PainlessScript {
+  override def fun: Option[PainlessScript] = Some(DateDiff)
+
+  override def inputType: SQLDateTime = SQLTypes.DateTime
+  override def outputType: SQLNumeric = SQLTypes.Numeric
+
+  override def left: PainlessScript = start
+  override def right: PainlessScript = end
+
+  override def sql: String = DateDiff.sql
+
+  override def toSQL(base: String): String = s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
+
+  override def toPainlessCall(callArgs: List[String]): String =
+    s"${unit.painless}${DateDiff.painless}(${callArgs.mkString(", ")})"
+}
+
+case object DateAdd extends SQLExpr("date_add") with SQLRegex
+
 case class DateAdd(identifier: SQLIdentifier, interval: TimeInterval)
-    extends SQLExpr("date_add")
-    with DateFunction
+    extends DateFunction
     with AddInterval[SQLDate]
     with SQLTransformFunction[SQLDate, SQLDate]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLDate = SQLTypes.Date
+  override def sql: String = DateAdd.sql
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
 }
 
+case object DateSub extends SQLExpr("date_sub") with SQLRegex
+
 case class DateSub(identifier: SQLIdentifier, interval: TimeInterval)
-    extends SQLExpr("date_sub")
-    with DateFunction
+    extends DateFunction
     with SubtractInterval[SQLDate]
     with SQLTransformFunction[SQLDate, SQLDate]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLDate = SQLTypes.Date
+  override def sql: String = DateSub.sql
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
 }
 
+case object ParseDate extends SQLExpr("parse_date") with SQLRegex with PainlessScript {
+  override def painless: String = ".parse"
+}
+
 case class ParseDate(identifier: SQLIdentifier, format: String)
-    extends SQLExpr("parse_date")
-    with DateFunction
+    extends DateFunction
     with SQLTransformFunction[SQLVarchar, SQLDate]
     with SQLFunctionWithIdentifier {
+  override def fun: Option[PainlessScript] = Some(ParseDate)
+
+  override def args: List[PainlessScript] = List.empty
+
   override def inputType: SQLVarchar = SQLTypes.Varchar
   override def outputType: SQLDate = SQLTypes.Date
+
+  override def sql: String = ParseDate.sql
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
   }
+
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String, idx: Int): String =
     if (nullable)
@@ -452,16 +533,26 @@ case class ParseDate(identifier: SQLIdentifier, format: String)
       s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDate::from)"
 }
 
+case object FormatDate extends SQLExpr("format_date") with SQLRegex with PainlessScript {
+  override def painless: String = ".format"
+}
+
 case class FormatDate(identifier: SQLIdentifier, format: String)
-    extends SQLExpr("format_date")
-    with DateFunction
+    extends DateFunction
     with SQLTransformFunction[SQLDate, SQLVarchar]
     with SQLFunctionWithIdentifier {
+  override def fun: Option[PainlessScript] = Some(FormatDate)
+
+  override def args: List[PainlessScript] = List.empty
+
   override def inputType: SQLDate = SQLTypes.Date
   override def outputType: SQLVarchar = SQLTypes.Varchar
+
+  override def sql: String = FormatDate.sql
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
   }
+
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String, idx: Int): String =
     if (nullable)
@@ -470,42 +561,56 @@ case class FormatDate(identifier: SQLIdentifier, format: String)
       s"DateTimeFormatter.ofPattern('$format').format($base)"
 }
 
+case object DateTimeAdd extends SQLExpr("datetime_add") with SQLRegex
+
 case class DateTimeAdd(identifier: SQLIdentifier, interval: TimeInterval)
-    extends SQLExpr("datetime_add")
-    with DateTimeFunction
+    extends DateTimeFunction
     with AddInterval[SQLDateTime]
     with SQLTransformFunction[SQLDateTime, SQLDateTime]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
+  override def sql: String = DateTimeAdd.sql
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
 }
 
+case object DateTimeSub extends SQLExpr("datetime_sub") with SQLRegex
+
 case class DateTimeSub(identifier: SQLIdentifier, interval: TimeInterval)
-    extends SQLExpr("datetime_sub")
-    with DateTimeFunction
+    extends DateTimeFunction
     with SubtractInterval[SQLDateTime]
     with SQLTransformFunction[SQLDateTime, SQLDateTime]
     with SQLFunctionWithIdentifier {
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLDateTime = SQLTypes.DateTime
+  override def sql: String = DateTimeSub.sql
   override def toSQL(base: String): String = {
     s"$sql($base, ${interval.sql})"
   }
 }
 
+case object ParseDateTime extends SQLExpr("parse_datetime") with SQLRegex with PainlessScript {
+  override def painless: String = ".parse"
+}
+
 case class ParseDateTime(identifier: SQLIdentifier, format: String)
-    extends SQLExpr("parse_datetime")
-    with DateTimeFunction
+    extends DateTimeFunction
     with SQLTransformFunction[SQLVarchar, SQLDateTime]
     with SQLFunctionWithIdentifier {
+  override def fun: Option[PainlessScript] = Some(ParseDateTime)
+
+  override def args: List[PainlessScript] = List.empty
+
   override def inputType: SQLVarchar = SQLTypes.Varchar
   override def outputType: SQLDateTime = SQLTypes.DateTime
+
+  override def sql: String = ParseDateTime.sql
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
   }
+
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String, idx: Int): String =
     if (nullable)
@@ -514,16 +619,26 @@ case class ParseDateTime(identifier: SQLIdentifier, format: String)
       s"DateTimeFormatter.ofPattern('$format').parse($base, ZonedDateTime::from)"
 }
 
+case object FormatDateTime extends SQLExpr("format_datetime") with SQLRegex with PainlessScript {
+  override def painless: String = ".format"
+}
+
 case class FormatDateTime(identifier: SQLIdentifier, format: String)
-    extends SQLExpr("format_datetime")
-    with DateTimeFunction
+    extends DateTimeFunction
     with SQLTransformFunction[SQLDateTime, SQLVarchar]
     with SQLFunctionWithIdentifier {
+  override def fun: Option[PainlessScript] = Some(FormatDateTime)
+
+  override def args: List[PainlessScript] = List.empty
+
   override def inputType: SQLDateTime = SQLTypes.DateTime
   override def outputType: SQLVarchar = SQLTypes.Varchar
+
+  override def sql: String = FormatDateTime.sql
   override def toSQL(base: String): String = {
     s"$sql($base, '$format')"
   }
+
   override def painless: String = throw new NotImplementedError("Use toPainless instead")
   override def toPainless(base: String, idx: Int): String =
     if (nullable)
@@ -536,15 +651,23 @@ sealed trait SQLConditionalFunction[In <: SQLType]
     extends SQLTransformFunction[In, SQLBool]
     with SQLFunctionWithIdentifier {
   def operator: SQLConditionalOperator
+
+  override def fun: Option[PainlessScript] = Some(operator)
+
   override def outputType: SQLBool = SQLTypes.Boolean
+
   override def toPainless(base: String, idx: Int): String = s"($base$painless)"
 }
 
-case class SQLIsNullFunction(identifier: SQLIdentifier)
-    extends SQLExpr("isnull")
-    with SQLConditionalFunction[SQLAny] {
-  override def operator: SQLConditionalOperator = IsNull
+case class SQLIsNullFunction(identifier: SQLIdentifier) extends SQLConditionalFunction[SQLAny] {
+  override def operator: SQLConditionalOperator = IsNullFunction
+
+  override def args: List[PainlessScript] = List(identifier)
+
   override def inputType: SQLAny = SQLTypes.Any
+
+  override def toSQL(base: String): String = sql
+
   override def painless: String = s" == null"
   override def toPainless(base: String, idx: Int): String = {
     if (nullable)
@@ -554,11 +677,15 @@ case class SQLIsNullFunction(identifier: SQLIdentifier)
   }
 }
 
-case class SQLIsNotNullFunction(identifier: SQLIdentifier)
-    extends SQLExpr("isnotnull")
-    with SQLConditionalFunction[SQLAny] {
-  override def operator: SQLConditionalOperator = IsNotNull
+case class SQLIsNotNullFunction(identifier: SQLIdentifier) extends SQLConditionalFunction[SQLAny] {
+  override def operator: SQLConditionalOperator = IsNotNullFunction
+
+  override def args: List[PainlessScript] = List(identifier)
+
   override def inputType: SQLAny = SQLTypes.Any
+
+  override def toSQL(base: String): String = sql
+
   override def painless: String = s" != null"
   override def toPainless(base: String, idx: Int): String = {
     if (nullable)
@@ -568,14 +695,22 @@ case class SQLIsNotNullFunction(identifier: SQLIdentifier)
   }
 }
 
-case class SQLCoalesce(values: List[PainlessScript]) extends SQLConditionalFunction[SQLAny] {
-  override def operator: SQLConditionalOperator = Coalesce
+case class SQLCoalesce(values: List[PainlessScript])
+    extends SQLTransformFunction[SQLAny, SQLType]
+    with SQLFunctionWithIdentifier {
+  def operator: SQLConditionalOperator = Coalesce
+
+  override def fun: Option[SQLConditionalOperator] = Some(operator)
+
+  override def args: List[PainlessScript] = values
+
+  override def outputType: SQLType = SQLTypeUtils.leastCommonSuperType(args.map(_.out))
 
   override def identifier: SQLIdentifier = SQLIdentifier("")
 
   override def inputType: SQLAny = SQLTypes.Any
 
-  override lazy val sql: String = s"$Coalesce(${values.map(_.sql).mkString(", ")})"
+  override def sql: String = s"$Coalesce(${values.map(_.sql).mkString(", ")})"
 
   // Reprend l’idée de SQLValues mais pour n’importe quel token
   override def out: SQLType = SQLTypeUtils.leastCommonSuperType(values.map(_.out).distinct)
@@ -612,23 +747,21 @@ case class SQLNullIf(expr1: PainlessScript, expr2: PainlessScript)
     extends SQLConditionalFunction[SQLAny] {
   override def operator: SQLConditionalOperator = NullIf
 
+  override def args: List[PainlessScript] = List(expr1, expr2)
+
   override def identifier: SQLIdentifier = SQLIdentifier("")
 
   override def inputType: SQLAny = SQLTypes.Any
-
-  override def sql: String = s"$NullIf(${expr1.sql}, ${expr2.sql})"
 
   override def out: SQLType = expr1.out
 
   override def applyType(in: SQLType): SQLType = out
 
-  override def painless: String = {
-    val e1 = expr1.painless
-    val e2 = expr2.painless
-    s"""{ def e1 = $e1;
-       |def e2 = $e2;
-       |return e1 == e2 ? null : e1;
-       |}""".stripMargin.replaceAll("\n", " ")
+  override def toPainlessCall(callArgs: List[String]): String = {
+    callArgs match {
+      case List(arg0, arg1) => s"${arg0.trim} == ${arg1.trim} ? null : $arg0"
+      case _ => throw new IllegalArgumentException("NULLIF requires exactly two arguments")
+    }
   }
 }
 
@@ -636,6 +769,8 @@ case class SQLCast(value: PainlessScript, targetType: SQLType, as: Boolean = tru
     extends SQLTransformFunction[SQLType, SQLType] {
   override def inputType: SQLType = value.out
   override def outputType: SQLType = targetType
+
+  override def args: List[PainlessScript] = List.empty
 
   override def sql: String =
     s"$Cast(${value.sql} ${if (as) s"$Alias " else ""}${targetType.typeId})"
@@ -654,6 +789,8 @@ case class SQLCaseWhen(
   conditions: List[(PainlessScript, PainlessScript)],
   default: Option[PainlessScript]
 ) extends SQLTransformFunction[SQLAny, SQLAny] {
+  override def args: List[PainlessScript] = List.empty
+
   override def inputType: SQLAny = SQLTypes.Any
   override def outputType: SQLAny = SQLTypes.Any
 
@@ -759,6 +896,8 @@ case class SQLArithmeticExpression(
 ) extends SQLTransformFunction[SQLNumeric, SQLNumeric]
     with SQLBinaryFunction[SQLNumeric, SQLNumeric, SQLNumeric] {
 
+  override def fun: Option[ArithmeticOperator] = Some(operator)
+
   override def inputType: SQLNumeric = SQLTypes.Numeric
   override def outputType: SQLNumeric = SQLTypes.Numeric
 
@@ -825,4 +964,68 @@ case class SQLArithmeticExpression(
       expr
   }
 
+}
+
+sealed trait MathematicalFunction
+    extends SQLTransformFunction[SQLNumeric, SQLNumeric]
+    with SQLFunctionWithIdentifier {
+  override def inputType: SQLNumeric = SQLTypes.Numeric
+
+  override def outputType: SQLNumeric = SQLTypes.Double
+
+  def operator: UnaryArithmeticOperator
+
+  override def fun: Option[PainlessScript] = Some(operator)
+
+  override def identifier: SQLIdentifier = SQLIdentifier("", functions = this :: Nil)
+
+}
+
+case class SQLMathematicalFunction(
+  operator: UnaryArithmeticOperator,
+  arg: PainlessScript
+) extends MathematicalFunction {
+  override def args: List[PainlessScript] = List(arg)
+}
+
+case class SQLPow(arg: PainlessScript, exponent: Int) extends MathematicalFunction {
+  override def operator: UnaryArithmeticOperator = Pow
+  override def args: List[PainlessScript] = List(arg, SQLIntValue(exponent))
+  override def nullable: Boolean = arg.nullable
+}
+
+case class SQLRound(arg: PainlessScript, scale: Int = 0) extends MathematicalFunction {
+  override def operator: UnaryArithmeticOperator = Round
+
+  override def args: List[PainlessScript] =
+    List(arg) :+ SQLIntValue(scale)
+
+  override def toPainlessCall(callArgs: List[String]): String =
+    callArgs match {
+      case List(arg0, arg1) =>
+        s"(def p = ${SQLPow(SQLIntValue(10), arg1.toInt).painless}; ${operator.painless}(($arg0 * p) / p))"
+      case _ => throw new IllegalArgumentException("ROUND requires one or two arguments")
+    }
+}
+
+case class SQLSign(arg: PainlessScript) extends MathematicalFunction {
+  override def operator: UnaryArithmeticOperator = Sign
+
+  override def args: List[PainlessScript] = List(arg)
+
+  override def outputType: SQLNumeric = SQLTypes.Int
+
+  override def painless: String = {
+    val ret = "arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)"
+    if (arg.nullable)
+      s"(def arg0 = ${arg.painless}; arg0 != null ? ($ret) : null)"
+    else
+      s"(def arg0 = ${arg.painless}; $ret)"
+  }
+}
+
+case class SQLAtan2(y: PainlessScript, x: PainlessScript) extends MathematicalFunction {
+  override def operator: UnaryArithmeticOperator = Atan2
+  override def args: List[PainlessScript] = List(y, x)
+  override def nullable: Boolean = y.nullable || x.nullable
 }

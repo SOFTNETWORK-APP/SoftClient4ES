@@ -180,6 +180,18 @@ package object sql {
     override def out: SQLNumeric = SQLTypes.Double
   }
 
+  case object SQLPiValue extends SQLValue[Double](Math.PI) {
+    override def sql: String = "pi"
+    override def painless: String = "Math.PI"
+    override def out: SQLNumeric = SQLTypes.Double
+  }
+
+  case object SQLEValue extends SQLValue[Double](Math.E) {
+    override def sql: String = "e"
+    override def painless: String = "Math.E"
+    override def out: SQLNumeric = SQLTypes.Double
+  }
+
   sealed abstract class SQLFromTo[+T](val from: SQLValue[T], val to: SQLValue[T]) extends SQLToken {
     override def sql = s"${from.sql} and ${to.sql}"
   }
