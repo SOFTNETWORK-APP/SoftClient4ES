@@ -158,6 +158,9 @@ object Queries {
 
   val mathematical: String =
     "select identifier, (abs(identifier) + 1.0) * 2, ceil(identifier), floor(identifier), sqrt(identifier), exp(identifier), log(identifier), log10(identifier), pow(identifier, 3), round(identifier), round(identifier, 2), sign(identifier), cos(identifier), acos(identifier), sin(identifier), asin(identifier), tan(identifier), atan(identifier), atan2(identifier, 3.0) from Table where sqrt(identifier) > 100.0"
+
+  val string: String =
+    "select identifier, length(identifier2) as len, lower(identifier2) as lower, upper(identifier2) as upper, substring(identifier2, 1, 3) as substr, trim(identifier2) as trim, concat(identifier2, '_test', 1) as concat from Table where length(trim(identifier2)) > 10"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -621,6 +624,13 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = SQLParser(mathematical)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       mathematical
+    )
+  }
+
+  it should "parse string functions" in {
+    val result = SQLParser(string)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
+      string
     )
   }
 

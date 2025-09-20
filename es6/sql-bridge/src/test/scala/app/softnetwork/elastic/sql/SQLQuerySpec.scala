@@ -2319,4 +2319,103 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\(double\\)(\\d)", "(double) $1")
   }
 
+  it should "handle string function as script field and condition" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(string)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "def left = (def e1 = (def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.trim() : null); e1 != null ? e1.length() : null); left == null ? false : left > 10"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "len": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.length() : null)"
+      |      }
+      |    },
+      |    "lower": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.lower() : null)"
+      |      }
+      |    },
+      |    "upper": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.upper() : null)"
+      |      }
+      |    },
+      |    "substr": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : ((1 - 1) < 0 || (1 - 1 + 3) > arg0.length()) ? null : arg0.substring((1 - 1), (1 - 1 + 3)))"
+      |      }
+      |    },
+      |    "trim": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.trim() : null)"
+      |      }
+      |    },
+      |    "concat": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : String.valueOf(arg0) + \"_test\" + String.valueOf(1))"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(":0", " : 0")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">", " > ")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll(";\\s\\s", "; ")
+      .replaceAll("false:", "false : ")
+  }
+
 }
