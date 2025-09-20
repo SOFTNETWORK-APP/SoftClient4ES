@@ -487,8 +487,48 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     mf => mf.identifier
   }
 
+  def concatFunction: PackratParser[StringFunction[SQLVarchar]] =
+    Concat.regex ~ start ~ rep1sep(valueExpr, separator) ~ end ^^ { case _ ~ _ ~ vs ~ _ =>
+      SQLConcat(vs)
+    }
+
+  def substringFunction: PackratParser[StringFunction[SQLVarchar]] =
+    Substring.regex ~ start ~ valueExpr ~ (From.regex | separator) ~ long ~ ((To.regex | separator) ~ long).? ~ end ^^ {
+      case _ ~ _ ~ v ~ _ ~ s ~ eOpt ~ _ =>
+        SQLSubstring(v, s.value.toInt, eOpt.map { case _ ~ e => e.value.toInt })
+    }
+
+  def stringFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+    (concatFunction | substringFunction) ^^ { sf =>
+      sf.identifier
+    }
+
+  def length: PackratParser[StringFunction[SQLBigInt]] =
+    Length.regex ^^ { _ =>
+      SQLLength
+    }
+
+  def lower: PackratParser[StringFunction[SQLVarchar]] =
+    Lower.regex ^^ { _ =>
+      SQLStringFunction(Lower)
+    }
+
+  def upper: PackratParser[StringFunction[SQLVarchar]] =
+    Upper.regex ^^ { _ =>
+      SQLStringFunction(Upper)
+    }
+
+  def trim: PackratParser[StringFunction[SQLVarchar]] =
+    Trim.regex ^^ { _ =>
+      SQLStringFunction(Trim)
+    }
+
+  def string_functions: Parser[
+    StringFunction[_]
+  ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim
+
   def sql_functions: PackratParser[SQLFunction] =
-    aggregates | distance | date_diff | date_trunc | extractors | date_functions | datetime_functions | logical_functions
+    aggregates | distance | date_diff | date_trunc | extractors | date_functions | datetime_functions | logical_functions | string_functions
 
   //private val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
 
@@ -547,6 +587,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     "double",
     "pi",
     "boolean",
+    "distance",
     "time",
     "date",
     "datetime",
@@ -595,7 +636,18 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     "acos",
     "tan",
     "atan",
-    "atan2"
+    "atan2",
+    "concat",
+    "substr",
+    "substring",
+    "to",
+    "length",
+    "lower",
+    "upper",
+    "trim"
+//    "ltrim",
+//    "rtrim",
+//    "replace",
   )
 
   private val identifierRegexStr =
@@ -681,7 +733,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     }
 
   def identifierWithTransformation: PackratParser[SQLIdentifier] =
-    mathematicalFunctionWithIdentifier | castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier
+    mathematicalFunctionWithIdentifier | castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier | stringFunctionWithIdentifier
 
   def identifierWithAggregation: PackratParser[SQLIdentifier] =
     aggregates ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {

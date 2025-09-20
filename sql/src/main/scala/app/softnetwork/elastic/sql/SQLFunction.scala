@@ -1025,3 +1025,97 @@ case class SQLAtan2(y: PainlessScript, x: PainlessScript) extends MathematicalFu
   override def args: List[PainlessScript] = List(y, x)
   override def nullable: Boolean = y.nullable || x.nullable
 }
+
+sealed trait StringFunction[Out <: SQLType]
+    extends SQLTransformFunction[SQLVarchar, Out]
+    with SQLFunctionWithIdentifier {
+  override def inputType: SQLVarchar = SQLTypes.Varchar
+
+  override def outputType: Out
+
+  def operator: SQLStringOperator
+
+  override def fun: Option[PainlessScript] = Some(operator)
+
+  override def identifier: SQLIdentifier = SQLIdentifier("", functions = this :: Nil)
+
+  override def toSQL(base: String): String = s"$sql($base)"
+
+  override def sql: String =
+    if (args.isEmpty)
+      s"${fun.map(_.sql).getOrElse("")}"
+    else
+      super.sql
+}
+
+case class SQLStringFunction(operator: SQLStringOperator) extends StringFunction[SQLVarchar] {
+  override def outputType: SQLVarchar = SQLTypes.Varchar
+  override def args: List[PainlessScript] = List.empty
+
+}
+
+case class SQLSubstring(str: PainlessScript, start: Int, length: Option[Int])
+    extends StringFunction[SQLVarchar] {
+  override def outputType: SQLVarchar = SQLTypes.Varchar
+  override def operator: SQLStringOperator = Substring
+
+  override def args: List[PainlessScript] =
+    List(str, SQLIntValue(start)) ++ length.map(l => SQLIntValue(l)).toList
+
+  override def nullable: Boolean = str.nullable
+
+  override def toPainlessCall(callArgs: List[String]): String = {
+    callArgs match {
+      case List(arg0, arg1, arg2) =>
+        s"($arg0${Length.painless} < $arg2) ? null : $arg0${operator.painless}($arg1, $arg2)"
+      case List(arg0, arg1) =>
+        s"($arg0${Length.painless} < $arg1) ? null : $arg0${operator.painless}($arg1)"
+      case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
+    }
+  }
+
+  override def validate(): Either[String, Unit] =
+    if (start < 0)
+      Left("SUBSTRING start position must be greater than or equal to 0")
+    else if (length.exists(_ < 0))
+      Left("SUBSTRING length must be non-negative")
+    else if (length.exists(_ < start))
+      Left("SUBSTRING length must be greater than or equal to start position")
+    else Right(())
+
+  override def toSQL(base: String): String = sql
+
+}
+
+case class SQLConcat(values: List[PainlessScript]) extends StringFunction[SQLVarchar] {
+  override def outputType: SQLVarchar = SQLTypes.Varchar
+  override def operator: SQLStringOperator = Concat
+
+  override def args: List[PainlessScript] = values
+
+  override def nullable: Boolean = values.exists(_.nullable)
+
+  override def toPainlessCall(callArgs: List[String]): String = {
+    if (callArgs.isEmpty)
+      throw new IllegalArgumentException("CONCAT requires at least one argument")
+    else
+      callArgs.zipWithIndex
+        .map { case (arg, idx) =>
+          SQLTypeUtils.coerce(arg, values(idx).out, SQLTypes.Varchar, nullable = false)
+        }
+        .mkString(operator.painless)
+  }
+
+  override def validate(): Either[String, Unit] =
+    if (values.isEmpty) Left("CONCAT requires at least one argument")
+    else Right(())
+
+  override def toSQL(base: String): String = sql
+
+}
+
+case object SQLLength extends StringFunction[SQLBigInt] {
+  override def outputType: SQLBigInt = SQLTypes.BigInt
+  override def operator: SQLStringOperator = Length
+  override def args: List[PainlessScript] = List.empty
+}

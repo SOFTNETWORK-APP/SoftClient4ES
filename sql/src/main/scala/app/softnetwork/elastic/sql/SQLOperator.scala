@@ -99,6 +99,23 @@ case object IsNotNull extends SQLExpr("is not null") with SQLComparisonOperator
 case object Match extends SQLExpr("match") with SQLComparisonOperator
 case object Against extends SQLExpr("against") with SQLRegex
 
+sealed trait SQLStringOperator extends SQLOperator {
+  override def painless: String = s".${sql.toLowerCase()}()"
+}
+case object Concat extends SQLExpr("concat") with SQLStringOperator {
+  override def painless: String = " + "
+}
+case object Lower extends SQLExpr("lower") with SQLStringOperator
+case object Upper extends SQLExpr("upper") with SQLStringOperator
+case object Trim extends SQLExpr("trim") with SQLStringOperator
+//case object LTrim extends SQLExpr("ltrim") with SQLStringOperator
+//case object RTrim extends SQLExpr("rtrim") with SQLStringOperator
+case object Substring extends SQLExpr("substring") with SQLStringOperator {
+  override def painless: String = ".substring"
+}
+case object To extends SQLExpr("to") with SQLRegex
+case object Length extends SQLExpr("length") with SQLStringOperator
+
 sealed trait SQLLogicalOperator extends SQLExpressionOperator
 
 case object Not extends SQLExpr("not") with SQLLogicalOperator

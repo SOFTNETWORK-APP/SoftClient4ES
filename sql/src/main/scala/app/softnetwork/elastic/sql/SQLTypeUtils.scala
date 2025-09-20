@@ -125,6 +125,10 @@ object SQLTypeUtils {
         case (_, _) if from == to =>
           return expr
 
+        // ---- Any -> VARCHAR ----
+        case (_, SQLTypes.Varchar) =>
+          s"String.valueOf($expr)"
+
         // ---- PAR DEFAUT ----
         case _ =>
           return expr // fallback
