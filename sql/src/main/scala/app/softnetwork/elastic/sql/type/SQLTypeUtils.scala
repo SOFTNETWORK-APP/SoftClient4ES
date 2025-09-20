@@ -1,5 +1,7 @@
-package app.softnetwork.elastic.sql
-import SQLTypes._
+package app.softnetwork.elastic.sql.`type`
+
+import app.softnetwork.elastic.sql.PainlessScript
+import app.softnetwork.elastic.sql.`type`.SQLTypes._
 
 object SQLTypeUtils {
 

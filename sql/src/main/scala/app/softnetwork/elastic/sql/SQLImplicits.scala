@@ -1,5 +1,7 @@
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.parser.SQLParser
+
 import scala.util.matching.Regex
 
 /** Created by smanciot on 27/06/2018.
@@ -7,7 +9,7 @@ import scala.util.matching.Regex
 object SQLImplicits {
   import scala.language.implicitConversions
 
-  implicit def queryToSQLCriteria(query: String): Option[SQLCriteria] = {
+  implicit def queryToSQLCriteria(query: String): Option[Criteria] = {
     val maybeQuery: Option[Either[SQLSearchRequest, SQLMultiSearchRequest]] = query
     maybeQuery match {
       case Some(Left(l)) => l.where.flatMap(_.criteria)

@@ -1,7 +1,11 @@
 package app.softnetwork.elastic.sql
 
 import org.scalatest.funsuite.AnyFunSuite
+import app.softnetwork.elastic.sql.function._
+import app.softnetwork.elastic.sql.function.time._
+import app.softnetwork.elastic.sql.time._
 import TimeUnit._
+import app.softnetwork.elastic.sql.`type`.SQLType
 
 class SQLDateTimeFunctionSuite extends AnyFunSuite {
 
@@ -9,17 +13,17 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
   val baseDate = "doc['createdAt'].value"
 
   // Liste de toutes les fonctions transformables avec leurs types
-  val transformFunctions: Seq[SQLTransformFunction[_, _]] = Seq(
-    ParseDate(SQLIdentifier(""), "yyyy-MM-dd"),
-    ParseDateTime(SQLIdentifier(""), "yyyy-MM-dd HH:mm:ss"),
-    DateAdd(SQLIdentifier(""), TimeInterval(1, Day)),
-    DateSub(SQLIdentifier(""), TimeInterval(2, Month)),
-    DateTimeAdd(SQLIdentifier(""), TimeInterval(3, Hour)),
-    DateTimeSub(SQLIdentifier(""), TimeInterval(30, Minute)),
-    DateTrunc(SQLIdentifier(""), Day),
+  val transformFunctions: Seq[TransformFunction[_, _]] = Seq(
+    ParseDate(GenericIdentifier(""), "yyyy-MM-dd"),
+    ParseDateTime(GenericIdentifier(""), "yyyy-MM-dd HH:mm:ss"),
+    DateAdd(GenericIdentifier(""), TimeInterval(1, Day)),
+    DateSub(GenericIdentifier(""), TimeInterval(2, Month)),
+    DateTimeAdd(GenericIdentifier(""), TimeInterval(3, Hour)),
+    DateTimeSub(GenericIdentifier(""), TimeInterval(30, Minute)),
+    DateTrunc(GenericIdentifier(""), Day),
     Extract(Day),
-    FormatDate(SQLIdentifier(""), "yyyy-MM-dd"),
-    FormatDateTime(SQLIdentifier(""), "yyyy-MM-dd HH:mm:ss"),
+    FormatDate(GenericIdentifier(""), "yyyy-MM-dd"),
+    FormatDateTime(GenericIdentifier(""), "yyyy-MM-dd HH:mm:ss"),
     YEAR,
     MONTH,
     DAY,
@@ -31,7 +35,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
   // Fonction pour chaîner une séquence de transformations en vérifiant les types
   def chainTransformsTyped(
     base: String,
-    transforms: Seq[SQLTransformFunction[_, _]]
+    transforms: Seq[TransformFunction[_, _]]
   ): String = {
     require(transforms.nonEmpty, "No transforms provided")
 
@@ -39,7 +43,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
       (transforms.head.toPainless(base, 0), transforms.head.outputType.asInstanceOf[SQLType])
 
     val (finalExpr, _) = transforms.tail.foldLeft(initial) {
-      case ((expr, currentType), t: SQLFunctionN[_, _]) =>
+      case ((expr, currentType), t: FunctionN[_, _]) =>
         if (!currentType.getClass.isAssignableFrom(t.inputType.getClass)) {
           throw new IllegalArgumentException(
             s"Type mismatch: expected ${currentType.getClass.getSimpleName}, got ${t.inputType.getClass.getSimpleName}"
@@ -53,9 +57,9 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
 
   // Générer dynamiquement tous les chaînages valides jusqu'à N fonctions
   def generateChains(
-    functions: Seq[SQLTransformFunction[_, _]],
+    functions: Seq[TransformFunction[_, _]],
     maxLength: Int
-  ): Seq[Seq[SQLTransformFunction[_, _]]] = {
+  ): Seq[Seq[TransformFunction[_, _]]] = {
     if (maxLength <= 1) functions.map(Seq(_))
     else {
       val shorter = generateChains(functions, maxLength - 1)
@@ -68,9 +72,9 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
   }
 
   // Tester tous les chaînages pour N=2 et N=3
-  val chains2: Seq[Seq[SQLTransformFunction[_, _]]] =
+  val chains2: Seq[Seq[TransformFunction[_, _]]] =
     generateChains(transformFunctions, 2)
-  val chains3: Seq[Seq[SQLTransformFunction[_, _]]] =
+  val chains3: Seq[Seq[TransformFunction[_, _]]] =
     generateChains(transformFunctions, 3)
 
   (chains2 ++ chains3).zipWithIndex.foreach { case (chain, idx) =>

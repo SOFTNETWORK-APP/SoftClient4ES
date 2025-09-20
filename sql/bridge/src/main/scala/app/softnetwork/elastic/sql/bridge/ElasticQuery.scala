@@ -8,13 +8,13 @@ import app.softnetwork.elastic.sql.{
   ElasticMatch,
   ElasticNested,
   ElasticParent,
-  SQLBetween,
-  SQLExpression,
-  SQLIn,
-  SQLIsNotNull,
-  SQLIsNotNullCriteria,
-  SQLIsNull,
-  SQLIsNullCriteria
+  BetweenExpr,
+  GenericExpression,
+  InExpr,
+  IsNotNullExpr,
+  IsNotNullCriteria,
+  IsNullExpr,
+  IsNullCriteria
 }
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.requests.searches.queries.Query
@@ -62,17 +62,17 @@ case class ElasticQuery(filter: ElasticFilter) {
           criteria.asQuery(group = group, innerHitsNames = innerHitsNames),
           score = false
         )
-      case expression: SQLExpression       => expression
-      case isNull: SQLIsNull               => isNull
-      case isNotNull: SQLIsNotNull         => isNotNull
-      case in: SQLIn[_, _]                 => in
-      case between: SQLBetween[String]     => between
-      case between: SQLBetween[Long]       => between
-      case between: SQLBetween[Double]     => between
+      case expression: GenericExpression       => expression
+      case isNull: IsNullExpr               => isNull
+      case isNotNull: IsNotNullExpr         => isNotNull
+      case in: InExpr[_, _]                 => in
+      case between: BetweenExpr[String]     => between
+      case between: BetweenExpr[Long]       => between
+      case between: BetweenExpr[Double]     => between
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
-      case isNull: SQLIsNullCriteria       => isNull
-      case isNotNull: SQLIsNotNullCriteria => isNotNull
+      case isNull: IsNullCriteria       => isNull
+      case isNotNull: IsNotNullCriteria => isNotNull
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }

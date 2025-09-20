@@ -1,13 +1,13 @@
 package app.softnetwork.elastic.sql
 
-case object Having extends SQLExpr("having") with SQLRegex
+case object Having extends Expr("having") with TokenRegex
 
-case class SQLHaving(criteria: Option[SQLCriteria]) extends Updateable {
+case class Having(criteria: Option[Criteria]) extends Updateable {
   override def sql: String = criteria match {
     case Some(c) => s" $Having $c"
     case _       => ""
   }
-  def update(request: SQLSearchRequest): SQLHaving =
+  def update(request: SQLSearchRequest): Having =
     this.copy(criteria = criteria.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = criteria.map(_.validate()).getOrElse(Right(()))

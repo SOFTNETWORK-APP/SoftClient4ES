@@ -1,4 +1,4 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.`type`
 
 sealed trait SQLType { def typeId: String }
 

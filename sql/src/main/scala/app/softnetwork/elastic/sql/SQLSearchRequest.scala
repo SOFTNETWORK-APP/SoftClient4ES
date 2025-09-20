@@ -1,22 +1,22 @@
 package app.softnetwork.elastic.sql
 
 case class SQLSearchRequest(
-  select: SQLSelect = SQLSelect(),
-  from: SQLFrom,
-  where: Option[SQLWhere],
-  groupBy: Option[SQLGroupBy] = None,
-  having: Option[SQLHaving] = None,
-  orderBy: Option[SQLOrderBy] = None,
-  limit: Option[SQLLimit] = None,
+  select: Select = Select(),
+  from: From,
+  where: Option[Where],
+  groupBy: Option[GroupBy] = None,
+  having: Option[Having] = None,
+  orderBy: Option[OrderBy] = None,
+  limit: Option[Limit] = None,
   score: Option[Double] = None
-) extends SQLToken {
+) extends Token {
   override def sql: String =
     s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}"
 
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
-  lazy val unnests: Seq[(String, String, Option[SQLLimit])] = from.unnests
-  lazy val bucketNames: Map[String, SQLBucket] = groupBy.map(_.bucketNames).getOrElse(Map.empty)
+  lazy val unnests: Seq[(String, String, Option[Limit])] = from.unnests
+  lazy val bucketNames: Map[String, Bucket] = groupBy.map(_.bucketNames).getOrElse(Map.empty)
   lazy val sorts: Map[String, SortOrder] =
     orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
 
@@ -46,11 +46,11 @@ case class SQLSearchRequest(
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
-  lazy val sources: Seq[String] = from.tables.collect { case SQLTable(source: SQLIdentifier, _) =>
+  lazy val sources: Seq[String] = from.tables.collect { case Table(source: GenericIdentifier, _) =>
     source.sql
   }
 
-  lazy val buckets: Seq[SQLBucket] = groupBy.map(_.buckets).getOrElse(Seq.empty)
+  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty)
 
   override def validate(): Either[String, Unit] = {
     for {

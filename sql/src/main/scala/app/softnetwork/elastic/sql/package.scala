@@ -1,5 +1,8 @@
 package app.softnetwork.elastic
 
+import app.softnetwork.elastic.sql.function.aggregate.{Max, Min}
+import app.softnetwork.elastic.sql.operator._
+
 import java.security.MessageDigest
 import java.util.regex.Pattern
 import scala.reflect.runtime.universe._
@@ -10,14 +13,17 @@ import scala.util.matching.Regex
   */
 package object sql {
 
+  import app.softnetwork.elastic.sql.function._
+  import app.softnetwork.elastic.sql.`type`._
+
   import scala.language.implicitConversions
 
-  implicit def asString(token: Option[_ <: SQLToken]): String = token match {
+  implicit def asString(token: Option[_ <: Token]): String = token match {
     case Some(t) => t.toString
     case _       => ""
   }
 
-  trait SQLToken extends Serializable with SQLValidation {
+  trait Token extends Serializable with Validation {
     def sql: String
     override def toString: String = sql
     def baseType: SQLType = SQLTypes.Any
@@ -27,30 +33,30 @@ package object sql {
     def nullable: Boolean = !system
   }
 
-  trait PainlessScript extends SQLToken {
+  trait PainlessScript extends Token {
     def painless: String
     def nullValue: String = "null"
   }
 
-  trait MathScript extends SQLToken {
+  trait MathScript extends Token {
     def script: String
   }
 
-  trait Updateable extends SQLToken {
+  trait Updateable extends Token {
     def update(request: SQLSearchRequest): Updateable
   }
 
-  abstract class SQLExpr(override val sql: String) extends SQLToken
+  abstract class Expr(override val sql: String) extends Token
 
-  case object Distinct extends SQLExpr("distinct") with SQLRegex
+  case object Distinct extends Expr("distinct") with TokenRegex
 
-  abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T])
-      extends SQLToken
+  abstract class Value[+T](val value: T)(implicit ev$1: T => Ordered[T])
+      extends Token
       with PainlessScript
-      with SQLFunctionWithValue[T] {
+      with FunctionWithValue[T] {
     def choose[R >: T](
       values: Seq[R],
-      operator: Option[SQLExpressionOperator],
+      operator: Option[ExpressionOperator],
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       if (values.isEmpty)
@@ -76,24 +82,24 @@ package object sql {
     override def nullable: Boolean = false
   }
 
-  case object SQLNull extends SQLValue[Null](null) {
+  case object Null extends Value[Null](null) {
     override def sql: String = "null"
     override def painless: String = "null"
     override def nullable: Boolean = true
     override def out: SQLType = SQLTypes.Null
   }
 
-  case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
+  case class BooleanValue(override val value: Boolean) extends Value[Boolean](value) {
     override def sql: String = value.toString
     override def out: SQLType = SQLTypes.Boolean
   }
 
-  case class SQLCharValue(override val value: Char) extends SQLValue[Char](value) {
+  case class CharValue(override val value: Char) extends Value[Char](value) {
     override def sql: String = s"""'$value'"""
     override def out: SQLType = SQLTypes.Char
   }
 
-  case class SQLStringValue(override val value: String) extends SQLValue[String](value) {
+  case class StringValue(override val value: String) extends Value[String](value) {
     override def sql: String = s"""'$value'"""
     import SQLImplicits._
     private lazy val pattern: Pattern = value.pattern
@@ -108,7 +114,7 @@ package object sql {
     }
     override def choose[R >: String](
       values: Seq[R],
-      operator: Option[SQLExpressionOperator],
+      operator: Option[ExpressionOperator],
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
@@ -122,13 +128,13 @@ package object sql {
     override def out: SQLType = SQLTypes.Varchar
   }
 
-  sealed abstract class SQLNumericValue[T: Numeric](override val value: T)(implicit
+  sealed abstract class NumericValue[T: Numeric](override val value: T)(implicit
     ev$1: T => Ordered[T]
-  ) extends SQLValue[T](value) {
+  ) extends Value[T](value) {
     override def sql: String = value.toString
     override def choose[R >: T](
       values: Seq[R],
-      operator: Option[SQLExpressionOperator],
+      operator: Option[ExpressionOperator],
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
@@ -156,48 +162,48 @@ package object sql {
     override def out: SQLNumeric = SQLTypes.Numeric
   }
 
-  case class SQLByteValue(override val value: Byte) extends SQLNumericValue[Byte](value) {
+  case class ByteValue(override val value: Byte) extends NumericValue[Byte](value) {
     override def out: SQLNumeric = SQLTypes.TinyInt
   }
 
-  case class SQLShortValue(override val value: Short) extends SQLNumericValue[Short](value) {
+  case class ShortValue(override val value: Short) extends NumericValue[Short](value) {
     override def out: SQLNumeric = SQLTypes.SmallInt
   }
 
-  case class SQLIntValue(override val value: Int) extends SQLNumericValue[Int](value) {
+  case class IntValue(override val value: Int) extends NumericValue[Int](value) {
     override def out: SQLNumeric = SQLTypes.Int
   }
 
-  case class SQLLongValue(override val value: Long) extends SQLNumericValue[Long](value) {
+  case class LongValue(override val value: Long) extends NumericValue[Long](value) {
     override def out: SQLNumeric = SQLTypes.BigInt
   }
 
-  case class SQLFloatValue(override val value: Float) extends SQLNumericValue[Float](value) {
+  case class FloatValue(override val value: Float) extends NumericValue[Float](value) {
     override def out: SQLNumeric = SQLTypes.Real
   }
 
-  case class SQLDoubleValue(override val value: Double) extends SQLNumericValue[Double](value) {
+  case class DoubleValue(override val value: Double) extends NumericValue[Double](value) {
     override def out: SQLNumeric = SQLTypes.Double
   }
 
-  case object SQLPiValue extends SQLValue[Double](Math.PI) {
+  case object PiValue extends Value[Double](Math.PI) {
     override def sql: String = "pi"
     override def painless: String = "Math.PI"
     override def out: SQLNumeric = SQLTypes.Double
   }
 
-  case object SQLEValue extends SQLValue[Double](Math.E) {
+  case object EValue extends Value[Double](Math.E) {
     override def sql: String = "e"
     override def painless: String = "Math.E"
     override def out: SQLNumeric = SQLTypes.Double
   }
 
-  sealed abstract class SQLFromTo[+T](val from: SQLValue[T], val to: SQLValue[T]) extends SQLToken {
+  sealed abstract class FromTo[+T](val from: Value[T], val to: Value[T]) extends Token {
     override def sql = s"${from.sql} and ${to.sql}"
   }
 
-  case class SQLLiteralFromTo(override val from: SQLStringValue, override val to: SQLStringValue)
-      extends SQLFromTo[String](from, to) {
+  case class LiteralFromTo(override val from: StringValue, override val to: StringValue)
+      extends FromTo[String](from, to) {
     def between: Seq[String] => Boolean = {
       _.exists { s => s >= from.value && s <= to.value }
     }
@@ -206,8 +212,8 @@ package object sql {
     }
   }
 
-  case class SQLLongFromTo(override val from: SQLLongValue, override val to: SQLLongValue)
-      extends SQLFromTo[Long](from, to) {
+  case class LongFromTo(override val from: LongValue, override val to: LongValue)
+      extends FromTo[Long](from, to) {
     def between: Seq[Long] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -216,8 +222,8 @@ package object sql {
     }
   }
 
-  case class SQLDoubleFromTo(override val from: SQLDoubleValue, override val to: SQLDoubleValue)
-      extends SQLFromTo[Double](from, to) {
+  case class DoubleFromTo(override val from: DoubleValue, override val to: DoubleValue)
+      extends FromTo[Double](from, to) {
     def between: Seq[Double] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -226,8 +232,8 @@ package object sql {
     }
   }
 
-  sealed abstract class SQLValues[+R: TypeTag, +T <: SQLValue[R]](val values: Seq[T])
-      extends SQLToken
+  sealed abstract class Values[+R: TypeTag, +T <: Value[R]](val values: Seq[T])
+      extends Token
       with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
     override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
@@ -236,8 +242,8 @@ package object sql {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.Any)
   }
 
-  case class SQLStringValues(override val values: Seq[SQLStringValue])
-      extends SQLValues[String, SQLValue[String]](values) {
+  case class StringValues(override val values: Seq[StringValue])
+      extends Values[String, Value[String]](values) {
     def eq: Seq[String] => Boolean = {
       _.exists { s => innerValues.exists(_.contentEquals(s)) }
     }
@@ -247,8 +253,8 @@ package object sql {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.Varchar)
   }
 
-  class SQLNumericValues[R: TypeTag](override val values: Seq[SQLNumericValue[R]])
-      extends SQLValues[R, SQLNumericValue[R]](values) {
+  class NumericValues[R: TypeTag](override val values: Seq[NumericValue[R]])
+      extends Values[R, NumericValue[R]](values) {
     def eq: Seq[R] => Boolean = {
       _.exists { n => innerValues.contains(n) }
     }
@@ -258,43 +264,40 @@ package object sql {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.Numeric)
   }
 
-  case class SQLByteValues(override val values: Seq[SQLByteValue])
-      extends SQLNumericValues[Byte](values) {
+  case class ByteValues(override val values: Seq[ByteValue]) extends NumericValues[Byte](values) {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.TinyInt)
   }
 
-  case class SQLShortValues(override val values: Seq[SQLShortValue])
-      extends SQLNumericValues[Short](values) {
+  case class ShortValues(override val values: Seq[ShortValue])
+      extends NumericValues[Short](values) {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.SmallInt)
   }
 
-  case class SQLIntValues(override val values: Seq[SQLIntValue])
-      extends SQLNumericValues[Int](values) {
+  case class IntValues(override val values: Seq[IntValue]) extends NumericValues[Int](values) {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.Int)
   }
 
-  case class SQLLongValues(override val values: Seq[SQLLongValue])
-      extends SQLNumericValues[Long](values) {
+  case class LongValues(override val values: Seq[LongValue]) extends NumericValues[Long](values) {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.BigInt)
   }
 
-  case class SQLFloatValues(override val values: Seq[SQLFloatValue])
-      extends SQLNumericValues[Float](values) {
+  case class FloatValues(override val values: Seq[FloatValue])
+      extends NumericValues[Float](values) {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.Real)
   }
 
-  case class SQLDoubleValues(override val values: Seq[SQLDoubleValue])
-      extends SQLNumericValues[Double](values) {
+  case class DoubleValues(override val values: Seq[DoubleValue])
+      extends NumericValues[Double](values) {
     override def out: SQLArray = SQLTypes.Array(SQLTypes.Double)
   }
 
   def choose[T](
     values: Seq[T],
-    criteria: Option[SQLCriteria],
-    function: Option[SQLFunction] = None
+    criteria: Option[Criteria],
+    function: Option[Function] = None
   )(implicit ev$1: T => Ordered[T]): Option[T] = {
     criteria match {
-      case Some(SQLExpression(_, operator, value: SQLValue[T] @unchecked, _)) =>
+      case Some(GenericExpression(_, operator, value: Value[T] @unchecked, _)) =>
         value.choose[T](values, Some(operator))
       case _ =>
         function match {
@@ -322,9 +325,9 @@ package object sql {
     s"""${if (startWith) ".*"}$v${if (endWith) ".*"}"""
   }
 
-  case object Alias extends SQLExpr("as") with SQLRegex
+  case object Alias extends Expr("as") with TokenRegex
 
-  case class SQLAlias(alias: String) extends SQLExpr(s" ${Alias.sql} $alias")
+  case class Alias(alias: String) extends Expr(s" ${Alias.sql} $alias")
 
   object AliasUtils {
     private val MaxAliasLength = 50
@@ -361,23 +364,23 @@ package object sql {
     }
   }
 
-  trait SQLRegex extends SQLToken {
+  trait TokenRegex extends Token {
     lazy val regex: Regex = s"\\b(?i)$sql\\b".r
   }
 
-  trait SQLSource extends Updateable {
+  trait Source extends Updateable {
     def name: String
-    def update(request: SQLSearchRequest): SQLSource
+    def update(request: SQLSearchRequest): Source
   }
 
-  trait Identifier extends SQLToken with SQLSource with SQLFunctionChain with PainlessScript {
+  trait Identifier extends Token with Source with FunctionChain with PainlessScript {
     def name: String
 
     def tableAlias: Option[String]
     def distinct: Boolean
     def nested: Boolean
     def fieldAlias: Option[String]
-    def bucket: Option[SQLBucket]
+    def bucket: Option[Bucket]
     override def sql: String = {
       var parts: Seq[String] = name.split("\\.").toSeq
       tableAlias match {
@@ -416,13 +419,13 @@ package object sql {
       else ""
 
     def toPainless(base: String): String = {
-      val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
+      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       var expr = base
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
-          case f: SQLTransformFunction[_, _] => expr = f.toPainless(expr, idx)
-          case f: PainlessScript             => expr = s"$expr${f.painless}"
-          case f                             => expr = f.toSQL(expr) // fallback
+          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx)
+          case f: PainlessScript          => expr = s"$expr${f.painless}"
+          case f                          => expr = f.toSQL(expr) // fallback
         }
       }
       expr
@@ -451,18 +454,18 @@ package object sql {
 
   }
 
-  case class SQLIdentifier(
+  case class GenericIdentifier(
     name: String,
     tableAlias: Option[String] = None,
     distinct: Boolean = false,
     nested: Boolean = false,
-    limit: Option[SQLLimit] = None,
-    functions: List[SQLFunction] = List.empty,
+    limit: Option[Limit] = None,
+    functions: List[Function] = List.empty,
     fieldAlias: Option[String] = None,
-    bucket: Option[SQLBucket] = None
+    bucket: Option[Bucket] = None
   ) extends Identifier {
 
-    def update(request: SQLSearchRequest): SQLIdentifier = {
+    def update(request: SQLSearchRequest): GenericIdentifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
       if (request.tableAliases.values.toSeq.contains(parts.head)) {
         request.unnests.find(_._1 == parts.head) match {

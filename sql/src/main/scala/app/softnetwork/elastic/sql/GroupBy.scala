@@ -1,12 +1,15 @@
 package app.softnetwork.elastic.sql
 
-case object GroupBy extends SQLExpr("group by") with SQLRegex
+import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.`type`.SQLTypes
 
-case class SQLGroupBy(buckets: Seq[SQLBucket]) extends Updateable {
+case object GroupBy extends Expr("group by") with TokenRegex
+
+case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
   override def sql: String = s" $GroupBy ${buckets.mkString(", ")}"
-  def update(request: SQLSearchRequest): SQLGroupBy =
+  def update(request: SQLSearchRequest): GroupBy =
     this.copy(buckets = buckets.map(_.update(request)))
-  lazy val bucketNames: Map[String, SQLBucket] = buckets.map { b =>
+  lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
     b.identifier.identifierName -> b
   }.toMap
 
@@ -19,11 +22,11 @@ case class SQLGroupBy(buckets: Seq[SQLBucket]) extends Updateable {
   }
 }
 
-case class SQLBucket(
-  identifier: SQLIdentifier
+case class Bucket(
+  identifier: GenericIdentifier
 ) extends Updateable {
   override def sql: String = s"$identifier"
-  def update(request: SQLSearchRequest): SQLBucket =
+  def update(request: SQLSearchRequest): Bucket =
     this.copy(identifier = identifier.update(request))
   lazy val sourceBucket: String =
     if (identifier.nested) {
@@ -41,23 +44,23 @@ case class SQLBucket(
 
 object BucketSelectorScript {
 
-  def extractBucketsPath(criteria: SQLCriteria): Map[String, String] = criteria match {
-    case SQLPredicate(left, _, right, _, _) =>
+  def extractBucketsPath(criteria: Criteria): Map[String, String] = criteria match {
+    case Predicate(left, _, right, _, _) =>
       extractBucketsPath(left) ++ extractBucketsPath(right)
     case relation: ElasticRelation => extractBucketsPath(relation.criteria)
-    case _: SQLMatch               => Map.empty //MATCH is not supported in bucket_selector
+    case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
     case e: Expression if e.aggregation =>
       import e._
       maybeValue match {
-        case Some(v: SQLIdentifier) if v.aggregation =>
+        case Some(v: GenericIdentifier) if v.aggregation =>
           Map(identifier.aliasOrName -> identifier.aliasOrName, v.aliasOrName -> v.aliasOrName)
         case _ => Map(identifier.aliasOrName -> identifier.aliasOrName)
       }
     case _ => Map.empty
   }
 
-  def toPainless(expr: SQLCriteria): String = expr match {
-    case SQLPredicate(left, op, right, maybeNot, group) =>
+  def toPainless(expr: Criteria): String = expr match {
+    case Predicate(left, op, right, maybeNot, group) =>
       val leftStr = toPainless(left)
       val rightStr = toPainless(right)
       val opStr = op match {
@@ -72,17 +75,17 @@ object BucketSelectorScript {
 
     case relation: ElasticRelation => toPainless(relation.criteria)
 
-    case _: SQLMatch => "1 == 1" //MATCH is not supported in bucket_selector
+    case _: MatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
       val paramName = e.identifier.paramName
       e.out match {
-        case SQLTypes.Date if e.operator.isInstanceOf[SQLComparisonOperator] =>
+        case SQLTypes.Date if e.operator.isInstanceOf[ComparisonOperator] =>
           // protect against null params and compare epoch millis
           s"($paramName != null) && (${e.painless}.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli())"
-        case SQLTypes.Time if e.operator.isInstanceOf[SQLComparisonOperator] =>
+        case SQLTypes.Time if e.operator.isInstanceOf[ComparisonOperator] =>
           s"($paramName != null) && (${e.painless}.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli())"
-        case SQLTypes.DateTime if e.operator.isInstanceOf[SQLComparisonOperator] =>
+        case SQLTypes.DateTime if e.operator.isInstanceOf[ComparisonOperator] =>
           s"($paramName != null) && (${e.painless}.toInstant().toEpochMilli())"
         case _ =>
           e.painless

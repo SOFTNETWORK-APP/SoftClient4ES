@@ -1,4 +1,4 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.`type`
 
 object SQLTypes {
   case object Any extends SQLAny { val typeId = "any" }

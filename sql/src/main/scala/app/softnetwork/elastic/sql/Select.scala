@@ -1,10 +1,15 @@
 package app.softnetwork.elastic.sql
 
-case object Select extends SQLExpr("select") with SQLRegex
+import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
 
-sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript {
-  def identifier: Identifier
-  def fieldAlias: Option[SQLAlias]
+case object Select extends Expr("select") with TokenRegex
+
+case class Field(
+  identifier: GenericIdentifier,
+  fieldAlias: Option[Alias] = None
+) extends Updateable
+    with FunctionChain
+    with PainlessScript {
   def isScriptField: Boolean = functions.nonEmpty && !aggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String = {
@@ -27,9 +32,10 @@ sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript 
     }
   }
 
-  override def functions: List[SQLFunction] = identifier.functions
+  override def functions: List[Function] = identifier.functions
 
-  def update(request: SQLSearchRequest): Field
+  def update(request: SQLSearchRequest): Field =
+    this.copy(identifier = identifier.update(request))
 
   def painless: String = identifier.painless
 
@@ -38,32 +44,24 @@ sealed trait Field extends Updateable with SQLFunctionChain with PainlessScript 
   override def validate(): Either[String, Unit] = identifier.validate()
 }
 
-case class SQLField(
-  identifier: SQLIdentifier,
-  fieldAlias: Option[SQLAlias] = None
-) extends Field {
-  def update(request: SQLSearchRequest): SQLField =
-    this.copy(identifier = identifier.update(request))
-}
+case object Except extends Expr("except") with TokenRegex
 
-case object Except extends SQLExpr("except") with SQLRegex
-
-case class SQLExcept(fields: Seq[Field]) extends Updateable {
+case class Except(fields: Seq[Field]) extends Updateable {
   override def sql: String = s" $Except(${fields.mkString(",")})"
-  def update(request: SQLSearchRequest): SQLExcept =
+  def update(request: SQLSearchRequest): Except =
     this.copy(fields = fields.map(_.update(request)))
 }
 
-case class SQLSelect(
-  fields: Seq[Field] = Seq(SQLField(identifier = SQLIdentifier("*"))),
-  except: Option[SQLExcept] = None
+case class Select(
+  fields: Seq[Field] = Seq(Field(identifier = GenericIdentifier("*"))),
+  except: Option[Except] = None
 ) extends Updateable {
   override def sql: String =
     s"$Select ${fields.mkString(", ")}${except.getOrElse("")}"
   lazy val fieldAliases: Map[String, String] = fields.flatMap { field =>
     field.fieldAlias.map(a => field.identifier.identifierName -> a.alias)
   }.toMap
-  def update(request: SQLSearchRequest): SQLSelect =
+  def update(request: SQLSearchRequest): Select =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))
 
   override def validate(): Either[String, Unit] =

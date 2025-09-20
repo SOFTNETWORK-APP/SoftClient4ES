@@ -1,21 +1,16 @@
 package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.{
-  AggregateFunction,
   Asc,
-  Avg,
+  Bucket,
   BucketSelectorScript,
-  Count,
+  Criteria,
   ElasticBoolQuery,
   Field,
-  Max,
-  Min,
-  SQLBucket,
-  SQLCriteria,
-  SQLFunctionUtils,
-  SortOrder,
-  Sum
+  SortOrder
 }
+import app.softnetwork.elastic.sql.function._
+import app.softnetwork.elastic.sql.function.aggregate._
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
   bucketSelectorAggregation,
@@ -59,7 +54,7 @@ case class ElasticAggregation(
 object ElasticAggregation {
   def apply(
     sqlAgg: Field,
-    having: Option[SQLCriteria],
+    having: Option[Criteria],
     bucketsDirection: Map[String, SortOrder]
   ): ElasticAggregation = {
     import sqlAgg._
@@ -89,7 +84,7 @@ object ElasticAggregation {
 
     var aggPath = Seq[String]()
 
-    val (aggFuncs, transformFuncs) = SQLFunctionUtils.aggregateAndTransformFunctions(identifier)
+    val (aggFuncs, transformFuncs) = FunctionUtils.aggregateAndTransformFunctions(identifier)
 
     require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
 
@@ -172,11 +167,11 @@ object ElasticAggregation {
   }
 
   def buildBuckets(
-    buckets: Seq[SQLBucket],
+    buckets: Seq[Bucket],
     bucketsDirection: Map[String, SortOrder],
     aggregations: Seq[Aggregation],
     aggregationsDirection: Map[String, SortOrder],
-    having: Option[SQLCriteria]
+    having: Option[Criteria]
   ): Option[TermsAggregation] = {
     Console.println(bucketsDirection)
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>

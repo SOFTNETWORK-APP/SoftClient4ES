@@ -1,10 +1,23 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.parser
 
-import scala.util.parsing.combinator.{PackratParsers, RegexParsers}
-import scala.util.parsing.input.CharSequenceReader
-import TimeUnit._
+import app.softnetwork.elastic.sql.`type`._
+import app.softnetwork.elastic.sql.function._
+import app.softnetwork.elastic.sql.function.aggregate._
+import app.softnetwork.elastic.sql.function.cond._
+import app.softnetwork.elastic.sql.function.convert._
+import app.softnetwork.elastic.sql.function.geo.Distance
+import app.softnetwork.elastic.sql.function.math._
+import app.softnetwork.elastic.sql.function.string._
+import app.softnetwork.elastic.sql.function.time._
+import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.operator.math._
+import app.softnetwork.elastic.sql.time.TimeUnit._
+import app.softnetwork.elastic.sql.time._
+import app.softnetwork.elastic.sql._
 
 import scala.language.implicitConversions
+import scala.util.parsing.combinator.{PackratParsers, RegexParsers}
+import scala.util.parsing.input.CharSequenceReader
 
 /** Created by smanciot on 27/06/2018.
   *
@@ -26,7 +39,7 @@ object SQLParser
       case s ~ f ~ w ~ g ~ h ~ o ~ l =>
         val request = SQLSearchRequest(s, f, w, g, h, o, l).update()
         request.validate() match {
-          case Left(error) => throw SQLValidationError(error)
+          case Left(error) => throw ValidationError(error)
           case _           =>
         }
         request
@@ -61,31 +74,31 @@ case class SQLParserError(msg: String) extends SQLCompilationError
 
 trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
-  def literal: PackratParser[SQLStringValue] =
-    """"[^"]*"|'[^']*'""".r ^^ (str => SQLStringValue(str.substring(1, str.length - 1)))
+  def literal: PackratParser[StringValue] =
+    """"[^"]*"|'[^']*'""".r ^^ (str => StringValue(str.substring(1, str.length - 1)))
 
-  def long: PackratParser[SQLLongValue] =
-    """(-)?(0|[1-9]\d*)""".r ^^ (str => SQLLongValue(str.toLong))
+  def long: PackratParser[LongValue] =
+    """(-)?(0|[1-9]\d*)""".r ^^ (str => LongValue(str.toLong))
 
-  def double: PackratParser[SQLDoubleValue] =
-    """(-)?(\d+\.\d+)""".r ^^ (str => SQLDoubleValue(str.toDouble))
+  def double: PackratParser[DoubleValue] =
+    """(-)?(\d+\.\d+)""".r ^^ (str => DoubleValue(str.toDouble))
 
-  def pi: PackratParser[SQLValue[Double]] =
-    Pi.regex ^^ (_ => SQLPiValue)
+  def pi: PackratParser[Value[Double]] =
+    Pi.regex ^^ (_ => PiValue)
 
-  def boolean: PackratParser[SQLBoolean] =
-    """(true|false)""".r ^^ (bool => SQLBoolean(bool.toBoolean))
+  def boolean: PackratParser[BooleanValue] =
+    """(true|false)""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
-  def value_identifier: PackratParser[SQLIdentifier] = (literal | long | double | pi | boolean) ^^ {
-    v =>
-      SQLIdentifier("", functions = v :: Nil)
-  }
+  def value_identifier: PackratParser[GenericIdentifier] =
+    (literal | long | double | pi | boolean) ^^ { v =>
+      GenericIdentifier("", functions = v :: Nil)
+    }
 
-  def start: PackratParser[SQLDelimiter] = "(" ^^ (_ => StartPredicate)
+  def start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)
 
-  def end: PackratParser[SQLDelimiter] = ")" ^^ (_ => EndPredicate)
+  def end: PackratParser[Delimiter] = ")" ^^ (_ => EndPredicate)
 
-  def separator: PackratParser[SQLDelimiter] = "," ^^ (_ => Separator)
+  def separator: PackratParser[Delimiter] = "," ^^ (_ => Separator)
 
   def count: PackratParser[AggregateFunction] = Count.regex ^^ (_ => Count)
 
@@ -116,7 +129,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
   def time_unit: PackratParser[TimeUnit] =
     year | month | quarter | week | day | hour | minute | second
 
-  def parens: PackratParser[List[SQLDelimiter]] =
+  def parens: PackratParser[List[Delimiter]] =
     start ~ end ^^ { case s ~ e => s :: e :: Nil }
 
   def current_date: PackratParser[CurrentFunction] =
@@ -138,9 +151,9 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     if (p.isDefined) NowWithParens else Now
   }
 
-  def add: PackratParser[IntervalOperator] = Add.sql ^^ (_ => Add)
+  def add: PackratParser[ArithmeticOperator] = Add.sql ^^ (_ => Add)
 
-  def subtract: PackratParser[IntervalOperator] = Subtract.sql ^^ (_ => Subtract)
+  def subtract: PackratParser[ArithmeticOperator] = Subtract.sql ^^ (_ => Subtract)
 
   def multiply: PackratParser[ArithmeticOperator] = Multiply.sql ^^ (_ => Multiply)
 
@@ -150,7 +163,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   def factor: PackratParser[PainlessScript] =
     "(" ~> arithmeticExpressionLevel2 <~ ")" ^^ {
-      case expr: SQLArithmeticExpression =>
+      case expr: ArithmeticExpression =>
         expr.copy(group = true)
       case other => other
     } | valueExpr
@@ -158,7 +171,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
   def arithmeticExpressionLevel1: Parser[PainlessScript] =
     factor ~ rep((multiply | divide | modulo) ~ factor) ^^ { case left ~ list =>
       list.foldLeft(left) { case (acc, op ~ right) =>
-        SQLArithmeticExpression(acc, op, right)
+        ArithmeticExpression(acc, op, right)
       }
     }
 
@@ -166,17 +179,18 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     arithmeticExpressionLevel1 ~ rep((add | subtract) ~ arithmeticExpressionLevel1) ^^ {
       case left ~ list =>
         list.foldLeft(left) { case (acc, op ~ right) =>
-          SQLArithmeticExpression(acc, op, right)
+          ArithmeticExpression(acc, op, right)
         }
     }
 
-  def identifierWithArithmeticExpression: Parser[SQLIdentifier] = arithmeticExpressionLevel2 ^^ {
-    case af: SQLArithmeticExpression  => SQLIdentifier("", functions = af :: Nil)
-    case id: SQLIdentifier            => id
-    case f: SQLFunctionWithIdentifier => f.identifier
-    case f: SQLFunction               => SQLIdentifier("", functions = f :: Nil)
-    case other                        => throw new Exception(s"Unexpected expression $other")
-  }
+  def identifierWithArithmeticExpression: Parser[GenericIdentifier] =
+    arithmeticExpressionLevel2 ^^ {
+      case af: ArithmeticExpression => GenericIdentifier("", functions = af :: Nil)
+      case id: GenericIdentifier       => id
+      case f: FunctionWithIdentifier   => f.identifier
+      case f: Function                 => GenericIdentifier("", functions = f :: Nil)
+      case other                       => throw new Exception(s"Unexpected expression $other")
+    }
 
   def interval: PackratParser[TimeInterval] =
     Interval.regex ~ long ~ time_unit ^^ { case _ ~ l ~ u =>
@@ -193,80 +207,80 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
       SQLSubtractInterval(it)
     }
 
-  def intervalFunction: PackratParser[SQLTransformFunction[SQLTemporal, SQLTemporal]] =
+  def intervalFunction: PackratParser[TransformFunction[SQLTemporal, SQLTemporal]] =
     add_interval | substract_interval
 
-  def identifierWithIntervalFunction: PackratParser[SQLIdentifier] =
+  def identifierWithIntervalFunction: PackratParser[GenericIdentifier] =
     (identifierWithFunction | identifier) ~ intervalFunction ^^ { case i ~ f =>
       i.copy(functions = f +: i.functions)
     }
 
-  def identifierWithSystemFunction: PackratParser[SQLIdentifier] =
+  def identifierWithSystemFunction: PackratParser[GenericIdentifier] =
     (current_date | current_time | current_timestamp | now) ~ intervalFunction.? ^^ {
       case f1 ~ f2 =>
         f2 match {
-          case Some(f) => SQLIdentifier("", functions = List(f, f1))
-          case None    => SQLIdentifier("", functions = List(f1))
+          case Some(f) => GenericIdentifier("", functions = List(f, f1))
+          case None    => GenericIdentifier("", functions = List(f1))
         }
     }
 
-  def date_trunc: PackratParser[SQLFunctionWithIdentifier] =
+  def date_trunc: PackratParser[FunctionWithIdentifier] =
     "(?i)date_trunc".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ time_unit ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ u ~ _ =>
         DateTrunc(i, u)
     }
 
-  def extract_identifier: PackratParser[SQLIdentifier] =
+  def extract_identifier: PackratParser[GenericIdentifier] =
     "(?i)extract".r ~ start ~ time_unit ~ "(?i)from".r ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
       case _ ~ _ ~ u ~ _ ~ i ~ _ =>
         i.copy(functions = Extract(u) +: i.functions)
     }
 
-  def extract_year: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extract_year: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     Year.regex ^^ (_ => YEAR)
 
-  def extract_month: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extract_month: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     Month.regex ^^ (_ => MONTH)
 
-  def extract_day: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extract_day: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     Day.regex ^^ (_ => DAY)
 
-  def extract_hour: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extract_hour: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     Hour.regex ^^ (_ => HOUR)
 
-  def extract_minute: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extract_minute: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     Minute.regex ^^ (_ => MINUTE)
 
-  def extract_second: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extract_second: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     Second.regex ^^ (_ => SECOND)
 
-  def extractors: PackratParser[SQLTransformFunction[SQLTemporal, SQLNumeric]] =
+  def extractors: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
     extract_year | extract_month | extract_day | extract_hour | extract_minute | extract_second
 
-  def date_add: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+  def date_add: PackratParser[DateFunction with FunctionWithIdentifier] =
     "(?i)date_add".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ interval ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ t ~ _ =>
         DateAdd(i, t)
     }
 
-  def date_sub: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+  def date_sub: PackratParser[DateFunction with FunctionWithIdentifier] =
     "(?i)date_sub".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ interval ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ t ~ _ =>
         DateSub(i, t)
     }
 
-  def parse_date: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+  def parse_date: PackratParser[DateFunction with FunctionWithIdentifier] =
     "(?i)parse_date".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | literal | identifier) ~ separator ~ literal ~ end ^^ {
       case _ ~ _ ~ li ~ _ ~ f ~ _ =>
         li match {
-          case l: SQLStringValue =>
-            ParseDate(SQLIdentifier("", functions = l :: Nil), f.value)
-          case i: SQLIdentifier =>
+          case l: StringValue =>
+            ParseDate(GenericIdentifier("", functions = l :: Nil), f.value)
+          case i: GenericIdentifier =>
             ParseDate(i, f.value)
         }
     }
 
-  def format_date: PackratParser[DateFunction with SQLFunctionWithIdentifier] =
+  def format_date: PackratParser[DateFunction with FunctionWithIdentifier] =
     "(?i)format_date".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ literal ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ f ~ _ =>
         FormatDate(i, f.value)
@@ -274,30 +288,30 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   def date_functions: PackratParser[DateFunction] = date_add | date_sub | parse_date | format_date
 
-  def datetime_add: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+  def datetime_add: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
     "(?i)datetime_add".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ interval ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ t ~ _ =>
         DateTimeAdd(i, t)
     }
 
-  def datetime_sub: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+  def datetime_sub: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
     "(?i)datetime_sub".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ interval ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ t ~ _ =>
         DateTimeSub(i, t)
     }
 
-  def parse_datetime: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+  def parse_datetime: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
     "(?i)parse_datetime".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | literal | identifier) ~ separator ~ literal ~ end ^^ {
       case _ ~ _ ~ li ~ _ ~ f ~ _ =>
         li match {
           case l: SQLLiteral =>
-            ParseDateTime(SQLIdentifier("", functions = l :: Nil), f.value)
-          case i: SQLIdentifier =>
+            ParseDateTime(GenericIdentifier("", functions = l :: Nil), f.value)
+          case i: GenericIdentifier =>
             ParseDateTime(i, f.value)
         }
     }
 
-  def format_datetime: PackratParser[DateTimeFunction with SQLFunctionWithIdentifier] =
+  def format_datetime: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
     "(?i)format_datetime".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ literal ~ end ^^ {
       case _ ~ _ ~ i ~ _ ~ f ~ _ =>
         FormatDateTime(i, f.value)
@@ -308,9 +322,9 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   def aggregates: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
-  def distance: PackratParser[SQLFunction] = Distance.regex ^^ (_ => Distance)
+  def distance: PackratParser[Function] = Distance.regex ^^ (_ => Distance)
 
-  def identifierWithTemporalFunction: PackratParser[SQLIdentifier] =
+  def identifierWithTemporalFunction: PackratParser[GenericIdentifier] =
     rep1sep(
       date_trunc | extractors | date_functions | datetime_functions,
       start
@@ -321,30 +335,30 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
         case Some(id) => id.copy(functions = id.functions ++ f)
         case None =>
           f.lastOption match {
-            case Some(fi: SQLFunctionWithIdentifier) =>
+            case Some(fi: FunctionWithIdentifier) =>
               fi.identifier.copy(functions = f ++ fi.identifier.functions)
-            case _ => SQLIdentifier("", functions = f)
+            case _ => GenericIdentifier("", functions = f)
           }
       }
     }
 
-  def date_diff: PackratParser[SQLBinaryFunction[_, _, _]] =
+  def date_diff: PackratParser[BinaryFunction[_, _, _]] =
     "(?i)date_diff".r ~ start ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ separator ~ time_unit ~ end ^^ {
       case _ ~ _ ~ d1 ~ _ ~ d2 ~ _ ~ u ~ _ => DateDiff(d1, d2, u)
     }
 
-  def date_diff_identifier: PackratParser[SQLIdentifier] = date_diff ^^ { dd =>
-    SQLIdentifier("", functions = dd :: Nil)
+  def date_diff_identifier: PackratParser[GenericIdentifier] = date_diff ^^ { dd =>
+    GenericIdentifier("", functions = dd :: Nil)
   }
 
-  def is_null: PackratParser[SQLConditionalFunction[_]] =
+  def is_null: PackratParser[ConditionalFunction[_]] =
     "(?i)isnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
-      case _ ~ _ ~ i ~ _ => SQLIsNullFunction(i)
+      case _ ~ _ ~ i ~ _ => IsNullFunction(i)
     }
 
-  def is_notnull: PackratParser[SQLConditionalFunction[_]] =
+  def is_notnull: PackratParser[ConditionalFunction[_]] =
     "(?i)isnotnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
-      case _ ~ _ ~ i ~ _ => SQLIsNotNullFunction(i)
+      case _ ~ _ ~ i ~ _ => IsNotNullFunction(i)
     }
 
   def valueExpr: PackratParser[PainlessScript] =
@@ -363,17 +377,17 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     boolean |
     identifier
 
-  def coalesce: PackratParser[SQLCoalesce] =
+  def coalesce: PackratParser[Coalesce] =
     Coalesce.regex ~ start ~ rep1sep(
       valueExpr,
       separator
     ) ~ end ^^ { case _ ~ _ ~ ids ~ _ =>
-      SQLCoalesce(ids)
+      Coalesce(ids)
     }
 
-  def nullif: PackratParser[SQLNullIf] =
+  def nullif: PackratParser[NullIf] =
     NullIf.regex ~ start ~ valueExpr ~ separator ~ valueExpr ~ end ^^ {
-      case _ ~ _ ~ id1 ~ _ ~ id2 ~ _ => SQLNullIf(id1, id2)
+      case _ ~ _ ~ id1 ~ _ ~ id2 ~ _ => NullIf(id1, id2)
     }
 
   def start_case: PackratParser[StartCase.type] = Case.regex ^^ (_ => StartCase)
@@ -390,115 +404,116 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
     when_case ~ (whereCriteria | valueExpr) ~ then_case.? ~ valueExpr ^^ { case _ ~ c ~ _ ~ r =>
       c match {
         case p: PainlessScript => p -> r
-        case rawTokens: List[SQLToken] =>
+        case rawTokens: List[Token] =>
           processTokens(rawTokens) match {
             case Some(criteria) => criteria -> r
-            case _              => SQLNull  -> r
+            case _              => Null     -> r
           }
       }
     }
 
   def case_else: Parser[PainlessScript] = else_case ~ valueExpr ^^ { case _ ~ r => r }
 
-  def case_when: PackratParser[SQLCaseWhen] =
+  def case_when: PackratParser[Case] =
     start_case ~ valueExpr.? ~ rep1(case_condition) ~ case_else.? ~ end_case ^^ {
-      case _ ~ e ~ c ~ r ~ _ => SQLCaseWhen(e, c, r)
+      case _ ~ e ~ c ~ r ~ _ => Case(e, c, r)
     }
 
-  def case_when_identifier: Parser[SQLIdentifier] = case_when ^^ { cw =>
-    SQLIdentifier("", functions = cw :: Nil)
+  def case_when_identifier: Parser[GenericIdentifier] = case_when ^^ { cw =>
+    GenericIdentifier("", functions = cw :: Nil)
   }
 
-  def logical_functions: PackratParser[SQLTransformFunction[_, _]] =
+  def logical_functions: PackratParser[TransformFunction[_, _]] =
     is_null | is_notnull | coalesce | nullif | case_when
 
-  private[this] def abs: PackratParser[UnaryArithmeticOperator] = Abs.regex ^^ (_ => Abs)
+  private[this] def abs: PackratParser[MathOp] = Abs.regex ^^ (_ => Abs)
 
-  private[this] def ceil: PackratParser[UnaryArithmeticOperator] = Ceil.regex ^^ (_ => Ceil)
+  private[this] def ceil: PackratParser[MathOp] = Ceil.regex ^^ (_ => Ceil)
 
-  private[this] def floor: PackratParser[UnaryArithmeticOperator] = Floor.regex ^^ (_ => Floor)
+  private[this] def floor: PackratParser[MathOp] = Floor.regex ^^ (_ => Floor)
 
-  private[this] def exp: PackratParser[UnaryArithmeticOperator] = Exp.regex ^^ (_ => Exp)
+  private[this] def exp: PackratParser[MathOp] = Exp.regex ^^ (_ => Exp)
 
-  private[this] def sqrt: PackratParser[UnaryArithmeticOperator] = Sqrt.regex ^^ (_ => Sqrt)
+  private[this] def sqrt: PackratParser[MathOp] = Sqrt.regex ^^ (_ => Sqrt)
 
-  private[this] def log: PackratParser[UnaryArithmeticOperator] = Log.regex ^^ (_ => Log)
+  private[this] def log: PackratParser[MathOp] = Log.regex ^^ (_ => Log)
 
-  private[this] def log10: PackratParser[UnaryArithmeticOperator] = Log10.regex ^^ (_ => Log10)
+  private[this] def log10: PackratParser[MathOp] = Log10.regex ^^ (_ => Log10)
 
-  implicit def functionAsIdentifier(mf: SQLFunction): SQLIdentifier = mf match {
-    case id: SQLIdentifier              => id
-    case fid: SQLFunctionWithIdentifier => fid.identifier
-    case _                              => SQLIdentifier("", functions = mf :: Nil)
+  implicit def functionAsIdentifier(mf: Function): GenericIdentifier = mf match {
+    case id: GenericIdentifier       => id
+    case fid: FunctionWithIdentifier => fid.identifier
+    case _                           => GenericIdentifier("", functions = mf :: Nil)
   }
 
   def arithmeticFunction: PackratParser[MathematicalFunction] =
     (abs | ceil | exp | floor | log | log10 | sqrt) ~ start ~ valueExpr ~ end ^^ {
-      case op ~ _ ~ v ~ _ => SQLMathematicalFunction(op, v)
+      case op ~ _ ~ v ~ _ => MathematicalFunctionWithOp(op, v)
     }
 
-  private[this] def sin: PackratParser[TrigonometricOperator] = Sin.regex ^^ (_ => Sin)
+  private[this] def sin: PackratParser[Trigonometric] = Sin.regex ^^ (_ => Sin)
 
-  private[this] def asin: PackratParser[TrigonometricOperator] = Asin.regex ^^ (_ => Asin)
+  private[this] def asin: PackratParser[Trigonometric] = Asin.regex ^^ (_ => Asin)
 
-  private[this] def cos: PackratParser[TrigonometricOperator] = Cos.regex ^^ (_ => Cos)
+  private[this] def cos: PackratParser[Trigonometric] = Cos.regex ^^ (_ => Cos)
 
-  private[this] def acos: PackratParser[TrigonometricOperator] = Acos.regex ^^ (_ => Acos)
+  private[this] def acos: PackratParser[Trigonometric] = Acos.regex ^^ (_ => Acos)
 
-  private[this] def tan: PackratParser[TrigonometricOperator] = Tan.regex ^^ (_ => Tan)
+  private[this] def tan: PackratParser[Trigonometric] = Tan.regex ^^ (_ => Tan)
 
-  private[this] def atan: PackratParser[TrigonometricOperator] = Atan.regex ^^ (_ => Atan)
+  private[this] def atan: PackratParser[Trigonometric] = Atan.regex ^^ (_ => Atan)
 
-  private[this] def atan2: PackratParser[TrigonometricOperator] = Atan2.regex ^^ (_ => Atan2)
+  private[this] def atan2: PackratParser[Trigonometric] = Atan2.regex ^^ (_ => Atan2)
 
   def atan2Function: PackratParser[MathematicalFunction] =
     atan2 ~ start ~ (double | valueExpr) ~ separator ~ (double | valueExpr) ~ end ^^ {
-      case _ ~ _ ~ y ~ _ ~ x ~ _ => SQLAtan2(y, x)
+      case _ ~ _ ~ y ~ _ ~ x ~ _ => Atan2(y, x)
     }
 
   def trigonometricFunction: PackratParser[MathematicalFunction] =
     atan2Function | ((sin | asin | cos | acos | tan | atan) ~ start ~ valueExpr ~ end ^^ {
-      case op ~ _ ~ v ~ _ => SQLMathematicalFunction(op, v)
+      case op ~ _ ~ v ~ _ => MathematicalFunctionWithOp(op, v)
     })
 
-  private[this] def round: PackratParser[UnaryArithmeticOperator] = Round.regex ^^ (_ => Round)
+  private[this] def round: PackratParser[MathOp] = Round.regex ^^ (_ => Round)
 
   def roundFunction: PackratParser[MathematicalFunction] =
     round ~ start ~ valueExpr ~ separator.? ~ long.? ~ end ^^ { case _ ~ _ ~ v ~ _ ~ s ~ _ =>
-      SQLRound(v, s.map(_.value.toInt))
+      Round(v, s.map(_.value.toInt))
     }
 
-  private[this] def pow: PackratParser[UnaryArithmeticOperator] = Pow.regex ^^ (_ => Pow)
+  private[this] def pow: PackratParser[MathOp] = Pow.regex ^^ (_ => Pow)
 
   def powFunction: PackratParser[MathematicalFunction] =
     pow ~ start ~ valueExpr ~ separator ~ long ~ end ^^ { case _ ~ _ ~ v1 ~ _ ~ e ~ _ =>
-      SQLPow(v1, e.value.toInt)
+      Pow(v1, e.value.toInt)
     }
 
-  private[this] def sign: PackratParser[UnaryArithmeticOperator] = Sign.regex ^^ (_ => Sign)
+  private[this] def sign: PackratParser[MathOp] = Sign.regex ^^ (_ => Sign)
 
   def signFunction: PackratParser[MathematicalFunction] =
-    sign ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ => SQLSign(v) }
+    sign ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ => Sign(v) }
 
   def mathematicalFunction: PackratParser[MathematicalFunction] =
     arithmeticFunction | trigonometricFunction | roundFunction | powFunction | signFunction
 
-  def mathematicalFunctionWithIdentifier: PackratParser[SQLIdentifier] = mathematicalFunction ^^ {
-    mf => mf.identifier
-  }
+  def mathematicalFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+    mathematicalFunction ^^ { mf =>
+      mf.identifier
+    }
 
   def concatFunction: PackratParser[StringFunction[SQLVarchar]] =
     Concat.regex ~ start ~ rep1sep(valueExpr, separator) ~ end ^^ { case _ ~ _ ~ vs ~ _ =>
-      SQLConcat(vs)
+      Concat(vs)
     }
 
   def substringFunction: PackratParser[StringFunction[SQLVarchar]] =
     Substring.regex ~ start ~ valueExpr ~ (From.regex | separator) ~ long ~ ((To.regex | separator) ~ long).? ~ end ^^ {
       case _ ~ _ ~ v ~ _ ~ s ~ eOpt ~ _ =>
-        SQLSubstring(v, s.value.toInt, eOpt.map { case _ ~ e => e.value.toInt })
+        Substring(v, s.value.toInt, eOpt.map { case _ ~ e => e.value.toInt })
     }
 
-  def stringFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+  def stringFunctionWithIdentifier: PackratParser[GenericIdentifier] =
     (concatFunction | substringFunction) ^^ { sf =>
       sf.identifier
     }
@@ -510,24 +525,24 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   def lower: PackratParser[StringFunction[SQLVarchar]] =
     Lower.regex ^^ { _ =>
-      SQLStringFunction(Lower)
+      StringFunctionWithOp(Lower)
     }
 
   def upper: PackratParser[StringFunction[SQLVarchar]] =
     Upper.regex ^^ { _ =>
-      SQLStringFunction(Upper)
+      StringFunctionWithOp(Upper)
     }
 
   def trim: PackratParser[StringFunction[SQLVarchar]] =
     Trim.regex ^^ { _ =>
-      SQLStringFunction(Trim)
+      StringFunctionWithOp(Trim)
     }
 
   def string_functions: Parser[
     StringFunction[_]
   ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim
 
-  def sql_functions: PackratParser[SQLFunction] =
+  def sql_functions: PackratParser[Function] =
     aggregates | distance | date_diff | date_trunc | extractors | date_functions | datetime_functions | logical_functions | string_functions
 
   //private val regexIdentifier = """[\*a-zA-Z_\-][a-zA-Z0-9_\-\.\[\]\*]*"""
@@ -657,9 +672,9 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   private val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
 
-  def identifier: PackratParser[SQLIdentifier] =
+  def identifier: PackratParser[GenericIdentifier] =
     Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>
-      SQLIdentifier(
+      GenericIdentifier(
         i,
         None,
         d.isDefined
@@ -702,15 +717,13 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
   def sql_type: PackratParser[SQLType] =
     char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type
 
-  private[this] def castFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+  private[this] def castFunctionWithIdentifier: PackratParser[GenericIdentifier] =
     "(?i)cast".r ~ start ~ (identifierWithTransformation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithFunction | date_diff_identifier | extract_identifier | identifier) ~ Alias.regex.? ~ sql_type ~ end ~ intervalFunction.? ^^ {
       case _ ~ _ ~ i ~ as ~ t ~ _ ~ a =>
-        i.copy(functions =
-          a.toList ++ (SQLCast(i, targetType = t, as = as.isDefined) +: i.functions)
-        )
+        i.copy(functions = a.toList ++ (Cast(i, targetType = t, as = as.isDefined) +: i.functions))
     }
 
-  private[this] def dateFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+  private[this] def dateFunctionWithIdentifier: PackratParser[GenericIdentifier] =
     (parse_date | format_date | date_add | date_sub) ~ intervalFunction.? ^^ { case t ~ af =>
       af match {
         case Some(f) => t.identifier.copy(functions = f +: t +: t.identifier.functions)
@@ -718,7 +731,7 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
       }
     }
 
-  private[this] def dateTimeFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+  private[this] def dateTimeFunctionWithIdentifier: PackratParser[GenericIdentifier] =
     (date_trunc | parse_datetime | format_datetime | datetime_add | datetime_sub) ~ intervalFunction.? ^^ {
       case t ~ af =>
         af match {
@@ -727,21 +740,21 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
         }
     }
 
-  private[this] def conditionalFunctionWithIdentifier: PackratParser[SQLIdentifier] =
+  private[this] def conditionalFunctionWithIdentifier: PackratParser[GenericIdentifier] =
     (is_null | is_notnull | coalesce | nullif) ^^ { t =>
       t.identifier.copy(functions = t +: t.identifier.functions)
     }
 
-  def identifierWithTransformation: PackratParser[SQLIdentifier] =
+  def identifierWithTransformation: PackratParser[GenericIdentifier] =
     mathematicalFunctionWithIdentifier | castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier | stringFunctionWithIdentifier
 
-  def identifierWithAggregation: PackratParser[SQLIdentifier] =
+  def identifierWithAggregation: PackratParser[GenericIdentifier] =
     aggregates ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
       case a ~ _ ~ i ~ _ =>
         i.copy(functions = a +: i.functions)
     }
 
-  def identifierWithFunction: PackratParser[SQLIdentifier] =
+  def identifierWithFunction: PackratParser[GenericIdentifier] =
     rep1sep(
       sql_functions,
       start
@@ -751,9 +764,9 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
       i match {
         case None =>
           f.lastOption match {
-            case Some(fi: SQLFunctionWithIdentifier) =>
+            case Some(fi: FunctionWithIdentifier) =>
               fi.identifier.copy(functions = f ++ fi.identifier.functions)
-            case _ => SQLIdentifier("", functions = f)
+            case _ => GenericIdentifier("", functions = f)
           }
         case Some(id) => id.copy(functions = id.functions ++ f)
       }
@@ -762,12 +775,12 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
   private val regexAlias =
     """\b(?!(?i)as\b)\b(?!(?i)except\b)\b(?!(?i)where\b)\b(?!(?i)filter\b)\b(?!(?i)from\b)\b(?!(?i)group\b)\b(?!(?i)having\b)\b(?!(?i)order\b)\b(?!(?i)limit\b)[a-zA-Z0-9_]*"""
 
-  def alias: PackratParser[SQLAlias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => SQLAlias(b) }
+  def alias: PackratParser[Alias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => Alias(b) }
 
   def field: PackratParser[Field] =
     (identifierWithArithmeticExpression | identifierWithTransformation | identifierWithAggregation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithFunction | date_diff_identifier | extract_identifier | case_when_identifier | identifier) ~ alias.? ^^ {
       case i ~ a =>
-        SQLField(i, a)
+        Field(i, a)
     }
 
 }
@@ -775,17 +788,17 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 trait SQLSelectParser {
   self: SQLParser with SQLWhereParser =>
 
-  def except: PackratParser[SQLExcept] = Except.regex ~ start ~ rep1sep(field, separator) ~ end ^^ {
+  def except: PackratParser[Except] = Except.regex ~ start ~ rep1sep(field, separator) ~ end ^^ {
     case _ ~ _ ~ e ~ _ =>
-      SQLExcept(e)
+      Except(e)
   }
 
-  def select: PackratParser[SQLSelect] =
+  def select: PackratParser[Select] =
     Select.regex ~ rep1sep(
       field,
       separator
     ) ~ except.? ^^ { case _ ~ fields ~ e =>
-      SQLSelect(fields, e)
+      Select(fields, e)
     }
 
 }
@@ -793,16 +806,16 @@ trait SQLSelectParser {
 trait SQLFromParser {
   self: SQLParser with SQLLimitParser =>
 
-  def unnest: PackratParser[SQLTable] =
+  def unnest: PackratParser[Table] =
     Unnest.regex ~ start ~ identifier ~ limit.? ~ end ~ alias ^^ { case _ ~ _ ~ i ~ l ~ _ ~ a =>
-      SQLTable(SQLUnnest(i, l), Some(a))
+      Table(Unnest(i, l), Some(a))
     }
 
-  def table: PackratParser[SQLTable] = identifier ~ alias.? ^^ { case i ~ a => SQLTable(i, a) }
+  def table: PackratParser[Table] = identifier ~ alias.? ^^ { case i ~ a => Table(i, a) }
 
-  def from: PackratParser[SQLFrom] = From.regex ~ rep1sep(unnest | table, separator) ^^ {
+  def from: PackratParser[From] = From.regex ~ rep1sep(unnest | table, separator) ^^ {
     case _ ~ tables =>
-      SQLFrom(tables)
+      From(tables)
   }
 
 }
@@ -810,128 +823,128 @@ trait SQLFromParser {
 trait SQLWhereParser {
   self: SQLParser with SQLGroupByParser with SQLOrderByParser =>
 
-  def isNull: PackratParser[SQLCriteria] = identifier ~ IsNull.regex ^^ { case i ~ _ =>
-    SQLIsNull(i)
+  def isNull: PackratParser[Criteria] = identifier ~ IsNull.regex ^^ { case i ~ _ =>
+    IsNullExpr(i)
   }
 
-  def isNotNull: PackratParser[SQLCriteria] = identifier ~ IsNotNull.regex ^^ { case i ~ _ =>
-    SQLIsNotNull(i)
+  def isNotNull: PackratParser[Criteria] = identifier ~ IsNotNull.regex ^^ { case i ~ _ =>
+    IsNotNullExpr(i)
   }
 
-  private def eq: PackratParser[SQLComparisonOperator] = Eq.sql ^^ (_ => Eq)
+  private def eq: PackratParser[ComparisonOperator] = Eq.sql ^^ (_ => Eq)
 
-  private def ne: PackratParser[SQLComparisonOperator] = Ne.sql ^^ (_ => Ne)
+  private def ne: PackratParser[ComparisonOperator] = Ne.sql ^^ (_ => Ne)
 
-  private def diff: PackratParser[SQLComparisonOperator] = Diff.sql ^^ (_ => Diff)
+  private def diff: PackratParser[ComparisonOperator] = Diff.sql ^^ (_ => Diff)
 
-  private def any_identifier: PackratParser[SQLIdentifier] =
+  private def any_identifier: PackratParser[GenericIdentifier] =
     identifierWithTransformation | identifierWithAggregation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithArithmeticExpression | identifierWithFunction | date_diff_identifier | extract_identifier | identifier
 
-  private def equality: PackratParser[SQLExpression] =
+  private def equality: PackratParser[GenericExpression] =
     not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | literal | double | pi | long | any_identifier) ^^ {
-      case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
+      case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
-  def like: PackratParser[SQLExpression] =
+  def like: PackratParser[GenericExpression] =
     any_identifier ~ not.? ~ Like.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
-      SQLExpression(i, Like, v, n)
+      GenericExpression(i, Like, v, n)
     }
 
-  private def ge: PackratParser[SQLComparisonOperator] = Ge.sql ^^ (_ => Ge)
+  private def ge: PackratParser[ComparisonOperator] = Ge.sql ^^ (_ => Ge)
 
-  def gt: PackratParser[SQLComparisonOperator] = Gt.sql ^^ (_ => Gt)
+  def gt: PackratParser[ComparisonOperator] = Gt.sql ^^ (_ => Gt)
 
-  private def le: PackratParser[SQLComparisonOperator] = Le.sql ^^ (_ => Le)
+  private def le: PackratParser[ComparisonOperator] = Le.sql ^^ (_ => Le)
 
-  def lt: PackratParser[SQLComparisonOperator] = Lt.sql ^^ (_ => Lt)
+  def lt: PackratParser[ComparisonOperator] = Lt.sql ^^ (_ => Lt)
 
-  private def comparison: PackratParser[SQLExpression] =
+  private def comparison: PackratParser[GenericExpression] =
     not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | long | literal | any_identifier) ^^ {
-      case n ~ i ~ o ~ v => SQLExpression(i, o, v, n)
+      case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
-  def in: PackratParser[SQLExpressionOperator] = In.regex ^^ (_ => In)
+  def in: PackratParser[ExpressionOperator] = In.regex ^^ (_ => In)
 
-  private def inLiteral: PackratParser[SQLCriteria] =
+  private def inLiteral: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(literal, separator) ~ end ^^ {
       case i ~ n ~ _ ~ _ ~ v ~ _ =>
-        SQLIn(
+        InExpr(
           i,
-          SQLStringValues(v),
+          StringValues(v),
           n
         )
     }
 
-  private def inDoubles: PackratParser[SQLCriteria] =
+  private def inDoubles: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(
       double,
       separator
     ) ~ end ^^ { case i ~ n ~ _ ~ _ ~ v ~ _ =>
-      SQLIn(
+      InExpr(
         i,
-        SQLDoubleValues(v),
+        DoubleValues(v),
         n
       )
     }
 
-  private def inLongs: PackratParser[SQLCriteria] =
+  private def inLongs: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(
       long,
       separator
     ) ~ end ^^ { case i ~ n ~ _ ~ _ ~ v ~ _ =>
-      SQLIn(
+      InExpr(
         i,
-        SQLLongValues(v),
+        LongValues(v),
         n
       )
     }
 
-  def between: PackratParser[SQLCriteria] =
+  def between: PackratParser[Criteria] =
     any_identifier ~ not.? ~ Between.regex ~ literal ~ and ~ literal ^^ {
-      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLLiteralFromTo(from, to), n)
+      case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, LiteralFromTo(from, to), n)
     }
 
-  def betweenLongs: PackratParser[SQLCriteria] =
+  def betweenLongs: PackratParser[Criteria] =
     any_identifier ~ not.? ~ Between.regex ~ long ~ and ~ long ^^ {
-      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLLongFromTo(from, to), n)
+      case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, LongFromTo(from, to), n)
     }
 
-  def betweenDoubles: PackratParser[SQLCriteria] =
+  def betweenDoubles: PackratParser[Criteria] =
     any_identifier ~ not.? ~ Between.regex ~ double ~ and ~ double ^^ {
-      case i ~ n ~ _ ~ from ~ _ ~ to => SQLBetween(i, SQLDoubleFromTo(from, to), n)
+      case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, DoubleFromTo(from, to), n)
     }
 
-  def sql_distance: PackratParser[SQLCriteria] =
+  def sql_distance: PackratParser[Criteria] =
     distance ~ start ~ identifier ~ separator ~ start ~ double ~ separator ~ double ~ end ~ end ~ le ~ literal ^^ {
       case _ ~ _ ~ i ~ _ ~ _ ~ lat ~ _ ~ lon ~ _ ~ _ ~ _ ~ d => ElasticGeoDistance(i, d, lat, lon)
     }
 
-  def matchCriteria: PackratParser[SQLMatch] =
+  def matchCriteria: PackratParser[MatchCriteria] =
     Match.regex ~ start ~ rep1sep(
       any_identifier,
       separator
     ) ~ end ~ Against.regex ~ start ~ literal ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ ~ l ~ _ =>
-      SQLMatch(i, l)
+      MatchCriteria(i, l)
     }
 
-  def and: PackratParser[SQLPredicateOperator] = And.regex ^^ (_ => And)
+  def and: PackratParser[PredicateOperator] = And.regex ^^ (_ => And)
 
-  def or: PackratParser[SQLPredicateOperator] = Or.regex ^^ (_ => Or)
+  def or: PackratParser[PredicateOperator] = Or.regex ^^ (_ => Or)
 
   def not: PackratParser[Not.type] = Not.regex ^^ (_ => Not)
 
-  def logical_criteria: PackratParser[SQLCriteria] =
-    (is_null | is_notnull) ^^ { case SQLConditionalFunctionAsCriteria(c) =>
+  def logical_criteria: PackratParser[Criteria] =
+    (is_null | is_notnull) ^^ { case ConditionalFunctionAsCriteria(c) =>
       c
     }
 
-  def criteria: PackratParser[SQLCriteria] =
+  def criteria: PackratParser[Criteria] =
     (equality | like | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | /*coalesce | nullif |*/ sql_distance | matchCriteria | logical_criteria) ^^ (
       c => c
     )
 
-  def predicate: PackratParser[SQLPredicate] = criteria ~ (and | or) ~ not.? ~ criteria ^^ {
-    case l ~ o ~ n ~ r => SQLPredicate(l, o, r, n)
+  def predicate: PackratParser[Predicate] = criteria ~ (and | or) ~ not.? ~ criteria ^^ {
+    case l ~ o ~ n ~ r => Predicate(l, o, r, n)
   }
 
   def nestedCriteria: PackratParser[ElasticRelation] =
@@ -960,19 +973,19 @@ trait SQLWhereParser {
     case _ ~ _ ~ p ~ _ => ElasticParent(p)
   }
 
-  private def allPredicate: PackratParser[SQLCriteria] =
+  private def allPredicate: PackratParser[Criteria] =
     nestedPredicate | childPredicate | parentPredicate | predicate
 
-  private def allCriteria: PackratParser[SQLToken] =
+  private def allCriteria: PackratParser[Token] =
     nestedCriteria | childCriteria | parentCriteria | criteria
 
-  def whereCriteria: PackratParser[List[SQLToken]] = rep1(
+  def whereCriteria: PackratParser[List[Token]] = rep1(
     allPredicate | allCriteria | start | or | and | end | then_case
   )
 
-  def where: PackratParser[SQLWhere] =
+  def where: PackratParser[Where] =
     Where.regex ~ whereCriteria ^^ { case _ ~ rawTokens =>
-      SQLWhere(processTokens(rawTokens))
+      Where(processTokens(rawTokens))
     }
 
   import scala.annotation.tailrec
@@ -1011,43 +1024,43 @@ trait SQLWhereParser {
     */
   @tailrec
   private def processTokensHelper(
-    tokens: List[SQLToken],
-    stack: List[SQLToken]
-  ): Option[SQLCriteria] = {
+    tokens: List[Token],
+    stack: List[Token]
+  ): Option[Criteria] = {
     tokens match {
       case Nil =>
         stack match {
-          case (right: SQLCriteria) :: (op: SQLPredicateOperator) :: (left: SQLCriteria) :: Nil =>
+          case (right: Criteria) :: (op: PredicateOperator) :: (left: Criteria) :: Nil =>
             Option(
-              SQLPredicate(left, op, right)
+              Predicate(left, op, right)
             )
           case _ =>
-            stack.headOption.collect { case c: SQLCriteria => c }
+            stack.headOption.collect { case c: Criteria => c }
         }
       case (_: StartDelimiter) :: rest =>
         val (subTokens, remainingTokens) = extractSubTokens(rest, 1)
         val subCriteria = processSubTokens(subTokens) match {
-          case p: SQLPredicate => p.copy(group = true)
-          case c               => c
+          case p: Predicate => p.copy(group = true)
+          case c            => c
         }
         processTokensHelper(remainingTokens, subCriteria :: stack)
-      case (c: SQLCriteria) :: rest =>
+      case (c: Criteria) :: rest =>
         stack match {
-          case (op: SQLPredicateOperator) :: (left: SQLCriteria) :: tail =>
-            val predicate = SQLPredicate(left, op, c)
+          case (op: PredicateOperator) :: (left: Criteria) :: tail =>
+            val predicate = Predicate(left, op, c)
             processTokensHelper(rest, predicate :: tail)
           case _ =>
             processTokensHelper(rest, c :: stack)
         }
-      case (op: SQLPredicateOperator) :: rest =>
+      case (op: PredicateOperator) :: rest =>
         stack match {
-          case (right: SQLCriteria) :: (left: SQLCriteria) :: tail =>
-            val predicate = SQLPredicate(left, op, right)
+          case (right: Criteria) :: (left: Criteria) :: tail =>
+            val predicate = Predicate(left, op, right)
             processTokensHelper(rest, predicate :: tail)
-          case (right: SQLCriteria) :: (o: SQLPredicateOperator) :: tail =>
+          case (right: Criteria) :: (o: PredicateOperator) :: tail =>
             tail match {
-              case (left: SQLCriteria) :: tt =>
-                val predicate = SQLPredicate(left, op, right)
+              case (left: Criteria) :: tt =>
+                val predicate = Predicate(left, op, right)
                 processTokensHelper(rest, o :: predicate :: tt)
               case _ =>
                 processTokensHelper(rest, op :: stack)
@@ -1055,7 +1068,7 @@ trait SQLWhereParser {
           case _ :: Nil =>
             processTokensHelper(rest, op :: stack)
           case _ =>
-            throw SQLValidationError("Invalid stack state for predicate creation")
+            throw ValidationError("Invalid stack state for predicate creation")
         }
       case ThenCase :: _ =>
         processTokensHelper(Nil, stack) // exit processing on THEN
@@ -1073,8 +1086,8 @@ trait SQLWhereParser {
     * @return
     */
   protected def processTokens(
-    tokens: List[SQLToken]
-  ): Option[SQLCriteria] = {
+    tokens: List[Token]
+  ): Option[Criteria] = {
     processTokensHelper(tokens, Nil)
   }
 
@@ -1086,9 +1099,9 @@ trait SQLWhereParser {
     *   - list of SQL tokens
     * @return
     */
-  private def processSubTokens(tokens: List[SQLToken]): SQLCriteria = {
+  private def processSubTokens(tokens: List[Token]): Criteria = {
     processTokensHelper(tokens, Nil).getOrElse(
-      throw SQLValidationError("Empty sub-expression")
+      throw ValidationError("Empty sub-expression")
     )
   }
 
@@ -1106,12 +1119,12 @@ trait SQLWhereParser {
     */
   @tailrec
   private def extractSubTokens(
-    tokens: List[SQLToken],
+    tokens: List[Token],
     openCount: Int,
-    subTokens: List[SQLToken] = Nil
-  ): (List[SQLToken], List[SQLToken]) = {
+    subTokens: List[Token] = Nil
+  ): (List[Token], List[Token]) = {
     tokens match {
-      case Nil => throw SQLValidationError("Unbalanced parentheses")
+      case Nil => throw ValidationError("Unbalanced parentheses")
       case (start: StartDelimiter) :: rest =>
         extractSubTokens(rest, openCount + 1, start :: subTokens)
       case (end: EndDelimiter) :: rest =>
@@ -1126,13 +1139,13 @@ trait SQLWhereParser {
 trait SQLGroupByParser {
   self: SQLParser with SQLWhereParser =>
 
-  def bucket: PackratParser[SQLBucket] = identifier ^^ { i =>
-    SQLBucket(i)
+  def bucket: PackratParser[Bucket] = identifier ^^ { i =>
+    Bucket(i)
   }
 
-  def groupBy: PackratParser[SQLGroupBy] =
+  def groupBy: PackratParser[GroupBy] =
     GroupBy.regex ~ rep1sep(bucket, separator) ^^ { case _ ~ buckets =>
-      SQLGroupBy(buckets)
+      GroupBy(buckets)
     }
 
 }
@@ -1140,8 +1153,8 @@ trait SQLGroupByParser {
 trait SQLHavingParser {
   self: SQLParser with SQLWhereParser =>
 
-  def having: PackratParser[SQLHaving] = Having.regex ~> whereCriteria ^^ { rawTokens =>
-    SQLHaving(
+  def having: PackratParser[Having] = Having.regex ~> whereCriteria ^^ { rawTokens =>
+    Having(
       processTokens(rawTokens)
     )
   }
@@ -1158,22 +1171,21 @@ trait SQLOrderByParser {
   private def fieldName: PackratParser[String] =
     """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
 
-  def fieldWithFunction: PackratParser[(String, List[SQLFunction])] =
+  def fieldWithFunction: PackratParser[(String, List[Function])] =
     rep1sep(sql_functions, start) ~ start.? ~ fieldName ~ rep1(end) ^^ { case f ~ _ ~ n ~ _ =>
       (n, f)
     }
 
-  def sort: PackratParser[SQLFieldSort] =
+  def sort: PackratParser[FieldSort] =
     (fieldWithFunction | fieldName) ~ (asc | desc).? ^^ { case f ~ o =>
       f match {
-        case i: (String, List[SQLFunction]) => SQLFieldSort(i._1, o, i._2)
-        case s: String                      => SQLFieldSort(s, o, List.empty)
+        case i: (String, List[Function]) => FieldSort(i._1, o, i._2)
+        case s: String                   => FieldSort(s, o, List.empty)
       }
     }
 
-  def orderBy: PackratParser[SQLOrderBy] = OrderBy.regex ~ rep1sep(sort, separator) ^^ {
-    case _ ~ s =>
-      SQLOrderBy(s)
+  def orderBy: PackratParser[OrderBy] = OrderBy.regex ~ rep1sep(sort, separator) ^^ { case _ ~ s =>
+    OrderBy(s)
   }
 
 }
@@ -1181,8 +1193,8 @@ trait SQLOrderByParser {
 trait SQLLimitParser {
   self: SQLParser =>
 
-  def limit: PackratParser[SQLLimit] = Limit.regex ~ long ^^ { case _ ~ i =>
-    SQLLimit(i.value.toInt)
+  def limit: PackratParser[Limit] = Limit.regex ~ long ^^ { case _ ~ i =>
+    Limit(i.value.toInt)
   }
 
 }

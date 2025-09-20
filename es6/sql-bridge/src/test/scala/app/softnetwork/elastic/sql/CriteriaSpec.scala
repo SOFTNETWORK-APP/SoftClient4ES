@@ -9,7 +9,7 @@ import org.scalatest.matchers.should.Matchers
 
 /** Created by smanciot on 13/04/17.
   */
-class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
+class CriteriaSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
@@ -17,7 +17,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
 
   def asQuery(sql: String): String = {
     import SQLImplicits._
-    val criteria: Option[SQLCriteria] = sql
+    val criteria: Option[Criteria] = sql
     val result = SearchBodyBuilderFn(
       SearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
     ).string

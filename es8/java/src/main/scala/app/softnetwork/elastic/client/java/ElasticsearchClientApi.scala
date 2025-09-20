@@ -401,7 +401,7 @@ trait ElasticsearchClientSingleValueAggregateApi
                   field,
                   aggType,
                   aggType match {
-                    case sql.Count =>
+                    case sql.function.aggregate.Count =>
                       NumericValue(
                         if (aggregation.distinct) {
                           root.get(agg).cardinality().value().toDouble
@@ -409,15 +409,15 @@ trait ElasticsearchClientSingleValueAggregateApi
                           root.get(agg).valueCount().value()
                         }
                       )
-                    case sql.Sum =>
+                    case sql.function.aggregate.Sum =>
                       NumericValue(root.get(agg).sum().value())
-                    case sql.Avg =>
+                    case sql.function.aggregate.Avg =>
                       val avgAgg = root.get(agg).avg()
                       aggregateValue(avgAgg.value(), avgAgg.valueAsString())
-                    case sql.Min =>
+                    case sql.function.aggregate.Min =>
                       val minAgg = root.get(agg).min()
                       aggregateValue(minAgg.value(), minAgg.valueAsString())
-                    case sql.Max =>
+                    case sql.function.aggregate.Max =>
                       val maxAgg = root.get(agg).max()
                       aggregateValue(maxAgg.value(), maxAgg.valueAsString())
                     case _ => EmptyValue

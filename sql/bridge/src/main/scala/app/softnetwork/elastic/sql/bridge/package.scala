@@ -1,5 +1,8 @@
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.function.aggregate.Count
+import app.softnetwork.elastic.sql.operator._
+
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.requests.script.Script
@@ -137,12 +140,12 @@ package object bridge {
     )
   }
 
-  def applyNumericOp[A](n: SQLNumericValue[_])(
+  def applyNumericOp[A](n: NumericValue[_])(
     longOp: Long => A,
     doubleOp: Double => A
   ): A = n.toEither.fold(longOp, doubleOp)
 
-  implicit def expressionToQuery(expression: SQLExpression): Query = {
+  implicit def expressionToQuery(expression: GenericExpression): Query = {
     import expression._
     if (aggregation)
       return matchAllQuery()
@@ -150,7 +153,7 @@ package object bridge {
       return scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
     }
     value match {
-      case n: SQLNumericValue[_] =>
+      case n: NumericValue[_] =>
         operator match {
           case Ge =>
             maybeNot match {
@@ -232,7 +235,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case l: SQLStringValue =>
+      case l: StringValue =>
         operator match {
           case Like =>
             maybeNot match {
@@ -285,7 +288,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case b: SQLBoolean =>
+      case b: BooleanValue =>
         operator match {
           case Eq =>
             maybeNot match {
@@ -303,9 +306,9 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case i: SQLIdentifier =>
+      case i: GenericIdentifier =>
         operator match {
-          case op: SQLComparisonOperator =>
+          case op: ComparisonOperator =>
             i.toScript match {
               case Some(script) =>
                 val o = if (maybeNot.isDefined) op.not else op
@@ -328,34 +331,34 @@ package object bridge {
   }
 
   implicit def isNullToQuery(
-                              isNull: SQLIsNull
+                              isNull: IsNullExpr
                             ): Query = {
     import isNull._
     not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullToQuery(
-                                 isNotNull: SQLIsNotNull
+                                 isNotNull: IsNotNullExpr
                                ): Query = {
     import isNotNull._
     existsQuery(identifier.name)
   }
 
   implicit def isNullCriteriaToQuery(
-    isNull: SQLIsNullCriteria
+    isNull: IsNullCriteria
   ): Query = {
     import isNull._
     not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullCriteriaToQuery(
-    isNotNull: SQLIsNotNullCriteria
+    isNotNull: IsNotNullCriteria
   ): Query = {
     import isNotNull._
     existsQuery(identifier.name)
   }
 
-  implicit def inToQuery[R, T <: SQLValue[R]](in: SQLIn[R, T]): Query = {
+  implicit def inToQuery[R, T <: Value[R]](in: InExpr[R, T]): Query = {
     import in._
     val _values: Seq[Any] = values.innerValues
     val t =
@@ -375,7 +378,7 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-                               between: SQLBetween[String]
+                               between: BetweenExpr[String]
                              ): Query = {
     import between._
     val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
@@ -386,7 +389,7 @@ package object bridge {
   }
 
   implicit def betweenLongsToQuery(
-                                   between: SQLBetween[Long]
+                                   between: BetweenExpr[Long]
                                  ): Query = {
     import between._
     val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
@@ -397,7 +400,7 @@ package object bridge {
   }
 
   implicit def betweenDoublesToQuery(
-                                      between: SQLBetween[Double]
+                                      between: BetweenExpr[Double]
                                     ): Query = {
     import between._
     val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
@@ -422,7 +425,7 @@ package object bridge {
   }
 
   implicit def criteriaToElasticCriteria(
-                                          criteria: SQLCriteria
+                                          criteria: Criteria
                                         ): ElasticCriteria = {
     ElasticCriteria(
       criteria

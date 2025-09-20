@@ -16,9 +16,9 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
 
   def asQuery(sql: String): String = {
     import SQLImplicits._
-    val criteria: Option[SQLCriteria] = sql
+    val criteria: Option[Criteria] = sql
     val result = SearchBodyBuilderFn(
-      SearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
+      SQLSearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
     ).string
     println(result)
     result

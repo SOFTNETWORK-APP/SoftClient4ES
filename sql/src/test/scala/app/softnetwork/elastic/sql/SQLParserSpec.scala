@@ -1,5 +1,7 @@
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.parser._
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
