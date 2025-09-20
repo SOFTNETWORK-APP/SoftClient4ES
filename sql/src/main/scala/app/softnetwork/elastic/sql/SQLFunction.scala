@@ -1068,27 +1068,21 @@ case class SQLSubstring(str: PainlessScript, start: Int, length: Option[Int])
     callArgs match {
       // SUBSTRING(expr, start, length)
       case List(arg0, arg1, arg2) =>
-        s"""def _start = ($arg1 - 1);
-           |def _end = _start + $arg2;
-           |(_start < 0 || _end > $arg0.length()) ? null : $arg0.substring(_start, _end)""".stripMargin
-          .replaceAll("\n", " ")
+        s"(($arg1 - 1) < 0 || ($arg1 - 1 + $arg2) > $arg0.length()) ? null : $arg0.substring(($arg1 - 1), ($arg1 - 1 + $arg2))"
 
       // SUBSTRING(expr, start)
       case List(arg0, arg1) =>
-        s"""def _start = ($arg1 - 1);
-           |(_start < 0 || _start >= $arg0.length()) ? null : $arg0.substring(_start)""".stripMargin
-          .replaceAll("\n", " ")
+        s"(($arg1 - 1) < 0 || ($arg1 - 1) >= $arg0.length()) ? null : $arg0.substring(($arg1 - 1))"
 
       case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
     }
   }
+
   override def validate(): Either[String, Unit] =
-    if (start < 0)
-      Left("SUBSTRING start position must be greater than or equal to 0")
+    if (start < 1)
+      Left("SUBSTRING start position must be greater than or equal to 1 (SQL is 1-based)")
     else if (length.exists(_ < 0))
       Left("SUBSTRING length must be non-negative")
-    else if (length.exists(_ < start))
-      Left("SUBSTRING length must be greater than or equal to start position")
     else Right(())
 
   override def toSQL(base: String): String = sql
