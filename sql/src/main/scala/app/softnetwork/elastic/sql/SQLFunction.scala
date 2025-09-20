@@ -1066,14 +1066,22 @@ case class SQLSubstring(str: PainlessScript, start: Int, length: Option[Int])
 
   override def toPainlessCall(callArgs: List[String]): String = {
     callArgs match {
+      // SUBSTRING(expr, start, length)
       case List(arg0, arg1, arg2) =>
-        s"($arg0${Length.painless} < $arg2) ? null : $arg0${operator.painless}($arg1, $arg2)"
+        s"""def _start = ($arg1 - 1);
+           |def _end = _start + $arg2;
+           |(_start < 0 || _end > $arg0.length()) ? null : $arg0.substring(_start, _end)""".stripMargin
+          .replaceAll("\n", " ")
+
+      // SUBSTRING(expr, start)
       case List(arg0, arg1) =>
-        s"($arg0${Length.painless} < $arg1) ? null : $arg0${operator.painless}($arg1)"
+        s"""def _start = ($arg1 - 1);
+           |(_start < 0 || _start >= $arg0.length()) ? null : $arg0.substring(_start)""".stripMargin
+          .replaceAll("\n", " ")
+
       case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
     }
   }
-
   override def validate(): Either[String, Unit] =
     if (start < 0)
       Left("SUBSTRING start position must be greater than or equal to 0")
@@ -1111,7 +1119,6 @@ case class SQLConcat(values: List[PainlessScript]) extends StringFunction[SQLVar
     else Right(())
 
   override def toSQL(base: String): String = sql
-
 }
 
 case object SQLLength extends StringFunction[SQLBigInt] {

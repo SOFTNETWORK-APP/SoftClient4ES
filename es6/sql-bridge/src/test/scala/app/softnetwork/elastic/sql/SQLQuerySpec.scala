@@ -2362,7 +2362,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "substr": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : (arg0.length() < 3) ? null : arg0.substring(1, 3))"
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null :  def _start = (1 - 1); def _end = _start + 3; (_start < 0 || _end > arg0.length()) ? null : arg0.substring(_start, _end)         )"
       |      }
       |    },
       |    "trim": {
@@ -2389,6 +2389,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll(":\\(", " : (")
@@ -2402,6 +2405,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("; if", ";if")
       .replaceAll("==", " == ")
       .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
       .replaceAll("\\*", " * ")
       .replaceAll("/", " / ")
       .replaceAll(">", " > ")
