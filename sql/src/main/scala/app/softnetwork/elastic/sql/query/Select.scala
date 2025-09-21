@@ -1,6 +1,16 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
+import app.softnetwork.elastic.sql.{
+  asString,
+  Alias,
+  AliasUtils,
+  Expr,
+  GenericIdentifier,
+  PainlessScript,
+  TokenRegex,
+  Updateable
+}
 
 case object Select extends Expr("select") with TokenRegex
 

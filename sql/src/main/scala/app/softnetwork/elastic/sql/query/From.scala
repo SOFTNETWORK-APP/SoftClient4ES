@@ -1,4 +1,14 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.query
+
+import app.softnetwork.elastic.sql.{
+  asString,
+  Alias,
+  Expr,
+  GenericIdentifier,
+  Source,
+  TokenRegex,
+  Updateable
+}
 
 case object From extends Expr("from") with TokenRegex
 

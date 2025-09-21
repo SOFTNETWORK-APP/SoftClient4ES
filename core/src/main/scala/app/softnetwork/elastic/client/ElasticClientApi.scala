@@ -8,7 +8,7 @@ import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
 import org.json4s.{DefaultFormats, Formats}

@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.Criteria
+import app.softnetwork.elastic.sql.query.Criteria
 import com.sksamuel.elastic4s.requests.searches.queries.Query
 
 case class ElasticCriteria(criteria: Criteria) {

@@ -1,4 +1,6 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.query
+
+import app.softnetwork.elastic.sql.{asString, GenericIdentifier, Token}
 
 case class SQLSearchRequest(
   select: Select = Select(),

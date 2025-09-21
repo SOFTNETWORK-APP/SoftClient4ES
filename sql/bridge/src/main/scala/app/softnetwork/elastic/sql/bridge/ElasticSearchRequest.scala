@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.{Bucket, Criteria, Except, Field}
+import app.softnetwork.elastic.sql.query.{Bucket, Criteria, Except, Field}
 import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
 
 case class ElasticSearchRequest(

@@ -1,4 +1,4 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function._
@@ -9,6 +9,7 @@ import app.softnetwork.elastic.sql.function.cond.{
 }
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql._
 
 import scala.annotation.tailrec
 

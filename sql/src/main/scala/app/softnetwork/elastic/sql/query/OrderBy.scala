@@ -1,6 +1,7 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
+import app.softnetwork.elastic.sql.{Expr, Token, TokenRegex}
 
 case object OrderBy extends Expr("order by") with TokenRegex
 

@@ -1,15 +1,8 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{
-  Expr,
-  Expression,
-  GenericIdentifier,
-  Identifier,
-  PainlessScript,
-  TokenRegex
-}
-import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.{Expr, GenericIdentifier, Identifier, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLBool, SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.query.Expression
 
 package object cond {
 

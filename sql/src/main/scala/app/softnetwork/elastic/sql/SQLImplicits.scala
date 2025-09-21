@@ -1,6 +1,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.parser.SQLParser
+import app.softnetwork.elastic.sql.query.{Criteria, SQLMultiSearchRequest, SQLSearchRequest}
 
 import scala.util.matching.Regex
 

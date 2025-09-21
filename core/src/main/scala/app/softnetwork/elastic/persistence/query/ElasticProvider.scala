@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.persistence.query
 
 import app.softnetwork.elastic.client.ElasticClientApi
-import app.softnetwork.elastic.sql.SQLQuery
+import app.softnetwork.elastic.sql.query.SQLQuery
 import mustache.Mustache
 import org.json4s.Formats
 import app.softnetwork.persistence._

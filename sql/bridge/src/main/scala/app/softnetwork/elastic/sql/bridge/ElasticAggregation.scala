@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.{
+import app.softnetwork.elastic.sql.query.{
   Asc,
   BucketSelectorScript,
   ElasticBoolQuery,

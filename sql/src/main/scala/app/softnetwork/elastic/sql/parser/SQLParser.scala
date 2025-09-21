@@ -14,6 +14,7 @@ import app.softnetwork.elastic.sql.operator.math._
 import app.softnetwork.elastic.sql.time.TimeUnit._
 import app.softnetwork.elastic.sql.time._
 import app.softnetwork.elastic.sql._
+import app.softnetwork.elastic.sql.query._
 
 import scala.language.implicitConversions
 import scala.util.parsing.combinator.{PackratParsers, RegexParsers}
@@ -185,11 +186,11 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
   def identifierWithArithmeticExpression: Parser[GenericIdentifier] =
     arithmeticExpressionLevel2 ^^ {
-      case af: ArithmeticExpression => GenericIdentifier("", functions = af :: Nil)
-      case id: GenericIdentifier       => id
-      case f: FunctionWithIdentifier   => f.identifier
-      case f: Function                 => GenericIdentifier("", functions = f :: Nil)
-      case other                       => throw new Exception(s"Unexpected expression $other")
+      case af: ArithmeticExpression  => GenericIdentifier("", functions = af :: Nil)
+      case id: GenericIdentifier     => id
+      case f: FunctionWithIdentifier => f.identifier
+      case f: Function               => GenericIdentifier("", functions = f :: Nil)
+      case other                     => throw new Exception(s"Unexpected expression $other")
     }
 
   def interval: PackratParser[TimeInterval] =

@@ -1,7 +1,8 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.{Expr, GenericIdentifier, TokenRegex, Updateable}
 
 case object GroupBy extends Expr("group by") with TokenRegex
 

@@ -3,6 +3,7 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
+import app.softnetwork.elastic.sql.query.Validator
 
 package object function {
 
@@ -103,7 +104,7 @@ package object function {
 
     def arithmetic: Boolean = functions.nonEmpty && functions.forall {
       case _: ArithmeticExpression => true
-      case _                          => false
+      case _                       => false
     }
   }
 

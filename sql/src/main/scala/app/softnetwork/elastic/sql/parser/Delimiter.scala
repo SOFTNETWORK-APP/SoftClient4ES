@@ -1,4 +1,6 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.parser
+
+import app.softnetwork.elastic.sql.{Expr, Token}
 
 sealed trait Delimiter extends Token
 

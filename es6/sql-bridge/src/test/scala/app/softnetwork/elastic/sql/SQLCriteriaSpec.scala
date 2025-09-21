@@ -1,6 +1,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
+import app.softnetwork.elastic.sql.query.Criteria
 import com.sksamuel.elastic4s.ElasticApi.matchAllQuery
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.searches.SearchRequest
@@ -9,7 +10,7 @@ import org.scalatest.matchers.should.Matchers
 
 /** Created by smanciot on 13/04/17.
   */
-class CriteriaSpec extends AnyFlatSpec with Matchers {
+class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 

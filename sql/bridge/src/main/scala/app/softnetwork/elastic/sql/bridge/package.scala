@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.function.aggregate.Count
 import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.query._
 
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._

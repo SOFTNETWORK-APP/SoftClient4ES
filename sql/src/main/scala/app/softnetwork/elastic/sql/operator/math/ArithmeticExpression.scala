@@ -3,6 +3,7 @@ package app.softnetwork.elastic.sql.operator.math
 import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.`type`._
 import app.softnetwork.elastic.sql.function.{BinaryFunction, TransformFunction}
+import app.softnetwork.elastic.sql.query.Validator
 
 case class ArithmeticExpression(
   left: PainlessScript,

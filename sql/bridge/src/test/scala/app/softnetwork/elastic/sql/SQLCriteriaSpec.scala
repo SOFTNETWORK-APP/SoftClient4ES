@@ -1,6 +1,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
+import app.softnetwork.elastic.sql.query.Criteria
 import com.sksamuel.elastic4s.ElasticApi.matchAllQuery
 import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -18,7 +19,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
     import SQLImplicits._
     val criteria: Option[Criteria] = sql
     val result = SearchBodyBuilderFn(
-      SQLSearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
+      SearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
     ).string
     println(result)
     result
