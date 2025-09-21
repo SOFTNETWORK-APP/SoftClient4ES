@@ -456,6 +456,14 @@ package object sql {
 
   }
 
+  object Identifier {
+    def apply(): Identifier = GenericIdentifier("")
+    def apply(function: Function): Identifier = GenericIdentifier("", functions = function :: Nil)
+    def apply(name: String): Identifier = GenericIdentifier(name)
+    def apply(name: String, function: Function): Identifier =
+      GenericIdentifier(name, functions = function :: Nil)
+  }
+
   case class GenericIdentifier(
     name: String,
     tableAlias: Option[String] = None,
