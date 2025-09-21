@@ -1,4 +1,4 @@
-package app.softnetwork.elastic.sql.query
+package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
 import app.softnetwork.elastic.sql.function.{Function, FunctionN}

@@ -8,6 +8,7 @@ import app.softnetwork.elastic.sql.function.cond.{
   IsNullFunction
 }
 import app.softnetwork.elastic.sql.function.geo.Distance
+import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql._
 

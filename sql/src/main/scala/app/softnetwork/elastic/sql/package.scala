@@ -2,6 +2,7 @@ package app.softnetwork.elastic
 
 import app.softnetwork.elastic.sql.function.aggregate.{Max, Min}
 import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.parser.Validation
 import app.softnetwork.elastic.sql.query._
 
 import java.security.MessageDigest

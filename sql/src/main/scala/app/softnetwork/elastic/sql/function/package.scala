@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
-import app.softnetwork.elastic.sql.query.Validator
+import app.softnetwork.elastic.sql.parser.Validator
 
 package object function {
 
