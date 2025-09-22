@@ -91,9 +91,9 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
   def boolean: PackratParser[BooleanValue] =
     """(true|false)""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
-  def value_identifier: PackratParser[GenericIdentifier] =
+  def value_identifier: PackratParser[Identifier] =
     (literal | long | double | pi | boolean) ^^ { v =>
-      GenericIdentifier("", functions = v :: Nil)
+      Identifier(v)
     }
 
   def start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)
@@ -185,12 +185,12 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
         }
     }
 
-  def identifierWithArithmeticExpression: Parser[GenericIdentifier] =
+  def identifierWithArithmeticExpression: Parser[Identifier] =
     arithmeticExpressionLevel2 ^^ {
-      case af: ArithmeticExpression  => GenericIdentifier("", functions = af :: Nil)
-      case id: GenericIdentifier     => id
+      case af: ArithmeticExpression  => Identifier(af)
+      case id: Identifier            => id
       case f: FunctionWithIdentifier => f.identifier
-      case f: Function               => GenericIdentifier("", functions = f :: Nil)
+      case f: Function               => Identifier(f)
       case other                     => throw new Exception(s"Unexpected expression $other")
     }
 
@@ -212,17 +212,17 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
   def intervalFunction: PackratParser[TransformFunction[SQLTemporal, SQLTemporal]] =
     add_interval | substract_interval
 
-  def identifierWithIntervalFunction: PackratParser[GenericIdentifier] =
+  def identifierWithIntervalFunction: PackratParser[Identifier] =
     (identifierWithFunction | identifier) ~ intervalFunction ^^ { case i ~ f =>
-      i.copy(functions = f +: i.functions)
+      i.withFunctions(f +: i.functions)
     }
 
-  def identifierWithSystemFunction: PackratParser[GenericIdentifier] =
+  def identifierWithSystemFunction: PackratParser[Identifier] =
     (current_date | current_time | current_timestamp | now) ~ intervalFunction.? ^^ {
       case f1 ~ f2 =>
         f2 match {
-          case Some(f) => GenericIdentifier("", functions = List(f, f1))
-          case None    => GenericIdentifier("", functions = List(f1))
+          case Some(f) => Identifier(List(f, f1))
+          case None    => Identifier(f1)
         }
     }
 
@@ -232,10 +232,10 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
         DateTrunc(i, u)
     }
 
-  def extract_identifier: PackratParser[GenericIdentifier] =
+  def extract_identifier: PackratParser[Identifier] =
     "(?i)extract".r ~ start ~ time_unit ~ "(?i)from".r ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
       case _ ~ _ ~ u ~ _ ~ i ~ _ =>
-        i.copy(functions = Extract(u) +: i.functions)
+        i.withFunctions(Extract(u) +: i.functions)
     }
 
   def extract_year: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
@@ -276,8 +276,8 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
       case _ ~ _ ~ li ~ _ ~ f ~ _ =>
         li match {
           case l: StringValue =>
-            ParseDate(GenericIdentifier("", functions = l :: Nil), f.value)
-          case i: GenericIdentifier =>
+            ParseDate(Identifier(l), f.value)
+          case i: Identifier =>
             ParseDate(i, f.value)
         }
     }
@@ -307,8 +307,8 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
       case _ ~ _ ~ li ~ _ ~ f ~ _ =>
         li match {
           case l: SQLLiteral =>
-            ParseDateTime(GenericIdentifier("", functions = l :: Nil), f.value)
-          case i: GenericIdentifier =>
+            ParseDateTime(Identifier(l), f.value)
+          case i: Identifier =>
             ParseDateTime(i, f.value)
         }
     }
@@ -326,7 +326,7 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
 
   def distance: PackratParser[Function] = Distance.regex ^^ (_ => Distance)
 
-  def identifierWithTemporalFunction: PackratParser[GenericIdentifier] =
+  def identifierWithTemporalFunction: PackratParser[Identifier] =
     rep1sep(
       date_trunc | extractors | date_functions | datetime_functions,
       start
@@ -334,12 +334,12 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
       end
     ) ^^ { case f ~ _ ~ i ~ _ =>
       i match {
-        case Some(id) => id.copy(functions = id.functions ++ f)
+        case Some(id) => id.withFunctions(id.functions ++ f)
         case None =>
           f.lastOption match {
             case Some(fi: FunctionWithIdentifier) =>
-              fi.identifier.copy(functions = f ++ fi.identifier.functions)
-            case _ => GenericIdentifier("", functions = f)
+              fi.identifier.withFunctions(f ++ fi.identifier.functions)
+            case _ => Identifier(f)
           }
       }
     }
@@ -349,8 +349,8 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
       case _ ~ _ ~ d1 ~ _ ~ d2 ~ _ ~ u ~ _ => DateDiff(d1, d2, u)
     }
 
-  def date_diff_identifier: PackratParser[GenericIdentifier] = date_diff ^^ { dd =>
-    GenericIdentifier("", functions = dd :: Nil)
+  def date_diff_identifier: PackratParser[Identifier] = date_diff ^^ { dd =>
+    Identifier(dd)
   }
 
   def is_null: PackratParser[ConditionalFunction[_]] =
@@ -421,8 +421,8 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
       case _ ~ e ~ c ~ r ~ _ => Case(e, c, r)
     }
 
-  def case_when_identifier: Parser[GenericIdentifier] = case_when ^^ { cw =>
-    GenericIdentifier("", functions = cw :: Nil)
+  def case_when_identifier: Parser[Identifier] = case_when ^^ { cw =>
+    Identifier(cw)
   }
 
   def logical_functions: PackratParser[TransformFunction[_, _]] =
@@ -442,8 +442,8 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
 
   private[this] def log10: PackratParser[MathOp] = Log10.regex ^^ (_ => Log10)
 
-  implicit def functionAsIdentifier(mf: Function): GenericIdentifier = mf match {
-    case id: GenericIdentifier       => id
+  implicit def functionAsIdentifier(mf: Function): Identifier = mf match {
+    case id: Identifier              => id
     case fid: FunctionWithIdentifier => fid.identifier
     case _                           => Identifier(mf)
   }
@@ -674,7 +674,7 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
 
   private val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
 
-  def identifier: PackratParser[GenericIdentifier] =
+  def identifier: PackratParser[Identifier] =
     Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>
       GenericIdentifier(
         i,
@@ -719,44 +719,44 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
   def sql_type: PackratParser[SQLType] =
     char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type
 
-  private[this] def castFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+  private[this] def castFunctionWithIdentifier: PackratParser[Identifier] =
     "(?i)cast".r ~ start ~ (identifierWithTransformation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithFunction | date_diff_identifier | extract_identifier | identifier) ~ Alias.regex.? ~ sql_type ~ end ~ intervalFunction.? ^^ {
       case _ ~ _ ~ i ~ as ~ t ~ _ ~ a =>
-        i.copy(functions = a.toList ++ (Cast(i, targetType = t, as = as.isDefined) +: i.functions))
+        i.withFunctions(a.toList ++ (Cast(i, targetType = t, as = as.isDefined) +: i.functions))
     }
 
-  private[this] def dateFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+  private[this] def dateFunctionWithIdentifier: PackratParser[Identifier] =
     (parse_date | format_date | date_add | date_sub) ~ intervalFunction.? ^^ { case t ~ af =>
       af match {
-        case Some(f) => t.identifier.copy(functions = f +: t +: t.identifier.functions)
-        case None    => t.identifier.copy(functions = t +: t.identifier.functions)
+        case Some(f) => t.identifier.withFunctions(f +: t +: t.identifier.functions)
+        case None    => t.identifier.withFunctions(t +: t.identifier.functions)
       }
     }
 
-  private[this] def dateTimeFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+  private[this] def dateTimeFunctionWithIdentifier: PackratParser[Identifier] =
     (date_trunc | parse_datetime | format_datetime | datetime_add | datetime_sub) ~ intervalFunction.? ^^ {
       case t ~ af =>
         af match {
-          case Some(f) => t.identifier.copy(functions = f +: t +: t.identifier.functions)
-          case None    => t.identifier.copy(functions = t +: t.identifier.functions)
+          case Some(f) => t.identifier.withFunctions(f +: t +: t.identifier.functions)
+          case None    => t.identifier.withFunctions(t +: t.identifier.functions)
         }
     }
 
-  private[this] def conditionalFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+  private[this] def conditionalFunctionWithIdentifier: PackratParser[Identifier] =
     (is_null | is_notnull | coalesce | nullif) ^^ { t =>
-      t.identifier.copy(functions = t +: t.identifier.functions)
+      t.identifier.withFunctions(t +: t.identifier.functions)
     }
 
   def identifierWithTransformation: PackratParser[Identifier] =
     mathematicalFunctionWithIdentifier | castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier | stringFunctionWithIdentifier
 
-  def identifierWithAggregation: PackratParser[GenericIdentifier] =
+  def identifierWithAggregation: PackratParser[Identifier] =
     aggregates ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
       case a ~ _ ~ i ~ _ =>
-        i.copy(functions = a +: i.functions)
+        i.withFunctions(a +: i.functions)
     }
 
-  def identifierWithFunction: PackratParser[GenericIdentifier] =
+  def identifierWithFunction: PackratParser[Identifier] =
     rep1sep(
       sql_functions,
       start
@@ -767,10 +767,10 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
         case None =>
           f.lastOption match {
             case Some(fi: FunctionWithIdentifier) =>
-              fi.identifier.copy(functions = f ++ fi.identifier.functions)
-            case _ => GenericIdentifier("", functions = f)
+              fi.identifier.withFunctions(f ++ fi.identifier.functions)
+            case _ => Identifier(f)
           }
-        case Some(id) => id.copy(functions = id.functions ++ f)
+        case Some(id) => id.withFunctions(id.functions ++ f)
       }
     }
 

@@ -378,6 +378,8 @@ package object sql {
   sealed trait Identifier extends Token with Source with FunctionChain with PainlessScript {
     def name: String
 
+    def withFunctions(functions: List[Function]): Identifier
+
     def update(request: SQLSearchRequest): Identifier
 
     def tableAlias: Option[String]
@@ -462,6 +464,7 @@ package object sql {
   object Identifier {
     def apply(): Identifier = GenericIdentifier("")
     def apply(function: Function): Identifier = GenericIdentifier("", functions = function :: Nil)
+    def apply(functions: List[Function]): Identifier = apply().withFunctions(functions)
     def apply(name: String): Identifier = GenericIdentifier(name)
     def apply(name: String, function: Function): Identifier =
       GenericIdentifier(name, functions = function :: Nil)
@@ -477,6 +480,8 @@ package object sql {
     fieldAlias: Option[String] = None,
     bucket: Option[Bucket] = None
   ) extends Identifier {
+
+    def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
 
     def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
