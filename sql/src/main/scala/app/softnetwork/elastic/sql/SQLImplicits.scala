@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.parser.SQLParser
+import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{Criteria, SQLMultiSearchRequest, SQLSearchRequest}
 
 import scala.util.matching.Regex
@@ -21,7 +21,7 @@ object SQLImplicits {
   implicit def queryToSQLQuery(
     query: String
   ): Option[Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
-    SQLParser(query) match {
+    Parser(query) match {
       case Left(_)  => None
       case Right(r) => Some(r)
     }

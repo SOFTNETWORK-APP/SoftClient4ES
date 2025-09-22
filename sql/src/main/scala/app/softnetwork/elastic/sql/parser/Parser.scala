@@ -24,15 +24,15 @@ import scala.util.parsing.input.CharSequenceReader
   *
   * SQL Parser for ElasticSearch
   */
-object SQLParser
-    extends SQLParser
-    with SQLSelectParser
-    with SQLFromParser
-    with SQLWhereParser
-    with SQLGroupByParser
-    with SQLHavingParser
-    with SQLOrderByParser
-    with SQLLimitParser
+object Parser
+    extends Parser
+    with SelectParser
+    with FromParser
+    with WhereParser
+    with GroupByParser
+    with HavingParser
+    with OrderByParser
+    with LimitParser
     with PackratParsers {
 
   def request: PackratParser[SQLSearchRequest] = {
@@ -53,12 +53,12 @@ object SQLParser
 
   def apply(
     query: String
-  ): Either[SQLParserError, Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
+  ): Either[ParserError, Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
     val reader = new PackratReader(new CharSequenceReader(query))
     parse(requests, reader) match {
       case NoSuccess(msg, _) =>
         Console.err.println(msg)
-        Left(SQLParserError(msg))
+        Left(ParserError(msg))
       case Success(result, _) =>
         result match {
           case x :: Nil => Right(Left(x))
@@ -69,11 +69,11 @@ object SQLParser
 
 }
 
-trait SQLCompilationError
+trait CompilationError
 
-case class SQLParserError(msg: String) extends SQLCompilationError
+case class ParserError(msg: String) extends CompilationError
 
-trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
+trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
 
   def literal: PackratParser[StringValue] =
     """"[^"]*"|'[^']*'""".r ^^ (str => StringValue(str.substring(1, str.length - 1)))
@@ -786,8 +786,8 @@ trait SQLParser extends RegexParsers with PackratParsers { _: SQLWhereParser =>
 
 }
 
-trait SQLSelectParser {
-  self: SQLParser with SQLWhereParser =>
+trait SelectParser {
+  self: Parser with WhereParser =>
 
   def except: PackratParser[Except] = Except.regex ~ start ~ rep1sep(field, separator) ~ end ^^ {
     case _ ~ _ ~ e ~ _ =>
@@ -804,8 +804,8 @@ trait SQLSelectParser {
 
 }
 
-trait SQLFromParser {
-  self: SQLParser with SQLLimitParser =>
+trait FromParser {
+  self: Parser with LimitParser =>
 
   def unnest: PackratParser[Table] =
     Unnest.regex ~ start ~ identifier ~ limit.? ~ end ~ alias ^^ { case _ ~ _ ~ i ~ l ~ _ ~ a =>
@@ -821,8 +821,8 @@ trait SQLFromParser {
 
 }
 
-trait SQLWhereParser {
-  self: SQLParser with SQLGroupByParser with SQLOrderByParser =>
+trait WhereParser {
+  self: Parser with GroupByParser with OrderByParser =>
 
   def isNull: PackratParser[Criteria] = identifier ~ IsNull.regex ^^ { case i ~ _ =>
     IsNullExpr(i)
@@ -1137,8 +1137,8 @@ trait SQLWhereParser {
   }
 }
 
-trait SQLGroupByParser {
-  self: SQLParser with SQLWhereParser =>
+trait GroupByParser {
+  self: Parser with WhereParser =>
 
   def bucket: PackratParser[Bucket] = identifier ^^ { i =>
     Bucket(i)
@@ -1151,8 +1151,8 @@ trait SQLGroupByParser {
 
 }
 
-trait SQLHavingParser {
-  self: SQLParser with SQLWhereParser =>
+trait HavingParser {
+  self: Parser with WhereParser =>
 
   def having: PackratParser[Having] = Having.regex ~> whereCriteria ^^ { rawTokens =>
     Having(
@@ -1162,8 +1162,8 @@ trait SQLHavingParser {
 
 }
 
-trait SQLOrderByParser {
-  self: SQLParser =>
+trait OrderByParser {
+  self: Parser =>
 
   def asc: PackratParser[Asc.type] = Asc.regex ^^ (_ => Asc)
 
@@ -1191,8 +1191,8 @@ trait SQLOrderByParser {
 
 }
 
-trait SQLLimitParser {
-  self: SQLParser =>
+trait LimitParser {
+  self: Parser =>
 
   def limit: PackratParser[Limit] = Limit.regex ~ long ^^ { case _ ~ i =>
     Limit(i.value.toInt)

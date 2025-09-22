@@ -172,436 +172,436 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   import Queries._
 
   "SQLParser" should "parse numerical eq" in {
-    val result = SQLParser(numericalEq)
+    val result = Parser(numericalEq)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalEq)
   }
 
   it should "parse numerical ne" in {
-    val result = SQLParser(numericalNe)
+    val result = Parser(numericalNe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalNe)
   }
 
   it should "parse numerical lt" in {
-    val result = SQLParser(numericalLt)
+    val result = Parser(numericalLt)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalLt)
   }
 
   it should "parse numerical le" in {
-    val result = SQLParser(numericalLe)
+    val result = Parser(numericalLe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalLe)
   }
 
   it should "parse numerical gt" in {
-    val result = SQLParser(numericalGt)
+    val result = Parser(numericalGt)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalGt)
   }
 
   it should "parse numerical ge" in {
-    val result = SQLParser(numericalGe)
+    val result = Parser(numericalGe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalGe)
   }
 
   it should "parse literal eq" in {
-    val result = SQLParser(literalEq)
+    val result = Parser(literalEq)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalEq)
   }
 
   it should "parse literal like" in {
-    val result = SQLParser(literalLike)
+    val result = Parser(literalLike)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalLike)
   }
 
   it should "parse literal not like" in {
-    val result = SQLParser(literalNotLike)
+    val result = Parser(literalNotLike)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalNotLike)
   }
 
   it should "parse literal ne" in {
-    val result = SQLParser(literalNe)
+    val result = Parser(literalNe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalNe)
   }
 
   it should "parse literal lt" in {
-    val result = SQLParser(literalLt)
+    val result = Parser(literalLt)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalLt)
   }
 
   it should "parse literal le" in {
-    val result = SQLParser(literalLe)
+    val result = Parser(literalLe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalLe)
   }
 
   it should "parse literal gt" in {
-    val result = SQLParser(literalGt)
+    val result = Parser(literalGt)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalGt)
   }
 
   it should "parse literal ge" in {
-    val result = SQLParser(literalGe)
+    val result = Parser(literalGe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalGe)
   }
 
   it should "parse boolean eq" in {
-    val result = SQLParser(boolEq)
+    val result = Parser(boolEq)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(boolEq)
   }
 
   it should "parse boolean ne" in {
-    val result = SQLParser(boolNe)
+    val result = Parser(boolNe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(boolNe)
   }
 
   it should "parse between" in {
-    val result = SQLParser(betweenExpression)
+    val result = Parser(betweenExpression)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(betweenExpression)
   }
 
   it should "parse and predicate" in {
-    val result = SQLParser(andPredicate)
+    val result = Parser(andPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(andPredicate)
   }
 
   it should "parse or predicate" in {
-    val result = SQLParser(orPredicate)
+    val result = Parser(orPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(orPredicate)
   }
 
   it should "parse left predicate with criteria" in {
-    val result = SQLParser(leftPredicate)
+    val result = Parser(leftPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(leftPredicate)
   }
 
   it should "parse right predicate with criteria" in {
-    val result = SQLParser(rightPredicate)
+    val result = Parser(rightPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(rightPredicate)
   }
 
   it should "parse multiple predicates" in {
-    val result = SQLParser(predicates)
+    val result = Parser(predicates)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(predicates)
   }
 
   it should "parse nested predicate" in {
-    val result = SQLParser(nestedPredicate)
+    val result = Parser(nestedPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(nestedPredicate)
   }
 
   it should "parse nested criteria" in {
-    val result = SQLParser(nestedCriteria)
+    val result = Parser(nestedCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(nestedCriteria)
   }
 
   it should "parse child predicate" in {
-    val result = SQLParser(childPredicate)
+    val result = Parser(childPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(childPredicate)
   }
 
   it should "parse child criteria" in {
-    val result = SQLParser(childCriteria)
+    val result = Parser(childCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(childCriteria)
   }
 
   it should "parse parent predicate" in {
-    val result = SQLParser(parentPredicate)
+    val result = Parser(parentPredicate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(parentPredicate)
   }
 
   it should "parse parent criteria" in {
-    val result = SQLParser(parentCriteria)
+    val result = Parser(parentCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(parentCriteria)
   }
 
   it should "parse in literal expression" in {
-    val result = SQLParser(inLiteralExpression)
+    val result = Parser(inLiteralExpression)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       inLiteralExpression
     )
   }
 
   it should "parse in numerical expression with Int values" in {
-    val result = SQLParser(inNumericalExpressionWithIntValues)
+    val result = Parser(inNumericalExpressionWithIntValues)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       inNumericalExpressionWithIntValues
     )
   }
 
   it should "parse in numerical expression with Double values" in {
-    val result = SQLParser(inNumericalExpressionWithDoubleValues)
+    val result = Parser(inNumericalExpressionWithDoubleValues)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       inNumericalExpressionWithDoubleValues
     )
   }
 
   it should "parse not in literal expression" in {
-    val result = SQLParser(notInLiteralExpression)
+    val result = Parser(notInLiteralExpression)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       notInLiteralExpression
     )
   }
 
   it should "parse not in numerical expression with Int values" in {
-    val result = SQLParser(notInNumericalExpressionWithIntValues)
+    val result = Parser(notInNumericalExpressionWithIntValues)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       notInNumericalExpressionWithIntValues
     )
   }
 
   it should "parse not in numerical expression with Double values" in {
-    val result = SQLParser(notInNumericalExpressionWithDoubleValues)
+    val result = Parser(notInNumericalExpressionWithDoubleValues)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       notInNumericalExpressionWithDoubleValues
     )
   }
 
   it should "parse nested with between" in {
-    val result = SQLParser(nestedWithBetween)
+    val result = Parser(nestedWithBetween)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(nestedWithBetween)
   }
 
   it should "parse count" in {
-    val result = SQLParser(count)
+    val result = Parser(count)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(count)
   }
 
   it should "parse distinct count" in {
-    val result = SQLParser(countDistinct)
+    val result = Parser(countDistinct)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(countDistinct)
   }
 
   it should "parse count with nested criteria" in {
-    val result = SQLParser(countNested)
+    val result = Parser(countNested)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(countNested)
   }
 
   it should "parse is null" in {
-    val result = SQLParser(isNull)
+    val result = Parser(isNull)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(isNull)
   }
 
   it should "parse is not null" in {
-    val result = SQLParser(isNotNull)
+    val result = Parser(isNotNull)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(isNotNull)
   }
 
   it should "parse geo distance criteria" in {
-    val result = SQLParser(geoDistanceCriteria)
+    val result = Parser(geoDistanceCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       geoDistanceCriteria
     )
   }
 
   it should "parse except fields" in {
-    val result = SQLParser(except)
+    val result = Parser(except)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(except)
   }
 
   it should "parse match criteria" in {
-    val result = SQLParser(matchCriteria)
+    val result = Parser(matchCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(matchCriteria)
   }
 
   it should "parse group by" in {
-    val result = SQLParser(groupBy)
+    val result = Parser(groupBy)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupBy)
   }
 
   it should "parse order by" in {
-    val result = SQLParser(orderBy)
+    val result = Parser(orderBy)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(orderBy)
   }
 
   it should "parse limit" in {
-    val result = SQLParser(limit)
+    val result = Parser(limit)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(limit)
   }
 
   it should "parse group by with order by and limit" in {
-    val result = SQLParser(groupByWithOrderByAndLimit)
+    val result = Parser(groupByWithOrderByAndLimit)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       groupByWithOrderByAndLimit
     )
   }
 
   it should "parse group by with having" in {
-    val result = SQLParser(groupByWithHaving)
+    val result = Parser(groupByWithHaving)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupByWithHaving)
   }
 
   it should "parse date time fields" in {
-    val result = SQLParser(dateTimeWithIntervalFields)
+    val result = Parser(dateTimeWithIntervalFields)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateTimeWithIntervalFields
     )
   }
 
   it should "parse fields with interval" in {
-    val result = SQLParser(fieldsWithInterval)
+    val result = Parser(fieldsWithInterval)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(fieldsWithInterval)
   }
 
   it should "parse filter with date time and interval" in {
-    val result = SQLParser(filterWithDateTimeAndInterval)
+    val result = Parser(filterWithDateTimeAndInterval)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       filterWithDateTimeAndInterval
     )
   }
 
   it should "parse filter with date and interval" in {
-    val result = SQLParser(filterWithDateAndInterval)
+    val result = Parser(filterWithDateAndInterval)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       filterWithDateAndInterval
     )
   }
 
   it should "parse filter with time and interval" in {
-    val result = SQLParser(filterWithTimeAndInterval)
+    val result = Parser(filterWithTimeAndInterval)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       filterWithTimeAndInterval
     )
   }
 
   it should "parse group by with having and date time functions" in {
-    val result = SQLParser(groupByWithHavingAndDateTimeFunctions)
+    val result = Parser(groupByWithHavingAndDateTimeFunctions)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       groupByWithHavingAndDateTimeFunctions
     )
   }
 
   it should "parse parse_date function" in {
-    val result = SQLParser(parseDate)
+    val result = Parser(parseDate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       parseDate
     )
   }
 
   it should "parse parse_date_time function" in {
-    val result = SQLParser(parseDateTime)
+    val result = Parser(parseDateTime)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       parseDateTime
     )
   }
 
   it should "parse date_diff function" in {
-    val result = SQLParser(dateDiff)
+    val result = Parser(dateDiff)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateDiff
     )
   }
 
   it should "parse date_diff function with aggregation" in {
-    val result = SQLParser(aggregationWithDateDiff)
+    val result = Parser(aggregationWithDateDiff)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       aggregationWithDateDiff
     )
   }
 
   it should "parse format_date function" in {
-    val result = SQLParser(formatDate)
+    val result = Parser(formatDate)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       formatDate
     )
   }
 
   it should "parse format_datetime function" in {
-    val result = SQLParser(formatDateTime)
+    val result = Parser(formatDateTime)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       formatDateTime
     )
   }
 
   it should "parse date_add function" in {
-    val result = SQLParser(dateAdd)
+    val result = Parser(dateAdd)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateAdd
     )
   }
 
   it should "parse date_sub function" in {
-    val result = SQLParser(dateSub)
+    val result = Parser(dateSub)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateSub
     )
   }
 
   it should "parse datetime_add function" in {
-    val result = SQLParser(dateTimeAdd)
+    val result = Parser(dateTimeAdd)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateTimeAdd
     )
   }
 
   it should "parse datetime_sub function" in {
-    val result = SQLParser(dateTimeSub)
+    val result = Parser(dateTimeSub)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       dateTimeSub
     )
   }
 
   it should "parse isnull function" in {
-    val result = SQLParser(isnull)
+    val result = Parser(isnull)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       isnull
     )
   }
 
   it should "parse isnotnull function" in {
-    val result = SQLParser(isnotnull)
+    val result = Parser(isnotnull)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       isnotnull
     )
   }
 
   it should "parse isnull criteria" in {
-    val result = SQLParser(isNullCriteria)
+    val result = Parser(isNullCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       isNullCriteria
     )
   }
 
   it should "parse isnotnull criteria" in {
-    val result = SQLParser(isNotNullCriteria)
+    val result = Parser(isNotNullCriteria)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       isNotNullCriteria
     )
   }
 
   it should "parse coalesce function" in {
-    val result = SQLParser(coalesce)
+    val result = Parser(coalesce)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       coalesce
     )
   }
 
   it should "parse nullif function" in {
-    val result = SQLParser(nullif)
+    val result = Parser(nullif)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       nullif
     )
   }
 
   it should "parse cast function" in {
-    val result = SQLParser(cast)
+    val result = Parser(cast)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       cast
     )
   }
 
   it should "parse all casts function" in {
-    val result = SQLParser(allCasts)
+    val result = Parser(allCasts)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       allCasts
     )
   }
 
   it should "parse case when expression" in {
-    val result = SQLParser(caseWhen)
+    val result = Parser(caseWhen)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       caseWhen
     )
   }
 
   it should "parse case when with expression" in {
-    val result = SQLParser(caseWhenExpr)
+    val result = Parser(caseWhenExpr)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("")
@@ -609,28 +609,28 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "parse extract function" in {
-    val result = SQLParser(extract)
+    val result = Parser(extract)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       extract
     )
   }
 
   it should "parse arithmetic expressions" in {
-    val result = SQLParser(arithmetic)
+    val result = Parser(arithmetic)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       arithmetic
     )
   }
 
   it should "parse mathematical functions" in {
-    val result = SQLParser(mathematical)
+    val result = Parser(mathematical)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       mathematical
     )
   }
 
   it should "parse string functions" in {
-    val result = SQLParser(string)
+    val result = Parser(string)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
       string
     )
