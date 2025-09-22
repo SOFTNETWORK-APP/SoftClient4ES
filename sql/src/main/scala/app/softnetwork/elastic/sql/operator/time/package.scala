@@ -17,6 +17,7 @@ package object time {
   case object Plus extends Expr("+") with IntervalOperator {
     override def painless: String = ".plus"
   }
+
   case object Minus extends Expr("-") with IntervalOperator {
     override def painless: String = ".minus"
   }
