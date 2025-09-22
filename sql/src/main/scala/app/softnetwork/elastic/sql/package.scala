@@ -375,12 +375,15 @@ package object sql {
     def update(request: SQLSearchRequest): Source
   }
 
-  trait Identifier extends Token with Source with FunctionChain with PainlessScript {
+  sealed trait Identifier extends Token with Source with FunctionChain with PainlessScript {
     def name: String
+
+    def update(request: SQLSearchRequest): Identifier
 
     def tableAlias: Option[String]
     def distinct: Boolean
     def nested: Boolean
+    def limit: Option[Limit]
     def fieldAlias: Option[String]
     def bucket: Option[Bucket]
     override def sql: String = {
@@ -475,7 +478,7 @@ package object sql {
     bucket: Option[Bucket] = None
   ) extends Identifier {
 
-    def update(request: SQLSearchRequest): GenericIdentifier = {
+    def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
       if (request.tableAliases.values.toSeq.contains(parts.head)) {
         request.unnests.find(_._1 == parts.head) match {

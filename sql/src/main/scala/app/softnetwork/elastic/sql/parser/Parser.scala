@@ -17,6 +17,7 @@ import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.query._
 
 import scala.language.implicitConversions
+import scala.language.existentials
 import scala.util.parsing.combinator.{PackratParsers, RegexParsers}
 import scala.util.parsing.input.CharSequenceReader
 
@@ -444,7 +445,7 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
   implicit def functionAsIdentifier(mf: Function): GenericIdentifier = mf match {
     case id: GenericIdentifier       => id
     case fid: FunctionWithIdentifier => fid.identifier
-    case _                           => GenericIdentifier("", functions = mf :: Nil)
+    case _                           => Identifier(mf)
   }
 
   def arithmeticFunction: PackratParser[MathematicalFunction] =
@@ -498,7 +499,7 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
   def mathematicalFunction: PackratParser[MathematicalFunction] =
     arithmeticFunction | trigonometricFunction | roundFunction | powFunction | signFunction
 
-  def mathematicalFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+  def mathematicalFunctionWithIdentifier: PackratParser[Identifier] =
     mathematicalFunction ^^ { mf =>
       mf.identifier
     }
@@ -514,7 +515,7 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
         Substring(v, s.value.toInt, eOpt.map { case _ ~ e => e.value.toInt })
     }
 
-  def stringFunctionWithIdentifier: PackratParser[GenericIdentifier] =
+  def stringFunctionWithIdentifier: PackratParser[Identifier] =
     (concatFunction | substringFunction) ^^ { sf =>
       sf.identifier
     }
@@ -746,7 +747,7 @@ trait Parser extends RegexParsers with PackratParsers { _: WhereParser =>
       t.identifier.copy(functions = t +: t.identifier.functions)
     }
 
-  def identifierWithTransformation: PackratParser[GenericIdentifier] =
+  def identifierWithTransformation: PackratParser[Identifier] =
     mathematicalFunctionWithIdentifier | castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier | stringFunctionWithIdentifier
 
   def identifierWithAggregation: PackratParser[GenericIdentifier] =
@@ -838,7 +839,7 @@ trait WhereParser {
 
   private def diff: PackratParser[ComparisonOperator] = Diff.sql ^^ (_ => Diff)
 
-  private def any_identifier: PackratParser[GenericIdentifier] =
+  private def any_identifier: PackratParser[Identifier] =
     identifierWithTransformation | identifierWithAggregation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithArithmeticExpression | identifierWithFunction | date_diff_identifier | extract_identifier | identifier
 
   private def equality: PackratParser[GenericExpression] =

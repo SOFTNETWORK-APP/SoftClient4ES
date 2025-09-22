@@ -6,7 +6,7 @@ import app.softnetwork.elastic.sql.{
   Alias,
   AliasUtils,
   Expr,
-  GenericIdentifier,
+  Identifier,
   PainlessScript,
   TokenRegex,
   Updateable
@@ -15,7 +15,7 @@ import app.softnetwork.elastic.sql.{
 case object Select extends Expr("select") with TokenRegex
 
 case class Field(
-  identifier: GenericIdentifier,
+  identifier: Identifier,
   fieldAlias: Option[Alias] = None
 ) extends Updateable
     with FunctionChain
@@ -63,7 +63,7 @@ case class Except(fields: Seq[Field]) extends Updateable {
 }
 
 case class Select(
-  fields: Seq[Field] = Seq(Field(identifier = GenericIdentifier("*"))),
+  fields: Seq[Field] = Seq(Field(identifier = Identifier("*"))),
   except: Option[Except] = None
 ) extends Updateable {
   override def sql: String =

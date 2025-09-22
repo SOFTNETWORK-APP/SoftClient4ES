@@ -2,7 +2,7 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.operator._
-import app.softnetwork.elastic.sql.{Expr, GenericIdentifier, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
 case object GroupBy extends Expr("group by") with TokenRegex
 
@@ -24,7 +24,7 @@ case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
 }
 
 case class Bucket(
-  identifier: GenericIdentifier
+  identifier: Identifier
 ) extends Updateable {
   override def sql: String = s"$identifier"
   def update(request: SQLSearchRequest): Bucket =
@@ -53,7 +53,7 @@ object BucketSelectorScript {
     case e: Expression if e.aggregation =>
       import e._
       maybeValue match {
-        case Some(v: GenericIdentifier) if v.aggregation =>
+        case Some(v: Identifier) if v.aggregation =>
           Map(identifier.aliasOrName -> identifier.aliasOrName, v.aliasOrName -> v.aliasOrName)
         case _ => Map(identifier.aliasOrName -> identifier.aliasOrName)
       }

@@ -307,7 +307,7 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case i: GenericIdentifier =>
+      case i: Identifier =>
         operator match {
           case op: ComparisonOperator =>
             i.toScript match {

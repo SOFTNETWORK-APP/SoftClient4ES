@@ -185,7 +185,7 @@ case class ElasticBoolQuery(
 }
 
 sealed trait Expression extends FunctionChain with ElasticFilter with Criteria { // to fix output type as Boolean
-  def identifier: GenericIdentifier
+  def identifier: Identifier
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false
   override lazy val limit: Option[Limit] = identifier.limit
@@ -213,10 +213,10 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
 
   def painlessValue: String = maybeValue
     .map {
-      case v: Value[_]          => v.painless
-      case v: Values[_, _]      => v.painless
-      case v: GenericIdentifier => v.painless
-      case v                    => v.sql
+      case v: Value[_]     => v.painless
+      case v: Values[_, _] => v.painless
+      case v: Identifier   => v.painless
+      case v               => v.sql
     }
     .getOrElse("") /*{
       operator match {
@@ -274,7 +274,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
 }
 
 case class GenericExpression(
-  identifier: GenericIdentifier,
+  identifier: Identifier,
   operator: ExpressionOperator,
   value: Token,
   maybeNot: Option[Not.type] = None
@@ -284,7 +284,7 @@ case class GenericExpression(
   override def update(request: SQLSearchRequest): Criteria = {
     val updated =
       value match {
-        case id: GenericIdentifier =>
+        case id: Identifier =>
           this.copy(identifier = identifier.update(request), value = id.update(request))
         case _ => this.copy(identifier = identifier.update(request))
       }
@@ -297,7 +297,7 @@ case class GenericExpression(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class IsNullExpr(identifier: GenericIdentifier) extends Expression {
+case class IsNullExpr(identifier: Identifier) extends Expression {
   override val operator: Operator = IsNull
 
   override def maybeValue: Option[Token] = None
@@ -315,7 +315,7 @@ case class IsNullExpr(identifier: GenericIdentifier) extends Expression {
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class IsNotNullExpr(identifier: GenericIdentifier) extends Expression {
+case class IsNotNullExpr(identifier: Identifier) extends Expression {
   override val operator: Operator = IsNotNull
 
   override def maybeValue: Option[Token] = None
@@ -350,8 +350,7 @@ object ConditionalFunctionAsCriteria {
   }
 }
 
-case class IsNullCriteria(identifier: GenericIdentifier)
-    extends CriteriaWithConditionalFunction[SQLAny] {
+case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditionalFunction[SQLAny] {
   override val conditionalFunction: ConditionalFunction[SQLAny] = IsNullFunction(identifier)
   override val operator: Operator = IsNull
   override def update(request: SQLSearchRequest): Criteria = {
@@ -370,7 +369,7 @@ case class IsNullCriteria(identifier: GenericIdentifier)
 
 }
 
-case class IsNotNullCriteria(identifier: GenericIdentifier)
+case class IsNotNullCriteria(identifier: Identifier)
     extends CriteriaWithConditionalFunction[SQLAny] {
   override val conditionalFunction: ConditionalFunction[SQLAny] = IsNotNullFunction(
     identifier
@@ -394,7 +393,7 @@ case class IsNotNullCriteria(identifier: GenericIdentifier)
 }
 
 case class InExpr[R, +T <: Value[R]](
-  identifier: GenericIdentifier,
+  identifier: Identifier,
   values: Values[R, T],
   maybeNot: Option[Not.type] = None
 ) extends Expression { this: InExpr[R, T] =>
@@ -421,7 +420,7 @@ case class InExpr[R, +T <: Value[R]](
 }
 
 case class BetweenExpr[+T](
-  identifier: GenericIdentifier,
+  identifier: Identifier,
   fromTo: FromTo[T],
   maybeNot: Option[Not.type]
 ) extends Expression {
@@ -446,7 +445,7 @@ case class BetweenExpr[+T](
 }
 
 case class ElasticGeoDistance(
-  identifier: GenericIdentifier,
+  identifier: Identifier,
   distance: StringValue,
   lat: DoubleValue,
   lon: DoubleValue
@@ -465,7 +464,7 @@ case class ElasticGeoDistance(
 }
 
 case class MatchCriteria(
-  identifiers: Seq[GenericIdentifier],
+  identifiers: Seq[Identifier],
   value: StringValue
 ) extends Criteria {
   override def sql: String =
@@ -505,7 +504,7 @@ case class MatchCriteria(
 }
 
 case class ElasticMatch(
-  identifier: GenericIdentifier,
+  identifier: Identifier,
   value: StringValue,
   options: Option[String]
 ) extends Expression {

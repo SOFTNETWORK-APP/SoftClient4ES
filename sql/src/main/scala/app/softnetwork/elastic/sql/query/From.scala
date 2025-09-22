@@ -4,7 +4,7 @@ import app.softnetwork.elastic.sql.{
   asString,
   Alias,
   Expr,
-  GenericIdentifier,
+  Identifier,
   Source,
   TokenRegex,
   Updateable
@@ -14,7 +14,7 @@ case object From extends Expr("from") with TokenRegex
 
 case object Unnest extends Expr("unnest") with TokenRegex
 
-case class Unnest(identifier: GenericIdentifier, limit: Option[Limit]) extends Source {
+case class Unnest(identifier: Identifier, limit: Option[Limit]) extends Source {
   override def sql: String = s"$Unnest($identifier${asString(limit)})"
   def update(request: SQLSearchRequest): Unnest =
     this.copy(identifier = identifier.update(request))

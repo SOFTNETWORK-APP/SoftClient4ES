@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, GenericIdentifier, Identifier, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{Expr, Identifier, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLBool, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.query.Expression
 
@@ -35,7 +35,7 @@ package object cond {
     override def toPainless(base: String, idx: Int): String = s"($base$painless)"
   }
 
-  case class IsNullFunction(identifier: GenericIdentifier) extends ConditionalFunction[SQLAny] {
+  case class IsNullFunction(identifier: Identifier) extends ConditionalFunction[SQLAny] {
     override def conditionalOp: ConditionalOp = IsNullFunction
 
     override def args: List[PainlessScript] = List(identifier)
@@ -53,7 +53,7 @@ package object cond {
     }
   }
 
-  case class IsNotNullFunction(identifier: GenericIdentifier) extends ConditionalFunction[SQLAny] {
+  case class IsNotNullFunction(identifier: Identifier) extends ConditionalFunction[SQLAny] {
     override def conditionalOp: ConditionalOp = IsNotNullFunction
 
     override def args: List[PainlessScript] = List(identifier)
@@ -82,7 +82,7 @@ package object cond {
 
     override def outputType: SQLType = SQLTypeUtils.leastCommonSuperType(args.map(_.out))
 
-    override def identifier: GenericIdentifier = GenericIdentifier("")
+    override def identifier: Identifier = Identifier()
 
     override def inputType: SQLAny = SQLTypes.Any
 
@@ -125,7 +125,7 @@ package object cond {
 
     override def args: List[PainlessScript] = List(expr1, expr2)
 
-    override def identifier: GenericIdentifier = GenericIdentifier("")
+    override def identifier: Identifier = Identifier()
 
     override def inputType: SQLAny = SQLTypes.Any
 

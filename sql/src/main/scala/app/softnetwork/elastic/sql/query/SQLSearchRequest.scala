@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.{asString, GenericIdentifier, Token}
+import app.softnetwork.elastic.sql.{asString, Identifier, Token}
 
 case class SQLSearchRequest(
   select: Select = Select(),
@@ -48,7 +48,7 @@ case class SQLSearchRequest(
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
-  lazy val sources: Seq[String] = from.tables.collect { case Table(source: GenericIdentifier, _) =>
+  lazy val sources: Seq[String] = from.tables.collect { case Table(source: Identifier, _) =>
     source.sql
   }
 

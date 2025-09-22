@@ -19,7 +19,7 @@ package object function {
   }
 
   trait FunctionWithIdentifier extends Function {
-    def identifier: GenericIdentifier //= SQLIdentifier("", functions = this :: Nil)
+    def identifier: Identifier
   }
 
   trait FunctionWithValue[+T] extends Function {

@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, GenericIdentifier, MathScript, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{Expr, Identifier, MathScript, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.operator.time._
 import app.softnetwork.elastic.sql.`type`.{
   SQLDate,
@@ -129,7 +129,7 @@ package object time {
     override def painless: String = ".truncatedTo"
   }
 
-  case class DateTrunc(identifier: GenericIdentifier, unit: TimeUnit)
+  case class DateTrunc(identifier: Identifier, unit: TimeUnit)
       extends DateTimeFunction
       with TransformFunction[SQLTemporal, SQLTemporal]
       with FunctionWithIdentifier {
@@ -216,7 +216,7 @@ package object time {
 
   case object DateAdd extends Expr("date_add") with TokenRegex
 
-  case class DateAdd(identifier: GenericIdentifier, interval: TimeInterval)
+  case class DateAdd(identifier: Identifier, interval: TimeInterval)
       extends DateFunction
       with AddInterval[SQLDate]
       with TransformFunction[SQLDate, SQLDate]
@@ -231,7 +231,7 @@ package object time {
 
   case object DateSub extends Expr("date_sub") with TokenRegex
 
-  case class DateSub(identifier: GenericIdentifier, interval: TimeInterval)
+  case class DateSub(identifier: Identifier, interval: TimeInterval)
       extends DateFunction
       with SubtractInterval[SQLDate]
       with TransformFunction[SQLDate, SQLDate]
@@ -248,7 +248,7 @@ package object time {
     override def painless: String = ".parse"
   }
 
-  case class ParseDate(identifier: GenericIdentifier, format: String)
+  case class ParseDate(identifier: Identifier, format: String)
       extends DateFunction
       with TransformFunction[SQLVarchar, SQLDate]
       with FunctionWithIdentifier {
@@ -276,7 +276,7 @@ package object time {
     override def painless: String = ".format"
   }
 
-  case class FormatDate(identifier: GenericIdentifier, format: String)
+  case class FormatDate(identifier: Identifier, format: String)
       extends DateFunction
       with TransformFunction[SQLDate, SQLVarchar]
       with FunctionWithIdentifier {
@@ -302,7 +302,7 @@ package object time {
 
   case object DateTimeAdd extends Expr("datetime_add") with TokenRegex
 
-  case class DateTimeAdd(identifier: GenericIdentifier, interval: TimeInterval)
+  case class DateTimeAdd(identifier: Identifier, interval: TimeInterval)
       extends DateTimeFunction
       with AddInterval[SQLDateTime]
       with TransformFunction[SQLDateTime, SQLDateTime]
@@ -317,7 +317,7 @@ package object time {
 
   case object DateTimeSub extends Expr("datetime_sub") with TokenRegex
 
-  case class DateTimeSub(identifier: GenericIdentifier, interval: TimeInterval)
+  case class DateTimeSub(identifier: Identifier, interval: TimeInterval)
       extends DateTimeFunction
       with SubtractInterval[SQLDateTime]
       with TransformFunction[SQLDateTime, SQLDateTime]
@@ -334,7 +334,7 @@ package object time {
     override def painless: String = ".parse"
   }
 
-  case class ParseDateTime(identifier: GenericIdentifier, format: String)
+  case class ParseDateTime(identifier: Identifier, format: String)
       extends DateTimeFunction
       with TransformFunction[SQLVarchar, SQLDateTime]
       with FunctionWithIdentifier {
@@ -362,7 +362,7 @@ package object time {
     override def painless: String = ".format"
   }
 
-  case class FormatDateTime(identifier: GenericIdentifier, format: String)
+  case class FormatDateTime(identifier: Identifier, format: String)
       extends DateTimeFunction
       with TransformFunction[SQLDateTime, SQLVarchar]
       with FunctionWithIdentifier {

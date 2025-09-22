@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, GenericIdentifier, IntValue, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{Expr, Identifier, IntValue, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLTypes}
 
 package object math {
@@ -45,7 +45,7 @@ package object math {
 
     override def fun: Option[PainlessScript] = Some(mathOp)
 
-    override def identifier: GenericIdentifier = GenericIdentifier("", functions = this :: Nil)
+    override def identifier: Identifier = Identifier(this)
 
   }
 
