@@ -18,38 +18,38 @@ package object time {
   sealed trait FixedUnit extends TimeUnit
 
   object TimeUnit {
-    case object Year extends Expr("year") with CalendarUnit {
+    case object Year extends Expr("YEAR") with CalendarUnit {
       override def script: String = "y"
     }
-    case object Month extends Expr("month") with CalendarUnit {
+    case object Month extends Expr("MONTH") with CalendarUnit {
       override def script: String = "M"
     }
-    case object Quarter extends Expr("quarter") with CalendarUnit {
+    case object Quarter extends Expr("QUARTER") with CalendarUnit {
       override def script: String = throw new IllegalArgumentException(
         "Quarter must be converted to months (value * 3) before creating date-math"
       )
     }
-    case object Week extends Expr("week") with CalendarUnit {
+    case object Week extends Expr("WEEK") with CalendarUnit {
       override def script: String = "w"
     }
 
-    case object Day extends Expr("day") with CalendarUnit with FixedUnit {
+    case object Day extends Expr("DAY") with CalendarUnit with FixedUnit {
       override def script: String = "d"
     }
 
-    case object Hour extends Expr("hour") with FixedUnit {
+    case object Hour extends Expr("HOUR") with FixedUnit {
       override def script: String = "H"
     }
-    case object Minute extends Expr("minute") with FixedUnit {
+    case object Minute extends Expr("MINUTE") with FixedUnit {
       override def script: String = "m"
     }
-    case object Second extends Expr("second") with FixedUnit {
+    case object Second extends Expr("SECOND") with FixedUnit {
       override def script: String = "s"
     }
 
   }
 
-  case object Interval extends Expr("interval") with TokenRegex
+  case object Interval extends Expr("INTERVAL") with TokenRegex
 
   sealed trait TimeInterval extends PainlessScript with MathScript {
     def value: Int

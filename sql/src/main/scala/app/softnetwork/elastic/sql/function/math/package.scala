@@ -10,29 +10,26 @@ package object math {
     override def toString: String = s" $sql "
   }
 
-  case object Abs extends Expr("abs") with MathOp
-  case object Ceil extends Expr("ceil") with MathOp
-  case object Floor extends Expr("floor") with MathOp
-  case object Round extends Expr("round") with MathOp
-  case object Exp extends Expr("exp") with MathOp
-  case object Log extends Expr("log") with MathOp
-  case object Log10 extends Expr("log10") with MathOp
-  case object Pow extends Expr("pow") with MathOp
-  case object Sqrt extends Expr("sqrt") with MathOp
-  case object Sign extends Expr("sign") with MathOp
-  case object Pi extends Expr("pi") with MathOp {
-    override def painless: String = "Math.PI"
-  }
+  case object Abs extends Expr("ABS") with MathOp
+  case object Ceil extends Expr("CEIL") with MathOp
+  case object Floor extends Expr("FLOOR") with MathOp
+  case object Round extends Expr("ROUND") with MathOp
+  case object Exp extends Expr("EXP") with MathOp
+  case object Log extends Expr("LOG") with MathOp
+  case object Log10 extends Expr("LOG10") with MathOp
+  case object Pow extends Expr("POW") with MathOp
+  case object Sqrt extends Expr("SQRT") with MathOp
+  case object Sign extends Expr("SIGN") with MathOp
 
   sealed trait Trigonometric extends MathOp
 
-  case object Sin extends Expr("sin") with Trigonometric
-  case object Asin extends Expr("asin") with Trigonometric
-  case object Cos extends Expr("cos") with Trigonometric
-  case object Acos extends Expr("acos") with Trigonometric
-  case object Tan extends Expr("tan") with Trigonometric
-  case object Atan extends Expr("atan") with Trigonometric
-  case object Atan2 extends Expr("atan2") with Trigonometric
+  case object Sin extends Expr("SIN") with Trigonometric
+  case object Asin extends Expr("ASIN") with Trigonometric
+  case object Cos extends Expr("COS") with Trigonometric
+  case object Acos extends Expr("ACOS") with Trigonometric
+  case object Tan extends Expr("TAN") with Trigonometric
+  case object Atan extends Expr("ATAN") with Trigonometric
+  case object Atan2 extends Expr("ATAN2") with Trigonometric
 
   sealed trait MathematicalFunction
       extends TransformFunction[SQLNumeric, SQLNumeric]

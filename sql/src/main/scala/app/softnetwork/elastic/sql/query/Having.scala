@@ -2,7 +2,7 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.{Expr, TokenRegex, Updateable}
 
-case object Having extends Expr("having") with TokenRegex
+case object Having extends Expr("HAVING") with TokenRegex
 
 case class Having(criteria: Option[Criteria]) extends Updateable {
   override def sql: String = criteria match {

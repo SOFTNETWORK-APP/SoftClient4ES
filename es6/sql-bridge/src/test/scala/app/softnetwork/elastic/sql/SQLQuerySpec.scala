@@ -1190,7 +1190,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle parse_date function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(parseDate)
+      SQLQuery(dateParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1256,7 +1256,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle parse_datetime function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(parseDateTime)
+      SQLQuery(dateTimeParse)
     val query = select.query
     println(query)
     query shouldBe

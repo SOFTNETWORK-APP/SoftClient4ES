@@ -39,29 +39,29 @@ package object operator {
   case object Gt extends Expr(">") with ComparisonOperator
   case object Le extends Expr("<=") with ComparisonOperator
   case object Lt extends Expr("<") with ComparisonOperator
-  case object In extends Expr("in") with ComparisonOperator
-  case object Like extends Expr("like") with ComparisonOperator
-  case object Between extends Expr("between") with ComparisonOperator
-  case object IsNull extends Expr("is null") with ComparisonOperator
-  case object IsNotNull extends Expr("is not null") with ComparisonOperator
+  case object In extends Expr("IN") with ComparisonOperator
+  case object Like extends Expr("LIKE") with ComparisonOperator
+  case object Between extends Expr("BETWEEN") with ComparisonOperator
+  case object IsNull extends Expr("IS NULL") with ComparisonOperator
+  case object IsNotNull extends Expr("IS NOT NULL") with ComparisonOperator
 
-  case object Match extends Expr("match") with ComparisonOperator
-  case object Against extends Expr("against") with TokenRegex
+  case object Match extends Expr("MATCH") with ComparisonOperator
+  case object Against extends Expr("AGAINST") with TokenRegex
 
   sealed trait LogicalOperator extends ExpressionOperator
 
-  case object Not extends Expr("not") with LogicalOperator
+  case object Not extends Expr("NOT") with LogicalOperator
 
   sealed trait PredicateOperator extends LogicalOperator
 
-  case object And extends Expr("and") with PredicateOperator
-  case object Or extends Expr("or") with PredicateOperator
+  case object And extends Expr("AND") with PredicateOperator
+  case object Or extends Expr("OR") with PredicateOperator
 
-  case object Union extends Expr("union") with Operator with TokenRegex
+  case object Union extends Expr("UNION") with Operator with TokenRegex
 
   sealed trait ElasticOperator extends Operator with TokenRegex
 
-  case object Nested extends Expr("nested") with ElasticOperator
-  case object Child extends Expr("child") with ElasticOperator
-  case object Parent extends Expr("parent") with ElasticOperator
+  case object Nested extends Expr("NESTED") with ElasticOperator
+  case object Child extends Expr("CHILD") with ElasticOperator
+  case object Parent extends Expr("PARENT") with ElasticOperator
 }

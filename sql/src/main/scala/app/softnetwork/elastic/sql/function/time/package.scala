@@ -107,26 +107,31 @@ package object time {
     override def painless: String = s"$now.toLocalTime()"
   }
 
-  case object CurrentDate extends Expr("current_date") with CurrentDateFunction
+  case object CurrentDate extends Expr("CURRENT_DATE") with CurrentDateFunction {
+    override lazy val words: List[String] = List(sql, "CURDATE")
+  }
 
-  case object CurentDateWithParens extends Expr("current_date()") with CurrentDateFunction
+  case object CurentDateWithParens extends Expr("CURRENT_DATE()") with CurrentDateFunction
 
-  case object CurrentTime extends Expr("current_time") with CurrentTimeFunction
+  case object CurrentTime extends Expr("CURRENT_TIME") with CurrentTimeFunction {
+    override lazy val words: List[String] = List(sql, "CURTIME")
+  }
 
-  case object CurrentTimeWithParens extends Expr("current_time()") with CurrentTimeFunction
+  case object CurrentTimeWithParens extends Expr("CURRENT_TIME()") with CurrentTimeFunction
 
-  case object CurrentTimestamp extends Expr("current_timestamp") with CurrentDateTimeFunction
+  case object CurrentTimestamp extends Expr("CURRENT_TIMESTAMP") with CurrentDateTimeFunction
 
   case object CurrentTimestampWithParens
-      extends Expr("current_timestamp()")
+      extends Expr("CURRENT_TIMESTAMP()")
       with CurrentDateTimeFunction
 
-  case object Now extends Expr("now") with CurrentDateTimeFunction
+  case object Now extends Expr("NOW") with CurrentDateTimeFunction
 
-  case object NowWithParens extends Expr("now()") with CurrentDateTimeFunction
+  case object NowWithParens extends Expr("NOW()") with CurrentDateTimeFunction
 
-  case object DateTrunc extends Expr("date_trunc") with TokenRegex with PainlessScript {
+  case object DateTrunc extends Expr("DATE_TRUNC") with TokenRegex with PainlessScript {
     override def painless: String = ".truncatedTo"
+    override lazy val words: List[String] = List(sql, "DATETRUNC")
   }
 
   case class DateTrunc(identifier: Identifier, unit: TimeUnit)
@@ -146,7 +151,7 @@ package object time {
     }
   }
 
-  case object Extract extends Expr("extract") with TokenRegex with PainlessScript {
+  case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
     override def painless: String = ".get"
   }
 
@@ -190,8 +195,9 @@ package object time {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  case object DateDiff extends Expr("date_diff") with TokenRegex with PainlessScript {
+  case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {
     override def painless: String = ".between"
+    override lazy val words: List[String] = List(sql, "DATEDIFF")
   }
 
   case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
@@ -214,7 +220,9 @@ package object time {
       s"${unit.painless}${DateDiff.painless}(${callArgs.mkString(", ")})"
   }
 
-  case object DateAdd extends Expr("date_add") with TokenRegex
+  case object DateAdd extends Expr("DATE_ADD") with TokenRegex {
+    override lazy val words: List[String] = List(sql, "DATEADD")
+  }
 
   case class DateAdd(identifier: Identifier, interval: TimeInterval)
       extends DateFunction
@@ -229,7 +237,9 @@ package object time {
     }
   }
 
-  case object DateSub extends Expr("date_sub") with TokenRegex
+  case object DateSub extends Expr("DATE_SUB") with TokenRegex {
+    override lazy val words: List[String] = List(sql, "DATESUB")
+  }
 
   case class DateSub(identifier: Identifier, interval: TimeInterval)
       extends DateFunction
@@ -244,22 +254,22 @@ package object time {
     }
   }
 
-  case object ParseDate extends Expr("parse_date") with TokenRegex with PainlessScript {
+  case object DateParse extends Expr("DATE_PARSE") with TokenRegex with PainlessScript {
     override def painless: String = ".parse"
   }
 
-  case class ParseDate(identifier: Identifier, format: String)
+  case class DateParse(identifier: Identifier, format: String)
       extends DateFunction
       with TransformFunction[SQLVarchar, SQLDate]
       with FunctionWithIdentifier {
-    override def fun: Option[PainlessScript] = Some(ParseDate)
+    override def fun: Option[PainlessScript] = Some(DateParse)
 
     override def args: List[PainlessScript] = List.empty
 
     override def inputType: SQLVarchar = SQLTypes.Varchar
     override def outputType: SQLDate = SQLTypes.Date
 
-    override def sql: String = ParseDate.sql
+    override def sql: String = DateParse.sql
     override def toSQL(base: String): String = {
       s"$sql($base, '$format')"
     }
@@ -272,22 +282,22 @@ package object time {
         s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDate::from)"
   }
 
-  case object FormatDate extends Expr("format_date") with TokenRegex with PainlessScript {
+  case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
     override def painless: String = ".format"
   }
 
-  case class FormatDate(identifier: Identifier, format: String)
+  case class DateFormat(identifier: Identifier, format: String)
       extends DateFunction
       with TransformFunction[SQLDate, SQLVarchar]
       with FunctionWithIdentifier {
-    override def fun: Option[PainlessScript] = Some(FormatDate)
+    override def fun: Option[PainlessScript] = Some(DateFormat)
 
     override def args: List[PainlessScript] = List.empty
 
     override def inputType: SQLDate = SQLTypes.Date
     override def outputType: SQLVarchar = SQLTypes.Varchar
 
-    override def sql: String = FormatDate.sql
+    override def sql: String = DateFormat.sql
     override def toSQL(base: String): String = {
       s"$sql($base, '$format')"
     }
@@ -300,7 +310,9 @@ package object time {
         s"DateTimeFormatter.ofPattern('$format').format($base)"
   }
 
-  case object DateTimeAdd extends Expr("datetime_add") with TokenRegex
+  case object DateTimeAdd extends Expr("DATETIME_ADD") with TokenRegex {
+    override lazy val words: List[String] = List(sql, "DATETIMEADD")
+  }
 
   case class DateTimeAdd(identifier: Identifier, interval: TimeInterval)
       extends DateTimeFunction
@@ -315,7 +327,9 @@ package object time {
     }
   }
 
-  case object DateTimeSub extends Expr("datetime_sub") with TokenRegex
+  case object DateTimeSub extends Expr("DATETIME_SUB") with TokenRegex {
+    override lazy val words: List[String] = List(sql, "DATETIMESUB")
+  }
 
   case class DateTimeSub(identifier: Identifier, interval: TimeInterval)
       extends DateTimeFunction
@@ -330,22 +344,22 @@ package object time {
     }
   }
 
-  case object ParseDateTime extends Expr("parse_datetime") with TokenRegex with PainlessScript {
+  case object DateTimeParse extends Expr("DATETIME_PARSE") with TokenRegex with PainlessScript {
     override def painless: String = ".parse"
   }
 
-  case class ParseDateTime(identifier: Identifier, format: String)
+  case class DateTimeParse(identifier: Identifier, format: String)
       extends DateTimeFunction
       with TransformFunction[SQLVarchar, SQLDateTime]
       with FunctionWithIdentifier {
-    override def fun: Option[PainlessScript] = Some(ParseDateTime)
+    override def fun: Option[PainlessScript] = Some(DateTimeParse)
 
     override def args: List[PainlessScript] = List.empty
 
     override def inputType: SQLVarchar = SQLTypes.Varchar
     override def outputType: SQLDateTime = SQLTypes.DateTime
 
-    override def sql: String = ParseDateTime.sql
+    override def sql: String = DateTimeParse.sql
     override def toSQL(base: String): String = {
       s"$sql($base, '$format')"
     }
@@ -358,22 +372,22 @@ package object time {
         s"DateTimeFormatter.ofPattern('$format').parse($base, ZonedDateTime::from)"
   }
 
-  case object FormatDateTime extends Expr("format_datetime") with TokenRegex with PainlessScript {
+  case object DateTimeFormat extends Expr("DATETIME_FORMAT") with TokenRegex with PainlessScript {
     override def painless: String = ".format"
   }
 
-  case class FormatDateTime(identifier: Identifier, format: String)
+  case class DateTimeFormat(identifier: Identifier, format: String)
       extends DateTimeFunction
       with TransformFunction[SQLDateTime, SQLVarchar]
       with FunctionWithIdentifier {
-    override def fun: Option[PainlessScript] = Some(FormatDateTime)
+    override def fun: Option[PainlessScript] = Some(DateTimeFormat)
 
     override def args: List[PainlessScript] = List.empty
 
     override def inputType: SQLDateTime = SQLTypes.DateTime
     override def outputType: SQLVarchar = SQLTypes.Varchar
 
-    override def sql: String = FormatDateTime.sql
+    override def sql: String = DateTimeFormat.sql
     override def toSQL(base: String): String = {
       s"$sql($base, '$format')"
     }

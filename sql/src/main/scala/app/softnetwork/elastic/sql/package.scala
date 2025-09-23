@@ -84,8 +84,8 @@ package object sql {
     override def nullable: Boolean = false
   }
 
-  case object Null extends Value[Null](null) {
-    override def sql: String = "null"
+  case object Null extends Value[Null](null) with TokenRegex {
+    override def sql: String = "NULL"
     override def painless: String = "null"
     override def nullable: Boolean = true
     override def out: SQLType = SQLTypes.Null
@@ -188,14 +188,14 @@ package object sql {
     override def out: SQLNumeric = SQLTypes.Double
   }
 
-  case object PiValue extends Value[Double](Math.PI) {
-    override def sql: String = "pi"
+  case object PiValue extends Value[Double](Math.PI) with TokenRegex {
+    override def sql: String = "PI"
     override def painless: String = "Math.PI"
     override def out: SQLNumeric = SQLTypes.Double
   }
 
-  case object EValue extends Value[Double](Math.E) {
-    override def sql: String = "e"
+  case object EValue extends Value[Double](Math.E) with TokenRegex {
+    override def sql: String = "E"
     override def painless: String = "Math.E"
     override def out: SQLNumeric = SQLTypes.Double
   }
@@ -327,7 +327,7 @@ package object sql {
     s"""${if (startWith) ".*"}$v${if (endWith) ".*"}"""
   }
 
-  case object Alias extends Expr("as") with TokenRegex
+  case object Alias extends Expr("AS") with TokenRegex
 
   case class Alias(alias: String) extends Expr(s" ${Alias.sql} $alias")
 
@@ -367,7 +367,8 @@ package object sql {
   }
 
   trait TokenRegex extends Token {
-    lazy val regex: Regex = s"\\b(?i)$sql\\b".r
+    def words: List[String] = List(sql)
+    lazy val regex: Regex = s"(?i)(${words.mkString("|")})\\b".r
   }
 
   trait Source extends Updateable {

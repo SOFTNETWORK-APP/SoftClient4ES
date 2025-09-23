@@ -10,7 +10,6 @@ import app.softnetwork.elastic.sql.{
   Value
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
-import app.softnetwork.elastic.sql.function.math.Pi
 
 package object `type` {
 
@@ -28,10 +27,10 @@ package object `type` {
       """(-)?(\d+\.\d+)""".r ^^ (str => DoubleValue(str.toDouble))
 
     def pi: PackratParser[Value[Double]] =
-      Pi.regex ^^ (_ => PiValue)
+      PiValue.regex ^^ (_ => PiValue)
 
     def boolean: PackratParser[BooleanValue] =
-      """(true|false)""".r ^^ (bool => BooleanValue(bool.toBoolean))
+      """(?i)(true|false)\\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
     def value_identifier: PackratParser[Identifier] =
       (literal | long | double | pi | boolean) ^^ { v =>

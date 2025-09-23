@@ -3,13 +3,13 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
 import app.softnetwork.elastic.sql.{Expr, Token, TokenRegex}
 
-case object OrderBy extends Expr("order by") with TokenRegex
+case object OrderBy extends Expr("ORDER BY") with TokenRegex
 
 sealed trait SortOrder extends TokenRegex
 
-case object Desc extends Expr("desc") with SortOrder
+case object Desc extends Expr("DESC") with SortOrder
 
-case object Asc extends Expr("asc") with SortOrder
+case object Asc extends Expr("ASC") with SortOrder
 
 case class FieldSort(
   field: String,

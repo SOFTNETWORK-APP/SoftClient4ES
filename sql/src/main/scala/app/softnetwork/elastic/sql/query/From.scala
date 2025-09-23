@@ -10,9 +10,9 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 
-case object From extends Expr("from") with TokenRegex
+case object From extends Expr("FROM") with TokenRegex
 
-case object Unnest extends Expr("unnest") with TokenRegex
+case object Unnest extends Expr("UNNEST") with TokenRegex
 
 case class Unnest(identifier: Identifier, limit: Option[Limit]) extends Source {
   override def sql: String = s"$Unnest($identifier${asString(limit)})"

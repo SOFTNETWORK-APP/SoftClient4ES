@@ -14,16 +14,16 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
 
   // Liste de toutes les fonctions transformables avec leurs types
   val transformFunctions: Seq[TransformFunction[_, _]] = Seq(
-    ParseDate(Identifier(), "yyyy-MM-dd"),
-    ParseDateTime(Identifier(), "yyyy-MM-dd HH:mm:ss"),
+    DateParse(Identifier(), "yyyy-MM-dd"),
+    DateTimeParse(Identifier(), "yyyy-MM-dd HH:mm:ss"),
     DateAdd(Identifier(), TimeInterval(1, Day)),
     DateSub(Identifier(), TimeInterval(2, Month)),
     DateTimeAdd(Identifier(), TimeInterval(3, Hour)),
     DateTimeSub(Identifier(), TimeInterval(30, Minute)),
     DateTrunc(Identifier(), Day),
     Extract(Day),
-    FormatDate(Identifier(), "yyyy-MM-dd"),
-    FormatDateTime(Identifier(), "yyyy-MM-dd HH:mm:ss"),
+    DateFormat(Identifier(), "yyyy-MM-dd"),
+    DateTimeFormat(Identifier(), "yyyy-MM-dd HH:mm:ss"),
     YEAR,
     MONTH,
     DAY,

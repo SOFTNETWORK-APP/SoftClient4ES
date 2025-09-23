@@ -4,7 +4,7 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
-case object GroupBy extends Expr("group by") with TokenRegex
+case object GroupBy extends Expr("GROUP BY") with TokenRegex
 
 case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
   override def sql: String = s" $GroupBy ${buckets.mkString(", ")}"

@@ -14,7 +14,7 @@ import app.softnetwork.elastic.sql._
 
 import scala.annotation.tailrec
 
-case object Where extends Expr("where") with TokenRegex
+case object Where extends Expr("WHERE") with TokenRegex
 
 sealed trait Criteria extends Updateable with PainlessScript {
   def operator: Operator

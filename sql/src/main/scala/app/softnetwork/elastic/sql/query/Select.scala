@@ -12,7 +12,7 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 
-case object Select extends Expr("select") with TokenRegex
+case object Select extends Expr("SELECT") with TokenRegex
 
 case class Field(
   identifier: Identifier,

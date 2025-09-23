@@ -10,18 +10,18 @@ package object cond {
     override def painless: String = sql
   }
 
-  case object Coalesce extends Expr("coalesce") with ConditionalOp
-  case object IsNullFunction extends Expr("isnull") with ConditionalOp
-  case object IsNotNullFunction extends Expr("isnotnull") with ConditionalOp
-  case object NullIf extends Expr("nullif") with ConditionalOp
-  case object Exists extends Expr("exists") with ConditionalOp
+  case object Coalesce extends Expr("COALESCE") with ConditionalOp
+  case object IsNullFunction extends Expr("ISNULL") with ConditionalOp
+  case object IsNotNullFunction extends Expr("ISNOTNULL") with ConditionalOp
+  case object NullIf extends Expr("NULLIF") with ConditionalOp
+  case object Exists extends Expr("EXISTS") with ConditionalOp
 
-  case object Case extends Expr("case") with ConditionalOp
+  case object Case extends Expr("CASE") with ConditionalOp
 
-  case object When extends Expr("when") with TokenRegex
-  case object Then extends Expr("then") with TokenRegex
-  case object Else extends Expr("else") with TokenRegex
-  case object End extends Expr("end") with TokenRegex
+  case object When extends Expr("WHEN") with TokenRegex
+  case object Then extends Expr("THEN") with TokenRegex
+  case object Else extends Expr("ELSE") with TokenRegex
+  case object End extends Expr("END") with TokenRegex
 
   sealed trait ConditionalFunction[In <: SQLType]
       extends TransformFunction[In, SQLBool]

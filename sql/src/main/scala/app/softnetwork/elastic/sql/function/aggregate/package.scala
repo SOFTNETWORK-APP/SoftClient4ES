@@ -6,14 +6,14 @@ package object aggregate {
 
   sealed trait AggregateFunction extends Function
 
-  case object Count extends Expr("count") with AggregateFunction
+  case object Count extends Expr("COUNT") with AggregateFunction
 
-  case object Min extends Expr("min") with AggregateFunction
+  case object Min extends Expr("MIN") with AggregateFunction
 
-  case object Max extends Expr("max") with AggregateFunction
+  case object Max extends Expr("MAX") with AggregateFunction
 
-  case object Avg extends Expr("avg") with AggregateFunction
+  case object Avg extends Expr("AVG") with AggregateFunction
 
-  case object Sum extends Expr("sum") with AggregateFunction
+  case object Sum extends Expr("SUM") with AggregateFunction
 
 }

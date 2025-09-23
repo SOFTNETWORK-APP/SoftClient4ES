@@ -5,7 +5,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
 
 package object convert {
 
-  case object Cast extends Expr("cast") with TokenRegex
+  case object Cast extends Expr("CAST") with TokenRegex
 
   case class Cast(value: PainlessScript, targetType: SQLType, as: Boolean = true)
       extends TransformFunction[SQLType, SQLType] {

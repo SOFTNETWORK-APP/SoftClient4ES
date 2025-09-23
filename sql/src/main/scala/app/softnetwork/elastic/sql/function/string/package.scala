@@ -9,19 +9,20 @@ package object string {
     override def painless: String = s".${sql.toLowerCase()}()"
   }
 
-  case object Concat extends Expr("concat") with StringOp {
+  case object Concat extends Expr("CONCAT") with StringOp {
     override def painless: String = " + "
   }
-  case object Lower extends Expr("lower") with StringOp
-  case object Upper extends Expr("upper") with StringOp
-  case object Trim extends Expr("trim") with StringOp
-  //case object LTrim extends SQLExpr("ltrim") with SQLStringOperator
-  //case object RTrim extends SQLExpr("rtrim") with SQLStringOperator
-  case object Substring extends Expr("substring") with StringOp {
+  case object Lower extends Expr("LOWER") with StringOp
+  case object Upper extends Expr("UPPER") with StringOp
+  case object Trim extends Expr("TRIM") with StringOp
+  //case object LTrim extends SQLExpr("LTRIM") with SQLStringOperator
+  //case object RTrim extends SQLExpr("RTRIM") with SQLStringOperator
+  case object Substring extends Expr("SUBSTRING") with StringOp {
     override def painless: String = ".substring"
+    override lazy val words: List[String] = List(sql, "SUBSTR")
   }
-  case object To extends Expr("to") with TokenRegex
-  case object Length extends Expr("length") with StringOp
+  case object To extends Expr("TO") with TokenRegex
+  case object Length extends Expr("LENGTH") with StringOp
 
   sealed trait StringFunction[Out <: SQLType]
       extends TransformFunction[SQLVarchar, Out]
