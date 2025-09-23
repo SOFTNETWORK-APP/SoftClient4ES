@@ -50,7 +50,7 @@ package object sql {
 
   abstract class Expr(override val sql: String) extends Token
 
-  case object Distinct extends Expr("distinct") with TokenRegex
+  case object Distinct extends Expr("DISTINCT") with TokenRegex
 
   abstract class Value[+T](val value: T)(implicit ev$1: T => Ordered[T])
       extends Token

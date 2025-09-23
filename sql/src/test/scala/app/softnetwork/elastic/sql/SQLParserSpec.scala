@@ -164,6 +164,9 @@ object Queries {
 
   val string: String =
     "SELECT identifier, LENGTH(identifier2) AS l, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, CONCAT(identifier2, '_test', 1) AS con FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
+
+  val topHits: String =
+    "SELECT department, COUNT(DISTINCT salary), FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC), LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date DESC) FROM emp GROUP BY department"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -799,6 +802,13 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("")
       .equalsIgnoreCase(string) shouldBe true
+  }
+
+  it should "parse top hits functions" in {
+    val result = Parser(topHits)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe topHits
   }
 
 }

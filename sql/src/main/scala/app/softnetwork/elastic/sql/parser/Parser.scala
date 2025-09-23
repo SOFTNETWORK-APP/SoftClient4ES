@@ -82,7 +82,7 @@ trait Parser
     with MathParser
     with StringParser
     with TemporalParser
-    with TypeParser { _: WhereParser =>
+    with TypeParser { _: WhereParser with OrderByParser =>
 
   def start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)
 
