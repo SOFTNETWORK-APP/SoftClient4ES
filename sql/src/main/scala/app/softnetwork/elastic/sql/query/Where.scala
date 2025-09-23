@@ -2,11 +2,7 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function._
-import app.softnetwork.elastic.sql.function.cond.{
-  ConditionalFunction,
-  IsNotNullFunction,
-  IsNullFunction
-}
+import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
@@ -51,7 +47,7 @@ sealed trait Criteria extends Updateable with PainlessScript {
       val leftStr = left.painless
       val rightStr = right.painless
       val opStr = op match {
-        case And | Or => op.painless
+        case AND | OR => op.painless
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
@@ -70,7 +66,7 @@ case class Predicate(
   leftCriteria: Criteria,
   operator: PredicateOperator,
   rightCriteria: Criteria,
-  not: Option[Not.type] = None,
+  not: Option[NOT.type] = None,
   group: Boolean = false
 ) extends Criteria {
   override def sql = s"${if (group) s"($leftCriteria"
@@ -104,12 +100,12 @@ case class Predicate(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = {
     val query = asBoolQuery(currentQuery)
     operator match {
-      case And =>
+      case AND =>
         (not match {
           case Some(_) => query.not(rightCriteria.asFilter(Option(query)))
           case _       => query.filter(rightCriteria.asFilter(Option(query)))
         }).filter(leftCriteria.asFilter(Option(query)))
-      case Or =>
+      case OR =>
         (not match {
           case Some(_) => query.not(rightCriteria.asFilter(Option(query)))
           case _       => query.should(rightCriteria.asFilter(Option(query)))
@@ -191,7 +187,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   override lazy val limit: Option[Limit] = identifier.limit
   override val functions: List[Function] = identifier.functions
   def maybeValue: Option[Token]
-  def maybeNot: Option[Not.type]
+  def maybeNot: Option[NOT.type]
   def notAsString: String = maybeNot.map(v => s"$v ").getOrElse("")
   def valueAsString: String = maybeValue.map(v => s" $v").getOrElse("")
   override def sql = s"$identifier $notAsString$operator$valueAsString"
@@ -277,7 +273,7 @@ case class GenericExpression(
   identifier: Identifier,
   operator: ExpressionOperator,
   value: Token,
-  maybeNot: Option[Not.type] = None
+  maybeNot: Option[NOT.type] = None
 ) extends Expression {
   override def maybeValue: Option[Token] = Option(value)
 
@@ -298,11 +294,11 @@ case class GenericExpression(
 }
 
 case class IsNullExpr(identifier: Identifier) extends Expression {
-  override val operator: Operator = IsNull
+  override val operator: Operator = IS_NULL
 
   override def maybeValue: Option[Token] = None
 
-  override def maybeNot: Option[Not.type] = None
+  override def maybeNot: Option[NOT.type] = None
 
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -316,11 +312,11 @@ case class IsNullExpr(identifier: Identifier) extends Expression {
 }
 
 case class IsNotNullExpr(identifier: Identifier) extends Expression {
-  override val operator: Operator = IsNotNull
+  override val operator: Operator = IS_NOT_NULL
 
   override def maybeValue: Option[Token] = None
 
-  override def maybeNot: Option[Not.type] = None
+  override def maybeNot: Option[NOT.type] = None
 
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -336,7 +332,7 @@ case class IsNotNullExpr(identifier: Identifier) extends Expression {
 sealed trait CriteriaWithConditionalFunction[In <: SQLType] extends Expression {
   def conditionalFunction: ConditionalFunction[In]
   override def maybeValue: Option[Token] = None
-  override def maybeNot: Option[Not.type] = None
+  override def maybeNot: Option[NOT.type] = None
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
   override val functions: List[Function] = List(conditionalFunction)
   override def sql: String = conditionalFunction.sql
@@ -344,15 +340,15 @@ sealed trait CriteriaWithConditionalFunction[In <: SQLType] extends Expression {
 
 object ConditionalFunctionAsCriteria {
   def unapply(f: ConditionalFunction[_]): Option[Criteria] = f match {
-    case IsNullFunction(id)    => Some(IsNullCriteria(id))
-    case IsNotNullFunction(id) => Some(IsNotNullCriteria(id))
-    case _                     => None
+    case IsNull(id)    => Some(IsNullCriteria(id))
+    case IsNotNull(id) => Some(IsNotNullCriteria(id))
+    case _             => None
   }
 }
 
 case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditionalFunction[SQLAny] {
-  override val conditionalFunction: ConditionalFunction[SQLAny] = IsNullFunction(identifier)
-  override val operator: Operator = IsNull
+  override val conditionalFunction: ConditionalFunction[SQLAny] = IsNull(identifier)
+  override val operator: Operator = IS_NULL
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -371,10 +367,10 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
 
 case class IsNotNullCriteria(identifier: Identifier)
     extends CriteriaWithConditionalFunction[SQLAny] {
-  override val conditionalFunction: ConditionalFunction[SQLAny] = IsNotNullFunction(
+  override val conditionalFunction: ConditionalFunction[SQLAny] = IsNotNull(
     identifier
   )
-  override val operator: Operator = IsNotNull
+  override val operator: Operator = IS_NOT_NULL
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -395,7 +391,7 @@ case class IsNotNullCriteria(identifier: Identifier)
 case class InExpr[R, +T <: Value[R]](
   identifier: Identifier,
   values: Values[R, T],
-  maybeNot: Option[Not.type] = None
+  maybeNot: Option[NOT.type] = None
 ) extends Expression { this: InExpr[R, T] =>
   private[this] lazy val id = functions.headOption match {
     case Some(f) => s"$f($identifier)"
@@ -403,7 +399,7 @@ case class InExpr[R, +T <: Value[R]](
   }
   override def sql =
     s"$id $notAsString$operator $values"
-  override def operator: Operator = In
+  override def operator: Operator = IN
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -422,7 +418,7 @@ case class InExpr[R, +T <: Value[R]](
 case class BetweenExpr[+T](
   identifier: Identifier,
   fromTo: FromTo[T],
-  maybeNot: Option[Not.type]
+  maybeNot: Option[NOT.type]
 ) extends Expression {
   private[this] lazy val id = functions.headOption match {
     case Some(f) => s"$f($identifier)"
@@ -430,7 +426,7 @@ case class BetweenExpr[+T](
   }
   override def sql =
     s"$id $notAsString$operator $fromTo"
-  override def operator: Operator = Between
+  override def operator: Operator = BETWEEN
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -452,13 +448,13 @@ case class ElasticGeoDistance(
 ) extends Expression {
   override def sql = s"$Distance($identifier,($lat,$lon)) $operator $distance"
   override val functions: List[Function] = List(Distance)
-  override def operator: Operator = Le
+  override def operator: Operator = LE
   override def update(request: SQLSearchRequest): ElasticGeoDistance =
     this.copy(identifier = identifier.update(request))
 
   override def maybeValue: Option[Token] = Some(distance)
 
-  override def maybeNot: Option[Not.type] = None
+  override def maybeNot: Option[NOT.type] = None
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
@@ -468,8 +464,8 @@ case class MatchCriteria(
   value: StringValue
 ) extends Criteria {
   override def sql: String =
-    s"$operator (${identifiers.mkString(",")}) $Against ($value)"
-  override def operator: Operator = Match
+    s"$operator (${identifiers.mkString(",")}) $AGAINST ($value)"
+  override def operator: Operator = MATCH
   override def update(request: SQLSearchRequest): Criteria =
     this.copy(identifiers = identifiers.map(_.update(request)))
 
@@ -479,8 +475,8 @@ case class MatchCriteria(
   private[this] def toCriteria(matches: List[ElasticMatch], curr: Criteria): Criteria =
     matches match {
       case Nil           => curr
-      case single :: Nil => Predicate(curr, Or, single)
-      case first :: rest => toCriteria(rest, Predicate(curr, Or, first))
+      case single :: Nil => Predicate(curr, OR, single)
+      case first :: rest => toCriteria(rest, Predicate(curr, OR, first))
     }
 
   lazy val criteria: Criteria =
@@ -510,13 +506,13 @@ case class ElasticMatch(
 ) extends Expression {
   override def sql: String =
     s"$operator($identifier,$value${options.map(o => s""","$o"""").getOrElse("")})"
-  override def operator: Operator = Match
+  override def operator: Operator = MATCH
   override def update(request: SQLSearchRequest): Criteria =
     this.copy(identifier = identifier.update(request))
 
   override def maybeValue: Option[Token] = Some(value)
 
-  override def maybeNot: Option[Not.type] = None
+  override def maybeNot: Option[NOT.type] = None
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 

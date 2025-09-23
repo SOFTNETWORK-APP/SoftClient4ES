@@ -1,6 +1,6 @@
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.function.aggregate.{Max, Min}
+import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.Validation
 import app.softnetwork.elastic.sql.query._
@@ -65,12 +65,12 @@ package object sql {
         None
       else
         operator match {
-          case Some(Eq)        => values.find(_ == value)
-          case Some(Ne | Diff) => values.find(_ != value)
-          case Some(Ge)        => values.filter(_ >= value).sorted.reverse.headOption
-          case Some(Gt)        => values.filter(_ > value).sorted.reverse.headOption
-          case Some(Le)        => values.filter(_ <= value).sorted.headOption
-          case Some(Lt)        => values.filter(_ < value).sorted.headOption
+          case Some(EQ)        => values.find(_ == value)
+          case Some(NE | DIFF) => values.find(_ != value)
+          case Some(GE)        => values.filter(_ >= value).sorted.reverse.headOption
+          case Some(GT)        => values.filter(_ > value).sorted.reverse.headOption
+          case Some(LE)        => values.filter(_ <= value).sorted.headOption
+          case Some(LT)        => values.filter(_ < value).sorted.headOption
           case _               => values.headOption
         }
     }
@@ -120,11 +120,11 @@ package object sql {
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
-        case Some(Eq)        => values.find(v => v.toString contentEquals value)
-        case Some(Ne | Diff) => values.find(v => !(v.toString contentEquals value))
-        case Some(Like)      => values.find(v => pattern.matcher(v.toString).matches())
-        case None            => Some(values.mkString(separator))
-        case _               => super.choose(values, operator, separator)
+        case Some(EQ)           => values.find(v => v.toString contentEquals value)
+        case Some(NE | DIFF)    => values.find(v => !(v.toString contentEquals value))
+        case Some(LIKE | RLIKE) => values.find(v => pattern.matcher(v.toString).matches())
+        case None               => Some(values.mkString(separator))
+        case _                  => super.choose(values, operator, separator)
       }
     }
     override def out: SQLType = SQLTypes.Varchar
@@ -303,8 +303,8 @@ package object sql {
         value.choose[T](values, Some(operator))
       case _ =>
         function match {
-          case Some(Min) => Some(values.min)
-          case Some(Max) => Some(values.max)
+          case Some(MIN) => Some(values.min)
+          case Some(MAX) => Some(values.max)
           // FIXME        case Some(SQLSum) => Some(values.sum)
           // FIXME        case Some(SQLAvg) => Some(values.sum / values.length  )
           case _ => values.headOption
@@ -313,18 +313,7 @@ package object sql {
   }
 
   def toRegex(value: String): String = {
-    val startWith = value.startsWith("%")
-    val endWith = value.endsWith("%")
-    val v =
-      if (startWith && endWith)
-        value.substring(1, value.length - 1)
-      else if (startWith)
-        value.substring(1)
-      else if (endWith)
-        value.substring(0, value.length - 1)
-      else
-        value
-    s"""${if (startWith) ".*"}$v${if (endWith) ".*"}"""
+    value.replaceAll("%", ".*").replaceAll("_", ".")
   }
 
   case object Alias extends Expr("AS") with TokenRegex

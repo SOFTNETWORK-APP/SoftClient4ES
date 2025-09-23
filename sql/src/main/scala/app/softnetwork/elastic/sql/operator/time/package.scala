@@ -8,17 +8,17 @@ package object time {
     override def script: String = sql
     override def toString: String = s" $sql "
     override def painless: String = this match {
-      case Plus  => ".plus"
-      case Minus => ".minus"
+      case PLUS  => ".plus"
+      case MINUS => ".minus"
       case _     => sql
     }
   }
 
-  case object Plus extends Expr("+") with IntervalOperator {
+  case object PLUS extends Expr("+") with IntervalOperator {
     override def painless: String = ".plus"
   }
 
-  case object Minus extends Expr("-") with IntervalOperator {
+  case object MINUS extends Expr("-") with IntervalOperator {
     override def painless: String = ".minus"
   }
 

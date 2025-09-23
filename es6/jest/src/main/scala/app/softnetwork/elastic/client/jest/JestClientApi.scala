@@ -386,7 +386,7 @@ trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCount
                     field,
                     aggType,
                     aggType match {
-                      case sql.function.aggregate.Count =>
+                      case sql.function.aggregate.COUNT =>
                         if (aggregation.distinct)
                           NumericValue(
                             root.getCardinalityAggregation(agg).getCardinality.doubleValue()
@@ -396,13 +396,13 @@ trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCount
                             root.getValueCountAggregation(agg).getValueCount.doubleValue()
                           )
                         }
-                      case sql.function.aggregate.Sum =>
+                      case sql.function.aggregate.SUM =>
                         NumericValue(root.getSumAggregation(agg).getSum)
-                      case sql.function.aggregate.Avg =>
+                      case sql.function.aggregate.AVG =>
                         NumericValue(root.getAvgAggregation(agg).getAvg)
-                      case sql.function.aggregate.Min =>
+                      case sql.function.aggregate.MIN =>
                         NumericValue(root.getMinAggregation(agg).getMin)
-                      case sql.function.aggregate.Max =>
+                      case sql.function.aggregate.MAX =>
                         NumericValue(root.getMaxAggregation(agg).getMax)
                       case _ => EmptyValue
                     },

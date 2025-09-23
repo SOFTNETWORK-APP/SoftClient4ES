@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble}
-import app.softnetwork.elastic.sql.function.aggregate.Count
+import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
 import com.sksamuel.elastic4s.ElasticApi
@@ -155,7 +155,7 @@ package object bridge {
     value match {
       case n: NumericValue[_] =>
         operator match {
-          case Ge =>
+          case GE =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -168,7 +168,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) gte d
                 )
             }
-          case Gt =>
+          case GT =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -181,7 +181,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) gt d
                 )
             }
-          case Le =>
+          case LE =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -194,7 +194,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) lte d
                 )
             }
-          case Lt =>
+          case LT =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -207,7 +207,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) lt d
                 )
             }
-          case Eq =>
+          case EQ =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -220,7 +220,7 @@ package object bridge {
                   d => termQuery(identifier.name, d)
                 )
             }
-          case Ne | Diff =>
+          case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -237,49 +237,56 @@ package object bridge {
         }
       case l: StringValue =>
         operator match {
-          case Like =>
+          case LIKE =>
             maybeNot match {
               case Some(_) =>
                 not(regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
                 regexQuery(identifier.name, toRegex(l.value))
             }
-          case Ge =>
+          case RLIKE =>
+            maybeNot match {
+              case Some(_) =>
+                not(regexQuery(identifier.name, l.value))
+              case _ =>
+                regexQuery(identifier.name, l.value)
+            }
+          case GE =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) lt l.value
               case _ =>
                 rangeQuery(identifier.name) gte l.value
             }
-          case Gt =>
+          case GT =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) lte l.value
               case _ =>
                 rangeQuery(identifier.name) gt l.value
             }
-          case Le =>
+          case LE =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) gt l.value
               case _ =>
                 rangeQuery(identifier.name) lte l.value
             }
-          case Lt =>
+          case LT =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) gte l.value
               case _ =>
                 rangeQuery(identifier.name) lt l.value
             }
-          case Eq =>
+          case EQ =>
             maybeNot match {
               case Some(_) =>
                 not(termQuery(identifier.name, l.value))
               case _ =>
                 termQuery(identifier.name, l.value)
             }
-          case Ne | Diff =>
+          case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
                 termQuery(identifier.name, l.value)
@@ -290,14 +297,14 @@ package object bridge {
         }
       case b: BooleanValue =>
         operator match {
-          case Eq =>
+          case EQ =>
             maybeNot match {
               case Some(_) =>
                 not(termQuery(identifier.name, b.value))
               case _ =>
                 termQuery(identifier.name, b.value)
             }
-          case Ne | Diff =>
+          case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
                 termQuery(identifier.name, b.value)
@@ -313,12 +320,12 @@ package object bridge {
               case Some(script) =>
                 val o = if (maybeNot.isDefined) op.not else op
                 o match {
-                  case Gt        => rangeQuery(identifier.name) gt script
-                  case Ge        => rangeQuery(identifier.name) gte script
-                  case Lt        => rangeQuery(identifier.name) lt script
-                  case Le        => rangeQuery(identifier.name) lte script
-                  case Eq        => rangeQuery(identifier.name) gte script lte script
-                  case Ne | Diff => not(rangeQuery(identifier.name) gte script lte script)
+                  case GT        => rangeQuery(identifier.name) gt script
+                  case GE        => rangeQuery(identifier.name) gte script
+                  case LT        => rangeQuery(identifier.name) lt script
+                  case LE        => rangeQuery(identifier.name) lte script
+                  case EQ        => rangeQuery(identifier.name) gte script lte script
+                  case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
                 scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
@@ -447,7 +454,7 @@ package object bridge {
                 sources = l.sources,
                 query = Some(
                   (aggregation.aggType match {
-                    case Count if aggregation.sourceField.equalsIgnoreCase("_id") =>
+                    case COUNT if aggregation.sourceField.equalsIgnoreCase("_id") =>
                       SearchBodyBuilderFn(
                         ElasticApi.search("") query {
                           queryFiltered

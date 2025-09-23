@@ -11,29 +11,30 @@ import app.softnetwork.elastic.sql.{
   Token
 }
 import app.softnetwork.elastic.sql.operator.{
-  Against,
-  And,
-  Between,
+  AGAINST,
+  AND,
+  BETWEEN,
   Child,
   ComparisonOperator,
-  Diff,
-  Eq,
+  DIFF,
+  EQ,
   ExpressionOperator,
-  Ge,
-  Gt,
-  In,
-  IsNotNull,
-  IsNull,
-  Le,
-  Like,
-  Lt,
-  Match,
-  Ne,
+  GE,
+  GT,
+  IN,
+  IS_NOT_NULL,
+  IS_NULL,
+  LE,
+  LIKE,
+  LT,
+  MATCH,
+  NE,
+  NOT,
   Nested,
-  Not,
-  Or,
+  OR,
   Parent,
-  PredicateOperator
+  PredicateOperator,
+  RLIKE
 }
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
@@ -56,19 +57,19 @@ import app.softnetwork.elastic.sql.query.{
 trait WhereParser {
   self: Parser with GroupByParser with OrderByParser =>
 
-  def isNull: PackratParser[Criteria] = identifier ~ IsNull.regex ^^ { case i ~ _ =>
+  def isNull: PackratParser[Criteria] = identifier ~ IS_NULL.regex ^^ { case i ~ _ =>
     IsNullExpr(i)
   }
 
-  def isNotNull: PackratParser[Criteria] = identifier ~ IsNotNull.regex ^^ { case i ~ _ =>
+  def isNotNull: PackratParser[Criteria] = identifier ~ IS_NOT_NULL.regex ^^ { case i ~ _ =>
     IsNotNullExpr(i)
   }
 
-  private def eq: PackratParser[ComparisonOperator] = Eq.sql ^^ (_ => Eq)
+  private def eq: PackratParser[ComparisonOperator] = EQ.sql ^^ (_ => EQ)
 
-  private def ne: PackratParser[ComparisonOperator] = Ne.sql ^^ (_ => Ne)
+  private def ne: PackratParser[ComparisonOperator] = NE.sql ^^ (_ => NE)
 
-  private def diff: PackratParser[ComparisonOperator] = Diff.sql ^^ (_ => Diff)
+  private def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   private def any_identifier: PackratParser[Identifier] =
     identifierWithTransformation | identifierWithAggregation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithArithmeticExpression | identifierWithFunction | date_diff_identifier | extract_identifier | identifier
@@ -79,24 +80,29 @@ trait WhereParser {
     }
 
   def like: PackratParser[GenericExpression] =
-    any_identifier ~ not.? ~ Like.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
-      GenericExpression(i, Like, v, n)
+    any_identifier ~ not.? ~ LIKE.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
+      GenericExpression(i, LIKE, v, n)
     }
 
-  private def ge: PackratParser[ComparisonOperator] = Ge.sql ^^ (_ => Ge)
+  def rlike: PackratParser[GenericExpression] =
+    any_identifier ~ not.? ~ RLIKE.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
+      GenericExpression(i, RLIKE, v, n)
+    }
 
-  def gt: PackratParser[ComparisonOperator] = Gt.sql ^^ (_ => Gt)
+  private def ge: PackratParser[ComparisonOperator] = GE.sql ^^ (_ => GE)
 
-  private def le: PackratParser[ComparisonOperator] = Le.sql ^^ (_ => Le)
+  def gt: PackratParser[ComparisonOperator] = GT.sql ^^ (_ => GT)
 
-  def lt: PackratParser[ComparisonOperator] = Lt.sql ^^ (_ => Lt)
+  private def le: PackratParser[ComparisonOperator] = LE.sql ^^ (_ => LE)
+
+  def lt: PackratParser[ComparisonOperator] = LT.sql ^^ (_ => LT)
 
   private def comparison: PackratParser[GenericExpression] =
     not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | long | literal | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
-  def in: PackratParser[ExpressionOperator] = In.regex ^^ (_ => In)
+  def in: PackratParser[ExpressionOperator] = IN.regex ^^ (_ => IN)
 
   private def inLiteral: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(literal, separator) ~ end ^^ {
@@ -133,17 +139,17 @@ trait WhereParser {
     }
 
   def between: PackratParser[Criteria] =
-    any_identifier ~ not.? ~ Between.regex ~ literal ~ and ~ literal ^^ {
+    any_identifier ~ not.? ~ BETWEEN.regex ~ literal ~ and ~ literal ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, LiteralFromTo(from, to), n)
     }
 
   def betweenLongs: PackratParser[Criteria] =
-    any_identifier ~ not.? ~ Between.regex ~ long ~ and ~ long ^^ {
+    any_identifier ~ not.? ~ BETWEEN.regex ~ long ~ and ~ long ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, LongFromTo(from, to), n)
     }
 
   def betweenDoubles: PackratParser[Criteria] =
-    any_identifier ~ not.? ~ Between.regex ~ double ~ and ~ double ^^ {
+    any_identifier ~ not.? ~ BETWEEN.regex ~ double ~ and ~ double ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, DoubleFromTo(from, to), n)
     }
 
@@ -153,18 +159,18 @@ trait WhereParser {
     }
 
   def matchCriteria: PackratParser[MatchCriteria] =
-    Match.regex ~ start ~ rep1sep(
+    MATCH.regex ~ start ~ rep1sep(
       any_identifier,
       separator
-    ) ~ end ~ Against.regex ~ start ~ literal ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ ~ l ~ _ =>
+    ) ~ end ~ AGAINST.regex ~ start ~ literal ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ ~ l ~ _ =>
       MatchCriteria(i, l)
     }
 
-  def and: PackratParser[PredicateOperator] = And.regex ^^ (_ => And)
+  def and: PackratParser[PredicateOperator] = AND.regex ^^ (_ => AND)
 
-  def or: PackratParser[PredicateOperator] = Or.regex ^^ (_ => Or)
+  def or: PackratParser[PredicateOperator] = OR.regex ^^ (_ => OR)
 
-  def not: PackratParser[Not.type] = Not.regex ^^ (_ => Not)
+  def not: PackratParser[NOT.type] = NOT.regex ^^ (_ => NOT)
 
   def logical_criteria: PackratParser[Criteria] =
     (is_null | is_notnull) ^^ { case ConditionalFunctionAsCriteria(c) =>
@@ -172,7 +178,7 @@ trait WhereParser {
     }
 
   def criteria: PackratParser[Criteria] =
-    (equality | like | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | /*coalesce | nullif |*/ sql_distance | matchCriteria | logical_criteria) ^^ (
+    (equality | like | rlike | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | /*coalesce | nullif |*/ sql_distance | matchCriteria | logical_criteria) ^^ (
       c => c
     )
 

@@ -5,13 +5,13 @@ import app.softnetwork.elastic.sql.function.cond.{
   Case,
   Coalesce,
   ConditionalFunction,
-  Else,
-  End,
-  IsNotNullFunction,
-  IsNullFunction,
+  ELSE,
+  END,
+  IsNotNull,
+  IsNull,
   NullIf,
-  Then,
-  When
+  THEN,
+  WHEN
 }
 import app.softnetwork.elastic.sql.{Identifier, Null, PainlessScript, Token}
 import app.softnetwork.elastic.sql.parser.{
@@ -29,12 +29,12 @@ package object cond {
 
     def is_null: PackratParser[ConditionalFunction[_]] =
       "(?i)isnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
-        case _ ~ _ ~ i ~ _ => IsNullFunction(i)
+        case _ ~ _ ~ i ~ _ => IsNull(i)
       }
 
     def is_notnull: PackratParser[ConditionalFunction[_]] =
       "(?i)isnotnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
-        case _ ~ _ ~ i ~ _ => IsNotNullFunction(i)
+        case _ ~ _ ~ i ~ _ => IsNotNull(i)
       }
 
     def coalesce: PackratParser[Coalesce] =
@@ -52,13 +52,13 @@ package object cond {
 
     def start_case: PackratParser[StartCase.type] = Case.regex ^^ (_ => StartCase)
 
-    def when_case: PackratParser[WhenCase.type] = When.regex ^^ (_ => WhenCase)
+    def when_case: PackratParser[WhenCase.type] = WHEN.regex ^^ (_ => WhenCase)
 
-    def then_case: PackratParser[ThenCase.type] = Then.regex ^^ (_ => ThenCase)
+    def then_case: PackratParser[ThenCase.type] = THEN.regex ^^ (_ => ThenCase)
 
-    def else_case: PackratParser[Else.type] = Else.regex ^^ (_ => Else)
+    def else_case: PackratParser[ELSE.type] = ELSE.regex ^^ (_ => ELSE)
 
-    def end_case: PackratParser[EndCase.type] = End.regex ^^ (_ => EndCase)
+    def end_case: PackratParser[EndCase.type] = END.regex ^^ (_ => EndCase)
 
     def case_condition: Parser[(PainlessScript, PainlessScript)] =
       when_case ~ (whereCriteria | valueExpr) ~ then_case.? ~ valueExpr ^^ { case _ ~ c ~ _ ~ r =>

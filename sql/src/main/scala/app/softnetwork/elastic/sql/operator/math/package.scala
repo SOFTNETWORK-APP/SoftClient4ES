@@ -8,10 +8,10 @@ package object math {
     override def toString: String = s" $sql "
   }
 
-  case object Add extends Expr("+") with ArithmeticOperator
-  case object Subtract extends Expr("-") with ArithmeticOperator
-  case object Multiply extends Expr("*") with ArithmeticOperator
-  case object Divide extends Expr("/") with ArithmeticOperator
-  case object Modulo extends Expr("%") with ArithmeticOperator
+  case object ADD extends Expr("+") with ArithmeticOperator
+  case object SUBTRACT extends Expr("-") with ArithmeticOperator
+  case object MULTIPLY extends Expr("*") with ArithmeticOperator
+  case object DIVIDE extends Expr("/") with ArithmeticOperator
+  case object MODULO extends Expr("%") with ArithmeticOperator
 
 }

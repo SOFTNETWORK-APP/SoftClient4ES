@@ -4,16 +4,16 @@ package object operator {
 
   trait Operator extends Token with PainlessScript with TokenRegex {
     override def painless: String = this match {
-      case And          => "&&"
-      case Or           => "||"
-      case Not          => "!"
-      case In           => ".contains"
-      case Like | Match => ".matches"
-      case Eq           => "=="
-      case Ne           => "!="
-      case IsNull       => " == null"
-      case IsNotNull    => " != null"
-      case _            => sql
+      case AND                  => "&&"
+      case OR                   => "||"
+      case NOT                  => "!"
+      case IN                   => ".contains"
+      case LIKE | RLIKE | MATCH => ".matches"
+      case EQ                   => "=="
+      case NE                   => "!="
+      case IS_NULL              => " == null"
+      case IS_NOT_NULL          => " != null"
+      case _                    => sql
     }
   }
 
@@ -23,41 +23,42 @@ package object operator {
 
   sealed trait ComparisonOperator extends ExpressionOperator with PainlessScript {
     def not: ComparisonOperator = this match {
-      case Eq        => Ne
-      case Ne | Diff => Eq
-      case Ge        => Lt
-      case Gt        => Le
-      case Le        => Gt
-      case Lt        => Ge
+      case EQ        => NE
+      case NE | DIFF => EQ
+      case GE        => LT
+      case GT        => LE
+      case LE        => GT
+      case LT        => GE
     }
   }
 
-  case object Eq extends Expr("=") with ComparisonOperator
-  case object Ne extends Expr("<>") with ComparisonOperator
-  case object Diff extends Expr("!=") with ComparisonOperator
-  case object Ge extends Expr(">=") with ComparisonOperator
-  case object Gt extends Expr(">") with ComparisonOperator
-  case object Le extends Expr("<=") with ComparisonOperator
-  case object Lt extends Expr("<") with ComparisonOperator
-  case object In extends Expr("IN") with ComparisonOperator
-  case object Like extends Expr("LIKE") with ComparisonOperator
-  case object Between extends Expr("BETWEEN") with ComparisonOperator
-  case object IsNull extends Expr("IS NULL") with ComparisonOperator
-  case object IsNotNull extends Expr("IS NOT NULL") with ComparisonOperator
+  case object EQ extends Expr("=") with ComparisonOperator
+  case object NE extends Expr("<>") with ComparisonOperator
+  case object DIFF extends Expr("!=") with ComparisonOperator
+  case object GE extends Expr(">=") with ComparisonOperator
+  case object GT extends Expr(">") with ComparisonOperator
+  case object LE extends Expr("<=") with ComparisonOperator
+  case object LT extends Expr("<") with ComparisonOperator
+  case object IN extends Expr("IN") with ComparisonOperator
+  case object LIKE extends Expr("LIKE") with ComparisonOperator
+  case object RLIKE extends Expr("RLIKE") with ComparisonOperator
+  case object BETWEEN extends Expr("BETWEEN") with ComparisonOperator
+  case object IS_NULL extends Expr("IS NULL") with ComparisonOperator
+  case object IS_NOT_NULL extends Expr("IS NOT NULL") with ComparisonOperator
 
-  case object Match extends Expr("MATCH") with ComparisonOperator
-  case object Against extends Expr("AGAINST") with TokenRegex
+  case object MATCH extends Expr("MATCH") with ComparisonOperator
+  case object AGAINST extends Expr("AGAINST") with TokenRegex
 
   sealed trait LogicalOperator extends ExpressionOperator
 
-  case object Not extends Expr("NOT") with LogicalOperator
+  case object NOT extends Expr("NOT") with LogicalOperator
 
   sealed trait PredicateOperator extends LogicalOperator
 
-  case object And extends Expr("AND") with PredicateOperator
-  case object Or extends Expr("OR") with PredicateOperator
+  case object AND extends Expr("AND") with PredicateOperator
+  case object OR extends Expr("OR") with PredicateOperator
 
-  case object Union extends Expr("UNION") with Operator with TokenRegex
+  case object UNION extends Expr("UNION") with Operator with TokenRegex
 
   sealed trait ElasticOperator extends Operator with TokenRegex
 

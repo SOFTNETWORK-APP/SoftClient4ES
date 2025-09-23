@@ -21,7 +21,7 @@ package object string {
     override def painless: String = ".substring"
     override lazy val words: List[String] = List(sql, "SUBSTR")
   }
-  case object To extends Expr("TO") with TokenRegex
+  case object TO extends Expr("TO") with TokenRegex
   case object Length extends Expr("LENGTH") with StringOp
 
   sealed trait StringFunction[Out <: SQLType]

@@ -65,7 +65,7 @@ object BucketSelectorScript {
       val leftStr = toPainless(left)
       val rightStr = toPainless(right)
       val opStr = op match {
-        case And | Or => op.painless
+        case AND | OR => op.painless
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty

@@ -423,19 +423,19 @@ trait RestHighLevelClientSingleValueAggregateApi
                     field,
                     aggType,
                     aggType match {
-                      case sql.function.aggregate.Count =>
+                      case sql.function.aggregate.COUNT =>
                         if (aggregation.distinct) {
                           NumericValue(root.get(agg).asInstanceOf[Cardinality].value())
                         } else {
                           NumericValue(root.get(agg).asInstanceOf[ValueCount].value())
                         }
-                      case sql.function.aggregate.Sum =>
+                      case sql.function.aggregate.SUM =>
                         NumericValue(root.get(agg).asInstanceOf[Sum].value())
-                      case sql.function.aggregate.Avg =>
+                      case sql.function.aggregate.AVG =>
                         NumericValue(root.get(agg).asInstanceOf[Avg].value())
-                      case sql.function.aggregate.Min =>
+                      case sql.function.aggregate.MIN =>
                         NumericValue(root.get(agg).asInstanceOf[Min].value())
-                      case sql.function.aggregate.Max =>
+                      case sql.function.aggregate.MAX =>
                         NumericValue(root.get(agg).asInstanceOf[Max].value())
                       case _ => EmptyValue
                     },

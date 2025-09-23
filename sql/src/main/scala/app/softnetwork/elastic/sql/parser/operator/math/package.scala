@@ -3,28 +3,28 @@ package app.softnetwork.elastic.sql.parser.operator
 import app.softnetwork.elastic.sql.function.{Function, FunctionWithIdentifier}
 import app.softnetwork.elastic.sql.{Identifier, PainlessScript}
 import app.softnetwork.elastic.sql.operator.math.{
-  Add,
+  ADD,
   ArithmeticExpression,
   ArithmeticOperator,
-  Divide,
-  Modulo,
-  Multiply,
-  Subtract
+  DIVIDE,
+  MODULO,
+  MULTIPLY,
+  SUBTRACT
 }
 import app.softnetwork.elastic.sql.parser.Parser
 
 package object math {
 
   trait ArithmeticParser { self: Parser =>
-    def add: PackratParser[ArithmeticOperator] = Add.sql ^^ (_ => Add)
+    def add: PackratParser[ArithmeticOperator] = ADD.sql ^^ (_ => ADD)
 
-    def subtract: PackratParser[ArithmeticOperator] = Subtract.sql ^^ (_ => Subtract)
+    def subtract: PackratParser[ArithmeticOperator] = SUBTRACT.sql ^^ (_ => SUBTRACT)
 
-    def multiply: PackratParser[ArithmeticOperator] = Multiply.sql ^^ (_ => Multiply)
+    def multiply: PackratParser[ArithmeticOperator] = MULTIPLY.sql ^^ (_ => MULTIPLY)
 
-    def divide: PackratParser[ArithmeticOperator] = Divide.sql ^^ (_ => Divide)
+    def divide: PackratParser[ArithmeticOperator] = DIVIDE.sql ^^ (_ => DIVIDE)
 
-    def modulo: PackratParser[ArithmeticOperator] = Modulo.sql ^^ (_ => Modulo)
+    def modulo: PackratParser[ArithmeticOperator] = MODULO.sql ^^ (_ => MODULO)
 
     def factor: PackratParser[PainlessScript] =
       "(" ~> arithmeticExpressionLevel2 <~ ")" ^^ {

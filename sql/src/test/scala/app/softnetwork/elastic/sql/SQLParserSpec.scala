@@ -20,7 +20,8 @@ object Queries {
   val literalNe = """select * from Table where identifier <> 'un'"""
   val boolEq = """select * from Table where identifier = true"""
   val boolNe = """select * from Table where identifier <> false"""
-  val literalLike = """select * from Table where identifier like '%un%'"""
+  val literalLike = """select * from Table where identifier like '%u_n%'"""
+  val literalRlike = """select * from Table where identifier rlike '.*u.n.*'"""
   val literalNotLike = """select * from Table where identifier not like '%un%'"""
   val betweenExpression = """select * from Table where identifier between '1' and '2'"""
   val andPredicate = "select * from Table where identifier1 = 1 and identifier2 > 2"
@@ -233,6 +234,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("")
       .equalsIgnoreCase(literalLike) shouldBe true
+  }
+
+  it should "parse literal rlike" in {
+    val result = Parser(literalRlike)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalRlike) shouldBe true
   }
 
   it should "parse literal not like" in {

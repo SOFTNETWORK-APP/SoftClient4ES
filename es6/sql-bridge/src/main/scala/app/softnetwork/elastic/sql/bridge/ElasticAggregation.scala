@@ -103,16 +103,16 @@ object ElasticAggregation {
 
     val _agg =
       aggType match {
-        case Count =>
+        case COUNT =>
           if (distinct)
             cardinalityAgg(aggName, sourceField)
           else {
             valueCountAgg(aggName, sourceField)
           }
-        case Min => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
-        case Max => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
-        case Avg => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
-        case Sum => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+        case MIN => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
+        case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
+        case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
+        case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
       }
 
     val filteredAggName = "filtered_agg"

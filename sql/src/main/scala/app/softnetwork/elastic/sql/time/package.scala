@@ -6,9 +6,7 @@ import scala.util.matching.Regex
 
 package object time {
 
-  sealed trait TimeField extends PainlessScript {
-    lazy val regex: Regex = s"\\b(?i)$sql\\b".r
-
+  sealed trait TimeField extends PainlessScript with TokenRegex {
     override def painless: String = s"ChronoField.$sql"
 
     override def nullable: Boolean = false
@@ -16,18 +14,42 @@ package object time {
 
   object TimeField {
     case object YEAR extends Expr("YEAR") with TimeField
-    case object MONTH_OF_YEAR extends Expr("MONTH_OF_YEAR") with TimeField
-    case object DAY_OF_MONTH extends Expr("DAY_OF_MONTH") with TimeField
-    case object DAY_OF_WEEK extends Expr("DAY_OF_WEEK") with TimeField
-    case object DAY_OF_YEAR extends Expr("DAY_OF_YEAR") with TimeField
-    case object HOUR_OF_DAY extends Expr("HOUR_OF_DAY") with TimeField
-    case object MINUTE_OF_HOUR extends Expr("MINUTE_OF_HOUR") with TimeField
-    case object SECOND_OF_MINUTE extends Expr("SECOND_OF_MINUTE") with TimeField
-    case object NANO_OF_SECOND extends Expr("NANO_OF_SECOND") with TimeField
-    case object MICRO_OF_SECOND extends Expr("MICRO_OF_SECOND") with TimeField
-    case object MILLI_OF_SECOND extends Expr("MILLI_OF_SECOND") with TimeField
-    case object EPOCH_DAY extends Expr("EPOCH_DAY") with TimeField
-    case object OFFSET_SECONDS extends Expr("OFFSET_SECONDS") with TimeField
+    case object MONTH_OF_YEAR extends Expr("MONTH_OF_YEAR") with TimeField {
+      override val words: List[String] = List(sql, "MONTHOFYEAR", "MONTH")
+    }
+    case object DAY_OF_MONTH extends Expr("DAY_OF_MONTH") with TimeField {
+      override val words: List[String] = List(sql, "DAYOFMONTH", "DAY")
+    }
+    case object DAY_OF_WEEK extends Expr("DAY_OF_WEEK") with TimeField {
+      override val words: List[String] = List(sql, "DAYOFWEEK", "WEEKDAY")
+    }
+    case object DAY_OF_YEAR extends Expr("DAY_OF_YEAR") with TimeField {
+      override val words: List[String] = List(sql, "DAYOFYEAR")
+    }
+    case object HOUR_OF_DAY extends Expr("HOUR_OF_DAY") with TimeField {
+      override val words: List[String] = List(sql, "HOUROFDAY", "HOUR")
+    }
+    case object MINUTE_OF_HOUR extends Expr("MINUTE_OF_HOUR") with TimeField {
+      override val words: List[String] = List(sql, "MINUTEOFHOUR", "MINUTE")
+    }
+    case object SECOND_OF_MINUTE extends Expr("SECOND_OF_MINUTE") with TimeField {
+      override val words: List[String] = List(sql, "SECONDOFMINUTE", "SECOND")
+    }
+    case object NANO_OF_SECOND extends Expr("NANO_OF_SECOND") with TimeField {
+      override val words: List[String] = List(sql, "NANOFSECOND", "NANOSECOND")
+    }
+    case object MICRO_OF_SECOND extends Expr("MICRO_OF_SECOND") with TimeField {
+      override val words: List[String] = List(sql, "MICROOFSECOND", "MICROSECOND")
+    }
+    case object MILLI_OF_SECOND extends Expr("MILLI_OF_SECOND") with TimeField {
+      override val words: List[String] = List(sql, "MILLIOFSECOND", "MILLISECOND")
+    }
+    case object EPOCH_DAY extends Expr("EPOCH_DAY") with TimeField {
+      override val words: List[String] = List(sql, "EPOCHDAY")
+    }
+    case object OFFSET_SECONDS extends Expr("OFFSET_SECONDS") with TimeField {
+      override val words: List[String] = List(sql, "OFFSETSECONDS")
+    }
   }
 
   sealed trait TimeUnit extends PainlessScript with MathScript {

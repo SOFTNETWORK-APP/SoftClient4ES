@@ -11,17 +11,17 @@ package object cond {
   }
 
   case object Coalesce extends Expr("COALESCE") with ConditionalOp
-  case object IsNullFunction extends Expr("ISNULL") with ConditionalOp
-  case object IsNotNullFunction extends Expr("ISNOTNULL") with ConditionalOp
+  case object IsNull extends Expr("ISNULL") with ConditionalOp
+  case object IsNotNull extends Expr("ISNOTNULL") with ConditionalOp
   case object NullIf extends Expr("NULLIF") with ConditionalOp
   case object Exists extends Expr("EXISTS") with ConditionalOp
 
   case object Case extends Expr("CASE") with ConditionalOp
 
-  case object When extends Expr("WHEN") with TokenRegex
-  case object Then extends Expr("THEN") with TokenRegex
-  case object Else extends Expr("ELSE") with TokenRegex
-  case object End extends Expr("END") with TokenRegex
+  case object WHEN extends Expr("WHEN") with TokenRegex
+  case object THEN extends Expr("THEN") with TokenRegex
+  case object ELSE extends Expr("ELSE") with TokenRegex
+  case object END extends Expr("END") with TokenRegex
 
   sealed trait ConditionalFunction[In <: SQLType]
       extends TransformFunction[In, SQLBool]
@@ -35,8 +35,8 @@ package object cond {
     override def toPainless(base: String, idx: Int): String = s"($base$painless)"
   }
 
-  case class IsNullFunction(identifier: Identifier) extends ConditionalFunction[SQLAny] {
-    override def conditionalOp: ConditionalOp = IsNullFunction
+  case class IsNull(identifier: Identifier) extends ConditionalFunction[SQLAny] {
+    override def conditionalOp: ConditionalOp = IsNull
 
     override def args: List[PainlessScript] = List(identifier)
 
@@ -53,8 +53,8 @@ package object cond {
     }
   }
 
-  case class IsNotNullFunction(identifier: Identifier) extends ConditionalFunction[SQLAny] {
-    override def conditionalOp: ConditionalOp = IsNotNullFunction
+  case class IsNotNull(identifier: Identifier) extends ConditionalFunction[SQLAny] {
+    override def conditionalOp: ConditionalOp = IsNotNull
 
     override def args: List[PainlessScript] = List(identifier)
 
@@ -154,10 +154,10 @@ package object cond {
     override def sql: String = {
       val exprPart = expression.map(e => s"$Case ${e.sql}").getOrElse(Case.sql)
       val whenThen = conditions
-        .map { case (cond, res) => s"$When ${cond.sql} $Then ${res.sql}" }
+        .map { case (cond, res) => s"$WHEN ${cond.sql} $THEN ${res.sql}" }
         .mkString(" ")
-      val elsePart = default.map(d => s" $Else ${d.sql}").getOrElse("")
-      s"$exprPart $whenThen$elsePart $End"
+      val elsePart = default.map(d => s" $ELSE ${d.sql}").getOrElse("")
+      s"$exprPart $whenThen$elsePart $END"
     }
 
     override def out: SQLType =

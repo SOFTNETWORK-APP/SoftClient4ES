@@ -45,7 +45,7 @@ object Parser
     }
   }
 
-  def union: PackratParser[Union.type] = Union.regex ^^ (_ => Union)
+  def union: PackratParser[UNION.type] = UNION.regex ^^ (_ => UNION)
 
   def requests: PackratParser[List[SQLSearchRequest]] = rep1sep(request, union) ^^ (s => s)
 

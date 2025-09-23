@@ -10,7 +10,7 @@ import app.softnetwork.elastic.sql.function.string.{
   StringFunction,
   StringFunctionWithOp,
   Substring,
-  To,
+  TO,
   Trim,
   Upper
 }
@@ -27,7 +27,7 @@ package object string {
       }
 
     def substringFunction: PackratParser[StringFunction[SQLVarchar]] =
-      Substring.regex ~ start ~ valueExpr ~ (From.regex | separator) ~ long ~ ((To.regex | separator) ~ long).? ~ end ^^ {
+      Substring.regex ~ start ~ valueExpr ~ (From.regex | separator) ~ long ~ ((TO.regex | separator) ~ long).? ~ end ^^ {
         case _ ~ _ ~ v ~ _ ~ s ~ eOpt ~ _ =>
           Substring(v, s.value.toInt, eOpt.map { case _ ~ e => e.value.toInt })
       }

@@ -1,22 +1,22 @@
 package app.softnetwork.elastic.sql.parser.function
 
 import app.softnetwork.elastic.sql.Identifier
-import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, Avg, Count, Max, Min, Sum}
+import app.softnetwork.elastic.sql.function.aggregate.{AVG, AggregateFunction, COUNT, MAX, MIN, SUM}
 import app.softnetwork.elastic.sql.parser.Parser
 
 package object aggregate {
 
   trait AggregateParser { self: Parser =>
 
-    def count: PackratParser[AggregateFunction] = Count.regex ^^ (_ => Count)
+    def count: PackratParser[AggregateFunction] = COUNT.regex ^^ (_ => COUNT)
 
-    def min: PackratParser[AggregateFunction] = Min.regex ^^ (_ => Min)
+    def min: PackratParser[AggregateFunction] = MIN.regex ^^ (_ => MIN)
 
-    def max: PackratParser[AggregateFunction] = Max.regex ^^ (_ => Max)
+    def max: PackratParser[AggregateFunction] = MAX.regex ^^ (_ => MAX)
 
-    def avg: PackratParser[AggregateFunction] = Avg.regex ^^ (_ => Avg)
+    def avg: PackratParser[AggregateFunction] = AVG.regex ^^ (_ => AVG)
 
-    def sum: PackratParser[AggregateFunction] = Sum.regex ^^ (_ => Sum)
+    def sum: PackratParser[AggregateFunction] = SUM.regex ^^ (_ => SUM)
 
     def aggregates: PackratParser[AggregateFunction] = count | min | max | avg | sum
 

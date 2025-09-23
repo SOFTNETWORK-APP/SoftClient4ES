@@ -54,11 +54,11 @@ package object time {
   }
 
   sealed trait AddInterval[IO <: SQLTemporal] extends IntervalFunction[IO] {
-    override def operator: IntervalOperator = Plus
+    override def operator: IntervalOperator = PLUS
   }
 
   sealed trait SubtractInterval[IO <: SQLTemporal] extends IntervalFunction[IO] {
-    override def operator: IntervalOperator = Minus
+    override def operator: IntervalOperator = MINUS
   }
 
   case class SQLAddInterval(interval: TimeInterval) extends AddInterval[SQLTemporal] {
