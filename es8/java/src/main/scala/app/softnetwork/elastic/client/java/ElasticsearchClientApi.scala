@@ -31,7 +31,7 @@ import com.google.gson.{Gson, JsonParser}
 
 import _root_.java.io.{StringReader, StringWriter}
 import _root_.java.util.{Map => JMap}
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future, Promise}

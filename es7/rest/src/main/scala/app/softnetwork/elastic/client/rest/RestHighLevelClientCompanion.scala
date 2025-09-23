@@ -21,7 +21,7 @@ trait RestHighLevelClientCompanion {
   private var client: Option[RestHighLevelClient] = None
 
   lazy val namedXContentRegistry: NamedXContentRegistry = {
-    import scala.collection.JavaConverters._
+    import scala.jdk.CollectionConverters._
     val searchModule = new SearchModule(Settings.EMPTY, false, List.empty[SearchPlugin].asJava)
     new NamedXContentRegistry(searchModule.getNamedXContents)
   }

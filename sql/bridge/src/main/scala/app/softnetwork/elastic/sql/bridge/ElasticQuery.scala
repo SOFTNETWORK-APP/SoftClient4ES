@@ -62,17 +62,15 @@ case class ElasticQuery(filter: ElasticFilter) {
           criteria.asQuery(group = group, innerHitsNames = innerHitsNames),
           score = false
         )
-      case expression: GenericExpression       => expression
-      case isNull: IsNullExpr               => isNull
-      case isNotNull: IsNotNullExpr         => isNotNull
-      case in: InExpr[_, _]                 => in
-      case between: BetweenExpr[String]     => between
-      case between: BetweenExpr[Long]       => between
-      case between: BetweenExpr[Double]     => between
+      case expression: GenericExpression   => expression
+      case isNull: IsNullExpr              => isNull
+      case isNotNull: IsNotNullExpr        => isNotNull
+      case in: InExpr[_, _]                => in
+      case between: BetweenExpr[_]         => between
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
-      case isNull: IsNullCriteria       => isNull
-      case isNotNull: IsNotNullCriteria => isNotNull
+      case isNull: IsNullCriteria          => isNull
+      case isNotNull: IsNotNullCriteria    => isNotNull
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }

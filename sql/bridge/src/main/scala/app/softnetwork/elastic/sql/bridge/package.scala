@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble}
 import app.softnetwork.elastic.sql.function.aggregate.Count
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
@@ -379,32 +380,18 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-                               between: BetweenExpr[String]
-                             ): Query = {
+    between: BetweenExpr[_]
+  ): Query = {
     import between._
-    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
-    maybeNot match {
-      case Some(_) => not(r)
-      case _       => r
-    }
-  }
-
-  implicit def betweenLongsToQuery(
-                                   between: BetweenExpr[Long]
-                                 ): Query = {
-    import between._
-    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
-    maybeNot match {
-      case Some(_) => not(r)
-      case _       => r
-    }
-  }
-
-  implicit def betweenDoublesToQuery(
-                                      between: BetweenExpr[Double]
-                                    ): Query = {
-    import between._
-    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
+    val r =
+      out match {
+        case _: SQLDouble =>
+          rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Double] lte fromTo.to.value.asInstanceOf[Double]
+        case _: SQLBigInt =>
+          rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Long] lte fromTo.to.value.asInstanceOf[Long]
+        case _ =>
+          rangeQuery(identifier.name) gte String.valueOf(fromTo.from.value) lte String.valueOf(fromTo.to.value)
+      }
     maybeNot match {
       case Some(_) => not(r)
       case _       => r

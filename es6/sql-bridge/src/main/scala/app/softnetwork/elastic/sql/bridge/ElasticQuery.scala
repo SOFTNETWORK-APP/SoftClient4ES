@@ -66,9 +66,7 @@ case class ElasticQuery(filter: ElasticFilter) {
       case isNull: IsNullExpr              => isNull
       case isNotNull: IsNotNullExpr        => isNotNull
       case in: InExpr[_, _]                => in
-      case between: BetweenExpr[String]    => between
-      case between: BetweenExpr[Long]      => between
-      case between: BetweenExpr[Double]    => between
+      case between: BetweenExpr[_]         => between
       case geoDistance: ElasticGeoDistance => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
       case isNull: IsNullCriteria          => isNull

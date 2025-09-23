@@ -30,7 +30,7 @@ package object `type` {
       PiValue.regex ^^ (_ => PiValue)
 
     def boolean: PackratParser[BooleanValue] =
-      """(?i)(true|false)\\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
+      """(?i)(true|false)\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
     def value_identifier: PackratParser[Identifier] =
       (literal | long | double | pi | boolean) ^^ { v =>

@@ -9,7 +9,7 @@ import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import com.google.gson.{Gson, JsonParser}
+import com.google.gson.JsonParser
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
 import io.searchbox.core.search.aggregation.RootAggregation
@@ -21,7 +21,7 @@ import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 import io.searchbox.params.Parameters
 import org.json4s.Formats
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
