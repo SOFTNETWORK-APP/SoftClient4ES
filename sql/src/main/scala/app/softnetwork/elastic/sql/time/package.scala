@@ -6,6 +6,30 @@ import scala.util.matching.Regex
 
 package object time {
 
+  sealed trait TimeField extends PainlessScript {
+    lazy val regex: Regex = s"\\b(?i)$sql\\b".r
+
+    override def painless: String = s"ChronoField.$sql"
+
+    override def nullable: Boolean = false
+  }
+
+  object TimeField {
+    case object YEAR extends Expr("YEAR") with TimeField
+    case object MONTH_OF_YEAR extends Expr("MONTH_OF_YEAR") with TimeField
+    case object DAY_OF_MONTH extends Expr("DAY_OF_MONTH") with TimeField
+    case object DAY_OF_WEEK extends Expr("DAY_OF_WEEK") with TimeField
+    case object DAY_OF_YEAR extends Expr("DAY_OF_YEAR") with TimeField
+    case object HOUR_OF_DAY extends Expr("HOUR_OF_DAY") with TimeField
+    case object MINUTE_OF_HOUR extends Expr("MINUTE_OF_HOUR") with TimeField
+    case object SECOND_OF_MINUTE extends Expr("SECOND_OF_MINUTE") with TimeField
+    case object NANO_OF_SECOND extends Expr("NANO_OF_SECOND") with TimeField
+    case object MICRO_OF_SECOND extends Expr("MICRO_OF_SECOND") with TimeField
+    case object MILLI_OF_SECOND extends Expr("MILLI_OF_SECOND") with TimeField
+    case object EPOCH_DAY extends Expr("EPOCH_DAY") with TimeField
+    case object OFFSET_SECONDS extends Expr("OFFSET_SECONDS") with TimeField
+  }
+
   sealed trait TimeUnit extends PainlessScript with MathScript {
     lazy val regex: Regex = s"\\b(?i)$sql(s)?\\b".r
 
@@ -18,32 +42,32 @@ package object time {
   sealed trait FixedUnit extends TimeUnit
 
   object TimeUnit {
-    case object Year extends Expr("YEAR") with CalendarUnit {
+    case object YEARS extends Expr("YEAR") with CalendarUnit {
       override def script: String = "y"
     }
-    case object Month extends Expr("MONTH") with CalendarUnit {
+    case object MONTHS extends Expr("MONTH") with CalendarUnit {
       override def script: String = "M"
     }
-    case object Quarter extends Expr("QUARTER") with CalendarUnit {
+    case object QUARTERS extends Expr("QUARTER") with CalendarUnit {
       override def script: String = throw new IllegalArgumentException(
         "Quarter must be converted to months (value * 3) before creating date-math"
       )
     }
-    case object Week extends Expr("WEEK") with CalendarUnit {
+    case object WEEKS extends Expr("WEEK") with CalendarUnit {
       override def script: String = "w"
     }
 
-    case object Day extends Expr("DAY") with CalendarUnit with FixedUnit {
+    case object DAYS extends Expr("DAY") with CalendarUnit with FixedUnit {
       override def script: String = "d"
     }
 
-    case object Hour extends Expr("HOUR") with FixedUnit {
+    case object HOURS extends Expr("HOUR") with FixedUnit {
       override def script: String = "H"
     }
-    case object Minute extends Expr("MINUTE") with FixedUnit {
+    case object MINUTES extends Expr("MINUTE") with FixedUnit {
       override def script: String = "m"
     }
-    case object Second extends Expr("SECOND") with FixedUnit {
+    case object SECONDS extends Expr("SECOND") with FixedUnit {
       override def script: String = "s"
     }
 
@@ -65,14 +89,14 @@ package object time {
       in match {
         case SQLTypes.Date =>
           unit match {
-            case Year | Month | Day     => Right(SQLTypes.Date)
-            case Hour | Minute | Second => Right(SQLTypes.Timestamp)
-            case _                      => Left(s"Invalid interval unit $unit for DATE")
+            case YEARS | MONTHS | DAYS     => Right(SQLTypes.Date)
+            case HOURS | MINUTES | SECONDS => Right(SQLTypes.Timestamp)
+            case _                         => Left(s"Invalid interval unit $unit for DATE")
           }
         case SQLTypes.Time =>
           unit match {
-            case Hour | Minute | Second => Right(SQLTypes.Time)
-            case _                      => Left(s"Invalid interval unit $unit for TIME")
+            case HOURS | MINUTES | SECONDS => Right(SQLTypes.Time)
+            case _                         => Left(s"Invalid interval unit $unit for TIME")
           }
         case SQLTypes.DateTime =>
           Right(SQLTypes.Timestamp)
@@ -99,9 +123,9 @@ package object time {
       case fu: FixedUnit    => FixedInterval(value, fu)
     }
     def script(interval: TimeInterval): String = interval match {
-      case CalendarInterval(v, Quarter) => s"${v * 3}M"
-      case CalendarInterval(v, u)       => s"$v${u.script}"
-      case FixedInterval(v, u)          => s"$v${u.script}"
+      case CalendarInterval(v, QUARTERS) => s"${v * 3}M"
+      case CalendarInterval(v, u)        => s"$v${u.script}"
+      case FixedInterval(v, u)           => s"$v${u.script}"
     }
   }
 

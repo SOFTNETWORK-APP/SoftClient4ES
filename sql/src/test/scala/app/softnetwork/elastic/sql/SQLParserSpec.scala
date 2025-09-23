@@ -153,7 +153,7 @@ object Queries {
     "select case current_date - interval 7 day when cast(lastUpdated as date) - interval 3 day then lastUpdated when lastSeen then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
 
   val extract: String =
-    "select extract(day from createdAt) as day, extract(month from createdAt) as month, extract(year from createdAt) as year, extract(hour from createdAt) as hour, extract(minute from createdAt) as minute, extract(second from createdAt) as second from Table"
+    "select extract(day_of_month from createdAt) as dom, extract(day_of_week from createdAt) as dow, extract(day_of_year from createdAt) as doy, extract(month_of_year from createdAt) as month, extract(year from createdAt) as year, extract(hour_of_day from createdAt) as hour, extract(minute_of_hour from createdAt) as minute, extract(second_of_minute from createdAt) as second from Table"
 
   val arithmetic: String =
     "select identifier, identifier + 1 as add, identifier - 1 as sub, identifier * 2 as mul, identifier / 2 as div, identifier % 2 as mod, (identifier * identifier2) - 10 as group1 from Table where identifier * (extract(year from current_date) - 10) > 10000"

@@ -4,40 +4,53 @@ import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.`type`.SQLTemporal
 import app.softnetwork.elastic.sql.function.TransformFunction
 import app.softnetwork.elastic.sql.function.time.{SQLAddInterval, SQLSubtractInterval}
-import app.softnetwork.elastic.sql.time.{Interval, TimeInterval, TimeUnit}
-import app.softnetwork.elastic.sql.time.TimeUnit.{
-  Day,
-  Hour,
-  Minute,
-  Month,
-  Quarter,
-  Second,
-  Week,
-  Year
-}
+import app.softnetwork.elastic.sql.time.{Interval, TimeField, TimeInterval, TimeUnit}
 
 package object time {
 
   trait TimeParser { self: Parser =>
 
-    def year: PackratParser[TimeUnit] = Year.regex ^^ (_ => Year)
+    import TimeField._
 
-    def month: PackratParser[TimeUnit] = Month.regex ^^ (_ => Month)
+    def year: PackratParser[TimeField] = YEAR.regex ^^ (_ => YEAR)
+    def month_of_year: PackratParser[TimeField] = MONTH_OF_YEAR.regex ^^ (_ => MONTH_OF_YEAR)
+    def day_of_month: PackratParser[TimeField] =
+      DAY_OF_MONTH.regex ^^ (_ => DAY_OF_MONTH)
+    def day_of_week: PackratParser[TimeField] =
+      DAY_OF_WEEK.regex ^^ (_ => DAY_OF_WEEK)
+    def day_of_year: PackratParser[TimeField] =
+      DAY_OF_YEAR.regex ^^ (_ => DAY_OF_YEAR)
+    def hour_of_day: PackratParser[TimeField] = HOUR_OF_DAY.regex ^^ (_ => HOUR_OF_DAY)
+    def minute_of_hour: PackratParser[TimeField] = MINUTE_OF_HOUR.regex ^^ (_ => MINUTE_OF_HOUR)
+    def second_of_minute: PackratParser[TimeField] =
+      SECOND_OF_MINUTE.regex ^^ (_ => SECOND_OF_MINUTE)
+    def nano_of_second: PackratParser[TimeField] =
+      NANO_OF_SECOND.regex ^^ (_ => NANO_OF_SECOND)
+    def micro_of_second: PackratParser[TimeField] =
+      MICRO_OF_SECOND.regex ^^ (_ => MICRO_OF_SECOND)
+    def milli_of_second: PackratParser[TimeField] =
+      MILLI_OF_SECOND.regex ^^ (_ => MILLI_OF_SECOND)
+    def epoch_day: PackratParser[TimeField] =
+      EPOCH_DAY.regex ^^ (_ => EPOCH_DAY)
+    def offset_seconds: PackratParser[TimeField] =
+      OFFSET_SECONDS.regex ^^ (_ => OFFSET_SECONDS)
 
-    def quarter: PackratParser[TimeUnit] = Quarter.regex ^^ (_ => Quarter)
+    def time_field: PackratParser[TimeField] =
+      year | month_of_year | day_of_month | day_of_week | day_of_year | hour_of_day | minute_of_hour | second_of_minute | nano_of_second | micro_of_second | milli_of_second | epoch_day | offset_seconds
 
-    def week: PackratParser[TimeUnit] = Week.regex ^^ (_ => Week)
+    import TimeUnit._
 
-    def day: PackratParser[TimeUnit] = Day.regex ^^ (_ => Day)
-
-    def hour: PackratParser[TimeUnit] = Hour.regex ^^ (_ => Hour)
-
-    def minute: PackratParser[TimeUnit] = Minute.regex ^^ (_ => Minute)
-
-    def second: PackratParser[TimeUnit] = Second.regex ^^ (_ => Second)
+    def years: PackratParser[TimeUnit] = YEARS.regex ^^ (_ => YEARS)
+    def months: PackratParser[TimeUnit] = MONTHS.regex ^^ (_ => MONTHS)
+    def quarters: PackratParser[TimeUnit] = QUARTERS.regex ^^ (_ => QUARTERS)
+    def weeks: PackratParser[TimeUnit] = WEEKS.regex ^^ (_ => WEEKS)
+    def days: PackratParser[TimeUnit] = DAYS.regex ^^ (_ => DAYS)
+    def hours: PackratParser[TimeUnit] = HOURS.regex ^^ (_ => HOURS)
+    def minutes: PackratParser[TimeUnit] = MINUTES.regex ^^ (_ => MINUTES)
+    def seconds: PackratParser[TimeUnit] = SECONDS.regex ^^ (_ => SECONDS)
 
     def time_unit: PackratParser[TimeUnit] =
-      year | month | quarter | week | day | hour | minute | second
+      years | months | quarters | weeks | days | hours | minutes | seconds
 
     def interval: PackratParser[TimeInterval] =
       Interval.regex ~ long ~ time_unit ^^ { case _ ~ l ~ u =>

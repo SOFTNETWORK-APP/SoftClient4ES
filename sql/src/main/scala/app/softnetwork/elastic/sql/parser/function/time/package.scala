@@ -7,39 +7,10 @@ import app.softnetwork.elastic.sql.function.{
   FunctionWithIdentifier,
   TransformFunction
 }
-import app.softnetwork.elastic.sql.function.time.{
-  CurentDateWithParens,
-  CurrentDate,
-  CurrentFunction,
-  CurrentTime,
-  CurrentTimeWithParens,
-  CurrentTimestamp,
-  CurrentTimestampWithParens,
-  DAY,
-  DateAdd,
-  DateDiff,
-  DateFormat,
-  DateFunction,
-  DateParse,
-  DateSub,
-  DateTimeAdd,
-  DateTimeFormat,
-  DateTimeFunction,
-  DateTimeParse,
-  DateTimeSub,
-  DateTrunc,
-  Extract,
-  HOUR,
-  MINUTE,
-  MONTH,
-  Now,
-  NowWithParens,
-  SECOND,
-  YEAR
-}
+import app.softnetwork.elastic.sql.function.time._
 import app.softnetwork.elastic.sql.parser.time.TimeParser
 import app.softnetwork.elastic.sql.parser.{Delimiter, Parser}
-import app.softnetwork.elastic.sql.time.TimeUnit.{Day, Hour, Minute, Month, Second, Year}
+import app.softnetwork.elastic.sql.time.TimeField
 
 package object time {
 
@@ -203,31 +174,32 @@ package object time {
       }
 
     def extract_identifier: PackratParser[Identifier] =
-      Extract.regex ~ start ~ time_unit ~ "(?i)from".r ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
+      Extract.regex ~ start ~ time_field ~ "(?i)from".r ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
         case _ ~ _ ~ u ~ _ ~ i ~ _ =>
           i.withFunctions(Extract(u) +: i.functions)
       }
 
-    def extract_year: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      Year.regex ^^ (_ => YEAR)
+    import TimeField._
 
-    def extract_month: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      Month.regex ^^ (_ => MONTH)
-
-    def extract_day: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      Day.regex ^^ (_ => DAY)
-
-    def extract_hour: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      Hour.regex ^^ (_ => HOUR)
-
-    def extract_minute: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      Minute.regex ^^ (_ => MINUTE)
-
-    def extract_second: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      Second.regex ^^ (_ => SECOND)
+    def year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      YEAR.regex ^^ (_ => Year)
+    def month_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      MONTH_OF_YEAR.regex ^^ (_ => MonthOfYear)
+    def day_of_month_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      DAY_OF_MONTH.regex ^^ (_ => DayOfMonth)
+    def day_of_week_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      DAY_OF_WEEK.regex ^^ (_ => DayOfWeek)
+    def day_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      DAY_OF_YEAR.regex ^^ (_ => DayOfYear)
+    def hour_of_day_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      HOUR_OF_DAY.regex ^^ (_ => HourOfDay)
+    def minute_of_hour_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      MINUTE_OF_HOUR.regex ^^ (_ => MinuteOfHour)
+    def second_of_minute_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      SECOND_OF_MINUTE.regex ^^ (_ => SecondOfMinute)
 
     def extractors: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      extract_year | extract_month | extract_day | extract_hour | extract_minute | extract_second
+      year_tr | month_of_year_tr | day_of_month_tr | day_of_week_tr | day_of_year_tr | hour_of_day_tr | minute_of_hour_tr | second_of_minute_tr
 
   }
 

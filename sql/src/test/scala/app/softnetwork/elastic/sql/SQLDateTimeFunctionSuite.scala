@@ -4,7 +4,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.time._
 import app.softnetwork.elastic.sql.time._
-import TimeUnit._
+import TimeField._
 import app.softnetwork.elastic.sql.`type`.SQLType
 
 class SQLDateTimeFunctionSuite extends AnyFunSuite {
@@ -16,20 +16,20 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
   val transformFunctions: Seq[TransformFunction[_, _]] = Seq(
     DateParse(Identifier(), "yyyy-MM-dd"),
     DateTimeParse(Identifier(), "yyyy-MM-dd HH:mm:ss"),
-    DateAdd(Identifier(), TimeInterval(1, Day)),
-    DateSub(Identifier(), TimeInterval(2, Month)),
-    DateTimeAdd(Identifier(), TimeInterval(3, Hour)),
-    DateTimeSub(Identifier(), TimeInterval(30, Minute)),
-    DateTrunc(Identifier(), Day),
-    Extract(Day),
+    DateAdd(Identifier(), TimeInterval(1, TimeUnit.DAYS)),
+    DateSub(Identifier(), TimeInterval(2, TimeUnit.MONTHS)),
+    DateTimeAdd(Identifier(), TimeInterval(3, TimeUnit.HOURS)),
+    DateTimeSub(Identifier(), TimeInterval(30, TimeUnit.MINUTES)),
+    DateTrunc(Identifier(), TimeUnit.DAYS),
+    Extract(TimeField.DAY_OF_MONTH),
     DateFormat(Identifier(), "yyyy-MM-dd"),
     DateTimeFormat(Identifier(), "yyyy-MM-dd HH:mm:ss"),
-    YEAR,
-    MONTH,
-    DAY,
-    HOUR,
-    MINUTE,
-    SECOND
+    Year,
+    MonthOfYear,
+    DayOfYear,
+    HourOfDay,
+    MinuteOfHour,
+    SecondOfMinute
   )
 
   // Fonction pour chaîner une séquence de transformations en vérifiant les types

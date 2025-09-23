@@ -12,7 +12,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTypes,
   SQLVarchar
 }
-import app.softnetwork.elastic.sql.time.{TimeInterval, TimeUnit}
+import app.softnetwork.elastic.sql.time.{TimeField, TimeInterval, TimeUnit}
 
 package object time {
 
@@ -155,43 +155,51 @@ package object time {
     override def painless: String = ".get"
   }
 
-  case class Extract(unit: TimeUnit, override val sql: String = "extract")
+  case class Extract(field: TimeField, override val sql: String = Extract.sql)
       extends DateTimeFunction
       with TransformFunction[SQLTemporal, SQLNumeric] {
     override def fun: Option[PainlessScript] = Some(Extract)
 
-    override def args: List[PainlessScript] = List(unit)
+    override def args: List[PainlessScript] = List(field)
 
     override def inputType: SQLTemporal = SQLTypes.Temporal
     override def outputType: SQLNumeric = SQLTypes.Numeric
 
-    override def toSQL(base: String): String = s"$sql(${unit.sql} from $base)"
+    override def toSQL(base: String): String = s"$sql(${field.sql} FROM $base)"
 
   }
 
-  import TimeUnit._
+  import TimeField._
 
-  object YEAR extends Extract(Year, Year.sql) {
+  object Year extends Extract(YEAR, YEAR.sql) {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object MONTH extends Extract(Month, Month.sql) {
+  object MonthOfYear extends Extract(MONTH_OF_YEAR, MONTH_OF_YEAR.sql) {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object DAY extends Extract(Day, Day.sql) {
+  object DayOfMonth extends Extract(DAY_OF_MONTH, DAY_OF_MONTH.sql) {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object HOUR extends Extract(Hour, Hour.sql) {
+  object DayOfWeek extends Extract(DAY_OF_WEEK, DAY_OF_WEEK.sql) {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object MINUTE extends Extract(Minute, Minute.sql) {
+  object DayOfYear extends Extract(DAY_OF_YEAR, DAY_OF_YEAR.sql) {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object SECOND extends Extract(Second, Second.sql) {
+  object HourOfDay extends Extract(HOUR_OF_DAY, HOUR_OF_DAY.sql) {
+    override def toSQL(base: String): String = s"$sql($base)"
+  }
+
+  object MinuteOfHour extends Extract(MINUTE_OF_HOUR, MINUTE_OF_HOUR.sql) {
+    override def toSQL(base: String): String = s"$sql($base)"
+  }
+
+  object SecondOfMinute extends Extract(SECOND_OF_MINUTE, SECOND_OF_MINUTE.sql) {
     override def toSQL(base: String): String = s"$sql($base)"
   }
 

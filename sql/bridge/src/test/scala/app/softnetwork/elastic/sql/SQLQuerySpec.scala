@@ -1185,7 +1185,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle parse_date function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(parseDate)
+      SQLQuery(dateParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1251,7 +1251,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle parse_datetime function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(parseDateTime)
+      SQLQuery(dateTimeParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1288,7 +1288,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoUnit.YEARS) : null)"
+        |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoField.YEAR) : null)"
         |            }
         |          }
         |        }
@@ -1993,40 +1993,52 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "match_all": {}
         |  },
         |  "script_fields": {
-        |    "day": {
+        |    "dom": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.DAYS) : null)"
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_MONTH) : null)"
+        |      }
+        |    },
+        |    "dow": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_WEEK) : null)"
+        |      }
+        |    },
+        |    "doy": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_YEAR) : null)"
         |      }
         |    },
         |    "month": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MONTHS) : null)"
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MONTH_OF_YEAR) : null)"
         |      }
         |    },
         |    "year": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.YEARS) : null)"
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.YEAR) : null)"
         |      }
         |    },
         |    "hour": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.HOURS) : null)"
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.HOUR_OF_DAY) : null)"
         |      }
         |    },
         |    "minute": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MINUTES) : null)"
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MINUTE_OF_HOUR) : null)"
         |      }
         |    },
         |    "second": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.SECONDS) : null)"
+        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
         |      }
         |    }
         |  },
@@ -2066,7 +2078,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoUnit.YEARS) - 10)) > 10000"
+        |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR) - 10)) > 10000"
         |            }
         |          }
         |        }
