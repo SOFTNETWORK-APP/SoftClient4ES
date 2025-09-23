@@ -153,7 +153,7 @@ object Queries {
     "select case current_date - interval 7 day when cast(lastUpdated as date) - interval 3 day then lastUpdated when lastSeen then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
 
   val extract: String =
-    "select extract(day_of_month from createdAt) as dom, extract(day_of_week from createdAt) as dow, extract(day_of_year from createdAt) as doy, extract(month_of_year from createdAt) as month, extract(year from createdAt) as year, extract(hour_of_day from createdAt) as hour, extract(minute_of_hour from createdAt) as minute, extract(second_of_minute from createdAt) as second from Table"
+    "select extract(day_of_month from createdAt) as dom, extract(day_of_week from createdAt) as dow, extract(day_of_year from createdAt) as doy, extract(month_of_year from createdAt) as m, extract(year from createdAt) as y, extract(hour_of_day from createdAt) as h, extract(minute_of_hour from createdAt) as minutes, extract(second_of_minute from createdAt) as s from Table"
 
   val arithmetic: String =
     "select identifier, identifier + 1 as add, identifier - 1 as sub, identifier * 2 as mul, identifier / 2 as div, identifier % 2 as mod, (identifier * identifier2) - 10 as group1 from Table where identifier * (extract(year from current_date) - 10) > 10000"
@@ -162,7 +162,7 @@ object Queries {
     "select identifier, (abs(identifier) + 1.0) * 2, ceil(identifier), floor(identifier), sqrt(identifier), exp(identifier), log(identifier), log10(identifier), pow(identifier, 3), round(identifier), round(identifier, 2), sign(identifier), cos(identifier), acos(identifier), sin(identifier), asin(identifier), tan(identifier), atan(identifier), atan2(identifier, 3.0) from Table where sqrt(identifier) > 100.0"
 
   val string: String =
-    "select identifier, length(identifier2) as len, lower(identifier2) as lower, upper(identifier2) as upper, substring(identifier2, 1, 3) as substr, trim(identifier2) as trim, concat(identifier2, '_test', 1) as concat from Table where length(trim(identifier2)) > 10"
+    "select identifier, length(identifier2) as l, lower(identifier2) as low, upper(identifier2) as upp, substring(identifier2, 1, 3) as sub, trim(identifier2) as tr, concat(identifier2, '_test', 1) as con from Table where length(trim(identifier2)) > 10"
 }
 
 /** Created by smanciot on 15/02/17.

@@ -2011,31 +2011,31 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_YEAR) : null)"
         |      }
         |    },
-        |    "month": {
+        |    "m": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MONTH_OF_YEAR) : null)"
         |      }
         |    },
-        |    "year": {
+        |    "y": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.YEAR) : null)"
         |      }
         |    },
-        |    "hour": {
+        |    "h": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.HOUR_OF_DAY) : null)"
         |      }
         |    },
-        |    "minute": {
+        |    "minutes": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MINUTE_OF_HOUR) : null)"
         |      }
         |    },
-        |    "second": {
+        |    "s": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
@@ -2343,37 +2343,37 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    }
         |  },
         |  "script_fields": {
-        |    "len": {
+        |    "l": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.length() : null)"
         |      }
         |    },
-        |    "lower": {
+        |    "low": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.lower() : null)"
         |      }
         |    },
-        |    "upper": {
+        |    "upp": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.upper() : null)"
         |      }
         |    },
-        |    "substr": {
+        |    "sub": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : ((1 - 1) < 0 || (1 - 1 + 3) > arg0.length()) ? null : arg0.substring((1 - 1), (1 - 1 + 3)))"
         |      }
         |    },
-        |    "trim": {
+        |    "tr": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.trim() : null)"
         |      }
         |    },
-        |    "concat": {
+        |    "con": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : String.valueOf(arg0) + \"_test\" + String.valueOf(1))"

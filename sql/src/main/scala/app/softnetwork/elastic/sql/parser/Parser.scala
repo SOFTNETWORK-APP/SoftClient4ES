@@ -234,9 +234,7 @@ trait Parser
   )
 
   private val identifierRegexStr =
-    s"""(?i)(?!(?:${reservedKeywords.mkString(
-      "|"
-    )})\\b)[\\*a-zA-Z_\\-][a-zA-Z0-9_\\-.\\[\\]\\*]*"""
+    s"""(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[\\*a-zA-Z_\\-][a-zA-Z0-9_\\-.\\[\\]\\*]*"""
 
   private val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
 
@@ -271,7 +269,7 @@ trait Parser
     }
 
   private val regexAlias =
-    """\b(?!(?i)as\b)\b(?!(?i)except\b)\b(?!(?i)where\b)\b(?!(?i)filter\b)\b(?!(?i)from\b)\b(?!(?i)group\b)\b(?!(?i)having\b)\b(?!(?i)order\b)\b(?!(?i)limit\b)[a-zA-Z0-9_]*"""
+    s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_]*""".stripMargin
 
   def alias: PackratParser[Alias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => Alias(b) }
 
