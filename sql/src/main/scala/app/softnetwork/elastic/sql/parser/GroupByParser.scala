@@ -5,7 +5,7 @@ import app.softnetwork.elastic.sql.query.{Bucket, GroupBy}
 trait GroupByParser {
   self: Parser with WhereParser =>
 
-  def bucket: PackratParser[Bucket] = identifier ^^ { i =>
+  def bucket: PackratParser[Bucket] = (long | identifier) ^^ { i =>
     Bucket(i)
   }
 

@@ -2,7 +2,7 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.operator._
-import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.{Expr, Identifier, LongValue, TokenRegex, Updateable}
 
 case object GroupBy extends Expr("GROUP BY") with TokenRegex
 
@@ -27,8 +27,23 @@ case class Bucket(
   identifier: Identifier
 ) extends Updateable {
   override def sql: String = s"$identifier"
-  def update(request: SQLSearchRequest): Bucket =
-    this.copy(identifier = identifier.update(request))
+  def update(request: SQLSearchRequest): Bucket = {
+    identifier.functions.headOption match {
+      case Some(func: LongValue) =>
+        if (func.value <= 0) {
+          throw new IllegalArgumentException(s"Bucket index must be greater than 0: ${func.value}")
+        } else if (request.select.fields.size < func.value) {
+          throw new IllegalArgumentException(
+            s"Bucket index ${func.value} is out of bounds [1, ${request.fields.size}]"
+          )
+        } else {
+          val field = request.select.fields(func.value.toInt - 1)
+          this.copy(identifier = field.identifier)
+        }
+      case _ => this.copy(identifier = identifier.update(request))
+    }
+  }
+
   lazy val sourceBucket: String =
     if (identifier.nested) {
       identifier.tableAlias

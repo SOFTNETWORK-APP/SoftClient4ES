@@ -1084,7 +1084,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle group by with having and date time functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHavingAndDateTimeFunctions)
+      SQLQuery(groupByWithHavingAndDateTimeFunctions.replace("GROUP BY 3, 2", "GROUP BY 3, 2"))
     val query = select.query
     println(query)
     query shouldBe

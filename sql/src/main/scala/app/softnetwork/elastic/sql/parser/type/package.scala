@@ -3,7 +3,6 @@ package app.softnetwork.elastic.sql.parser
 import app.softnetwork.elastic.sql.{
   BooleanValue,
   DoubleValue,
-  Identifier,
   LongValue,
   PiValue,
   StringValue,
@@ -31,11 +30,6 @@ package object `type` {
 
     def boolean: PackratParser[BooleanValue] =
       """(?i)(true|false)\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
-
-    def value_identifier: PackratParser[Identifier] =
-      (literal | long | double | pi | boolean) ^^ { v =>
-        Identifier(v)
-      }
 
     def char_type: PackratParser[SQLTypes.Char.type] =
       "(?i)char".r ^^ (_ => SQLTypes.Char)

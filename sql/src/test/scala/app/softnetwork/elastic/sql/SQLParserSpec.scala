@@ -13,10 +13,10 @@ object Queries {
   val numericalGe = "SELECT * FROM Table WHERE identifier >= 1"
   val numericalNe = "SELECT * FROM Table WHERE identifier <> 1"
   val literalEq = """SELECT * FROM Table WHERE identifier = 'un'"""
-  val literalLt = "SELECT * FROM Table WHERE createdAt < 'now-35M/M'"
-  val literalLe = "SELECT * FROM Table WHERE createdAt <= 'now-35M/M'"
-  val literalGt = "SELECT * FROM Table WHERE createdAt > 'now-35M/M'"
-  val literalGe = "SELECT * FROM Table WHERE createdAt >= 'now-35M/M'"
+  val literalLt = "SELECT * FROM Table WHERE createdAt < 'NOW-35M/M'"
+  val literalLe = "SELECT * FROM Table WHERE createdAt <= 'NOW-35M/M'"
+  val literalGt = "SELECT * FROM Table WHERE createdAt > 'NOW-35M/M'"
+  val literalGe = "SELECT * FROM Table WHERE createdAt >= 'NOW-35M/M'"
   val literalNe = """SELECT * FROM Table WHERE identifier <> 'un'"""
   val boolEq = """SELECT * FROM Table WHERE identifier = true"""
   val boolNe = """SELECT * FROM Table WHERE identifier <> false"""
@@ -53,7 +53,7 @@ object Queries {
   val notInNumericalExpressionWithDoubleValues =
     "SELECT * FROM Table WHERE identifier NOT IN (1.0,2.1,3.4)"
   val nestedWithBetween =
-    "SELECT * FROM Table WHERE nested(ciblage.Archivage_CreationDate BETWEEN 'now-3M/M' AND 'now' AND ciblage.statutComportement = 1)"
+    "SELECT * FROM Table WHERE nested(ciblage.Archivage_CreationDate BETWEEN 'NOW-3M/M' AND 'NOW' AND ciblage.statutComportement = 1)"
   val COUNT = "SELECT COUNT(t.id) AS c1 FROM Table AS t WHERE t.nom = 'Nom'"
   val countDistinct = "SELECT COUNT(distinct t.id) AS c2 FROM Table AS t WHERE t.nom = 'Nom'"
   val countNested =
@@ -66,41 +66,41 @@ object Queries {
   val matchCriteria =
     "SELECT * FROM Table WHERE match (identifier1,identifier2,identifier3) against ('value')"
   val groupBy =
-    "SELECT identifier, COUNT(identifier2) FROM Table WHERE identifier2 is NOT null group by identifier"
-  val orderBy = "SELECT * FROM Table order by identifier desc"
+    "SELECT identifier, COUNT(identifier2) FROM Table WHERE identifier2 is NOT null GROUP BY identifier"
+  val orderBy = "SELECT * FROM Table ORDER BY identifier DESC"
   val limit = "SELECT * FROM Table limit 10"
   val groupByWithOrderByAndLimit: String =
     """SELECT identifier, COUNT(identifier2)
       |FROM Table
       |WHERE identifier is NOT null
-      |group by identifier
-      |order by identifier2 desc
+      |GROUP BY identifier
+      |ORDER BY identifier2 DESC
       |limit 10""".stripMargin.replaceAll("\n", " ")
   val groupByWithHaving: String =
     """SELECT COUNT(CustomerID) AS cnt, City, Country
       |FROM Customers
-      |group by Country, City
-      |having Country <> 'USA' AND City <> 'Berlin' AND COUNT(CustomerID) > 1
-      |order by COUNT(CustomerID) desc, Country asc""".stripMargin.replaceAll("\n", " ")
+      |GROUP BY Country, City
+      |HAVING Country <> 'USA' AND City <> 'Berlin' AND COUNT(CustomerID) > 1
+      |ORDER BY COUNT(CustomerID) DESC, Country ASC""".stripMargin.replaceAll("\n", " ")
   val dateTimeWithIntervalFields: String =
-    "SELECT current_timestamp() - INTERVAL 3 day AS ct, CURRENT_DATE AS cd, current_time AS t, now AS n FROM dual"
+    "SELECT current_timestamp() - INTERVAL 3 DAY AS ct, CURRENT_DATE AS cd, current_time AS t, NOW AS n FROM dual"
   val fieldsWithInterval: String =
     "SELECT createdAt - INTERVAL 35 MINUTE AS ct, identifier FROM Table"
   val filterWithDateTimeAndInterval: String =
-    "SELECT * FROM Table WHERE createdAt < current_timestamp() AND createdAt >= current_timestamp() - INTERVAL 10 day"
+    "SELECT * FROM Table WHERE createdAt < current_timestamp() AND createdAt >= current_timestamp() - INTERVAL 10 DAY"
   val filterWithDateAndInterval: String =
-    "SELECT * FROM Table WHERE createdAt < CURRENT_DATE AND createdAt >= CURRENT_DATE() - INTERVAL 10 day"
+    "SELECT * FROM Table WHERE createdAt < CURRENT_DATE AND createdAt >= CURRENT_DATE() - INTERVAL 10 DAY"
   val filterWithTimeAndInterval: String =
     "SELECT * FROM Table WHERE createdAt < current_time AND createdAt >= current_time() - INTERVAL 10 MINUTE"
   val groupByWithHavingAndDateTimeFunctions: String =
     """SELECT COUNT(CustomerID) AS cnt, City, Country, MAX(createdAt) AS lastSeen
       |FROM Table
-      |group by Country, City
-      |having Country <> 'USA' AND City != 'Berlin' AND COUNT(CustomerID) > 1 AND lastSeen > now - INTERVAL 7 day
-      |order by Country asc""".stripMargin
+      |GROUP BY Country, City
+      |HAVING Country <> 'USA' AND City != 'Berlin' AND COUNT(CustomerID) > 1 AND lastSeen > NOW - INTERVAL 7 DAY
+      |ORDER BY Country ASC""".stripMargin
       .replaceAll("\n", " ")
   val dateParse =
-    "SELECT identifier, COUNT(identifier2) AS ct, MAX(date_parse(createdAt, 'yyyy-MM-dd')) AS lastSeen FROM Table WHERE identifier2 is NOT null group by identifier order by COUNT(identifier2) desc"
+    "SELECT identifier, COUNT(identifier2) AS ct, MAX(date_parse(createdAt, 'yyyy-MM-dd')) AS lastSeen FROM Table WHERE identifier2 is NOT null GROUP BY identifier ORDER BY COUNT(identifier2) DESC"
   val dateTimeParse: String =
     """SELECT identifier, COUNT(identifier2) AS ct,
       |MAX(
@@ -112,29 +112,29 @@ object Queries {
       |), MINUTE))) AS lastSeen
       |FROM Table
       |WHERE identifier2 is NOT null
-      |group by identifier
-      |order by COUNT(identifier2) desc""".stripMargin
+      |GROUP BY identifier
+      |ORDER BY COUNT(identifier2) DESC""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\( ", "(")
       .replaceAll(" \\)", ")")
 
-  val dateDiff = "SELECT date_diff(createdAt, updatedAt, day) AS diff, identifier FROM Table"
+  val dateDiff = "SELECT date_diff(createdAt, updatedAt, DAY) AS diff, identifier FROM Table"
 
   val aggregationWithDateDiff =
-    "SELECT MAX(date_diff(datetime_parse(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, day)) AS max_diff FROM Table group by identifier"
+    "SELECT MAX(date_diff(datetime_parse(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, DAY)) AS max_diff FROM Table GROUP BY identifier"
 
   val dateFormat =
     "SELECT identifier, date_format(date_trunc(lastUpdated, month), 'yyyy-MM-dd') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeFormat =
     "SELECT identifier, datetime_format(date_trunc(lastUpdated, month), 'yyyy-MM-ddThh:mm:ssZ') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
-    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 day) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateSub =
-    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 day) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeAdd =
-    "SELECT identifier, datetime_add(lastUpdated, INTERVAL 10 day) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, datetime_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeSub =
-    "SELECT identifier, datetime_sub(lastUpdated, INTERVAL 10 day) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, datetime_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
 
   val isnull = "SELECT ISNULL(identifier) AS flag FROM Table"
   val isnotnull = "SELECT identifier, ISNOTNULL(identifier2) AS flag FROM Table"
@@ -143,15 +143,15 @@ object Queries {
   val coalesce: String =
     "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
   val nullif: String =
-    "SELECT COALESCE(nullif(createdAt, date_parse('2025-09-11', 'yyyy-MM-dd') - INTERVAL 2 day), CURRENT_DATE) AS c, identifier FROM Table"
+    "SELECT COALESCE(nullif(createdAt, date_parse('2025-09-11', 'yyyy-MM-dd') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val cast: String =
     "SELECT CAST(COALESCE(nullif(createdAt, date_parse('2025-09-11', 'yyyy-MM-dd')), CURRENT_DATE - INTERVAL 2 hour) bigint) AS c, identifier FROM Table"
   val allCasts =
     "SELECT CAST(identifier AS int) AS c1, CAST(identifier AS bigint) AS c2, CAST(identifier AS double) AS c3, CAST(identifier AS real) AS c4, CAST(identifier AS boolean) AS c5, CAST(identifier AS char) AS c6, CAST(identifier AS varchar) AS c7, CAST(createdAt AS date) AS c8, CAST(createdAt AS time) AS c9, CAST(createdAt AS datetime) AS c10, CAST(createdAt AS timestamp) AS c11, CAST(identifier AS smallint) AS c12, CAST(identifier AS tinyint) AS c13 FROM Table"
   val caseWhen: String =
-    "SELECT CASE WHEN lastUpdated > now - INTERVAL 7 day THEN lastUpdated WHEN ISNOTNULL(lastSeen) THEN lastSeen + INTERVAL 2 day ELSE createdAt END AS c, identifier FROM Table"
+    "SELECT CASE WHEN lastUpdated > NOW - INTERVAL 7 DAY THEN lastUpdated WHEN ISNOTNULL(lastSeen) THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
   val caseWhenExpr: String =
-    "SELECT CASE CURRENT_DATE - INTERVAL 7 day WHEN CAST(lastUpdated AS date) - INTERVAL 3 day THEN lastUpdated WHEN lastSeen THEN lastSeen + INTERVAL 2 day ELSE createdAt END AS c, identifier FROM Table"
+    "SELECT CASE CURRENT_DATE - INTERVAL 7 DAY WHEN CAST(lastUpdated AS date) - INTERVAL 3 DAY THEN lastUpdated WHEN lastSeen THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
 
   val extract: String =
     "SELECT EXTRACT(day_of_month FROM createdAt) AS dom, EXTRACT(day_of_week FROM createdAt) AS dow, EXTRACT(day_of_year FROM createdAt) AS doy, EXTRACT(month_of_year FROM createdAt) AS m, EXTRACT(year FROM createdAt) AS y, EXTRACT(hour_of_day FROM createdAt) AS h, EXTRACT(minute_of_hour FROM createdAt) AS minutes, EXTRACT(second_of_minute FROM createdAt) AS s FROM Table"
@@ -524,7 +524,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(matchCriteria) shouldBe true
   }
 
-  it should "parse group by" in {
+  it should "parse GROUP BY" in {
     val result = Parser(groupBy)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -532,7 +532,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(groupBy) shouldBe true
   }
 
-  it should "parse order by" in {
+  it should "parse ORDER BY" in {
     val result = Parser(orderBy)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -548,7 +548,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(limit) shouldBe true
   }
 
-  it should "parse group by with order by AND limit" in {
+  it should "parse GROUP BY with ORDER BY AND limit" in {
     val result = Parser(groupByWithOrderByAndLimit)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -556,7 +556,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(groupByWithOrderByAndLimit) shouldBe true
   }
 
-  it should "parse group by with having" in {
+  it should "parse GROUP BY with HAVING" in {
     val result = Parser(groupByWithHaving)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -604,12 +604,11 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(filterWithTimeAndInterval) shouldBe true
   }
 
-  it should "parse group by with having AND date time functions" in {
+  it should "parse GROUP BY with HAVING AND date time functions" in {
     val result = Parser(groupByWithHavingAndDateTimeFunctions)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(groupByWithHavingAndDateTimeFunctions) shouldBe true
+      .getOrElse("") shouldBe groupByWithHavingAndDateTimeFunctions
   }
 
   it should "parse date_parse function" in {

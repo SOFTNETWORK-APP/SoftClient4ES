@@ -453,11 +453,11 @@ package object sql {
 
   object Identifier {
     def apply(): Identifier = GenericIdentifier("")
-    def apply(function: Function): Identifier = GenericIdentifier("", functions = function :: Nil)
+    def apply(function: Function): Identifier = apply(List(function))
     def apply(functions: List[Function]): Identifier = apply().withFunctions(functions)
     def apply(name: String): Identifier = GenericIdentifier(name)
     def apply(name: String, function: Function): Identifier =
-      GenericIdentifier(name, functions = function :: Nil)
+      apply(name).withFunctions(List(function))
   }
 
   case class GenericIdentifier(
