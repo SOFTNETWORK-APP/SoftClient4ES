@@ -166,7 +166,7 @@ object Queries {
     "SELECT identifier, LENGTH(identifier2) AS l, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, CONCAT(identifier2, '_test', 1) AS con FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
 
   val topHits: String =
-    "SELECT department, COUNT(DISTINCT salary), FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC), LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date DESC) FROM emp GROUP BY department"
+    "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary FROM emp"
 }
 
 /** Created by smanciot on 15/02/17.

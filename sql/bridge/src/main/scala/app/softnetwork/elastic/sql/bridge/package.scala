@@ -102,7 +102,7 @@ package object bridge {
       }
     }
 
-    _search = scriptFields match {
+    _search = scriptFields.filterNot(_.aggregation) match {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>

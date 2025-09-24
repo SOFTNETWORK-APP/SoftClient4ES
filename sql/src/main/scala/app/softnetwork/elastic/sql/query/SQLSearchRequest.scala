@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.function.aggregate.TopHitsAggregation
 import app.softnetwork.elastic.sql.{asString, Identifier, Token}
 
 case class SQLSearchRequest(
@@ -18,7 +19,10 @@ case class SQLSearchRequest(
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
   lazy val unnests: Seq[(String, String, Option[Limit])] = from.unnests
-  lazy val bucketNames: Map[String, Bucket] = groupBy.map(_.bucketNames).getOrElse(Map.empty)
+  lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
+    b.identifier.identifierName -> b
+  }.toMap
+
   lazy val sorts: Map[String, SortOrder] =
     orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
 
@@ -44,7 +48,12 @@ case class SQLSearchRequest(
       Seq.empty
   }
 
-  lazy val aggregates: Seq[Field] = select.fields.filter(_.aggregation)
+  lazy val topHitsFields: Seq[Field] = select.fields.filter(_.topHits.nonEmpty)
+
+  lazy val topHitsAggs: Seq[TopHitsAggregation] = topHitsFields.flatMap(_.topHits)
+
+  lazy val aggregates: Seq[Field] =
+    select.fields.filter(_.aggregation).filterNot(_.topHits.isDefined) ++ topHitsFields
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
@@ -52,7 +61,16 @@ case class SQLSearchRequest(
     source.sql
   }
 
-  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty)
+  lazy val topHitsBuckets: Seq[Bucket] = topHitsAggs
+    .flatMap(_.bucketNames)
+    .filterNot(bucket =>
+      groupBy.map(_.bucketNames).getOrElse(Map.empty).keys.toSeq.contains(bucket._1)
+    )
+    .toMap
+    .values
+    .toSeq
+
+  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty) ++ topHitsBuckets
 
   override def validate(): Either[String, Unit] = {
     for {

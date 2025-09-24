@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.function.aggregate.TopHitsAggregation
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
 import app.softnetwork.elastic.sql.{
   asString,
@@ -44,8 +45,22 @@ case class Field(
 
   override def functions: List[Function] = identifier.functions
 
-  def update(request: SQLSearchRequest): Field =
-    this.copy(identifier = identifier.update(request))
+  lazy val topHits: Option[TopHitsAggregation] =
+    functions.collectFirst { case th: TopHitsAggregation => th }
+
+  def update(request: SQLSearchRequest): Field = {
+    val updated =
+      topHits match {
+        case Some(th) =>
+          val topHitsAggregation = th.update(request)
+          identifier.functions match {
+            case _ :: tail => identifier.withFunctions(functions = topHitsAggregation +: tail)
+            case _         => identifier.withFunctions(functions = List(topHitsAggregation))
+          }
+        case None => identifier
+      }
+    this.copy(identifier = updated.update(request))
+  }
 
   def painless: String = identifier.painless
 

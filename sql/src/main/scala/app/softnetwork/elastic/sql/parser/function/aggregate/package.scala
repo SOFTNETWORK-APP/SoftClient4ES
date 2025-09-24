@@ -47,7 +47,7 @@ package object aggregate {
       }
 
     def identifierWithTopHits: PackratParser[Identifier] = (first_value | last_value) ^^ { th =>
-      th.identifier.withFunctions(List(th))
+      th.identifier.withFunctions(th +: th.identifier.functions)
     }
 
   }

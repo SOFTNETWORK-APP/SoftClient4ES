@@ -7,6 +7,7 @@ import app.softnetwork.elastic.sql.query.{
   Field,
   Bucket,
   Criteria,
+  Desc,
   SortOrder
 }
 import app.softnetwork.elastic.sql.function._
@@ -21,6 +22,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   nestedAggregation,
   sumAgg,
   termsAgg,
+  topHitsAgg,
   valueCountAgg
 }
 import com.sksamuel.elastic4s.requests.script.Script
@@ -31,6 +33,7 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{
   TermsAggregation,
   TermsOrder,
 }
+import com.sksamuel.elastic4s.requests.searches.sort.FieldSort
 
 import scala.language.implicitConversions
 
@@ -77,8 +80,15 @@ object ElasticAggregation {
         field
       else if (distinct)
         s"${aggType}_distinct_${sourceField.replace(".", "_")}"
-      else
-        s"${aggType}_${sourceField.replace(".", "_")}"
+      else {
+        aggType match {
+          case th: TopHitsAggregation =>
+            s"${th.topHits.sql.toLowerCase}_${sourceField.replace(".", "_")}"
+          case _ =>
+            s"${aggType}_${sourceField.replace(".", "_")}"
+
+        }
+      }
     }
 
     var aggPath = Seq[String]()
@@ -112,6 +122,38 @@ object ElasticAggregation {
         case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
         case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+        case th: TopHitsAggregation =>
+          val topHits =
+            topHitsAgg(aggName)
+              .fetchSource(
+                th.identifier.name +: th.fields
+                  .filterNot(_.isScriptField)
+                  .map(_.sourceField)
+                  .toArray,
+                Array.empty
+              ).copy(
+              scripts = th.fields.filter(_.isScriptField).map(f =>
+                f.sourceField -> Script(f.painless).lang("painless")
+              ).toMap
+            )
+              .size(1) sortBy th.orderBy.sorts.map(sort =>
+              sort.order match {
+                case Some(Desc) =>
+                  th.topHits match {
+                    case FIRST_VALUE => FieldSort(sort.field).desc()
+                    case LAST_VALUE  => FieldSort(sort.field).asc()
+                  }
+                case _ =>
+                  th.topHits match {
+                    case FIRST_VALUE => FieldSort(sort.field).asc()
+                    case LAST_VALUE  => FieldSort(sort.field).desc()
+                  }
+              }
+            )
+          /*th.fields.filter(_.isScriptField).foldLeft(topHits) { (agg, f) =>
+            agg.script(f.sourceField, Script(f.painless, lang = Some("painless")))
+          }*/
+          topHits
       }
 
     val filteredAggName = "filtered_agg"

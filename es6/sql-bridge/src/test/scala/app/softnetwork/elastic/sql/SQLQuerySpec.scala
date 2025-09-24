@@ -2431,4 +2431,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("false:", "false : ")
   }
 
+  it should "handle top hits aggregation" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(topHits)
+    val query = select.query
+    println(query)
+  }
+
 }
