@@ -83,15 +83,15 @@ object Queries {
       |HAVING Country <> 'USA' AND City <> 'Berlin' AND COUNT(CustomerID) > 1
       |ORDER BY COUNT(CustomerID) DESC, Country ASC""".stripMargin.replaceAll("\n", " ")
   val dateTimeWithIntervalFields: String =
-    "SELECT current_timestamp() - INTERVAL 3 DAY AS ct, CURRENT_DATE AS cd, current_time AS t, NOW AS n FROM dual"
+    "SELECT CURRENT_TIMESTAMP() - INTERVAL 3 DAY AS ct, CURRENT_DATE AS cd, CURRENT_TIME AS t, NOW AS n FROM dual"
   val fieldsWithInterval: String =
     "SELECT createdAt - INTERVAL 35 MINUTE AS ct, identifier FROM Table"
   val filterWithDateTimeAndInterval: String =
-    "SELECT * FROM Table WHERE createdAt < current_timestamp() AND createdAt >= current_timestamp() - INTERVAL 10 DAY"
+    "SELECT * FROM Table WHERE createdAt < CURRENT_TIMESTAMP() AND createdAt >= CURRENT_TIMESTAMP() - INTERVAL 10 DAY"
   val filterWithDateAndInterval: String =
     "SELECT * FROM Table WHERE createdAt < CURRENT_DATE AND createdAt >= CURRENT_DATE() - INTERVAL 10 DAY"
   val filterWithTimeAndInterval: String =
-    "SELECT * FROM Table WHERE createdAt < current_time AND createdAt >= current_time() - INTERVAL 10 MINUTE"
+    "SELECT * FROM Table WHERE createdAt < CURRENT_TIME AND createdAt >= CURRENT_TIME() - INTERVAL 10 MINUTE"
   val groupByWithHavingAndDateTimeFunctions: String =
     """SELECT COUNT(CustomerID) AS cnt, City, Country, MAX(createdAt) AS lastSeen
       |FROM Table

@@ -2436,6 +2436,101 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SQLQuery(topHits)
     val query = select.query
     println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "script_fields": {
+      |    "hire_date": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(!doc.containsKey('hire_date') || doc['hire_date'].empty ? null : doc['hire_date'].value)"
+      |      }
+      |    }
+      |  },
+      |  "_source": true,
+      |  "aggs": {
+      |    "dept": {
+      |      "terms": {
+      |        "field": "department.keyword"
+      |      },
+      |      "aggs": {
+      |        "cnt": {
+      |          "cardinality": {
+      |            "field": "salary"
+      |          }
+      |        },
+      |        "first_salary": {
+      |          "top_hits": {
+      |            "size": 1,
+      |            "sort": [
+      |              {
+      |                "hire_date": {
+      |                  "order": "asc"
+      |                }
+      |              }
+      |            ],
+      |            "_source": {
+      |              "includes": [
+      |                "salary",
+      |                "firstName"
+      |              ]
+      |            }
+      |          }
+      |        },
+      |        "last_salary": {
+      |          "top_hits": {
+      |            "size": 1,
+      |            "sort": [
+      |              {
+      |                "hire_date": {
+      |                  "order": "desc"
+      |                }
+      |              }
+      |            ],
+      |            "_source": {
+      |              "includes": [
+      |                "salary",
+      |                "firstName"
+      |              ]
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">", " > ")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
   }
 
 }
