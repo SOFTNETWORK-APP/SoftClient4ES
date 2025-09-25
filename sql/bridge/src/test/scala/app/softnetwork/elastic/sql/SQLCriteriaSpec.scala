@@ -147,7 +147,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |"query":{
         |    "bool":{"filter":[{"regexp" : {
         |      "identifier" : {
-        |        "value" : ".*un.*"
+        |        "value" : ".*u.n.*"
         |      }
         |    }
         |  }
@@ -680,8 +680,8 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |            {
         |              "range" : {
         |                "ciblage.Archivage_CreationDate" : {
-        |                  "gte" : "now-3M/M",
-        |                  "lte" : "now"
+        |                  "gte" : "NOW-3M/M",
+        |                  "lte" : "NOW"
         |                }
         |              }
         |            },
