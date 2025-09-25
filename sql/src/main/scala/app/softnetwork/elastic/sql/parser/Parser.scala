@@ -91,15 +91,10 @@ trait Parser
   def separator: PackratParser[Delimiter] = "," ^^ (_ => Separator)
 
   def valueExpr: PackratParser[PainlessScript] =
-    // les plus spécifiques en premier
-    identifierWithTransformation | // transformations appliquées à un identifier
-    date_diff_identifier | // date_diff(...) retournant un identifier-like
-    last_day_identifier |
-    extract_identifier |
-    identifierWithSystemFunction | // CURRENT_DATE, NOW, etc. (+/- interval)
+    // the order is important here
+    identifierWithTransformation | // transformations applied to an identifier
     identifierWithIntervalFunction |
-    identifierWithTemporalFunction | // chaîne de fonctions appliquées à un identifier
-    identifierWithFunction | // fonctions appliquées à un identifier
+    identifierWithFunction | // fonctions applied to an identifier
     literal | // 'string'
     pi |
     double |
@@ -252,15 +247,19 @@ trait Parser
     mathematicalFunctionWithIdentifier |
     castFunctionWithIdentifier |
     conditionalFunctionWithIdentifier |
+    systemFunctionWithIdentifier |
     dateFunctionWithIdentifier |
     dateTimeFunctionWithIdentifier |
-    stringFunctionWithIdentifier
+    stringFunctionWithIdentifier |
+    date_diff_identifier |
+    extract_identifier |
+    case_when_identifier
 
   def identifierWithFunction: PackratParser[Identifier] =
     rep1sep(
       sql_functions,
       start
-    ) ~ start.? ~ (identifierWithSystemFunction | identifierWithIntervalFunction | identifier).? ~ rep1(
+    ) ~ start.? ~ (identifierWithTransformation | identifierWithIntervalFunction | identifier).? ~ rep1(
       end
     ) ^^ { case f ~ _ ~ i ~ _ =>
       i match {

@@ -4,7 +4,7 @@ import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.`type`.SQLTemporal
 import app.softnetwork.elastic.sql.function.TransformFunction
 import app.softnetwork.elastic.sql.function.time.{SQLAddInterval, SQLSubtractInterval}
-import app.softnetwork.elastic.sql.time.{Interval, TimeField, TimeInterval, TimeUnit}
+import app.softnetwork.elastic.sql.time.{Interval, IsoField, TimeField, TimeInterval, TimeUnit}
 
 package object time {
 
@@ -35,8 +35,30 @@ package object time {
     def offset_seconds: PackratParser[TimeField] =
       OFFSET_SECONDS.regex ^^ (_ => OFFSET_SECONDS)
 
+    import IsoField._
+
+    def quarter_of_year: PackratParser[TimeField] =
+      QUARTER_OF_YEAR.regex ^^ (_ => QUARTER_OF_YEAR)
+
+    def week_of_week_based_year: PackratParser[TimeField] =
+      WEEK_OF_WEEK_BASED_YEAR.regex ^^ (_ => WEEK_OF_WEEK_BASED_YEAR)
+
     def time_field: PackratParser[TimeField] =
-      year | month_of_year | day_of_month | day_of_week | day_of_year | hour_of_day | minute_of_hour | second_of_minute | nano_of_second | micro_of_second | milli_of_second | epoch_day | offset_seconds
+      year |
+      month_of_year |
+      day_of_month |
+      day_of_week |
+      day_of_year |
+      hour_of_day |
+      minute_of_hour |
+      second_of_minute |
+      nano_of_second |
+      micro_of_second |
+      milli_of_second |
+      epoch_day |
+      offset_seconds |
+      quarter_of_year |
+      week_of_week_based_year
 
     import TimeUnit._
 
@@ -71,7 +93,9 @@ package object time {
       add_interval | substract_interval
 
     def identifierWithIntervalFunction: PackratParser[Identifier] =
-      (identifierWithFunction | identifier) ~ intervalFunction ^^ { case i ~ f =>
+      (identifierWithTransformation |
+      identifierWithFunction |
+      identifier) ~ intervalFunction ^^ { case i ~ f =>
         i.withFunctions(f +: i.functions)
       }
 

@@ -7,55 +7,82 @@ import scala.util.matching.Regex
 package object time {
 
   sealed trait TimeField extends PainlessScript with TokenRegex {
-    override def painless: String = s"ChronoField.$sql"
+    override def painless: String = s"ChronoField.$timeField"
 
     override def nullable: Boolean = false
+
+    def timeField: String
+
+    override lazy val words: List[String] =
+      List(timeField, timeField.replaceAll("_", ""), sql).distinct
   }
 
   object TimeField {
-    case object YEAR extends Expr("YEAR") with TimeField
-    case object MONTH_OF_YEAR extends Expr("MONTH_OF_YEAR") with TimeField {
-      override val words: List[String] = List(sql, "MONTHOFYEAR", "MONTH")
+    case object YEAR extends Expr("YEAR") with TimeField {
+      override val timeField: String = "YEAR"
     }
-    case object DAY_OF_MONTH extends Expr("DAY_OF_MONTH") with TimeField {
-      override val words: List[String] = List(sql, "DAYOFMONTH", "DAY")
+    case object MONTH_OF_YEAR extends Expr("MONTH") with TimeField {
+      override val timeField: String = "MONTH_OF_YEAR"
     }
-    case object DAY_OF_WEEK extends Expr("DAY_OF_WEEK") with TimeField {
-      override val words: List[String] = List(sql, "DAYOFWEEK", "WEEKDAY")
+    case object DAY_OF_MONTH extends Expr("DAY") with TimeField {
+      override val timeField: String = "DAY_OF_MONTH"
     }
-    case object DAY_OF_YEAR extends Expr("DAY_OF_YEAR") with TimeField {
-      override val words: List[String] = List(sql, "DAYOFYEAR")
+    case object DAY_OF_WEEK extends Expr("WEEKDAY") with TimeField {
+      override val timeField: String = "DAY_OF_WEEK"
     }
-    case object HOUR_OF_DAY extends Expr("HOUR_OF_DAY") with TimeField {
-      override val words: List[String] = List(sql, "HOUROFDAY", "HOUR")
+    case object DAY_OF_YEAR extends Expr("YEARDAY") with TimeField {
+      override val timeField: String = "DAY_OF_YEAR"
     }
-    case object MINUTE_OF_HOUR extends Expr("MINUTE_OF_HOUR") with TimeField {
-      override val words: List[String] = List(sql, "MINUTEOFHOUR", "MINUTE")
+    case object HOUR_OF_DAY extends Expr("HOUR") with TimeField {
+      override val timeField: String = "HOUR_OF_DAY"
     }
-    case object SECOND_OF_MINUTE extends Expr("SECOND_OF_MINUTE") with TimeField {
-      override val words: List[String] = List(sql, "SECONDOFMINUTE", "SECOND")
+    case object MINUTE_OF_HOUR extends Expr("MINUTE") with TimeField {
+      override val timeField: String = "MINUTE_OF_HOUR"
     }
-    case object NANO_OF_SECOND extends Expr("NANO_OF_SECOND") with TimeField {
-      override val words: List[String] = List(sql, "NANOFSECOND", "NANOSECOND")
+    case object SECOND_OF_MINUTE extends Expr("SECOND") with TimeField {
+      override val timeField: String = "SECOND_OF_MINUTE"
     }
-    case object MICRO_OF_SECOND extends Expr("MICRO_OF_SECOND") with TimeField {
-      override val words: List[String] = List(sql, "MICROOFSECOND", "MICROSECOND")
+    case object NANO_OF_SECOND extends Expr("NANOSECOND") with TimeField {
+      override val timeField: String = "NANO_OF_SECOND"
     }
-    case object MILLI_OF_SECOND extends Expr("MILLI_OF_SECOND") with TimeField {
-      override val words: List[String] = List(sql, "MILLIOFSECOND", "MILLISECOND")
+    case object MICRO_OF_SECOND extends Expr("MICROSECOND") with TimeField {
+      override val timeField: String = "MICRO_OF_SECOND"
     }
-    case object EPOCH_DAY extends Expr("EPOCH_DAY") with TimeField {
-      override val words: List[String] = List(sql, "EPOCHDAY")
+    case object MILLI_OF_SECOND extends Expr("MILLISECOND") with TimeField {
+      override val timeField: String = "MILLI_OF_SECOND"
     }
-    case object OFFSET_SECONDS extends Expr("OFFSET_SECONDS") with TimeField {
-      override val words: List[String] = List(sql, "OFFSETSECONDS")
+    case object EPOCH_DAY extends Expr("EPOCHDAY") with TimeField {
+      override val timeField: String = "EPOCH_DAY"
     }
+    case object OFFSET_SECONDS extends Expr("OFFSET") with TimeField {
+      override val timeField: String = "OFFSET_SECONDS"
+    }
+  }
+
+  sealed trait IsoField extends TimeField {
+    def isoField: String
+    def timeField: String = isoField
+    override def painless: String = s"java.time.temporal.IsoFields.$isoField"
+  }
+
+  object IsoField {
+
+    case object QUARTER_OF_YEAR extends Expr("QUARTER") with IsoField {
+      override val isoField: String = "QUARTER_OF_YEAR"
+    }
+
+    case object WEEK_OF_WEEK_BASED_YEAR extends Expr("WEEK") with IsoField {
+      override val isoField: String = "WEEK_OF_WEEK_BASED_YEAR"
+    }
+
   }
 
   sealed trait TimeUnit extends PainlessScript with MathScript {
     lazy val regex: Regex = s"\\b(?i)$sql(s)?\\b".r
 
-    override def painless: String = s"ChronoUnit.${sql.toUpperCase()}S"
+    def timeUnit: String = sql.toUpperCase() + "S"
+
+    override def painless: String = s"ChronoUnit.$timeUnit"
 
     override def nullable: Boolean = false
   }

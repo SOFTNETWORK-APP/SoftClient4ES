@@ -10,13 +10,8 @@ trait SelectParser {
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithAggregation |
-    identifierWithSystemFunction |
     identifierWithIntervalFunction |
     identifierWithFunction |
-    date_diff_identifier |
-    last_day_identifier |
-    extract_identifier |
-    case_when_identifier |
     identifier) ~ alias.? ^^ { case i ~ a =>
       Field(i, a)
     }

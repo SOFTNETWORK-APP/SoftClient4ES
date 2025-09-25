@@ -2051,6 +2051,48 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "lang": "painless",
       |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
       |      }
+      |    },
+      |    "nano": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.NANO_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "micro": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MICRO_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "milli": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MILLI_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "epoch": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.EPOCH_DAY) : null)"
+      |      }
+      |    },
+      |    "off": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.OFFSET_SECONDS) : null)"
+      |      }
+      |    },
+      |    "w": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR) : null)"
+      |      }
+      |    },
+      |    "q": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR) : null)"
+      |      }
       |    }
       |  },
       |  "_source": true

@@ -83,7 +83,7 @@ object Queries {
       |HAVING Country <> 'USA' AND City <> 'Berlin' AND COUNT(CustomerID) > 1
       |ORDER BY COUNT(CustomerID) DESC, Country ASC""".stripMargin.replaceAll("\n", " ")
   val dateTimeWithIntervalFields: String =
-    "SELECT CURRENT_TIMESTAMP() - INTERVAL 3 DAY AS ct, CURRENT_DATE AS cd, CURRENT_TIME AS t, NOW AS n FROM dual"
+    "SELECT CURRENT_TIMESTAMP() - INTERVAL 3 DAY AS ct, CURRENT_DATE AS cd, CURRENT_TIME AS t, NOW AS n, TODAY as td FROM dual"
   val fieldsWithInterval: String =
     "SELECT createdAt - INTERVAL 35 MINUTE AS ct, identifier FROM Table"
   val filterWithDateTimeAndInterval: String =
@@ -100,7 +100,7 @@ object Queries {
       |ORDER BY Country ASC""".stripMargin
       .replaceAll("\n", " ")
   val dateParse =
-    "SELECT identifier, COUNT(identifier2) AS ct, MAX(date_parse(createdAt, 'yyyy-MM-dd')) AS lastSeen FROM Table WHERE identifier2 is NOT null GROUP BY identifier ORDER BY COUNT(identifier2) DESC"
+    "SELECT identifier, COUNT(identifier2) AS ct, MAX(DATE_PARSE(createdAt, 'yyyy-MM-dd')) AS lastSeen FROM Table WHERE identifier2 is NOT null GROUP BY identifier ORDER BY COUNT(identifier2) DESC"
   val dateTimeParse: String =
     """SELECT identifier, COUNT(identifier2) AS ct,
       |MAX(
@@ -124,9 +124,9 @@ object Queries {
     "SELECT MAX(date_diff(datetime_parse(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, DAY)) AS max_diff FROM Table GROUP BY identifier"
 
   val dateFormat =
-    "SELECT identifier, date_format(date_trunc(lastUpdated, month), 'yyyy-MM-dd') AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_format(date_trunc(lastUpdated, MONTH), 'yyyy-MM-dd') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeFormat =
-    "SELECT identifier, datetime_format(date_trunc(lastUpdated, month), 'yyyy-MM-ddThh:mm:ssZ') AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), 'yyyy-MM-ddThh:mm:ssZ') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
     "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateSub =
@@ -143,9 +143,9 @@ object Queries {
   val coalesce: String =
     "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
   val nullif: String =
-    "SELECT COALESCE(nullif(createdAt, date_parse('2025-09-11', 'yyyy-MM-dd') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
+    "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val cast: String =
-    "SELECT CAST(COALESCE(nullif(createdAt, date_parse('2025-09-11', 'yyyy-MM-dd')), CURRENT_DATE - INTERVAL 2 hour) bigint) AS c, identifier FROM Table"
+    "SELECT CAST(COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd')), CURRENT_DATE - INTERVAL 2 HOUR) BIGINT) AS c, identifier FROM Table"
   val allCasts =
     "SELECT CAST(identifier AS int) AS c1, CAST(identifier AS bigint) AS c2, CAST(identifier AS double) AS c3, CAST(identifier AS real) AS c4, CAST(identifier AS boolean) AS c5, CAST(identifier AS char) AS c6, CAST(identifier AS varchar) AS c7, CAST(createdAt AS date) AS c8, CAST(createdAt AS time) AS c9, CAST(createdAt AS datetime) AS c10, CAST(createdAt AS timestamp) AS c11, CAST(identifier AS smallint) AS c12, CAST(identifier AS tinyint) AS c13 FROM Table"
   val caseWhen: String =
@@ -154,7 +154,7 @@ object Queries {
     "SELECT CASE CURRENT_DATE - INTERVAL 7 DAY WHEN CAST(lastUpdated AS date) - INTERVAL 3 DAY THEN lastUpdated WHEN lastSeen THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
 
   val extract: String =
-    "SELECT EXTRACT(day_of_month FROM createdAt) AS dom, EXTRACT(day_of_week FROM createdAt) AS dow, EXTRACT(day_of_year FROM createdAt) AS doy, EXTRACT(month_of_year FROM createdAt) AS m, EXTRACT(year FROM createdAt) AS y, EXTRACT(hour_of_day FROM createdAt) AS h, EXTRACT(minute_of_hour FROM createdAt) AS minutes, EXTRACT(second_of_minute FROM createdAt) AS s FROM Table"
+    "SELECT EXTRACT(DAY FROM createdAt) AS dom, EXTRACT(WEEKDAY FROM createdAt) AS dow, EXTRACT(YEARDAY FROM createdAt) AS doy, EXTRACT(MONTH FROM createdAt) AS m, EXTRACT(YEAR FROM createdAt) AS y, EXTRACT(HOUR FROM createdAt) AS h, EXTRACT(MINUTE FROM createdAt) AS minutes, EXTRACT(SECOND FROM createdAt) AS s, EXTRACT(NANOSECOND FROM createdAt) AS nano, EXTRACT(MICROSECOND FROM createdAt) AS micro, EXTRACT(MILLISECOND FROM createdAt) AS milli, EXTRACT(EPOCHDAY FROM createdAt) AS epoch, EXTRACT(OFFSET FROM createdAt) AS off, EXTRACT(WEEK FROM createdAt) AS w, EXTRACT(QUARTER FROM createdAt) AS q FROM Table"
 
   val arithmetic: String =
     "SELECT identifier, identifier + 1 AS add, identifier - 1 AS sub, identifier * 2 AS mul, identifier / 2 AS div, identifier % 2 AS mod, (identifier * identifier2) - 10 FROM Table WHERE identifier * (EXTRACT(year FROM CURRENT_DATE) - 10) > 10000"
@@ -169,7 +169,10 @@ object Queries {
     "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary FROM emp"
 
   val lastDay: String =
-    "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY_OF_MONTH FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
+    "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
+
+  val extractors: String =
+    "SELECT WEEKDAY(createdAt) AS dow, YEARDAY(createdAt) AS doy, DAY(createdAt) AS dom, WEEKDAY(createdAt) AS dow2, YEARDAY(createdAt) AS doy2, HOUR(createdAt) AS h, MINUTE(createdAt) AS minutes, SECOND(createdAt) AS s, NANOSECOND(createdAt) AS nano, MICROSECOND(createdAt) AS micro, MILLISECOND(createdAt) AS milli, EPOCHDAY(createdAt) AS epoch, OFFSET(createdAt) AS off, WEEK(createdAt) AS w, QUARTER(createdAt) AS q FROM Table"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -178,7 +181,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
-  "SQLParser" should "parse numerical eq" in {
+  "SQLParser" should "parse numerical EQ" in {
     val result = Parser(numericalEq)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -186,7 +189,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(numericalEq) shouldBe true
   }
 
-  it should "parse numerical ne" in {
+  it should "parse numerical NE" in {
     val result = Parser(numericalNe)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -194,7 +197,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(numericalNe) shouldBe true
   }
 
-  it should "parse numerical lt" in {
+  it should "parse numerical LT" in {
     val result = Parser(numericalLt)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -202,7 +205,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(numericalLt) shouldBe true
   }
 
-  it should "parse numerical le" in {
+  it should "parse numerical LE" in {
     val result = Parser(numericalLe)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -210,7 +213,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(numericalLe) shouldBe true
   }
 
-  it should "parse numerical gt" in {
+  it should "parse numerical GT" in {
     val result = Parser(numericalGt)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -218,7 +221,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(numericalGt) shouldBe true
   }
 
-  it should "parse numerical ge" in {
+  it should "parse numerical GE" in {
     val result = Parser(numericalGe)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -226,7 +229,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(numericalGe) shouldBe true
   }
 
-  it should "parse literal eq" in {
+  it should "parse literal EQ" in {
     val result = Parser(literalEq)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -258,7 +261,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(literalNotLike) shouldBe true
   }
 
-  it should "parse literal ne" in {
+  it should "parse literal NE" in {
     val result = Parser(literalNe)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -266,7 +269,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(literalNe) shouldBe true
   }
 
-  it should "parse literal lt" in {
+  it should "parse literal LT" in {
     val result = Parser(literalLt)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -274,7 +277,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(literalLt) shouldBe true
   }
 
-  it should "parse literal le" in {
+  it should "parse literal LE" in {
     val result = Parser(literalLe)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -282,7 +285,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(literalLe) shouldBe true
   }
 
-  it should "parse literal gt" in {
+  it should "parse literal GT" in {
     val result = Parser(literalGt)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -290,12 +293,12 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(literalGt) shouldBe true
   }
 
-  it should "parse literal ge" in {
+  it should "parse literal GE" in {
     val result = Parser(literalGe)
     result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") equalsIgnoreCase literalGe
   }
 
-  it should "parse boolean eq" in {
+  it should "parse boolean EQ" in {
     val result = Parser(boolEq)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -303,7 +306,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(boolEq) shouldBe true
   }
 
-  it should "parse boolean ne" in {
+  it should "parse boolean NE" in {
     val result = Parser(boolNe)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -407,7 +410,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(parentCriteria) shouldBe true
   }
 
-  it should "parse in literal expression" in {
+  it should "parse IN literal expression" in {
     val result = Parser(inLiteralExpression)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -415,7 +418,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(inLiteralExpression) shouldBe true
   }
 
-  it should "parse in numerical expression with Int values" in {
+  it should "parse IN numerical expression with Int values" in {
     val result = Parser(inNumericalExpressionWithIntValues)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -423,7 +426,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(inNumericalExpressionWithIntValues) shouldBe true
   }
 
-  it should "parse in numerical expression with Double values" in {
+  it should "parse IN numerical expression with Double values" in {
     val result = Parser(inNumericalExpressionWithDoubleValues)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -431,7 +434,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(inNumericalExpressionWithDoubleValues) shouldBe true
   }
 
-  it should "parse NOT in literal expression" in {
+  it should "parse NOT IN literal expression" in {
     val result = Parser(notInLiteralExpression)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -439,7 +442,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(notInLiteralExpression) shouldBe true
   }
 
-  it should "parse NOT in numerical expression with Int values" in {
+  it should "parse NOT IN numerical expression with Int values" in {
     val result = Parser(notInNumericalExpressionWithIntValues)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -447,7 +450,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(notInNumericalExpressionWithIntValues) shouldBe true
   }
 
-  it should "parse NOT in numerical expression with Double values" in {
+  it should "parse NOT IN numerical expression with Double values" in {
     val result = Parser(notInNumericalExpressionWithDoubleValues)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -471,7 +474,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(COUNT) shouldBe true
   }
 
-  it should "parse distinct COUNT" in {
+  it should "parse DISTINCT COUNT" in {
     val result = Parser(countDistinct)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -487,7 +490,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(countNested) shouldBe true
   }
 
-  it should "parse is null" in {
+  it should "parse IS NULL" in {
     val result = Parser(isNull)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -495,7 +498,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(isNull) shouldBe true
   }
 
-  it should "parse is NOT null" in {
+  it should "parse IS NOT NULL" in {
     val result = Parser(isNotNull)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -511,7 +514,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(geoDistanceCriteria) shouldBe true
   }
 
-  it should "parse except fields" in {
+  it should "parse EXCEPT fields" in {
     val result = Parser(except)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -519,7 +522,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(except) shouldBe true
   }
 
-  it should "parse match criteria" in {
+  it should "parse MATCH criteria" in {
     val result = Parser(matchCriteria)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -543,7 +546,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(orderBy) shouldBe true
   }
 
-  it should "parse limit" in {
+  it should "parse LIMIT" in {
     val result = Parser(limit)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -551,7 +554,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(limit) shouldBe true
   }
 
-  it should "parse GROUP BY with ORDER BY AND limit" in {
+  it should "parse GROUP BY with ORDER BY and LIMIT" in {
     val result = Parser(groupByWithOrderByAndLimit)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -583,7 +586,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(fieldsWithInterval) shouldBe true
   }
 
-  it should "parse filter with date time AND INTERVAL" in {
+  it should "parse filter with date time and INTERVAL" in {
     val result = Parser(filterWithDateTimeAndInterval)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -591,7 +594,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(filterWithDateTimeAndInterval) shouldBe true
   }
 
-  it should "parse filter with date AND INTERVAL" in {
+  it should "parse filter with date and interval" in {
     val result = Parser(filterWithDateAndInterval)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -599,7 +602,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(filterWithDateAndInterval) shouldBe true
   }
 
-  it should "parse filter with time AND INTERVAL" in {
+  it should "parse filter with time and interval" in {
     val result = Parser(filterWithTimeAndInterval)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -607,7 +610,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(filterWithTimeAndInterval) shouldBe true
   }
 
-  it should "parse GROUP BY with HAVING AND date time functions" in {
+  it should "parse GROUP BY with HAVING and date time functions" in {
     val result = Parser(groupByWithHavingAndDateTimeFunctions)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -694,7 +697,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(dateTimeSub) shouldBe true
   }
 
-  it should "parse isnull function" in {
+  it should "parse ISNULL function" in {
     val result = Parser(isnull)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -702,7 +705,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(isnull) shouldBe true
   }
 
-  it should "parse isnotnull function" in {
+  it should "parse ISNOTNULL function" in {
     val result = Parser(isnotnull)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -710,7 +713,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(isnotnull) shouldBe true
   }
 
-  it should "parse isnull criteria" in {
+  it should "parse ISNULL criteria" in {
     val result = Parser(isNullCriteria)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -718,7 +721,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(isNullCriteria) shouldBe true
   }
 
-  it should "parse isnotnull criteria" in {
+  it should "parse ISNOTNULL criteria" in {
     val result = Parser(isNotNullCriteria)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -726,7 +729,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(isNotNullCriteria) shouldBe true
   }
 
-  it should "parse coalesce function" in {
+  it should "parse COALESCE function" in {
     val result = Parser(coalesce)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -734,7 +737,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(coalesce) shouldBe true
   }
 
-  it should "parse nullif function" in {
+  it should "parse NULLIF function" in {
     val result = Parser(nullif)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
@@ -742,12 +745,11 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(nullif) shouldBe true
   }
 
-  it should "parse cast function" in {
+  it should "parse CAST function" in {
     val result = Parser(cast)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(cast) shouldBe true
+      .getOrElse("") shouldBe cast
   }
 
   it should "parse all casts function" in {
@@ -774,12 +776,11 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(caseWhenExpr) shouldBe true
   }
 
-  it should "parse extract function" in {
+  it should "parse EXTRACT function" in {
     val result = Parser(extract)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(extract) shouldBe true
+      .getOrElse("") shouldBe extract
   }
 
   it should "parse arithmetic expressions" in {
@@ -819,4 +820,12 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("") shouldBe lastDay
   }
+
+  it should "parse all date extractors" in {
+    val result = Parser(extractors)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe extractors
+  }
+
 }

@@ -12,7 +12,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTypes,
   SQLVarchar
 }
-import app.softnetwork.elastic.sql.time.{TimeField, TimeInterval, TimeUnit}
+import app.softnetwork.elastic.sql.time.{IsoField, TimeField, TimeInterval, TimeUnit}
 
 package object time {
 
@@ -129,6 +129,10 @@ package object time {
 
   case object NowWithParens extends Expr("NOW()") with CurrentDateTimeFunction
 
+  case object Today extends Expr("TODAY") with CurrentDateFunction
+
+  case object TodayWithParens extends Expr("TODAY()") with CurrentDateFunction
+
   case object DateTrunc extends Expr("DATE_TRUNC") with TokenRegex with PainlessScript {
     override def painless: String = ".truncatedTo"
     override lazy val words: List[String] = List(sql, "DATETRUNC")
@@ -205,22 +209,29 @@ package object time {
 
   object OffsetSeconds extends Extract(OFFSET_SECONDS) with TimeFieldExtract
 
+  import IsoField._
+
+  object QuarterOfYear extends Extract(QUARTER_OF_YEAR) with TimeFieldExtract
+
+  object WeekOfWeekBasedYear extends Extract(WEEK_OF_WEEK_BASED_YEAR) with TimeFieldExtract
+
   case object LastDayOfMonth extends Expr("LAST_DAY") with TokenRegex with PainlessScript {
     override def painless: String = ".withDayOfMonth"
     override lazy val words: List[String] = List(sql, "LASTDAY")
   }
 
-  case class LastDayOfMonth(date: PainlessScript)
+  case class LastDayOfMonth(identifier: Identifier)
       extends DateFunction
-      with TransformFunction[SQLDate, SQLDate] {
+      with TransformFunction[SQLDate, SQLDate]
+      with FunctionWithIdentifier {
     override def fun: Option[PainlessScript] = Some(LastDayOfMonth)
 
-    override def args: List[PainlessScript] = List(date)
+    override def args: List[PainlessScript] = List(identifier)
 
     override def inputType: SQLDate = SQLTypes.Date
     override def outputType: SQLDate = SQLTypes.Date
 
-    override def nullable: Boolean = date.nullable
+    override def nullable: Boolean = identifier.nullable
 
     override def sql: String = LastDayOfMonth.sql
 
@@ -229,7 +240,7 @@ package object time {
     }
 
     override def toPainless(base: String, idx: Int): String = {
-      val arg = SQLTypeUtils.coerce(base, date.out, SQLTypes.Date, nullable = false)
+      val arg = SQLTypeUtils.coerce(base, identifier.out, SQLTypes.Date, nullable = false)
       if (nullable && base.nonEmpty)
         s"(def e$idx = $arg; e$idx != null ? ${toPainlessCall(List(s"e$idx"))} : null)"
       else

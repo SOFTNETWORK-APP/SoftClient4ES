@@ -74,13 +74,9 @@ trait WhereParser {
   private def any_identifier: PackratParser[Identifier] =
     identifierWithTransformation |
     identifierWithAggregation |
-    identifierWithSystemFunction |
     identifierWithIntervalFunction |
     identifierWithArithmeticExpression |
     identifierWithFunction |
-    date_diff_identifier |
-    last_day_identifier |
-    extract_identifier |
     identifier
 
   private def equality: PackratParser[GenericExpression] =

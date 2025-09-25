@@ -28,12 +28,12 @@ package object cond {
   trait CondParser { self: Parser with WhereParser =>
 
     def is_null: PackratParser[ConditionalFunction[_]] =
-      "(?i)isnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
+      "(?i)isnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
         case _ ~ _ ~ i ~ _ => IsNull(i)
       }
 
     def is_notnull: PackratParser[ConditionalFunction[_]] =
-      "(?i)isnotnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithTemporalFunction | identifier) ~ end ^^ {
+      "(?i)isnotnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
         case _ ~ _ ~ i ~ _ => IsNotNull(i)
       }
 
