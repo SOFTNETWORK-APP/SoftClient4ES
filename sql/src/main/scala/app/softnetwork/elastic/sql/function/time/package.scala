@@ -155,9 +155,12 @@ package object time {
     override def painless: String = ".get"
   }
 
-  case class Extract(field: TimeField, override val sql: String = Extract.sql)
+  case class Extract(field: TimeField)
       extends DateTimeFunction
       with TransformFunction[SQLTemporal, SQLNumeric] {
+
+    override val sql: String = Extract.sql
+
     override def fun: Option[PainlessScript] = Some(Extract)
 
     override def args: List[PainlessScript] = List(field)
@@ -171,36 +174,75 @@ package object time {
 
   import TimeField._
 
-  object Year extends Extract(YEAR, YEAR.sql) {
+  sealed trait TimeFieldExtract extends Extract {
+    override val sql: String = field.sql
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object MonthOfYear extends Extract(MONTH_OF_YEAR, MONTH_OF_YEAR.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
+  object Year extends Extract(YEAR) with TimeFieldExtract
+
+  object MonthOfYear extends Extract(MONTH_OF_YEAR) with TimeFieldExtract
+
+  object DayOfMonth extends Extract(DAY_OF_MONTH) with TimeFieldExtract
+
+  object DayOfWeek extends Extract(DAY_OF_WEEK) with TimeFieldExtract
+
+  object DayOfYear extends Extract(DAY_OF_YEAR) with TimeFieldExtract
+
+  object HourOfDay extends Extract(HOUR_OF_DAY) with TimeFieldExtract
+
+  object MinuteOfHour extends Extract(MINUTE_OF_HOUR) with TimeFieldExtract
+
+  object SecondOfMinute extends Extract(SECOND_OF_MINUTE) with TimeFieldExtract
+
+  object NanoOfSecond extends Extract(NANO_OF_SECOND) with TimeFieldExtract
+
+  object MicroOfSecond extends Extract(MICRO_OF_SECOND) with TimeFieldExtract
+
+  object MilliOfSecond extends Extract(MILLI_OF_SECOND) with TimeFieldExtract
+
+  object EpochDay extends Extract(EPOCH_DAY) with TimeFieldExtract
+
+  object OffsetSeconds extends Extract(OFFSET_SECONDS) with TimeFieldExtract
+
+  case object LastDayOfMonth extends Expr("LAST_DAY") with TokenRegex with PainlessScript {
+    override def painless: String = ".withDayOfMonth"
+    override lazy val words: List[String] = List(sql, "LASTDAY")
   }
 
-  object DayOfMonth extends Extract(DAY_OF_MONTH, DAY_OF_MONTH.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
-  }
+  case class LastDayOfMonth(date: PainlessScript)
+      extends DateFunction
+      with TransformFunction[SQLDate, SQLDate] {
+    override def fun: Option[PainlessScript] = Some(LastDayOfMonth)
 
-  object DayOfWeek extends Extract(DAY_OF_WEEK, DAY_OF_WEEK.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
-  }
+    override def args: List[PainlessScript] = List(date)
 
-  object DayOfYear extends Extract(DAY_OF_YEAR, DAY_OF_YEAR.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
-  }
+    override def inputType: SQLDate = SQLTypes.Date
+    override def outputType: SQLDate = SQLTypes.Date
 
-  object HourOfDay extends Extract(HOUR_OF_DAY, HOUR_OF_DAY.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
-  }
+    override def nullable: Boolean = date.nullable
 
-  object MinuteOfHour extends Extract(MINUTE_OF_HOUR, MINUTE_OF_HOUR.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
-  }
+    override def sql: String = LastDayOfMonth.sql
 
-  object SecondOfMinute extends Extract(SECOND_OF_MINUTE, SECOND_OF_MINUTE.sql) {
-    override def toSQL(base: String): String = s"$sql($base)"
+    override def toSQL(base: String): String = {
+      s"$sql($base)"
+    }
+
+    override def toPainless(base: String, idx: Int): String = {
+      val arg = SQLTypeUtils.coerce(base, date.out, SQLTypes.Date, nullable = false)
+      if (nullable && base.nonEmpty)
+        s"(def e$idx = $arg; e$idx != null ? ${toPainlessCall(List(s"e$idx"))} : null)"
+      else
+        s"(def e$idx = $arg; ${toPainlessCall(List(s"e$idx"))})"
+    }
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case arg :: Nil => s"$arg${LastDayOfMonth.painless}($arg.lengthOfMonth())"
+        case _ => throw new IllegalArgumentException("LastDayOfMonth requires exactly one argument")
+      }
+    }
+
   }
 
   case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {

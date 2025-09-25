@@ -174,7 +174,7 @@ package object time {
       }
 
     def extract_identifier: PackratParser[Identifier] =
-      Extract.regex ~ start ~ time_field ~ "(?i)from".r ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
+      Extract.regex ~ start ~ time_field ~ "(?i)from".r ~ (identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | last_day_identifier | identifier) ~ end ^^ {
         case _ ~ _ ~ u ~ _ ~ i ~ _ =>
           i.withFunctions(Extract(u) +: i.functions)
       }
@@ -197,9 +197,36 @@ package object time {
       MINUTE_OF_HOUR.regex ^^ (_ => MinuteOfHour)
     def second_of_minute_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       SECOND_OF_MINUTE.regex ^^ (_ => SecondOfMinute)
+    def nano_of_second_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      NANO_OF_SECOND.regex ^^ (_ => NanoOfSecond)
+    def micro_of_second_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      MICRO_OF_SECOND.regex ^^ (_ => MicroOfSecond)
+    def milli_of_second_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      MILLI_OF_SECOND.regex ^^ (_ => MilliOfSecond)
+    def epoch_day_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      EPOCH_DAY.regex ^^ (_ => EpochDay)
+    def offset_seconds_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+      OFFSET_SECONDS.regex ^^ (_ => OffsetSeconds)
 
     def extractors: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      year_tr | month_of_year_tr | day_of_month_tr | day_of_week_tr | day_of_year_tr | hour_of_day_tr | minute_of_hour_tr | second_of_minute_tr
+      year_tr |
+      month_of_year_tr |
+      day_of_month_tr |
+      day_of_week_tr |
+      day_of_year_tr |
+      hour_of_day_tr |
+      minute_of_hour_tr |
+      second_of_minute_tr |
+      milli_of_second_tr |
+      micro_of_second_tr |
+      nano_of_second_tr |
+      epoch_day_tr |
+      offset_seconds_tr
+
+    def last_day_identifier: Parser[Identifier] =
+      LastDayOfMonth.regex ~ start ~ (castFunctionWithIdentifier | identifierWithTemporalFunction | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
+        case _ ~ _ ~ i ~ _ => i.withFunctions(LastDayOfMonth(i) +: i.functions)
+      }
 
   }
 

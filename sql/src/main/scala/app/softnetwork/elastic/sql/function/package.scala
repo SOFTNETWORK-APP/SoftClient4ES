@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
@@ -112,6 +112,9 @@ package object function {
     def fun: Option[PainlessScript] = None
 
     def args: List[PainlessScript]
+
+    def argTypes: List[SQLType] = args.map(_.out)
+
     def argsSeparator: String = ", "
 
     def inputType: In
@@ -139,7 +142,9 @@ package object function {
         args
           .filter(_.nullable)
           .zipWithIndex
-          .map { case (a, i) => s"def arg$i = ${a.painless};" }
+          .map { case (a, i) =>
+            s"def arg$i = ${SQLTypeUtils.coerce(a.painless, a.out, argTypes(i), nullable = false)};"
+          }
           .mkString(" ")
 
       val callArgs = args.zipWithIndex
@@ -147,7 +152,7 @@ package object function {
           if (a.nullable)
             s"arg$i"
           else
-            a.painless
+            SQLTypeUtils.coerce(a.painless, a.out, argTypes(i), nullable = false)
         }
 
       if (args.exists(_.nullable))

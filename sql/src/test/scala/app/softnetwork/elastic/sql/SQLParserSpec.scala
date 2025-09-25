@@ -167,6 +167,9 @@ object Queries {
 
   val topHits: String =
     "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary FROM emp"
+
+  val lastDay: String =
+    "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY_OF_MONTH FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -810,4 +813,10 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .getOrElse("") shouldBe topHits
   }
 
+  it should "parse last_day function" in {
+    val result = Parser(lastDay)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe lastDay
+  }
 }

@@ -99,11 +99,11 @@ object SQLTypeUtils {
       (from, to) match {
         // ---- DATE & TIME ----
         case (SQLTypes.Date, SQLTypes.DateTime | SQLTypes.Timestamp) =>
-          s"($expr).atStartOfDay(ZoneId.of('Z'))"
+          s"$expr.atStartOfDay(ZoneId.of('Z'))"
         case (SQLTypes.DateTime | SQLTypes.Timestamp, SQLTypes.Date) =>
-          s"($expr).toLocalDate()"
+          s"$expr.toLocalDate()"
         case (SQLTypes.DateTime | SQLTypes.Timestamp, SQLTypes.Time) =>
-          s"($expr).toLocalTime()"
+          s"$expr.toLocalTime()"
 
         // ---- NUMERIQUES ----
         case (SQLTypes.Int, SQLTypes.BigInt) =>

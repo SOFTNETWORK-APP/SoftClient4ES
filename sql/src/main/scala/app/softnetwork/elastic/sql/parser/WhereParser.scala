@@ -72,7 +72,16 @@ trait WhereParser {
   private def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   private def any_identifier: PackratParser[Identifier] =
-    identifierWithTransformation | identifierWithAggregation | identifierWithSystemFunction | identifierWithIntervalFunction | identifierWithArithmeticExpression | identifierWithFunction | date_diff_identifier | extract_identifier | identifier
+    identifierWithTransformation |
+    identifierWithAggregation |
+    identifierWithSystemFunction |
+    identifierWithIntervalFunction |
+    identifierWithArithmeticExpression |
+    identifierWithFunction |
+    date_diff_identifier |
+    last_day_identifier |
+    extract_identifier |
+    identifier
 
   private def equality: PackratParser[GenericExpression] =
     not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | literal | double | pi | long | any_identifier) ^^ {

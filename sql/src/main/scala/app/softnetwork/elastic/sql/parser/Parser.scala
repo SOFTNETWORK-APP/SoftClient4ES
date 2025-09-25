@@ -94,6 +94,7 @@ trait Parser
     // les plus spécifiques en premier
     identifierWithTransformation | // transformations appliquées à un identifier
     date_diff_identifier | // date_diff(...) retournant un identifier-like
+    last_day_identifier |
     extract_identifier |
     identifierWithSystemFunction | // CURRENT_DATE, NOW, etc. (+/- interval)
     identifierWithIntervalFunction |
@@ -248,7 +249,12 @@ trait Parser
     }
 
   def identifierWithTransformation: PackratParser[Identifier] =
-    mathematicalFunctionWithIdentifier | castFunctionWithIdentifier | conditionalFunctionWithIdentifier | dateFunctionWithIdentifier | dateTimeFunctionWithIdentifier | stringFunctionWithIdentifier
+    mathematicalFunctionWithIdentifier |
+    castFunctionWithIdentifier |
+    conditionalFunctionWithIdentifier |
+    dateFunctionWithIdentifier |
+    dateTimeFunctionWithIdentifier |
+    stringFunctionWithIdentifier
 
   def identifierWithFunction: PackratParser[Identifier] =
     rep1sep(
