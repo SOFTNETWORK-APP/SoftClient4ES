@@ -123,6 +123,13 @@ object ElasticAggregation {
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
         case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
         case th: TopHitsAggregation =>
+          val limit = {
+            th match {
+              case _: LastValue => 1
+              //                case _: FirstValue => 1
+              case _ => th.limit.map(_.limit).getOrElse(1)
+            }
+          }
           val topHits =
             topHitsAgg(aggName)
               .fetchSource(
@@ -136,17 +143,17 @@ object ElasticAggregation {
                 f.sourceField -> Script(f.painless).lang("painless")
               ).toMap
             )
-              .size(1) sortBy th.orderBy.sorts.map(sort =>
+              .size(limit) sortBy th.orderBy.sorts.map(sort =>
               sort.order match {
                 case Some(Desc) =>
                   th.topHits match {
-                    case FIRST_VALUE => FieldSort(sort.field).desc()
-                    case LAST_VALUE  => FieldSort(sort.field).asc()
+                    case LAST_VALUE => FieldSort(sort.field).asc()
+                    case _          => FieldSort(sort.field).desc()
                   }
                 case _ =>
                   th.topHits match {
-                    case FIRST_VALUE => FieldSort(sort.field).asc()
-                    case LAST_VALUE  => FieldSort(sort.field).desc()
+                    case LAST_VALUE => FieldSort(sort.field).desc()
+                    case _          => FieldSort(sort.field).asc()
                   }
               }
             )

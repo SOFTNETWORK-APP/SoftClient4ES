@@ -2528,6 +2528,28 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              ]
         |            }
         |          }
+        |        },
+        |        "employees": {
+        |          "top_hits": {
+        |            "size": 1000,
+        |            "sort": [
+        |              {
+        |                "hire_date": {
+        |                  "order": "asc"
+        |                }
+        |              },
+        |              {
+        |                "salary": {
+        |                  "order": "desc"
+        |                }
+        |              }
+        |            ],
+        |            "_source": {
+        |              "includes": [
+        |                "name"
+        |              ]
+        |            }
+        |          }
         |        }
         |      }
         |    }

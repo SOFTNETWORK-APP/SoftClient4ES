@@ -166,7 +166,7 @@ object Queries {
     "SELECT identifier, LENGTH(identifier2) AS l, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, CONCAT(identifier2, '_test', 1) AS con FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
 
   val topHits: String =
-    "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary FROM emp"
+    "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary, ARRAY_AGG(name) OVER (PARTITION BY department ORDER BY hire_date ASC, salary DESC LIMIT 1000) AS employees FROM emp"
 
   val lastDay: String =
     "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
