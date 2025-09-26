@@ -9,6 +9,7 @@ case class ElasticSearchRequest(
                                  sources: Seq[String],
                                  criteria: Option[Criteria],
                                  limit: Option[Int],
+                                 offset: Option[Int],
                                  search: SearchRequest,
                                  buckets: Seq[Bucket] = Seq.empty,
                                  aggregations: Seq[ElasticAggregation] = Seq.empty

@@ -68,7 +68,7 @@ object Queries {
   val groupBy =
     "SELECT identifier, COUNT(identifier2) FROM Table WHERE identifier2 is NOT null GROUP BY identifier"
   val orderBy = "SELECT * FROM Table ORDER BY identifier DESC"
-  val limit = "SELECT * FROM Table limit 10"
+  val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
   val groupByWithOrderByAndLimit: String =
     """SELECT identifier, COUNT(identifier2)
       |FROM Table
@@ -550,8 +550,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(limit)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(limit) shouldBe true
+      .getOrElse("") shouldBe limit
   }
 
   it should "parse GROUP BY with ORDER BY and LIMIT" in {

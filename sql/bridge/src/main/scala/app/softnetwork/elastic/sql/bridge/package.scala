@@ -27,6 +27,7 @@ package object bridge {
       request.sources,
       request.where.flatMap(_.criteria),
       request.limit.map(_.limit),
+      request.limit.flatMap(_.offset.map(_.offset)),
       request,
       request.buckets,
       request.aggregates.map(
@@ -128,7 +129,7 @@ package object bridge {
       _search size 0
     } else {
       limit match {
-        case Some(l) => _search limit l.limit from 0
+        case Some(l) => _search limit l.limit from l.offset.map(_.offset).getOrElse(0)
         case _       => _search
       }
     }
