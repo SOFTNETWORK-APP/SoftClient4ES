@@ -367,7 +367,7 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
 
 case class IsNotNullCriteria(identifier: Identifier)
     extends CriteriaWithConditionalFunction[SQLAny] {
-  override val conditionalFunction: ConditionalFunction[SQLAny] = IsNotNull(
+  override lazy val conditionalFunction: ConditionalFunction[SQLAny] = IsNotNull(
     identifier
   )
   override val operator: Operator = IS_NOT_NULL

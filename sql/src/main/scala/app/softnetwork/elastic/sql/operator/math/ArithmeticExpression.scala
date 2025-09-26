@@ -28,7 +28,7 @@ case class ArithmeticExpression(
       expr
   }
 
-  override def out: SQLType =
+  override def baseType: SQLType =
     SQLTypeUtils.leastCommonSuperType(List(left.out, right.out))
 
   override def validate(): Either[String, Unit] = {
@@ -45,13 +45,13 @@ case class ArithmeticExpression(
     if (nullable) {
       val l = left match {
         case t: TransformFunction[_, _] =>
-          SQLTypeUtils.coerce(t.toPainless("", idx + 1), left.out, out, nullable = false)
-        case _ => SQLTypeUtils.coerce(left.painless, left.out, out, nullable = false)
+          SQLTypeUtils.coerce(t.toPainless("", idx + 1), left.baseType, out, nullable = false)
+        case _ => SQLTypeUtils.coerce(left.painless, left.baseType, out, nullable = false)
       }
       val r = right match {
         case t: TransformFunction[_, _] =>
-          SQLTypeUtils.coerce(t.toPainless("", idx + 1), right.out, out, nullable = false)
-        case _ => SQLTypeUtils.coerce(right.painless, right.out, out, nullable = false)
+          SQLTypeUtils.coerce(t.toPainless("", idx + 1), right.baseType, out, nullable = false)
+        case _ => SQLTypeUtils.coerce(right.painless, right.baseType, out, nullable = false)
       }
       var expr = ""
       if (left.nullable)

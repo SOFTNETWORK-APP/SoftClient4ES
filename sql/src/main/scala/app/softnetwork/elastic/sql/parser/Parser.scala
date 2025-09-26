@@ -235,17 +235,17 @@ trait Parser
   private val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
 
   def identifier: PackratParser[Identifier] =
-    Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>
+    (Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>
       GenericIdentifier(
         i,
         None,
         d.isDefined
       )
-    }
+    }) >> castOperator
 
   def identifierWithTransformation: PackratParser[Identifier] =
-    mathematicalFunctionWithIdentifier |
-    castFunctionWithIdentifier |
+    (mathematicalFunctionWithIdentifier |
+    conversionFunctionWithIdentifier |
     conditionalFunctionWithIdentifier |
     systemFunctionWithIdentifier |
     dateFunctionWithIdentifier |
@@ -253,10 +253,10 @@ trait Parser
     stringFunctionWithIdentifier |
     date_diff_identifier |
     extract_identifier |
-    case_when_identifier
+    case_when_identifier) >> castOperator
 
   def identifierWithFunction: PackratParser[Identifier] =
-    rep1sep(
+    (rep1sep(
       sql_functions,
       start
     ) ~ start.? ~ (identifierWithTransformation | identifierWithIntervalFunction | identifier).? ~ rep1(
@@ -271,7 +271,7 @@ trait Parser
           }
         case Some(id) => id.withFunctions(id.functions ++ f)
       }
-    }
+    }) >> castOperator
 
   private val regexAlias =
     s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_]*""".stripMargin

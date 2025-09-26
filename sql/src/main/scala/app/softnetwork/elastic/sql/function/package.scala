@@ -95,7 +95,7 @@ package object function {
 
     override def in: SQLType = functions.lastOption.map(_.in).getOrElse(super.in)
 
-    override def out: SQLType = {
+    override def baseType: SQLType = {
       val baseType = functions.lastOption.map(_.in).getOrElse(super.baseType)
       functions.reverse.foldLeft(baseType) { (currentType, fun) =>
         fun.applyType(currentType)
@@ -105,6 +105,15 @@ package object function {
     def arithmetic: Boolean = functions.nonEmpty && functions.forall {
       case _: ArithmeticExpression => true
       case _                       => false
+    }
+
+    override def cast(targetType: SQLType): SQLType = {
+      functions.headOption match {
+        case Some(f) =>
+          f.cast(targetType)
+        case None =>
+          this.baseType
+      }
     }
   }
 
@@ -121,7 +130,7 @@ package object function {
     def outputType: Out
 
     override def in: SQLType = inputType
-    override def out: SQLType = outputType
+    override def baseType: SQLType = outputType
 
     override def applyType(in: SQLType): SQLType = outputType
 
@@ -143,7 +152,7 @@ package object function {
           .filter(_.nullable)
           .zipWithIndex
           .map { case (a, i) =>
-            s"def arg$i = ${SQLTypeUtils.coerce(a.painless, a.out, argTypes(i), nullable = false)};"
+            s"def arg$i = ${SQLTypeUtils.coerce(a.painless, a.baseType, argTypes(i), nullable = false)};"
           }
           .mkString(" ")
 
@@ -152,7 +161,7 @@ package object function {
           if (a.nullable)
             s"arg$i"
           else
-            SQLTypeUtils.coerce(a.painless, a.out, argTypes(i), nullable = false)
+            SQLTypeUtils.coerce(a.painless, a.baseType, argTypes(i), nullable = false)
         }
 
       if (args.exists(_.nullable))

@@ -89,7 +89,7 @@ object SQLTypeUtils {
 
   def coerce(in: PainlessScript, to: SQLType): String = {
     val expr = in.painless
-    val from = in.out
+    val from = in.baseType
     val nullable = in.nullable
     coerce(expr, from, to, nullable)
   }
@@ -114,14 +114,46 @@ object SQLTypeUtils {
           s"((double) $expr)"
 
         // ---- NUMERIC <-> TEMPORAL ----
-        case (SQLTypes.BigInt, SQLTypes.Timestamp) =>
+        case (SQLTypes.BigInt, SQLTypes.Timestamp | SQLTypes.DateTime) =>
           s"Instant.ofEpochMilli($expr).atZone(ZoneId.of('Z'))"
-        case (SQLTypes.Timestamp, SQLTypes.BigInt) =>
+        case (SQLTypes.Timestamp | SQLTypes.DateTime, SQLTypes.BigInt) =>
           s"$expr.toInstant().toEpochMilli()"
 
-        // ---- BOOLEEN -> NUMERIC ----
-        case (SQLTypes.Boolean, SQLTypes.Numeric) =>
+        // ---- BOOLEAN -> NUMERIC ----
+        case (SQLTypes.Boolean, SQLTypes.Numeric | SQLTypes.Int) =>
           s"($expr ? 1 : 0)"
+        case (SQLTypes.Boolean, SQLTypes.BigInt) =>
+          s"($expr ? 1L : 0L)"
+        case (SQLTypes.Boolean, SQLTypes.Double) =>
+          s"($expr ? 1.0 : 0.0)"
+        case (SQLTypes.Boolean, SQLTypes.Real) =>
+          s"($expr ? 1.0f : 0.0f)"
+        case (SQLTypes.Boolean, SQLTypes.SmallInt) =>
+          s"(short)($expr ? 1 : 0)"
+        case (SQLTypes.Boolean, SQLTypes.TinyInt) =>
+          s"(byte)($expr ? 1 : 0)"
+
+        // ---- VARCHAR -> TEMPORAL ----
+        case (SQLTypes.Varchar, SQLTypes.Int) =>
+          s"Integer.parseInt($expr).intValue()"
+        case (SQLTypes.Varchar, SQLTypes.BigInt) =>
+          s"Long.parseLong($expr).longValue()"
+        case (SQLTypes.Varchar, SQLTypes.Double) =>
+          s"Double.parseDouble($expr).doubleValue()"
+        case (SQLTypes.Varchar, SQLTypes.Real) =>
+          s"Float.parseFloat($expr).floatValue()"
+        case (SQLTypes.Varchar, SQLTypes.SmallInt) =>
+          s"Short.parseShort($expr).shortValue()"
+        case (SQLTypes.Varchar, SQLTypes.TinyInt) =>
+          s"Byte.parseByte($expr).byteValue()"
+
+        // ---- VARCHAR -> DATE ----
+        case (SQLTypes.Varchar, SQLTypes.Date) =>
+          s"LocalDate.parse($expr, DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
+        case (SQLTypes.Varchar, SQLTypes.Time) =>
+          s"LocalTime.parse($expr, DateTimeFormatter.ofPattern('HH:mm:ss'))"
+        case (SQLTypes.Varchar, SQLTypes.DateTime | SQLTypes.Timestamp) =>
+          s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)"
 
         // ---- IDENTITY ----
         case (_, _) if from == to =>

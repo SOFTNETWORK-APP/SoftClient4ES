@@ -1836,7 +1836,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(cast)
+      SQLQuery(conversion)
     val query = select.query
     println(query)
     query shouldBe
@@ -1848,7 +1848,31 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "{ def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from) ? null : arg0));if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS); }.toInstant().toEpochMilli()"
+        |        "source": "try { def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from) ? null : arg0));if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS).toInstant().toEpochMilli(); } catch (Exception e) { return null; }"
+        |      }
+        |    },
+        |    "c2": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "ZonedDateTime.now(ZoneId.of('Z')).toInstant().toEpochMilli()"
+        |      }
+        |    },
+        |    "c3": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()"
+        |      }
+        |    },
+        |    "c4": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "Long.parseLong(\"125\").longValue()"
+        |      }
+        |    },
+        |    "c5": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
         |      }
         |    }
         |  },
@@ -1878,6 +1902,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("ChronoUnit", " ChronoUnit")
         .replaceAll(",LocalDate", ", LocalDate")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll("try\\{", "try {")
+        .replaceAll("\\}catch", "} catch ")
+        .replaceAll("Exceptione\\)", "Exception e) ")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
   }
 
   it should "handle case function as script field" in {

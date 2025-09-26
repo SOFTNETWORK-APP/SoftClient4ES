@@ -14,7 +14,7 @@ package object cond {
   case object IsNull extends Expr("ISNULL") with ConditionalOp
   case object IsNotNull extends Expr("ISNOTNULL") with ConditionalOp
   case object NullIf extends Expr("NULLIF") with ConditionalOp
-  case object Exists extends Expr("EXISTS") with ConditionalOp
+  // case object Exists extends Expr("EXISTS") with ConditionalOp
 
   case object Case extends Expr("CASE") with ConditionalOp
 
@@ -89,7 +89,7 @@ package object cond {
     override def sql: String = s"$Coalesce(${values.map(_.sql).mkString(", ")})"
 
     // Reprend l’idée de SQLValues mais pour n’importe quel token
-    override def out: SQLType = SQLTypeUtils.leastCommonSuperType(values.map(_.out).distinct)
+    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(values.map(_.out).distinct)
 
     override def applyType(in: SQLType): SQLType = out
 
@@ -129,7 +129,7 @@ package object cond {
 
     override def inputType: SQLAny = SQLTypes.Any
 
-    override def out: SQLType = expr1.out
+    override def baseType: SQLType = expr1.out
 
     override def applyType(in: SQLType): SQLType = out
 
@@ -160,7 +160,7 @@ package object cond {
       s"$exprPart $whenThen$elsePart $END"
     }
 
-    override def out: SQLType =
+    override def baseType: SQLType =
       SQLTypeUtils.leastCommonSuperType(
         conditions.map(_._2.out) ++ default.map(_.out).toList
       )
@@ -209,12 +209,12 @@ package object cond {
                   case i: Identifier if i.name == name && cond.isInstanceOf[Identifier] =>
                     i.nullable = false
                     if (cond.asInstanceOf[Identifier].functions.isEmpty)
-                      s"def val$idx = $c; if (expr == val$idx) return ${SQLTypeUtils.coerce(i.toPainless(s"val$idx"), i.out, out, nullable = false)};"
+                      s"def val$idx = $c; if (expr == val$idx) return ${SQLTypeUtils.coerce(i.toPainless(s"val$idx"), i.baseType, out, nullable = false)};"
                     else {
                       cond.asInstanceOf[Identifier].nullable = false
                       s"def e$idx = ${i.checkNotNull}; def val$idx = e$idx != null ? ${SQLTypeUtils
-                        .coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.out, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
-                        .coerce(i.toPainless(s"e$idx"), i.out, out, nullable = false)};"
+                        .coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.baseType, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
+                        .coerce(i.toPainless(s"e$idx"), i.baseType, out, nullable = false)};"
                     }
                   case _ =>
                     s"if (expr == $c) return ${SQLTypeUtils.coerce(res, out)};"
@@ -226,7 +226,7 @@ package object cond {
                 res match {
                   case i: Identifier if i.name == name && cond.isInstanceOf[Expression] =>
                     i.nullable = false
-                    SQLTypeUtils.coerce(i.toPainless("left"), i.out, out, nullable = false)
+                    SQLTypeUtils.coerce(i.toPainless("left"), i.baseType, out, nullable = false)
                   case _ => SQLTypeUtils.coerce(res, out)
                 }
               s"if ($c) return $r;"

@@ -48,9 +48,9 @@ package object time {
 
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
-        s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.out, out, nullable = false)}$painless : null)"
+        s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.baseType, out, nullable = false)}$painless : null)"
       else
-        s"${SQLTypeUtils.coerce(base, expr.out, out, nullable = expr.nullable)}$painless"
+        s"${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = expr.nullable)}$painless"
   }
 
   sealed trait AddInterval[IO <: SQLTemporal] extends IntervalFunction[IO] {
@@ -73,15 +73,15 @@ package object time {
 
   sealed trait DateTimeFunction extends Function {
     def now: String = "ZonedDateTime.now(ZoneId.of('Z'))"
-    override def out: SQLType = SQLTypes.DateTime
+    override def baseType: SQLType = SQLTypes.DateTime
   }
 
   sealed trait DateFunction extends DateTimeFunction {
-    override def out: SQLType = SQLTypes.Date
+    override def baseType: SQLType = SQLTypes.Date
   }
 
   sealed trait TimeFunction extends DateTimeFunction {
-    override def out: SQLType = SQLTypes.Time
+    override def baseType: SQLType = SQLTypes.Time
   }
 
   sealed trait SystemFunction extends Function {
@@ -94,44 +94,63 @@ package object time {
       extends DateTimeFunction
       with CurrentFunction
       with MathScript {
-    override def painless: String = now
+    override def painless: String =
+      SQLTypeUtils.coerce(now, this.baseType, this.out, nullable = false)
     override def script: String = "now"
   }
 
   sealed trait CurrentDateFunction extends DateFunction with CurrentFunction with MathScript {
-    override def painless: String = s"$now.toLocalDate()"
+    override def painless: String =
+      SQLTypeUtils.coerce(s"$now.toLocalDate()", this.baseType, this.out, nullable = false)
     override def script: String = "now"
   }
 
   sealed trait CurrentTimeFunction extends TimeFunction with CurrentFunction {
-    override def painless: String = s"$now.toLocalTime()"
+    override def painless: String =
+      SQLTypeUtils.coerce(s"$now.toLocalTime()", this.baseType, this.out, nullable = false)
   }
 
-  case object CurrentDate extends Expr("CURRENT_DATE") with CurrentDateFunction {
+  case object CurrentDate extends Expr("CURRENT_DATE") with TokenRegex {
     override lazy val words: List[String] = List(sql, "CURDATE")
   }
 
-  case object CurentDateWithParens extends Expr("CURRENT_DATE()") with CurrentDateFunction
+  case class CurrentDate(parens: Boolean = false) extends CurrentDateFunction {
+    override def sql: String =
+      if (parens) s"$CurrentDate()"
+      else CurrentDate.sql
+  }
 
-  case object CurrentTime extends Expr("CURRENT_TIME") with CurrentTimeFunction {
+  case object CurrentTime extends Expr("CURRENT_TIME") with TokenRegex {
     override lazy val words: List[String] = List(sql, "CURTIME")
   }
 
-  case object CurrentTimeWithParens extends Expr("CURRENT_TIME()") with CurrentTimeFunction
+  case class CurrentTime(parens: Boolean = false) extends CurrentTimeFunction {
+    override def sql: String =
+      if (parens) s"$CurrentTime()"
+      else CurrentTime.sql
+  }
 
-  case object CurrentTimestamp extends Expr("CURRENT_TIMESTAMP") with CurrentDateTimeFunction
+  case object CurrentTimestamp extends Expr("CURRENT_TIMESTAMP") with TokenRegex
 
-  case object CurrentTimestampWithParens
-      extends Expr("CURRENT_TIMESTAMP()")
-      with CurrentDateTimeFunction
+  case class CurrentTimestamp(parens: Boolean = false) extends CurrentDateTimeFunction {
+    override def sql: String =
+      if (parens) s"$CurrentTimestamp()"
+      else CurrentTimestamp.sql
+  }
 
-  case object Now extends Expr("NOW") with CurrentDateTimeFunction
+  case object Now extends Expr("NOW") with TokenRegex
 
-  case object NowWithParens extends Expr("NOW()") with CurrentDateTimeFunction
+  case class Now(parens: Boolean = false) extends CurrentDateTimeFunction {
+    override def sql: String = if (parens) s"$Now()" else Now.sql
+  }
 
-  case object Today extends Expr("TODAY") with CurrentDateFunction
+  case object Today extends Expr("TODAY") with TokenRegex
 
-  case object TodayWithParens extends Expr("TODAY()") with CurrentDateFunction
+  case class Today(parens: Boolean = false) extends CurrentDateFunction {
+    override def sql: String =
+      if (parens) s"$Today()"
+      else Today.sql
+  }
 
   case object DateTrunc extends Expr("DATE_TRUNC") with TokenRegex with PainlessScript {
     override def painless: String = ".truncatedTo"
@@ -240,7 +259,7 @@ package object time {
     }
 
     override def toPainless(base: String, idx: Int): String = {
-      val arg = SQLTypeUtils.coerce(base, identifier.out, SQLTypes.Date, nullable = false)
+      val arg = SQLTypeUtils.coerce(base, identifier.baseType, SQLTypes.Date, nullable = false)
       if (nullable && base.nonEmpty)
         s"(def e$idx = $arg; e$idx != null ? ${toPainlessCall(List(s"e$idx"))} : null)"
       else

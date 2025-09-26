@@ -49,13 +49,13 @@ package object math {
       }
 
     def identifierWithArithmeticExpression: Parser[Identifier] =
-      arithmeticExpressionLevel2 ^^ {
+      (arithmeticExpressionLevel2 ^^ {
         case af: ArithmeticExpression  => Identifier(af)
         case id: Identifier            => id
         case f: FunctionWithIdentifier => f.identifier
         case f: Function               => Identifier(f)
         case other                     => throw new Exception(s"Unexpected expression $other")
-      }
+      }) >> castOperator
 
   }
 }

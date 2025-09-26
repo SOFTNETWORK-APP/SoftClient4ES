@@ -12,6 +12,9 @@ package object string {
   case object Concat extends Expr("CONCAT") with StringOp {
     override def painless: String = " + "
   }
+  case object Pipe extends Expr("\\|\\|") with StringOp {
+    override def painless: String = " + "
+  }
   case object Lower extends Expr("LOWER") with StringOp
   case object Upper extends Expr("UPPER") with StringOp
   case object Trim extends Expr("TRIM") with StringOp
@@ -100,7 +103,7 @@ package object string {
       else
         callArgs.zipWithIndex
           .map { case (arg, idx) =>
-            SQLTypeUtils.coerce(arg, values(idx).out, SQLTypes.Varchar, nullable = false)
+            SQLTypeUtils.coerce(arg, values(idx).baseType, SQLTypes.Varchar, nullable = false)
           }
           .mkString(stringOp.painless)
     }

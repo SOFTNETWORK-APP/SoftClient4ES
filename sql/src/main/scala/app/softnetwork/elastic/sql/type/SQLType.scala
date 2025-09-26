@@ -1,6 +1,9 @@
 package app.softnetwork.elastic.sql.`type`
 
-sealed trait SQLType { def typeId: String }
+sealed trait SQLType {
+  def typeId: String
+  override def toString: String = typeId
+}
 
 trait SQLAny extends SQLType
 

@@ -21,25 +21,25 @@ package object time {
 
     def current_date: PackratParser[CurrentFunction] =
       CurrentDate.regex ~ parens.? ^^ { case _ ~ p =>
-        if (p.isDefined) CurentDateWithParens else CurrentDate
+        CurrentDate(p.isDefined)
       }
 
     def current_time: PackratParser[CurrentFunction] =
       CurrentTime.regex ~ parens.? ^^ { case _ ~ p =>
-        if (p.isDefined) CurrentTimeWithParens else CurrentTime
+        CurrentTime(p.isDefined)
       }
 
     def current_timestamp: PackratParser[CurrentFunction] =
       CurrentTimestamp.regex ~ parens.? ^^ { case _ ~ p =>
-        if (p.isDefined) CurrentTimestampWithParens else CurrentTimestamp
+        CurrentTimestamp(p.isDefined)
       }
 
     def now: PackratParser[CurrentFunction] = Now.regex ~ parens.? ^^ { case _ ~ p =>
-      if (p.isDefined) NowWithParens else Now
+      Now(p.isDefined)
     }
 
     def today: PackratParser[CurrentFunction] = Today.regex ~ parens.? ^^ { case _ ~ p =>
-      if (p.isDefined) TodayWithParens else Today
+      Today(p.isDefined)
     }
 
     def systemFunctions: PackratParser[CurrentFunction] =

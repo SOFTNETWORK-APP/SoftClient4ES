@@ -30,7 +30,15 @@ package object sql {
     override def toString: String = sql
     def baseType: SQLType = SQLTypes.Any
     def in: SQLType = baseType
-    def out: SQLType = baseType
+    private[this] var _out: SQLType = SQLTypes.Null
+    def out: SQLType = if (_out == SQLTypes.Null) baseType else _out
+    def out_=(t: SQLType): Unit = {
+      _out = t
+    }
+    def cast(targetType: SQLType): SQLType = {
+      this.out = targetType
+      this.out
+    }
     def system: Boolean = false
     def nullable: Boolean = !system
   }
@@ -74,12 +82,18 @@ package object sql {
           case _               => values.headOption
         }
     }
-    override def painless: String = value match {
-      case s: String  => s""""$s""""
-      case b: Boolean => b.toString
-      case n: Number  => n.toString
-      case _          => value.toString
-    }
+    override def painless: String =
+      SQLTypeUtils.coerce(
+        value match {
+          case s: String  => s""""$s""""
+          case b: Boolean => b.toString
+          case n: Number  => n.toString
+          case _          => value.toString
+        },
+        this.baseType,
+        this.out,
+        nullable = false
+      )
 
     override def nullable: Boolean = false
   }
@@ -88,17 +102,17 @@ package object sql {
     override def sql: String = "NULL"
     override def painless: String = "null"
     override def nullable: Boolean = true
-    override def out: SQLType = SQLTypes.Null
+    override def baseType: SQLType = SQLTypes.Null
   }
 
   case class BooleanValue(override val value: Boolean) extends Value[Boolean](value) {
     override def sql: String = value.toString
-    override def out: SQLType = SQLTypes.Boolean
+    override def baseType: SQLType = SQLTypes.Boolean
   }
 
   case class CharValue(override val value: Char) extends Value[Char](value) {
     override def sql: String = s"""'$value'"""
-    override def out: SQLType = SQLTypes.Char
+    override def baseType: SQLType = SQLTypes.Char
   }
 
   case class StringValue(override val value: String) extends Value[String](value) {
@@ -127,7 +141,7 @@ package object sql {
         case _                  => super.choose(values, operator, separator)
       }
     }
-    override def out: SQLType = SQLTypes.Varchar
+    override def baseType: SQLType = SQLTypes.Varchar
   }
 
   sealed abstract class NumericValue[T: Numeric](override val value: T)(implicit
@@ -161,43 +175,43 @@ package object sql {
     def ne: Seq[T] => Boolean = {
       _.forall { _ != value }
     }
-    override def out: SQLNumeric = SQLTypes.Numeric
+    override def baseType: SQLNumeric = SQLTypes.Numeric
   }
 
   case class ByteValue(override val value: Byte) extends NumericValue[Byte](value) {
-    override def out: SQLNumeric = SQLTypes.TinyInt
+    override def baseType: SQLNumeric = SQLTypes.TinyInt
   }
 
   case class ShortValue(override val value: Short) extends NumericValue[Short](value) {
-    override def out: SQLNumeric = SQLTypes.SmallInt
+    override def baseType: SQLNumeric = SQLTypes.SmallInt
   }
 
   case class IntValue(override val value: Int) extends NumericValue[Int](value) {
-    override def out: SQLNumeric = SQLTypes.Int
+    override def baseType: SQLNumeric = SQLTypes.Int
   }
 
   case class LongValue(override val value: Long) extends NumericValue[Long](value) {
-    override def out: SQLNumeric = SQLTypes.BigInt
+    override def baseType: SQLNumeric = SQLTypes.BigInt
   }
 
   case class FloatValue(override val value: Float) extends NumericValue[Float](value) {
-    override def out: SQLNumeric = SQLTypes.Real
+    override def baseType: SQLNumeric = SQLTypes.Real
   }
 
   case class DoubleValue(override val value: Double) extends NumericValue[Double](value) {
-    override def out: SQLNumeric = SQLTypes.Double
+    override def baseType: SQLNumeric = SQLTypes.Double
   }
 
   case object PiValue extends Value[Double](Math.PI) with TokenRegex {
     override def sql: String = "PI"
     override def painless: String = "Math.PI"
-    override def out: SQLNumeric = SQLTypes.Double
+    override def baseType: SQLNumeric = SQLTypes.Double
   }
 
   case object EValue extends Value[Double](Math.E) with TokenRegex {
     override def sql: String = "E"
     override def painless: String = "Math.E"
-    override def out: SQLNumeric = SQLTypes.Double
+    override def baseType: SQLNumeric = SQLTypes.Double
   }
 
   sealed abstract class FromTo[+T](val from: Value[T], val to: Value[T]) extends Token {
@@ -241,7 +255,7 @@ package object sql {
     override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Any)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
   }
 
   case class StringValues(override val values: Seq[StringValue])
@@ -252,7 +266,7 @@ package object sql {
     def ne: Seq[String] => Boolean = {
       _.forall { s => innerValues.forall(!_.contentEquals(s)) }
     }
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Varchar)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Varchar)
   }
 
   class NumericValues[R: TypeTag](override val values: Seq[NumericValue[R]])
@@ -263,34 +277,34 @@ package object sql {
     def ne: Seq[R] => Boolean = {
       _.forall { n => !innerValues.contains(n) }
     }
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Numeric)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Numeric)
   }
 
   case class ByteValues(override val values: Seq[ByteValue]) extends NumericValues[Byte](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.TinyInt)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.TinyInt)
   }
 
   case class ShortValues(override val values: Seq[ShortValue])
       extends NumericValues[Short](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.SmallInt)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.SmallInt)
   }
 
   case class IntValues(override val values: Seq[IntValue]) extends NumericValues[Int](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Int)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Int)
   }
 
   case class LongValues(override val values: Seq[LongValue]) extends NumericValues[Long](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.BigInt)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.BigInt)
   }
 
   case class FloatValues(override val values: Seq[FloatValue])
       extends NumericValues[Float](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Real)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Real)
   }
 
   case class DoubleValues(override val values: Seq[DoubleValue])
       extends NumericValues[Double](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Double)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Double)
   }
 
   def choose[T](

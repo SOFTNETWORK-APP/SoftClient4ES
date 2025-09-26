@@ -93,11 +93,11 @@ package object time {
       add_interval | substract_interval
 
     def identifierWithIntervalFunction: PackratParser[Identifier] =
-      (identifierWithTransformation |
+      ((identifierWithTransformation |
       identifierWithFunction |
       identifier) ~ intervalFunction ^^ { case i ~ f =>
         i.withFunctions(f +: i.functions)
-      }
+      }) >> castOperator
 
   }
 }

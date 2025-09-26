@@ -144,8 +144,8 @@ object Queries {
     "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
   val nullif: String =
     "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
-  val cast: String =
-    "SELECT CAST(COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd')), CURRENT_DATE - INTERVAL 2 HOUR) BIGINT) AS c, identifier FROM Table"
+  val conversion: String =
+    "SELECT TRY_CAST(COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd')), CURRENT_DATE - INTERVAL 2 HOUR) BIGINT) AS c, CONVERT(CURRENT_TIMESTAMP, BIGINT) AS c2, CURRENT_TIMESTAMP::DATE AS c3, '125'::BIGINT AS c4, '2025-09-11'::DATE AS c5, identifier FROM Table"
   val allCasts =
     "SELECT CAST(identifier AS int) AS c1, CAST(identifier AS bigint) AS c2, CAST(identifier AS double) AS c3, CAST(identifier AS real) AS c4, CAST(identifier AS boolean) AS c5, CAST(identifier AS char) AS c6, CAST(identifier AS varchar) AS c7, CAST(createdAt AS date) AS c8, CAST(createdAt AS time) AS c9, CAST(createdAt AS datetime) AS c10, CAST(createdAt AS timestamp) AS c11, CAST(identifier AS smallint) AS c12, CAST(identifier AS tinyint) AS c13 FROM Table"
   val caseWhen: String =
@@ -745,11 +745,11 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(nullif) shouldBe true
   }
 
-  it should "parse CAST function" in {
-    val result = Parser(cast)
+  it should "parse conversion function" in {
+    val result = Parser(conversion)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("") shouldBe cast
+      .getOrElse("") shouldBe conversion
   }
 
   it should "parse all casts function" in {
