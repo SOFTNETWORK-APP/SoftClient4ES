@@ -177,37 +177,37 @@ package object time {
     import TimeField._
 
     def year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      YEAR.regex ^^ (_ => Year)
+      YEAR.regex ^^ (_ => new Year)
     def month_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      MONTH_OF_YEAR.regex ^^ (_ => MonthOfYear)
+      MONTH_OF_YEAR.regex ^^ (_ => new MonthOfYear)
     def day_of_month_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      DAY_OF_MONTH.regex ^^ (_ => DayOfMonth)
+      DAY_OF_MONTH.regex ^^ (_ => new DayOfMonth)
     def day_of_week_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      DAY_OF_WEEK.regex ^^ (_ => DayOfWeek)
+      DAY_OF_WEEK.regex ^^ (_ => new DayOfWeek)
     def day_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      DAY_OF_YEAR.regex ^^ (_ => DayOfYear)
+      DAY_OF_YEAR.regex ^^ (_ => new DayOfYear)
     def hour_of_day_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      HOUR_OF_DAY.regex ^^ (_ => HourOfDay)
+      HOUR_OF_DAY.regex ^^ (_ => new HourOfDay)
     def minute_of_hour_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      MINUTE_OF_HOUR.regex ^^ (_ => MinuteOfHour)
+      MINUTE_OF_HOUR.regex ^^ (_ => new MinuteOfHour)
     def second_of_minute_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      SECOND_OF_MINUTE.regex ^^ (_ => SecondOfMinute)
+      SECOND_OF_MINUTE.regex ^^ (_ => new SecondOfMinute)
     def nano_of_second_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      NANO_OF_SECOND.regex ^^ (_ => NanoOfSecond)
+      NANO_OF_SECOND.regex ^^ (_ => new NanoOfSecond)
     def micro_of_second_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      MICRO_OF_SECOND.regex ^^ (_ => MicroOfSecond)
+      MICRO_OF_SECOND.regex ^^ (_ => new MicroOfSecond)
     def milli_of_second_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      MILLI_OF_SECOND.regex ^^ (_ => MilliOfSecond)
+      MILLI_OF_SECOND.regex ^^ (_ => new MilliOfSecond)
     def epoch_day_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      EPOCH_DAY.regex ^^ (_ => EpochDay)
+      EPOCH_DAY.regex ^^ (_ => new EpochDay)
     def offset_seconds_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      OFFSET_SECONDS.regex ^^ (_ => OffsetSeconds)
+      OFFSET_SECONDS.regex ^^ (_ => new OffsetSeconds)
 
     def quarter_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      IsoField.QUARTER_OF_YEAR.regex ^^ (_ => QuarterOfYear)
+      IsoField.QUARTER_OF_YEAR.regex ^^ (_ => new QuarterOfYear)
 
     def week_of_week_based_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      IsoField.WEEK_OF_WEEK_BASED_YEAR.regex ^^ (_ => WeekOfWeekBasedYear)
+      IsoField.WEEK_OF_WEEK_BASED_YEAR.regex ^^ (_ => new WeekOfWeekBasedYear)
 
     def extractors: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       year_tr |

@@ -197,42 +197,42 @@ package object time {
 
   import TimeField._
 
-  sealed trait TimeFieldExtract extends Extract {
+  sealed abstract class TimeFieldExtract(field: TimeField) extends Extract(field) {
     override val sql: String = field.sql
     override def toSQL(base: String): String = s"$sql($base)"
   }
 
-  object Year extends Extract(YEAR) with TimeFieldExtract
+  class Year extends TimeFieldExtract(YEAR)
 
-  object MonthOfYear extends Extract(MONTH_OF_YEAR) with TimeFieldExtract
+  class MonthOfYear extends TimeFieldExtract(MONTH_OF_YEAR)
 
-  object DayOfMonth extends Extract(DAY_OF_MONTH) with TimeFieldExtract
+  class DayOfMonth extends TimeFieldExtract(DAY_OF_MONTH)
 
-  object DayOfWeek extends Extract(DAY_OF_WEEK) with TimeFieldExtract
+  class DayOfWeek extends TimeFieldExtract(DAY_OF_WEEK)
 
-  object DayOfYear extends Extract(DAY_OF_YEAR) with TimeFieldExtract
+  class DayOfYear extends TimeFieldExtract(DAY_OF_YEAR)
 
-  object HourOfDay extends Extract(HOUR_OF_DAY) with TimeFieldExtract
+  class HourOfDay extends TimeFieldExtract(HOUR_OF_DAY)
 
-  object MinuteOfHour extends Extract(MINUTE_OF_HOUR) with TimeFieldExtract
+  class MinuteOfHour extends TimeFieldExtract(MINUTE_OF_HOUR)
 
-  object SecondOfMinute extends Extract(SECOND_OF_MINUTE) with TimeFieldExtract
+  class SecondOfMinute extends TimeFieldExtract(SECOND_OF_MINUTE)
 
-  object NanoOfSecond extends Extract(NANO_OF_SECOND) with TimeFieldExtract
+  class NanoOfSecond extends TimeFieldExtract(NANO_OF_SECOND)
 
-  object MicroOfSecond extends Extract(MICRO_OF_SECOND) with TimeFieldExtract
+  class MicroOfSecond extends TimeFieldExtract(MICRO_OF_SECOND)
 
-  object MilliOfSecond extends Extract(MILLI_OF_SECOND) with TimeFieldExtract
+  class MilliOfSecond extends TimeFieldExtract(MILLI_OF_SECOND)
 
-  object EpochDay extends Extract(EPOCH_DAY) with TimeFieldExtract
+  class EpochDay extends TimeFieldExtract(EPOCH_DAY)
 
-  object OffsetSeconds extends Extract(OFFSET_SECONDS) with TimeFieldExtract
+  class OffsetSeconds extends TimeFieldExtract(OFFSET_SECONDS)
 
   import IsoField._
 
-  object QuarterOfYear extends Extract(QUARTER_OF_YEAR) with TimeFieldExtract
+  class QuarterOfYear extends TimeFieldExtract(QUARTER_OF_YEAR)
 
-  object WeekOfWeekBasedYear extends Extract(WEEK_OF_WEEK_BASED_YEAR) with TimeFieldExtract
+  class WeekOfWeekBasedYear extends TimeFieldExtract(WEEK_OF_WEEK_BASED_YEAR)
 
   case object LastDayOfMonth extends Expr("LAST_DAY") with TokenRegex with PainlessScript {
     override def painless: String = ".withDayOfMonth"

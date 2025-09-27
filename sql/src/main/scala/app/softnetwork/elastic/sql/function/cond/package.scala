@@ -80,7 +80,7 @@ package object cond {
 
     override def args: List[PainlessScript] = values
 
-    override def outputType: SQLType = SQLTypeUtils.leastCommonSuperType(args.map(_.out))
+    override def outputType: SQLType = SQLTypeUtils.leastCommonSuperType(args.map(_.baseType))
 
     override def identifier: Identifier = Identifier()
 
@@ -89,7 +89,8 @@ package object cond {
     override def sql: String = s"$Coalesce(${values.map(_.sql).mkString(", ")})"
 
     // Reprend l’idée de SQLValues mais pour n’importe quel token
-    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(values.map(_.out).distinct)
+    override def baseType: SQLType =
+      SQLTypeUtils.leastCommonSuperType(values.map(_.baseType).distinct)
 
     override def applyType(in: SQLType): SQLType = out
 
@@ -162,10 +163,10 @@ package object cond {
 
     override def baseType: SQLType =
       SQLTypeUtils.leastCommonSuperType(
-        conditions.map(_._2.out) ++ default.map(_.out).toList
+        conditions.map(_._2.baseType) ++ default.map(_.baseType).toList
       )
 
-    override def applyType(in: SQLType): SQLType = out
+    override def applyType(in: SQLType): SQLType = baseType
 
     override def validate(): Either[String, Unit] = {
       if (conditions.isEmpty) Left("CASE WHEN requires at least one condition")

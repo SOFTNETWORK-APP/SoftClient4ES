@@ -29,7 +29,7 @@ case class ArithmeticExpression(
   }
 
   override def baseType: SQLType =
-    SQLTypeUtils.leastCommonSuperType(List(left.out, right.out))
+    SQLTypeUtils.leastCommonSuperType(List(left.baseType, right.baseType))
 
   override def validate(): Either[String, Unit] = {
     for {

@@ -24,12 +24,12 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
     Extract(TimeField.DAY_OF_MONTH),
     DateFormat(Identifier(), "yyyy-MM-dd"),
     DateTimeFormat(Identifier(), "yyyy-MM-dd HH:mm:ss"),
-    Year,
-    MonthOfYear,
-    DayOfYear,
-    HourOfDay,
-    MinuteOfHour,
-    SecondOfMinute
+    new Year,
+    new MonthOfYear,
+    new DayOfYear,
+    new HourOfDay,
+    new MinuteOfHour,
+    new SecondOfMinute
   )
 
   // Fonction pour chaîner une séquence de transformations en vérifiant les types
