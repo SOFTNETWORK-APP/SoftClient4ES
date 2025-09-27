@@ -61,7 +61,7 @@ object Queries {
   val isNull = "SELECT * FROM Table WHERE identifier is null"
   val isNotNull = "SELECT * FROM Table WHERE identifier is NOT null"
   val geoDistanceCriteria =
-    "SELECT * FROM Table WHERE distance(profile.location,(-70.0,40.0)) <= '5km'"
+    "SELECT * FROM Table WHERE ST_DISTANCE(profile.location, POINT(-70.0, 40.0)) <= '5km'"
   val except = "SELECT * except(col1,col2) FROM Table"
   val matchCriteria =
     "SELECT * FROM Table WHERE match (identifier1,identifier2,identifier3) against ('value')"
@@ -173,6 +173,10 @@ object Queries {
 
   val extractors: String =
     "SELECT YEAR(createdAt) AS y, MONTH(createdAt) AS m, WEEKDAY(createdAt) AS wd, YEARDAY(createdAt) AS yd, DAY(createdAt) AS d, HOUR(createdAt) AS h, MINUTE(createdAt) AS minutes, SECOND(createdAt) AS s, NANOSECOND(createdAt) AS nano, MICROSECOND(createdAt) AS micro, MILLISECOND(createdAt) AS milli, EPOCHDAY(createdAt) AS epoch, OFFSET(createdAt) AS off, WEEK(createdAt) AS w, QUARTER(createdAt) AS q FROM Table"
+
+  val geoDistance =
+    "SELECT ST_DISTANCE(POINT(-70.0, 40.0), toLocation) AS d1, ST_DISTANCE(fromLocation, POINT(-70.0, 40.0)) AS d2, ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) AS d3 FROM Table"
+
 }
 
 /** Created by smanciot on 15/02/17.
@@ -510,8 +514,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(geoDistanceCriteria)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(geoDistanceCriteria) shouldBe true
+      .getOrElse("") shouldBe geoDistanceCriteria
   }
 
   it should "parse EXCEPT fields" in {
@@ -827,4 +830,10 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .getOrElse("") shouldBe extractors
   }
 
+  it should "parse geo distance field" in {
+    val result = Parser(geoDistance)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe geoDistance
+  }
 }

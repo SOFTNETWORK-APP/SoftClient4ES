@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
-import app.softnetwork.elastic.sql.function.geo.Distance
+import app.softnetwork.elastic.sql.function.geo.{Distance, Point}
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql._
@@ -443,10 +443,10 @@ case class BetweenExpr[+T](
 case class ElasticGeoDistance(
   identifier: Identifier,
   distance: StringValue,
-  lat: DoubleValue,
-  lon: DoubleValue
+  point: Point
 ) extends Expression {
-  override def sql = s"$Distance($identifier,($lat,$lon)) $operator $distance"
+  override def sql =
+    s"$Distance($identifier, POINT(${point.lat}, ${point.lon})) $operator $distance"
   override val functions: List[Function] = List(Distance)
   override def operator: Operator = LE
   override def update(request: SQLSearchRequest): ElasticGeoDistance =

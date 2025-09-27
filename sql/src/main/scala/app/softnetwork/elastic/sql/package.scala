@@ -48,6 +48,10 @@ package object sql {
     def nullValue: String = "null"
   }
 
+  trait PainlessParams extends PainlessScript {
+    def params: Map[String, Any]
+  }
+
   trait MathScript extends Token {
     def script: String
   }

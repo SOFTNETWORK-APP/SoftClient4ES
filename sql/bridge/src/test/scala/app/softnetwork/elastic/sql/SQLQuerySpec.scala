@@ -632,8 +632,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |    blockedCustomers not like "%uuid%" AND
            |    NOT receiptOfOrdersDisabled=true AND
            |    (
-           |      distance(pickup.location,(0.0,0.0)) <= "7000m" OR
-           |      distance(withdrawals.location,(0.0,0.0)) <= "7000m"
+           |      distance(pickup.location, POINT(0.0, 0.0)) <= "7000m" OR
+           |      distance(withdrawals.location, POINT(0.0, 0.0)) <= "7000m"
            |    )
            |  )
            |GROUP BY
@@ -2816,4 +2816,85 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("\\|\\|", " || ")
         .replaceAll("(\\d)=", "$1 = ")
   }
+
+
+  it should "handle geo distance as script field" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(geoDistance)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "script_fields": {
+        |    "d1": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def arg0 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+        |        "params": {
+        |          "lat": -70.0,
+        |          "lon": 40.0
+        |        }
+        |      }
+        |    },
+        |    "d2": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def arg0 = (!doc.containsKey('fromLocation') || doc['fromLocation'].empty ? null : doc['fromLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+        |        "params": {
+        |          "lat": -70.0,
+        |          "lon": 40.0
+        |        }
+        |      }
+        |    },
+        |    "d3": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "new GeoPoint(params.lat1, params.lon1).arcDistance(params.lat2, params.lon2)",
+        |        "params": {
+        |          "lat1": -70.0,
+        |          "lon1": 40.0,
+        |          "lat2": 0.0,
+        |          "lon2": 0.0
+        |        }
+        |      }
+        |    }
+        |  },
+        |  "_source": true
+        |}""".stripMargin
+        .replaceAll("\\s+", "")
+        .replaceAll("defv", " def v")
+        .replaceAll("defa", "def a")
+        .replaceAll("defe", "def e")
+        .replaceAll("defl", "def l")
+        .replaceAll("def_", "def _")
+        .replaceAll("=_", " = _")
+        .replaceAll(",_", ", _")
+        .replaceAll(",\\(", ", (")
+        .replaceAll("if\\(", "if (")
+        .replaceAll("=\\(", " = (")
+        .replaceAll(":\\(", " : (")
+        .replaceAll(",(\\d)", ", $1")
+        .replaceAll("\\?", " ? ")
+        .replaceAll(":null", " : null")
+        .replaceAll("null:", "null : ")
+        .replaceAll("return", " return ")
+        .replaceAll(";", "; ")
+        .replaceAll("; if", ";if")
+        .replaceAll("==", " == ")
+        .replaceAll("\\+", " + ")
+        .replaceAll("\\*", " * ")
+        .replaceAll("/", " / ")
+        .replaceAll(">", " > ")
+        .replaceAll("<", " < ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll("\\|\\|", " || ")
+        .replaceAll("(\\d)=", "$1 = ")
+        .replaceAll(",params", ", params")
+        .replaceAll("GeoPoint", " GeoPoint")
+  }
+
 }

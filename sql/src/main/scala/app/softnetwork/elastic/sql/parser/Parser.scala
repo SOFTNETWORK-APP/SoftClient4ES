@@ -109,7 +109,7 @@ trait Parser
   }
 
   def sql_functions: PackratParser[Function] =
-    aggregates | distance | date_diff | date_trunc | extractors | date_functions | datetime_functions | conditional_functions | string_functions
+    aggregates | date_diff | date_trunc | extractors | date_functions | datetime_functions | conditional_functions | string_functions
 
   private val reservedKeywords = Seq(
     "select",

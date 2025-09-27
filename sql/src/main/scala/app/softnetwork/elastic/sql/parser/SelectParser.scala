@@ -6,7 +6,7 @@ trait SelectParser {
   self: Parser with WhereParser =>
 
   def field: PackratParser[Field] =
-    (identifierWithTopHits |
+    (distance_identifier >> castOperator | identifierWithTopHits |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithAggregation |

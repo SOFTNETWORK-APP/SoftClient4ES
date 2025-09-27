@@ -107,7 +107,13 @@ package object bridge {
         _search scriptfields scriptFields.map { field =>
           scriptField(
             field.scriptName,
-            Script(script = field.painless).lang("painless").scriptType("source")
+            Script(script = field.painless)
+              .lang("painless")
+              .scriptType("source")
+              .params(field.identifier.functions.headOption match {
+                case Some(f: PainlessParams) => f.params
+                case _                       => Map.empty[String, Any]
+              })
           )
         }
     }
@@ -412,7 +418,7 @@ package object bridge {
     geoDistance: ElasticGeoDistance
   ): Query = {
     import geoDistance._
-    geoDistanceQuery(identifier.name, lat.value, lon.value) distance distance.value
+    geoDistanceQuery(identifier.name, point.lat.value, point.lon.value) distance distance.value
   }
 
   implicit def matchToQuery(

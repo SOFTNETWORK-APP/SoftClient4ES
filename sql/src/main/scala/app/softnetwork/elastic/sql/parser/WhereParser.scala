@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.{
   DoubleFromTo,
   DoubleValues,
@@ -159,8 +160,8 @@ trait WhereParser {
     }
 
   def sql_distance: PackratParser[Criteria] =
-    distance ~ start ~ identifier ~ separator ~ start ~ double ~ separator ~ double ~ end ~ end ~ le ~ literal ^^ {
-      case _ ~ _ ~ i ~ _ ~ _ ~ lat ~ _ ~ lon ~ _ ~ _ ~ _ ~ d => ElasticGeoDistance(i, d, lat, lon)
+    Distance.regex ~ start ~ identifier ~ separator ~ point ~ end ~ le ~ literal ^^ {
+      case _ ~ _ ~ i ~ _ ~ p ~ _ ~ _ ~ d => ElasticGeoDistance(i, d, p)
     }
 
   def matchCriteria: PackratParser[MatchCriteria] =
