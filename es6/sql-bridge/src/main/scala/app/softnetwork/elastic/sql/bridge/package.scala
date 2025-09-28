@@ -9,6 +9,7 @@ import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.script.Script
+import com.sksamuel.elastic4s.script.ScriptType.Source
 import com.sksamuel.elastic4s.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.searches.queries.Query
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
@@ -415,10 +416,28 @@ package object bridge {
   }
 
   implicit def geoDistanceToQuery(
-    geoDistance: ElasticGeoDistance
+    distanceCriteria: DistanceCriteria
   ): Query = {
-    import geoDistance._
-    geoDistanceQuery(identifier.name, point.lat.value, point.lon.value) distance distance.value
+    import distanceCriteria._
+    operator match {
+      case LE | LT if distance.oneIdentifier =>
+        val identifier = distance.identifiers.head
+        val point = distance.points.head
+        geoDistanceQuery(
+          identifier.name,
+          point.lat.value,
+          point.lon.value
+        ) distance geoDistance
+      case _ =>
+        scriptQuery(
+          Script(
+            script = distanceCriteria.painless,
+            lang = Some("painless"),
+            scriptType = Source,
+            params = distance.params
+          )
+        )
+    }
   }
 
   implicit def matchToQuery(

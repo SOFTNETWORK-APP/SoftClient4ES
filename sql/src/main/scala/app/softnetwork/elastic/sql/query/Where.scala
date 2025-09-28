@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
-import app.softnetwork.elastic.sql.function.geo.{Distance, Point}
+import app.softnetwork.elastic.sql.function.geo.{Distance, DistanceUnit, GeoDistance, Point}
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql._
@@ -209,10 +209,8 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
 
   def painlessValue: String = maybeValue
     .map {
-      case v: Value[_]     => v.painless
-      case v: Values[_, _] => v.painless
-      case v: Identifier   => v.painless
-      case v               => v.sql
+      case v: PainlessScript => v.painless
+      case v                 => v.sql
     }
     .getOrElse("") /*{
       operator match {
@@ -223,13 +221,8 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
 
   protected lazy val left: String = {
     val targetedType = maybeValue match {
-      case Some(v) =>
-        v match {
-          case value: Value[_]      => value.out
-          case values: Values[_, _] => values.out
-          case other                => other.out
-        }
-      case None => identifier.out
+      case Some(v) => v.out
+      case None    => identifier.out
     }
     SQLTypeUtils.coerce(identifier, targetedType)
   }
@@ -440,19 +433,23 @@ case class BetweenExpr[+T](
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class ElasticGeoDistance(
-  identifier: Identifier,
-  distance: StringValue,
-  point: Point
+case class DistanceCriteria(
+  distance: Distance,
+  operator: ComparisonOperator,
+  distanceValue: LongValue,
+  distanceUnit: DistanceUnit
 ) extends Expression {
-  override def sql =
-    s"$Distance($identifier, POINT(${point.lat}, ${point.lon})) $operator $distance"
-  override val functions: List[Function] = List(Distance)
-  override def operator: Operator = LE
-  override def update(request: SQLSearchRequest): ElasticGeoDistance =
-    this.copy(identifier = identifier.update(request))
 
-  override def maybeValue: Option[Token] = Some(distance)
+  def geoDistance: String = s"$distanceValue$distanceUnit"
+
+  override def identifier: Identifier = Identifier(distance)
+
+  override def sql = s"$distance $operator $distanceValue $distanceUnit"
+
+  override def update(request: SQLSearchRequest): DistanceCriteria =
+    this.copy(distance = distance.update(request))
+
+  override def maybeValue: Option[Token] = Some(GeoDistance(distanceValue, distanceUnit))
 
   override def maybeNot: Option[NOT.type] = None
 

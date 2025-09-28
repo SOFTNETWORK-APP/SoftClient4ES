@@ -632,8 +632,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |    blockedCustomers not like "%uuid%" AND
            |    NOT receiptOfOrdersDisabled=true AND
            |    (
-           |      distance(pickup.location, POINT(0.0, 0.0)) <= "7000m" OR
-           |      distance(withdrawals.location, POINT(0.0, 0.0)) <= "7000m"
+           |      distance(pickup.location, POINT(0.0, 0.0)) <= 7000 m OR
+           |      distance(withdrawals.location, POINT(0.0, 0.0)) <= 7000 m
            |    )
            |  )
            |GROUP BY
@@ -2836,7 +2836,53 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     query shouldBe
     """{
       |  "query": {
-      |    "match_all": {}
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "geo_distance": {
+      |            "distance": "5000km",
+      |            "toLocation": [
+      |              40.0,
+      |              -70.0
+      |            ]
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "(def arg0 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)) >= 4000000.0",
+      |              "params": {
+      |                "lat": -70.0,
+      |                "lon": 40.0
+      |              }
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "(def arg0 = (!doc.containsKey('fromLocation') || doc['fromLocation'].empty ? null : doc['fromLocation']); def arg1 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null || arg1 == null) ? null : arg0.arcDistance(arg1.lat, arg1.lon)) < 2000000.0"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "new GeoPoint(params.lat1, params.lon1).arcDistance(params.lat2, params.lon2) < 1000000.0",
+      |              "params": {
+      |                "lat1": -70.0,
+      |                "lon1": 40.0,
+      |                "lat2": 0.0,
+      |                "lon2": 0.0
+      |              }
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
       |  },
       |  "script_fields": {
       |    "d1": {
@@ -2897,7 +2943,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\+", " + ")
       .replaceAll("\\*", " * ")
       .replaceAll("/", " / ")
-      .replaceAll(">", " > ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll(">=", " >=")
       .replaceAll("<", " < ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
@@ -2905,6 +2953,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("(\\d)=", "$1 = ")
       .replaceAll(",params", ", params")
       .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
   }
 
 }

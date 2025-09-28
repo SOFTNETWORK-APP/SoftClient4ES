@@ -1,16 +1,19 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLDouble, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLDouble, SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.{
   DoubleValue,
   Expr,
   Identifier,
+  LongValue,
   PainlessParams,
   PainlessScript,
   Token,
-  TokenRegex
+  TokenRegex,
+  Updateable
 }
 import app.softnetwork.elastic.sql.operator.Operator
+import app.softnetwork.elastic.sql.query.SQLSearchRequest
 
 package object geo {
 
@@ -18,6 +21,44 @@ package object geo {
 
   case class Point(lat: DoubleValue, lon: DoubleValue) extends Token {
     override def sql: String = s"POINT($lat, $lon)"
+  }
+
+  sealed trait DistanceUnit extends TokenRegex
+
+  object DistanceUnit {
+    def convertToMeters(value: Double, unit: DistanceUnit): Double =
+      unit match {
+        case Kilometers    => value * 1000.0
+        case Meters        => value
+        case Centimeters   => value / 100.0
+        case Millimeters   => value / 1000.0
+        case Miles         => value * 1609.34
+        case Yards         => value * 0.9144
+        case Feet          => value * 0.3048
+        case Inches        => value * 0.0254
+        case NauticalMiles => value * 1852.0
+      }
+  }
+
+  sealed trait MetricUnit extends DistanceUnit
+
+  case object Kilometers extends Expr("km") with MetricUnit
+  case object Meters extends Expr("m") with MetricUnit
+  case object Centimeters extends Expr("cm") with MetricUnit
+  case object Millimeters extends Expr("mm") with MetricUnit
+
+  sealed trait ImperialUnit extends DistanceUnit
+  case object Miles extends Expr("mi") with ImperialUnit
+  case object Yards extends Expr("yd") with ImperialUnit
+  case object Feet extends Expr("ft") with ImperialUnit
+  case object Inches extends Expr("in") with ImperialUnit
+
+  case object NauticalMiles extends Expr("nmi") with DistanceUnit
+
+  case class GeoDistance(value: LongValue, unit: DistanceUnit) extends PainlessScript {
+    override def baseType: SQLType = SQLTypes.BigInt
+    override def sql: String = s"$value$unit"
+    override def painless: String = s"${DistanceUnit.convertToMeters(value.value, unit)}"
   }
 
   case object Distance extends Expr("ST_DISTANCE") with Function with Operator {
@@ -28,7 +69,13 @@ package object geo {
 
   case class Distance(from: Either[Identifier, Point], to: Either[Identifier, Point])
       extends FunctionN[SQLAny, SQLDouble]
-      with PainlessParams {
+      with PainlessParams
+      with Updateable {
+
+    override def update(request: SQLSearchRequest): Distance = this.copy(
+      from = from.fold(id => Left(id.update(request)), p => Right(p)),
+      to = to.fold(id => Left(id.update(request)), p => Right(p))
+    )
 
     override def fun: Option[PainlessScript] = Some(Distance)
 
@@ -46,7 +93,9 @@ package object geo {
       (fromId, toId)
     }
 
-    private[this] lazy val identifiers: List[Identifier] = List(fromId, toId).flatten
+    lazy val identifiers: List[Identifier] = List(fromId, toId).flatten
+
+    lazy val oneIdentifier: Boolean = identifiers.size == 1
 
     private[this] lazy val (fromPoint, toPoint) = {
       val fromPoint = from.fold(_ => None, Some(_))
@@ -54,9 +103,7 @@ package object geo {
       (fromPoint, toPoint)
     }
 
-    private[this] lazy val points: List[Point] = List(fromPoint, toPoint).flatten
-
-    private[this] lazy val oneIdentifier: Boolean = identifiers.size == 1
+    lazy val points: List[Point] = List(fromPoint, toPoint).flatten
 
     override def nullable: Boolean =
       from.fold(identity, identity).nullable || to.fold(identity, identity).nullable

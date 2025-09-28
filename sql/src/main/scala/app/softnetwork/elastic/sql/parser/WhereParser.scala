@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.function.geo.Distance
+import app.softnetwork.elastic.sql.function.geo.Meters
 import app.softnetwork.elastic.sql.{
   DoubleFromTo,
   DoubleValues,
@@ -41,8 +41,8 @@ import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
   ConditionalFunctionAsCriteria,
   Criteria,
+  DistanceCriteria,
   ElasticChild,
-  ElasticGeoDistance,
   ElasticNested,
   ElasticParent,
   ElasticRelation,
@@ -159,9 +159,9 @@ trait WhereParser {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, DoubleFromTo(from, to), n)
     }
 
-  def sql_distance: PackratParser[Criteria] =
-    Distance.regex ~ start ~ identifier ~ separator ~ point ~ end ~ le ~ literal ^^ {
-      case _ ~ _ ~ i ~ _ ~ p ~ _ ~ _ ~ d => ElasticGeoDistance(i, d, p)
+  def distanceCriteria: PackratParser[Criteria] =
+    distance ~ (ge | gt | le | lt) ~ long ~ distance_unit.? ^^ { case d ~ o ~ v ~ u =>
+      DistanceCriteria(d, o, v, u.getOrElse(Meters))
     }
 
   def matchCriteria: PackratParser[MatchCriteria] =
@@ -184,7 +184,7 @@ trait WhereParser {
     }
 
   def criteria: PackratParser[Criteria] =
-    (equality | like | rlike | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | /*coalesce | nullif |*/ sql_distance | matchCriteria | logical_criteria) ^^ (
+    (equality | like | rlike | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | /*coalesce | nullif |*/ distanceCriteria | matchCriteria | logical_criteria) ^^ (
       c => c
     )
 

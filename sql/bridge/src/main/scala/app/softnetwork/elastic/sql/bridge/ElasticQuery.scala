@@ -4,7 +4,7 @@ import app.softnetwork.elastic.sql.query.{
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
-  ElasticGeoDistance,
+  DistanceCriteria,
   ElasticMatch,
   ElasticNested,
   ElasticParent,
@@ -67,7 +67,7 @@ case class ElasticQuery(filter: ElasticFilter) {
       case isNotNull: IsNotNullExpr        => isNotNull
       case in: InExpr[_, _]                => in
       case between: BetweenExpr[_]         => between
-      case geoDistance: ElasticGeoDistance => geoDistance
+      case geoDistance: DistanceCriteria => geoDistance
       case matchExpression: ElasticMatch   => matchExpression
       case isNull: IsNullCriteria          => isNull
       case isNotNull: IsNotNullCriteria    => isNotNull

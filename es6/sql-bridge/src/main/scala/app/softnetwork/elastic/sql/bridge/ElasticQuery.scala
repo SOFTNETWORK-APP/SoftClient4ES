@@ -2,10 +2,10 @@ package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
+  DistanceCriteria,
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
-  ElasticGeoDistance,
   ElasticMatch,
   ElasticNested,
   ElasticParent,
@@ -62,15 +62,15 @@ case class ElasticQuery(filter: ElasticFilter) {
           criteria.asQuery(group = group, innerHitsNames = innerHitsNames),
           score = false
         )
-      case expression: GenericExpression   => expression
-      case isNull: IsNullExpr              => isNull
-      case isNotNull: IsNotNullExpr        => isNotNull
-      case in: InExpr[_, _]                => in
-      case between: BetweenExpr[_]         => between
-      case geoDistance: ElasticGeoDistance => geoDistance
-      case matchExpression: ElasticMatch   => matchExpression
-      case isNull: IsNullCriteria          => isNull
-      case isNotNull: IsNotNullCriteria    => isNotNull
+      case expression: GenericExpression => expression
+      case isNull: IsNullExpr            => isNull
+      case isNotNull: IsNotNullExpr      => isNotNull
+      case in: InExpr[_, _]              => in
+      case between: BetweenExpr[_]       => between
+      case geoDistance: DistanceCriteria => geoDistance
+      case matchExpression: ElasticMatch => matchExpression
+      case isNull: IsNullCriteria        => isNull
+      case isNotNull: IsNotNullCriteria  => isNotNull
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }
