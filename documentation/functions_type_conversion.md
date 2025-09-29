@@ -5,9 +5,17 @@
 ---
 
 ### Function: CAST (Aliases: CONVERT)
-**Description:** Cast expression to a target SQL type.
-**Inputs:** `expr`, `TYPE` (DATE, TIMESTAMP, VARCHAR, INT, DOUBLE, etc.)
-**Output:** `TYPE`
+**Description:** 
+
+Cast expression to a target SQL type.
+
+**Inputs:** 
+- `expr`
+- `TYPE` (`DATE`, `TIMESTAMP`, `VARCHAR`, `INT`, `DOUBLE`, etc.)
+
+**Output:** 
+- `TYPE`
+
 **Example:**
 ```sql
 SELECT CAST(salary AS DOUBLE) AS s FROM emp;
@@ -15,9 +23,18 @@ SELECT CAST(salary AS DOUBLE) AS s FROM emp;
 ```
 
 ### Function: TRY_CAST (Aliases: none)
-**Description:** Attempt a cast and return NULL on failure (safer alternative).
-**Inputs:** `expr`, `TYPE`
-**Output:** `TYPE` or NULL
+**Description:** 
+
+Attempt a cast and return NULL on failure (safer alternative).
+
+**Inputs:** 
+- `expr`
+- `TYPE` (`DATE`, `TIMESTAMP`, `VARCHAR`, `INT`, `DOUBLE`, etc.)
+
+**Output:** 
+
+- `TYPE`or `NULL`
+
 **Example:**
 ```sql
 SELECT TRY_CAST('not-a-number' AS INT) AS maybe_null;

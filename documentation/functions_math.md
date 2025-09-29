@@ -7,9 +7,15 @@
 ---
 
 ### Function: ABS
-**Description:** Absolute value.
-**Inputs:** `x` (NUMERIC)
-**Output:** NUMERIC
+**Description:**  
+Absolute value.
+
+**Inputs:** 
+- `x` (`NUMERIC`)
+
+**Output:** 
+- `NUMERIC`
+
 **Example:**
 ```sql
 SELECT ABS(-5) AS a;
@@ -17,9 +23,14 @@ SELECT ABS(-5) AS a;
 ```
 
 ### Function: ROUND
-**Description:** Round to n decimals (optional).
-**Inputs:** `x` (NUMERIC), optional `n` (INTEGER)
-**Output:** NUMERIC
+**Description:**  
+Round to n decimals (optional).
+
+**Inputs:** `x` (`NUMERIC`), optional `n` (`INT`)
+
+**Output:** 
+- `DOUBLE`
+
 **Example:**
 ```sql
 SELECT ROUND(123.456, 2) AS r;
@@ -27,9 +38,15 @@ SELECT ROUND(123.456, 2) AS r;
 ```
 
 ### Function: FLOOR
-**Description:** Greatest integer ≤ x.
-**Inputs:** `x` (NUMERIC)
-**Output:** INTEGER
+**Description:**  
+Greatest `BIGINT` ≤ x.
+
+**Inputs:** 
+- `x` (`NUMERIC`)
+
+**Output:** 
+- `BIGINT`
+
 **Example:**
 ```sql
 SELECT FLOOR(3.9) AS f;
@@ -37,9 +54,15 @@ SELECT FLOOR(3.9) AS f;
 ```
 
 ### Function: CEIL / CEILING
-**Description:** Smallest integer ≥ x.
-**Inputs:** `x` (NUMERIC)
-**Output:** INTEGER
+**Description:**  
+Smallest `BIGINT` ≥ x.
+
+**Inputs:** 
+- `x` (`NUMERIC`)
+
+**Output:** 
+- `BIGINT`
+
 **Example:**
 ```sql
 SELECT CEIL(3.1) AS c;
@@ -47,9 +70,15 @@ SELECT CEIL(3.1) AS c;
 ```
 
 ### Function: POWER / POW
-**Description:** x^y.
-**Inputs:** `x` (NUMERIC), `y` (NUMERIC)
-**Output:** NUMERIC
+**Description:**  
+x^y.
+
+**Inputs:** 
+- `x` (`NUMERIC`), `y` (`NUMERIC`)
+
+**Output:** 
+- `NUMERIC`
+
 **Example:**
 ```sql
 SELECT POWER(2, 10) AS p;
@@ -57,9 +86,15 @@ SELECT POWER(2, 10) AS p;
 ```
 
 ### Function: SQRT
-**Description:** Square root.
-**Inputs:** `x` (NUMERIC >= 0)
-**Output:** NUMERIC
+**Description:**  
+Square root.
+
+**Inputs:** 
+- `x` (`NUMERIC` >= 0)
+
+**Output:** 
+- `NUMERIC`
+
 **Example:**
 ```sql
 SELECT SQRT(16) AS s;
@@ -67,9 +102,15 @@ SELECT SQRT(16) AS s;
 ```
 
 ### Function: LOG / LN
-**Description:** Natural logarithm.
-**Inputs:** `x` (NUMERIC > 0)
-**Output:** NUMERIC
+**Description:**  
+Natural logarithm.
+
+**Inputs:** 
+- `x` (`NUMERIC` > 0)
+
+**Output:** 
+- `NUMERIC`
+
 **Example:**
 ```sql
 SELECT LOG(EXP(1)) AS l;
@@ -77,9 +118,15 @@ SELECT LOG(EXP(1)) AS l;
 ```
 
 ### Function: LOG10
-**Description:** Base-10 logarithm.
-**Inputs:** `x` (NUMERIC > 0)
-**Output:** NUMERIC
+**Description:**  
+Base-10 logarithm.
+
+**Inputs:** 
+- `x` (`NUMERIC` > 0)
+
+**Output:** 
+- `NUMERIC`
+
 **Example:**
 ```sql
 SELECT LOG10(1000) AS l10;
@@ -87,9 +134,15 @@ SELECT LOG10(1000) AS l10;
 ```
 
 ### Function: EXP
-**Description:** e^x.
-**Inputs:** `x` (NUMERIC)
-**Output:** NUMERIC
+**Description:**  
+e^x.
+
+**Inputs:** 
+- `x` (`NUMERIC`)
+
+**Output:** 
+- `NUMERIC`
+
 **Example:**
 ```sql
 SELECT EXP(1) AS e;
@@ -97,9 +150,15 @@ SELECT EXP(1) AS e;
 ```
 
 ### Function: SIGN / SGN
-**Description:** Returns -1, 0, or 1 according to sign.
-**Inputs:** `x` (NUMERIC)
-**Output:** INTEGER
+**Description:**  
+Returns -1, 0, or 1 according to sign.
+
+**Inputs:** 
+- `x` (`NUMERIC`)
+
+**Output:** 
+- `TINYINT`
+
 **Example:**
 ```sql
 SELECT SIGN(-10) AS s;
@@ -107,9 +166,15 @@ SELECT SIGN(-10) AS s;
 ```
 
 ### Trigonometric functions: COS, ACOS, SIN, ASIN, TAN, ATAN, ATAN2
-**Description:** Standard trig functions. Inputs in radians.
-**Inputs:** `x` or (`y`, `x` for ATAN2)
-**Output:** NUMERIC
+**Description:**  
+Standard trigonometric functions. Inputs in radians.
+
+**Inputs:** 
+- `x` or (`y`, `x` for ATAN2)
+
+**Output:** 
+- `DOUBLE`
+
 **Example:**
 ```sql
 SELECT COS(PI()/3) AS c;

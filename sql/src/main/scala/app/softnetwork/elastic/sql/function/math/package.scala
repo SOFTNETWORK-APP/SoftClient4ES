@@ -1,27 +1,37 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{Expr, Identifier, IntValue, PainlessScript, TokenRegex}
-import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLType, SQLTypes}
 
 package object math {
 
   sealed trait MathOp extends PainlessScript with TokenRegex {
     override def painless: String = s"Math.${sql.toLowerCase()}"
     override def toString: String = s" $sql "
+
+    override def baseType: SQLNumeric = SQLTypes.Numeric
   }
 
   case object Abs extends Expr("ABS") with MathOp
-  case object Ceil extends Expr("CEIL") with MathOp
-  case object Floor extends Expr("FLOOR") with MathOp
+  case object Ceil extends Expr("CEIL") with MathOp{
+    override def baseType: SQLNumeric = SQLTypes.BigInt
+  }
+  case object Floor extends Expr("FLOOR") with MathOp{
+    override def baseType: SQLNumeric = SQLTypes.BigInt
+  }
   case object Round extends Expr("ROUND") with MathOp
   case object Exp extends Expr("EXP") with MathOp
   case object Log extends Expr("LOG") with MathOp
   case object Log10 extends Expr("LOG10") with MathOp
   case object Pow extends Expr("POW") with MathOp
   case object Sqrt extends Expr("SQRT") with MathOp
-  case object Sign extends Expr("SIGN") with MathOp
+  case object Sign extends Expr("SIGN") with MathOp {
+    override def baseType: SQLNumeric = SQLTypes.TinyInt
+  }
 
-  sealed trait Trigonometric extends MathOp
+  sealed trait Trigonometric extends MathOp {
+    override def baseType: SQLNumeric = SQLTypes.Double
+  }
 
   case object Sin extends Expr("SIN") with Trigonometric
   case object Asin extends Expr("ASIN") with Trigonometric
@@ -36,7 +46,7 @@ package object math {
       with FunctionWithIdentifier {
     override def inputType: SQLNumeric = SQLTypes.Numeric
 
-    override def outputType: SQLNumeric = SQLTypes.Double
+    override def outputType: SQLNumeric = mathOp.baseType
 
     def mathOp: MathOp
 
@@ -73,8 +83,6 @@ package object math {
     override def mathOp: MathOp = Sign
 
     override def args: List[PainlessScript] = List(arg)
-
-    override def outputType: SQLNumeric = SQLTypes.Int
 
     override def painless: String = {
       val ret = "arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)"

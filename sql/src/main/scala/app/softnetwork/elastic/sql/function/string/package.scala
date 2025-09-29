@@ -15,8 +15,12 @@ package object string {
   case object Pipe extends Expr("\\|\\|") with StringOp {
     override def painless: String = " + "
   }
-  case object Lower extends Expr("LOWER") with StringOp
-  case object Upper extends Expr("UPPER") with StringOp
+  case object Lower extends Expr("LOWER") with StringOp {
+    override lazy val words: List[String] = List(sql, "LCASE")
+  }
+  case object Upper extends Expr("UPPER") with StringOp {
+    override lazy val words: List[String] = List(sql, "UCASE")
+  }
   case object Trim extends Expr("TRIM") with StringOp
   //case object LTrim extends SQLExpr("LTRIM") with SQLStringOperator
   //case object RTrim extends SQLExpr("RTRIM") with SQLStringOperator
@@ -25,7 +29,9 @@ package object string {
     override lazy val words: List[String] = List(sql, "SUBSTR")
   }
   case object TO extends Expr("TO") with TokenRegex
-  case object Length extends Expr("LENGTH") with StringOp
+  case object Length extends Expr("LENGTH") with StringOp{
+    override lazy val words: List[String] = List(sql, "LEN")
+  }
 
   sealed trait StringFunction[Out <: SQLType]
       extends TransformFunction[SQLVarchar, Out]

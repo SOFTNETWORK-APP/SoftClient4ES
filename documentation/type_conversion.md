@@ -9,7 +9,7 @@ Converts a value to a specified SQL type. Fails if the conversion is invalid.
 
 **Inputs:**  
 - `value` (ANY type)  
-- `targetType` (SQLType: `INT`, `BIGINT`, `DOUBLE`, `DATE`, `DATETIME`, `TIMESTAMP`, `VARCHAR`, etc.)  
+- `targetType` (SQL type: `INT`, `BIGINT`, `DOUBLE`, `DATE`, `DATETIME`, `TIMESTAMP`, `VARCHAR`, etc.)  
 
 **Output:**  
 - `targetType`  
@@ -29,7 +29,7 @@ Attempts to convert a value to a specified SQL type. Returns `NULL` if the conve
 
 **Inputs:**  
 - `value` (ANY type)  
-- `targetType` (SQLType: `INT`, `BIGINT`, `DOUBLE`, `DATE`, `DATETIME`, etc.)  
+- `targetType` (SQL type: `INT`, `BIGINT`, `DOUBLE`, `DATE`, `DATETIME`, etc.)  
 
 **Output:**  
 - `targetType` (nullable)  
@@ -49,7 +49,7 @@ Converts a value to a specified SQL type. Equivalent to `CAST`, but uses functio
 
 **Inputs:**  
 - `value` (ANY type)  
-- `targetType` (SQLType)  
+- `targetType` (SQL type)  
 
 **Output:**  
 - `targetType`  

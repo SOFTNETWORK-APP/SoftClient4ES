@@ -5,9 +5,15 @@
 ---
 
 ### Function: UPPER / UCASE
-**Description:** Convert string to upper case.
-**Inputs:** `str` (VARCHAR)
-**Output:** `VARCHAR`
+**Description:**  
+Convert string to upper case.
+
+**Inputs:** 
+- `str` (`VARCHAR`)
+
+**Output:** 
+- `VARCHAR`
+
 **Example:**
 ```sql
 SELECT UPPER('hello') AS up;
@@ -15,9 +21,15 @@ SELECT UPPER('hello') AS up;
 ```
 
 ### Function: LOWER / LCASE
-**Description:** Convert string to lower case.
-**Inputs:** `str` (VARCHAR)
-**Output:** `VARCHAR`
+**Description:**  
+Convert string to lower case.
+
+**Inputs:** 
+- `str` (`VARCHAR`)
+
+**Output:** 
+- `VARCHAR`
+
 **Example:**
 ```sql
 SELECT LOWER('Hello') AS lo;
@@ -25,9 +37,15 @@ SELECT LOWER('Hello') AS lo;
 ```
 
 ### Function: TRIM
-**Description:** Trim whitespace both sides.
-**Inputs:** `str` (VARCHAR)
-**Output:** `VARCHAR`
+**Description:**  
+Trim whitespace both sides.
+
+**Inputs:** 
+- `str` (`VARCHAR`)
+
+**Output:** 
+- `VARCHAR`
+
 **Example:**
 ```sql
 SELECT TRIM('  abc  ') AS t;
@@ -35,9 +53,15 @@ SELECT TRIM('  abc  ') AS t;
 ```
 
 ### Function: LENGTH / LEN
-**Description:** Character length.
-**Inputs:** `str` (VARCHAR)
-**Output:** INTEGER
+**Description:**  
+Character length.
+
+**Inputs:** 
+- `str` (`VARCHAR`)
+
+**Output:** 
+- `BIGINT`
+
 **Example:**
 ```sql
 SELECT LENGTH('abc') AS l;
@@ -45,9 +69,15 @@ SELECT LENGTH('abc') AS l;
 ```
 
 ### Function: SUBSTRING / SUBSTR
-**Description:** SQL 1-based substring.
-**Inputs:** `str` (VARCHAR), `start` (INT >=1), optional `length` (INT)
-**Output:** `VARCHAR`
+**Description:**  
+SQL 1-based substring.
+
+**Inputs:** 
+- `str` (`VARCHAR`), `start` (`INT` >=1), optional `length` (`INT`)
+
+**Output:** 
+- `VARCHAR`
+
 **Example:**
 ```sql
 SELECT SUBSTRING('abcdef', 2, 3) AS s;
@@ -55,18 +85,30 @@ SELECT SUBSTRING('abcdef', 2, 3) AS s;
 ```
 
 ### Function: CONCAT
-**Description:** Concatenate values into a string.
-**Inputs:** `expr1, expr2, ...` (coercible to VARCHAR)
-**Output:** VARCHAR
+**Description:**  
+Concatenate values into a string.
+
+**Inputs:** 
+- `expr1, expr2, ...` (coercible to `VARCHAR`)
+
+**Output:** 
+- `VARCHAR`
+
 **Example:**
 ```sql
 SELECT CONCAT(firstName, ' ', lastName) AS full FROM users;
 ```
 
 ### Function: REPLACE
-**Description:** Replace substring occurrences.
-**Inputs:** `str, search, replace`
-**Output:** VARCHAR
+**Description:**  
+Replace substring occurrences.
+
+**Inputs:** 
+- `str, search, replace`
+
+**Output:** 
+- `VARCHAR`
+
 **Example:**
 ```sql
 SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
@@ -74,9 +116,15 @@ SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
 ```
 
 ### Function: POSITION / STRPOS
-**Description:** 1-based index, 0 if not found.
-**Inputs:** `substr, str`
-**Output:** INTEGER
+**Description:**  
+1-based index, 0 if not found.
+
+**Inputs:** 
+- `substr, str`
+
+**Output:** 
+- `INT`
+
 **Example:**
 ```sql
 SELECT POSITION('lo' IN 'hello') AS pos;
@@ -84,9 +132,15 @@ SELECT POSITION('lo' IN 'hello') AS pos;
 ```
 
 ### Function: REGEXP_LIKE / RLIKE
-**Description:** Regex match predicate.
-**Inputs:** `str, pattern`
-**Output:** BOOLEAN
+**Description:**  
+Regex match predicate.
+
+**Inputs:** 
+- `str, pattern`
+
+**Output:** 
+- `BOOLEAN`
+
 **Example:**
 ```sql
 SELECT REGEXP_LIKE(email, '.*@example\.com') AS ok FROM users;

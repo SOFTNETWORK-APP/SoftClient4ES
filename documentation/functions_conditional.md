@@ -2,7 +2,7 @@
 
 # Conditional Functions
 
-This page documents conditional expressions. Two syntaxes for `CASE` are supported and described below.
+This page documents conditional expressions.
 
 ---
 
@@ -61,9 +61,15 @@ FROM emp;
 ---
 
 ### Function: COALESCE
-**Description:** Return first non-null argument.
-**Inputs:** `expr1, expr2, ...`
-**Output:** Value of first non-null expression (coerced)
+**Description:**  
+Return first non-null argument.
+
+**Inputs:** 
+- `expr1, expr2, ...`
+
+**Output:** 
+- Value of first non-null expression (coerced)
+
 **Example:**
 ```sql
 SELECT COALESCE(nickname, firstname, 'N/A') AS display FROM users;
@@ -73,23 +79,55 @@ SELECT COALESCE(nickname, firstname, 'N/A') AS display FROM users;
 ---
 
 ### Function: NULLIF
-**Description:** Return NULL if expr1 = expr2; otherwise return expr1.
-**Inputs:** `expr1, expr2`
-**Output:** Type of `expr1`
+**Description:**  
+Return NULL if expr1 = expr2; otherwise return expr1.
+
+**Inputs:** 
+- `expr1, expr2`
+
+**Output:** 
+- Type of `expr1`
+
 **Example:**
 ```sql
 SELECT NULLIF(status, 'unknown') AS status_norm FROM events;
+-- Result: NULL if status is 'unknown', else original status
 ```
 
 ---
 
-### Predicate: IS NULL / IS NOT NULL (also exposed as functions ISNULL / ISNOTNULL)
-**Description:** Test nullness.
-**Inputs:** `expr`
-**Output:** BOOLEAN
+### Function: ISNULL
+**Description:**  
+Test nullness.
+
+**Inputs:** 
+- `expr`
+
+**Output:**
+- `BOOLEAN`
+
 **Example:**
 ```sql
 SELECT ISNULL(manager) AS manager_missing FROM emp;
+-- Result: TRUE if manager is NULL, else FALSE
+```
+
+---
+
+### Function: ISNOTNULL
+**Description:**  
+Test non-nullness.
+
+**Inputs:**
+- `expr`
+
+**Output:**
+- `BOOLEAN`
+
+**Example:**
+```sql
+SELECT ISNOTNULL(manager) AS manager_missing FROM emp;
+-- Result: TRUE if manager is NOT NULL, else FALSE
 ```
 
 [Back to index](./README.md)

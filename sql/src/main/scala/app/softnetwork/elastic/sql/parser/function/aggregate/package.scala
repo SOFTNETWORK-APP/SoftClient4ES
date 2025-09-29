@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql.parser.function
 import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.parser.{LimitParser, OrderByParser, Parser}
-import app.softnetwork.elastic.sql.query.{Limit, OrderBy}
+import app.softnetwork.elastic.sql.query.{FieldSort, Limit, OrderBy}
 
 package object aggregate {
 
@@ -30,11 +30,18 @@ package object aggregate {
     def partition_by: PackratParser[Seq[Identifier]] =
       PARTITION_BY.regex ~> rep1sep(identifier, separator)
 
+    private[this] def over: Parser[(Seq[Identifier], OrderBy, Option[Limit])] =
+      OVER.regex ~> start ~ partition_by.? ~ orderBy ~ limit.? <~ end ^^ { case _ ~ pb ~ ob ~ l =>
+        (pb.getOrElse(Seq.empty), ob, l)
+      }
+
     private[this] def top_hits
       : PackratParser[(Identifier, Seq[Identifier], OrderBy, Option[Limit])] =
-      start ~ identifier ~ end ~ OVER.regex ~ start ~ partition_by.? ~ orderBy ~ limit.? ~ end ^^ {
-        case _ ~ id ~ _ ~ _ ~ _ ~ pb ~ ob ~ l ~ _ =>
-          (id, pb.getOrElse(Seq.empty), ob, l)
+      start ~ identifier ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
+        o match {
+          case Some((pb, ob, l)) => (id, pb, ob, l)
+          case None => (id, Seq.empty, OrderBy(Seq(FieldSort(id.name, order = None))), None)
+        }
       }
 
     def first_value: PackratParser[TopHitsAggregation] =
