@@ -163,7 +163,7 @@ object Queries {
     "SELECT identifier, (ABS(identifier) + 1.0) * 2, CEIL(identifier), FLOOR(identifier), SQRT(identifier), EXP(identifier), LOG(identifier), LOG10(identifier), POW(identifier, 3), ROUND(identifier), ROUND(identifier, 2), SIGN(identifier), COS(identifier), ACOS(identifier), SIN(identifier), ASIN(identifier), TAN(identifier), ATAN(identifier), ATAN2(identifier, 3.0) FROM Table WHERE SQRT(identifier) > 100.0"
 
   val string: String =
-    "SELECT identifier, LENGTH(identifier2) AS l, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, CONCAT(identifier2, '_test', 1) AS con FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
+    "SELECT identifier, LENGTH(identifier2) AS l, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, LTRIM(identifier2) AS ltr, RTRIM(identifier2) AS rtr, CONCAT(identifier2, '_test', 1) AS con FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
 
   val topHits: String =
     "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary, ARRAY_AGG(name) OVER (PARTITION BY department ORDER BY hire_date ASC, salary DESC LIMIT 1000) AS employees FROM emp"

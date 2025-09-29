@@ -22,14 +22,18 @@ package object string {
     override lazy val words: List[String] = List(sql, "UCASE")
   }
   case object Trim extends Expr("TRIM") with StringOp
-  //case object LTrim extends SQLExpr("LTRIM") with SQLStringOperator
-  //case object RTrim extends SQLExpr("RTRIM") with SQLStringOperator
+  case object Ltrim extends Expr("LTRIM") with StringOp {
+    override def painless: String = ".replaceAll(\"^\\\\s+\",\"\")"
+  }
+  case object Rtrim extends Expr("RTRIM") with StringOp {
+    override def painless: String = ".replaceAll(\"\\\\s+$\",\"\")"
+  }
   case object Substring extends Expr("SUBSTRING") with StringOp {
     override def painless: String = ".substring"
     override lazy val words: List[String] = List(sql, "SUBSTR")
   }
   case object To extends Expr("TO") with TokenRegex
-  case object LengthOp extends Expr("LENGTH") with StringOp {
+  case object Length extends Expr("LENGTH") with StringOp {
     override lazy val words: List[String] = List(sql, "LEN")
   }
 
@@ -121,7 +125,7 @@ package object string {
     override def toSQL(base: String): String = sql
   }
 
-  case object Length extends StringFunction[SQLBigInt] {
+  case class Length() extends StringFunction[SQLBigInt] {
     override def outputType: SQLBigInt = SQLTypes.BigInt
     override def stringOp: StringOp = LengthOp
     override def args: List[PainlessScript] = List.empty

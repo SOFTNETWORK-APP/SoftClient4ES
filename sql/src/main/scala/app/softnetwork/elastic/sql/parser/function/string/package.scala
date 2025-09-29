@@ -5,8 +5,9 @@ import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLVarchar}
 import app.softnetwork.elastic.sql.function.string.{
   Concat,
   Length,
-  LengthOp,
   Lower,
+  Ltrim,
+  Rtrim,
   StringFunction,
   StringFunctionWithOp,
   Substring,
@@ -38,8 +39,8 @@ package object string {
       }
 
     def length: PackratParser[StringFunction[SQLBigInt]] =
-      LengthOp.regex ^^ { _ =>
-        Length
+      Length.regex ^^ { _ =>
+        Length()
       }
 
     def lower: PackratParser[StringFunction[SQLVarchar]] =
@@ -57,9 +58,19 @@ package object string {
         StringFunctionWithOp(Trim)
       }
 
+    def ltrim: PackratParser[StringFunction[SQLVarchar]] =
+      Ltrim.regex ^^ { _ =>
+        StringFunctionWithOp(Ltrim)
+      }
+
+    def rtrim: PackratParser[StringFunction[SQLVarchar]] =
+      Rtrim.regex ^^ { _ =>
+        StringFunctionWithOp(Rtrim)
+      }
+
     def string_functions: Parser[
       StringFunction[_]
-    ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim
+    ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim | ltrim | rtrim
 
   }
 }

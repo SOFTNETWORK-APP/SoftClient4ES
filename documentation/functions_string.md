@@ -52,6 +52,38 @@ SELECT TRIM('  abc  ') AS t;
 -- Result: 'abc'
 ```
 
+### Function: LTRIM
+**Description:**  
+Trim whitespace left side.
+
+**Inputs:**
+- `str` (`VARCHAR`)
+
+**Output:**
+- `VARCHAR`
+
+**Example:**
+```sql
+SELECT LTRIM('  abc  ') AS t;
+-- Result: 'abc  '
+```
+
+### Function: RTRIM
+**Description:**  
+Trim whitespace right side.
+
+**Inputs:**
+- `str` (`VARCHAR`)
+
+**Output:**
+- `VARCHAR`
+
+**Example:**
+```sql
+SELECT RTRIM('  abc  ') AS t;
+-- Result: '  abc'
+```
+
 ### Function: LENGTH / LEN
 **Description:**  
 Character length.
@@ -117,10 +149,11 @@ SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
 
 ### Function: POSITION / STRPOS
 **Description:**  
-1-based index, 0 if not found.
+1-based index, 0 if not found.  
+The first position of the `substr` in the `str`.
 
 **Inputs:** 
-- `substr, str`
+- `substr` `IN` `str`
 
 **Output:** 
 - `INT`
