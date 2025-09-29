@@ -13,10 +13,10 @@ package object math {
   }
 
   case object Abs extends Expr("ABS") with MathOp
-  case object Ceil extends Expr("CEIL") with MathOp{
+  case object Ceil extends Expr("CEIL") with MathOp {
     override def baseType: SQLNumeric = SQLTypes.BigInt
   }
-  case object Floor extends Expr("FLOOR") with MathOp{
+  case object Floor extends Expr("FLOOR") with MathOp {
     override def baseType: SQLNumeric = SQLTypes.BigInt
   }
   case object Round extends Expr("ROUND") with MathOp
