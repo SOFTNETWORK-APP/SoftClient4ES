@@ -2817,7 +2817,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("(\\d)=", "$1 = ")
   }
 
-  it should "handle geo distance as script field" in {
+  it should "handle geo distance as script fields and criteria" in {
     val select: ElasticSearchRequest =
       SQLQuery(geoDistance)
     val query = select.query
@@ -2828,24 +2828,30 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "bool": {
         |      "filter": [
         |        {
-        |          "geo_distance": {
-        |            "distance": "5000km",
-        |            "toLocation": [
-        |              40.0,
-        |              -70.0
-        |            ]
-        |          }
-        |        },
-        |        {
-        |          "script": {
-        |            "script": {
-        |              "lang": "painless",
-        |              "source": "(def arg0 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)) >= 4000000.0",
-        |              "params": {
-        |                "lat": -70.0,
-        |                "lon": 40.0
+        |          "bool": {
+        |            "must": [
+        |              {
+        |                "script": {
+        |                  "script": {
+        |                    "lang": "painless",
+        |                    "source": "(def arg0 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)) >= 4000000.0",
+        |                    "params": {
+        |                      "lat": -70.0,
+        |                      "lon": 40.0
+        |                    }
+        |                  }
+        |                }
+        |              },
+        |              {
+        |                "geo_distance": {
+        |                  "distance": "5000km",
+        |                  "toLocation": [
+        |                    40.0,
+        |                    -70.0
+        |                  ]
+        |                }
         |              }
-        |            }
+        |            ]
         |          }
         |        },
         |        {

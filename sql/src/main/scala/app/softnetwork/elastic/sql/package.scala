@@ -1,8 +1,9 @@
 package app.softnetwork.elastic
 
 import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
+import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.operator._
-import app.softnetwork.elastic.sql.parser.Validation
+import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
 
 import java.security.MessageDigest
@@ -218,8 +219,23 @@ package object sql {
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
+  case class GeoDistance(longValue: LongValue, unit: DistanceUnit)
+      extends NumericValue[Double](DistanceUnit.convertToMeters(longValue.value, unit))
+      with PainlessScript {
+    override def baseType: SQLNumeric = SQLTypes.Double
+    override def sql: String = s"$longValue $unit"
+    def geoDistance: String = s"$longValue$unit"
+    override def painless: String = s"$value"
+  }
+
   sealed abstract class FromTo[+T](val from: Value[T], val to: Value[T]) extends Token {
-    override def sql = s"${from.sql} and ${to.sql}"
+    override def sql = s"${from.sql} AND ${to.sql}"
+
+    override def baseType: SQLType =
+      SQLTypeUtils.leastCommonSuperType(List(from.baseType, to.baseType))
+
+    override def validate(): Either[String, Unit] =
+      Validator.validateTypesMatching(from.out, to.out)
   }
 
   case class LiteralFromTo(override val from: StringValue, override val to: StringValue)
@@ -243,6 +259,16 @@ package object sql {
   }
 
   case class DoubleFromTo(override val from: DoubleValue, override val to: DoubleValue)
+      extends FromTo[Double](from, to) {
+    def between: Seq[Double] => Boolean = {
+      _.exists { n => n >= from.value && n <= to.value }
+    }
+    def notBetween: Seq[Double] => Boolean = {
+      _.forall { n => n < from.value || n > to.value }
+    }
+  }
+
+  case class GeoDistanceFromTo(override val from: GeoDistance, override val to: GeoDistance)
       extends FromTo[Double](from, to) {
     def between: Seq[Double] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }

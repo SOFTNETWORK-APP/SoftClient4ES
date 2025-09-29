@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
-import app.softnetwork.elastic.sql.function.geo.{Distance, DistanceUnit, GeoDistance, Point}
+import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql._
@@ -413,12 +413,7 @@ case class BetweenExpr[+T](
   fromTo: FromTo[T],
   maybeNot: Option[NOT.type]
 ) extends Expression {
-  private[this] lazy val id = functions.headOption match {
-    case Some(f) => s"$f($identifier)"
-    case _       => s"$identifier"
-  }
-  override def sql =
-    s"$id $notAsString$operator $fromTo"
+  override def sql = s"$identifier $notAsString$operator $fromTo"
   override def operator: Operator = BETWEEN
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
@@ -431,25 +426,33 @@ case class BetweenExpr[+T](
   override def maybeValue: Option[Token] = Some(fromTo)
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+
+  override def validate(): Either[String, Unit] =
+    Validator.validateTypesMatching(identifier.out, fromTo.out)
+
+  override def painless: String = {
+    if (identifier.nullable) {
+      return s"def left = $left; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
+    }
+    s"$painlessNot(${fromTo.from} <= $left <= ${fromTo.to})"
+  }
+
 }
 
 case class DistanceCriteria(
   distance: Distance,
   operator: ComparisonOperator,
-  distanceValue: LongValue,
-  distanceUnit: DistanceUnit
+  geoDistance: GeoDistance
 ) extends Expression {
-
-  def geoDistance: String = s"$distanceValue$distanceUnit"
 
   override def identifier: Identifier = Identifier(distance)
 
-  override def sql = s"$distance $operator $distanceValue $distanceUnit"
+  override def sql = s"$distance $operator $geoDistance"
 
   override def update(request: SQLSearchRequest): DistanceCriteria =
     this.copy(distance = distance.update(request))
 
-  override def maybeValue: Option[Token] = Some(GeoDistance(distanceValue, distanceUnit))
+  override def maybeValue: Option[Token] = Some(geoDistance)
 
   override def maybeNot: Option[NOT.type] = None
 

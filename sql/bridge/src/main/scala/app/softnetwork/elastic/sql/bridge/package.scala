@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble}
 import app.softnetwork.elastic.sql.function.aggregate.COUNT
+import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
 
@@ -157,8 +158,49 @@ package object bridge {
     import expression._
     if (aggregation)
       return matchAllQuery()
-    if (identifier.functions.nonEmpty) {
+    if (
+      identifier.functions.nonEmpty && (identifier.functions.size > 1 || (identifier.functions.head match {
+        case _: Distance => false
+        case _           => true
+      }))
+    ) {
       return scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
+    }
+    // Geo distance special case
+    identifier.functions.headOption match {
+      case Some(d: Distance) =>
+        operator match {
+          case o: ComparisonOperator =>
+            (value match {
+              case l: LongValue =>
+                Some(GeoDistance(l, Meters))
+              case g: GeoDistance =>
+                Some(g)
+              case _ => None
+            }) match {
+              case Some(g) =>
+                maybeNot match {
+                  case Some(_) =>
+                    return geoDistanceToQuery(
+                      DistanceCriteria(
+                        d,
+                        o.not,
+                        g
+                      )
+                    )
+                  case _ =>
+                    return geoDistanceToQuery(
+                      DistanceCriteria(
+                        d,
+                        o,
+                        g
+                      )
+                    )
+                }
+              case _ =>
+            }
+        }
+      case _ =>
     }
     value match {
       case n: NumericValue[_] =>
@@ -396,6 +438,35 @@ package object bridge {
     between: BetweenExpr[_]
   ): Query = {
     import between._
+    // Geo distance special case
+    identifier.functions.headOption match {
+      case Some(d: Distance) =>
+        fromTo match {
+          case ft: GeoDistanceFromTo =>
+            val fq =
+              geoDistanceToQuery(
+                DistanceCriteria(
+                  d,
+                  GE,
+                  ft.from
+                )
+              )
+            val tq =
+              geoDistanceToQuery(
+                DistanceCriteria(
+                  d,
+                  LE,
+                  ft.to
+                )
+              )
+            maybeNot match {
+              case Some(_) => return not(fq, tq)
+              case _       => return must(fq, tq)
+            }
+          case _ =>
+        }
+      case _ =>
+    }
     val r =
       out match {
         case _: SQLDouble =>
@@ -423,7 +494,7 @@ package object bridge {
           identifier.name,
           point.lat.value,
           point.lon.value
-        ) distance geoDistance
+        ) distance geoDistance.geoDistance
       case _ =>
         scriptQuery(
           Script(

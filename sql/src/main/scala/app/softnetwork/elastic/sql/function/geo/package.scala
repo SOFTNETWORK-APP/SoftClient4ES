@@ -1,11 +1,10 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLDouble, SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLDouble, SQLTypes}
 import app.softnetwork.elastic.sql.{
   DoubleValue,
   Expr,
   Identifier,
-  LongValue,
   PainlessParams,
   PainlessScript,
   Token,
@@ -54,12 +53,6 @@ package object geo {
   case object Inches extends Expr("in") with ImperialUnit
 
   case object NauticalMiles extends Expr("nmi") with DistanceUnit
-
-  case class GeoDistance(value: LongValue, unit: DistanceUnit) extends PainlessScript {
-    override def baseType: SQLType = SQLTypes.BigInt
-    override def sql: String = s"$value$unit"
-    override def painless: String = s"${DistanceUnit.convertToMeters(value.value, unit)}"
-  }
 
   case object Distance extends Expr("ST_DISTANCE") with Function with Operator {
     override def words: List[String] = List(sql, "DISTANCE")

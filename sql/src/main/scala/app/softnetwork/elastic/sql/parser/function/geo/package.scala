@@ -1,7 +1,6 @@
 package app.softnetwork.elastic.sql.parser.function
 
-import app.softnetwork.elastic.sql.Identifier
-import app.softnetwork.elastic.sql.function.Function
+import app.softnetwork.elastic.sql.{GeoDistance, Identifier}
 import app.softnetwork.elastic.sql.function.geo._
 import app.softnetwork.elastic.sql.parser.Parser
 
@@ -37,6 +36,9 @@ package object geo {
 
     def distance_unit: PackratParser[DistanceUnit] =
       kilometers | meters | centimeters | millimeters | miles | yards | feet | inches | nauticalMiles
+
+    def geo_distance: PackratParser[GeoDistance] =
+      long ~ distance_unit ^^ { case value ~ unit => GeoDistance(value, unit) }
 
     def distance_identifier: PackratParser[Identifier] = distance ^^ functionAsIdentifier
   }

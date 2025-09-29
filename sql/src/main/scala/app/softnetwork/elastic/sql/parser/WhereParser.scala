@@ -4,9 +4,12 @@ import app.softnetwork.elastic.sql.function.geo.Meters
 import app.softnetwork.elastic.sql.{
   DoubleFromTo,
   DoubleValues,
+  GeoDistance,
+  GeoDistanceFromTo,
   Identifier,
   LiteralFromTo,
   LongFromTo,
+  LongValue,
   LongValues,
   StringValues,
   Token
@@ -81,7 +84,7 @@ trait WhereParser {
     identifier
 
   private def equality: PackratParser[GenericExpression] =
-    not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | literal | double | pi | long | any_identifier) ^^ {
+    not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | literal | double | pi | geo_distance | long | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
@@ -104,7 +107,7 @@ trait WhereParser {
   def lt: PackratParser[ComparisonOperator] = LT.sql ^^ (_ => LT)
 
   private def comparison: PackratParser[GenericExpression] =
-    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | long | literal | any_identifier) ^^ {
+    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | geo_distance | long | literal | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
@@ -159,10 +162,29 @@ trait WhereParser {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, DoubleFromTo(from, to), n)
     }
 
-  def distanceCriteria: PackratParser[Criteria] =
-    distance ~ (ge | gt | le | lt) ~ long ~ distance_unit.? ^^ { case d ~ o ~ v ~ u =>
-      DistanceCriteria(d, o, v, u.getOrElse(Meters))
+  def betweenDistances: PackratParser[Criteria] =
+    distance_identifier ~ not.? ~ BETWEEN.regex ~ (geo_distance | long) ~ and ~ (geo_distance | long) ^^ {
+      case i ~ n ~ _ ~ from ~ _ ~ to =>
+        BetweenExpr(
+          i,
+          GeoDistanceFromTo(
+            from match {
+              case gd: GeoDistance => gd
+              case l: LongValue    => GeoDistance(l, Meters)
+            },
+            to match {
+              case gd: GeoDistance => gd
+              case l: LongValue    => GeoDistance(l, Meters)
+            }
+          ),
+          n
+        )
     }
+
+  /*def distanceCriteria: PackratParser[Criteria] =
+    distance ~ (ge | gt | le | lt) ~ geo_distance ^^ { case d ~ o ~ g =>
+      DistanceCriteria(d, o, g)
+    }*/
 
   def matchCriteria: PackratParser[MatchCriteria] =
     MATCH.regex ~ start ~ rep1sep(
@@ -184,9 +206,21 @@ trait WhereParser {
     }
 
   def criteria: PackratParser[Criteria] =
-    (equality | like | rlike | comparison | inLiteral | inLongs | inDoubles | between | betweenLongs | betweenDoubles | isNotNull | isNull | /*coalesce | nullif |*/ distanceCriteria | matchCriteria | logical_criteria) ^^ (
-      c => c
-    )
+    (equality |
+    like |
+    rlike |
+    comparison |
+    inLiteral |
+    inLongs |
+    inDoubles |
+    between |
+    betweenDistances |
+    betweenLongs |
+    betweenDoubles |
+    isNotNull |
+    isNull | /*coalesce | nullif | distanceCriteria | */
+    matchCriteria |
+    logical_criteria) ^^ (c => c)
 
   def predicate: PackratParser[Predicate] = criteria ~ (and | or) ~ not.? ~ criteria ^^ {
     case l ~ o ~ n ~ r => Predicate(l, o, r, n)

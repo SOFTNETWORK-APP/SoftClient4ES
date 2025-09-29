@@ -253,7 +253,8 @@ trait Parser
     stringFunctionWithIdentifier |
     date_diff_identifier |
     extract_identifier |
-    case_when_identifier) >> castOperator
+    case_when_identifier |
+    distance_identifier) >> castOperator
 
   def identifierWithFunction: PackratParser[Identifier] =
     (rep1sep(
