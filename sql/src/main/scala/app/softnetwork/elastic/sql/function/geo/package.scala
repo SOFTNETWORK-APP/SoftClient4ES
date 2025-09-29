@@ -58,6 +58,21 @@ package object geo {
     override def words: List[String] = List(sql, "DISTANCE")
 
     override def painless: String = ".arcDistance"
+
+    def haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double = {
+      val R = 6371e3 // Radius of the earth in meters
+      val r1 = lat1.toRadians
+      val r2 = lat2.toRadians
+      val rlat = (lat2 - lat1).toRadians
+      val rlon = (lon2 - lon1).toRadians
+
+      val a = Math.sin(rlat / 2) * Math.sin(rlat / 2) +
+        Math.cos(r1) * Math.cos(r2) *
+        Math.sin(rlon / 2) * Math.sin(rlon / 2)
+      val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+
+      (R * c).round.toDouble // in meters
+    }
   }
 
   case class Distance(from: Either[Identifier, Point], to: Either[Identifier, Point])
@@ -110,21 +125,6 @@ package object geo {
       else
         Map.empty
 
-    def haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double = {
-      val R = 6371e3 // Radius of the earth in meters
-      val r1 = lat1.toRadians
-      val r2 = lat2.toRadians
-      val rlat = (lat2 - lat1).toRadians
-      val rlon = (lon2 - lon1).toRadians
-
-      val a = Math.sin(rlat / 2) * Math.sin(rlat / 2) +
-        Math.cos(r1) * Math.cos(r2) *
-        Math.sin(rlon / 2) * Math.sin(rlon / 2)
-      val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-
-      (R * c).round.toDouble // in meters
-    }
-
     override def painless: String = {
       val nullCheck =
         identifiers.zipWithIndex
@@ -143,7 +143,7 @@ package object geo {
         if (oneIdentifier) {
           s"arg0${fun.map(_.painless).getOrElse("")}(params.lat, params.lon)"
         } else if (identifiers.isEmpty) {
-          s"${haversine(
+          s"${Distance.haversine(
             fromPoint.get.lat.value,
             fromPoint.get.lon.value,
             toPoint.get.lat.value,
