@@ -251,7 +251,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               Validator.validateTypesMatching(identifier.out, v.out) match {
                 case Left(_) =>
                   Left(
-                    s"Type mismatch: '${out.typeId}' is not compatible with '${v.out.typeId}' in expression: $this"
+                    s"Type mismatch: '${identifier.out.typeId}' is not compatible with '${v.out.typeId}' in expression: $this"
                   )
                 case Right(_) => Right(())
               }
@@ -427,8 +427,13 @@ case class BetweenExpr[+T](
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
-  override def validate(): Either[String, Unit] =
-    Validator.validateTypesMatching(identifier.out, fromTo.out)
+  override def validate(): Either[String, Unit] = {
+    for {
+      _ <- identifier.validate()
+      _ <- fromTo.validate()
+      _ <- Validator.validateTypesMatching(identifier.out, fromTo.from.out)
+    } yield ()
+  }
 
   override def painless: String = {
     if (identifier.nullable) {
