@@ -2,7 +2,7 @@
 
 # Operators (detailed)
 
-**Navigation:** [Query Structure](./query-structure.md) · [Operator Precedence](./operator_precedence.md) · [Keywords](./keywords.md)
+**Navigation:** [Query Structure](./request_structure.md) · [Operator Precedence](./operator_precedence.md) · [Keywords](./keywords.md)
 
 This file provides a per-operator description and a concrete SQL example for each operator supported by the engine.
 
