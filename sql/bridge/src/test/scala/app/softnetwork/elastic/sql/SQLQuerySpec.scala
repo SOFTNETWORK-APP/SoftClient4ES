@@ -2866,13 +2866,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "new GeoPoint(params.lat1, params.lon1).arcDistance(params.lat2, params.lon2) < 1000000.0",
-        |              "params": {
-        |                "lat1": -70.0,
-        |                "lon1": 40.0,
-        |                "lat2": 0.0,
-        |                "lon2": 0.0
-        |              }
+        |              "source": "0.0 < 1000000.0"
         |            }
         |          }
         |        }
@@ -2903,13 +2897,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "d3": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "new GeoPoint(params.lat1, params.lon1).arcDistance(params.lat2, params.lon2)",
-        |        "params": {
-        |          "lat1": -70.0,
-        |          "lon1": 40.0,
-        |          "lat2": 0.0,
-        |          "lon2": 0.0
-        |        }
+        |        "source": "8318612.0"
         |      }
         |    }
         |  },

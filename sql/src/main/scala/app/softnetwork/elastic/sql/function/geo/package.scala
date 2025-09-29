@@ -107,15 +107,23 @@ package object geo {
           "lat" -> points.head.lat.value,
           "lon" -> points.head.lon.value
         )
-      else if (identifiers.isEmpty)
-        Map(
-          "lat1" -> fromPoint.get.lat.value,
-          "lon1" -> fromPoint.get.lon.value,
-          "lat2" -> toPoint.get.lat.value,
-          "lon2" -> toPoint.get.lon.value
-        )
       else
         Map.empty
+
+    def haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double = {
+      val R = 6371e3 // Radius of the earth in meters
+      val r1 = lat1.toRadians
+      val r2 = lat2.toRadians
+      val rlat = (lat2 - lat1).toRadians
+      val rlon = (lon2 - lon1).toRadians
+
+      val a = Math.sin(rlat / 2) * Math.sin(rlat / 2) +
+        Math.cos(r1) * Math.cos(r2) *
+        Math.sin(rlon / 2) * Math.sin(rlon / 2)
+      val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+
+      (R * c).round.toDouble // in meters
+    }
 
     override def painless: String = {
       val nullCheck =
@@ -135,7 +143,12 @@ package object geo {
         if (oneIdentifier) {
           s"arg0${fun.map(_.painless).getOrElse("")}(params.lat, params.lon)"
         } else if (identifiers.isEmpty) {
-          s"new GeoPoint(params.lat1, params.lon1)${fun.map(_.painless).getOrElse("")}(params.lat2, params.lon2)"
+          s"${haversine(
+            fromPoint.get.lat.value,
+            fromPoint.get.lon.value,
+            toPoint.get.lat.value,
+            toPoint.get.lon.value
+          )}"
         } else {
           s"arg0${fun.map(_.painless).getOrElse("")}(arg1.lat, arg1.lon)"
         }

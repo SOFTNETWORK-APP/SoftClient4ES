@@ -175,7 +175,7 @@ object Queries {
     "SELECT YEAR(createdAt) AS y, MONTH(createdAt) AS m, WEEKDAY(createdAt) AS wd, YEARDAY(createdAt) AS yd, DAY(createdAt) AS d, HOUR(createdAt) AS h, MINUTE(createdAt) AS minutes, SECOND(createdAt) AS s, NANOSECOND(createdAt) AS nano, MICROSECOND(createdAt) AS micro, MILLISECOND(createdAt) AS milli, EPOCHDAY(createdAt) AS epoch, OFFSET(createdAt) AS off, WEEK(createdAt) AS w, QUARTER(createdAt) AS q FROM Table"
 
   val geoDistance =
-    "SELECT ST_DISTANCE(POINT(-70.0, 40.0), toLocation) AS d1, ST_DISTANCE(fromLocation, POINT(-70.0, 40.0)) AS d2, ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) AS d3 FROM Table WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km AND ST_DISTANCE(fromLocation, toLocation) < 2000 km AND ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) < 1000 km"
+    "SELECT ST_DISTANCE(POINT(-70.0, 40.0), toLocation) AS d1, ST_DISTANCE(fromLocation, POINT(-70.0, 40.0)) AS d2, ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) AS d3 FROM Table WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km AND ST_DISTANCE(fromLocation, toLocation) < 2000 km AND ST_DISTANCE(POINT(-70.0, 40.0), POINT(-70.0, 40.0)) < 1000 km"
 
 }
 
