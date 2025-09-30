@@ -345,16 +345,24 @@ package object time {
       "%d" -> "dd",
       "%e" -> "d",
       "%H" -> "HH",
+      "%k" -> "H",
       "%h" -> "hh",
       "%I" -> "hh",
+      "%l" -> "h",
       "%i" -> "mm",
       "%s" -> "ss",
+      "%S" -> "ss",
       "%f" -> "SSS", // microseconds
       "%p" -> "a",
       "%W" -> "EEEE",
       "%a" -> "EEE",
       "%M" -> "MMMM",
-      "%b" -> "MMM"
+      "%b" -> "MMM",
+      "%T" -> "HH:mm:ss",
+      "%r" -> "hh:mm:ss a",
+      "%j" -> "DDD",
+      "%x" -> "YY",
+      "%X" -> "YYYY"
     )
 
     def convert(includeTimeZone: Boolean = false): String = {
