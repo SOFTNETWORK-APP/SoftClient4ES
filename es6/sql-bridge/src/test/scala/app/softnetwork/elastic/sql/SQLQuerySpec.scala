@@ -2424,7 +2424,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    }
       |  },
       |  "script_fields": {
-      |    "l": {
+      |    "len": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.length() : null)"
@@ -2445,7 +2445,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "sub": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : ((1 - 1) < 0 || (1 - 1 + 3) > arg0.length()) ? null : arg0.substring((1 - 1), (1 - 1 + 3)))"
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.substring(1 - 1, Math.min(1 - 1 + 3, arg0.length())))"
       |      }
       |    },
       |    "tr": {
@@ -2457,19 +2457,55 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "ltr": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"^\\\\s+\", \"\") : null)"
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"^\\\\s+\",\"\") : null)"
       |      }
       |    },
       |    "rtr": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"\\\\s+$\", \"\") : null)"
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"\\\\s+$\",\"\") : null)"
       |      }
       |    },
       |    "con": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : String.valueOf(arg0) + \"_test\" + String.valueOf(1))"
+      |      }
+      |    },
+      |    "l": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.substring(0, Math.min(5, arg0.length())))"
+      |      }
+      |    },
+      |    "r": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : 3 == 0 ? \"\" : 3 > arg0.length() ? null : arg0.substring(arg0.length() - 3))"
+      |      }
+      |    },
+      |    "rep": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.replace(\"el\", \"le\"))"
+      |      }
+      |    },
+      |    "rev": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : new StringBuilder(arg0).reverse().toString())"
+      |      }
+      |    },
+      |    "pos": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg1 == null) ? null : arg1.indexOf(\"soft\", 1 - 1) + 1)"
+      |      }
+      |    },
+      |    "reg": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.matches(\"soft\"))"
       |      }
       |    }
       |  },
@@ -2513,6 +2549,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\|\\|", " || ")
       .replaceAll(";\\s\\s", "; ")
       .replaceAll("false:", "false : ")
+      .replaceAll("(\\d),", "$1, ")
+      .replaceAll(":(\\d)", " : $1")
+      .replaceAll("new", "new ")
+      .replaceAll(""",\\"le""", """, \\"le""")
   }
 
   it should "handle top hits aggregation" in {

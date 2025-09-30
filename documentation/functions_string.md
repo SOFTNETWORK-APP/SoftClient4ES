@@ -105,7 +105,7 @@ SELECT LENGTH('abc') AS l;
 SQL 1-based substring.
 
 **Inputs:** 
-- `str` (`VARCHAR`), `start` (`INT` >=1), optional `length` (`INT`)
+- `str` (`VARCHAR`) `,`|`FROM` `start` (`INT` >= 1) optional `,`|`FOR` `length` (`INT`)
 
 **Output:** 
 - `VARCHAR`
@@ -114,6 +114,47 @@ SQL 1-based substring.
 ```sql
 SELECT SUBSTRING('abcdef', 2, 3) AS s;
 -- Result: 'bcd'
+
+SELECT SUBSTRING('abcdef' FROM 2 FOR 3) AS s;
+-- Result: 'bcd'
+
+SELECT SUBSTRING('abcdef' FROM 4) AS s;
+-- Result: 'def'
+```
+
+### Function: LEFT
+**Description:**  
+Leftmost characters.
+
+**Inputs:** 
+- `str` (`VARCHAR`) `,`|`FOR` `length` (`INT`)
+
+**Output:**
+- `VARCHAR`
+
+**Example:**
+```sql
+SELECT LEFT('abcdef', 3) AS l;
+-- Result: 'abc'
+```
+
+### Function: RIGHT
+**Description:**  
+Rightmost characters.
+
+**Inputs:**
+- `str` (`VARCHAR`) `,`|`FOR` `length` (`INT`)
+
+**Output:**
+- `VARCHAR`
+
+**Example:**
+```sql
+SELECT RIGHT('abcdef', 3) AS r;
+-- Result: 'def'
+
+SELECT RIGHT('abcdef' FOR 10) AS r;
+-- Result: 'abcdef'
 ```
 
 ### Function: CONCAT
@@ -147,21 +188,43 @@ SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
 -- Result: 'John'
 ```
 
-### Function: POSITION / STRPOS
+### Function: REPLACE
 **Description:**  
-1-based index, 0 if not found.  
-The first position of the `substr` in the `str`.
+Replace substring occurrences.
 
 **Inputs:** 
-- `substr` `IN` `str`
+- `str, search, replace`
 
-**Output:** 
-- `INT`
+**Output:**
+- `VARCHAR`
 
 **Example:**
 ```sql
-SELECT POSITION('lo' IN 'hello') AS pos;
+SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
+-- Result: 'John'
+```
+
+### Function: POSITION / STRPOS
+**Description:**  
+1-based index, 0 if not found.
+The first position of the `substr` in the `str`, starting at the optional `FROM` position (1-based).
+
+**Inputs:**
+- `substr` `,` | `IN` `str` optional `,` | `FROM` `INT`
+
+**Output:**
+- `BIGINT`
+
+**Example:**
+```sql
+SELECT POSITION('lo', 'hello') AS pos;
 -- Result: 4
+
+SELECT POSITION('a' IN 'Elasticsearch' FROM 5) AS pos;
+-- Result: 10
+
+SELECT POSITION('z' IN 'Elasticsearch') AS pos;
+-- Result: 0
 ```
 
 ### Function: REGEXP_LIKE / RLIKE

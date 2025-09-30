@@ -141,16 +141,14 @@ package object function {
 
     override def painless: String = {
       val nullCheck =
-        args
-          .filter(_.nullable)
-          .zipWithIndex
+        args.zipWithIndex
+          .filter(_._1.nullable)
           .map { case (_, i) => s"arg$i == null" }
           .mkString(" || ")
 
       val assignments =
-        args
-          .filter(_.nullable)
-          .zipWithIndex
+        args.zipWithIndex
+          .filter(_._1.nullable)
           .map { case (a, i) =>
             s"def arg$i = ${SQLTypeUtils.coerce(a.painless, a.baseType, argTypes(i), nullable = false)};"
           }

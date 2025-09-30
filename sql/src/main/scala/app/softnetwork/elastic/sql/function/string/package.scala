@@ -1,7 +1,14 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{Expr, Identifier, IntValue, PainlessScript, TokenRegex}
-import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLType, SQLTypeUtils, SQLTypes, SQLVarchar}
+import app.softnetwork.elastic.sql.`type`.{
+  SQLBigInt,
+  SQLBool,
+  SQLType,
+  SQLTypeUtils,
+  SQLTypes,
+  SQLVarchar
+}
 
 package object string {
 
@@ -32,9 +39,24 @@ package object string {
     override def painless: String = ".substring"
     override lazy val words: List[String] = List(sql, "SUBSTR")
   }
-  case object To extends Expr("TO") with TokenRegex
+  case object LeftOp extends Expr("LEFT") with StringOp
+  case object RightOp extends Expr("RIGHT") with StringOp
+  case object For extends Expr("FOR") with TokenRegex
   case object Length extends Expr("LENGTH") with StringOp {
     override lazy val words: List[String] = List(sql, "LEN")
+  }
+  case object Replace extends Expr("REPLACE") with StringOp {
+    override lazy val words: List[String] = List(sql, "STR_REPLACE")
+    override def painless: String = ".replace"
+  }
+  case object Reverse extends Expr("REVERSE") with StringOp
+  case object Position extends Expr("POSITION") with StringOp {
+    override lazy val words: List[String] = List(sql, "STRPOS")
+    override def painless: String = ".indexOf"
+  }
+  case object RegexpLike extends Expr("REGEXP_LIKE") with StringOp {
+    override lazy val words: List[String] = List(sql, "REGEXP")
+    override def painless: String = ".matches"
   }
 
   sealed trait StringFunction[Out <: SQLType]
@@ -78,11 +100,11 @@ package object string {
       callArgs match {
         // SUBSTRING(expr, start, length)
         case List(arg0, arg1, arg2) =>
-          s"(($arg1 - 1) < 0 || ($arg1 - 1 + $arg2) > $arg0.length()) ? null : $arg0.substring(($arg1 - 1), ($arg1 - 1 + $arg2))"
+          s"$arg0.substring($arg1 - 1, Math.min($arg1 - 1 + $arg2, $arg0.length()))"
 
         // SUBSTRING(expr, start)
         case List(arg0, arg1) =>
-          s"(($arg1 - 1) < 0 || ($arg1 - 1) >= $arg0.length()) ? null : $arg0.substring(($arg1 - 1))"
+          s"$arg0.substring(Math.min($arg1 - 1, $arg0.length() - 1))"
 
         case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
       }
@@ -93,7 +115,8 @@ package object string {
         Left("SUBSTRING start position must be greater than or equal to 1 (SQL is 1-based)")
       else if (length.exists(_ < 0))
         Left("SUBSTRING length must be non-negative")
-      else Right(())
+      else
+        str.validate()
 
     override def toSQL(base: String): String = sql
 
@@ -120,14 +143,157 @@ package object string {
 
     override def validate(): Either[String, Unit] =
       if (values.isEmpty) Left("CONCAT requires at least one argument")
-      else Right(())
+      else
+        values.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
 
     override def toSQL(base: String): String = sql
   }
 
   case class Length() extends StringFunction[SQLBigInt] {
     override def outputType: SQLBigInt = SQLTypes.BigInt
-    override def stringOp: StringOp = LengthOp
+    override def stringOp: StringOp = Length
     override def args: List[PainlessScript] = List.empty
+  }
+
+  case class LeftFunction(str: PainlessScript, length: Int) extends StringFunction[SQLVarchar] {
+    override def outputType: SQLVarchar = SQLTypes.Varchar
+    override def stringOp: StringOp = LeftOp
+
+    override def args: List[PainlessScript] = List(str, IntValue(length))
+
+    override def nullable: Boolean = str.nullable
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case List(arg0, arg1) =>
+          s"$arg0.substring(0, Math.min($arg1, $arg0.length()))"
+        case _ => throw new IllegalArgumentException("LEFT requires 2 arguments")
+      }
+    }
+
+    override def validate(): Either[String, Unit] =
+      if (length < 0)
+        Left("LEFT length must be non-negative")
+      else
+        str.validate()
+
+    override def toSQL(base: String): String = sql
+  }
+
+  case class RightFunction(str: PainlessScript, length: Int) extends StringFunction[SQLVarchar] {
+    override def outputType: SQLVarchar = SQLTypes.Varchar
+    override def stringOp: StringOp = RightOp
+
+    override def args: List[PainlessScript] = List(str, IntValue(length))
+
+    override def nullable: Boolean = str.nullable
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case List(arg0, arg1) =>
+          s"""$arg1 == 0 ? "" : $arg1 > $arg0.length() ? null : $arg0.substring($arg0.length() - $arg1)"""
+        case _ => throw new IllegalArgumentException("RIGHT requires 2 arguments")
+      }
+    }
+
+    override def validate(): Either[String, Unit] =
+      if (length < 0)
+        Left("RIGHT length must be non-negative")
+      else
+        str.validate()
+
+    override def toSQL(base: String): String = sql
+  }
+
+  case class Replace(str: PainlessScript, search: PainlessScript, replace: PainlessScript)
+      extends StringFunction[SQLVarchar] {
+    override def outputType: SQLVarchar = SQLTypes.Varchar
+    override def stringOp: StringOp = Replace
+
+    override def args: List[PainlessScript] = List(str, search, replace)
+
+    override def nullable: Boolean = str.nullable || search.nullable || replace.nullable
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case List(arg0, arg1, arg2) =>
+          s"$arg0.replace($arg1, $arg2)"
+        case _ => throw new IllegalArgumentException("REPLACE requires 3 arguments")
+      }
+    }
+
+    override def validate(): Either[String, Unit] =
+      args.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+
+    override def toSQL(base: String): String = sql
+  }
+
+  case class Reverse(str: PainlessScript) extends StringFunction[SQLVarchar] {
+    override def outputType: SQLVarchar = SQLTypes.Varchar
+    override def stringOp: StringOp = Reverse
+
+    override def args: List[PainlessScript] = List(str)
+
+    override def nullable: Boolean = str.nullable
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case List(arg0) => s"new StringBuilder($arg0).reverse().toString()"
+        case _          => throw new IllegalArgumentException("REVERSE requires 1 argument")
+      }
+    }
+
+    override def validate(): Either[String, Unit] =
+      str.validate()
+
+    override def toSQL(base: String): String = sql
+  }
+
+  case class Position(substr: PainlessScript, str: PainlessScript, start: Int)
+      extends StringFunction[SQLBigInt] {
+    override def outputType: SQLBigInt = SQLTypes.BigInt
+    override def stringOp: StringOp = Position
+
+    override def args: List[PainlessScript] = List(substr, str, IntValue(start))
+
+    override def nullable: Boolean = substr.nullable || str.nullable
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case List(arg0, arg1, arg2) => s"$arg1.indexOf($arg0, $arg2 - 1) + 1"
+        case _ => throw new IllegalArgumentException("POSITION requires 3 arguments")
+      }
+    }
+
+    override def validate(): Either[String, Unit] =
+      if (start < 1)
+        Left("POSITION start must be greater than or equal to 1 (SQL is 1-based)")
+      else
+        str.validate().orElse(substr.validate())
+
+    override def toSQL(base: String): String = sql
+  }
+
+  case class RegexpLike(str: PainlessScript, pattern: PainlessScript)
+      extends StringFunction[SQLBool] {
+    override def outputType: SQLBool = SQLTypes.Boolean
+
+    override def stringOp: StringOp = RegexpLike
+
+    override def args: List[PainlessScript] = List(str, pattern)
+
+    override def nullable: Boolean = str.nullable || pattern.nullable
+
+    override def toPainlessCall(callArgs: List[String]): String = {
+      callArgs match {
+        case List(arg0, arg1) => s"$arg0.matches($arg1)"
+        case _ => throw new IllegalArgumentException("REGEXP_LIKE requires 2 arguments")
+      }
+    }
+
+    override def validate(): Either[String, Unit] =
+      args.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+
+    override def toSQL(base: String): String = sql
   }
 }
