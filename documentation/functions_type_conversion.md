@@ -4,7 +4,7 @@
 
 ---
 
-### Function: CAST (Aliases: CONVERT)
+### Function: CAST (Alias: CONVERT)
 **Description:** 
 
 Cast expression to a target SQL type.
@@ -22,7 +22,7 @@ SELECT CAST(salary AS DOUBLE) AS s FROM emp;
 -- Result: 12345.0
 ```
 
-### Function: TRY_CAST (Aliases: none)
+### Function: TRY_CAST (Alias: SAFE_CAST)
 **Description:** 
 
 Attempt a cast and return NULL on failure (safer alternative).

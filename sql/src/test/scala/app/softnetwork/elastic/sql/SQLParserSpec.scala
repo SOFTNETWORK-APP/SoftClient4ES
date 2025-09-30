@@ -154,7 +154,7 @@ object Queries {
     "SELECT CASE CURRENT_DATE - INTERVAL 7 DAY WHEN CAST(lastUpdated AS date) - INTERVAL 3 DAY THEN lastUpdated WHEN lastSeen THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
 
   val extract: String =
-    "SELECT EXTRACT(DAY FROM createdAt) AS dom, EXTRACT(WEEKDAY FROM createdAt) AS dow, EXTRACT(YEARDAY FROM createdAt) AS doy, EXTRACT(MONTH FROM createdAt) AS m, EXTRACT(YEAR FROM createdAt) AS y, EXTRACT(HOUR FROM createdAt) AS h, EXTRACT(MINUTE FROM createdAt) AS minutes, EXTRACT(SECOND FROM createdAt) AS s, EXTRACT(NANOSECOND FROM createdAt) AS nano, EXTRACT(MICROSECOND FROM createdAt) AS micro, EXTRACT(MILLISECOND FROM createdAt) AS milli, EXTRACT(EPOCHDAY FROM createdAt) AS epoch, EXTRACT(OFFSET FROM createdAt) AS off, EXTRACT(WEEK FROM createdAt) AS w, EXTRACT(QUARTER FROM createdAt) AS q FROM Table"
+    "SELECT EXTRACT(DAY FROM createdAt) AS dom, EXTRACT(WEEKDAY FROM createdAt) AS dow, EXTRACT(YEARDAY FROM createdAt) AS doy, EXTRACT(MONTH FROM createdAt) AS m, EXTRACT(YEAR FROM createdAt) AS y, EXTRACT(HOUR FROM createdAt) AS h, EXTRACT(MINUTE FROM createdAt) AS minutes, EXTRACT(SECOND FROM createdAt) AS s, EXTRACT(NANOSECOND FROM createdAt) AS nano, EXTRACT(MICROSECOND FROM createdAt) AS micro, EXTRACT(MILLISECOND FROM createdAt) AS milli, EXTRACT(EPOCHDAY FROM createdAt) AS epoch, EXTRACT(OFFSET_SECONDS FROM createdAt) AS off, EXTRACT(WEEK FROM createdAt) AS w, EXTRACT(QUARTER FROM createdAt) AS q FROM Table"
 
   val arithmetic: String =
     "SELECT identifier, identifier + 1 AS add, identifier - 1 AS sub, identifier * 2 AS mul, identifier / 2 AS div, identifier % 2 AS mod, (identifier * identifier2) - 10 FROM Table WHERE identifier * (EXTRACT(year FROM CURRENT_DATE) - 10) > 10000"
@@ -172,7 +172,7 @@ object Queries {
     "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
 
   val extractors: String =
-    "SELECT YEAR(createdAt) AS y, MONTH(createdAt) AS m, WEEKDAY(createdAt) AS wd, YEARDAY(createdAt) AS yd, DAY(createdAt) AS d, HOUR(createdAt) AS h, MINUTE(createdAt) AS minutes, SECOND(createdAt) AS s, NANOSECOND(createdAt) AS nano, MICROSECOND(createdAt) AS micro, MILLISECOND(createdAt) AS milli, EPOCHDAY(createdAt) AS epoch, OFFSET(createdAt) AS off, WEEK(createdAt) AS w, QUARTER(createdAt) AS q FROM Table"
+    "SELECT YEAR(createdAt) AS y, MONTH(createdAt) AS m, WEEKDAY(createdAt) AS wd, YEARDAY(createdAt) AS yd, DAY(createdAt) AS d, HOUR(createdAt) AS h, MINUTE(createdAt) AS minutes, SECOND(createdAt) AS s, NANOSECOND(createdAt) AS nano, MICROSECOND(createdAt) AS micro, MILLISECOND(createdAt) AS milli, EPOCHDAY(createdAt) AS epoch, OFFSET_SECONDS(createdAt) AS off, WEEK(createdAt) AS w, QUARTER(createdAt) AS q FROM Table"
 
   val geoDistance =
     "SELECT ST_DISTANCE(POINT(-70.0, 40.0), toLocation) AS d1, ST_DISTANCE(fromLocation, POINT(-70.0, 40.0)) AS d2, ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) AS d3 FROM Table WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km AND ST_DISTANCE(fromLocation, toLocation) < 2000 km AND ST_DISTANCE(POINT(-70.0, 40.0), POINT(-70.0, 40.0)) < 1000 km"

@@ -10,7 +10,7 @@ import app.softnetwork.elastic.sql.function.{
 import app.softnetwork.elastic.sql.function.time._
 import app.softnetwork.elastic.sql.parser.time.TimeParser
 import app.softnetwork.elastic.sql.parser.{Delimiter, Parser}
-import app.softnetwork.elastic.sql.time.{IsoField, TimeField}
+import app.softnetwork.elastic.sql.time.{IsoField, TimeField, TimeUnit}
 
 package object time {
 
@@ -154,8 +154,16 @@ package object time {
     self: Parser =>
 
     def date_diff: PackratParser[BinaryFunction[_, _, _]] =
-      DateDiff.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ time_unit ~ end ^^ {
-        case _ ~ _ ~ d1 ~ _ ~ d2 ~ _ ~ u ~ _ => DateDiff(d1, d2, u)
+      DateDiff.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ (separator ~ time_unit).? ~ end ^^ {
+        case _ ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
+          DateDiff(
+            d1,
+            d2,
+            u match {
+              case Some(_ ~ unit) => unit
+              case None           => TimeUnit.DAYS
+            }
+          )
       }
 
     def date_diff_identifier: PackratParser[Identifier] = date_diff ^^ { dd =>

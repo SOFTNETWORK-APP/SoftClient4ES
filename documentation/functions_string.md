@@ -4,7 +4,7 @@
 
 ---
 
-### Function: UPPER / UCASE
+### Function: UPPER (Alias: UCASE)
 **Description:**  
 Convert string to upper case.
 
@@ -20,7 +20,7 @@ SELECT UPPER('hello') AS up;
 -- Result: 'HELLO'
 ```
 
-### Function: LOWER / LCASE
+### Function: LOWER (Alias: LCASE)
 **Description:**  
 Convert string to lower case.
 
@@ -84,7 +84,7 @@ SELECT RTRIM('  abc  ') AS t;
 -- Result: '  abc'
 ```
 
-### Function: LENGTH / LEN
+### Function: LENGTH (Alias: LEN)
 **Description:**  
 Character length.
 
@@ -100,7 +100,7 @@ SELECT LENGTH('abc') AS l;
 -- Result: 3
 ```
 
-### Function: SUBSTRING / SUBSTR
+### Function: SUBSTRING (Alias: SUBSTR)
 **Description:**  
 SQL 1-based substring.
 
@@ -207,7 +207,7 @@ SELECT REVERSE('abcdef') AS r;
 -- Result: 'fedcba'
 ```
 
-### Function: POSITION / STRPOS
+### Function: POSITION (Alias: STRPOS)
 **Description:**  
 Returns the 1-based position of the first occurrence of a substring in a string.  
 If the substring is not found, returns 0.  
@@ -231,7 +231,7 @@ SELECT POSITION('z' IN 'Elasticsearch') AS pos;
 -- Result: 0
 ```
 
-### Function: REGEXP_LIKE / RLIKE
+### Function: REGEXP_LIKE (Alias: REGEXP)
 **Description:**  
 `REGEXP_LIKE(string, pattern [, match_param])`
 

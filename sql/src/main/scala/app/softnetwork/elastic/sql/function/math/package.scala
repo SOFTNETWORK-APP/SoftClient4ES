@@ -14,6 +14,7 @@ package object math {
 
   case object Abs extends Expr("ABS") with MathOp
   case object Ceil extends Expr("CEIL") with MathOp {
+    override def words: List[String] = List("CEILING", sql)
     override def baseType: SQLNumeric = SQLTypes.BigInt
   }
   case object Floor extends Expr("FLOOR") with MathOp {

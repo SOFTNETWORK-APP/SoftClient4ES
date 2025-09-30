@@ -8,7 +8,7 @@ This page documents aggregate functions.
 
 ---
 
-### Function: COUNT (Aliases: COUNT(*))
+### Function: COUNT
 **Description:**  
 Count rows or non-null expressions.  
 With `DISTINCT` counts distinct values.

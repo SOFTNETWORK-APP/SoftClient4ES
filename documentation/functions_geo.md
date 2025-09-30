@@ -4,7 +4,7 @@
 
 ---
 
-### Function: ST_DISTANCE (Aliases: DISTANCE)
+### Function: ST_DISTANCE (Alias: DISTANCE)
 **Description:** 
 
 Computes the geodesic distance (great-circle distance) in meters between two points.

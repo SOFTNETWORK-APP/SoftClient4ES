@@ -8,7 +8,7 @@ This page documents TEMPORAL functions.
 
 ---
 
-### Function: CURRENT_TIMESTAMP (Aliases: NOW, CURRENT_DATETIME)
+### Function: CURRENT_TIMESTAMP (Alias: NOW, CURRENT_DATETIME)
 **Description:**  
 Returns current datetime (ZonedDateTime) in UTC.
 
@@ -26,7 +26,7 @@ SELECT CURRENT_TIMESTAMP AS now;
 
 ---
 
-### Function: CURRENT_DATE (Aliases: CURDATE, TODAY)
+### Function: CURRENT_DATE (Alias: CURDATE, TODAY)
 **Description:**  
 Returns current date as `DATE`.
 
@@ -44,7 +44,7 @@ SELECT CURRENT_DATE AS today;
 
 ---
 
-### Function: CURRENT_TIME (Aliases: CURTIME)
+### Function: CURRENT_TIME (Alias: CURTIME)
 **Description:**  
 Returns current time-of-day.
 
@@ -62,12 +62,31 @@ SELECT CURRENT_TIME AS t;
 
 ---
 
-### Function: DATE_ADD / DATEADD (Aliases: DATEADD)
+### Function: INTERVAL
+**Description:**  
+Literal syntax for time intervals.  
+
+**Inputs:**
+- n (`INT`)
+- `UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`|`MILLISECOND`|`MICROSECOND`|`NANOSECOND`)
+
+**Output:**
+- `INTERVAL`
+- Note: `INTERVAL` is not a standalone type, it can only be used as part of date/datetime arithmetic functions.
+
+**Example:**
+```sql
+SELECT DATE_ADD('2025-01-10'::DATE, INTERVAL 1 MONTH);
+-- Result: 2025-02-10
+```
+
+### Function: DATE_ADD (Alias: DATEADD)
 **Description:**  
 Adds interval to `DATE`.
 
 **Inputs:** 
-- `date_expr` (`DATE`), `INTERVAL n UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`)
+- `date_expr` (`DATE`)
+- `INTERVAL` n (`INT`) `UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`)
 
 **Output:** 
 - `DATE`
@@ -80,12 +99,13 @@ SELECT DATE_ADD('2025-01-10'::DATE, INTERVAL 1 MONTH) AS next_month;
 
 ---
 
-### Function: DATE_SUB / DATESUB
+### Function: DATE_SUB (Alias: DATESUB)
 **Description:**  
 Subtract interval from `DATE`.
 
 **Inputs:** 
-- `date_expr` (`DATE`), `INTERVAL n UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`)
+- `date_expr` (`DATE`)
+- `INTERVAL` n (`INT`) `UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`)
 
 **Output:** 
 - `DATE`
@@ -98,12 +118,13 @@ SELECT DATE_SUB('2025-01-10'::DATE, INTERVAL 7 DAY) AS week_before;
 
 ---
 
-### Function: DATETIME_ADD / DATETIMEADD
+### Function: DATETIME_ADD (Alias: DATETIMEADD)
 **Description:**  
 Adds interval to `DATETIME` / `TIMESTAMP` 
 
 **Inputs:** 
-- `datetime_expr` (`DATETIME`), `INTERVAL n UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`)
+- `datetime_expr` (`DATETIME`)
+- `INTERVAL` n (`INT`) `UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`)
 
 **Output:** 
 - `DATETIME`
@@ -116,12 +137,13 @@ SELECT DATETIME_ADD('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 DAY) AS tomorr
 
 ---
 
-### Function: DATETIME_SUB / DATETIMESUB
+### Function: DATETIME_SUB (Alias: DATETIMESUB)
 **Description:**  
 Subtract interval from `DATETIME` / `TIMESTAMP`.
 
 **Inputs:** 
-- `datetime_expr`, `INTERVAL n UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`)
+- `datetime_expr`
+- `INTERVAL` n (`INT`) `UNIT` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`)
 
 **Output:** 
 - `DATETIME`
@@ -134,12 +156,14 @@ SELECT DATETIME_SUB('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 2 HOUR) AS earli
 
 ---
 
-### Function: DATEDIFF / DATE_DIFF
+### Function: DATEDIFF (Alias: DATE_DIFF)
 **Description:**  
 Difference between 2 dates (date1 - date2) in the specified time unit.
 
 **Inputs:** 
-- `date1` (`DATE` or `DATETIME`), `date2` (`DATE` or `DATETIME`), `unit` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`)
+- `date1` (`DATE` or `DATETIME`)
+- `date2` (`DATE` or `DATETIME`), 
+- optional `unit` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`), `DAY` by default
 
 **Output:** 
 - `BIGINT`
@@ -154,10 +178,12 @@ SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS diff;
 
 ### Function: DATE_FORMAT
 **Description:**  
-Format `DATE` / `DATETIME` to `VARCHAR`.
+Format `DATE` to `VARCHAR`.
 
 **Inputs:** 
-- `date_expr`, `pattern`
+- `date_expr` (`DATE`)
+- `pattern` (`VARCHAR`)
+- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
 
 **Output:** 
 - `VARCHAR`
@@ -175,7 +201,9 @@ SELECT DATE_FORMAT('2025-01-10'::DATE, 'yyyy-MM-dd') AS fmt;
 Parse `VARCHAR` into `DATE`.
 
 **Inputs:** 
-- `VARCHAR`, `pattern`
+- `VARCHAR`
+- `pattern` (`VARCHAR`)
+- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
 
 **Output:** 
 - `DATE`
@@ -193,7 +221,9 @@ SELECT DATE_PARSE('2025-01-10','yyyy-MM-dd') AS d;
 Parse `VARCHAR` into `DATETIME` / `TIMESTAMP`.
 
 **Inputs:** 
-- `VARCHAR`, `pattern`
+- `VARCHAR`
+- `pattern` (`VARCHAR`)
+- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
 
 **Output:** 
 - `DATETIME`
@@ -210,7 +240,10 @@ SELECT DATETIME_PARSE('2025-01-10T12:00:00Z','yyyy-MM-dd''T''HH:mm:ssZ') AS dt;
 **Description:**  
 Format `DATETIME` / `TIMESTAMP` to `VARCHAR` with pattern.
 
-**Inputs:** `datetime_expr`, `pattern`
+**Inputs:** 
+- `datetime_expr` (`DATETIME` or `TIMESTAMP`)
+- `pattern` (`VARCHAR`)
+- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
 
 **Output:** 
 - `VARCHAR`
@@ -224,10 +257,11 @@ SELECT DATETIME_FORMAT('2025-01-10T12:00:00Z'::TIMESTAMP,'yyyy-MM-dd HH:mm:ss') 
 
 ### Function: DATE_TRUNC
 **Description:**  
-Truncate date/datetime to a `unit` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`).
+Truncate date/datetime to a `unit`.
 
 **Inputs:** 
-- `date_or_datetime_expr`, `unit`
+- `date_or_datetime_expr` (`DATE` or `DATETIME`)
+- `unit` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`)
 
 **Output:** 
 - `DATE` or `DATETIME`
@@ -245,7 +279,7 @@ SELECT DATE_TRUNC('2025-01-15'::DATE, MONTH) AS start_month;
 Extract field from date or datetime.
 
 **Inputs:** 
-- `unit FROM date_expr`
+- `unit` (`YEAR`|`QUARTER`|`MONTH`|`WEEK`|`DAY`|`HOUR`|`MINUTE`|`SECOND`) `FROM` `date_expr` (`DATE` or `DATETIME`)
 
 **Output:** 
 - `INT` / `BIGINT`
@@ -263,7 +297,7 @@ SELECT EXTRACT(YEAR FROM '2025-01-10T12:00:00Z'::TIMESTAMP) AS y;
 Last day of month for a date.
 
 **Inputs:** 
-- `date_expr`
+- `date_expr` (`DATE`)
 
 **Output:** 
 - `DATE`
@@ -281,7 +315,7 @@ SELECT LAST_DAY('2025-02-15'::DATE) AS ld;
 ISO week number (1..53)
 
 **Inputs:** 
-- `date_expr`
+- `date_expr` (`DATE`)
 
 **Output:** 
 - `INT`
@@ -299,7 +333,7 @@ SELECT WEEK('2025-01-01'::DATE) AS w;
 Quarter number (1..4)
 
 **Inputs:** 
-- `date_expr`
+- `date_expr` (`DATE`)
 
 **Output:** 
 - `INT`
@@ -317,7 +351,7 @@ SELECT QUARTER('2025-05-10'::DATE) AS q;
 Sub-second extraction.
 
 **Inputs:** 
-- `datetime_expr`
+- `datetime_expr` (`DATETIME` or `TIMESTAMP`)
 
 **Output:** 
 - `INT`
@@ -335,7 +369,7 @@ SELECT MILLISECOND('2025-01-01T12:00:00.123Z'::TIMESTAMP) AS ms;
 Days since epoch.
 
 **Inputs:** 
-- `date_expr`
+- `date_expr` (`DATE`)
 
 **Output:** 
 - `BIGINT`
@@ -348,19 +382,19 @@ SELECT EPOCHDAY('1970-01-02'::DATE) AS d;
 
 ---
 
-### Function: OFFSET / OFFSET_SECONDS
+### Function: OFFSET_SECONDS
 **Description:**  
 Timezone offset in seconds.
 
 **Inputs:** 
-- `timestamp_expr`
+- `timestamp_expr` (`TIMESTAMP` with timezone)
 
 **Output:** 
 - `INT`
 
 **Example:**
 ```sql
-SELECT OFFSET('2025-01-01T12:00:00+02:00'::TIMESTAMP) AS off;
+SELECT OFFSET_SECONDS('2025-01-01T12:00:00+02:00'::TIMESTAMP) AS off;
 -- Result: 7200
 ```
 

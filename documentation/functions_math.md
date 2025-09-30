@@ -53,7 +53,7 @@ SELECT FLOOR(3.9) AS f;
 -- Result: 3
 ```
 
-### Function: CEIL / CEILING
+### Function: CEIL (Alias: CEILING)
 **Description:**  
 Smallest `BIGINT` ≥ x.
 
@@ -69,7 +69,7 @@ SELECT CEIL(3.1) AS c;
 -- Result: 4
 ```
 
-### Function: POWER / POW
+### Function: POWER (Alias: POW)
 **Description:**  
 x^y.
 
@@ -101,7 +101,7 @@ SELECT SQRT(16) AS s;
 -- Result: 4
 ```
 
-### Function: LOG / LN
+### Function: LOG (Alias: LN)
 **Description:**  
 Natural logarithm.
 
@@ -149,7 +149,7 @@ SELECT EXP(1) AS e;
 -- Result: 2.71828...
 ```
 
-### Function: SIGN / SGN
+### Function: SIGN (Alias SGN)
 **Description:**  
 Returns -1, 0, or 1 according to sign.
 
