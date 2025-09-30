@@ -124,7 +124,7 @@ SELECT SUBSTRING('abcdef' FROM 4) AS s;
 
 ### Function: LEFT
 **Description:**  
-Leftmost characters.
+Returns the leftmost characters from a string.
 
 **Inputs:** 
 - `str` (`VARCHAR`) `,`|`FOR` `length` (`INT`)
@@ -140,7 +140,10 @@ SELECT LEFT('abcdef', 3) AS l;
 
 ### Function: RIGHT
 **Description:**  
-Rightmost characters.
+Returns the rightmost characters from a string.  
+If `length` exceeds the string size, the implementation returns the full string.  
+If `length = 0`, an empty string is returned.  
+If `length < 0`, a validation error is raised.
 
 **Inputs:**
 - `str` (`VARCHAR`) `,`|`FOR` `length` (`INT`)
@@ -174,7 +177,7 @@ SELECT CONCAT(firstName, ' ', lastName) AS full FROM users;
 
 ### Function: REPLACE
 **Description:**  
-Replace substring occurrences.
+Replaces all occurrences of a substring with another substring.
 
 **Inputs:** 
 - `str, search, replace`
@@ -188,26 +191,27 @@ SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
 -- Result: 'John'
 ```
 
-### Function: REPLACE
+### Function: REVERSE
 **Description:**  
-Replace substring occurrences.
+Reverses the characters in a string.
 
 **Inputs:** 
-- `str, search, replace`
+- `str` (`VARCHAR`)
 
 **Output:**
 - `VARCHAR`
 
 **Example:**
 ```sql
-SELECT REPLACE('Mr. John', 'Mr. ', '') AS r;
--- Result: 'John'
+SELECT REVERSE('abcdef') AS r;
+-- Result: 'fedcba'
 ```
 
 ### Function: POSITION / STRPOS
 **Description:**  
-1-based index, 0 if not found.
-The first position of the `substr` in the `str`, starting at the optional `FROM` position (1-based).
+Returns the 1-based position of the first occurrence of a substring in a string.  
+If the substring is not found, returns 0.  
+An optional FROM position (1-based) can be provided to start the search.
 
 **Inputs:**
 - `substr` `,` | `IN` `str` optional `,` | `FROM` `INT`
@@ -229,17 +233,28 @@ SELECT POSITION('z' IN 'Elasticsearch') AS pos;
 
 ### Function: REGEXP_LIKE / RLIKE
 **Description:**  
-Regex match predicate.
+`REGEXP_LIKE(string, pattern [, match_param])`
+
+Returns `TRUE` if the input string matches the regular expression `pattern`.  
+By default, the match is case-sensitive.
 
 **Inputs:** 
-- `str, pattern`
+- `string`: The input string to test.
+- `pattern`: A regular expression pattern.
+- `match_param` *(optional)*: A string controlling the regex matching behavior.
+    - `'i'`: Case-insensitive match.
+    - `'c'`: Case-sensitive match (default).
+    - `'m'`: Multi-line mode.
+    - `'n'`: Allows the `.` to match newline characters.
 
 **Output:** 
 - `BOOLEAN`
 
-**Example:**
+**Examples:**
 ```sql
-SELECT REGEXP_LIKE(email, '.*@example\.com') AS ok FROM users;
+SELECT REGEXP_LIKE('Hello', 'HEL');         -- false
+SELECT REGEXP_LIKE('Hello', 'HEL', 'i');    -- true
+SELECT REGEXP_LIKE('abc\nxyz', '^xyz', 'm') -- true
 ```
 
 [Back to index](./README.md)

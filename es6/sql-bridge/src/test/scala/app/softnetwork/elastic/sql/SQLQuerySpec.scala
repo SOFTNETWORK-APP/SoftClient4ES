@@ -2481,7 +2481,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "r": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : 3 == 0 ? \"\" : 3 > arg0.length() ? null : arg0.substring(arg0.length() - 3))"
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : 3 == 0 ? \"\" : arg0.substring(arg0.length() - Math.min(3, arg0.length())))"
       |      }
       |    },
       |    "rep": {
@@ -2505,7 +2505,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "reg": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.matches(\"soft\"))"
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : java.util.regex.Pattern.compile(\"soft\", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE).matcher(arg0).find())"
       |      }
       |    }
       |  },
@@ -2553,6 +2553,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(":(\\d)", " : $1")
       .replaceAll("new", "new ")
       .replaceAll(""",\\"le""", """, \\"le""")
+      .replaceAll(":arg", " : arg")
+      .replaceAll(",java", ", java")
+      .replaceAll("\\|java", " | java")
   }
 
   it should "handle top hits aggregation" in {

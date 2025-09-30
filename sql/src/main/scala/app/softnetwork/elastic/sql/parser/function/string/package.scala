@@ -52,9 +52,16 @@ package object string {
       }
 
     def regexp: PackratParser[StringFunction[SQLBool]] =
-      RegexpLike.regex ~ start ~ valueExpr ~ separator ~ valueExpr ~ end ^^ {
-        case _ ~ _ ~ str ~ _ ~ pattern ~ _ =>
-          RegexpLike(str, pattern)
+      RegexpLike.regex ~ start ~ valueExpr ~ separator ~ valueExpr ~ (separator ~ literal).? ~ end ^^ {
+        case _ ~ _ ~ str ~ _ ~ pattern ~ flags ~ _ =>
+          RegexpLike(
+            str,
+            pattern,
+            flags match {
+              case Some(_ ~ f) => Some(MatchFlags(f.value))
+              case _           => None
+            }
+          )
       }
 
     def stringFunctionWithIdentifier: PackratParser[Identifier] =

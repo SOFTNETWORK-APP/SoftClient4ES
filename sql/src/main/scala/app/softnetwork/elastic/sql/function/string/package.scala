@@ -54,9 +54,29 @@ package object string {
     override lazy val words: List[String] = List(sql, "STRPOS")
     override def painless: String = ".indexOf"
   }
+
   case object RegexpLike extends Expr("REGEXP_LIKE") with StringOp {
     override lazy val words: List[String] = List(sql, "REGEXP")
     override def painless: String = ".matches"
+  }
+
+  case class MatchFlags(flags: String) extends PainlessScript {
+    override def sql: String = s"'$flags'"
+    override def painless: String = flags.toCharArray
+      .map {
+        case 'i' => "java.util.regex.Pattern.CASE_INSENSITIVE"
+        case 'c' => "0"
+        case 'n' => "java.util.regex.Pattern.DOTALL"
+        case 'm' => "java.util.regex.Pattern.MULTILINE"
+        case _   => ""
+      }
+      .filter(_.nonEmpty)
+      .mkString(" | ") match {
+      case "" => "0"
+      case s  => s
+    }
+
+    override def nullable: Boolean = false
   }
 
   sealed trait StringFunction[Out <: SQLType]
@@ -191,7 +211,7 @@ package object string {
     override def toPainlessCall(callArgs: List[String]): String = {
       callArgs match {
         case List(arg0, arg1) =>
-          s"""$arg1 == 0 ? "" : $arg1 > $arg0.length() ? null : $arg0.substring($arg0.length() - $arg1)"""
+          s"""$arg1 == 0 ? "" : $arg0.substring($arg0.length() - Math.min($arg1, $arg0.length()))"""
         case _ => throw new IllegalArgumentException("RIGHT requires 2 arguments")
       }
     }
@@ -274,20 +294,25 @@ package object string {
     override def toSQL(base: String): String = sql
   }
 
-  case class RegexpLike(str: PainlessScript, pattern: PainlessScript)
-      extends StringFunction[SQLBool] {
+  case class RegexpLike(
+    str: PainlessScript,
+    pattern: PainlessScript,
+    matchFlags: Option[MatchFlags] = None
+  ) extends StringFunction[SQLBool] {
     override def outputType: SQLBool = SQLTypes.Boolean
 
     override def stringOp: StringOp = RegexpLike
 
-    override def args: List[PainlessScript] = List(str, pattern)
+    override def args: List[PainlessScript] = List(str, pattern) ++ matchFlags.toList
 
     override def nullable: Boolean = str.nullable || pattern.nullable
 
     override def toPainlessCall(callArgs: List[String]): String = {
       callArgs match {
-        case List(arg0, arg1) => s"$arg0.matches($arg1)"
-        case _ => throw new IllegalArgumentException("REGEXP_LIKE requires 2 arguments")
+        case List(arg0, arg1) => s"java.util.regex.Pattern.compile($arg1).matcher($arg0).find()"
+        case List(arg0, arg1, arg2) =>
+          s"java.util.regex.Pattern.compile($arg1, $arg2).matcher($arg0).find()"
+        case _ => throw new IllegalArgumentException("REGEXP_LIKE requires 2 or 3 arguments")
       }
     }
 
