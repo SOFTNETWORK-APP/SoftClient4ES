@@ -1293,7 +1293,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoField.YEAR) : null)"
+      |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoField.YEAR) : null)"
       |            }
       |          }
       |        }
@@ -1317,6 +1317,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\|\\|", " || ")
       .replaceAll(">", " > ")
       .replaceAll(",ZonedDateTime", ", ZonedDateTime")
+      .replaceAll("SSSXXX", "SSS XXX")
+      .replaceAll("ddHH", "dd HH")
   }
 
   it should "handle date_diff function as script field" in {
@@ -1383,7 +1385,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "max": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
+      |              "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX').parse(e0, ZonedDateTime::from) : null); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
       |            }
       |          }
       |        }
@@ -1408,6 +1410,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll("\\|\\|", " || ")
       .replaceAll("ZonedDateTime", " ZonedDateTime")
+      .replaceAll("SSSXXX", "SSS XXX")
+      .replaceAll("ddHH", "dd HH")
   }
 
   it should "handle date_add function as script field" in {

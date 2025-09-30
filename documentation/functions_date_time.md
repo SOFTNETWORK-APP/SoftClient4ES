@@ -183,15 +183,20 @@ Format `DATE` to `VARCHAR`.
 **Inputs:** 
 - `date_expr` (`DATE`)
 - `pattern` (`VARCHAR`)
-- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
+- Note: pattern follows [MySQL-style](#supported-mysql-style-datetime-patterns).
 
 **Output:** 
 - `VARCHAR`
 
 **Example:**
 ```sql
-SELECT DATE_FORMAT('2025-01-10'::DATE, 'yyyy-MM-dd') AS fmt;
+-- Simple date formatting
+SELECT DATE_FORMAT('2025-01-10'::DATE, '%Y-%m-%d') AS fmt;
 -- Result: '2025-01-10'
+
+-- Day of the week (%W)
+SELECT DATE_FORMAT('2025-01-10'::DATE, '%W') AS weekday;
+-- Result: 'Friday'
 ```
 
 ---
@@ -203,14 +208,19 @@ Parse `VARCHAR` into `DATE`.
 **Inputs:** 
 - `VARCHAR`
 - `pattern` (`VARCHAR`)
-- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
+- Note: pattern follows [MySQL-style](#supported-mysql-style-datetime-patterns).
 
 **Output:** 
 - `DATE`
 
 **Example:**
 ```sql
-SELECT DATE_PARSE('2025-01-10','yyyy-MM-dd') AS d;
+-- Parse ISO-style date
+SELECT DATE_PARSE('2025-01-10','%Y-%m-%d') AS d;
+-- Result: 2025-01-10
+
+-- Parse with day of week (%W)
+SELECT DATE_PARSE('Friday 2025-01-10','%W %Y-%m-%d') AS d;
 -- Result: 2025-01-10
 ```
 
@@ -223,15 +233,20 @@ Parse `VARCHAR` into `DATETIME` / `TIMESTAMP`.
 **Inputs:** 
 - `VARCHAR`
 - `pattern` (`VARCHAR`)
-- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
+- Note: pattern follows [MySQL-style](#supported-mysql-style-datetime-patterns).
 
 **Output:** 
 - `DATETIME`
 
 **Example:**
 ```sql
-SELECT DATETIME_PARSE('2025-01-10T12:00:00Z','yyyy-MM-dd''T''HH:mm:ssZ') AS dt;
--- Result: 2025-01-10T12:00:00Z
+-- Parse full datetime with microseconds (%f)
+SELECT DATETIME_PARSE('2025-01-10 12:00:00.123456','%Y-%m-%d %H:%i:%s.%f') AS dt;
+-- Result: 2025-01-10T12:00:00.123456Z
+
+-- Parse 12-hour clock with AM/PM (%p)
+SELECT DATETIME_PARSE('2025-01-10 01:45:30 PM','%Y-%m-%d %h:%i:%s %p') AS dt;
+-- Result: 2025-01-10T13:45:30Z
 ```
 
 ---
@@ -243,14 +258,24 @@ Format `DATETIME` / `TIMESTAMP` to `VARCHAR` with pattern.
 **Inputs:** 
 - `datetime_expr` (`DATETIME` or `TIMESTAMP`)
 - `pattern` (`VARCHAR`)
-- Note: Patterns follow Java DateTimeFormatter syntax (not MySQL-style).
+- Note: pattern follows [MySQL-style](#supported-mysql-style-datetime-patterns).
 
 **Output:** 
 - `VARCHAR`
 
 **Example:**
 ```sql
-SELECT DATETIME_FORMAT('2025-01-10T12:00:00Z'::TIMESTAMP,'yyyy-MM-dd HH:mm:ss') AS s;
+-- Format with seconds and microseconds
+SELECT DATETIME_FORMAT('2025-01-10T12:00:00.123456Z'::TIMESTAMP,'%Y-%m-%d %H:%i:%s.%f') AS s;
+-- Result: '2025-01-10 12:00:00.123456'
+
+-- Format 12-hour clock with AM/PM
+SELECT DATETIME_FORMAT('2025-01-10T13:45:30Z'::TIMESTAMP,'%Y-%m-%d %h:%i:%s %p') AS s;
+-- Result: '2025-01-10 01:45:30 PM'
+
+-- Format with full weekday name
+SELECT DATETIME_FORMAT('2025-01-10T13:45:30Z'::TIMESTAMP,'%W, %Y-%m-%d') AS s;
+-- Result: 'Friday, 2025-01-10'
 ```
 
 ---
@@ -397,5 +422,29 @@ Timezone offset in seconds.
 SELECT OFFSET_SECONDS('2025-01-01T12:00:00+02:00'::TIMESTAMP) AS off;
 -- Result: 7200
 ```
+
+---
+
+### Supported MySQL-style Date/Time Patterns
+
+| Pattern | Description                  | Example Output |
+|---------|------------------------------|----------------|
+| `%Y`    | Year (4 digits)              | `2025`         |
+| `%y`    | Year (2 digits)              | `25`           |
+| `%m`    | Month (2 digits)             | `01`           |
+| `%c`    | Month (1–12)                 | `1`            |
+| `%M`    | Month name (full)            | `January`      |
+| `%b`    | Month name (abbrev)          | `Jan`          |
+| `%d`    | Day of month (2 digits)      | `10`           |
+| `%e`    | Day of month (1–31)          | `9`            |
+| `%W`    | Weekday name (full)          | `Friday`       |
+| `%a`    | Weekday name (abbrev)        | `Fri`          |
+| `%H`    | Hour (00–23)                 | `13`           |
+| `%h`    | Hour (01–12)                 | `01`           |
+| `%I`    | Hour (01–12, synonym for %h) | `01`           |
+| `%i`    | Minutes (00–59)              | `45`           |
+| `%s`    | Seconds (00–59)              | `30`           |
+| `%f`    | Microseconds (000–999)       | `123`          |
+| `%p`    | AM/PM marker                 | `AM` / `PM`    |
 
 [Back to index](./README.md)

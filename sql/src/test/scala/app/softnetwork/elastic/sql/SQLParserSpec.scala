@@ -100,7 +100,7 @@ object Queries {
       |ORDER BY Country ASC""".stripMargin
       .replaceAll("\n", " ")
   val dateParse =
-    "SELECT identifier, COUNT(identifier2) AS ct, MAX(DATE_PARSE(createdAt, 'yyyy-MM-dd')) AS lastSeen FROM Table WHERE identifier2 is NOT null GROUP BY identifier ORDER BY COUNT(identifier2) DESC"
+    "SELECT identifier, COUNT(identifier2) AS ct, MAX(DATE_PARSE(createdAt, '%Y-%m-%d')) AS lastSeen FROM Table WHERE identifier2 is NOT null GROUP BY identifier ORDER BY COUNT(identifier2) DESC"
   val dateTimeParse: String =
     """SELECT identifier, COUNT(identifier2) AS ct,
       |MAX(
@@ -108,7 +108,7 @@ object Queries {
       |date_trunc(
       |datetime_parse(
       |createdAt,
-      |'yyyy-MM-ddTHH:mm:ssZ'
+      |'%Y-%m-%d %H:%i:%s.%f'
       |), MINUTE))) AS lastSeen
       |FROM Table
       |WHERE identifier2 is NOT null
@@ -121,12 +121,12 @@ object Queries {
   val dateDiff = "SELECT date_diff(createdAt, updatedAt, DAY) AS diff, identifier FROM Table"
 
   val aggregationWithDateDiff =
-    "SELECT MAX(date_diff(datetime_parse(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, DAY)) AS max_diff FROM Table GROUP BY identifier"
+    "SELECT MAX(date_diff(datetime_parse(createdAt, '%Y-%m-%d %H:%i:%s.%f'), updatedAt, DAY)) AS max_diff FROM Table GROUP BY identifier"
 
   val dateFormat =
-    "SELECT identifier, date_format(date_trunc(lastUpdated, MONTH), 'yyyy-MM-dd') AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeFormat =
-    "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), 'yyyy-MM-ddThh:mm:ssZ') AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d %H:%i:%s') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
     "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateSub =
@@ -143,9 +143,9 @@ object Queries {
   val coalesce: String =
     "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
   val nullif: String =
-    "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
+    "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val conversion: String =
-    "SELECT TRY_CAST(COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', 'yyyy-MM-dd')), CURRENT_DATE - INTERVAL 2 HOUR) BIGINT) AS c, CONVERT(CURRENT_TIMESTAMP, BIGINT) AS c2, CURRENT_TIMESTAMP::DATE AS c3, '125'::BIGINT AS c4, '2025-09-11'::DATE AS c5, identifier FROM Table"
+    "SELECT TRY_CAST(COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d')), CURRENT_DATE - INTERVAL 2 HOUR) BIGINT) AS c, CONVERT(CURRENT_TIMESTAMP, BIGINT) AS c2, CURRENT_TIMESTAMP::DATE AS c3, '125'::BIGINT AS c4, '2025-09-11'::DATE AS c5, identifier FROM Table"
   val allCasts =
     "SELECT CAST(identifier AS int) AS c1, CAST(identifier AS bigint) AS c2, CAST(identifier AS double) AS c3, CAST(identifier AS real) AS c4, CAST(identifier AS boolean) AS c5, CAST(identifier AS char) AS c6, CAST(identifier AS varchar) AS c7, CAST(createdAt AS date) AS c8, CAST(createdAt AS time) AS c9, CAST(createdAt AS datetime) AS c10, CAST(createdAt AS timestamp) AS c11, CAST(identifier AS smallint) AS c12, CAST(identifier AS tinyint) AS c13 FROM Table"
   val caseWhen: String =

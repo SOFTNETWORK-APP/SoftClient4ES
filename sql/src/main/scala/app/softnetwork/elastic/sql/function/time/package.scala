@@ -334,6 +334,43 @@ package object time {
     }
   }
 
+  sealed trait FunctionWithDateTimeFormat {
+    def format: String
+
+    val sqlToJava: Map[String, String] = Map(
+      "%Y" -> "yyyy",
+      "%y" -> "yy",
+      "%m" -> "MM",
+      "%c" -> "M",
+      "%d" -> "dd",
+      "%e" -> "d",
+      "%H" -> "HH",
+      "%h" -> "hh",
+      "%I" -> "hh",
+      "%i" -> "mm",
+      "%s" -> "ss",
+      "%f" -> "SSS", // microseconds
+      "%p" -> "a",
+      "%W" -> "EEEE",
+      "%a" -> "EEE",
+      "%M" -> "MMMM",
+      "%b" -> "MMM"
+    )
+
+    def convert(includeTimeZone: Boolean = false): String = {
+      val basePattern = sqlToJava.foldLeft(format) { case (pattern, (sql, java)) =>
+        pattern.replace(sql, java)
+      }
+
+      val patternWithTZ =
+        if (basePattern.contains("Z")) basePattern.replace("Z", "X")
+        else if (includeTimeZone) s"$basePattern XXX"
+        else basePattern
+
+      patternWithTZ
+    }
+  }
+
   case object DateParse extends Expr("DATE_PARSE") with TokenRegex with PainlessScript {
     override def painless: String = ".parse"
   }
@@ -341,7 +378,8 @@ package object time {
   case class DateParse(identifier: Identifier, format: String)
       extends DateFunction
       with TransformFunction[SQLVarchar, SQLDate]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with FunctionWithDateTimeFormat {
     override def fun: Option[PainlessScript] = Some(DateParse)
 
     override def args: List[PainlessScript] = List.empty
@@ -357,9 +395,9 @@ package object time {
     override def painless: String = throw new NotImplementedError("Use toPainless instead")
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
-        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('$format').parse(e$idx, LocalDate::from) : null)"
+        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert()}').parse(e$idx, LocalDate::from) : null)"
       else
-        s"DateTimeFormatter.ofPattern('$format').parse($base, LocalDate::from)"
+        s"DateTimeFormatter.ofPattern('${convert()}').parse($base, LocalDate::from)"
   }
 
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
@@ -369,7 +407,8 @@ package object time {
   case class DateFormat(identifier: Identifier, format: String)
       extends DateFunction
       with TransformFunction[SQLDate, SQLVarchar]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with FunctionWithDateTimeFormat {
     override def fun: Option[PainlessScript] = Some(DateFormat)
 
     override def args: List[PainlessScript] = List.empty
@@ -385,9 +424,9 @@ package object time {
     override def painless: String = throw new NotImplementedError("Use toPainless instead")
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
-        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('$format').format(e$idx) : null)"
+        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert()}').format(e$idx) : null)"
       else
-        s"DateTimeFormatter.ofPattern('$format').format($base)"
+        s"DateTimeFormatter.ofPattern('${convert()}').format($base)"
   }
 
   case object DateTimeAdd extends Expr("DATETIME_ADD") with TokenRegex {
@@ -431,7 +470,8 @@ package object time {
   case class DateTimeParse(identifier: Identifier, format: String)
       extends DateTimeFunction
       with TransformFunction[SQLVarchar, SQLDateTime]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with FunctionWithDateTimeFormat {
     override def fun: Option[PainlessScript] = Some(DateTimeParse)
 
     override def args: List[PainlessScript] = List.empty
@@ -447,9 +487,9 @@ package object time {
     override def painless: String = throw new NotImplementedError("Use toPainless instead")
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
-        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('$format').parse(e$idx, ZonedDateTime::from) : null)"
+        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').parse(e$idx, ZonedDateTime::from) : null)"
       else
-        s"DateTimeFormatter.ofPattern('$format').parse($base, ZonedDateTime::from)"
+        s"DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').parse($base, ZonedDateTime::from)"
   }
 
   case object DateTimeFormat extends Expr("DATETIME_FORMAT") with TokenRegex with PainlessScript {
@@ -459,7 +499,8 @@ package object time {
   case class DateTimeFormat(identifier: Identifier, format: String)
       extends DateTimeFunction
       with TransformFunction[SQLDateTime, SQLVarchar]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with FunctionWithDateTimeFormat {
     override def fun: Option[PainlessScript] = Some(DateTimeFormat)
 
     override def args: List[PainlessScript] = List.empty
@@ -475,9 +516,9 @@ package object time {
     override def painless: String = throw new NotImplementedError("Use toPainless instead")
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
-        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('$format').format(e$idx) : null)"
+        s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').format(e$idx) : null)"
       else
-        s"DateTimeFormatter.ofPattern('$format').format($base)"
+        s"DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').format($base)"
   }
 
 }

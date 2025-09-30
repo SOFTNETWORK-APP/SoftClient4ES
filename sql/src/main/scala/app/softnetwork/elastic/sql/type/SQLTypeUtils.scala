@@ -133,7 +133,7 @@ object SQLTypeUtils {
         case (SQLTypes.Boolean, SQLTypes.TinyInt) =>
           s"(byte)($expr ? 1 : 0)"
 
-        // ---- VARCHAR -> TEMPORAL ----
+        // ---- VARCHAR -> NUMERIC ----
         case (SQLTypes.Varchar, SQLTypes.Int) =>
           s"Integer.parseInt($expr).intValue()"
         case (SQLTypes.Varchar, SQLTypes.BigInt) =>
@@ -147,12 +147,14 @@ object SQLTypeUtils {
         case (SQLTypes.Varchar, SQLTypes.TinyInt) =>
           s"Byte.parseByte($expr).byteValue()"
 
-        // ---- VARCHAR -> DATE ----
+        // ---- VARCHAR -> TEMPORAL ----
         case (SQLTypes.Varchar, SQLTypes.Date) =>
           s"LocalDate.parse($expr, DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
         case (SQLTypes.Varchar, SQLTypes.Time) =>
           s"LocalTime.parse($expr, DateTimeFormatter.ofPattern('HH:mm:ss'))"
-        case (SQLTypes.Varchar, SQLTypes.DateTime | SQLTypes.Timestamp) =>
+        case (SQLTypes.Varchar, SQLTypes.DateTime) =>
+          s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
+        case (SQLTypes.Varchar, SQLTypes.Timestamp) =>
           s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)"
 
         // ---- IDENTITY ----
