@@ -23,7 +23,9 @@ package object math {
   case object Exp extends Expr("EXP") with MathOp
   case object Log extends Expr("LOG") with MathOp
   case object Log10 extends Expr("LOG10") with MathOp
-  case object Pow extends Expr("POW") with MathOp
+  case object Pow extends Expr("POW") with MathOp {
+    override def words: List[String] = List("POWER", sql)
+  }
   case object Sqrt extends Expr("SQRT") with MathOp
   case object Sign extends Expr("SIGN") with MathOp {
     override def baseType: SQLNumeric = SQLTypes.TinyInt

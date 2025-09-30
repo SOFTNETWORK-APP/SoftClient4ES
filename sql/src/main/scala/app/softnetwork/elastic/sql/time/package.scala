@@ -55,6 +55,7 @@ package object time {
       override val timeField: String = "EPOCH_DAY"
     }
     case object OFFSET_SECONDS extends Expr("OFFSET") with TimeField {
+      override lazy val words: List[String] = List("OFFSET_SECONDS", sql)
       override val timeField: String = "OFFSET_SECONDS"
     }
   }
