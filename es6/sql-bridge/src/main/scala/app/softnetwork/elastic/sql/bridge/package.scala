@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble}
+import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble, SQLTemporal, SQLVarchar}
 import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
@@ -468,17 +468,24 @@ package object bridge {
       case _ =>
     }
     val r =
-      out match {
+      fromTo.out match {
         case _: SQLDouble =>
           rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Double] lte fromTo.to.value
             .asInstanceOf[Double]
         case _: SQLBigInt =>
           rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Long] lte fromTo.to.value
             .asInstanceOf[Long]
-        case _ =>
+        case _: SQLVarchar =>
           rangeQuery(identifier.name) gte String.valueOf(fromTo.from.value) lte String.valueOf(
             fromTo.to.value
           )
+        case _: SQLTemporal =>
+          // TODO
+          throw new IllegalArgumentException(
+            "Range queries on temporal values are not supported yet"
+          )
+        case other =>
+          throw new IllegalArgumentException(s"Unsupported type for range query: $other")
       }
     maybeNot match {
       case Some(_) => not(r)

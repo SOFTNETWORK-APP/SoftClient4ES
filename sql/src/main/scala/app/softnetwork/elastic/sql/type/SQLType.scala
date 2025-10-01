@@ -7,6 +7,8 @@ sealed trait SQLType {
 
 trait SQLAny extends SQLType
 
+trait SQLNull extends SQLType
+
 trait SQLTemporal extends SQLType
 
 trait SQLDate extends SQLTemporal

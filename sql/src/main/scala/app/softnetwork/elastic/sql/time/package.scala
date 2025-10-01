@@ -77,7 +77,7 @@ package object time {
 
   }
 
-  sealed trait TimeUnit extends PainlessScript with MathScript {
+  sealed trait TimeUnit extends PainlessScript with DateMathScript {
     lazy val regex: Regex = s"\\b(?i)$sql(s)?\\b".r
 
     def timeUnit: String = sql.toUpperCase() + "S"
@@ -124,7 +124,7 @@ package object time {
 
   case object Interval extends Expr("INTERVAL") with TokenRegex
 
-  sealed trait TimeInterval extends PainlessScript with MathScript {
+  sealed trait TimeInterval extends PainlessScript with DateMathScript {
     def value: Int
     def unit: TimeUnit
     override def sql: String = s"$Interval $value ${unit.sql}"
@@ -148,7 +148,7 @@ package object time {
             case _                         => Left(s"Invalid interval unit $unit for TIME")
           }
         case SQLTypes.DateTime =>
-          Right(SQLTypes.Timestamp)
+          Right(SQLTypes.DateTime)
         case SQLTypes.Timestamp =>
           Right(SQLTypes.Timestamp)
         case SQLTypes.Temporal =>

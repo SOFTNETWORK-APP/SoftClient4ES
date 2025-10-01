@@ -63,8 +63,8 @@ package object function {
     def toScript: Option[String] = {
       val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       orderedFunctions.foldLeft(Option("")) {
-        case (expr, f: MathScript) if expr.isDefined => Option(s"${expr.get}${f.script}")
-        case (_, _)                                  => None // ignore non math scripts
+        case (expr, f: DateMathScript) if expr.isDefined => Option(s"${expr.get}${f.script}")
+        case (_, _)                                      => None // ignore non math scripts
       } match {
         case Some(s) if s.nonEmpty =>
           out match {
@@ -74,6 +74,8 @@ package object function {
         case _ => None
       }
     }
+
+    override def dateMathScript: Boolean = toScript.isDefined
 
     override def system: Boolean = functions.lastOption.exists(_.system)
 

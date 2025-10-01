@@ -42,6 +42,7 @@ package object sql {
     }
     def system: Boolean = false
     def nullable: Boolean = !system
+    def dateMathScript: Boolean = false
   }
 
   trait PainlessScript extends Token {
@@ -53,8 +54,9 @@ package object sql {
     def params: Map[String, Any]
   }
 
-  trait MathScript extends Token {
+  trait DateMathScript extends Token {
     def script: String
+    override def dateMathScript: Boolean = true
   }
 
   trait Updateable extends Token {

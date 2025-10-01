@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql.`type`
 object SQLTypes {
   case object Any extends SQLAny { val typeId = "ANY" }
 
-  case object Null extends SQLAny { val typeId = "NULL" }
+  case object Null extends SQLNull { val typeId = "NULL" }
 
   case object Temporal extends SQLTemporal { val typeId = "TEMPORAL" }
 

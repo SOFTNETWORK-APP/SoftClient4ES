@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, Identifier, MathScript, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{DateMathScript, Expr, Identifier, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.operator.time._
 import app.softnetwork.elastic.sql.`type`.{
   SQLDate,
@@ -18,7 +18,7 @@ package object time {
 
   sealed trait IntervalFunction[IO <: SQLTemporal]
       extends TransformFunction[IO, IO]
-      with MathScript {
+      with DateMathScript {
     def operator: IntervalOperator
 
     override def fun: Option[IntervalOperator] = Some(operator)
@@ -93,13 +93,13 @@ package object time {
   sealed trait CurrentDateTimeFunction
       extends DateTimeFunction
       with CurrentFunction
-      with MathScript {
+      with DateMathScript {
     override def painless: String =
       SQLTypeUtils.coerce(now, this.baseType, this.out, nullable = false)
     override def script: String = "now"
   }
 
-  sealed trait CurrentDateFunction extends DateFunction with CurrentFunction with MathScript {
+  sealed trait CurrentDateFunction extends DateFunction with CurrentFunction with DateMathScript {
     override def painless: String =
       SQLTypeUtils.coerce(s"$now.toLocalDate()", this.baseType, this.out, nullable = false)
     override def script: String = "now"
@@ -315,6 +315,7 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, ${interval.sql})"
     }
+    override def dateMathScript: Boolean = identifier.dateMathScript
   }
 
   case object DateSub extends Expr("DATE_SUB") with TokenRegex {
@@ -332,6 +333,7 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, ${interval.sql})"
     }
+    override def dateMathScript: Boolean = identifier.dateMathScript
   }
 
   sealed trait FunctionWithDateTimeFormat {
@@ -452,6 +454,7 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, ${interval.sql})"
     }
+    override def dateMathScript: Boolean = identifier.dateMathScript
   }
 
   case object DateTimeSub extends Expr("DATETIME_SUB") with TokenRegex {
@@ -469,6 +472,7 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, ${interval.sql})"
     }
+    override def dateMathScript: Boolean = identifier.dateMathScript
   }
 
   case object DateTimeParse extends Expr("DATETIME_PARSE") with TokenRegex with PainlessScript {

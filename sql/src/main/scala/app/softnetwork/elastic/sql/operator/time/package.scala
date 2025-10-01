@@ -1,10 +1,10 @@
 package app.softnetwork.elastic.sql.operator
 
-import app.softnetwork.elastic.sql.{Expr, MathScript}
+import app.softnetwork.elastic.sql.{DateMathScript, Expr}
 
 package object time {
 
-  sealed trait IntervalOperator extends Operator with BinaryOperator with MathScript {
+  sealed trait IntervalOperator extends Operator with BinaryOperator with DateMathScript {
     override def script: String = sql
     override def toString: String = s" $sql "
     override def painless: String = this match {
