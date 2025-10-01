@@ -41,5 +41,7 @@ package object geo {
       long ~ distance_unit ^^ { case value ~ unit => GeoDistance(value, unit) }
 
     def distance_identifier: PackratParser[Identifier] = distance ^^ functionAsIdentifier
+
+    def geoFunctionWithIdentifier: PackratParser[Identifier] = distance_identifier
   }
 }

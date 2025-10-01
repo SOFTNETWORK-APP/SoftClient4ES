@@ -2,6 +2,11 @@ package app.softnetwork.elastic
 
 import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
+import app.softnetwork.elastic.sql.function.time.{
+  CurrentDateFunction,
+  CurrentDateTimeFunction,
+  CurrentFunction
+}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
@@ -43,6 +48,11 @@ package object sql {
     def system: Boolean = false
     def nullable: Boolean = !system
     def dateMathScript: Boolean = false
+    def isTemporal: Boolean = out.isInstanceOf[SQLTemporal]
+  }
+
+  trait TokenValue extends Token {
+    def value: Any
   }
 
   trait PainlessScript extends Token {
@@ -55,8 +65,27 @@ package object sql {
   }
 
   trait DateMathScript extends Token {
-    def script: String
+    def script: Option[String]
+    def hasScript: Boolean = script.isDefined
     override def dateMathScript: Boolean = true
+    def formatScript: Option[String] = None
+    def hasFormat: Boolean = formatScript.isDefined
+  }
+
+  object DateMathRounding {
+    def apply(out: SQLType): Option[String] =
+      out match {
+        case _: SQLDate => Some("/d")
+        /*case _: SQLDateTime  => Some("/s")
+        case _: SQLTimestamp => Some("/s")*/
+        case _: SQLTime => Some("/s")
+        case _          => None
+      }
+  }
+
+  trait DateMathRounding {
+    def roundingScript: Option[String] = None
+    def hasRounding: Boolean = roundingScript.isDefined
   }
 
   trait Updateable extends Token {
@@ -230,18 +259,23 @@ package object sql {
     override def painless: String = s"$value"
   }
 
-  sealed abstract class FromTo[+T](val from: Value[T], val to: Value[T]) extends Token {
+  sealed abstract class FromTo(val from: TokenValue, val to: TokenValue) extends Token {
     override def sql = s"${from.sql} AND ${to.sql}"
 
     override def baseType: SQLType =
       SQLTypeUtils.leastCommonSuperType(List(from.baseType, to.baseType))
 
-    override def validate(): Either[String, Unit] =
-      Validator.validateTypesMatching(from.out, to.out)
+    override def validate(): Either[String, Unit] = {
+      for {
+        _ <- from.validate()
+        _ <- to.validate()
+        _ <- Validator.validateTypesMatching(from.out, to.out)
+      } yield ()
+    }
   }
 
   case class LiteralFromTo(override val from: StringValue, override val to: StringValue)
-      extends FromTo[String](from, to) {
+      extends FromTo(from, to) {
     def between: Seq[String] => Boolean = {
       _.exists { s => s >= from.value && s <= to.value }
     }
@@ -251,7 +285,7 @@ package object sql {
   }
 
   case class LongFromTo(override val from: LongValue, override val to: LongValue)
-      extends FromTo[Long](from, to) {
+      extends FromTo(from, to) {
     def between: Seq[Long] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -261,7 +295,7 @@ package object sql {
   }
 
   case class DoubleFromTo(override val from: DoubleValue, override val to: DoubleValue)
-      extends FromTo[Double](from, to) {
+      extends FromTo(from, to) {
     def between: Seq[Double] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -271,7 +305,7 @@ package object sql {
   }
 
   case class GeoDistanceFromTo(override val from: GeoDistance, override val to: GeoDistance)
-      extends FromTo[Double](from, to) {
+      extends FromTo(from, to) {
     def between: Seq[Double] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -279,6 +313,9 @@ package object sql {
       _.forall { n => n < from.value || n > to.value }
     }
   }
+
+  case class IdentifierFromTo(override val from: Identifier, override val to: Identifier)
+      extends FromTo(from, to)
 
   sealed abstract class Values[+R: TypeTag, +T <: Value[R]](val values: Seq[T])
       extends Token
@@ -411,7 +448,12 @@ package object sql {
     def update(request: SQLSearchRequest): Source
   }
 
-  sealed trait Identifier extends Token with Source with FunctionChain with PainlessScript {
+  sealed trait Identifier
+      extends TokenValue
+      with Source
+      with FunctionChain
+      with PainlessScript
+      with DateMathScript {
     def name: String
 
     def withFunctions(functions: List[Function]): Identifier
@@ -474,6 +516,56 @@ package object sql {
       expr
     }
 
+    def script: Option[String] =
+      if (isTemporal) {
+        var orderedFunctions = FunctionUtils.transformFunctions(this).reverse
+
+        val baseOpt: Option[String] = orderedFunctions.headOption match {
+          case Some(head) =>
+            head match {
+              case s: StringValue if s.value.nonEmpty =>
+                orderedFunctions = orderedFunctions.tail
+                Some(s.value + "||")
+              case current: CurrentFunction =>
+                orderedFunctions = orderedFunctions.tail
+                current.script
+              case _ => Option(name).filter(_.nonEmpty).map(_ + "||")
+            }
+          case _ => Option(name).filter(_.nonEmpty).map(_ + "||")
+        }
+
+        val roundingOpt: Option[String] =
+          orderedFunctions
+            .collectFirst {
+              case r: DateMathRounding if r.hasRounding => r.roundingScript.get
+            }
+            .orElse(DateMathRounding(out))
+
+        orderedFunctions.foldLeft(baseOpt) {
+          case (expr, f: Function) if expr.isDefined && f.dateMathScript =>
+            f match {
+              case s: DateMathScript =>
+                s.script match {
+                  case Some(script) if script.nonEmpty =>
+                    Some(s"${expr.get}$script")
+                  case _ => expr
+                }
+              case _ => expr
+            }
+          case (_, _) => None // ignore non math scripts
+        } match {
+          case Some(s) if s.nonEmpty =>
+            roundingOpt match {
+              case Some(r) if r.nonEmpty => Some(s"$s$r")
+              case _                     => Some(s)
+            }
+          case _ => None
+        }
+      } else
+        None
+
+    override def dateMathScript: Boolean = isTemporal
+
     def checkNotNull: String =
       if (name.isEmpty) ""
       else
@@ -495,6 +587,11 @@ package object sql {
 
     override def nullable: Boolean = _nullable
 
+    override def value: String =
+      script match {
+        case Some(s) => s
+        case _       => painless
+      }
   }
 
   object Identifier {

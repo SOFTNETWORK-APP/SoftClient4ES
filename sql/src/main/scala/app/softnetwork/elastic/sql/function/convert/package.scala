@@ -1,11 +1,11 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Alias, Expr, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{Alias, DateMathRounding, Expr, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
 
 package object convert {
 
-  sealed trait Conversion extends TransformFunction[SQLType, SQLType] {
+  sealed trait Conversion extends TransformFunction[SQLType, SQLType] with DateMathRounding {
     override def toSQL(base: String): String = sql
 
     def value: PainlessScript
@@ -28,6 +28,10 @@ package object convert {
       if (safe) s"try $retWithBrackets catch (Exception e) { return null; }"
       else ret
     }
+
+    override def roundingScript: Option[String] = DateMathRounding(targetType)
+
+    override def dateMathScript: Boolean = isTemporal
   }
 
   case object Cast extends Expr("CAST") with TokenRegex

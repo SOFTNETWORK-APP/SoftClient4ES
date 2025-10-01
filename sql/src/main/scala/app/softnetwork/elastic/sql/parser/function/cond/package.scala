@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.parser.function
 
-import app.softnetwork.elastic.sql.function.TransformFunction
+import app.softnetwork.elastic.sql.function.{FunctionWithIdentifier, TransformFunction}
 import app.softnetwork.elastic.sql.function.cond.{
   Case,
   Coalesce,
@@ -83,13 +83,13 @@ package object cond {
       Identifier(cw)
     }
 
-    def conditional_functions: PackratParser[TransformFunction[_, _]] =
-      is_null | is_notnull | coalesce | nullif | case_when
+    def conditional_function: PackratParser[FunctionWithIdentifier] =
+      is_null | is_notnull | coalesce | nullif
 
     def conditionalFunctionWithIdentifier: PackratParser[Identifier] =
-      (is_null | is_notnull | coalesce | nullif) ^^ { t =>
+      conditional_function ^^ { t =>
         t.identifier.withFunctions(t +: t.identifier.functions)
-      }
+      } | case_when_identifier
 
   }
 }

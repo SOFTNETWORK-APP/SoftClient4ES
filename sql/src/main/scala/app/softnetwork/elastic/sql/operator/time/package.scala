@@ -5,7 +5,7 @@ import app.softnetwork.elastic.sql.{DateMathScript, Expr}
 package object time {
 
   sealed trait IntervalOperator extends Operator with BinaryOperator with DateMathScript {
-    override def script: String = sql
+    override def script: Option[String] = Some(sql)
     override def toString: String = s" $sql "
     override def painless: String = this match {
       case PLUS  => ".plus"

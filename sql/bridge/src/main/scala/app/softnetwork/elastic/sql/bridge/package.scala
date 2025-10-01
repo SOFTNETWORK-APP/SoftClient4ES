@@ -111,7 +111,9 @@ package object bridge {
         _search scriptfields scriptFields.map { field =>
           scriptField(
             field.scriptName,
-            Script(script = field.painless).lang("painless").scriptType("source")
+            Script(script = field.painless)
+              .lang("painless")
+              .scriptType("source")
               .params(field.identifier.functions.headOption match {
                 case Some(f: PainlessParams) => f.params
                 case _                       => Map.empty[String, Any]
@@ -366,7 +368,7 @@ package object bridge {
       case i: Identifier =>
         operator match {
           case op: ComparisonOperator =>
-            i.toScript match {
+            i.script match {
               case Some(script) =>
                 val o = if (maybeNot.isDefined) op.not else op
                 o match {
@@ -435,7 +437,7 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-    between: BetweenExpr[_]
+    between: BetweenExpr
   ): Query = {
     import between._
     // Geo distance special case
@@ -480,10 +482,38 @@ package object bridge {
             fromTo.to.value
           )
         case _: SQLTemporal =>
-          // TODO
-          throw new IllegalArgumentException("Range queries on temporal values are not supported yet")
-        case other =>
-          throw new IllegalArgumentException(s"Unsupported type for range query: $other")
+          fromTo match {
+            case ft: IdentifierFromTo =>
+              (ft.from.script, ft.to.script) match {
+                case (Some(from), Some(to)) =>
+                  rangeQuery(identifier.name) gte from lte to
+                case (Some(from), None) =>
+                  val fq = rangeQuery(identifier.name) gte from
+                  val tq = GenericExpression(identifier, LE, ft.to, None)
+                  maybeNot match {
+                    case Some(_) => return not(fq, tq)
+                    case _       => return must(fq, tq)
+                  }
+                case (None, Some(to)) =>
+                  val fq = GenericExpression(identifier, GE, ft.from, None)
+                  val tq = rangeQuery(identifier.name) lte to
+                  maybeNot match {
+                    case Some(_) => return not(fq, tq)
+                    case _       => return must(fq, tq)
+                  }
+                case _ =>
+                  val fq = GenericExpression(identifier, GE, ft.from, None)
+                  val tq = GenericExpression(identifier, LE, ft.to, None)
+                  maybeNot match {
+                    case Some(_) => return not(fq, tq)
+                    case _       => return must(fq, tq)
+                  }
+              }
+            case other =>
+              throw new IllegalArgumentException(s"Unsupported type for range query: $other")
+          }
+        case _ =>
+          throw new IllegalArgumentException(s"Unsupported out type for range query: ${fromTo.out}")
       }
     maybeNot match {
       case Some(_) => not(r)

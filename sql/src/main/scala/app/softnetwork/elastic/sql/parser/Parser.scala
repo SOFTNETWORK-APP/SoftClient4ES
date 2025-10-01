@@ -95,21 +95,18 @@ trait Parser
     identifierWithTransformation | // transformations applied to an identifier
     identifierWithIntervalFunction |
     identifierWithFunction | // fonctions applied to an identifier
-    literal | // 'string'
-    pi |
-    double |
-    long |
-    boolean |
+    identifierWithValue |
     identifier
 
   implicit def functionAsIdentifier(mf: Function): Identifier = mf match {
-    case id: Identifier              => id
-    case fid: FunctionWithIdentifier => fid.identifier
-    case _                           => Identifier(mf)
+    case id: Identifier => id
+    case fid: FunctionWithIdentifier =>
+      fid.identifier //.withFunctions(fid +: fid.identifier.functions)
+    case _ => Identifier(mf)
   }
 
-  def sql_functions: PackratParser[Function] =
-    aggregates | date_diff | date_trunc | extractors | date_functions | datetime_functions | conditional_functions | string_functions
+  def sql_function: PackratParser[Function] =
+    aggregate_function | time_function | conditional_function | string_function
 
   private val reservedKeywords = Seq(
     "select",
@@ -241,24 +238,19 @@ trait Parser
         None,
         d.isDefined
       )
-    }) >> castOperator
+    }) >> cast
 
   def identifierWithTransformation: PackratParser[Identifier] =
     (mathematicalFunctionWithIdentifier |
     conversionFunctionWithIdentifier |
     conditionalFunctionWithIdentifier |
-    systemFunctionWithIdentifier |
-    dateFunctionWithIdentifier |
-    dateTimeFunctionWithIdentifier |
+    timeFunctionWithIdentifier |
     stringFunctionWithIdentifier |
-    date_diff_identifier |
-    extract_identifier |
-    case_when_identifier |
-    distance_identifier) >> castOperator
+    geoFunctionWithIdentifier) >> cast
 
   def identifierWithFunction: PackratParser[Identifier] =
     (rep1sep(
-      sql_functions,
+      sql_function,
       start
     ) ~ start.? ~ (identifierWithTransformation | identifierWithIntervalFunction | identifier).? ~ rep1(
       end
@@ -272,7 +264,7 @@ trait Parser
           }
         case Some(id) => id.withFunctions(id.functions ++ f)
       }
-    }) >> castOperator
+    }) >> cast
 
   private val regexAlias =
     s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_]*""".stripMargin

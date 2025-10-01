@@ -95,9 +95,10 @@ package object time {
     def identifierWithIntervalFunction: PackratParser[Identifier] =
       ((identifierWithTransformation |
       identifierWithFunction |
-      identifier) ~ intervalFunction ^^ { case i ~ f =>
-        i.withFunctions(f +: i.functions)
-      }) >> castOperator
+      identifierWithValue |
+      identifier) ~ rep(intervalFunction) ^^ { case i ~ f =>
+        i.withFunctions(f ++ i.functions)
+      }) >> cast
 
   }
 }

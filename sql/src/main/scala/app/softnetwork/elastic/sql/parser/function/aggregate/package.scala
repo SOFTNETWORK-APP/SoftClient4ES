@@ -19,10 +19,10 @@ package object aggregate {
 
     def sum: PackratParser[AggregateFunction] = SUM.regex ^^ (_ => SUM)
 
-    def aggregates: PackratParser[AggregateFunction] = count | min | max | avg | sum
+    def aggregate_function: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
     def identifierWithAggregation: PackratParser[Identifier] =
-      aggregates ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
+      aggregate_function ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
         case a ~ _ ~ i ~ _ =>
           i.withFunctions(a +: i.functions)
       }

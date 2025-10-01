@@ -44,7 +44,7 @@ package object math {
 
     private[this] def log10: PackratParser[MathOp] = Log10.regex ^^ (_ => Log10)
 
-    def arithmeticFunction: PackratParser[MathematicalFunction] =
+    def arithmetic_function: PackratParser[MathematicalFunction] =
       (abs | ceil | exp | floor | log | log10 | sqrt) ~ start ~ valueExpr ~ end ^^ {
         case op ~ _ ~ v ~ _ => MathematicalFunctionWithOp(op, v)
       }
@@ -63,42 +63,40 @@ package object math {
 
     private[this] def atan2: PackratParser[Trigonometric] = Atan2.regex ^^ (_ => Atan2)
 
-    def atan2Function: PackratParser[MathematicalFunction] =
+    def atan2_function: PackratParser[MathematicalFunction] =
       atan2 ~ start ~ (double | valueExpr) ~ separator ~ (double | valueExpr) ~ end ^^ {
         case _ ~ _ ~ y ~ _ ~ x ~ _ => Atan2(y, x)
       }
 
-    def trigonometricFunction: PackratParser[MathematicalFunction] =
-      atan2Function | ((sin | asin | cos | acos | tan | atan) ~ start ~ valueExpr ~ end ^^ {
+    def trigonometric_function: PackratParser[MathematicalFunction] =
+      atan2_function | ((sin | asin | cos | acos | tan | atan) ~ start ~ valueExpr ~ end ^^ {
         case op ~ _ ~ v ~ _ => MathematicalFunctionWithOp(op, v)
       })
 
     private[this] def round: PackratParser[MathOp] = Round.regex ^^ (_ => Round)
 
-    def roundFunction: PackratParser[MathematicalFunction] =
+    def round_function: PackratParser[MathematicalFunction] =
       round ~ start ~ valueExpr ~ separator.? ~ long.? ~ end ^^ { case _ ~ _ ~ v ~ _ ~ s ~ _ =>
         Round(v, s.map(_.value.toInt))
       }
 
     private[this] def pow: PackratParser[MathOp] = Pow.regex ^^ (_ => Pow)
 
-    def powFunction: PackratParser[MathematicalFunction] =
+    def pow_function: PackratParser[MathematicalFunction] =
       pow ~ start ~ valueExpr ~ separator ~ long ~ end ^^ { case _ ~ _ ~ v1 ~ _ ~ e ~ _ =>
         Pow(v1, e.value.toInt)
       }
 
     private[this] def sign: PackratParser[MathOp] = Sign.regex ^^ (_ => Sign)
 
-    def signFunction: PackratParser[MathematicalFunction] =
+    def sign_function: PackratParser[MathematicalFunction] =
       sign ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ => Sign(v) }
 
-    def mathematicalFunction: PackratParser[MathematicalFunction] =
-      arithmeticFunction | trigonometricFunction | roundFunction | powFunction | signFunction
+    def mathematical_function: PackratParser[MathematicalFunction] =
+      arithmetic_function | trigonometric_function | round_function | pow_function | sign_function
 
     def mathematicalFunctionWithIdentifier: PackratParser[Identifier] =
-      mathematicalFunction ^^ { mf =>
-        mf.identifier
-      }
+      mathematical_function ^^ functionAsIdentifier
 
   }
 }

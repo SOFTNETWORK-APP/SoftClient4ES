@@ -986,18 +986,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "bool": {
       |      "filter": [
       |        {
-      |          "script": {
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
+      |          "range": {
+      |            "createdAt": {
+      |              "lt": "now/s"
       |            }
       |          }
       |        },
       |        {
-      |          "script": {
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
+      |          "range": {
+      |            "createdAt": {
+      |              "gte": "now-10m/s"
       |            }
       |          }
       |        }

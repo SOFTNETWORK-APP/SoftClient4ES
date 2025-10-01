@@ -55,7 +55,7 @@ package object math {
         case f: FunctionWithIdentifier => f.identifier
         case f: Function               => Identifier(f)
         case other                     => throw new Exception(s"Unexpected expression $other")
-      }) >> castOperator
+      }) >> cast
 
   }
 }

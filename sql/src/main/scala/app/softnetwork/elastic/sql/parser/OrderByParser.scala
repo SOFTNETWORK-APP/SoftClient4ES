@@ -14,7 +14,7 @@ trait OrderByParser {
     """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
 
   def fieldWithFunction: PackratParser[(String, List[Function])] =
-    rep1sep(sql_functions, start) ~ start.? ~ fieldName ~ rep1(end) ^^ { case f ~ _ ~ n ~ _ =>
+    rep1sep(sql_function, start) ~ start.? ~ fieldName ~ rep1(end) ^^ { case f ~ _ ~ n ~ _ =>
       (n, f)
     }
 

@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.parser.function
 
-import app.softnetwork.elastic.sql.{Identifier, StringValue}
+import app.softnetwork.elastic.sql.{function, Identifier, StringValue}
 import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLNumeric, SQLTemporal}
 import app.softnetwork.elastic.sql.function.{
   BinaryFunction,
@@ -14,7 +14,7 @@ import app.softnetwork.elastic.sql.time.{IsoField, TimeField, TimeUnit}
 
 package object time {
 
-  trait SystemParser { self: Parser with TimeParser =>
+  trait CurrentParser { self: Parser with TimeParser =>
 
     def parens: PackratParser[List[Delimiter]] =
       start ~ end ^^ { case s ~ e => s :: e :: Nil }
@@ -42,16 +42,11 @@ package object time {
       Today(p.isDefined)
     }
 
-    def systemFunctions: PackratParser[CurrentFunction] =
+    private[this] def current_function: PackratParser[CurrentFunction] =
       current_date | current_time | current_timestamp | now | today
 
-    def systemFunctionWithIdentifier: PackratParser[Identifier] =
-      systemFunctions ~ intervalFunction.? ^^ { case f1 ~ f2 =>
-        f2 match {
-          case Some(f) => Identifier(List(f, f1))
-          case None    => Identifier(f1)
-        }
-      }
+    def currentFunctionWithIdentifier: PackratParser[Identifier] =
+      current_function ^^ functionAsIdentifier
 
   }
 
@@ -91,17 +86,13 @@ package object time {
         case _ ~ _ ~ i ~ _ => LastDayOfMonth(i)
       }
 
-    def date_functions: PackratParser[DateFunction] =
+    def date_function: PackratParser[DateFunction] =
       date_add | date_sub | date_parse | date_format | last_day
 
     def dateFunctionWithIdentifier: PackratParser[Identifier] =
-      (date_parse | date_format | date_add | date_sub | last_day) ~ intervalFunction.? ^^ {
-        case t ~ af =>
-          af match {
-            case Some(f) => t.identifier.withFunctions(f +: t +: t.identifier.functions)
-            case None    => t.identifier.withFunctions(t +: t.identifier.functions)
-          }
-      }
+      (date_parse | date_format | date_add | date_sub | last_day) ^^ (t =>
+        t.identifier.withFunctions(t +: t.identifier.functions)
+      )
 
   }
 
@@ -136,21 +127,17 @@ package object time {
           DateTimeFormat(i, f.value)
       }
 
-    def datetime_functions: PackratParser[DateTimeFunction] =
+    def datetime_function: PackratParser[DateTimeFunction] =
       datetime_add | datetime_sub | datetime_parse | datetime_format
 
     def dateTimeFunctionWithIdentifier: PackratParser[Identifier] =
-      (date_trunc | datetime_parse | datetime_format | datetime_add | datetime_sub) ~ intervalFunction.? ^^ {
-        case t ~ af =>
-          af match {
-            case Some(f) => t.identifier.withFunctions(f +: t +: t.identifier.functions)
-            case None    => t.identifier.withFunctions(t +: t.identifier.functions)
-          }
+      (datetime_parse | datetime_format | datetime_add | datetime_sub) ^^ { t =>
+        t.identifier.withFunctions(t +: t.identifier.functions)
       }
 
   }
 
-  trait TemporalParser extends SystemParser with TimeParser with DateParser with DateTimeParser {
+  trait TemporalParser extends CurrentParser with TimeParser with DateParser with DateTimeParser {
     self: Parser =>
 
     def date_diff: PackratParser[BinaryFunction[_, _, _]] =
@@ -175,6 +162,10 @@ package object time {
         case _ ~ _ ~ i ~ _ ~ u ~ _ =>
           DateTrunc(i, u)
       }
+
+    def date_trunc_identifier: PackratParser[Identifier] = date_trunc ^^ { dt =>
+      dt.identifier.withFunctions(dt +: dt.identifier.functions)
+    }
 
     def extract_identifier: PackratParser[Identifier] =
       Extract.regex ~ start ~ time_field ~ "(?i)from".r ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
@@ -217,7 +208,7 @@ package object time {
     def week_of_week_based_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       IsoField.WEEK_OF_WEEK_BASED_YEAR.regex ^^ (_ => new WeekOfWeekBasedYear)
 
-    def extractors: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
+    def extractor_function: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       year_tr |
       month_of_year_tr |
       day_of_month_tr |
@@ -234,6 +225,18 @@ package object time {
       quarter_of_year_tr |
       week_of_week_based_year_tr
 
+    def time_function: Parser[function.Function] =
+      date_function | datetime_function | date_diff | date_trunc | extractor_function
+
+    def timeFunctionWithIdentifier: Parser[Identifier] =
+      (currentFunctionWithIdentifier |
+      dateFunctionWithIdentifier |
+      dateTimeFunctionWithIdentifier |
+      date_diff_identifier |
+      date_trunc_identifier |
+      extract_identifier) ~ rep(intervalFunction) ^^ { case i ~ f =>
+        i.withFunctions(f ++ i.functions)
+      }
   }
 
 }

@@ -99,7 +99,7 @@ package object string {
         StringFunctionWithOp(Rtrim)
       }
 
-    def string_functions: Parser[
+    def string_function: Parser[
       StringFunction[_]
     ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim | ltrim | rtrim
 

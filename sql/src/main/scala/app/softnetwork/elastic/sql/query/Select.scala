@@ -6,6 +6,7 @@ import app.softnetwork.elastic.sql.{
   asString,
   Alias,
   AliasUtils,
+  DateMathScript,
   Expr,
   Identifier,
   PainlessScript,
@@ -20,7 +21,8 @@ case class Field(
   fieldAlias: Option[Alias] = None
 ) extends Updateable
     with FunctionChain
-    with PainlessScript {
+    with PainlessScript
+    with DateMathScript {
   def isScriptField: Boolean = functions.nonEmpty && !aggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String = {
@@ -63,6 +65,8 @@ case class Field(
   }
 
   def painless: String = identifier.painless
+
+  def script: Option[String] = identifier.script
 
   lazy val scriptName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
 

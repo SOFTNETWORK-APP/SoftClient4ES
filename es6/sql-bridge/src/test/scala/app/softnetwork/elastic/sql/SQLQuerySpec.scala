@@ -989,18 +989,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "bool": {
       |      "filter": [
       |        {
-      |          "script": {
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
+      |          "range": {
+      |            "createdAt": {
+      |              "lt": "now/s"
       |            }
       |          }
       |        },
       |        {
-      |          "script": {
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
+      |          "range": {
+      |            "createdAt": {
+      |              "gte": "now-10m/s"
       |            }
       |          }
       |        }
@@ -3011,4 +3009,41 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("lat,arg", "lat, arg")
   }
 
+  it should "handle between with temporal" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(betweenTemporal)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "range": {
+      |            "createdAt": {
+      |              "gte": "now-1M/d",
+      |              "lte": "now/d"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "range": {
+      |            "lastUpdated": {
+      |              "gte": "2025-09-11||/d",
+      |              "lte": "now/d"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "*"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+  }
 }

@@ -7,6 +7,7 @@ import app.softnetwork.elastic.sql.{
   GeoDistance,
   GeoDistanceFromTo,
   Identifier,
+  IdentifierFromTo,
   LiteralFromTo,
   LongFromTo,
   LongValue,
@@ -76,11 +77,12 @@ trait WhereParser {
   private def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   private def any_identifier: PackratParser[Identifier] =
+    identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithAggregation |
     identifierWithIntervalFunction |
-    identifierWithArithmeticExpression |
     identifierWithFunction |
+    identifierWithValue |
     identifier
 
   private def equality: PackratParser[GenericExpression] =
@@ -162,6 +164,11 @@ trait WhereParser {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, DoubleFromTo(from, to), n)
     }
 
+  def betweenIdentifiers: PackratParser[Criteria] =
+    any_identifier ~ not.? ~ BETWEEN.regex ~ any_identifier ~ and ~ any_identifier ^^ {
+      case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, IdentifierFromTo(from, to), n)
+    }
+
   def betweenDistances: PackratParser[Criteria] =
     distance_identifier ~ not.? ~ BETWEEN.regex ~ (geo_distance | long) ~ and ~ (geo_distance | long) ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to =>
@@ -217,6 +224,7 @@ trait WhereParser {
     betweenDistances |
     betweenLongs |
     betweenDoubles |
+    betweenIdentifiers |
     isNotNull |
     isNull | /*coalesce | nullif | distanceCriteria | */
     matchCriteria |

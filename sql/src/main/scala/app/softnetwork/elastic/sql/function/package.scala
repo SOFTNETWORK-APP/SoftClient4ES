@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
@@ -22,7 +22,7 @@ package object function {
     def identifier: Identifier
   }
 
-  trait FunctionWithValue[+T] extends Function {
+  trait FunctionWithValue[+T] extends Function with TokenValue {
     def value: T
   }
 
@@ -59,23 +59,6 @@ package object function {
       functions.reverse.foldLeft(base)((expr, fun) => {
         fun.toSQL(expr)
       })
-
-    def toScript: Option[String] = {
-      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
-      orderedFunctions.foldLeft(Option("")) {
-        case (expr, f: DateMathScript) if expr.isDefined => Option(s"${expr.get}${f.script}")
-        case (_, _)                                      => None // ignore non math scripts
-      } match {
-        case Some(s) if s.nonEmpty =>
-          out match {
-            case SQLTypes.Date => Some(s"$s/d")
-            case _             => Some(s)
-          }
-        case _ => None
-      }
-    }
-
-    override def dateMathScript: Boolean = toScript.isDefined
 
     override def system: Boolean = functions.lastOption.exists(_.system)
 

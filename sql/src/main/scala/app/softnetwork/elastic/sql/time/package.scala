@@ -77,7 +77,7 @@ package object time {
 
   }
 
-  sealed trait TimeUnit extends PainlessScript with DateMathScript {
+  sealed trait TimeUnit extends PainlessScript with DateMathScript with DateMathRounding {
     lazy val regex: Regex = s"\\b(?i)$sql(s)?\\b".r
 
     def timeUnit: String = sql.toUpperCase() + "S"
@@ -85,6 +85,11 @@ package object time {
     override def painless: String = s"ChronoUnit.$timeUnit"
 
     override def nullable: Boolean = false
+
+    override def roundingScript: Option[String] = script match {
+      case Some(s) if s.nonEmpty => Some(s"/$s")
+      case _                     => None
+    }
   }
 
   sealed trait CalendarUnit extends TimeUnit
@@ -92,32 +97,32 @@ package object time {
 
   object TimeUnit {
     case object YEARS extends Expr("YEAR") with CalendarUnit {
-      override def script: String = "y"
+      override def script: Option[String] = Some("y")
     }
     case object MONTHS extends Expr("MONTH") with CalendarUnit {
-      override def script: String = "M"
+      override def script: Option[String] = Some("M")
     }
     case object QUARTERS extends Expr("QUARTER") with CalendarUnit {
-      override def script: String = throw new IllegalArgumentException(
+      override def script: Option[String] = throw new IllegalArgumentException(
         "Quarter must be converted to months (value * 3) before creating date-math"
       )
     }
     case object WEEKS extends Expr("WEEK") with CalendarUnit {
-      override def script: String = "w"
+      override def script: Option[String] = Some("w")
     }
 
     case object DAYS extends Expr("DAY") with CalendarUnit with FixedUnit {
-      override def script: String = "d"
+      override def script: Option[String] = Some("d")
     }
 
     case object HOURS extends Expr("HOUR") with FixedUnit {
-      override def script: String = "H"
+      override def script: Option[String] = Some("H")
     }
     case object MINUTES extends Expr("MINUTE") with FixedUnit {
-      override def script: String = "m"
+      override def script: Option[String] = Some("m")
     }
     case object SECONDS extends Expr("SECOND") with FixedUnit {
-      override def script: String = "s"
+      override def script: Option[String] = Some("s")
     }
 
   }
@@ -131,7 +136,7 @@ package object time {
 
     override def painless: String = s"$value, ${unit.painless}"
 
-    override def script: String = TimeInterval.script(this)
+    override def script: Option[String] = Some(TimeInterval.script(this))
 
     def checkType(in: SQLType): Either[String, SQLType] = {
       import TimeUnit._
@@ -173,8 +178,16 @@ package object time {
     }
     def script(interval: TimeInterval): String = interval match {
       case CalendarInterval(v, QUARTERS) => s"${v * 3}M"
-      case CalendarInterval(v, u)        => s"$v${u.script}"
-      case FixedInterval(v, u)           => s"$v${u.script}"
+      case CalendarInterval(v, u) =>
+        u.script match {
+          case Some(s) if s.nonEmpty => s"$v$s"
+          case _ => throw new IllegalArgumentException(s"Invalid calendar unit $u")
+        }
+      case FixedInterval(v, u) =>
+        u.script match {
+          case Some(s) if s.nonEmpty => s"$v$s"
+          case _                     => throw new IllegalArgumentException(s"Invalid fixed unit $u")
+        }
     }
   }
 

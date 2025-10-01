@@ -408,9 +408,9 @@ case class InExpr[R, +T <: Value[R]](
   override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
 }
 
-case class BetweenExpr[+T](
+case class BetweenExpr(
   identifier: Identifier,
-  fromTo: FromTo[T],
+  fromTo: FromTo,
   maybeNot: Option[NOT.type]
 ) extends Expression {
   override def sql = s"$identifier $notAsString$operator $fromTo"
@@ -431,7 +431,7 @@ case class BetweenExpr[+T](
     for {
       _ <- identifier.validate()
       _ <- fromTo.validate()
-      _ <- Validator.validateTypesMatching(identifier.out, fromTo.from.out)
+      _ <- Validator.validateTypesMatching(identifier.out, fromTo.out)
     } yield ()
   }
 

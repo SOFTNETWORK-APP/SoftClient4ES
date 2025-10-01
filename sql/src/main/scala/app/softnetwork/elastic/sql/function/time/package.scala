@@ -1,6 +1,14 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{DateMathScript, Expr, Identifier, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  DateMathRounding,
+  DateMathScript,
+  Expr,
+  Identifier,
+  PainlessScript,
+  StringValue,
+  TokenRegex
+}
 import app.softnetwork.elastic.sql.operator.time._
 import app.softnetwork.elastic.sql.`type`.{
   SQLDate,
@@ -30,7 +38,10 @@ package object time {
     override def argsSeparator: String = " "
     override def sql: String = s"$operator${args.map(_.sql).mkString(argsSeparator)}"
 
-    override def script: String = s"${operator.script}${interval.script}"
+    override def script: Option[String] = (operator.script, interval.script) match {
+      case (Some(op), Some(iv)) => Some(s"$op$iv")
+      case _                    => None
+    }
 
     private[this] var _out: SQLType = outputType
 
@@ -88,21 +99,18 @@ package object time {
     override def system: Boolean = true
   }
 
-  sealed trait CurrentFunction extends SystemFunction with PainlessScript
-
-  sealed trait CurrentDateTimeFunction
-      extends DateTimeFunction
-      with CurrentFunction
-      with DateMathScript {
-    override def painless: String =
-      SQLTypeUtils.coerce(now, this.baseType, this.out, nullable = false)
-    override def script: String = "now"
+  sealed trait CurrentFunction extends SystemFunction with PainlessScript with DateMathScript {
+    override def script: Option[String] = Some("now")
   }
 
-  sealed trait CurrentDateFunction extends DateFunction with CurrentFunction with DateMathScript {
+  sealed trait CurrentDateTimeFunction extends DateTimeFunction with CurrentFunction {
+    override def painless: String =
+      SQLTypeUtils.coerce(now, this.baseType, this.out, nullable = false)
+  }
+
+  sealed trait CurrentDateFunction extends DateFunction with CurrentFunction {
     override def painless: String =
       SQLTypeUtils.coerce(s"$now.toLocalDate()", this.baseType, this.out, nullable = false)
-    override def script: String = "now"
   }
 
   sealed trait CurrentTimeFunction extends TimeFunction with CurrentFunction {
@@ -160,7 +168,8 @@ package object time {
   case class DateTrunc(identifier: Identifier, unit: TimeUnit)
       extends DateTimeFunction
       with TransformFunction[SQLTemporal, SQLTemporal]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with DateMathRounding {
     override def fun: Option[PainlessScript] = Some(DateTrunc)
 
     override def args: List[PainlessScript] = List(unit)
@@ -172,6 +181,8 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, ${unit.sql})"
     }
+
+    override def roundingScript: Option[String] = unit.roundingScript
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
@@ -389,7 +400,8 @@ package object time {
       extends DateFunction
       with TransformFunction[SQLVarchar, SQLDate]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat {
+      with FunctionWithDateTimeFormat
+      with DateMathScript {
     override def fun: Option[PainlessScript] = Some(DateParse)
 
     override def args: List[PainlessScript] = List.empty
@@ -408,6 +420,21 @@ package object time {
         s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert()}').parse(e$idx, LocalDate::from) : null)"
       else
         s"DateTimeFormatter.ofPattern('${convert()}').parse($base, LocalDate::from)"
+
+    override def script: Option[String] = {
+      val base: String = FunctionUtils
+        .transformFunctions(identifier)
+        .reverse
+        .collectFirst { case s: StringValue => s.value }
+        .getOrElse(identifier.name)
+      if (base.nonEmpty) {
+        Some(s"$base||")
+      } else {
+        None
+      }
+    }
+
+    override def formatScript: Option[String] = Some(format)
   }
 
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
@@ -483,7 +510,8 @@ package object time {
       extends DateTimeFunction
       with TransformFunction[SQLVarchar, SQLDateTime]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat {
+      with FunctionWithDateTimeFormat
+      with DateMathScript {
     override def fun: Option[PainlessScript] = Some(DateTimeParse)
 
     override def args: List[PainlessScript] = List.empty
@@ -502,6 +530,21 @@ package object time {
         s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').parse(e$idx, ZonedDateTime::from) : null)"
       else
         s"DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').parse($base, ZonedDateTime::from)"
+
+    override def script: Option[String] = {
+      val base: String = FunctionUtils
+        .transformFunctions(identifier)
+        .reverse
+        .collectFirst { case s: StringValue => s.value }
+        .getOrElse(identifier.name)
+      if (base.nonEmpty) {
+        Some(s"$base||")
+      } else {
+        None
+      }
+    }
+
+    override def formatScript: Option[String] = Some(format)
   }
 
   case object DateTimeFormat extends Expr("DATETIME_FORMAT") with TokenRegex with PainlessScript {

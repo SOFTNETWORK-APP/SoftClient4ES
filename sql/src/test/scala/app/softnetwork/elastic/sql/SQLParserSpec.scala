@@ -177,6 +177,8 @@ object Queries {
   val geoDistance =
     "SELECT ST_DISTANCE(POINT(-70.0, 40.0), toLocation) AS d1, ST_DISTANCE(fromLocation, POINT(-70.0, 40.0)) AS d2, ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) AS d3 FROM Table WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km AND ST_DISTANCE(fromLocation, toLocation) < 2000 km AND ST_DISTANCE(POINT(-70.0, 40.0), POINT(-70.0, 40.0)) < 1000 km"
 
+  val betweenTemporal =
+    "SELECT * FROM Table WHERE createdAt BETWEEN CURRENT_DATE - INTERVAL 1 MONTH AND CURRENT_DATE AND lastUpdated BETWEEN '2025-09-11'::DATE AND TODAY" //DATE_TRUNC(CURRENT_TIMESTAMP, DATE)"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -191,6 +193,13 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("")
       .equalsIgnoreCase(numericalEq) shouldBe true
+  }
+
+  it should "parse BETWEEN with temporal fields" in {
+    val result = Parser(betweenTemporal)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe betweenTemporal
   }
 
   it should "parse numerical NE" in {
@@ -835,4 +844,12 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("") shouldBe geoDistance
   }
+
+  /*it should "parse BETWEEN with temporal fields" in {
+    val result = Parser(betweenTemporal)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe betweenTemporal
+  }*/
+
 }
