@@ -1,5 +1,16 @@
 package app.softnetwork.elastic
 
+import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
+import app.softnetwork.elastic.sql.function.geo.DistanceUnit
+import app.softnetwork.elastic.sql.function.time.{
+  CurrentDateFunction,
+  CurrentDateTimeFunction,
+  CurrentFunction
+}
+import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.parser.{Validation, Validator}
+import app.softnetwork.elastic.sql.query._
+
 import java.security.MessageDigest
 import java.util.regex.Pattern
 import scala.reflect.runtime.universe._
@@ -10,90 +21,137 @@ import scala.util.matching.Regex
   */
 package object sql {
 
+  import app.softnetwork.elastic.sql.function._
+  import app.softnetwork.elastic.sql.`type`._
+
   import scala.language.implicitConversions
 
-  implicit def asString(token: Option[_ <: SQLToken]): String = token match {
+  implicit def asString(token: Option[_ <: Token]): String = token match {
     case Some(t) => t.toString
     case _       => ""
   }
 
-  trait SQLToken extends Serializable with SQLValidation {
+  trait Token extends Serializable with Validation {
     def sql: String
     override def toString: String = sql
     def baseType: SQLType = SQLTypes.Any
     def in: SQLType = baseType
-    def out: SQLType = baseType
+    private[this] var _out: SQLType = SQLTypes.Null
+    def out: SQLType = if (_out == SQLTypes.Null) baseType else _out
+    def out_=(t: SQLType): Unit = {
+      _out = t
+    }
+    def cast(targetType: SQLType): SQLType = {
+      this.out = targetType
+      this.out
+    }
     def system: Boolean = false
     def nullable: Boolean = !system
+    def dateMathScript: Boolean = false
+    def isTemporal: Boolean = out.isInstanceOf[SQLTemporal]
   }
 
-  trait PainlessScript extends SQLToken {
+  trait TokenValue extends Token {
+    def value: Any
+  }
+
+  trait PainlessScript extends Token {
     def painless: String
     def nullValue: String = "null"
   }
 
-  trait MathScript extends SQLToken {
-    def script: String
+  trait PainlessParams extends PainlessScript {
+    def params: Map[String, Any]
   }
 
-  trait Updateable extends SQLToken {
+  trait DateMathScript extends Token {
+    def script: Option[String]
+    def hasScript: Boolean = script.isDefined
+    override def dateMathScript: Boolean = true
+    def formatScript: Option[String] = None
+    def hasFormat: Boolean = formatScript.isDefined
+  }
+
+  object DateMathRounding {
+    def apply(out: SQLType): Option[String] =
+      out match {
+        case _: SQLDate => Some("/d")
+        /*case _: SQLDateTime  => Some("/s")
+        case _: SQLTimestamp => Some("/s")*/
+        case _: SQLTime => Some("/s")
+        case _          => None
+      }
+  }
+
+  trait DateMathRounding {
+    def roundingScript: Option[String] = None
+    def hasRounding: Boolean = roundingScript.isDefined
+  }
+
+  trait Updateable extends Token {
     def update(request: SQLSearchRequest): Updateable
   }
 
-  abstract class SQLExpr(override val sql: String) extends SQLToken
+  abstract class Expr(override val sql: String) extends Token
 
-  case object Distinct extends SQLExpr("distinct") with SQLRegex
+  case object Distinct extends Expr("DISTINCT") with TokenRegex
 
-  abstract class SQLValue[+T](val value: T)(implicit ev$1: T => Ordered[T])
-      extends SQLToken
+  abstract class Value[+T](val value: T)(implicit ev$1: T => Ordered[T])
+      extends Token
       with PainlessScript
-      with SQLFunctionWithValue[T] {
+      with FunctionWithValue[T] {
     def choose[R >: T](
       values: Seq[R],
-      operator: Option[SQLExpressionOperator],
+      operator: Option[ExpressionOperator],
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       if (values.isEmpty)
         None
       else
         operator match {
-          case Some(Eq)        => values.find(_ == value)
-          case Some(Ne | Diff) => values.find(_ != value)
-          case Some(Ge)        => values.filter(_ >= value).sorted.reverse.headOption
-          case Some(Gt)        => values.filter(_ > value).sorted.reverse.headOption
-          case Some(Le)        => values.filter(_ <= value).sorted.headOption
-          case Some(Lt)        => values.filter(_ < value).sorted.headOption
+          case Some(EQ)        => values.find(_ == value)
+          case Some(NE | DIFF) => values.find(_ != value)
+          case Some(GE)        => values.filter(_ >= value).sorted.reverse.headOption
+          case Some(GT)        => values.filter(_ > value).sorted.reverse.headOption
+          case Some(LE)        => values.filter(_ <= value).sorted.headOption
+          case Some(LT)        => values.filter(_ < value).sorted.headOption
           case _               => values.headOption
         }
     }
-    override def painless: String = value match {
-      case s: String  => s""""$s""""
-      case b: Boolean => b.toString
-      case n: Number  => n.toString
-      case _          => value.toString
-    }
+    override def painless: String =
+      SQLTypeUtils.coerce(
+        value match {
+          case s: String  => s""""$s""""
+          case b: Boolean => b.toString
+          case n: Number  => n.toString
+          case _          => value.toString
+        },
+        this.baseType,
+        this.out,
+        nullable = false
+      )
 
     override def nullable: Boolean = false
   }
 
-  case object SQLNull extends SQLValue[Null](null) {
-    override def sql: String = "null"
+  case object Null extends Value[Null](null) with TokenRegex {
+    override def sql: String = "NULL"
     override def painless: String = "null"
     override def nullable: Boolean = true
-    override def out: SQLType = SQLTypes.Null
+    override def baseType: SQLType = SQLTypes.Null
   }
 
-  case class SQLBoolean(override val value: Boolean) extends SQLValue[Boolean](value) {
+  case class BooleanValue(override val value: Boolean) extends Value[Boolean](value) {
     override def sql: String = value.toString
-    override def out: SQLType = SQLTypes.Boolean
+    override def baseType: SQLType = SQLTypes.Boolean
   }
 
-  case class SQLCharValue(override val value: Char) extends SQLValue[Char](value) {
+  case class CharValue(override val value: Char) extends Value[Char](value) {
     override def sql: String = s"""'$value'"""
-    override def out: SQLType = SQLTypes.Char
+    override def baseType: SQLType = SQLTypes.Char
   }
 
-  case class SQLStringValue(override val value: String) extends SQLValue[String](value) {
+  case class StringValue(override val value: String) extends Value[String](value) {
     override def sql: String = s"""'$value'"""
     import SQLImplicits._
     private lazy val pattern: Pattern = value.pattern
@@ -108,27 +166,27 @@ package object sql {
     }
     override def choose[R >: String](
       values: Seq[R],
-      operator: Option[SQLExpressionOperator],
+      operator: Option[ExpressionOperator],
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
-        case Some(Eq)        => values.find(v => v.toString contentEquals value)
-        case Some(Ne | Diff) => values.find(v => !(v.toString contentEquals value))
-        case Some(Like)      => values.find(v => pattern.matcher(v.toString).matches())
-        case None            => Some(values.mkString(separator))
-        case _               => super.choose(values, operator, separator)
+        case Some(EQ)           => values.find(v => v.toString contentEquals value)
+        case Some(NE | DIFF)    => values.find(v => !(v.toString contentEquals value))
+        case Some(LIKE | RLIKE) => values.find(v => pattern.matcher(v.toString).matches())
+        case None               => Some(values.mkString(separator))
+        case _                  => super.choose(values, operator, separator)
       }
     }
-    override def out: SQLType = SQLTypes.Varchar
+    override def baseType: SQLType = SQLTypes.Varchar
   }
 
-  sealed abstract class SQLNumericValue[T: Numeric](override val value: T)(implicit
+  sealed abstract class NumericValue[T: Numeric](override val value: T)(implicit
     ev$1: T => Ordered[T]
-  ) extends SQLValue[T](value) {
+  ) extends Value[T](value) {
     override def sql: String = value.toString
     override def choose[R >: T](
       values: Seq[R],
-      operator: Option[SQLExpressionOperator],
+      operator: Option[ExpressionOperator],
       separator: String = "|"
     )(implicit ev: R => Ordered[R]): Option[R] = {
       operator match {
@@ -153,51 +211,71 @@ package object sql {
     def ne: Seq[T] => Boolean = {
       _.forall { _ != value }
     }
-    override def out: SQLNumeric = SQLTypes.Numeric
+    override def baseType: SQLNumeric = SQLTypes.Numeric
   }
 
-  case class SQLByteValue(override val value: Byte) extends SQLNumericValue[Byte](value) {
-    override def out: SQLNumeric = SQLTypes.TinyInt
+  case class ByteValue(override val value: Byte) extends NumericValue[Byte](value) {
+    override def baseType: SQLNumeric = SQLTypes.TinyInt
   }
 
-  case class SQLShortValue(override val value: Short) extends SQLNumericValue[Short](value) {
-    override def out: SQLNumeric = SQLTypes.SmallInt
+  case class ShortValue(override val value: Short) extends NumericValue[Short](value) {
+    override def baseType: SQLNumeric = SQLTypes.SmallInt
   }
 
-  case class SQLIntValue(override val value: Int) extends SQLNumericValue[Int](value) {
-    override def out: SQLNumeric = SQLTypes.Int
+  case class IntValue(override val value: Int) extends NumericValue[Int](value) {
+    override def baseType: SQLNumeric = SQLTypes.Int
   }
 
-  case class SQLLongValue(override val value: Long) extends SQLNumericValue[Long](value) {
-    override def out: SQLNumeric = SQLTypes.BigInt
+  case class LongValue(override val value: Long) extends NumericValue[Long](value) {
+    override def baseType: SQLNumeric = SQLTypes.BigInt
   }
 
-  case class SQLFloatValue(override val value: Float) extends SQLNumericValue[Float](value) {
-    override def out: SQLNumeric = SQLTypes.Real
+  case class FloatValue(override val value: Float) extends NumericValue[Float](value) {
+    override def baseType: SQLNumeric = SQLTypes.Real
   }
 
-  case class SQLDoubleValue(override val value: Double) extends SQLNumericValue[Double](value) {
-    override def out: SQLNumeric = SQLTypes.Double
+  case class DoubleValue(override val value: Double) extends NumericValue[Double](value) {
+    override def baseType: SQLNumeric = SQLTypes.Double
   }
 
-  case object SQLPiValue extends SQLValue[Double](Math.PI) {
-    override def sql: String = "pi"
+  case object PiValue extends Value[Double](Math.PI) with TokenRegex {
+    override def sql: String = "PI"
     override def painless: String = "Math.PI"
-    override def out: SQLNumeric = SQLTypes.Double
+    override def baseType: SQLNumeric = SQLTypes.Double
   }
 
-  case object SQLEValue extends SQLValue[Double](Math.E) {
-    override def sql: String = "e"
+  case object EValue extends Value[Double](Math.E) with TokenRegex {
+    override def sql: String = "E"
     override def painless: String = "Math.E"
-    override def out: SQLNumeric = SQLTypes.Double
+    override def baseType: SQLNumeric = SQLTypes.Double
   }
 
-  sealed abstract class SQLFromTo[+T](val from: SQLValue[T], val to: SQLValue[T]) extends SQLToken {
-    override def sql = s"${from.sql} and ${to.sql}"
+  case class GeoDistance(longValue: LongValue, unit: DistanceUnit)
+      extends NumericValue[Double](DistanceUnit.convertToMeters(longValue.value, unit))
+      with PainlessScript {
+    override def baseType: SQLNumeric = SQLTypes.Double
+    override def sql: String = s"$longValue $unit"
+    def geoDistance: String = s"$longValue$unit"
+    override def painless: String = s"$value"
   }
 
-  case class SQLLiteralFromTo(override val from: SQLStringValue, override val to: SQLStringValue)
-      extends SQLFromTo[String](from, to) {
+  sealed abstract class FromTo(val from: TokenValue, val to: TokenValue) extends Token {
+    override def sql = s"${from.sql} AND ${to.sql}"
+
+    override def baseType: SQLType =
+      SQLTypeUtils.leastCommonSuperType(List(from.baseType, to.baseType))
+
+    override def validate(): Either[String, Unit] = {
+      for {
+        _ <- from.validate()
+        _ <- to.validate()
+        _ <- Validator.validateTypesMatching(from.out, to.out)
+      } yield ()
+    }
+  }
+
+  case class LiteralFromTo(override val from: StringValue, override val to: StringValue)
+      extends FromTo(from, to) {
     def between: Seq[String] => Boolean = {
       _.exists { s => s >= from.value && s <= to.value }
     }
@@ -206,8 +284,8 @@ package object sql {
     }
   }
 
-  case class SQLLongFromTo(override val from: SQLLongValue, override val to: SQLLongValue)
-      extends SQLFromTo[Long](from, to) {
+  case class LongFromTo(override val from: LongValue, override val to: LongValue)
+      extends FromTo(from, to) {
     def between: Seq[Long] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -216,8 +294,8 @@ package object sql {
     }
   }
 
-  case class SQLDoubleFromTo(override val from: SQLDoubleValue, override val to: SQLDoubleValue)
-      extends SQLFromTo[Double](from, to) {
+  case class DoubleFromTo(override val from: DoubleValue, override val to: DoubleValue)
+      extends FromTo(from, to) {
     def between: Seq[Double] => Boolean = {
       _.exists { n => n >= from.value && n <= to.value }
     }
@@ -226,80 +304,90 @@ package object sql {
     }
   }
 
-  sealed abstract class SQLValues[+R: TypeTag, +T <: SQLValue[R]](val values: Seq[T])
-      extends SQLToken
+  case class GeoDistanceFromTo(override val from: GeoDistance, override val to: GeoDistance)
+      extends FromTo(from, to) {
+    def between: Seq[Double] => Boolean = {
+      _.exists { n => n >= from.value && n <= to.value }
+    }
+    def notBetween: Seq[Double] => Boolean = {
+      _.forall { n => n < from.value || n > to.value }
+    }
+  }
+
+  case class IdentifierFromTo(override val from: Identifier, override val to: Identifier)
+      extends FromTo(from, to)
+
+  sealed abstract class Values[+R: TypeTag, +T <: Value[R]](val values: Seq[T])
+      extends Token
       with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
     override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Any)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
   }
 
-  case class SQLStringValues(override val values: Seq[SQLStringValue])
-      extends SQLValues[String, SQLValue[String]](values) {
+  case class StringValues(override val values: Seq[StringValue])
+      extends Values[String, Value[String]](values) {
     def eq: Seq[String] => Boolean = {
       _.exists { s => innerValues.exists(_.contentEquals(s)) }
     }
     def ne: Seq[String] => Boolean = {
       _.forall { s => innerValues.forall(!_.contentEquals(s)) }
     }
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Varchar)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Varchar)
   }
 
-  class SQLNumericValues[R: TypeTag](override val values: Seq[SQLNumericValue[R]])
-      extends SQLValues[R, SQLNumericValue[R]](values) {
+  class NumericValues[R: TypeTag](override val values: Seq[NumericValue[R]])
+      extends Values[R, NumericValue[R]](values) {
     def eq: Seq[R] => Boolean = {
       _.exists { n => innerValues.contains(n) }
     }
     def ne: Seq[R] => Boolean = {
       _.forall { n => !innerValues.contains(n) }
     }
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Numeric)
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Numeric)
   }
 
-  case class SQLByteValues(override val values: Seq[SQLByteValue])
-      extends SQLNumericValues[Byte](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.TinyInt)
+  case class ByteValues(override val values: Seq[ByteValue]) extends NumericValues[Byte](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.TinyInt)
   }
 
-  case class SQLShortValues(override val values: Seq[SQLShortValue])
-      extends SQLNumericValues[Short](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.SmallInt)
+  case class ShortValues(override val values: Seq[ShortValue])
+      extends NumericValues[Short](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.SmallInt)
   }
 
-  case class SQLIntValues(override val values: Seq[SQLIntValue])
-      extends SQLNumericValues[Int](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Int)
+  case class IntValues(override val values: Seq[IntValue]) extends NumericValues[Int](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Int)
   }
 
-  case class SQLLongValues(override val values: Seq[SQLLongValue])
-      extends SQLNumericValues[Long](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.BigInt)
+  case class LongValues(override val values: Seq[LongValue]) extends NumericValues[Long](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.BigInt)
   }
 
-  case class SQLFloatValues(override val values: Seq[SQLFloatValue])
-      extends SQLNumericValues[Float](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Real)
+  case class FloatValues(override val values: Seq[FloatValue])
+      extends NumericValues[Float](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Real)
   }
 
-  case class SQLDoubleValues(override val values: Seq[SQLDoubleValue])
-      extends SQLNumericValues[Double](values) {
-    override def out: SQLArray = SQLTypes.Array(SQLTypes.Double)
+  case class DoubleValues(override val values: Seq[DoubleValue])
+      extends NumericValues[Double](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Double)
   }
 
   def choose[T](
     values: Seq[T],
-    criteria: Option[SQLCriteria],
-    function: Option[SQLFunction] = None
+    criteria: Option[Criteria],
+    function: Option[Function] = None
   )(implicit ev$1: T => Ordered[T]): Option[T] = {
     criteria match {
-      case Some(SQLExpression(_, operator, value: SQLValue[T] @unchecked, _)) =>
+      case Some(GenericExpression(_, operator, value: Value[T] @unchecked, _)) =>
         value.choose[T](values, Some(operator))
       case _ =>
         function match {
-          case Some(Min) => Some(values.min)
-          case Some(Max) => Some(values.max)
+          case Some(MIN) => Some(values.min)
+          case Some(MAX) => Some(values.max)
           // FIXME        case Some(SQLSum) => Some(values.sum)
           // FIXME        case Some(SQLAvg) => Some(values.sum / values.length  )
           case _ => values.headOption
@@ -308,23 +396,12 @@ package object sql {
   }
 
   def toRegex(value: String): String = {
-    val startWith = value.startsWith("%")
-    val endWith = value.endsWith("%")
-    val v =
-      if (startWith && endWith)
-        value.substring(1, value.length - 1)
-      else if (startWith)
-        value.substring(1)
-      else if (endWith)
-        value.substring(0, value.length - 1)
-      else
-        value
-    s"""${if (startWith) ".*"}$v${if (endWith) ".*"}"""
+    value.replaceAll("%", ".*").replaceAll("_", ".")
   }
 
-  case object Alias extends SQLExpr("as") with SQLRegex
+  case object Alias extends Expr("AS") with TokenRegex
 
-  case class SQLAlias(alias: String) extends SQLExpr(s" ${Alias.sql} $alias")
+  case class Alias(alias: String) extends Expr(s" ${Alias.sql} $alias")
 
   object AliasUtils {
     private val MaxAliasLength = 50
@@ -361,23 +438,34 @@ package object sql {
     }
   }
 
-  trait SQLRegex extends SQLToken {
-    lazy val regex: Regex = s"\\b(?i)$sql\\b".r
+  trait TokenRegex extends Token {
+    def words: List[String] = List(sql)
+    lazy val regex: Regex = s"(?i)(${words.mkString("|")})\\b".r
   }
 
-  trait SQLSource extends Updateable {
+  trait Source extends Updateable {
     def name: String
-    def update(request: SQLSearchRequest): SQLSource
+    def update(request: SQLSearchRequest): Source
   }
 
-  trait Identifier extends SQLToken with SQLSource with SQLFunctionChain with PainlessScript {
+  sealed trait Identifier
+      extends TokenValue
+      with Source
+      with FunctionChain
+      with PainlessScript
+      with DateMathScript {
     def name: String
+
+    def withFunctions(functions: List[Function]): Identifier
+
+    def update(request: SQLSearchRequest): Identifier
 
     def tableAlias: Option[String]
     def distinct: Boolean
     def nested: Boolean
+    def limit: Option[Limit]
     def fieldAlias: Option[String]
-    def bucket: Option[SQLBucket]
+    def bucket: Option[Bucket]
     override def sql: String = {
       var parts: Seq[String] = name.split("\\.").toSeq
       tableAlias match {
@@ -416,17 +504,67 @@ package object sql {
       else ""
 
     def toPainless(base: String): String = {
-      val orderedFunctions = SQLFunctionUtils.transformFunctions(this).reverse
+      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       var expr = base
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
-          case f: SQLTransformFunction[_, _] => expr = f.toPainless(expr, idx)
-          case f: PainlessScript             => expr = s"$expr${f.painless}"
-          case f                             => expr = f.toSQL(expr) // fallback
+          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx)
+          case f: PainlessScript          => expr = s"$expr${f.painless}"
+          case f                          => expr = f.toSQL(expr) // fallback
         }
       }
       expr
     }
+
+    def script: Option[String] =
+      if (isTemporal) {
+        var orderedFunctions = FunctionUtils.transformFunctions(this).reverse
+
+        val baseOpt: Option[String] = orderedFunctions.headOption match {
+          case Some(head) =>
+            head match {
+              case s: StringValue if s.value.nonEmpty =>
+                orderedFunctions = orderedFunctions.tail
+                Some(s.value + "||")
+              case current: CurrentFunction =>
+                orderedFunctions = orderedFunctions.tail
+                current.script
+              case _ => Option(name).filter(_.nonEmpty).map(_ + "||")
+            }
+          case _ => Option(name).filter(_.nonEmpty).map(_ + "||")
+        }
+
+        val roundingOpt: Option[String] =
+          orderedFunctions
+            .collectFirst {
+              case r: DateMathRounding if r.hasRounding => r.roundingScript.get
+            }
+            .orElse(DateMathRounding(out))
+
+        orderedFunctions.foldLeft(baseOpt) {
+          case (expr, f: Function) if expr.isDefined && f.dateMathScript =>
+            f match {
+              case s: DateMathScript =>
+                s.script match {
+                  case Some(script) if script.nonEmpty =>
+                    Some(s"${expr.get}$script")
+                  case _ => expr
+                }
+              case _ => expr
+            }
+          case (_, _) => None // ignore non math scripts
+        } match {
+          case Some(s) if s.nonEmpty =>
+            roundingOpt match {
+              case Some(r) if r.nonEmpty => Some(s"$s$r")
+              case _                     => Some(s)
+            }
+          case _ => None
+        }
+      } else
+        None
+
+    override def dateMathScript: Boolean = isTemporal
 
     def checkNotNull: String =
       if (name.isEmpty) ""
@@ -449,20 +587,36 @@ package object sql {
 
     override def nullable: Boolean = _nullable
 
+    override def value: String =
+      script match {
+        case Some(s) => s
+        case _       => painless
+      }
   }
 
-  case class SQLIdentifier(
+  object Identifier {
+    def apply(): Identifier = GenericIdentifier("")
+    def apply(function: Function): Identifier = apply(List(function))
+    def apply(functions: List[Function]): Identifier = apply().withFunctions(functions)
+    def apply(name: String): Identifier = GenericIdentifier(name)
+    def apply(name: String, function: Function): Identifier =
+      apply(name).withFunctions(List(function))
+  }
+
+  case class GenericIdentifier(
     name: String,
     tableAlias: Option[String] = None,
     distinct: Boolean = false,
     nested: Boolean = false,
-    limit: Option[SQLLimit] = None,
-    functions: List[SQLFunction] = List.empty,
+    limit: Option[Limit] = None,
+    functions: List[Function] = List.empty,
     fieldAlias: Option[String] = None,
-    bucket: Option[SQLBucket] = None
+    bucket: Option[Bucket] = None
   ) extends Identifier {
 
-    def update(request: SQLSearchRequest): SQLIdentifier = {
+    def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
+
+    def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
       if (request.tableAliases.values.toSeq.contains(parts.head)) {
         request.unnests.find(_._1 == parts.head) match {

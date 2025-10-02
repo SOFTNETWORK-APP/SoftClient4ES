@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.AggregateFunction
+import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 
 sealed trait AggregateResult {
   def field: String

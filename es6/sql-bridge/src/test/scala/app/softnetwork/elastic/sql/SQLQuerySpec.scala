@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.Queries._
+import app.softnetwork.elastic.sql.query.SQLQuery
 import com.google.gson.{JsonArray, JsonObject, JsonParser, JsonPrimitive}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -631,8 +632,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |    blockedCustomers not like "%uuid%" AND
            |    NOT receiptOfOrdersDisabled=true AND
            |    (
-           |      distance(pickup.location,(0.0,0.0)) <= "7000m" OR
-           |      distance(withdrawals.location,(0.0,0.0)) <= "7000m"
+           |      distance(pickup.location, POINT(0.0, 0.0)) <= 7000 m OR
+           |      distance(withdrawals.location, POINT(0.0, 0.0)) <= 7000 m
            |    )
            |  )
            |GROUP BY
@@ -988,18 +989,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "bool": {
       |      "filter": [
       |        {
-      |          "script": {
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalTime()"
+      |          "range": {
+      |            "createdAt": {
+      |              "lt": "now/s"
       |            }
       |          }
       |        },
       |        {
-      |          "script": {
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def left = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); left == null ? false : left >= ZonedDateTime.now(ZoneId.of('Z')).toLocalTime().minus(10, ChronoUnit.MINUTES)"
+      |          "range": {
+      |            "createdAt": {
+      |              "gte": "now-10m/s"
       |            }
       |          }
       |        }
@@ -1083,7 +1082,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle group by with having and date time functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHavingAndDateTimeFunctions)
+      SQLQuery(groupByWithHavingAndDateTimeFunctions.replace("GROUP BY 3, 2", "GROUP BY 3, 2"))
     val query = select.query
     println(query)
     query shouldBe
@@ -1189,7 +1188,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle parse_date function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(parseDate)
+      SQLQuery(dateParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1255,7 +1254,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle parse_datetime function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(parseDateTime)
+      SQLQuery(dateTimeParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1292,7 +1291,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoUnit.YEARS) : null)"
+      |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoField.YEAR) : null)"
       |            }
       |          }
       |        }
@@ -1316,6 +1315,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\|\\|", " || ")
       .replaceAll(">", " > ")
       .replaceAll(",ZonedDateTime", ", ZonedDateTime")
+      .replaceAll("SSSXXX", "SSS XXX")
+      .replaceAll("ddHH", "dd HH")
   }
 
   it should "handle date_diff function as script field" in {
@@ -1382,7 +1383,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "max": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-ddTHH:mm:ssZ').parse(e0, ZonedDateTime::from) : null); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
+      |              "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX').parse(e0, ZonedDateTime::from) : null); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
       |            }
       |          }
       |        }
@@ -1407,6 +1408,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll("\\|\\|", " || ")
       .replaceAll("ZonedDateTime", " ZonedDateTime")
+      .replaceAll("SSSXXX", "SSS XXX")
+      .replaceAll("ddHH", "dd HH")
   }
 
   it should "handle date_add function as script field" in {
@@ -1765,7 +1768,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "{ def v0 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.minus(35, ChronoUnit.MINUTES) : null);if (v0 != null) return v0; return (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()).atStartOfDay(ZoneId.of('Z')); }"
+      |        "source": "{ def v0 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.minus(35, ChronoUnit.MINUTES) : null);if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().atStartOfDay(ZoneId.of('Z')); }"
       |      }
       |    }
       |  },
@@ -1846,7 +1849,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(cast)
+      SQLQuery(conversion)
     val query = select.query
     println(query)
     query shouldBe
@@ -1858,7 +1861,31 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "{ def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from) ? null : arg0));if (v0 != null) return v0; return (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()).atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS); }.toInstant().toEpochMilli()"
+      |        "source": "try { def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from) ? null : arg0));if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS).toInstant().toEpochMilli(); } catch (Exception e) { return null; }"
+      |      }
+      |    },
+      |    "c2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "ZonedDateTime.now(ZoneId.of('Z')).toInstant().toEpochMilli()"
+      |      }
+      |    },
+      |    "c3": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()"
+      |      }
+      |    },
+      |    "c4": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "Long.parseLong(\"125\").longValue()"
+      |      }
+      |    },
+      |    "c5": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
       |      }
       |    }
       |  },
@@ -1888,6 +1915,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll(",LocalDate", ", LocalDate")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+      .replaceAll("try\\{", "try {")
+      .replaceAll("\\}catch", "} catch ")
+      .replaceAll("Exceptione\\)", "Exception e) ")
+      .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
   }
 
   it should "handle case function as script field" in {
@@ -1954,7 +1985,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def val0 = e0 != null ? (e0.minus(3, ChronoUnit.DAYS)).atStartOfDay(ZoneId.of('Z')) : null; if (expr == val0) return e0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+      |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def val0 = e0 != null ? e0.minus(3, ChronoUnit.DAYS).atStartOfDay(ZoneId.of('Z')) : null; if (expr == val0) return e0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
       |      }
       |    }
       |  },
@@ -2003,40 +2034,94 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "script_fields": {
-      |    "day": {
+      |    "dom": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.DAYS) : null)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_MONTH) : null)"
       |      }
       |    },
-      |    "month": {
+      |    "dow": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MONTHS) : null)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_WEEK) : null)"
       |      }
       |    },
-      |    "year": {
+      |    "doy": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.YEARS) : null)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_YEAR) : null)"
       |      }
       |    },
-      |    "hour": {
+      |    "m": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.HOURS) : null)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MONTH_OF_YEAR) : null)"
       |      }
       |    },
-      |    "minute": {
+      |    "y": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.MINUTES) : null)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.YEAR) : null)"
       |      }
       |    },
-      |    "second": {
+      |    "h": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoUnit.SECONDS) : null)"
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.HOUR_OF_DAY) : null)"
+      |      }
+      |    },
+      |    "minutes": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MINUTE_OF_HOUR) : null)"
+      |      }
+      |    },
+      |    "s": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
+      |      }
+      |    },
+      |    "nano": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.NANO_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "micro": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MICRO_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "milli": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MILLI_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "epoch": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.EPOCH_DAY) : null)"
+      |      }
+      |    },
+      |    "off": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.OFFSET_SECONDS) : null)"
+      |      }
+      |    },
+      |    "w": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR) : null)"
+      |      }
+      |    },
+      |    "q": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR) : null)"
       |      }
       |    }
       |  },
@@ -2076,7 +2161,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "script": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoUnit.YEARS) - 10)) > 10000"
+      |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR) - 10)) > 10000"
       |            }
       |          }
       |        }
@@ -2347,34 +2432,82 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.length() : null)"
       |      }
       |    },
-      |    "lower": {
+      |    "low": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.lower() : null)"
       |      }
       |    },
-      |    "upper": {
+      |    "upp": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.upper() : null)"
       |      }
       |    },
-      |    "substr": {
+      |    "sub": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : ((1 - 1) < 0 || (1 - 1 + 3) > arg0.length()) ? null : arg0.substring((1 - 1), (1 - 1 + 3)))"
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.substring(1 - 1, Math.min(1 - 1 + 3, arg0.length())))"
       |      }
       |    },
-      |    "trim": {
+      |    "tr": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.trim() : null)"
       |      }
       |    },
-      |    "concat": {
+      |    "ltr": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"^\\\\s+\",\"\") : null)"
+      |      }
+      |    },
+      |    "rtr": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"\\\\s+$\",\"\") : null)"
+      |      }
+      |    },
+      |    "con": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : String.valueOf(arg0) + \"_test\" + String.valueOf(1))"
+      |      }
+      |    },
+      |    "l": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.substring(0, Math.min(5, arg0.length())))"
+      |      }
+      |    },
+      |    "r": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : 3 == 0 ? \"\" : arg0.substring(arg0.length() - Math.min(3, arg0.length())))"
+      |      }
+      |    },
+      |    "rep": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.replace(\"el\", \"le\"))"
+      |      }
+      |    },
+      |    "rev": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : new StringBuilder(arg0).reverse().toString())"
+      |      }
+      |    },
+      |    "pos": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg1 == null) ? null : arg1.indexOf(\"soft\", 1 - 1) + 1)"
+      |      }
+      |    },
+      |    "reg": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : java.util.regex.Pattern.compile(\"soft\", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE).matcher(arg0).find())"
       |      }
       |    }
       |  },
@@ -2405,7 +2538,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(";", "; ")
       .replaceAll("; if", ";if")
       .replaceAll("==", " == ")
-      .replaceAll("\\+", " + ")
+      .replaceAll("\\+(\\d)", " + $1")
+      .replaceAll("\\)\\+", ") + ")
+      .replaceAll("\\+String", " + String")
       .replaceAll("-", " - ")
       .replaceAll("\\*", " * ")
       .replaceAll("/", " / ")
@@ -2416,6 +2551,546 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\|\\|", " || ")
       .replaceAll(";\\s\\s", "; ")
       .replaceAll("false:", "false : ")
+      .replaceAll("(\\d),", "$1, ")
+      .replaceAll(":(\\d)", " : $1")
+      .replaceAll("new", "new ")
+      .replaceAll(""",\\"le""", """, \\"le""")
+      .replaceAll(":arg", " : arg")
+      .replaceAll(",java", ", java")
+      .replaceAll("\\|java", " | java")
   }
 
+  it should "handle top hits aggregation" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(topHits)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "script_fields": {
+      |    "hire_date": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(!doc.containsKey('hire_date') || doc['hire_date'].empty ? null : doc['hire_date'].value)"
+      |      }
+      |    }
+      |  },
+      |  "_source": true,
+      |  "aggs": {
+      |    "dept": {
+      |      "terms": {
+      |        "field": "department.keyword"
+      |      },
+      |      "aggs": {
+      |        "cnt": {
+      |          "cardinality": {
+      |            "field": "salary"
+      |          }
+      |        },
+      |        "first_salary": {
+      |          "top_hits": {
+      |            "size": 1,
+      |            "sort": [
+      |              {
+      |                "hire_date": {
+      |                  "order": "asc"
+      |                }
+      |              }
+      |            ],
+      |            "_source": {
+      |              "includes": [
+      |                "salary",
+      |                "firstName"
+      |              ]
+      |            }
+      |          }
+      |        },
+      |        "last_salary": {
+      |          "top_hits": {
+      |            "size": 1,
+      |            "sort": [
+      |              {
+      |                "hire_date": {
+      |                  "order": "desc"
+      |                }
+      |              }
+      |            ],
+      |            "_source": {
+      |              "includes": [
+      |                "salary",
+      |                "firstName"
+      |              ]
+      |            }
+      |          }
+      |        },
+      |        "employees": {
+      |          "top_hits": {
+      |            "size": 1000,
+      |            "sort": [
+      |              {
+      |                "hire_date": {
+      |                  "order": "asc"
+      |                }
+      |              },
+      |              {
+      |                "salary": {
+      |                  "order": "desc"
+      |                }
+      |              }
+      |            ],
+      |            "_source": {
+      |              "includes": [
+      |                "name"
+      |              ]
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">", " > ")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+  }
+
+  it should "handle last day function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(lastDay)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "script": {
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "(def e1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); e1.withDayOfMonth(e1.lengthOfMonth())).get(ChronoField.DAY_OF_MONTH) > 28"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "script_fields": {
+        |    "ld": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "(def e1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e1 != null ? e1.withDayOfMonth(e1.lengthOfMonth()) : null)"
+        |      }
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "identifier"
+        |    ]
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">", " > ")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+  }
+
+  it should "handle all extractors" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(extractors)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "script_fields": {
+      |    "y": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.YEAR) : null)"
+      |      }
+      |    },
+      |    "m": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MONTH_OF_YEAR) : null)"
+      |      }
+      |    },
+      |    "wd": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_WEEK) : null)"
+      |      }
+      |    },
+      |    "yd": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_YEAR) : null)"
+      |      }
+      |    },
+      |    "d": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_MONTH) : null)"
+      |      }
+      |    },
+      |    "h": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.HOUR_OF_DAY) : null)"
+      |      }
+      |    },
+      |    "minutes": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MINUTE_OF_HOUR) : null)"
+      |      }
+      |    },
+      |    "s": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
+      |      }
+      |    },
+      |    "nano": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.NANO_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "micro": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MICRO_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "milli": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MILLI_OF_SECOND) : null)"
+      |      }
+      |    },
+      |    "epoch": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.EPOCH_DAY) : null)"
+      |      }
+      |    },
+      |    "off": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.OFFSET_SECONDS) : null)"
+      |      }
+      |    },
+      |    "w": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR) : null)"
+      |      }
+      |    },
+      |    "q": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR) : null)"
+      |      }
+      |    }
+      |  },
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("-", " - ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">", " > ")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+  }
+
+  it should "handle geo distance as script fields and criteria" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(geoDistance)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "must": [
+      |              {
+      |                "script": {
+      |                  "script": {
+      |                    "lang": "painless",
+      |                    "source": "(def arg0 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)) >= 4000000.0",
+      |                    "params": {
+      |                      "lat": -70.0,
+      |                      "lon": 40.0
+      |                    }
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "geo_distance": {
+      |                  "distance": "5000km",
+      |                  "toLocation": [
+      |                    40.0,
+      |                    -70.0
+      |                  ]
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "(def arg0 = (!doc.containsKey('fromLocation') || doc['fromLocation'].empty ? null : doc['fromLocation']); def arg1 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null || arg1 == null) ? null : arg0.arcDistance(arg1.lat, arg1.lon)) < 2000000.0"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "script": {
+      |            "script": {
+      |              "lang": "painless",
+      |              "source": "0.0 < 1000000.0"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "d1": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('toLocation') || doc['toLocation'].empty ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+      |        "params": {
+      |          "lat": -70.0,
+      |          "lon": 40.0
+      |        }
+      |      }
+      |    },
+      |    "d2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "(def arg0 = (!doc.containsKey('fromLocation') || doc['fromLocation'].empty ? null : doc['fromLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+      |        "params": {
+      |          "lat": -70.0,
+      |          "lon": 40.0
+      |        }
+      |      }
+      |    },
+      |    "d3": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "8318612.0"
+      |      }
+      |    }
+      |  },
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll("\\*", " * ")
+      .replaceAll("/", " / ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll(">=", " >=")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+  }
+
+  it should "handle between with temporal" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(betweenTemporal)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "range": {
+      |            "createdAt": {
+      |              "gte": "now-1M/d",
+      |              "lte": "now/d"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "bool": {
+      |            "must": [
+      |              {
+      |                "script": {
+      |                  "script": {
+      |                    "lang": "painless",
+      |                    "source": "def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left >= (def e2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "range": {
+      |                  "lastUpdated": {
+      |                    "lte": "now/d"
+      |                  }
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "*"
+      |    ]
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
 }

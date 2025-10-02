@@ -1,21 +1,17 @@
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.{
-  AggregateFunction,
+import app.softnetwork.elastic.sql.query.{
   Asc,
-  Avg,
+  Bucket,
   BucketSelectorScript,
-  Count,
+  Criteria,
+  Desc,
   ElasticBoolQuery,
   Field,
-  Max,
-  Min,
-  SQLBucket,
-  SQLCriteria,
-  SQLFunctionUtils,
-  SortOrder,
-  Sum
+  SortOrder
 }
+import app.softnetwork.elastic.sql.function._
+import app.softnetwork.elastic.sql.function.aggregate._
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
   bucketSelectorAggregation,
@@ -26,6 +22,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   nestedAggregation,
   sumAgg,
   termsAgg,
+  topHitsAgg,
   valueCountAgg
 }
 import com.sksamuel.elastic4s.script.Script
@@ -36,6 +33,7 @@ import com.sksamuel.elastic4s.searches.aggs.{
   TermsAggregation,
   TermsOrder
 }
+import com.sksamuel.elastic4s.searches.sort.FieldSort
 
 import scala.language.implicitConversions
 
@@ -59,7 +57,7 @@ case class ElasticAggregation(
 object ElasticAggregation {
   def apply(
     sqlAgg: Field,
-    having: Option[SQLCriteria],
+    having: Option[Criteria],
     bucketsDirection: Map[String, SortOrder]
   ): ElasticAggregation = {
     import sqlAgg._
@@ -83,13 +81,20 @@ object ElasticAggregation {
         field
       else if (distinct)
         s"${aggType}_distinct_${sourceField.replace(".", "_")}"
-      else
-        s"${aggType}_${sourceField.replace(".", "_")}"
+      else {
+        aggType match {
+          case th: TopHitsAggregation =>
+            s"${th.topHits.sql.toLowerCase}_${sourceField.replace(".", "_")}"
+          case _ =>
+            s"${aggType}_${sourceField.replace(".", "_")}"
+
+        }
+      }
     }
 
     var aggPath = Seq[String]()
 
-    val (aggFuncs, transformFuncs) = SQLFunctionUtils.aggregateAndTransformFunctions(identifier)
+    val (aggFuncs, transformFuncs) = FunctionUtils.aggregateAndTransformFunctions(identifier)
 
     require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
 
@@ -108,16 +113,57 @@ object ElasticAggregation {
 
     val _agg =
       aggType match {
-        case Count =>
+        case COUNT =>
           if (distinct)
             cardinalityAgg(aggName, sourceField)
           else {
             valueCountAgg(aggName, sourceField)
           }
-        case Min => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
-        case Max => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
-        case Avg => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
-        case Sum => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+        case MIN => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
+        case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
+        case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
+        case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+        case th: TopHitsAggregation =>
+          val limit = {
+            th match {
+              case _: LastValue => 1
+//                case _: FirstValue => 1
+              case _ => th.limit.map(_.limit).getOrElse(1)
+            }
+          }
+          val topHits =
+            topHitsAgg(aggName)
+              .fetchSource(
+                th.identifier.name +: th.fields
+                  .filterNot(_.isScriptField)
+                  .map(_.sourceField)
+                  .toArray,
+                Array.empty
+              )
+              .copy(
+                scripts = th.fields
+                  .filter(_.isScriptField)
+                  .map(f => f.sourceField -> Script(f.painless).lang("painless"))
+                  .toMap
+              )
+              .size(limit) sortBy th.orderBy.sorts.map(sort =>
+              sort.order match {
+                case Some(Desc) =>
+                  th.topHits match {
+                    case LAST_VALUE => FieldSort(sort.field).asc()
+                    case _          => FieldSort(sort.field).desc()
+                  }
+                case _ =>
+                  th.topHits match {
+                    case LAST_VALUE => FieldSort(sort.field).desc()
+                    case _          => FieldSort(sort.field).asc()
+                  }
+              }
+            )
+          /*th.fields.filter(_.isScriptField).foldLeft(topHits) { (agg, f) =>
+            agg.script(f.sourceField, Script(f.painless, lang = Some("painless")))
+          }*/
+          topHits
       }
 
     val filteredAggName = "filtered_agg"
@@ -172,11 +218,11 @@ object ElasticAggregation {
   }
 
   def buildBuckets(
-    buckets: Seq[SQLBucket],
+    buckets: Seq[Bucket],
     bucketsDirection: Map[String, SortOrder],
     aggregations: Seq[Aggregation],
     aggregationsDirection: Map[String, SortOrder],
-    having: Option[SQLCriteria]
+    having: Option[Criteria]
   ): Option[TermsAggregation] = {
     Console.println(bucketsDirection)
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>

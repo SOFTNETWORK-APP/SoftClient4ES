@@ -5,7 +5,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.{client, sql}
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization.serialization
@@ -31,7 +31,7 @@ import com.google.gson.{Gson, JsonParser}
 
 import _root_.java.io.{StringReader, StringWriter}
 import _root_.java.util.{Map => JMap}
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -401,7 +401,7 @@ trait ElasticsearchClientSingleValueAggregateApi
                   field,
                   aggType,
                   aggType match {
-                    case sql.Count =>
+                    case sql.function.aggregate.COUNT =>
                       NumericValue(
                         if (aggregation.distinct) {
                           root.get(agg).cardinality().value().toDouble
@@ -409,15 +409,15 @@ trait ElasticsearchClientSingleValueAggregateApi
                           root.get(agg).valueCount().value()
                         }
                       )
-                    case sql.Sum =>
+                    case sql.function.aggregate.SUM =>
                       NumericValue(root.get(agg).sum().value())
-                    case sql.Avg =>
+                    case sql.function.aggregate.AVG =>
                       val avgAgg = root.get(agg).avg()
                       aggregateValue(avgAgg.value(), avgAgg.valueAsString())
-                    case sql.Min =>
+                    case sql.function.aggregate.MIN =>
                       val minAgg = root.get(agg).min()
                       aggregateValue(minAgg.value(), minAgg.valueAsString())
-                    case sql.Max =>
+                    case sql.function.aggregate.MAX =>
                       val maxAgg = root.get(agg).max()
                       aggregateValue(maxAgg.value(), maxAgg.valueAsString())
                     case _ => EmptyValue

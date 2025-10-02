@@ -5,11 +5,11 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql
-import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import com.google.gson.{Gson, JsonParser}
+import com.google.gson.JsonParser
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
 import io.searchbox.core.search.aggregation.RootAggregation
@@ -21,7 +21,7 @@ import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 import io.searchbox.params.Parameters
 import org.json4s.Formats
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -386,7 +386,7 @@ trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCount
                     field,
                     aggType,
                     aggType match {
-                      case sql.Count =>
+                      case sql.function.aggregate.COUNT =>
                         if (aggregation.distinct)
                           NumericValue(
                             root.getCardinalityAggregation(agg).getCardinality.doubleValue()
@@ -396,13 +396,13 @@ trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCount
                             root.getValueCountAggregation(agg).getValueCount.doubleValue()
                           )
                         }
-                      case sql.Sum =>
+                      case sql.function.aggregate.SUM =>
                         NumericValue(root.getSumAggregation(agg).getSum)
-                      case sql.Avg =>
+                      case sql.function.aggregate.AVG =>
                         NumericValue(root.getAvgAggregation(agg).getAvg)
-                      case sql.Min =>
+                      case sql.function.aggregate.MIN =>
                         NumericValue(root.getMinAggregation(agg).getMin)
-                      case sql.Max =>
+                      case sql.function.aggregate.MAX =>
                         NumericValue(root.getMaxAggregation(agg).getMax)
                       case _ => EmptyValue
                     },

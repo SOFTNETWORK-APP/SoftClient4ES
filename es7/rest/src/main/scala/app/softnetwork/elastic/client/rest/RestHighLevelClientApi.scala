@@ -5,7 +5,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.{client, sql}
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization.serialization
@@ -423,19 +423,19 @@ trait RestHighLevelClientSingleValueAggregateApi
                     field,
                     aggType,
                     aggType match {
-                      case sql.Count =>
+                      case sql.function.aggregate.COUNT =>
                         if (aggregation.distinct) {
                           NumericValue(root.get(agg).asInstanceOf[Cardinality].value())
                         } else {
                           NumericValue(root.get(agg).asInstanceOf[ValueCount].value())
                         }
-                      case sql.Sum =>
+                      case sql.function.aggregate.SUM =>
                         NumericValue(root.get(agg).asInstanceOf[Sum].value())
-                      case sql.Avg =>
+                      case sql.function.aggregate.AVG =>
                         NumericValue(root.get(agg).asInstanceOf[Avg].value())
-                      case sql.Min =>
+                      case sql.function.aggregate.MIN =>
                         NumericValue(root.get(agg).asInstanceOf[Min].value())
-                      case sql.Max =>
+                      case sql.function.aggregate.MAX =>
                         NumericValue(root.get(agg).asInstanceOf[Max].value())
                       case _ => EmptyValue
                     },

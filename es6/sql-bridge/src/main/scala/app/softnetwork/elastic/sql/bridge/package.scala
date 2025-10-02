@@ -1,10 +1,16 @@
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble, SQLTemporal, SQLVarchar}
+import app.softnetwork.elastic.sql.function.aggregate.COUNT
+import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
+import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.query._
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.script.Script
+import com.sksamuel.elastic4s.script.ScriptType.Source
 import com.sksamuel.elastic4s.searches.aggs.Aggregation
 import com.sksamuel.elastic4s.searches.queries.Query
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
@@ -20,6 +26,7 @@ package object bridge {
       request.sources,
       request.where.flatMap(_.criteria),
       request.limit.map(_.limit),
+      request.limit.flatMap(_.offset.map(_.offset)).orElse(Some(0)),
       request,
       request.buckets,
       request.aggregates.map(
@@ -96,13 +103,19 @@ package object bridge {
         }
     }
 
-    _search = scriptFields match {
+    _search = scriptFields.filterNot(_.aggregation) match {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
           scriptField(
             field.scriptName,
-            Script(script = field.painless).lang("painless").scriptType("source")
+            Script(script = field.painless)
+              .lang("painless")
+              .scriptType("source")
+              .params(field.identifier.functions.headOption match {
+                case Some(f: PainlessParams) => f.params
+                case _                       => Map.empty[String, Any]
+              })
           )
         }
     }
@@ -122,7 +135,7 @@ package object bridge {
       _search size 0
     } else {
       limit match {
-        case Some(l) => _search limit l.limit from 0
+        case Some(l) => _search limit l.limit from l.offset.map(_.offset).getOrElse(0)
         case _       => _search
       }
     }
@@ -136,22 +149,63 @@ package object bridge {
     )
   }
 
-  def applyNumericOp[A](n: SQLNumericValue[_])(
+  def applyNumericOp[A](n: NumericValue[_])(
     longOp: Long => A,
     doubleOp: Double => A
   ): A = n.toEither.fold(longOp, doubleOp)
 
-  implicit def expressionToQuery(expression: SQLExpression): Query = {
+  implicit def expressionToQuery(expression: GenericExpression): Query = {
     import expression._
     if (aggregation)
       return matchAllQuery()
-    if (identifier.functions.nonEmpty) {
+    if (
+      identifier.functions.nonEmpty && (identifier.functions.size > 1 || (identifier.functions.head match {
+        case _: Distance => false
+        case _           => true
+      }))
+    ) {
       return scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
     }
-    value match {
-      case n: SQLNumericValue[_] =>
+    // Geo distance special case
+    identifier.functions.headOption match {
+      case Some(d: Distance) =>
         operator match {
-          case Ge =>
+          case o: ComparisonOperator =>
+            (value match {
+              case l: LongValue =>
+                Some(GeoDistance(l, Meters))
+              case g: GeoDistance =>
+                Some(g)
+              case _ => None
+            }) match {
+              case Some(g) =>
+                maybeNot match {
+                  case Some(_) =>
+                    return geoDistanceToQuery(
+                      DistanceCriteria(
+                        d,
+                        o.not,
+                        g
+                      )
+                    )
+                  case _ =>
+                    return geoDistanceToQuery(
+                      DistanceCriteria(
+                        d,
+                        o,
+                        g
+                      )
+                    )
+                }
+              case _ =>
+            }
+        }
+      case _ =>
+    }
+    value match {
+      case n: NumericValue[_] =>
+        operator match {
+          case GE =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -164,7 +218,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) gte d
                 )
             }
-          case Gt =>
+          case GT =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -177,7 +231,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) gt d
                 )
             }
-          case Le =>
+          case LE =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -190,7 +244,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) lte d
                 )
             }
-          case Lt =>
+          case LT =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -203,7 +257,7 @@ package object bridge {
                   d => rangeQuery(identifier.name) lt d
                 )
             }
-          case Eq =>
+          case EQ =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -216,7 +270,7 @@ package object bridge {
                   d => termQuery(identifier.name, d)
                 )
             }
-          case Ne | Diff =>
+          case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
@@ -231,51 +285,58 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case l: SQLStringValue =>
+      case l: StringValue =>
         operator match {
-          case Like =>
+          case LIKE =>
             maybeNot match {
               case Some(_) =>
                 not(regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
                 regexQuery(identifier.name, toRegex(l.value))
             }
-          case Ge =>
+          case RLIKE =>
+            maybeNot match {
+              case Some(_) =>
+                not(regexQuery(identifier.name, l.value))
+              case _ =>
+                regexQuery(identifier.name, l.value)
+            }
+          case GE =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) lt l.value
               case _ =>
                 rangeQuery(identifier.name) gte l.value
             }
-          case Gt =>
+          case GT =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) lte l.value
               case _ =>
                 rangeQuery(identifier.name) gt l.value
             }
-          case Le =>
+          case LE =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) gt l.value
               case _ =>
                 rangeQuery(identifier.name) lte l.value
             }
-          case Lt =>
+          case LT =>
             maybeNot match {
               case Some(_) =>
                 rangeQuery(identifier.name) gte l.value
               case _ =>
                 rangeQuery(identifier.name) lt l.value
             }
-          case Eq =>
+          case EQ =>
             maybeNot match {
               case Some(_) =>
                 not(termQuery(identifier.name, l.value))
               case _ =>
                 termQuery(identifier.name, l.value)
             }
-          case Ne | Diff =>
+          case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
                 termQuery(identifier.name, l.value)
@@ -284,16 +345,16 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case b: SQLBoolean =>
+      case b: BooleanValue =>
         operator match {
-          case Eq =>
+          case EQ =>
             maybeNot match {
               case Some(_) =>
                 not(termQuery(identifier.name, b.value))
               case _ =>
                 termQuery(identifier.name, b.value)
             }
-          case Ne | Diff =>
+          case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
                 termQuery(identifier.name, b.value)
@@ -302,19 +363,19 @@ package object bridge {
             }
           case _ => matchAllQuery()
         }
-      case i: SQLIdentifier =>
+      case i: Identifier =>
         operator match {
-          case op: SQLComparisonOperator =>
-            i.toScript match {
+          case op: ComparisonOperator =>
+            i.script match {
               case Some(script) =>
                 val o = if (maybeNot.isDefined) op.not else op
                 o match {
-                  case Gt        => rangeQuery(identifier.name) gt script
-                  case Ge        => rangeQuery(identifier.name) gte script
-                  case Lt        => rangeQuery(identifier.name) lt script
-                  case Le        => rangeQuery(identifier.name) lte script
-                  case Eq        => rangeQuery(identifier.name) gte script lte script
-                  case Ne | Diff => not(rangeQuery(identifier.name) gte script lte script)
+                  case GT        => rangeQuery(identifier.name) gt script
+                  case GE        => rangeQuery(identifier.name) gte script
+                  case LT        => rangeQuery(identifier.name) lt script
+                  case LE        => rangeQuery(identifier.name) lte script
+                  case EQ        => rangeQuery(identifier.name) gte script lte script
+                  case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
                 scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
@@ -327,34 +388,34 @@ package object bridge {
   }
 
   implicit def isNullToQuery(
-    isNull: SQLIsNull
+    isNull: IsNullExpr
   ): Query = {
     import isNull._
     not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullToQuery(
-    isNotNull: SQLIsNotNull
+    isNotNull: IsNotNullExpr
   ): Query = {
     import isNotNull._
     existsQuery(identifier.name)
   }
 
   implicit def isNullCriteriaToQuery(
-    isNull: SQLIsNullCriteria
+    isNull: IsNullCriteria
   ): Query = {
     import isNull._
     not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullCriteriaToQuery(
-    isNotNull: SQLIsNotNullCriteria
+    isNotNull: IsNotNullCriteria
   ): Query = {
     import isNotNull._
     existsQuery(identifier.name)
   }
 
-  implicit def inToQuery[R, T <: SQLValue[R]](in: SQLIn[R, T]): Query = {
+  implicit def inToQuery[R, T <: Value[R]](in: InExpr[R, T]): Query = {
     import in._
     val _values: Seq[Any] = values.innerValues
     val t =
@@ -374,32 +435,84 @@ package object bridge {
   }
 
   implicit def betweenToQuery(
-    between: SQLBetween[String]
+    between: BetweenExpr
   ): Query = {
     import between._
-    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
-    maybeNot match {
-      case Some(_) => not(r)
-      case _       => r
+    // Geo distance special case
+    identifier.functions.headOption match {
+      case Some(d: Distance) =>
+        fromTo match {
+          case ft: GeoDistanceFromTo =>
+            val fq =
+              geoDistanceToQuery(
+                DistanceCriteria(
+                  d,
+                  GE,
+                  ft.from
+                )
+              )
+            val tq =
+              geoDistanceToQuery(
+                DistanceCriteria(
+                  d,
+                  LE,
+                  ft.to
+                )
+              )
+            maybeNot match {
+              case Some(_) => return not(fq, tq)
+              case _       => return must(fq, tq)
+            }
+          case _ =>
+        }
+      case _ =>
     }
-  }
-
-  implicit def betweenLongsToQuery(
-    between: SQLBetween[Long]
-  ): Query = {
-    import between._
-    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
-    maybeNot match {
-      case Some(_) => not(r)
-      case _       => r
-    }
-  }
-
-  implicit def betweenDoublesToQuery(
-    between: SQLBetween[Double]
-  ): Query = {
-    import between._
-    val r = rangeQuery(identifier.name) gte fromTo.from.value lte fromTo.to.value
+    val r =
+      fromTo.out match {
+        case _: SQLDouble =>
+          rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Double] lte fromTo.to.value
+            .asInstanceOf[Double]
+        case _: SQLBigInt =>
+          rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Long] lte fromTo.to.value
+            .asInstanceOf[Long]
+        case _: SQLVarchar =>
+          rangeQuery(identifier.name) gte String.valueOf(fromTo.from.value) lte String.valueOf(
+            fromTo.to.value
+          )
+        case _: SQLTemporal =>
+          fromTo match {
+            case ft: IdentifierFromTo =>
+              (ft.from.script, ft.to.script) match {
+                case (Some(from), Some(to)) =>
+                  rangeQuery(identifier.name) gte from lte to
+                case (Some(from), None) =>
+                  val fq = rangeQuery(identifier.name) gte from
+                  val tq = GenericExpression(identifier, LE, ft.to, None)
+                  maybeNot match {
+                    case Some(_) => return not(fq, tq)
+                    case _       => return must(fq, tq)
+                  }
+                case (None, Some(to)) =>
+                  val fq = GenericExpression(identifier, GE, ft.from, None)
+                  val tq = rangeQuery(identifier.name) lte to
+                  maybeNot match {
+                    case Some(_) => return not(fq, tq)
+                    case _       => return must(fq, tq)
+                  }
+                case _ =>
+                  val fq = GenericExpression(identifier, GE, ft.from, None)
+                  val tq = GenericExpression(identifier, LE, ft.to, None)
+                  maybeNot match {
+                    case Some(_) => return not(fq, tq)
+                    case _       => return must(fq, tq)
+                  }
+              }
+            case other =>
+              throw new IllegalArgumentException(s"Unsupported type for range query: $other")
+          }
+        case _ =>
+          throw new IllegalArgumentException(s"Unsupported out type for range query: ${fromTo.out}")
+      }
     maybeNot match {
       case Some(_) => not(r)
       case _       => r
@@ -407,10 +520,28 @@ package object bridge {
   }
 
   implicit def geoDistanceToQuery(
-    geoDistance: ElasticGeoDistance
+    distanceCriteria: DistanceCriteria
   ): Query = {
-    import geoDistance._
-    geoDistanceQuery(identifier.name, lat.value, lon.value) distance distance.value
+    import distanceCriteria._
+    operator match {
+      case LE | LT if distance.oneIdentifier =>
+        val identifier = distance.identifiers.head
+        val point = distance.points.head
+        geoDistanceQuery(
+          identifier.name,
+          point.lat.value,
+          point.lon.value
+        ) distance geoDistance.geoDistance
+      case _ =>
+        scriptQuery(
+          Script(
+            script = distanceCriteria.painless,
+            lang = Some("painless"),
+            scriptType = Source,
+            params = distance.params
+          )
+        )
+    }
   }
 
   implicit def matchToQuery(
@@ -421,7 +552,7 @@ package object bridge {
   }
 
   implicit def criteriaToElasticCriteria(
-    criteria: SQLCriteria
+    criteria: Criteria
   ): ElasticCriteria = {
     ElasticCriteria(
       criteria
@@ -453,7 +584,7 @@ package object bridge {
                 sources = l.sources,
                 query = Some(
                   (aggregation.aggType match {
-                    case Count if aggregation.sourceField.equalsIgnoreCase("_id") =>
+                    case COUNT if aggregation.sourceField.equalsIgnoreCase("_id") =>
                       SearchBodyBuilderFn(
                         ElasticApi.search("") query {
                           queryFiltered

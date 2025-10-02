@@ -3,7 +3,7 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
-import app.softnetwork.elastic.sql.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
 import org.json4s.Formats
 import app.softnetwork.persistence.model.Timestamped
 import org.slf4j.{Logger, LoggerFactory}

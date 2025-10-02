@@ -1,17 +1,18 @@
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.{Field, SQLBucket, SQLCriteria, SQLExcept}
+import app.softnetwork.elastic.sql.query.{Bucket, Criteria, Except, Field}
 import com.sksamuel.elastic4s.searches.SearchRequest
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 
 case class ElasticSearchRequest(
   fields: Seq[Field],
-  except: Option[SQLExcept],
+  except: Option[Except],
   sources: Seq[String],
-  criteria: Option[SQLCriteria],
+  criteria: Option[Criteria],
   limit: Option[Int],
+  offset: Option[Int],
   search: SearchRequest,
-  buckets: Seq[SQLBucket] = Seq.empty,
+  buckets: Seq[Bucket] = Seq.empty,
   aggregations: Seq[ElasticAggregation] = Seq.empty
 ) {
   def minScore(score: Option[Double]): ElasticSearchRequest = {

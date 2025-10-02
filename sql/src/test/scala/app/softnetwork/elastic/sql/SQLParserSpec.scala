@@ -1,166 +1,184 @@
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.parser._
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 object Queries {
-  val numericalEq = "select t.col1, t.col2 from Table as t where t.identifier = 1.0"
-  val numericalLt = "select * from Table where identifier < 1"
-  val numericalLe = "select * from Table where identifier <= 1"
-  val numericalGt = "select * from Table where identifier > 1"
-  val numericalGe = "select * from Table where identifier >= 1"
-  val numericalNe = "select * from Table where identifier <> 1"
-  val literalEq = """select * from Table where identifier = 'un'"""
-  val literalLt = "select * from Table where createdAt < 'now-35M/M'"
-  val literalLe = "select * from Table where createdAt <= 'now-35M/M'"
-  val literalGt = "select * from Table where createdAt > 'now-35M/M'"
-  val literalGe = "select * from Table where createdAt >= 'now-35M/M'"
-  val literalNe = """select * from Table where identifier <> 'un'"""
-  val boolEq = """select * from Table where identifier = true"""
-  val boolNe = """select * from Table where identifier <> false"""
-  val literalLike = """select * from Table where identifier like '%un%'"""
-  val literalNotLike = """select * from Table where identifier not like '%un%'"""
-  val betweenExpression = """select * from Table where identifier between '1' and '2'"""
-  val andPredicate = "select * from Table where identifier1 = 1 and identifier2 > 2"
-  val orPredicate = "select * from Table where identifier1 = 1 or identifier2 > 2"
+  val numericalEq = "SELECT t.col1, t.col2 FROM Table AS t WHERE t.identifier = 1.0"
+  val numericalLt = "SELECT * FROM Table WHERE identifier < 1"
+  val numericalLe = "SELECT * FROM Table WHERE identifier <= 1"
+  val numericalGt = "SELECT * FROM Table WHERE identifier > 1"
+  val numericalGe = "SELECT * FROM Table WHERE identifier >= 1"
+  val numericalNe = "SELECT * FROM Table WHERE identifier <> 1"
+  val literalEq = """SELECT * FROM Table WHERE identifier = 'un'"""
+  val literalLt = "SELECT * FROM Table WHERE createdAt < 'NOW-35M/M'"
+  val literalLe = "SELECT * FROM Table WHERE createdAt <= 'NOW-35M/M'"
+  val literalGt = "SELECT * FROM Table WHERE createdAt > 'NOW-35M/M'"
+  val literalGe = "SELECT * FROM Table WHERE createdAt >= 'NOW-35M/M'"
+  val literalNe = """SELECT * FROM Table WHERE identifier <> 'un'"""
+  val boolEq = """SELECT * FROM Table WHERE identifier = true"""
+  val boolNe = """SELECT * FROM Table WHERE identifier <> false"""
+  val literalLike = """SELECT * FROM Table WHERE identifier LIKE '%u_n%'"""
+  val literalRlike = """SELECT * FROM Table WHERE identifier RLIKE '.*u.n.*'"""
+  val literalNotLike = """SELECT * FROM Table WHERE identifier NOT LIKE '%un%'"""
+  val betweenExpression = """SELECT * FROM Table WHERE identifier BETWEEN '1' AND '2'"""
+  val andPredicate = "SELECT * FROM Table WHERE identifier1 = 1 AND identifier2 > 2"
+  val orPredicate = "SELECT * FROM Table WHERE identifier1 = 1 OR identifier2 > 2"
   val leftPredicate =
-    "select * from Table where (identifier1 = 1 and identifier2 > 2) or identifier3 = 3"
+    "SELECT * FROM Table WHERE (identifier1 = 1 AND identifier2 > 2) OR identifier3 = 3"
   val rightPredicate =
-    "select * from Table where identifier1 = 1 and (identifier2 > 2 or identifier3 = 3)"
+    "SELECT * FROM Table WHERE identifier1 = 1 AND (identifier2 > 2 OR identifier3 = 3)"
   val predicates =
-    "select * from Table where (identifier1 = 1 and identifier2 > 2) or (identifier3 = 3 and identifier4 = 4)"
+    "SELECT * FROM Table WHERE (identifier1 = 1 AND identifier2 > 2) OR (identifier3 = 3 AND identifier4 = 4)"
   val nestedPredicate =
-    "select * from Table where identifier1 = 1 and nested(nested.identifier2 > 2 or nested.identifier3 = 3)"
+    "SELECT * FROM Table WHERE identifier1 = 1 AND nested(nested.identifier2 > 2 OR nested.identifier3 = 3)"
   val nestedCriteria =
-    "select * from Table where identifier1 = 1 and nested(nested.identifier3 = 3)"
+    "SELECT * FROM Table WHERE identifier1 = 1 AND nested(nested.identifier3 = 3)"
   val childPredicate =
-    "select * from Table where identifier1 = 1 and child(child.identifier2 > 2 or child.identifier3 = 3)"
-  val childCriteria = "select * from Table where identifier1 = 1 and child(child.identifier3 = 3)"
+    "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 > 2 OR child.identifier3 = 3)"
+  val childCriteria = "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier3 = 3)"
   val parentPredicate =
-    "select * from Table where identifier1 = 1 and parent(parent.identifier2 > 2 or parent.identifier3 = 3)"
+    "SELECT * FROM Table WHERE identifier1 = 1 AND parent(parent.identifier2 > 2 OR parent.identifier3 = 3)"
   val parentCriteria =
-    "select * from Table where identifier1 = 1 and parent(parent.identifier3 = 3)"
-  val inLiteralExpression = "select * from Table where identifier in ('val1','val2','val3')"
-  val inNumericalExpressionWithIntValues = "select * from Table where identifier in (1,2,3)"
+    "SELECT * FROM Table WHERE identifier1 = 1 AND parent(parent.identifier3 = 3)"
+  val inLiteralExpression = "SELECT * FROM Table WHERE identifier IN ('val1','val2','val3')"
+  val inNumericalExpressionWithIntValues = "SELECT * FROM Table WHERE identifier IN (1,2,3)"
   val inNumericalExpressionWithDoubleValues =
-    "select * from Table where identifier in (1.0,2.1,3.4)"
+    "SELECT * FROM Table WHERE identifier IN (1.0,2.1,3.4)"
   val notInLiteralExpression =
-    "select * from Table where identifier not in ('val1','val2','val3')"
-  val notInNumericalExpressionWithIntValues = "select * from Table where identifier not in (1,2,3)"
+    "SELECT * FROM Table WHERE identifier NOT IN ('val1','val2','val3')"
+  val notInNumericalExpressionWithIntValues = "SELECT * FROM Table WHERE identifier NOT IN (1,2,3)"
   val notInNumericalExpressionWithDoubleValues =
-    "select * from Table where identifier not in (1.0,2.1,3.4)"
+    "SELECT * FROM Table WHERE identifier NOT IN (1.0,2.1,3.4)"
   val nestedWithBetween =
-    "select * from Table where nested(ciblage.Archivage_CreationDate between 'now-3M/M' and 'now' and ciblage.statutComportement = 1)"
-  val count = "select count(t.id) as c1 from Table as t where t.nom = 'Nom'"
-  val countDistinct = "select count(distinct t.id) as c2 from Table as t where t.nom = 'Nom'"
+    "SELECT * FROM Table WHERE nested(ciblage.Archivage_CreationDate BETWEEN 'NOW-3M/M' AND 'NOW' AND ciblage.statutComportement = 1)"
+  val COUNT = "SELECT COUNT(t.id) AS c1 FROM Table AS t WHERE t.nom = 'Nom'"
+  val countDistinct = "SELECT COUNT(distinct t.id) AS c2 FROM Table AS t WHERE t.nom = 'Nom'"
   val countNested =
-    "select count(email.value) as email from crmgp where profile.postalCode in ('75001','75002')"
-  val isNull = "select * from Table where identifier is null"
-  val isNotNull = "select * from Table where identifier is not null"
+    "SELECT COUNT(email.value) AS email FROM crmgp WHERE profile.postalCode IN ('75001','75002')"
+  val isNull = "SELECT * FROM Table WHERE identifier is null"
+  val isNotNull = "SELECT * FROM Table WHERE identifier is NOT null"
   val geoDistanceCriteria =
-    "select * from Table where distance(profile.location,(-70.0,40.0)) <= '5km'"
-  val except = "select * except(col1,col2) from Table"
+    "SELECT * FROM Table WHERE ST_DISTANCE(profile.location, POINT(-70.0, 40.0)) <= 5 km"
+  val except = "SELECT * except(col1,col2) FROM Table"
   val matchCriteria =
-    "select * from Table where match (identifier1,identifier2,identifier3) against ('value')"
+    "SELECT * FROM Table WHERE match (identifier1,identifier2,identifier3) against ('value')"
   val groupBy =
-    "select identifier, count(identifier2) from Table where identifier2 is not null group by identifier"
-  val orderBy = "select * from Table order by identifier desc"
-  val limit = "select * from Table limit 10"
+    "SELECT identifier, COUNT(identifier2) FROM Table WHERE identifier2 is NOT null GROUP BY identifier"
+  val orderBy = "SELECT * FROM Table ORDER BY identifier DESC"
+  val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
   val groupByWithOrderByAndLimit: String =
-    """select identifier, count(identifier2)
-      |from Table
-      |where identifier is not null
-      |group by identifier
-      |order by identifier2 desc
+    """SELECT identifier, COUNT(identifier2)
+      |FROM Table
+      |WHERE identifier is NOT null
+      |GROUP BY identifier
+      |ORDER BY identifier2 DESC
       |limit 10""".stripMargin.replaceAll("\n", " ")
   val groupByWithHaving: String =
-    """select count(CustomerID) as cnt, City, Country
-      |from Customers
-      |group by Country, City
-      |having Country <> 'USA' and City <> 'Berlin' and count(CustomerID) > 1
-      |order by count(CustomerID) desc, Country asc""".stripMargin.replaceAll("\n", " ")
+    """SELECT COUNT(CustomerID) AS cnt, City, Country
+      |FROM Customers
+      |GROUP BY Country, City
+      |HAVING Country <> 'USA' AND City <> 'Berlin' AND COUNT(CustomerID) > 1
+      |ORDER BY COUNT(CustomerID) DESC, Country ASC""".stripMargin.replaceAll("\n", " ")
   val dateTimeWithIntervalFields: String =
-    "select current_timestamp() - interval 3 day as ct, current_date as cd, current_time as t, now as n from dual"
+    "SELECT CURRENT_TIMESTAMP() - INTERVAL 3 DAY AS ct, CURRENT_DATE AS cd, CURRENT_TIME AS t, NOW AS n, TODAY as td FROM dual"
   val fieldsWithInterval: String =
-    "select createdAt - interval 35 minute as ct, identifier from Table"
+    "SELECT createdAt - INTERVAL 35 MINUTE AS ct, identifier FROM Table"
   val filterWithDateTimeAndInterval: String =
-    "select * from Table where createdAt < current_timestamp() and createdAt >= current_timestamp() - interval 10 day"
+    "SELECT * FROM Table WHERE createdAt < CURRENT_TIMESTAMP() AND createdAt >= CURRENT_TIMESTAMP() - INTERVAL 10 DAY"
   val filterWithDateAndInterval: String =
-    "select * from Table where createdAt < current_date and createdAt >= current_date() - interval 10 day"
+    "SELECT * FROM Table WHERE createdAt < CURRENT_DATE AND createdAt >= CURRENT_DATE() - INTERVAL 10 DAY"
   val filterWithTimeAndInterval: String =
-    "select * from Table where createdAt < current_time and createdAt >= current_time() - interval 10 minute"
+    "SELECT * FROM Table WHERE createdAt < CURRENT_TIME AND createdAt >= CURRENT_TIME() - INTERVAL 10 MINUTE"
   val groupByWithHavingAndDateTimeFunctions: String =
-    """select count(CustomerID) as cnt, City, Country, max(createdAt) as lastSeen
-      |from Table
-      |group by Country, City
-      |having Country <> 'USA' and City != 'Berlin' and count(CustomerID) > 1 and lastSeen > now - interval 7 day
-      |order by Country asc""".stripMargin
+    """SELECT COUNT(CustomerID) AS cnt, City, Country, MAX(createdAt) AS lastSeen
+      |FROM Table
+      |GROUP BY Country, City
+      |HAVING Country <> 'USA' AND City != 'Berlin' AND COUNT(CustomerID) > 1 AND lastSeen > NOW - INTERVAL 7 DAY
+      |ORDER BY Country ASC""".stripMargin
       .replaceAll("\n", " ")
-  val parseDate =
-    "select identifier, count(identifier2) as ct, max(parse_date(createdAt, 'yyyy-MM-dd')) as lastSeen from Table where identifier2 is not null group by identifier order by count(identifier2) desc"
-  val parseDateTime: String =
-    """select identifier, count(identifier2) as ct,
-      |max(
+  val dateParse =
+    "SELECT identifier, COUNT(identifier2) AS ct, MAX(DATE_PARSE(createdAt, '%Y-%m-%d')) AS lastSeen FROM Table WHERE identifier2 is NOT null GROUP BY identifier ORDER BY COUNT(identifier2) DESC"
+  val dateTimeParse: String =
+    """SELECT identifier, COUNT(identifier2) AS ct,
+      |MAX(
       |year(
       |date_trunc(
-      |parse_datetime(
+      |datetime_parse(
       |createdAt,
-      |'yyyy-MM-ddTHH:mm:ssZ'
-      |), minute))) as lastSeen
-      |from Table
-      |where identifier2 is not null
-      |group by identifier
-      |order by count(identifier2) desc""".stripMargin
+      |'%Y-%m-%d %H:%i:%s.%f'
+      |), MINUTE))) AS lastSeen
+      |FROM Table
+      |WHERE identifier2 is NOT null
+      |GROUP BY identifier
+      |ORDER BY COUNT(identifier2) DESC""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\( ", "(")
       .replaceAll(" \\)", ")")
 
-  val dateDiff = "select date_diff(createdAt, updatedAt, day) as diff, identifier from Table"
+  val dateDiff = "SELECT date_diff(createdAt, updatedAt, DAY) AS diff, identifier FROM Table"
 
   val aggregationWithDateDiff =
-    "select max(date_diff(parse_datetime(createdAt, 'yyyy-MM-ddTHH:mm:ssZ'), updatedAt, day)) as max_diff from Table group by identifier"
+    "SELECT MAX(date_diff(datetime_parse(createdAt, '%Y-%m-%d %H:%i:%s.%f'), updatedAt, DAY)) AS max_diff FROM Table GROUP BY identifier"
 
-  val formatDate =
-    "select identifier, format_date(date_trunc(lastUpdated, month), 'yyyy-MM-dd') as lastSeen from Table where identifier2 is not null"
-  val formatDateTime =
-    "select identifier, format_datetime(date_trunc(lastUpdated, month), 'yyyy-MM-ddThh:mm:ssZ') as lastSeen from Table where identifier2 is not null"
+  val dateFormat =
+    "SELECT identifier, date_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d') AS lastSeen FROM Table WHERE identifier2 is NOT null"
+  val dateTimeFormat =
+    "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d %H:%i:%s') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
-    "select identifier, date_add(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateSub =
-    "select identifier, date_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeAdd =
-    "select identifier, datetime_add(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+    "SELECT identifier, datetime_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeSub =
-    "select identifier, datetime_sub(lastUpdated, interval 10 day) as lastSeen from Table where identifier2 is not null"
+    "SELECT identifier, datetime_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
 
-  val isnull = "select isnull(identifier) as flag from Table"
-  val isnotnull = "select identifier, isnotnull(identifier2) as flag from Table"
-  val isNullCriteria = "select * from Table where isnull(identifier)"
-  val isNotNullCriteria = "select * from Table where isnotnull(identifier)"
+  val isnull = "SELECT ISNULL(identifier) AS flag FROM Table"
+  val isnotnull = "SELECT identifier, ISNOTNULL(identifier2) AS flag FROM Table"
+  val isNullCriteria = "SELECT * FROM Table WHERE ISNULL(identifier)"
+  val isNotNullCriteria = "SELECT * FROM Table WHERE ISNOTNULL(identifier)"
   val coalesce: String =
-    "select coalesce(createdAt - interval 35 minute, current_date) as c, identifier from Table"
+    "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
   val nullif: String =
-    "select coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd') - interval 2 day), current_date) as c, identifier from Table"
-  val cast: String =
-    "select cast(coalesce(nullif(createdAt, parse_date('2025-09-11', 'yyyy-MM-dd')), current_date - interval 2 hour) bigint) as c, identifier from Table"
+    "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
+  val conversion: String =
+    "SELECT TRY_CAST(COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d')), CURRENT_DATE - INTERVAL 2 HOUR) BIGINT) AS c, CONVERT(CURRENT_TIMESTAMP, BIGINT) AS c2, CURRENT_TIMESTAMP::DATE AS c3, '125'::BIGINT AS c4, '2025-09-11'::DATE AS c5, identifier FROM Table"
   val allCasts =
-    "select cast(identifier as int) as c1, cast(identifier as bigint) as c2, cast(identifier as double) as c3, cast(identifier as real) as c4, cast(identifier as boolean) as c5, cast(identifier as char) as c6, cast(identifier as varchar) as c7, cast(createdAt as date) as c8, cast(createdAt as time) as c9, cast(createdAt as datetime) as c10, cast(createdAt as timestamp) as c11, cast(identifier as smallint) as c12, cast(identifier as tinyint) as c13 from Table"
+    "SELECT CAST(identifier AS int) AS c1, CAST(identifier AS bigint) AS c2, CAST(identifier AS double) AS c3, CAST(identifier AS real) AS c4, CAST(identifier AS boolean) AS c5, CAST(identifier AS char) AS c6, CAST(identifier AS varchar) AS c7, CAST(createdAt AS date) AS c8, CAST(createdAt AS time) AS c9, CAST(createdAt AS datetime) AS c10, CAST(createdAt AS timestamp) AS c11, CAST(identifier AS smallint) AS c12, CAST(identifier AS tinyint) AS c13 FROM Table"
   val caseWhen: String =
-    "select case when lastUpdated > now - interval 7 day then lastUpdated when isnotnull(lastSeen) then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
+    "SELECT CASE WHEN lastUpdated > NOW - INTERVAL 7 DAY THEN lastUpdated WHEN ISNOTNULL(lastSeen) THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
   val caseWhenExpr: String =
-    "select case current_date - interval 7 day when cast(lastUpdated as date) - interval 3 day then lastUpdated when lastSeen then lastSeen + interval 2 day else createdAt end as c, identifier from Table"
+    "SELECT CASE CURRENT_DATE - INTERVAL 7 DAY WHEN CAST(lastUpdated AS date) - INTERVAL 3 DAY THEN lastUpdated WHEN lastSeen THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
 
   val extract: String =
-    "select extract(day from createdAt) as day, extract(month from createdAt) as month, extract(year from createdAt) as year, extract(hour from createdAt) as hour, extract(minute from createdAt) as minute, extract(second from createdAt) as second from Table"
+    "SELECT EXTRACT(DAY FROM createdAt) AS dom, EXTRACT(WEEKDAY FROM createdAt) AS dow, EXTRACT(YEARDAY FROM createdAt) AS doy, EXTRACT(MONTH FROM createdAt) AS m, EXTRACT(YEAR FROM createdAt) AS y, EXTRACT(HOUR FROM createdAt) AS h, EXTRACT(MINUTE FROM createdAt) AS minutes, EXTRACT(SECOND FROM createdAt) AS s, EXTRACT(NANOSECOND FROM createdAt) AS nano, EXTRACT(MICROSECOND FROM createdAt) AS micro, EXTRACT(MILLISECOND FROM createdAt) AS milli, EXTRACT(EPOCHDAY FROM createdAt) AS epoch, EXTRACT(OFFSET_SECONDS FROM createdAt) AS off, EXTRACT(WEEK FROM createdAt) AS w, EXTRACT(QUARTER FROM createdAt) AS q FROM Table"
 
   val arithmetic: String =
-    "select identifier, identifier + 1 as add, identifier - 1 as sub, identifier * 2 as mul, identifier / 2 as div, identifier % 2 as mod, (identifier * identifier2) - 10 as group1 from Table where identifier * (extract(year from current_date) - 10) > 10000"
+    "SELECT identifier, identifier + 1 AS add, identifier - 1 AS sub, identifier * 2 AS mul, identifier / 2 AS div, identifier % 2 AS mod, (identifier * identifier2) - 10 FROM Table WHERE identifier * (EXTRACT(year FROM CURRENT_DATE) - 10) > 10000"
 
   val mathematical: String =
-    "select identifier, (abs(identifier) + 1.0) * 2, ceil(identifier), floor(identifier), sqrt(identifier), exp(identifier), log(identifier), log10(identifier), pow(identifier, 3), round(identifier), round(identifier, 2), sign(identifier), cos(identifier), acos(identifier), sin(identifier), asin(identifier), tan(identifier), atan(identifier), atan2(identifier, 3.0) from Table where sqrt(identifier) > 100.0"
+    "SELECT identifier, (ABS(identifier) + 1.0) * 2, CEIL(identifier), FLOOR(identifier), SQRT(identifier), EXP(identifier), LOG(identifier), LOG10(identifier), POW(identifier, 3), ROUND(identifier), ROUND(identifier, 2), SIGN(identifier), COS(identifier), ACOS(identifier), SIN(identifier), ASIN(identifier), TAN(identifier), ATAN(identifier), ATAN2(identifier, 3.0) FROM Table WHERE SQRT(identifier) > 100.0"
 
   val string: String =
-    "select identifier, length(identifier2) as len, lower(identifier2) as lower, upper(identifier2) as upper, substring(identifier2, 1, 3) as substr, trim(identifier2) as trim, concat(identifier2, '_test', 1) as concat from Table where length(trim(identifier2)) > 10"
+    "SELECT identifier, LENGTH(identifier2) AS len, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, LTRIM(identifier2) AS ltr, RTRIM(identifier2) AS rtr, CONCAT(identifier2, '_test', 1) AS con, LEFT(identifier2, 5) AS l, RIGHT(identifier2, 3) AS r, REPLACE(identifier2, 'el', 'le') AS rep, REVERSE(identifier2) AS rev, POSITION('soft', identifier2, 1) AS pos, REGEXP_LIKE(identifier2, 'soft', 'im') AS reg FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
+
+  val topHits: String =
+    "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary, ARRAY_AGG(name) OVER (PARTITION BY department ORDER BY hire_date ASC, salary DESC LIMIT 1000) AS employees FROM emp"
+
+  val lastDay: String =
+    "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
+
+  val extractors: String =
+    "SELECT YEAR(createdAt) AS y, MONTH(createdAt) AS m, WEEKDAY(createdAt) AS wd, YEARDAY(createdAt) AS yd, DAY(createdAt) AS d, HOUR(createdAt) AS h, MINUTE(createdAt) AS minutes, SECOND(createdAt) AS s, NANOSECOND(createdAt) AS nano, MICROSECOND(createdAt) AS micro, MILLISECOND(createdAt) AS milli, EPOCHDAY(createdAt) AS epoch, OFFSET_SECONDS(createdAt) AS off, WEEK(createdAt) AS w, QUARTER(createdAt) AS q FROM Table"
+
+  val geoDistance =
+    "SELECT ST_DISTANCE(POINT(-70.0, 40.0), toLocation) AS d1, ST_DISTANCE(fromLocation, POINT(-70.0, 40.0)) AS d2, ST_DISTANCE(POINT(-70.0, 40.0), POINT(0.0, 0.0)) AS d3 FROM Table WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km AND ST_DISTANCE(fromLocation, toLocation) < 2000 km AND ST_DISTANCE(POINT(-70.0, 40.0), POINT(-70.0, 40.0)) < 1000 km"
+
+  val betweenTemporal =
+    "SELECT * FROM Table WHERE createdAt BETWEEN CURRENT_DATE - INTERVAL 1 MONTH AND CURRENT_DATE AND lastUpdated BETWEEN LAST_DAY('2025-09-11'::DATE) AND DATE_TRUNC(CURRENT_TIMESTAMP, DAY)"
 }
 
 /** Created by smanciot on 15/02/17.
@@ -169,469 +187,662 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
-  "SQLParser" should "parse numerical eq" in {
-    val result = SQLParser(numericalEq)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalEq)
+  "SQLParser" should "parse numerical EQ" in {
+    val result = Parser(numericalEq)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(numericalEq) shouldBe true
   }
 
-  it should "parse numerical ne" in {
-    val result = SQLParser(numericalNe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalNe)
+  it should "parse numerical NE" in {
+    val result = Parser(numericalNe)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(numericalNe) shouldBe true
   }
 
-  it should "parse numerical lt" in {
-    val result = SQLParser(numericalLt)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalLt)
+  it should "parse numerical LT" in {
+    val result = Parser(numericalLt)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(numericalLt) shouldBe true
   }
 
-  it should "parse numerical le" in {
-    val result = SQLParser(numericalLe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalLe)
+  it should "parse numerical LE" in {
+    val result = Parser(numericalLe)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(numericalLe) shouldBe true
   }
 
-  it should "parse numerical gt" in {
-    val result = SQLParser(numericalGt)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalGt)
+  it should "parse numerical GT" in {
+    val result = Parser(numericalGt)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(numericalGt) shouldBe true
   }
 
-  it should "parse numerical ge" in {
-    val result = SQLParser(numericalGe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(numericalGe)
+  it should "parse numerical GE" in {
+    val result = Parser(numericalGe)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(numericalGe) shouldBe true
   }
 
-  it should "parse literal eq" in {
-    val result = SQLParser(literalEq)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalEq)
+  it should "parse literal EQ" in {
+    val result = Parser(literalEq)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalEq) shouldBe true
   }
 
-  it should "parse literal like" in {
-    val result = SQLParser(literalLike)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalLike)
+  it should "parse literal LIKE" in {
+    val result = Parser(literalLike)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalLike) shouldBe true
   }
 
-  it should "parse literal not like" in {
-    val result = SQLParser(literalNotLike)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalNotLike)
+  it should "parse literal RLIKE" in {
+    val result = Parser(literalRlike)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalRlike) shouldBe true
   }
 
-  it should "parse literal ne" in {
-    val result = SQLParser(literalNe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalNe)
+  it should "parse literal NOT LIKE" in {
+    val result = Parser(literalNotLike)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalNotLike) shouldBe true
   }
 
-  it should "parse literal lt" in {
-    val result = SQLParser(literalLt)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalLt)
+  it should "parse literal NE" in {
+    val result = Parser(literalNe)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalNe) shouldBe true
   }
 
-  it should "parse literal le" in {
-    val result = SQLParser(literalLe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalLe)
+  it should "parse literal LT" in {
+    val result = Parser(literalLt)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalLt) shouldBe true
   }
 
-  it should "parse literal gt" in {
-    val result = SQLParser(literalGt)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalGt)
+  it should "parse literal LE" in {
+    val result = Parser(literalLe)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalLe) shouldBe true
   }
 
-  it should "parse literal ge" in {
-    val result = SQLParser(literalGe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(literalGe)
+  it should "parse literal GT" in {
+    val result = Parser(literalGt)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(literalGt) shouldBe true
   }
 
-  it should "parse boolean eq" in {
-    val result = SQLParser(boolEq)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(boolEq)
+  it should "parse literal GE" in {
+    val result = Parser(literalGe)
+    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") equalsIgnoreCase literalGe
   }
 
-  it should "parse boolean ne" in {
-    val result = SQLParser(boolNe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(boolNe)
+  it should "parse boolean EQ" in {
+    val result = Parser(boolEq)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(boolEq) shouldBe true
   }
 
-  it should "parse between" in {
-    val result = SQLParser(betweenExpression)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(betweenExpression)
+  it should "parse boolean NE" in {
+    val result = Parser(boolNe)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(boolNe) shouldBe true
   }
 
-  it should "parse and predicate" in {
-    val result = SQLParser(andPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(andPredicate)
+  it should "parse BETWEEN" in {
+    val result = Parser(betweenExpression)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(betweenExpression) shouldBe true
   }
 
-  it should "parse or predicate" in {
-    val result = SQLParser(orPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(orPredicate)
+  it should "parse AND predicate" in {
+    val result = Parser(andPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(andPredicate) shouldBe true
+  }
+
+  it should "parse OR predicate" in {
+    val result = Parser(orPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(orPredicate) shouldBe true
   }
 
   it should "parse left predicate with criteria" in {
-    val result = SQLParser(leftPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(leftPredicate)
+    val result = Parser(leftPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(leftPredicate) shouldBe true
   }
 
   it should "parse right predicate with criteria" in {
-    val result = SQLParser(rightPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(rightPredicate)
+    val result = Parser(rightPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(rightPredicate) shouldBe true
   }
 
   it should "parse multiple predicates" in {
-    val result = SQLParser(predicates)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(predicates)
+    val result = Parser(predicates)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(predicates) shouldBe true
   }
 
   it should "parse nested predicate" in {
-    val result = SQLParser(nestedPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(nestedPredicate)
+    val result = Parser(nestedPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(nestedPredicate) shouldBe true
   }
 
   it should "parse nested criteria" in {
-    val result = SQLParser(nestedCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(nestedCriteria)
+    val result = Parser(nestedCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(nestedCriteria) shouldBe true
   }
 
   it should "parse child predicate" in {
-    val result = SQLParser(childPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(childPredicate)
+    val result = Parser(childPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(childPredicate) shouldBe true
   }
 
   it should "parse child criteria" in {
-    val result = SQLParser(childCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(childCriteria)
+    val result = Parser(childCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(childCriteria) shouldBe true
   }
 
   it should "parse parent predicate" in {
-    val result = SQLParser(parentPredicate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(parentPredicate)
+    val result = Parser(parentPredicate)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(parentPredicate) shouldBe true
   }
 
   it should "parse parent criteria" in {
-    val result = SQLParser(parentCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(parentCriteria)
+    val result = Parser(parentCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(parentCriteria) shouldBe true
   }
 
-  it should "parse in literal expression" in {
-    val result = SQLParser(inLiteralExpression)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      inLiteralExpression
-    )
+  it should "parse IN literal expression" in {
+    val result = Parser(inLiteralExpression)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(inLiteralExpression) shouldBe true
   }
 
-  it should "parse in numerical expression with Int values" in {
-    val result = SQLParser(inNumericalExpressionWithIntValues)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      inNumericalExpressionWithIntValues
-    )
+  it should "parse IN numerical expression with Int values" in {
+    val result = Parser(inNumericalExpressionWithIntValues)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(inNumericalExpressionWithIntValues) shouldBe true
   }
 
-  it should "parse in numerical expression with Double values" in {
-    val result = SQLParser(inNumericalExpressionWithDoubleValues)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      inNumericalExpressionWithDoubleValues
-    )
+  it should "parse IN numerical expression with Double values" in {
+    val result = Parser(inNumericalExpressionWithDoubleValues)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(inNumericalExpressionWithDoubleValues) shouldBe true
   }
 
-  it should "parse not in literal expression" in {
-    val result = SQLParser(notInLiteralExpression)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      notInLiteralExpression
-    )
+  it should "parse NOT IN literal expression" in {
+    val result = Parser(notInLiteralExpression)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(notInLiteralExpression) shouldBe true
   }
 
-  it should "parse not in numerical expression with Int values" in {
-    val result = SQLParser(notInNumericalExpressionWithIntValues)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      notInNumericalExpressionWithIntValues
-    )
+  it should "parse NOT IN numerical expression with Int values" in {
+    val result = Parser(notInNumericalExpressionWithIntValues)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(notInNumericalExpressionWithIntValues) shouldBe true
   }
 
-  it should "parse not in numerical expression with Double values" in {
-    val result = SQLParser(notInNumericalExpressionWithDoubleValues)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      notInNumericalExpressionWithDoubleValues
-    )
+  it should "parse NOT IN numerical expression with Double values" in {
+    val result = Parser(notInNumericalExpressionWithDoubleValues)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(notInNumericalExpressionWithDoubleValues) shouldBe true
   }
 
-  it should "parse nested with between" in {
-    val result = SQLParser(nestedWithBetween)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(nestedWithBetween)
+  it should "parse nested with BETWEEN" in {
+    val result = Parser(nestedWithBetween)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(nestedWithBetween) shouldBe true
   }
 
-  it should "parse count" in {
-    val result = SQLParser(count)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(count)
+  it should "parse COUNT" in {
+    val result = Parser(COUNT)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(COUNT) shouldBe true
   }
 
-  it should "parse distinct count" in {
-    val result = SQLParser(countDistinct)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(countDistinct)
+  it should "parse DISTINCT COUNT" in {
+    val result = Parser(countDistinct)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(countDistinct) shouldBe true
   }
 
-  it should "parse count with nested criteria" in {
-    val result = SQLParser(countNested)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(countNested)
+  it should "parse COUNT with nested criteria" in {
+    val result = Parser(countNested)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(countNested) shouldBe true
   }
 
-  it should "parse is null" in {
-    val result = SQLParser(isNull)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(isNull)
+  it should "parse IS NULL" in {
+    val result = Parser(isNull)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(isNull) shouldBe true
   }
 
-  it should "parse is not null" in {
-    val result = SQLParser(isNotNull)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(isNotNull)
+  it should "parse IS NOT NULL" in {
+    val result = Parser(isNotNull)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(isNotNull) shouldBe true
   }
 
   it should "parse geo distance criteria" in {
-    val result = SQLParser(geoDistanceCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      geoDistanceCriteria
-    )
+    val result = Parser(geoDistanceCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe geoDistanceCriteria
   }
 
-  it should "parse except fields" in {
-    val result = SQLParser(except)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(except)
+  it should "parse EXCEPT fields" in {
+    val result = Parser(except)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(except) shouldBe true
   }
 
-  it should "parse match criteria" in {
-    val result = SQLParser(matchCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(matchCriteria)
+  it should "parse MATCH criteria" in {
+    val result = Parser(matchCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(matchCriteria) shouldBe true
   }
 
-  it should "parse group by" in {
-    val result = SQLParser(groupBy)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupBy)
+  it should "parse GROUP BY" in {
+    val result = Parser(groupBy)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(groupBy) shouldBe true
   }
 
-  it should "parse order by" in {
-    val result = SQLParser(orderBy)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(orderBy)
+  it should "parse ORDER BY" in {
+    val result = Parser(orderBy)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(orderBy) shouldBe true
   }
 
-  it should "parse limit" in {
-    val result = SQLParser(limit)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(limit)
+  it should "parse LIMIT" in {
+    val result = Parser(limit)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe limit
   }
 
-  it should "parse group by with order by and limit" in {
-    val result = SQLParser(groupByWithOrderByAndLimit)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      groupByWithOrderByAndLimit
-    )
+  it should "parse GROUP BY with ORDER BY and LIMIT" in {
+    val result = Parser(groupByWithOrderByAndLimit)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(groupByWithOrderByAndLimit) shouldBe true
   }
 
-  it should "parse group by with having" in {
-    val result = SQLParser(groupByWithHaving)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(groupByWithHaving)
+  it should "parse GROUP BY with HAVING" in {
+    val result = Parser(groupByWithHaving)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(groupByWithHaving) shouldBe true
   }
 
   it should "parse date time fields" in {
-    val result = SQLParser(dateTimeWithIntervalFields)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateTimeWithIntervalFields
-    )
+    val result = Parser(dateTimeWithIntervalFields)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateTimeWithIntervalFields) shouldBe true
   }
 
-  it should "parse fields with interval" in {
-    val result = SQLParser(fieldsWithInterval)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(fieldsWithInterval)
+  it should "parse fields with INTERVAL" in {
+    val result = Parser(fieldsWithInterval)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(fieldsWithInterval) shouldBe true
   }
 
-  it should "parse filter with date time and interval" in {
-    val result = SQLParser(filterWithDateTimeAndInterval)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      filterWithDateTimeAndInterval
-    )
+  it should "parse filter with date time and INTERVAL" in {
+    val result = Parser(filterWithDateTimeAndInterval)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(filterWithDateTimeAndInterval) shouldBe true
   }
 
   it should "parse filter with date and interval" in {
-    val result = SQLParser(filterWithDateAndInterval)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      filterWithDateAndInterval
-    )
+    val result = Parser(filterWithDateAndInterval)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(filterWithDateAndInterval) shouldBe true
   }
 
   it should "parse filter with time and interval" in {
-    val result = SQLParser(filterWithTimeAndInterval)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      filterWithTimeAndInterval
-    )
+    val result = Parser(filterWithTimeAndInterval)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(filterWithTimeAndInterval) shouldBe true
   }
 
-  it should "parse group by with having and date time functions" in {
-    val result = SQLParser(groupByWithHavingAndDateTimeFunctions)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      groupByWithHavingAndDateTimeFunctions
-    )
+  it should "parse GROUP BY with HAVING and date time functions" in {
+    val result = Parser(groupByWithHavingAndDateTimeFunctions)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe groupByWithHavingAndDateTimeFunctions
   }
 
-  it should "parse parse_date function" in {
-    val result = SQLParser(parseDate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      parseDate
-    )
+  it should "parse date_parse function" in {
+    val result = Parser(dateParse)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateParse) shouldBe true
   }
 
-  it should "parse parse_date_time function" in {
-    val result = SQLParser(parseDateTime)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      parseDateTime
-    )
+  it should "parse date_parse_time function" in {
+    val result = Parser(dateTimeParse)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateTimeParse) shouldBe true
   }
 
   it should "parse date_diff function" in {
-    val result = SQLParser(dateDiff)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateDiff
-    )
+    val result = Parser(dateDiff)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateDiff) shouldBe true
   }
 
   it should "parse date_diff function with aggregation" in {
-    val result = SQLParser(aggregationWithDateDiff)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      aggregationWithDateDiff
-    )
+    val result = Parser(aggregationWithDateDiff)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(aggregationWithDateDiff) shouldBe true
   }
 
   it should "parse format_date function" in {
-    val result = SQLParser(formatDate)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      formatDate
-    )
+    val result = Parser(dateFormat)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateFormat) shouldBe true
   }
 
   it should "parse format_datetime function" in {
-    val result = SQLParser(formatDateTime)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      formatDateTime
-    )
+    val result = Parser(dateTimeFormat)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateTimeFormat) shouldBe true
   }
 
   it should "parse date_add function" in {
-    val result = SQLParser(dateAdd)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateAdd
-    )
+    val result = Parser(dateAdd)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateAdd) shouldBe true
   }
 
   it should "parse date_sub function" in {
-    val result = SQLParser(dateSub)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateSub
-    )
+    val result = Parser(dateSub)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateSub) shouldBe true
   }
 
   it should "parse datetime_add function" in {
-    val result = SQLParser(dateTimeAdd)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateTimeAdd
-    )
+    val result = Parser(dateTimeAdd)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateTimeAdd) shouldBe true
   }
 
   it should "parse datetime_sub function" in {
-    val result = SQLParser(dateTimeSub)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      dateTimeSub
-    )
+    val result = Parser(dateTimeSub)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(dateTimeSub) shouldBe true
   }
 
-  it should "parse isnull function" in {
-    val result = SQLParser(isnull)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      isnull
-    )
+  it should "parse ISNULL function" in {
+    val result = Parser(isnull)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(isnull) shouldBe true
   }
 
-  it should "parse isnotnull function" in {
-    val result = SQLParser(isnotnull)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      isnotnull
-    )
+  it should "parse ISNOTNULL function" in {
+    val result = Parser(isnotnull)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(isnotnull) shouldBe true
   }
 
-  it should "parse isnull criteria" in {
-    val result = SQLParser(isNullCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      isNullCriteria
-    )
+  it should "parse ISNULL criteria" in {
+    val result = Parser(isNullCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(isNullCriteria) shouldBe true
   }
 
-  it should "parse isnotnull criteria" in {
-    val result = SQLParser(isNotNullCriteria)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      isNotNullCriteria
-    )
+  it should "parse ISNOTNULL criteria" in {
+    val result = Parser(isNotNullCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(isNotNullCriteria) shouldBe true
   }
 
-  it should "parse coalesce function" in {
-    val result = SQLParser(coalesce)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      coalesce
-    )
+  it should "parse COALESCE function" in {
+    val result = Parser(coalesce)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(coalesce) shouldBe true
   }
 
-  it should "parse nullif function" in {
-    val result = SQLParser(nullif)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      nullif
-    )
+  it should "parse NULLIF function" in {
+    val result = Parser(nullif)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(nullif) shouldBe true
   }
 
-  it should "parse cast function" in {
-    val result = SQLParser(cast)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      cast
-    )
+  it should "parse conversion function" in {
+    val result = Parser(conversion)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe conversion
   }
 
   it should "parse all casts function" in {
-    val result = SQLParser(allCasts)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      allCasts
-    )
+    val result = Parser(allCasts)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(allCasts) shouldBe true
   }
 
-  it should "parse case when expression" in {
-    val result = SQLParser(caseWhen)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      caseWhen
-    )
+  it should "parse CASE WHEN expression" in {
+    val result = Parser(caseWhen)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(caseWhen) shouldBe true
   }
 
-  it should "parse case when with expression" in {
-    val result = SQLParser(caseWhenExpr)
+  it should "parse CASE WHEN with expression" in {
+    val result = Parser(caseWhenExpr)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("")
       .equalsIgnoreCase(caseWhenExpr) shouldBe true
   }
 
-  it should "parse extract function" in {
-    val result = SQLParser(extract)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      extract
-    )
+  it should "parse EXTRACT function" in {
+    val result = Parser(extract)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe extract
   }
 
   it should "parse arithmetic expressions" in {
-    val result = SQLParser(arithmetic)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      arithmetic
-    )
+    val result = Parser(arithmetic)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(arithmetic) shouldBe true
   }
 
   it should "parse mathematical functions" in {
-    val result = SQLParser(mathematical)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      mathematical
-    )
+    val result = Parser(mathematical)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("")
+      .equalsIgnoreCase(mathematical) shouldBe true
   }
 
   it should "parse string functions" in {
-    val result = SQLParser(string)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") should ===(
-      string
-    )
+    val result = Parser(string)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe string
+  }
+
+  it should "parse top hits functions" in {
+    val result = Parser(topHits)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe topHits
+  }
+
+  it should "parse last_day function" in {
+    val result = Parser(lastDay)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe lastDay
+  }
+
+  it should "parse all date extractors" in {
+    val result = Parser(extractors)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe extractors
+  }
+
+  it should "parse geo distance field" in {
+    val result = Parser(geoDistance)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe geoDistance
+  }
+
+  it should "parse BETWEEN with temporal fields" in {
+    val result = Parser(betweenTemporal)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe betweenTemporal
   }
 
 }
