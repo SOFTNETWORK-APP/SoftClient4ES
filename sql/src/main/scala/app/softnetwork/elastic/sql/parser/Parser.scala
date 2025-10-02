@@ -111,11 +111,13 @@ trait Parser
   private val reservedKeywords = Seq(
     "select",
     "from",
+    "join",
     "where",
     "group",
     "having",
     "order",
     "limit",
+    "offset",
     "as",
     "by",
     "except",
@@ -229,7 +231,7 @@ trait Parser
   private val identifierRegexStr =
     s"""(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[\\*a-zA-Z_\\-][a-zA-Z0-9_\\-.\\[\\]\\*]*"""
 
-  private val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
+  val identifierRegex = identifierRegexStr.r // scala.util.matching.Regex
 
   def identifier: PackratParser[Identifier] =
     (Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>

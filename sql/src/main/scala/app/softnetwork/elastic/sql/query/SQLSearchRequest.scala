@@ -57,9 +57,7 @@ case class SQLSearchRequest(
 
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
-  lazy val sources: Seq[String] = from.tables.collect { case Table(source: Identifier, _) =>
-    source.sql
-  }
+  lazy val sources: Seq[String] = from.tables.map(_.name)
 
   lazy val topHitsBuckets: Seq[Bucket] = topHitsAggs
     .flatMap(_.bucketNames)

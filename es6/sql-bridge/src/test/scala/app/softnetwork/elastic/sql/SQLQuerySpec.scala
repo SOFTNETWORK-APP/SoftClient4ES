@@ -102,7 +102,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as email from index i, unnest(emails) as inner_emails where i.nom = \"Nom\""
+        "select count(inner_emails.value) as email from index i join unnest(emails) as inner_emails where i.nom = \"Nom\""
       )
     results.size shouldBe 1
     val result = results.head
@@ -147,7 +147,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count with nested criteria" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as count_emails from index, unnest(emails) as inner_emails, unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
+        "select count(inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
       )
     results.size shouldBe 1
     val result = results.head
@@ -206,7 +206,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count with filter" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as count_emails from index, unnest(emails) as inner_emails, unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
+        "select count(inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
       )
     results.size shouldBe 1
     val result = results.head
@@ -276,7 +276,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count with \"and not\" operator" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(distinct inner_emails.value) as count_emails from index, unnest(emails) as inner_emails, unnest(profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
+        "select count(distinct inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
       )
     results.size shouldBe 1
     val result = results.head
@@ -352,7 +352,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count with date filtering" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(distinct inner_emails.value) as count_distinct_emails from index, unnest(emails) as inner_emails, unnest(profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
+        "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
       )
     results.size shouldBe 1
     val result = results.head
@@ -428,7 +428,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |profile_ccm.lastName as lastName,
         |profile_ccm.postalCode as postalCode,
         |profile_ccm.birthYear as birthYear
-        |FROM index, unnest(profiles) as profile_ccm
+        |FROM index join unnest(profiles) as profile_ccm
         |WHERE
         |((profile_ccm.postalCode BETWEEN "10" AND "99999")
         |AND
@@ -621,8 +621,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |  min(inner_products.price) as min_price,
            |  max(inner_products.price) as max_price
            |FROM
-           |  stores store,
-           |  UNNEST(store.products LIMIT 10) as inner_products
+           |  stores store
+           |  JOIN UNNEST(store.products LIMIT 10) as inner_products
            |WHERE
            |  (
            |    firstName is not null AND

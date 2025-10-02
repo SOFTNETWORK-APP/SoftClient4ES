@@ -45,7 +45,7 @@ Expand an array / nested field into rows. Mapped to Elasticsearch `nested` and i
 ```sql
 SELECT id, phone
 FROM customers
-UNNEST(phones) AS phone;
+JOIN UNNEST(phones) AS phone;
 ```
 
 ---

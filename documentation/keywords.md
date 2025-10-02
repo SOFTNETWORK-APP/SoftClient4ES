@@ -7,6 +7,7 @@ A list of reserved words recognized by the parser for this engine.
 ## Main clauses
 SELECT  
 FROM  
+JOIN  
 UNNEST  
 WHERE  
 GROUP BY  
