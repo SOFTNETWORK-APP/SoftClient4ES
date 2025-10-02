@@ -86,13 +86,11 @@ package object time {
         case _ ~ _ ~ i ~ _ => LastDayOfMonth(i)
       }
 
-    def date_function: PackratParser[DateFunction] =
+    def date_function: PackratParser[DateFunction with FunctionWithIdentifier] =
       date_add | date_sub | date_parse | date_format | last_day
 
     def dateFunctionWithIdentifier: PackratParser[Identifier] =
-      (date_parse | date_format | date_add | date_sub | last_day) ^^ (t =>
-        t.identifier.withFunctions(t +: t.identifier.functions)
-      )
+      date_function ^^ (t => t.identifier.withFunctions(t +: t.identifier.functions))
 
   }
 
@@ -127,11 +125,11 @@ package object time {
           DateTimeFormat(i, f.value)
       }
 
-    def datetime_function: PackratParser[DateTimeFunction] =
+    def datetime_function: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
       datetime_add | datetime_sub | datetime_parse | datetime_format
 
     def dateTimeFunctionWithIdentifier: PackratParser[Identifier] =
-      (datetime_parse | datetime_format | datetime_add | datetime_sub) ^^ { t =>
+      datetime_function ^^ { t =>
         t.identifier.withFunctions(t +: t.identifier.functions)
       }
 

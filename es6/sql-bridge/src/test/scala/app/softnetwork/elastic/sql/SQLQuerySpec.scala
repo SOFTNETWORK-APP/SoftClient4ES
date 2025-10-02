@@ -3028,11 +3028,24 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          }
       |        },
       |        {
-      |          "range": {
-      |            "lastUpdated": {
-      |              "gte": "2025-09-11||/d",
-      |              "lte": "now/d"
-      |            }
+      |          "bool": {
+      |            "must": [
+      |              {
+      |                "script": {
+      |                  "script": {
+      |                    "lang": "painless",
+      |                    "source": "def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left >= (def e2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "range": {
+      |                  "lastUpdated": {
+      |                    "lte": "now/d"
+      |                  }
+      |                }
+      |              }
+      |            ]
       |          }
       |        }
       |      ]
@@ -3045,5 +3058,39 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
   }
 }

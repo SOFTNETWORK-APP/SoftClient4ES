@@ -160,6 +160,15 @@ FROM users
 WHERE age BETWEEN 18 AND 30;
 ```
 
+- Temporal BETWEEN
+```sql
+SELECT * 
+FROM users 
+WHERE createdAt BETWEEN CURRENT_DATE - INTERVAL 1 MONTH AND CURRENT_DATE 
+AND 
+lastUpdated BETWEEN LAST_DAY('2025-09-11'::DATE) AND DATE_TRUNC(CURRENT_TIMESTAMP, DAY)
+```
+
 - Distance BETWEEN (using meters)
 
 ```sql

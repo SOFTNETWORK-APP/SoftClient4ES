@@ -183,6 +183,8 @@ package object time {
     }
 
     override def roundingScript: Option[String] = unit.roundingScript
+
+    override def dateMathScript: Boolean = identifier.dateMathScript
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
