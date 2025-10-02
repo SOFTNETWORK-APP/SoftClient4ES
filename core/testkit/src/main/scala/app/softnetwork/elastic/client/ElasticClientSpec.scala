@@ -890,8 +890,8 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         | inner_children.name,
         | inner_children.birthDate
         |FROM
-        | parent as p,
-        | UNNEST(p.children) as inner_children
+        | parent as p
+        | JOIN UNNEST(p.children) as inner_children
         |WHERE
         | inner_children.name is not null AND p.uuid = 'A16'
         |""".stripMargin,
