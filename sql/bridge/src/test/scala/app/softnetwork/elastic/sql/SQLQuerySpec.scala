@@ -7,7 +7,8 @@ import com.google.gson.{JsonArray, JsonObject, JsonParser, JsonPrimitive}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import scala.jdk.CollectionConverters._
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 /** Created by smanciot on 13/04/17.
   */

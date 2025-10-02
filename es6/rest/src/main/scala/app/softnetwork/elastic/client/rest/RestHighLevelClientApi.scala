@@ -49,7 +49,8 @@ import org.elasticsearch.search.builder.SearchSourceBuilder
 import org.json4s.Formats
 
 import java.io.ByteArrayInputStream
-import scala.jdk.CollectionConverters._
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}

@@ -288,8 +288,12 @@ package object string {
     override def validate(): Either[String, Unit] =
       if (start < 1)
         Left("POSITION start must be greater than or equal to 1 (SQL is 1-based)")
-      else
-        str.validate().orElse(substr.validate())
+      else {
+        for {
+          _ <- str.validate()
+          _ <- substr.validate()
+        } yield ()
+      }
 
     override def toSQL(base: String): String = sql
   }

@@ -21,7 +21,8 @@ import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 import io.searchbox.params.Parameters
 import org.json4s.Formats
 
-import scala.jdk.CollectionConverters._
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}

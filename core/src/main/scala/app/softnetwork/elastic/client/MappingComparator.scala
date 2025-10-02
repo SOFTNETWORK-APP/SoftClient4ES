@@ -3,7 +3,8 @@ package app.softnetwork.elastic.client
 import com.google.gson._
 import com.typesafe.scalalogging.StrictLogging
 
-import scala.jdk.CollectionConverters._
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.util.{Failure, Success, Try}
 
 object MappingComparator extends StrictLogging {

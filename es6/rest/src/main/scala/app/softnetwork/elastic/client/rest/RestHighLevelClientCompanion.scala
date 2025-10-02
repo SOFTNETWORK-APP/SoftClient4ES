@@ -12,6 +12,8 @@ import org.elasticsearch.common.xcontent.NamedXContentRegistry
 import org.elasticsearch.plugins.SearchPlugin
 import org.elasticsearch.search.SearchModule
 
+import scala.collection.JavaConverters._
+
 trait RestHighLevelClientCompanion extends Logging {
 
   def elasticConfig: ElasticConfig
@@ -19,7 +21,7 @@ trait RestHighLevelClientCompanion extends Logging {
   private var client: Option[RestHighLevelClient] = None
 
   lazy val namedXContentRegistry: NamedXContentRegistry = {
-    import scala.jdk.CollectionConverters._
+    // import scala.jdk.CollectionConverters._
     val searchModule = new SearchModule(Settings.EMPTY, false, List.empty[SearchPlugin].asJava)
     new NamedXContentRegistry(searchModule.getNamedXContents)
   }

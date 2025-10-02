@@ -12,6 +12,8 @@ import org.elasticsearch.plugins.SearchPlugin
 import org.elasticsearch.search.SearchModule
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.JavaConverters._
+
 trait RestHighLevelClientCompanion {
 
   val logger: Logger = LoggerFactory getLogger getClass.getName
@@ -21,7 +23,7 @@ trait RestHighLevelClientCompanion {
   private var client: Option[RestHighLevelClient] = None
 
   lazy val namedXContentRegistry: NamedXContentRegistry = {
-    import scala.jdk.CollectionConverters._
+//    import scala.jdk.CollectionConverters._
     val searchModule = new SearchModule(Settings.EMPTY, false, List.empty[SearchPlugin].asJava)
     new NamedXContentRegistry(searchModule.getNamedXContents)
   }
