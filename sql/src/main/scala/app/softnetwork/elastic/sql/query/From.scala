@@ -201,7 +201,7 @@ case class NestedElement(
     else
       s"""{"name":"${elem.innerHitsName}","size":$sizePerInner, "_source": {"includes": [${elem.sources
         .map(s => s""""$s"""")
-        .mkString(",")}]},"inner_hits":{${childrenEntries}}"""
+        .mkString(",")}]},"inner_hits":{$childrenEntries}"""
   }
 
   def raw: String = buildInnerHitsObject(this)
