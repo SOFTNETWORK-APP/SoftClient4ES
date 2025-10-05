@@ -55,7 +55,7 @@ package object aggregate {
       val partitionByStr =
         if (partitionBy.nonEmpty) s"$PARTITION_BY ${partitionBy.mkString(", ")}"
         else ""
-      s"$topHits($identifier) $OVER ($partitionByStr$orderBy${asString(limit)})"
+      s"$topHits($identifier) $OVER ($partitionByStr$orderBy)"
     }
 
     override def toSQL(base: String): String = sql
@@ -65,7 +65,8 @@ package object aggregate {
     def withFields(fields: Seq[Field]): TopHitsAggregation
 
     def update(request: SQLSearchRequest): TopHitsAggregation = {
-      val updated = this.withPartitionBy(partitionBy = partitionBy.map(_.update(request)))
+      val updated = this
+        .withPartitionBy(partitionBy = partitionBy.map(_.update(request)))
       updated.withFields(
         fields = request.select.fields
           .filterNot(field =>
@@ -81,9 +82,9 @@ package object aggregate {
     identifier: Identifier,
     partitionBy: Seq[Identifier] = Seq.empty,
     orderBy: OrderBy,
-    fields: Seq[Field] = Seq.empty,
-    limit: Option[Limit] = None
+    fields: Seq[Field] = Seq.empty
   ) extends TopHitsAggregation {
+    override def limit: Option[Limit] = Some(Limit(1, None))
     override def topHits: TopHits = FIRST_VALUE
     override def withPartitionBy(partitionBy: Seq[Identifier]): TopHitsAggregation =
       this.copy(partitionBy = partitionBy)
@@ -94,9 +95,9 @@ package object aggregate {
     identifier: Identifier,
     partitionBy: Seq[Identifier] = Seq.empty,
     orderBy: OrderBy,
-    fields: Seq[Field] = Seq.empty,
-    limit: Option[Limit] = None
+    fields: Seq[Field] = Seq.empty
   ) extends TopHitsAggregation {
+    override def limit: Option[Limit] = Some(Limit(1, None))
     override def topHits: TopHits = LAST_VALUE
     override def withPartitionBy(partitionBy: Seq[Identifier]): TopHitsAggregation =
       this.copy(partitionBy = partitionBy)
@@ -114,6 +115,12 @@ package object aggregate {
     override def withPartitionBy(partitionBy: Seq[Identifier]): TopHitsAggregation =
       this.copy(partitionBy = partitionBy)
     override def withFields(fields: Seq[Field]): TopHitsAggregation = this
+    override def update(request: SQLSearchRequest): TopHitsAggregation = super
+      .update(request)
+      .asInstanceOf[ArrayAgg]
+      .copy(
+        limit = limit.orElse(request.limit)
+      )
   }
 
 }

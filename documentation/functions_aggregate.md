@@ -149,7 +149,7 @@ FROM emp;
 Collect values into an array for each partition. Implemented using `OVER` and pushed to ES as `top_hits`. Post-processing converts hits to an array of scalars.
 
 **Inputs:** 
-- `expr` with optional `OVER (PARTITION BY ... ORDER BY ... LIMIT n)`  
+- `expr` with optional `OVER (PARTITION BY ... ORDER BY ... )`  
 If `OVER` is not provided, only the expr column name is used for the sorting.
 
 **Output:** 
@@ -161,9 +161,9 @@ SELECT department,
 ARRAY_AGG(name) OVER (
     PARTITION BY department 
     ORDER BY hire_date ASC 
-    LIMIT 100
 ) AS employees
-FROM emp;
+FROM emp
+LIMIT 100;
 -- Result: employees as an array of name values 
 -- per department (sorted and limited)
 ```

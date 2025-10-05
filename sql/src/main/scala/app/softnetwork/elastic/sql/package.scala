@@ -2,11 +2,7 @@ package app.softnetwork.elastic
 
 import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
-import app.softnetwork.elastic.sql.function.time.{
-  CurrentDateFunction,
-  CurrentDateTimeFunction,
-  CurrentFunction
-}
+import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
@@ -463,6 +459,7 @@ package object sql {
     def tableAlias: Option[String]
     def distinct: Boolean
     def nested: Boolean
+    def nestedElement: Option[NestedElement]
     def limit: Option[Limit]
     def fieldAlias: Option[String]
     def bucket: Option[Bucket]
@@ -497,10 +494,20 @@ package object sql {
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
+    def path: String =
+      nestedElement match {
+        case Some(ne) =>
+          name.split("\\.") match {
+            case Array(_, _*) => s"${ne.path}.${name.split("\\.").tail.mkString(".")}"
+            case _            => s"${ne.path}.$name"
+          }
+        case None => name
+      }
+
     def paramName: String =
       if (aggregation && functions.size == 1) s"params.$aliasOrName"
-      else if (name.nonEmpty)
-        s"doc['$name'].value"
+      else if (path.nonEmpty)
+        s"doc['$path'].value"
       else ""
 
     def toPainless(base: String): String = {
@@ -567,9 +574,9 @@ package object sql {
     override def dateMathScript: Boolean = isTemporal
 
     def checkNotNull: String =
-      if (name.isEmpty) ""
+      if (path.isEmpty) ""
       else
-        s"(!doc.containsKey('$name') || doc['$name'].empty ? $nullValue : doc['$name'].value)"
+        s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value)"
 
     override def painless: String = toPainless(
       if (nullable)
@@ -592,6 +599,11 @@ package object sql {
         case Some(s) => s
         case _       => painless
       }
+
+    def withNested(nested: Boolean): Identifier = this match {
+      case g: GenericIdentifier => g.copy(nested = nested)
+      case _                    => this
+    }
   }
 
   object Identifier {
@@ -611,7 +623,8 @@ package object sql {
     limit: Option[Limit] = None,
     functions: List[Function] = List.empty,
     fieldAlias: Option[String] = None,
-    bucket: Option[Bucket] = None
+    bucket: Option[Bucket] = None,
+    nestedElement: Option[NestedElement] = None
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
@@ -619,13 +632,33 @@ package object sql {
     def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
       if (request.tableAliases.values.toSeq.contains(parts.head)) {
-        request.unnests.find(_._1 == parts.head) match {
-          case Some(tuple) =>
+        request.unnestAliases.find(_._1 == parts.head) match {
+          case Some(tuple) if !nested =>
             this.copy(
               tableAlias = Some(parts.head),
-              name = s"${tuple._2}.${parts.tail.mkString(".")}",
+              name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
               nested = true,
-              limit = tuple._3,
+              limit = tuple._2._2,
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket),
+              nestedElement = {
+                request.unnests.get(parts.head) match {
+                  case Some(unnest) => Some(request.toNestedElement(unnest))
+                  case None         => None
+                }
+              }
+            )
+          case Some(tuple) if nested =>
+            this.copy(
+              tableAlias = Some(parts.head),
+              name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+              limit = tuple._2._2,
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket)
+            )
+          case None if nested =>
+            this.copy(
+              tableAlias = Some(parts.head),
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )

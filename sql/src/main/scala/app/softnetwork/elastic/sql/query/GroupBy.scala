@@ -52,6 +52,7 @@ case class Bucket(
     } else {
       identifier.name
     }
+  lazy val nested: Boolean = identifier.nested
   lazy val nestedBucket: Option[String] =
     identifier.nestedType.map(t => s"nested_$t")
 
@@ -61,7 +62,7 @@ case class Bucket(
 object BucketSelectorScript {
 
   def extractBucketsPath(criteria: Criteria): Map[String, String] = criteria match {
-    case Predicate(left, _, right, _, _) =>
+    case Predicate(left, _, right, _, _, _) =>
       extractBucketsPath(left) ++ extractBucketsPath(right)
     case relation: ElasticRelation => extractBucketsPath(relation.criteria)
     case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
@@ -76,7 +77,7 @@ object BucketSelectorScript {
   }
 
   def toPainless(expr: Criteria): String = expr match {
-    case Predicate(left, op, right, maybeNot, group) =>
+    case Predicate(left, op, right, maybeNot, group, _) =>
       val leftStr = toPainless(left)
       val rightStr = toPainless(right)
       val opStr = op match {

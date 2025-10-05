@@ -18,10 +18,38 @@ case class SQLSearchRequest(
 
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
-  lazy val unnests: Seq[(String, String, Option[Limit])] = from.unnests
+  lazy val unnestAliases: Map[String, (String, Option[Limit])] = from.unnestAliases
   lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
     b.identifier.identifierName -> b
   }.toMap
+  lazy val unnests: Map[String, Unnest] =
+    from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
+  lazy val nestedFields: Map[String, Seq[Field]] =
+    select.fields
+      .filterNot(_.aggregation)
+      .filter(_.nested)
+      .groupBy(_.identifier.innerHitsName.getOrElse(""))
+  lazy val nested: Seq[NestedElement] = {
+    // nested roots (i.e., unnests without a parent)
+    val roots = from.unnests.filter(_.parent.isEmpty)
+    roots.map(toNestedElement)
+  }
+
+  def toNestedElement(u: Unnest): NestedElement = {
+    val children = from.unnests
+      .filter(_.parent.map(_.innerHitsName).getOrElse("") == u.innerHitsName)
+      .map(toNestedElement)
+    NestedElement(
+      path = u.path,
+      innerHitsName = u.innerHitsName,
+      size = u.limit.map(_.limit),
+      children = children,
+      sources = nestedFields
+        .get(u.innerHitsName)
+        .map(_.map(_.identifier.name.split('.').tail.mkString(".")))
+        .getOrElse(Nil)
+    )
+  }
 
   lazy val sorts: Map[String, SortOrder] =
     orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
@@ -32,7 +60,8 @@ case class SQLSearchRequest(
       select = select.update(updated),
       where = where.map(_.update(updated)),
       groupBy = groupBy.map(_.update(updated)),
-      having = having.map(_.update(updated))
+      having = having.map(_.update(updated)),
+      orderBy = orderBy.map(_.update(updated))
     )
   }
 
@@ -42,6 +71,7 @@ case class SQLSearchRequest(
     if (aggregates.isEmpty && buckets.isEmpty)
       select.fields
         .filterNot(_.isScriptField)
+        .filterNot(_.nested)
         .map(_.sourceField)
         .filterNot(f => excludes.contains(f))
     else

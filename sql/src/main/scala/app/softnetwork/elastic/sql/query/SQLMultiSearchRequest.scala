@@ -8,6 +8,9 @@ case class SQLMultiSearchRequest(requests: Seq[SQLSearchRequest]) extends Token 
   def update(): SQLMultiSearchRequest = this.copy(requests = requests.map(_.update()))
 
   override def validate(): Either[String, Unit] = {
-    requests.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+    requests.map(_.validate()).filter(_.isLeft) match {
+      case Nil    => Right(())
+      case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+    }
   }
 }

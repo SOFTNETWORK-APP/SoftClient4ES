@@ -6,7 +6,6 @@ import app.softnetwork.elastic.sql.query.{
   BucketSelectorScript,
   Criteria,
   Desc,
-  ElasticBoolQuery,
   Field,
   SortOrder
 }
@@ -16,7 +15,6 @@ import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
   bucketSelectorAggregation,
   cardinalityAgg,
-  filterAgg,
   maxAgg,
   minAgg,
   nestedAggregation,
@@ -168,23 +166,8 @@ object ElasticAggregation {
 
     val filteredAggName = "filtered_agg"
 
-    val filteredAgg: Option[FilterAggregation] =
-      having match {
-        case Some(f) =>
-          val boolQuery = Option(ElasticBoolQuery(group = true))
-          Some(
-            filterAgg(
-              filteredAggName,
-              f.asFilter(boolQuery)
-                .query(Set(identifier.innerHitsName).flatten, boolQuery)
-            )
-          )
-        case _ =>
-          None
-      }
-
     def filtered(): Unit =
-      filteredAgg match {
+      having match {
         case Some(_) =>
           aggPath ++= Seq(filteredAggName)
           aggPath ++= Seq(aggName)
@@ -210,7 +193,7 @@ object ElasticAggregation {
       sourceField,
       distinct = distinct,
       nestedAgg = nestedAgg,
-      filteredAgg = filteredAgg,
+      filteredAgg = None,
       aggType = aggType,
       agg = _agg,
       direction = direction

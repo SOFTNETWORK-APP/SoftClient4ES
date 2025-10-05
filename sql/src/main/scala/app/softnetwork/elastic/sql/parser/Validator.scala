@@ -11,9 +11,9 @@ object Validator {
       case Nil => return Right(())
       case _   =>
     }
-    functions.map(_.validate()).find(_.isLeft) match {
-      case Some(left) => return left
-      case None       =>
+    functions.map(_.validate()).filter(_.isLeft) match {
+      case Nil    => // ok
+      case errors => return Left(errors.map { case Left(err) => err }.mkString("\n"))
     }
     val funcs = functions.collect { case f: FunctionN[_, _] => f }
     funcs.sliding(2).foreach {

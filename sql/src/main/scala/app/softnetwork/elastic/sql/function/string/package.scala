@@ -164,7 +164,10 @@ package object string {
     override def validate(): Either[String, Unit] =
       if (values.isEmpty) Left("CONCAT requires at least one argument")
       else
-        values.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+        values.map(_.validate()).filter(_.isLeft) match {
+          case Nil    => Right(())
+          case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+        }
 
     override def toSQL(base: String): String = sql
   }
@@ -243,7 +246,10 @@ package object string {
     }
 
     override def validate(): Either[String, Unit] =
-      args.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+      args.map(_.validate()).filter(_.isLeft) match {
+        case Nil    => Right(())
+        case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+      }
 
     override def toSQL(base: String): String = sql
   }
@@ -321,7 +327,10 @@ package object string {
     }
 
     override def validate(): Either[String, Unit] =
-      args.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+      args.map(_.validate()).filter(_.isLeft) match {
+        case Nil    => Right(())
+        case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+      }
 
     override def toSQL(base: String): String = sql
   }

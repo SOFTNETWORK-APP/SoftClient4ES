@@ -17,6 +17,8 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   def nested: Boolean = false
 
+  def nestedElement: Option[NestedElement]
+
   def limit: Option[Limit] = None
 
   def update(request: SQLSearchRequest): Criteria
@@ -43,7 +45,7 @@ sealed trait Criteria extends Updateable with PainlessScript {
   override def out: SQLType = SQLTypes.Boolean
 
   override def painless: String = this match {
-    case Predicate(left, op, right, maybeNot, group) =>
+    case Predicate(left, op, right, maybeNot, group, _) =>
       val leftStr = left.painless
       val rightStr = right.painless
       val opStr = op match {
@@ -67,7 +69,8 @@ case class Predicate(
   operator: PredicateOperator,
   rightCriteria: Criteria,
   not: Option[NOT.type] = None,
-  group: Boolean = false
+  group: Boolean = false,
+  nestedElement: Option[NestedElement] = None
 ) extends Criteria {
   override def sql = s"${if (group) s"($leftCriteria"
   else leftCriteria} $operator${not
@@ -80,7 +83,7 @@ case class Predicate(
     )
     if (updatedPredicate.nested) {
       val unnested = unnest(updatedPredicate)
-      ElasticNested(unnested, unnested.limit)
+      ElasticNested(unnested, unnested.limit, nestedElement)
     } else
       updatedPredicate
   }
@@ -182,6 +185,7 @@ case class ElasticBoolQuery(
 
 sealed trait Expression extends FunctionChain with ElasticFilter with Criteria { // to fix output type as Boolean
   def identifier: Identifier
+  def nestedElement: Option[NestedElement] = identifier.nestedElement
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false
   override lazy val limit: Option[Limit] = identifier.limit
@@ -278,7 +282,7 @@ case class GenericExpression(
         case _ => this.copy(identifier = identifier.update(request))
       }
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -296,7 +300,7 @@ case class IsNullExpr(identifier: Identifier) extends Expression {
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -314,7 +318,7 @@ case class IsNotNullExpr(identifier: Identifier) extends Expression {
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -345,7 +349,7 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -367,7 +371,7 @@ case class IsNotNullCriteria(identifier: Identifier)
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -396,7 +400,7 @@ case class InExpr[R, +T <: Value[R]](
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -418,7 +422,7 @@ case class BetweenExpr(
   override def update(request: SQLSearchRequest): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
-      ElasticNested(updated, limit)
+      ElasticNested(updated, limit, nestedElement)
     } else
       updated
   }
@@ -466,7 +470,8 @@ case class DistanceCriteria(
 
 case class MatchCriteria(
   identifiers: Seq[Identifier],
-  value: StringValue
+  value: StringValue,
+  nestedElement: Option[NestedElement] = None
 ) extends Criteria {
   override def sql: String =
     s"$operator (${identifiers.mkString(",")}) $AGAINST ($value)"
@@ -532,7 +537,7 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
   override def sql = s"$operator($criteria)"
 
   private[this] def rtype(criteria: Criteria): Option[String] = criteria match {
-    case Predicate(left, _, right, _, _) => rtype(left).orElse(rtype(right))
+    case Predicate(left, _, right, _, _, nested) => rtype(left).orElse(rtype(right))
     case c: Expression =>
       c.identifier.nestedType.orElse(c.identifier.name.split('.').headOption)
     case relation: ElasticRelation => relation.relationType
@@ -547,15 +552,18 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
 
 }
 
-case class ElasticNested(override val criteria: Criteria, override val limit: Option[Limit])
-    extends ElasticRelation(criteria, Nested) {
+case class ElasticNested(
+  override val criteria: Criteria,
+  override val limit: Option[Limit],
+  nestedElement: Option[NestedElement] = None
+) extends ElasticRelation(criteria, Nested) {
   override def update(request: SQLSearchRequest): ElasticNested =
     this.copy(criteria = criteria.update(request))
 
   override def nested: Boolean = true
 
   private[this] def name(criteria: Criteria): Option[String] = criteria match {
-    case Predicate(left, _, right, _, _) => name(left).orElse(name(right))
+    case Predicate(left, _, right, _, _, nested) => name(left).orElse(name(right))
     case c: Expression =>
       c.identifier.innerHitsName.orElse(c.identifier.name.split('.').headOption)
     case n: ElasticNested => name(n.criteria)
@@ -565,13 +573,18 @@ case class ElasticNested(override val criteria: Criteria, override val limit: Op
   lazy val innerHitsName: Option[String] = name(criteria)
 }
 
-case class ElasticChild(override val criteria: Criteria) extends ElasticRelation(criteria, Child) {
+case class ElasticChild(
+  override val criteria: Criteria,
+  nestedElement: Option[NestedElement] = None
+) extends ElasticRelation(criteria, Child) {
   override def update(request: SQLSearchRequest): ElasticChild =
     this.copy(criteria = criteria.update(request))
 }
 
-case class ElasticParent(override val criteria: Criteria)
-    extends ElasticRelation(criteria, Parent) {
+case class ElasticParent(
+  override val criteria: Criteria,
+  nestedElement: Option[NestedElement] = None
+) extends ElasticRelation(criteria, Parent) {
   override def update(request: SQLSearchRequest): ElasticParent =
     this.copy(criteria = criteria.update(request))
 }

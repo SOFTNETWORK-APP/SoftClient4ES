@@ -30,33 +30,32 @@ package object aggregate {
     def partition_by: PackratParser[Seq[Identifier]] =
       PARTITION_BY.regex ~> rep1sep(identifier, separator)
 
-    private[this] def over: Parser[(Seq[Identifier], OrderBy, Option[Limit])] =
-      OVER.regex ~> start ~ partition_by.? ~ orderBy ~ limit.? <~ end ^^ { case _ ~ pb ~ ob ~ l =>
-        (pb.getOrElse(Seq.empty), ob, l)
+    private[this] def over: Parser[(Seq[Identifier], OrderBy)] =
+      OVER.regex ~> start ~ partition_by.? ~ orderBy <~ end ^^ { case _ ~ pb ~ ob =>
+        (pb.getOrElse(Seq.empty), ob)
       }
 
-    private[this] def top_hits
-      : PackratParser[(Identifier, Seq[Identifier], OrderBy, Option[Limit])] =
+    private[this] def top_hits: PackratParser[(Identifier, Seq[Identifier], OrderBy)] =
       start ~ identifier ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
         o match {
-          case Some((pb, ob, l)) => (id, pb, ob, l)
-          case None => (id, Seq.empty, OrderBy(Seq(FieldSort(id.name, order = None))), None)
+          case Some((pb, ob)) => (id, pb, ob)
+          case None           => (id, Seq.empty, OrderBy(Seq(FieldSort(id.name, order = None))))
         }
       }
 
     def first_value: PackratParser[TopHitsAggregation] =
       FIRST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
-        FirstValue(top._1, top._2, top._3, limit = top._4)
+        FirstValue(top._1, top._2, top._3)
       }
 
     def last_value: PackratParser[TopHitsAggregation] =
       LAST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
-        LastValue(top._1, top._2, top._3, limit = top._4)
+        LastValue(top._1, top._2, top._3)
       }
 
     def array_agg: PackratParser[TopHitsAggregation] =
       ARRAY_AGG.regex ~ top_hits ^^ { case _ ~ top =>
-        ArrayAgg(top._1, top._2, top._3, limit = top._4)
+        ArrayAgg(top._1, top._2, top._3, limit = None)
       }
 
     def identifierWithTopHits: PackratParser[Identifier] =
