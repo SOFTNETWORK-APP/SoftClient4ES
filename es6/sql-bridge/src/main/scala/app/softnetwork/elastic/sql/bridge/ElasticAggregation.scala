@@ -193,7 +193,6 @@ object ElasticAggregation {
       sourceField,
       distinct = distinct,
       nestedAgg = nestedAgg,
-      filteredAgg = None,
       aggType = aggType,
       agg = _agg,
       direction = direction

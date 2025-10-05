@@ -2,10 +2,9 @@ package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.query.{
   Asc,
-  BucketSelectorScript,
-  ElasticBoolQuery,
-  Field,
   Bucket,
+  BucketSelectorScript,
+  Field,
   Criteria,
   Desc,
   SortOrder
@@ -16,7 +15,6 @@ import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
   bucketSelectorAggregation,
   cardinalityAgg,
-  filterAgg,
   maxAgg,
   minAgg,
   nestedAggregation,
@@ -165,23 +163,8 @@ object ElasticAggregation {
 
     val filteredAggName = "filtered_agg"
 
-    val filteredAgg: Option[FilterAggregation] =
-      having match {
-        case Some(f) =>
-          val boolQuery = Option(ElasticBoolQuery(group = true))
-          Some(
-            filterAgg(
-              filteredAggName,
-              f.asFilter(boolQuery)
-                .query(Set(identifier.innerHitsName).flatten, boolQuery)
-            )
-          )
-        case _ =>
-          None
-      }
-
     def filtered(): Unit =
-      filteredAgg match {
+      having match {
         case Some(_) =>
           aggPath ++= Seq(filteredAggName)
           aggPath ++= Seq(aggName)
@@ -207,7 +190,6 @@ object ElasticAggregation {
       sourceField,
       distinct = distinct,
       nestedAgg = nestedAgg,
-      filteredAgg = filteredAgg,
       aggType = aggType,
       agg = _agg,
       direction = direction

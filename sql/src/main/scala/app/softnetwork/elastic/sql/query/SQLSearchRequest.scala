@@ -36,18 +36,16 @@ case class SQLSearchRequest(
   }
 
   def toNestedElement(u: Unnest): NestedElement = {
-    val children = from.unnests
-      .filter(_.parent.map(_.innerHitsName).getOrElse("") == u.innerHitsName)
-      .map(toNestedElement)
     NestedElement(
       path = u.path,
       innerHitsName = u.innerHitsName,
       size = u.limit.map(_.limit),
-      children = children,
+      children = Nil,
       sources = nestedFields
         .get(u.innerHitsName)
         .map(_.map(_.identifier.name.split('.').tail.mkString(".")))
-        .getOrElse(Nil)
+        .getOrElse(Nil),
+      parent = u.parent.map(toNestedElement)
     )
   }
 

@@ -78,8 +78,12 @@ case class Unnest(
       limit = limit.orElse(request.limit)
     )
     updated.identifier.tableAlias match {
-      case Some(alias) =>
-        return updated.copy(parent = request.unnests.get(alias))
+      case Some(alias) if updated.identifier.nested =>
+        request.unnests.get(alias) match {
+          case Some(parent) if parent.path != updated.path =>
+            return updated.copy(parent = Some(parent))
+          case _ =>
+        }
       case _ =>
     }
     updated
@@ -171,8 +175,9 @@ case class NestedElement(
   path: String,
   innerHitsName: String,
   size: Option[Int],
-  children: Seq[NestedElement] = Nil,
-  sources: Seq[String] = Nil
+  children: Seq[NestedElement] = Nil, // TODO remove and use parent instead
+  sources: Seq[String] = Nil,
+  parent: Option[NestedElement]
 ) {
   // key used inside parent's inner_hits map for a child:
   private def childKey(path: String): String = path.split('.').last
@@ -205,4 +210,18 @@ case class NestedElement(
   }
 
   def raw: String = buildInnerHitsObject(this)
+
+  lazy val root: NestedElement = {
+    parent match {
+      case Some(p) => p.root
+      case None    => this
+    }
+  }
+
+  lazy val level: Int = {
+    parent match {
+      case Some(p) => 1 + p.level
+      case None    => 0
+    }
+  }
 }

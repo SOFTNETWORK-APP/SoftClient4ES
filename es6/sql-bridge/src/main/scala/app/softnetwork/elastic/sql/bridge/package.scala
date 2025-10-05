@@ -13,7 +13,7 @@ import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.script.ScriptType.Source
 import com.sksamuel.elastic4s.searches.aggs.{Aggregation, FilterAggregation}
-import com.sksamuel.elastic4s.searches.queries.{BoolQuery, Query, RawQuery}
+import com.sksamuel.elastic4s.searches.queries.{Query, RawQuery}
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
 import com.sksamuel.elastic4s.searches.sort.FieldSort
 
@@ -52,8 +52,6 @@ package object bridge {
     import request._
     val notNestedBuckets = buckets.filterNot(_.nested)
     val nestedBuckets = buckets.filter(_.nested).groupBy(_.nestedBucket.getOrElse(""))
-    val aggregations =
-      aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts))
     val filteredAgg: Option[FilterAggregation] =
       request.having.flatMap(_.criteria) match {
         case Some(f) =>
@@ -68,6 +66,11 @@ package object bridge {
         case _ =>
           None
       }
+    val aggregations =
+      aggregates.map(
+        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+          .copy(filteredAgg = filteredAgg)
+      )
     val notNestedAggregations = aggregations.filterNot(_.nested)
     val nestedAggregations =
       aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))

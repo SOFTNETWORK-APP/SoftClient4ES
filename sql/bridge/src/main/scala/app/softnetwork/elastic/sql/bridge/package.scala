@@ -10,7 +10,7 @@ import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.requests.script.Script
 import com.sksamuel.elastic4s.requests.script.ScriptType.Source
-import com.sksamuel.elastic4s.requests.searches.aggs.Aggregation
+import com.sksamuel.elastic4s.requests.searches.aggs.{Aggregation, FilterAggregation}
 import com.sksamuel.elastic4s.requests.searches.queries.Query
 import com.sksamuel.elastic4s.requests.searches.sort.FieldSort
 import com.sksamuel.elastic4s.requests.searches.{
@@ -39,10 +39,27 @@ package object bridge {
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
-    val notNestedBuckets = buckets.filterNot(_.identifier.nested)
-    val nestedBuckets = buckets.filter(_.identifier.nested).groupBy(_.nestedBucket.getOrElse(""))
+    val notNestedBuckets = buckets.filterNot(_.nested)
+    val nestedBuckets = buckets.filter(_.nested).groupBy(_.nestedBucket.getOrElse(""))
+    val filteredAgg: Option[FilterAggregation] =
+      request.having.flatMap(_.criteria) match {
+        case Some(f) =>
+          val boolQuery = Option(ElasticBoolQuery(group = true))
+          Some(
+            filterAgg(
+              "filtered_agg",
+              f.asFilter(boolQuery)
+                .query(aggregates.flatMap(_.identifier.innerHitsName).toSet, boolQuery)
+            )
+          )
+        case _ =>
+          None
+      }
     val aggregations =
-      aggregates.map(ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts))
+      aggregates.map(
+        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+          .copy(filteredAgg = filteredAgg)
+      )
     val notNestedAggregations = aggregations.filterNot(_.nested)
     val nestedAggregations =
       aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
@@ -72,7 +89,7 @@ package object bridge {
               case _       => aggregations
             }
           val filtered: Option[Aggregation] =
-            first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
+            filteredAgg.map(filtered => filtered.subAggregations(buckets))
           first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(buckets))
         }
       }
@@ -100,7 +117,7 @@ package object bridge {
           case _       => aggregations
         }
         val filtered: Option[Aggregation] =
-          first.filteredAgg.map(filtered => filtered.subAggregations(buckets))
+          filteredAgg.map(filtered => filtered.subAggregations(buckets))
         filtered.map(Seq(_)).getOrElse(buckets)
       }
     }
@@ -574,6 +591,20 @@ package object bridge {
     request
       .map {
         case Left(l) =>
+          val filteredAgg: Option[FilterAggregation] =
+            l.having.flatMap(_.criteria) match {
+              case Some(f) =>
+                val boolQuery = Option(ElasticBoolQuery(group = true))
+                Some(
+                  filterAgg(
+                    "filtered_agg",
+                    f.asFilter(boolQuery)
+                      .query(l.aggregates.flatMap(_.identifier.innerHitsName).toSet, boolQuery)
+                  )
+                )
+              case _ =>
+                None
+            }
           l.aggregates
             .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts))
             .map(aggregation => {
@@ -599,7 +630,7 @@ package object bridge {
                         }
                           aggregations {
                           val filtered =
-                            aggregation.filteredAgg match {
+                            filteredAgg match {
                               case Some(filtered) => filtered.subAggregations(aggregation.agg)
                               case _              => aggregation.agg
                             }
