@@ -54,13 +54,19 @@ case class SQLSearchRequest(
 
   def update(): SQLSearchRequest = {
     (for {
-      from    <- Option(this.copy(from = from.update(this)))
-      select  <- Option(from.copy(select = select.update(from)))
+      from <- Option(this.copy(from = from.update(this)))
+      select <- Option(
+        from.copy(
+          select = select.update(from),
+          groupBy = groupBy.map(_.update(from)),
+          having = having.map(_.update(from))
+        )
+      )
       where   <- Option(select.copy(where = where.map(_.update(select))))
-      groupBy <- Option(where.copy(groupBy = groupBy.map(_.update(where))))
-      having  <- Option(groupBy.copy(having = having.map(_.update(groupBy))))
-      updated <- Option(having.copy(orderBy = orderBy.map(_.update(having))))
-    } yield updated).get
+      updated <- Option(where.copy(orderBy = orderBy.map(_.update(where))))
+    } yield updated).getOrElse(
+      throw new IllegalStateException("Failed to update SQLSearchRequest")
+    )
   }
 
   lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)
