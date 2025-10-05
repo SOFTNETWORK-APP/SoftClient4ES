@@ -18,7 +18,7 @@ import app.softnetwork.elastic.sql.query.{
 }
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.FetchSourceContext
-import com.sksamuel.elastic4s.searches.queries.Query
+import com.sksamuel.elastic4s.searches.queries.{InnerHit, Query}
 
 import scala.annotation.tailrec
 
@@ -47,7 +47,6 @@ case class ElasticQuery(filter: ElasticFilter) {
             .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
 
           val nestedElements: Seq[NestedElement] = criteria.nestedElements.sortBy(_.level)
-          nestedElements.foreach(n => println(s"nestedElement: ${n.path}, level: ${n.level}"))
 
           val nestedParentsPath
             : collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
@@ -73,6 +72,24 @@ case class ElasticQuery(filter: ElasticFilter) {
 
           val nestedParents = getNestedParents(nestedElements.last, Seq.empty)
 
+          def nestedInner(n: NestedElement): InnerHit = {
+            var inner = innerHits(n.innerHitsName)
+            n.size match {
+              case Some(s) =>
+                inner = inner.from(0).size(s)
+              case _ =>
+            }
+            if (n.sources.nonEmpty) {
+              inner = inner.fetchSource(
+                FetchSourceContext(
+                  fetchSource = true,
+                  includes = n.sources.toArray
+                )
+              )
+            }
+            inner
+          }
+
           def buildNestedQuery(n: NestedElement): Query = {
             val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
             if (children.nonEmpty) {
@@ -87,12 +104,7 @@ case class ElasticQuery(filter: ElasticFilter) {
                 combinedQuery
               ) /*.scoreMode(ScoreMode.None)*/
                 .inner(
-                  innerHits(n.innerHitsName)
-                    .from(0)
-                    .size(n.size.getOrElse(3))
-                    .fetchSource(
-                      FetchSourceContext(fetchSource = true, includes = n.sources.toArray)
-                    )
+                  nestedInner(n)
                 )
             } else {
               nestedQuery(
@@ -100,12 +112,7 @@ case class ElasticQuery(filter: ElasticFilter) {
                 q
               ) /*.scoreMode(ScoreMode.None)*/
                 .inner(
-                  innerHits(n.innerHitsName)
-                    .from(0)
-                    .size(n.size.getOrElse(3))
-                    .fetchSource(
-                      FetchSourceContext(fetchSource = true, includes = n.sources.toArray)
-                    )
+                  nestedInner(n)
                 )
             }
           }

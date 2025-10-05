@@ -3,7 +3,6 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.Queries._
 import app.softnetwork.elastic.sql.query.SQLQuery
-import com.google.gson.{JsonArray, JsonObject, JsonParser, JsonPrimitive}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -63,556 +62,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s+", "")
   }
 
-  it should "perform count distinct" in {
-    val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = \"Nom\"")
-    results.size shouldBe 1
-    val result = results.head
-    result.nested shouldBe false
-    result.distinct shouldBe true
-    result.aggName shouldBe "c2"
-    result.field shouldBe "c2"
-    result.sources shouldBe Seq[String]("Table")
-    result.query.getOrElse("") shouldBe
-    """|{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "term": {
-        |            "nom": {
-        |              "value": "Nom"
-        |            }
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "c2": {
-        |      "cardinality": {
-        |        "field": "id"
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform nested count" in {
-    val results: Seq[ElasticAggregation] =
-      SQLQuery(
-        "select count(inner_emails.value) as email from index i join unnest(emails) as inner_emails where i.nom = \"Nom\""
-      )
-    results.size shouldBe 1
-    val result = results.head
-    result.nested shouldBe true
-    result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.email"
-    result.field shouldBe "email"
-    result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
-    """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "term": {
-        |            "nom": {
-        |              "value": "Nom"
-        |            }
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "email": {
-        |          "value_count": {
-        |            "field": "emails.value"
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform nested count with nested criteria" in {
-    val results: Seq[ElasticAggregation] =
-      SQLQuery(
-        "select count(inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
-      )
-    results.size shouldBe 1
-    val result = results.head
-    result.nested shouldBe true
-    result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.count_emails"
-    result.field shouldBe "count_emails"
-    result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
-    """{
-        |  "query": {
-        |    "bool":{
-        |      "filter": [
-        |          {
-        |            "term": {
-        |              "nom": {
-        |                "value": "Nom"
-        |              }
-        |            }
-        |          },
-        |          {
-        |            "nested": {
-        |              "path": "profiles",
-        |              "query": {
-        |                "terms": {
-        |                  "profiles.postalCode": [
-        |                    "75001",
-        |                    "75002"
-        |                  ]
-        |                }
-        |              },
-        |              "inner_hits":{"name":"inner_profiles","from":0,"size":3}
-        |            }
-        |          }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "count_emails": {
-        |          "value_count": {
-        |            "field": "emails.value"
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform nested count with filter" in {
-    val results: Seq[ElasticAggregation] =
-      SQLQuery(
-        "select count(inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
-      )
-    results.size shouldBe 1
-    val result = results.head
-    result.nested shouldBe true
-    result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.filtered_agg.count_emails"
-    result.field shouldBe "count_emails"
-    result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
-    """{
-        |  "query": {
-        |    "bool":{
-        |      "filter": [
-        |        {
-        |          "term": {
-        |            "nom": {
-        |              "value": "Nom"
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "nested": {
-        |            "path": "profiles",
-        |            "query": {
-        |              "terms": {
-        |                "profiles.postalCode": [
-        |                  "75001",
-        |                  "75002"
-        |                ]
-        |              }
-        |            },
-        |            "inner_hits":{"name":"inner_profiles","from":0,"size":3}
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "filtered_agg": {
-        |          "filter": {
-        |            "term": {
-        |              "emails.context": {
-        |                "value": "profile"
-        |              }
-        |            }
-        |          },
-        |          "aggs": {
-        |            "count_emails": {
-        |              "value_count": {
-        |                "field": "emails.value"
-        |              }
-        |            }
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform nested count with \"and not\" operator" in {
-    val results: Seq[ElasticAggregation] =
-      SQLQuery(
-        "select count(distinct inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
-      )
-    results.size shouldBe 1
-    val result = results.head
-    result.nested shouldBe true
-    result.distinct shouldBe true
-    result.aggName shouldBe "nested_emails.count_emails"
-    result.field shouldBe "count_emails"
-    result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
-    """
-        |{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "nested": {
-        |            "path": "profiles",
-        |            "query": {
-        |              "bool": {
-        |                "filter": [
-        |                  {
-        |                    "term": {
-        |                      "profiles.postalCode": {
-        |                        "value": "33600"
-        |                      }
-        |                    }
-        |                  },
-        |                  {
-        |                    "bool": {
-        |                      "must_not": [
-        |                        {
-        |                          "term": {
-        |                            "profiles.postalCode": {
-        |                              "value": "75001"
-        |                            }
-        |                          }
-        |                        }
-        |                      ]
-        |                    }
-        |                  }
-        |                ]
-        |              }
-        |            },
-        |            "inner_hits": {
-        |              "name": "inner_profiles",
-        |              "from": 0,
-        |              "size": 3
-        |            }
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "count_emails": {
-        |          "cardinality": {
-        |            "field": "emails.value"
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}
-        |""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform nested count with date filtering" in {
-    val results: Seq[ElasticAggregation] =
-      SQLQuery(
-        "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
-      )
-    results.size shouldBe 1
-    val result = results.head
-    result.nested shouldBe true
-    result.distinct shouldBe true
-    result.aggName shouldBe "nested_emails.count_distinct_emails"
-    result.field shouldBe "count_distinct_emails"
-    result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
-    """{
-    "query": {
-      |        "bool": {
-      |            "filter": [
-      |                {
-      |                    "nested": {
-      |                        "path": "profiles",
-      |                        "query": {
-      |                            "bool": {
-      |                                "filter": [
-      |                                    {
-      |                                        "term": {
-      |                                            "profiles.postalCode": {
-      |                                                "value": "33600"
-      |                                            }
-      |                                        }
-      |                                    },
-      |                                    {
-      |                                        "range": {
-      |                                            "profiles.createdDate": {
-      |                                                "lte": "now-35M/M"
-      |                                            }
-      |                                        }
-      |                                    }
-      |                                ]
-      |                            }
-      |                        },
-      |                        "inner_hits": {
-      |                            "name": "inner_profiles",
-      |                            "from": 0,
-      |                            "size": 3
-      |                        }
-      |                    }
-      |                }
-      |            ]
-      |        }
-      |    },
-      |    "size": 0,
-      |    "aggs": {
-      |        "nested_emails": {
-      |            "nested": {
-      |                "path": "emails"
-      |            },
-      |            "aggs": {
-      |                "count_distinct_emails": {
-      |                    "cardinality": {
-      |                        "field": "emails.value"
-      |                    }
-      |                }
-      |            }
-      |        }
-      |    }
-      |}""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform nested select" in {
-    val select: ElasticSearchRequest =
-      SQLQuery("""
-        |SELECT
-        |profileId,
-        |profile_ccm.email as email,
-        |profile_ccm.city as city,
-        |profile_ccm.firstName as firstName,
-        |profile_ccm.lastName as lastName,
-        |profile_ccm.postalCode as postalCode,
-        |profile_ccm.birthYear as birthYear
-        |FROM index join unnest(profiles) as profile_ccm
-        |WHERE
-        |((profile_ccm.postalCode BETWEEN "10" AND "99999")
-        |AND
-        |(profile_ccm.birthYear <= 2000))
-        |limit 100""".stripMargin)
-    val query = select.query
-    val queryWithoutSource = query.substring(0, query.indexOf("_source") - 2) + "}"
-    queryWithoutSource shouldBe
-    """{
-      |    "query": {
-      |        "bool": {
-      |            "filter": [
-      |                {
-      |                    "nested": {
-      |                        "path": "profiles",
-      |                        "query": {
-      |                            "bool": {
-      |                                "filter": [
-      |                                    {
-      |                                        "range": {
-      |                                            "profiles.postalCode": {
-      |                                                "gte": "10",
-      |                                                "lte": "99999"
-      |                                            }
-      |                                        }
-      |                                    },
-      |                                    {
-      |                                        "range": {
-      |                                            "profiles.birthYear": {
-      |                                                "lte": 2000
-      |                                            }
-      |                                        }
-      |                                    }
-      |                                ]
-      |                            }
-      |                        },
-      |                        "inner_hits": {
-      |                            "name": "profile_ccm",
-      |                            "from": 0,
-      |                            "size": 3
-      |                        }
-      |                    }
-      |                }
-      |            ]
-      |        }
-      |    },
-      |    "from": 0,
-      |    "size": 100
-      |}""".stripMargin.replaceAll("\\s+", "")
-    val includes = new JsonParser()
-      .parse(query.substring(query.indexOf("_source") + 9, query.length - 1))
-      .asInstanceOf[JsonObject]
-      .get("includes")
-      .asInstanceOf[JsonArray]
-      .iterator()
-      .asScala
-    val sourceIncludes: Seq[String] = (
-      for (i <- includes) yield i.asInstanceOf[JsonPrimitive].getAsString
-    ).toSeq
-    val expectedSourceIncludes = Seq(
-      "profileId",
-      "profile_ccm.email",
-      "profile_ccm.city",
-      "profile_ccm.firstName",
-      "profile_ccm.lastName",
-      "profile_ccm.postalCode",
-      "profile_ccm.birthYear"
-    )
-    sourceIncludes should contain theSameElementsAs expectedSourceIncludes
-  }
-
-  it should "exclude fields from select" in {
-    val select: ElasticSearchRequest =
-      SQLQuery(
-        except
-      )
-    select.query shouldBe
-    """
-        |{
-        | "query":{
-        |   "match_all":{}
-        | },
-        | "_source":{
-        |   "includes":["*"],
-        |   "excludes":["col1","col2"]
-        | }
-        |}""".stripMargin.replaceAll("\\s+", "")
-  }
-
-  it should "perform query with group by and having" in {
-    val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHaving)
-    val query = select.query
-    println(query)
-    query shouldBe
-    """{
-      |  "query": {
-      |    "match_all": {}
-      |  },
-      |  "size": 0,
-      |  "_source": true,
-      |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "bool": {
-      |          "filter": [
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "Country": {
-      |                        "value": "USA"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "City": {
-      |                        "value": "Berlin"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "match_all": {}
-      |            }
-      |          ]
-      |        }
-      |      },
-      |      "aggs": {
-      |        "Country": {
-      |          "terms": {
-      |            "field": "Country.keyword",
-      |            "order": {
-      |              "Country": "asc"
-      |            }
-      |          },
-      |          "aggs": {
-      |            "City": {
-      |              "terms": {
-      |                "field": "City.keyword",
-      |                "order": {
-      |                  "cnt": "desc"
-      |                }
-      |              },
-      |              "aggs": {
-      |                "cnt": {
-      |                  "value_count": {
-      |                    "field": "CustomerID"
-      |                  }
-      |                },
-      |                "having_filter": {
-      |                  "bucket_selector": {
-      |                    "buckets_path": {
-      |                      "cnt": "cnt"
-      |                    },
-      |                    "script": {
-      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1"
-      |                    }
-      |                  }
-      |                }
-      |              }
-      |            }
-      |          }
-      |        }
-      |      }
-      |    }
-      |  }
-      |}""".stripMargin
-      .replaceAll("\\s+", "")
-      .replaceAll("==", " == ")
-      .replaceAll("&&", " && ")
-      .replaceAll(">", " > ")
-  }
-
   it should "perform complex query" in {
     val select: ElasticSearchRequest =
       SQLQuery(
@@ -622,7 +71,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |  max(inner_products.price) as max_price
            |FROM
            |  stores store
-           |  JOIN UNNEST(store.products LIMIT 10) as inner_products
+           |  JOIN UNNEST(store.products) as inner_products
            |WHERE
            |  (
            |    firstName is not null AND
@@ -646,7 +95,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |  match (inner_products.description, inner_products.ingredients) against ("lasagnes") AND
            |  min(inner_products.price) > 5.0 AND
            |  max(inner_products.price) < 50.0 AND
-           |  inner_products.category <> "coffee"""".stripMargin
+           |  inner_products.category <> "coffee"
+           |  LIMIT 10""".stripMargin
       ).minScore(1.0)
     val query = select.query
     println(query)
@@ -868,6 +318,557 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("<", " < ")
       .replaceAll(">", " > ")
 
+  }
+
+  it should "perform count distinct" in {
+    val results: Seq[ElasticAggregation] =
+      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = \"Nom\"")
+    results.size shouldBe 1
+    val result = results.head
+    result.nested shouldBe false
+    result.distinct shouldBe true
+    result.aggName shouldBe "c2"
+    result.field shouldBe "c2"
+    result.sources shouldBe Seq[String]("Table")
+    result.query.getOrElse("") shouldBe
+    """|{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "term": {
+        |            "nom": {
+        |              "value": "Nom"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "aggs": {
+        |    "c2": {
+        |      "cardinality": {
+        |        "field": "id"
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform nested count" in {
+    val results: Seq[ElasticAggregation] =
+      SQLQuery(
+        "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = \"Nom\""
+      )
+    results.size shouldBe 1
+    val result = results.head
+    result.nested shouldBe true
+    result.distinct shouldBe false
+    result.aggName shouldBe "nested_emails.email"
+    result.field shouldBe "email"
+    result.sources shouldBe Seq[String]("index")
+    result.query.getOrElse("") shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "term": {
+        |            "nom": {
+        |              "value": "Nom"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "aggs": {
+        |    "nested_emails": {
+        |      "nested": {
+        |        "path": "emails"
+        |      },
+        |      "aggs": {
+        |        "email": {
+        |          "value_count": {
+        |            "field": "emails.value"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform nested count with nested criteria" in {
+    val results: Seq[ElasticAggregation] =
+      SQLQuery(
+        "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
+      )
+    results.size shouldBe 1
+    val result = results.head
+    result.nested shouldBe true
+    result.distinct shouldBe false
+    result.aggName shouldBe "nested_emails.count_emails"
+    result.field shouldBe "count_emails"
+    result.sources shouldBe Seq[String]("index")
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "term": {
+      |            "nom": {
+      |              "value": "Nom"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "terms": {
+      |                "profiles.postalCode": [
+      |                  "75001",
+      |                  "75002"
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "nested_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "count_emails": {
+      |          "value_count": {
+      |            "field": "emails.value"
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform nested count with filter" in {
+    val results: Seq[ElasticAggregation] =
+      SQLQuery(
+        "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
+      )
+    results.size shouldBe 1
+    val result = results.head
+    result.nested shouldBe true
+    result.distinct shouldBe false
+    result.aggName shouldBe "nested_emails.filtered_agg.count_emails"
+    result.field shouldBe "count_emails"
+    result.sources shouldBe Seq[String]("index")
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "term": {
+      |            "nom": {
+      |              "value": "Nom"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "terms": {
+      |                "profiles.postalCode": [
+      |                  "75001",
+      |                  "75002"
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "nested_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "filtered_agg": {
+      |          "filter": {
+      |            "term": {
+      |              "emails.context": {
+      |                "value": "profile"
+      |              }
+      |            }
+      |          },
+      |          "aggs": {
+      |            "count_emails": {
+      |              "value_count": {
+      |                "field": "emails.value"
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform nested count with \"and not\" operator" in {
+    val results: Seq[ElasticAggregation] =
+      SQLQuery(
+        "select count(distinct inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
+      )
+    results.size shouldBe 1
+    val result = results.head
+    result.nested shouldBe true
+    result.distinct shouldBe true
+    result.aggName shouldBe "nested_emails.count_emails"
+    result.field shouldBe "count_emails"
+    result.sources shouldBe Seq[String]("index")
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "term": {
+      |                      "profiles.postalCode": {
+      |                        "value": "33600"
+      |                      }
+      |                    }
+      |                  },
+      |                  {
+      |                    "bool": {
+      |                      "must_not": [
+      |                        {
+      |                          "term": {
+      |                            "profiles.postalCode": {
+      |                              "value": "75001"
+      |                            }
+      |                          }
+      |                        }
+      |                      ]
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "nested_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "count_emails": {
+      |          "cardinality": {
+      |            "field": "emails.value"
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform nested count with date filtering" in {
+    val results: Seq[ElasticAggregation] =
+      SQLQuery(
+        "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
+      )
+    results.size shouldBe 1
+    val result = results.head
+    result.nested shouldBe true
+    result.distinct shouldBe true
+    result.aggName shouldBe "nested_emails.count_distinct_emails"
+    result.field shouldBe "count_distinct_emails"
+    result.sources shouldBe Seq[String]("index")
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "term": {
+      |                      "profiles.postalCode": {
+      |                        "value": "33600"
+      |                      }
+      |                    }
+      |                  },
+      |                  {
+      |                    "range": {
+      |                      "profiles.createdDate": {
+      |                        "lte": "now-35M/M"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "nested_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "count_distinct_emails": {
+      |          "cardinality": {
+      |            "field": "emails.value"
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform nested select" in {
+    val select: ElasticSearchRequest =
+      SQLQuery("""
+        |SELECT
+        |profileId,
+        |profile_ccm.email as email,
+        |profile_ccm.city as city,
+        |profile_ccm.firstName as firstName,
+        |profile_ccm.lastName as lastName,
+        |profile_ccm.postalCode as postalCode,
+        |profile_ccm.birthYear as birthYear
+        |FROM index join unnest(index.profiles) as profile_ccm
+        |WHERE
+        |((profile_ccm.postalCode BETWEEN "10" AND "99999")
+        |AND
+        |(profile_ccm.birthYear <= 2000))
+        |limit 100""".stripMargin)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "range": {
+      |                      "profiles.postalCode": {
+      |                        "gte": "10",
+      |                        "lte": "99999"
+      |                      }
+      |                    }
+      |                  },
+      |                  {
+      |                    "range": {
+      |                      "profiles.birthYear": {
+      |                        "lte": 2000
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "profile_ccm",
+      |              "from": 0,
+      |              "_source": {
+      |                "includes": [
+      |                  "email",
+      |                  "city",
+      |                  "firstName",
+      |                  "lastName",
+      |                  "postalCode",
+      |                  "birthYear"
+      |                ]
+      |              },
+      |              "size": 100
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 100,
+      |  "_source": {
+      |    "includes": [
+      |      "profileId"
+      |    ]
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "exclude fields from select" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(
+        except
+      )
+    select.query shouldBe
+    """
+        |{
+        | "query":{
+        |   "match_all":{}
+        | },
+        | "_source":{
+        |   "includes":["*"],
+        |   "excludes":["col1","col2"]
+        | }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "perform query with group by and having" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(groupByWithHaving)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "filtered_agg": {
+      |      "filter": {
+      |        "bool": {
+      |          "filter": [
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "Country": {
+      |                        "value": "USA"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "bool": {
+      |                "must_not": [
+      |                  {
+      |                    "term": {
+      |                      "City": {
+      |                        "value": "Berlin"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            {
+      |              "match_all": {}
+      |            }
+      |          ]
+      |        }
+      |      },
+      |      "aggs": {
+      |        "Country": {
+      |          "terms": {
+      |            "field": "Country.keyword",
+      |            "order": {
+      |              "Country": "asc"
+      |            }
+      |          },
+      |          "aggs": {
+      |            "City": {
+      |              "terms": {
+      |                "field": "City.keyword",
+      |                "order": {
+      |                  "cnt": "desc"
+      |                }
+      |              },
+      |              "aggs": {
+      |                "cnt": {
+      |                  "value_count": {
+      |                    "field": "CustomerID"
+      |                  }
+      |                },
+      |                "having_filter": {
+      |                  "bucket_selector": {
+      |                    "buckets_path": {
+      |                      "cnt": "cnt"
+      |                    },
+      |                    "script": {
+      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1"
+      |                    }
+      |                  }
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
   }
 
   it should "add script fields" in {
@@ -3094,4 +3095,113 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("false:", "false : ")
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
   }
+
+  it should "handle nested of nested" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(nestedOfNested)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "comments",
+      |            "query": {
+      |              "nested": {
+      |                "path": "comments.replies",
+      |                "query": {
+      |                  "bool": {
+      |                    "filter": [
+      |                      {
+      |                        "match": {
+      |                          "comments.content": {
+      |                            "query": "Nice"
+      |                          }
+      |                        }
+      |                      },
+      |                      {
+      |                        "script": {
+      |                          "script": {
+      |                            "lang": "painless",
+      |                            "source": "def left = (!doc.containsKey('comments.replies.lastUpdated') || doc['comments.replies.lastUpdated'].empty ? null : doc['comments.replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+      |                          }
+      |                        }
+      |                      }
+      |                    ]
+      |                  }
+      |                },
+      |                "inner_hits": {
+      |                  "name": "matched_replies",
+      |                  "from": 0,
+      |                  "_source": {
+      |                    "includes": [
+      |                      "reply_author",
+      |                      "reply_text"
+      |                    ]
+      |                  },
+      |                  "size": 5
+      |                }
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "matched_comments",
+      |              "from": 0,
+      |              "_source": {
+      |                "includes": [
+      |                  "author",
+      |                  "comments"
+      |                ]
+      |              },
+      |              "size": 5
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 5,
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
 }
