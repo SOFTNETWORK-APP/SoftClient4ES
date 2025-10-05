@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.aggregate.TopHitsAggregation
-import app.softnetwork.elastic.sql.{asString, Identifier, Token}
+import app.softnetwork.elastic.sql.{asString, Token}
 
 case class SQLSearchRequest(
   select: Select = Select(),
@@ -39,7 +39,7 @@ case class SQLSearchRequest(
     NestedElement(
       path = u.path,
       innerHitsName = u.innerHitsName,
-      size = u.limit.map(_.limit),
+      size = limit.map(_.limit),
       children = Nil,
       sources = nestedFields
         .get(u.innerHitsName)
@@ -53,14 +53,14 @@ case class SQLSearchRequest(
     orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
 
   def update(): SQLSearchRequest = {
-    val updated = this.copy(from = from.update(this))
-    updated.copy(
-      select = select.update(updated),
-      where = where.map(_.update(updated)),
-      groupBy = groupBy.map(_.update(updated)),
-      having = having.map(_.update(updated)),
-      orderBy = orderBy.map(_.update(updated))
-    )
+    (for {
+      from    <- Option(this.copy(from = from.update(this)))
+      select  <- Option(from.copy(select = select.update(from)))
+      where   <- Option(select.copy(where = where.map(_.update(select))))
+      groupBy <- Option(where.copy(groupBy = groupBy.map(_.update(where))))
+      having  <- Option(groupBy.copy(having = having.map(_.update(groupBy))))
+      updated <- Option(having.copy(orderBy = orderBy.map(_.update(having))))
+    } yield updated).get
   }
 
   lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)

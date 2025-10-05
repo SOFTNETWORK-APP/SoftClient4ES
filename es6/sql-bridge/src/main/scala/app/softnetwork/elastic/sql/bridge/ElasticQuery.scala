@@ -73,10 +73,6 @@ case class ElasticQuery(filter: ElasticFilter) {
 
           val nestedParents = getNestedParents(nestedElements.last, Seq.empty)
 
-          nestedParentsPath.foreach { case (path, (element, children)) =>
-            println(s"parent: $path, children: ${children.map(_.path).mkString(", ")}")
-          }
-
           def buildNestedQuery(n: NestedElement): Query = {
             val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
             if (children.nonEmpty) {

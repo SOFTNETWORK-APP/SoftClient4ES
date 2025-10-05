@@ -1,23 +1,26 @@
 package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.query.{
+  BetweenExpr,
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
-  DistanceCriteria,
   ElasticMatch,
   ElasticNested,
   ElasticParent,
-  BetweenExpr,
   GenericExpression,
   InExpr,
-  IsNotNullExpr,
   IsNotNullCriteria,
+  IsNotNullExpr,
+  IsNullCriteria,
   IsNullExpr,
-  IsNullCriteria
+  NestedElement
 }
 import com.sksamuel.elastic4s.ElasticApi._
+import com.sksamuel.elastic4s.requests.common.FetchSourceContext
 import com.sksamuel.elastic4s.requests.searches.queries.Query
+
+import scala.annotation.tailrec
 
 case class ElasticQuery(filter: ElasticFilter) {
   def query(
@@ -39,15 +42,77 @@ case class ElasticQuery(filter: ElasticFilter) {
           criteria.asFilter(currentQuery).query(innerHitsNames, currentQuery)
         } else {
           val boolQuery = Option(ElasticBoolQuery(group = true))
-          nestedQuery(
-            relationType.getOrElse(""),
-            criteria
-              .asFilter(boolQuery)
-              .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
-          ) /*.scoreMode(ScoreMode.None)*/
-            .inner(
-              innerHits(innerHitsName.getOrElse("")).from(0).size(limit.map(_.limit).getOrElse(3))
-            )
+          val q = criteria
+            .asFilter(boolQuery)
+            .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
+
+          val nestedElements: Seq[NestedElement] = criteria.nestedElements.sortBy(_.level)
+          nestedElements.foreach(n => println(s"nestedElement: ${n.path}, level: ${n.level}"))
+
+          val nestedParentsPath
+          : collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
+            collection.mutable.Map.empty
+
+          @tailrec
+          def getNestedParents(
+                                n: NestedElement,
+                                parents: Seq[NestedElement]
+                              ): Seq[NestedElement] = {
+            n.parent match {
+              case Some(p) =>
+                if (!nestedParentsPath.contains(p.path)) {
+                  nestedParentsPath += p.path -> (p, Seq(n))
+                  getNestedParents(p, p +: parents)
+                } else {
+                  nestedParentsPath += p.path -> (p, nestedParentsPath(p.path)._2 :+ n)
+                  parents
+                }
+              case _ => parents
+            }
+          }
+
+          val nestedParents = getNestedParents(nestedElements.last, Seq.empty)
+
+          def buildNestedQuery(n: NestedElement): Query = {
+            val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
+            if (children.nonEmpty) {
+              val innerQueries = children.map(buildNestedQuery)
+              val combinedQuery = if (innerQueries.size == 1) {
+                innerQueries.head
+              } else {
+                must(innerQueries)
+              }
+              nestedQuery(
+                n.path,
+                combinedQuery
+              ) /*.scoreMode(ScoreMode.None)*/
+                .inner(
+                  innerHits(n.innerHitsName)
+                    .from(0)
+                    .size(n.size.getOrElse(3))
+                    .fetchSource(
+                      FetchSourceContext(fetchSource = true, includes = n.sources.toArray)
+                    )
+                )
+            } else {
+              nestedQuery(
+                n.path,
+                q
+              ) /*.scoreMode(ScoreMode.None)*/
+                .inner(
+                  innerHits(n.innerHitsName)
+                    .from(0)
+                    .size(n.size.getOrElse(3))
+                    .fetchSource(
+                      FetchSourceContext(fetchSource = true, includes = n.sources.toArray)
+                    )
+                )
+            }
+          }
+          if (nestedParents.nonEmpty)
+            buildNestedQuery(nestedParents.head)
+          else
+            buildNestedQuery(nestedElements.last)
         }
       case child: ElasticChild =>
         import child._
