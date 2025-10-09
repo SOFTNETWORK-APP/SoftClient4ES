@@ -24,6 +24,7 @@ sealed trait Criteria extends Updateable with PainlessScript {
       case p: Predicate       => p.nestedElements
       case r: ElasticRelation => r.criteria.nestedElements
       case e: Expression      => e.nestedElement.toSeq
+      case m: MatchCriteria   => m.criteria.nestedElements
       case _                  => Nil
     }
 
@@ -81,7 +82,7 @@ case class Predicate(
 ) extends Criteria {
   override def sql = s"${if (group) s"($leftCriteria"
   else leftCriteria} $operator${not
-    .map(_ => " not")
+    .map(_ => " NOT")
     .getOrElse("")} ${if (group) s"$rightCriteria)" else rightCriteria}"
   override def update(request: SQLSearchRequest): Criteria = {
     val updatedPredicate = this.copy(
@@ -130,10 +131,7 @@ case class Predicate(
   }
 
   override def nested: Boolean =
-    leftCriteria.nested && rightCriteria.nested && nestedElements
-      .map(_.root.path)
-      .distinct
-      .size <= 1
+    leftCriteria.nested && rightCriteria.nested
 
   override def matchCriteria: Boolean = leftCriteria.matchCriteria || rightCriteria.matchCriteria
 
@@ -571,8 +569,13 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
 
 case class ElasticNested(
   override val criteria: Criteria,
-  override val limit: Option[Limit]
+  override val limit: Option[Limit],
+  fromCriteria: Boolean = true
 ) extends ElasticRelation(criteria, Nested) {
+  override def sql: String =
+    if (!fromCriteria) s"$operator($criteria)"
+    else s"$criteria"
+
   def nestedElement: Option[NestedElement] = None
 
   override def update(request: SQLSearchRequest): ElasticNested =

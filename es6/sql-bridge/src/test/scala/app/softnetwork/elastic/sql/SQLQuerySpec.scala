@@ -3207,4 +3207,114 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
   }
 
+  it should "handle predicate with distinct nested" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(predicateWithDistinctNested)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "bool": {
+        |            "must_not": [
+        |              {
+        |                "nested": {
+        |                  "path": "replies",
+        |                  "query": {
+        |                    "script": {
+        |                      "script": {
+        |                        "lang": "painless",
+        |                        "source": "def left = (!doc.containsKey('replies.lastUpdated') || doc['replies.lastUpdated'].empty ? null : doc['replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+        |                      }
+        |                    }
+        |                  },
+        |                  "inner_hits": {
+        |                    "name": "matched_replies",
+        |                    "from": 0,
+        |                    "_source": {
+        |                      "includes": [
+        |                        "reply_author",
+        |                        "reply_text"
+        |                      ]
+        |                    },
+        |                    "size": 5
+        |                  }
+        |                }
+        |              }
+        |            ],
+        |            "filter": [
+        |              {
+        |                "nested": {
+        |                  "path": "comments",
+        |                  "query": {
+        |                    "match": {
+        |                      "comments.content": {
+        |                        "query": "Nice"
+        |                      }
+        |                    }
+        |                  },
+        |                  "inner_hits": {
+        |                    "name": "matched_comments",
+        |                    "from": 0,
+        |                    "_source": {
+        |                      "includes": [
+        |                        "author",
+        |                        "comments"
+        |                      ]
+        |                    },
+        |                    "size": 5
+        |                  }
+        |                }
+        |              }
+        |            ]
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "from": 0,
+        |  "size": 5,
+        |  "_source": true
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
 }

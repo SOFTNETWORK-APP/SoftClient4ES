@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.bridge
 
+import app.softnetwork.elastic.sql.operator.AND
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
   ElasticBoolQuery,
@@ -15,7 +16,8 @@ import app.softnetwork.elastic.sql.query.{
   IsNullCriteria,
   IsNullExpr,
   NestedElement,
-  NestedElements
+  NestedElements,
+  Predicate
 }
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.FetchSourceContext
@@ -42,15 +44,10 @@ case class ElasticQuery(filter: ElasticFilter) {
         if (innerHitsNames.contains(innerHitsName.getOrElse(""))) {
           criteria.asFilter(currentQuery).query(innerHitsNames, currentQuery)
         } else {
-          val boolQuery = Option(ElasticBoolQuery(group = true))
-          val q = criteria
-            .asFilter(boolQuery)
-            .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
-
           NestedElements.buildNestedTrees(criteria.nestedElements) match {
             case Nil =>
               matchAllQuery()
-            case nestedElements =>
+            case nestedTrees =>
               def nestedInner(n: NestedElement): InnerHit = {
                 var inner = innerHits(n.innerHitsName)
                 n.size match {
@@ -69,10 +66,10 @@ case class ElasticQuery(filter: ElasticFilter) {
                 inner
               }
 
-              def buildNestedQuery(n: NestedElement): Query = {
+              def buildNestedQuery(n: NestedElement, q: Query): Query = {
                 val children = n.children
                 if (children.nonEmpty) {
-                  val innerQueries = children.map(buildNestedQuery)
+                  val innerQueries = children.map(child => buildNestedQuery(child, q))
                   val combinedQuery = if (innerQueries.size == 1) {
                     innerQueries.head
                   } else {
@@ -96,11 +93,41 @@ case class ElasticQuery(filter: ElasticFilter) {
                 }
               }
 
-              if (nestedElements.size == 1) {
-                buildNestedQuery(nestedElements.head)
-              } else {
-                val innerQueries = nestedElements.map(buildNestedQuery)
-                must(innerQueries)
+              criteria match {
+                case p: Predicate if nestedTrees.size > 1 =>
+                  val leftNested = ElasticNested(p.leftCriteria, p.leftCriteria.limit)
+                  val leftBoolQuery = Option(ElasticBoolQuery(group = true))
+                  val leftQuery = ElasticQuery(leftNested)
+                    .query(innerHitsNames /*++ leftNested.innerHitsName.toSet*/, leftBoolQuery)
+
+                  val rightNested = ElasticNested(p.rightCriteria, p.rightCriteria.limit)
+                  val rightBoolQuery = Option(ElasticBoolQuery(group = true))
+                  val rightQuery = ElasticQuery(rightNested)
+                    .query(innerHitsNames /*++ rightNested.innerHitsName.toSet*/, rightBoolQuery)
+
+                  p.operator match {
+                    case AND =>
+                      p.not match {
+                        case Some(_) => not(rightQuery).filter(leftQuery)
+                        case _       => must(leftQuery, rightQuery)
+                      }
+                    case _ =>
+                      p.not match {
+                        case Some(_) => not(rightQuery).should(leftQuery)
+                        case _       => should(leftQuery, rightQuery)
+                      }
+                  }
+                case _ =>
+                  val boolQuery = Option(ElasticBoolQuery(group = true))
+                  val q = criteria
+                    .asFilter(boolQuery)
+                    .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
+                  if (nestedTrees.size == 1) {
+                    buildNestedQuery(nestedTrees.head, q)
+                  } else {
+                    val innerQueries = nestedTrees.map(nested => buildNestedQuery(nested, q))
+                    must(innerQueries)
+                  }
               }
           }
         }

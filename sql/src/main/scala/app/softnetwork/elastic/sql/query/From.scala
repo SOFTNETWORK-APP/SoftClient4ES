@@ -73,7 +73,7 @@ case class Unnest(
   parent: Option[Unnest] = None
 ) extends Source
     with Join {
-  override def sql: String = s"$Join $Unnest($identifier${asString(limit)})${asString(alias)}"
+  override def sql: String = s"$Join $Unnest($identifier)${asString(alias)}"
   def update(request: SQLSearchRequest): Unnest = {
     val updated = this.copy(
       identifier = identifier.withNested(true).update(request),

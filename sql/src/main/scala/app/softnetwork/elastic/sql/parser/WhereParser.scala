@@ -236,11 +236,11 @@ trait WhereParser {
 
   def nestedCriteria: PackratParser[ElasticRelation] =
     Nested.regex ~ start.? ~ criteria ~ end.? ^^ { case _ ~ _ ~ c ~ _ =>
-      ElasticNested(c, None)
+      ElasticNested(c, None, fromCriteria = false)
     }
 
   def nestedPredicate: PackratParser[ElasticRelation] = Nested.regex ~ start ~ predicate ~ end ^^ {
-    case _ ~ _ ~ p ~ _ => ElasticNested(p, None)
+    case _ ~ _ ~ p ~ _ => ElasticNested(p, None, fromCriteria = false)
   }
 
   def childCriteria: PackratParser[ElasticRelation] = Child.regex ~ start.? ~ criteria ~ end.? ^^ {
