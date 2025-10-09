@@ -206,7 +206,6 @@ object ElasticAggregation {
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria]
   ): Option[TermsAggregation] = {
-    Console.println(bucketsDirection)
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
       val agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {
@@ -241,7 +240,11 @@ object ElasticAggregation {
               val bucketsPath = extractBucketsPath(criteria)
 
               val bucketSelector =
-                bucketSelectorAggregation("having_filter", Script(script), bucketsPath)
+                bucketSelectorAggregation(
+                  "having_filter",
+                  Script(script.replaceAll("1 == 1 &&", "").replaceAll("&& 1 == 1", "").trim),
+                  bucketsPath
+                )
 
               withAggregationOrders.copy(subaggs = aggregations :+ bucketSelector)
 

@@ -238,7 +238,11 @@ object ElasticAggregation {
               val bucketsPath = extractBucketsPath(criteria)
 
               val bucketSelector =
-                bucketSelectorAggregation("having_filter", Script(script), bucketsPath)
+                bucketSelectorAggregation(
+                  "having_filter",
+                  Script(script.replaceAll("1 == 1 &&", "").replaceAll("&& 1 == 1", "").trim),
+                  bucketsPath
+                )
 
               withAggregationOrders.copy(subaggs = aggregations :+ bucketSelector)
 
