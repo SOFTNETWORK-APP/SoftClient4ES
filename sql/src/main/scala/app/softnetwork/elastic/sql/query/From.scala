@@ -10,6 +10,8 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 
+import scala.annotation.tailrec
+
 case object From extends Expr("FROM") with TokenRegex
 
 sealed trait JoinType extends TokenRegex
@@ -223,5 +225,57 @@ case class NestedElement(
       case Some(p) => 1 + p.level
       case None    => 0
     }
+  }
+}
+
+object NestedElements {
+
+  def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
+    val nestedParentsPath: collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
+      collection.mutable.Map.empty
+
+    val distinctNestedElements = nestedElements.distinctBy(_.path)
+
+    @tailrec
+    def getNestedParents(
+      n: NestedElement,
+      parents: Seq[NestedElement]
+    ): Seq[NestedElement] = {
+      n.parent match {
+        case Some(p) =>
+          if (!nestedParentsPath.contains(p.path)) {
+            p.copy(children = Nil)
+            nestedParentsPath += p.path -> (p, Seq(n))
+            getNestedParents(p, p +: parents)
+          } else {
+            nestedParentsPath += p.path -> (p, nestedParentsPath(p.path)._2 :+ n)
+            parents
+          }
+        case _ => parents
+      }
+    }
+
+    val nestedParents = getNestedParents(distinctNestedElements.maxBy(_.level), Seq.empty)
+
+    def innerBuildNestedTree(n: NestedElement): NestedElement = {
+      val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
+      if (children.nonEmpty) {
+        val updatedChildren = children.map(innerBuildNestedTree)
+        n.copy(children = updatedChildren)
+      } else {
+        n
+      }
+    }
+
+    if (nestedParents.nonEmpty) {
+      nestedParents.map(innerBuildNestedTree)
+    } else {
+      distinctNestedElements
+    }
+  }
+
+  def walkNestedTree(n: NestedElement)(f: NestedElement => Unit): Unit = {
+    f(n)
+    n.children.foreach(child => walkNestedTree(child)(f))
   }
 }

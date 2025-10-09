@@ -14,7 +14,8 @@ import app.softnetwork.elastic.sql.query.{
   IsNotNullExpr,
   IsNullCriteria,
   IsNullExpr,
-  NestedElement
+  NestedElement,
+  NestedElements
 }
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.FetchSourceContext
@@ -46,80 +47,62 @@ case class ElasticQuery(filter: ElasticFilter) {
             .asFilter(boolQuery)
             .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
 
-          val nestedElements: Seq[NestedElement] = criteria.nestedElements.sortBy(_.level)
-
-          val nestedParentsPath
-            : collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
-            collection.mutable.Map.empty
-
-          @tailrec
-          def getNestedParents(
-            n: NestedElement,
-            parents: Seq[NestedElement]
-          ): Seq[NestedElement] = {
-            n.parent match {
-              case Some(p) =>
-                if (!nestedParentsPath.contains(p.path)) {
-                  nestedParentsPath += p.path -> (p, Seq(n))
-                  getNestedParents(p, p +: parents)
-                } else {
-                  nestedParentsPath += p.path -> (p, nestedParentsPath(p.path)._2 :+ n)
-                  parents
+          NestedElements.buildNestedTrees(criteria.nestedElements) match {
+            case Nil =>
+              matchAllQuery()
+            case nestedElements =>
+              def nestedInner(n: NestedElement): InnerHit = {
+                var inner = innerHits(n.innerHitsName)
+                n.size match {
+                  case Some(s) =>
+                    inner = inner.from(0).size(s)
+                  case _ =>
                 }
-              case _ => parents
-            }
-          }
+                if (n.sources.nonEmpty) {
+                  inner = inner.fetchSource(
+                    FetchSourceContext(
+                      fetchSource = true,
+                      includes = n.sources.toArray
+                    )
+                  )
+                }
+                inner
+              }
 
-          val nestedParents = getNestedParents(nestedElements.last, Seq.empty)
+              def buildNestedQuery(n: NestedElement): Query = {
+                val children = n.children
+                if (children.nonEmpty) {
+                  val innerQueries = children.map(buildNestedQuery)
+                  val combinedQuery = if (innerQueries.size == 1) {
+                    innerQueries.head
+                  } else {
+                    must(innerQueries)
+                  }
+                  nestedQuery(
+                    n.path,
+                    combinedQuery
+                  ) /*.scoreMode(ScoreMode.None)*/
+                    .inner(
+                      nestedInner(n)
+                    )
+                } else {
+                  nestedQuery(
+                    n.path,
+                    q
+                  ) /*.scoreMode(ScoreMode.None)*/
+                    .inner(
+                      nestedInner(n)
+                    )
+                }
+              }
 
-          def nestedInner(n: NestedElement): InnerHit = {
-            var inner = innerHits(n.innerHitsName)
-            n.size match {
-              case Some(s) =>
-                inner = inner.from(0).size(s)
-              case _ =>
-            }
-            if (n.sources.nonEmpty) {
-              inner = inner.fetchSource(
-                FetchSourceContext(
-                  fetchSource = true,
-                  includes = n.sources.toArray
-                )
-              )
-            }
-            inner
-          }
-
-          def buildNestedQuery(n: NestedElement): Query = {
-            val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
-            if (children.nonEmpty) {
-              val innerQueries = children.map(buildNestedQuery)
-              val combinedQuery = if (innerQueries.size == 1) {
-                innerQueries.head
+              if (nestedElements.size == 1) {
+                buildNestedQuery(nestedElements.head)
               } else {
+                val innerQueries = nestedElements.map(buildNestedQuery)
                 must(innerQueries)
               }
-              nestedQuery(
-                n.path,
-                combinedQuery
-              ) /*.scoreMode(ScoreMode.None)*/
-                .inner(
-                  nestedInner(n)
-                )
-            } else {
-              nestedQuery(
-                n.path,
-                q
-              ) /*.scoreMode(ScoreMode.None)*/
-                .inner(
-                  nestedInner(n)
-                )
-            }
           }
-          if (nestedParents.nonEmpty)
-            buildNestedQuery(nestedParents.head)
-          else
-            buildNestedQuery(nestedElements.last)
         }
       case child: ElasticChild =>
         import child._

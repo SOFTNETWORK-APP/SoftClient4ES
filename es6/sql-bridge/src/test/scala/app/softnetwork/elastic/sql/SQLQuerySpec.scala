@@ -91,8 +91,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |HAVING inner_products.deleted=false AND
            |  inner_products.upForSale=true AND
            |  inner_products.stock > 0 AND
-           |  match (inner_products.name) against ("lasagnes") AND
-           |  match (inner_products.description, inner_products.ingredients) against ("lasagnes") AND
+           |  match (
+           |    inner_products.name,
+           |    inner_products.description,
+           |    inner_products.ingredients
+           |  ) against ("lasagnes") AND
            |  min(inner_products.price) > 5.0 AND
            |  max(inner_products.price) < 50.0 AND
            |  inner_products.category <> "coffee"
@@ -229,15 +232,15 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  }
         |                },
         |                {
-        |                  "match": {
-        |                    "products.name": {
-        |                      "query": "lasagnes"
-        |                    }
-        |                  }
-        |                },
-        |                {
         |                  "bool": {
         |                    "should": [
+        |                      {
+        |                        "match": {
+        |                          "products.name": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
         |                      {
         |                        "match": {
         |                          "products.description": {
@@ -300,7 +303,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                      "max_price": "max_price"
         |                    },
         |                    "script": {
-        |                      "source": "1 == 1 && 1 == 1 && 1 == 1 && 1 == 1 && 1 == 1 && params.min_price > 5.0 && params.max_price < 50.0 && 1 == 1"
+        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
         |                    }
         |                  }
         |                }
@@ -853,7 +856,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                      "cnt": "cnt"
       |                    },
       |                    "script": {
-      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1"
+      |                      "source": "params.cnt > 1"
       |                    }
       |                  }
       |                }
@@ -1168,7 +1171,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                      "cnt": "cnt"
       |                    },
       |                    "script": {
-      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1 && 1 == 1"
+      |                      "source": "params.cnt > 1"
       |                    }
       |                  }
       |                }
