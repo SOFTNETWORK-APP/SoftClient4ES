@@ -148,7 +148,12 @@ case class From(tables: Seq[Table]) extends Updateable {
     .flatten
 
   lazy val tableAliases: Map[String, String] = tables
-    .flatMap((table: Table) => table.tableAlias.map(alias => table.name -> alias.alias))
+    .flatMap((table: Table) =>
+      table.tableAlias match {
+        case Some(alias) if alias.alias.nonEmpty => Some(table.name -> alias.alias)
+        case _                                   => Some(table.name -> table.name)
+      }
+    )
     .toMap ++ unnestAliases.map(unnest => unnest._2._1 -> unnest._1)
 
   lazy val unnestAliases: Map[String, (String, Option[Limit])] = unnests

@@ -3436,7 +3436,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "aggs": {
         |        "avg_popularity": {
         |            "avg": {
-        |                "field": "blogs.popularity"
+        |                "field": "popularity"
         |            }
         |        },
         |        "nested_comments": {
