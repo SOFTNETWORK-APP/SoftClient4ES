@@ -107,7 +107,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.email"
+    result.aggName shouldBe "inner_emails.email"
     result.field shouldBe "email"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -127,7 +127,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "nested_emails": {
+        |    "inner_emails": {
         |      "nested": {
         |        "path": "emails"
         |      },
@@ -152,7 +152,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.count_emails"
+    result.aggName shouldBe "inner_emails.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     val query = result.query.getOrElse("")
@@ -190,7 +190,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  },
       |  "size": 0,
       |  "aggs": {
-      |    "nested_emails": {
+      |    "inner_emails": {
       |      "nested": {
       |        "path": "emails"
       |      },
@@ -215,7 +215,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.filtered_agg.count_emails"
+    result.aggName shouldBe "inner_emails.filtered_agg.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     val query = result.query.getOrElse("")
@@ -253,7 +253,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  },
       |  "size": 0,
       |  "aggs": {
-      |    "nested_emails": {
+      |    "inner_emails": {
       |      "nested": {
       |        "path": "emails"
       |      },
@@ -289,7 +289,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe true
-    result.aggName shouldBe "nested_emails.count_emails"
+    result.aggName shouldBe "inner_emails.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     val query = result.query.getOrElse("")
@@ -338,7 +338,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  },
       |  "size": 0,
       |  "aggs": {
-      |    "nested_emails": {
+      |    "inner_emails": {
       |      "nested": {
       |        "path": "emails"
       |      },
@@ -363,7 +363,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe true
-    result.aggName shouldBe "nested_emails.count_distinct_emails"
+    result.aggName shouldBe "inner_emails.count_distinct_emails"
     result.field shouldBe "count_distinct_emails"
     result.sources shouldBe Seq[String]("index")
     val query = result.query.getOrElse("")
@@ -406,7 +406,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  },
       |  "size": 0,
       |  "aggs": {
-      |    "nested_emails": {
+      |    "inner_emails": {
       |      "nested": {
       |        "path": "emails"
       |      },
@@ -752,7 +752,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "min_score": 1.0,
         |  "_source": true,
         |  "aggs": {
-        |    "nested_products": {
+        |    "inner_products": {
         |      "nested": {
         |        "path": "products"
         |      },
@@ -3439,7 +3439,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "field": "popularity"
         |            }
         |        },
-        |        "nested_comments": {
+        |        "comments": {
         |            "nested": {
         |                "path": "comments"
         |            },

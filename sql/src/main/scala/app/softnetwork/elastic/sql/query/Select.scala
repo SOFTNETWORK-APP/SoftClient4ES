@@ -73,6 +73,8 @@ case class Field(
   override def validate(): Either[String, Unit] = identifier.validate()
 
   lazy val nested: Boolean = identifier.nested
+
+  lazy val path: String = identifier.path
 }
 
 case object Except extends Expr("except") with TokenRegex

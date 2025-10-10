@@ -488,8 +488,6 @@ package object sql {
         fun.toSQL(expr)
       }) // FIXME use AliasUtils.normalize?
 
-    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
-
     lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)

@@ -55,10 +55,10 @@ case class Bucket(
     } else {
       identifier.name
     }
-  lazy val nested: Boolean = identifier.nested
+  lazy val nested: Boolean = nestedElement.isDefined
   lazy val nestedElement: Option[NestedElement] = identifier.nestedElement
   lazy val nestedBucket: Option[String] =
-    identifier.nestedType.map(t => s"nested_$t")
+    identifier.nestedElement.map(_.innerHitsName)
 
   lazy val name: String = identifier.fieldAlias.getOrElse(sourceBucket.replace(".", "_"))
 }

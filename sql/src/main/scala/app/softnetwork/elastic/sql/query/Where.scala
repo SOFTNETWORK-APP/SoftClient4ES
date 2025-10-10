@@ -554,7 +554,9 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
   private[this] def rtype(criteria: Criteria): Option[String] = criteria match {
     case Predicate(left, _, right, _, _) => rtype(left).orElse(rtype(right))
     case c: Expression =>
-      c.identifier.nestedType.orElse(c.identifier.name.split('.').headOption)
+      c.identifier.nestedElement
+        .map(_.innerHitsName)
+        .orElse(c.identifier.name.split('.').headOption)
     case relation: ElasticRelation => relation.relationType
     case _                         => None
   }
