@@ -3317,4 +3317,108 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
   }
 
+  it should "handle nested without criteria" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(nestedWithoutCriteria)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "filter": [
+      |              {
+      |                "script": {
+      |                  "script": {
+      |                    "lang": "painless",
+      |                    "source": "def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()"
+      |                  }
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "comments",
+      |            "query": {
+      |              "nested": {
+      |                "path": "comments.replies",
+      |                "query": {
+      |                  "match_all": {}
+      |                },
+      |                "inner_hits": {
+      |                  "name": "matched_replies",
+      |                  "from": 0,
+      |                  "_source": {
+      |                    "includes": [
+      |                      "reply_author",
+      |                      "reply_text"
+      |                    ]
+      |                  },
+      |                  "size": 5
+      |                }
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "matched_comments",
+      |              "from": 0,
+      |              "_source": {
+      |                "includes": [
+      |                  "author",
+      |                  "comments"
+      |                ]
+      |              },
+      |              "size": 5
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 5,
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
 }

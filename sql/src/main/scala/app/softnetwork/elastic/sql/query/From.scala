@@ -231,6 +231,7 @@ case class NestedElement(
 object NestedElements {
 
   def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
+    if (nestedElements.isEmpty) return Nil
     val nestedParentsPath: collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
       collection.mutable.Map.empty
 
@@ -255,7 +256,9 @@ object NestedElements {
       }
     }
 
-    val nestedParents = getNestedParents(distinctNestedElements.maxBy(_.level), Seq.empty)
+    val deepestNestedElement =
+      distinctNestedElements.maxBy(_.level) // FIXME we may have multiple deepest elements
+    val nestedParents = getNestedParents(deepestNestedElement, Seq.empty)
 
     def innerBuildNestedTree(n: NestedElement): NestedElement = {
       val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)

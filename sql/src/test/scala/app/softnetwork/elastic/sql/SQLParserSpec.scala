@@ -186,6 +186,8 @@ object Queries {
   val predicateWithDistinctNested =
     "SELECT matched_comments.author AS comment_authors, matched_comments.comments AS comments, matched_replies.reply_author, matched_replies.reply_text FROM blogs AS blogs JOIN UNNEST(blogs.comments) AS matched_comments JOIN UNNEST(blogs.replies) AS matched_replies WHERE MATCH (matched_comments.content) AGAINST ('Nice') AND NOT matched_replies.lastUpdated < LAST_DAY('2025-09-10'::DATE) LIMIT 5" // GROUP BY 1
 
+  val nestedWithoutCriteria =
+    "SELECT matched_comments.author AS comment_authors, matched_comments.comments AS comments, matched_replies.reply_author, matched_replies.reply_text FROM blogs AS blogs JOIN UNNEST(blogs.comments) AS matched_comments JOIN UNNEST(matched_comments.replies) AS matched_replies WHERE blogs.lastUpdated::DATE < CURRENT_DATE LIMIT 5" // GROUP BY 1
 }
 
 /** Created by smanciot on 15/02/17.
@@ -864,4 +866,12 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("") shouldBe predicateWithDistinctNested
   }
+
+  it should "parse nested without criteria" in {
+    val result = Parser(nestedWithoutCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe nestedWithoutCriteria
+  }
+
 }

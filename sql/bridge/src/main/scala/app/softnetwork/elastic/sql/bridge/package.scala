@@ -8,10 +8,11 @@ import app.softnetwork.elastic.sql.query._
 
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
+import com.sksamuel.elastic4s.requests.common.FetchSourceContext
 import com.sksamuel.elastic4s.requests.script.Script
 import com.sksamuel.elastic4s.requests.script.ScriptType.Source
 import com.sksamuel.elastic4s.requests.searches.aggs.{Aggregation, FilterAggregation}
-import com.sksamuel.elastic4s.requests.searches.queries.Query
+import com.sksamuel.elastic4s.requests.searches.queries.{InnerHit, Query}
 import com.sksamuel.elastic4s.requests.searches.sort.FieldSort
 import com.sksamuel.elastic4s.requests.searches.{
   MultiSearchRequest,
@@ -63,9 +64,77 @@ package object bridge {
     val notNestedAggregations = aggregations.filterNot(_.nested)
     val nestedAggregations =
       aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse(""))
+
+    val nestedWithoutCriteriaQuery: Option[Query] =
+      NestedElements.buildNestedTrees(request.nestedElementsWithoutCriteria) match {
+        case Nil => None
+        case nestedTrees =>
+          def nestedInner(n: NestedElement): InnerHit = {
+            var inner = innerHits(n.innerHitsName)
+            n.size match {
+              case Some(s) =>
+                inner = inner.from(0).size(s)
+              case _ =>
+            }
+            if (n.sources.nonEmpty) {
+              inner = inner.fetchSource(
+                FetchSourceContext(
+                  fetchSource = true,
+                  includes = n.sources.toArray
+                )
+              )
+            }
+            inner
+          }
+
+          def buildNestedQuery(n: NestedElement): Query = {
+            val children = n.children
+            if (children.nonEmpty) {
+              val innerQueries = children.map(child => buildNestedQuery(child))
+              val combinedQuery = if (innerQueries.size == 1) {
+                innerQueries.head
+              } else {
+                must(innerQueries)
+              }
+              nestedQuery(
+                n.path,
+                combinedQuery
+              ) /*.scoreMode(ScoreMode.None)*/
+                .inner(
+                  nestedInner(n)
+                )
+            } else {
+              nestedQuery(
+                n.path,
+                matchAllQuery()
+              ) /*.scoreMode(ScoreMode.None)*/
+                .inner(
+                  nestedInner(n)
+                )
+            }
+          }
+
+          if (nestedTrees.size == 1) {
+            Some(buildNestedQuery(nestedTrees.head))
+          } else {
+            val innerQueries = nestedTrees.map(nested => buildNestedQuery(nested))
+            Some(boolQuery().filter(innerQueries))
+          }
+      }
+
     var _search: SearchRequest = search("") query {
-      where.flatMap(_.criteria.map(_.asQuery())).getOrElse(matchAllQuery())
+      where.flatMap(_.criteria.map(_.asQuery())) match {
+        case Some(c) =>
+          val baseQuery = c
+          nestedWithoutCriteriaQuery match {
+            case Some(nc) => boolQuery().filter(baseQuery, nc)
+            case _        => baseQuery
+          }
+        case _ =>
+          nestedWithoutCriteriaQuery.getOrElse(matchAllQuery())
+      }
     } sourceFiltering (fields, excludes)
+
 
     _search = if (nestedAggregations.nonEmpty) {
       _search aggregations {
@@ -100,7 +169,6 @@ package object bridge {
     _search = notNestedAggregations match {
       case Nil => _search
       case _   => _search aggregations {
-        val first = notNestedAggregations.head
         val aggregationDirections: Map[String, SortOrder] = notNestedAggregations
           .filter(_.direction.isDefined)
           .map(agg => agg.agg.name -> agg.direction.get)

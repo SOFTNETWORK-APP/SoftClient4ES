@@ -21,6 +21,9 @@ case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
       Right(())
     }
   }
+
+  def nestedElements: Seq[NestedElement] =
+    buckets.flatMap(_.nestedElement).distinct
 }
 
 case class Bucket(
@@ -53,6 +56,7 @@ case class Bucket(
       identifier.name
     }
   lazy val nested: Boolean = identifier.nested
+  lazy val nestedElement: Option[NestedElement] = identifier.nestedElement
   lazy val nestedBucket: Option[String] =
     identifier.nestedType.map(t => s"nested_$t")
 

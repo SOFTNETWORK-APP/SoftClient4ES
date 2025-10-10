@@ -623,4 +623,8 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
     case _       => Right(())
   }
 
+  def nestedElements: Seq[NestedElement] = criteria match {
+    case Some(c) => c.nestedElements.distinctBy(_.path)
+    case _       => Nil
+  }
 }
