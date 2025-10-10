@@ -181,38 +181,6 @@ case class NestedElement(
   sources: Seq[String] = Nil,
   parent: Option[NestedElement]
 ) {
-  // key used inside parent's inner_hits map for a child:
-  private def childKey(path: String): String = path.split('.').last
-
-  private def childInnerDef(child: NestedElement): String = {
-    val innerHitsForChild = buildInnerHitsObject(child)
-    s"""{"path":"${child.path}","inner_hits":$innerHitsForChild}"""
-  }
-
-  private def buildInnerHitsObject(elem: NestedElement): String = {
-    val childrenEntries =
-      if (elem.children.isEmpty) ""
-      else
-        elem.children
-          .map { c =>
-            s""""${childKey(c.path)}": ${childInnerDef(c)}"""
-          }
-          .mkString(",")
-
-    val sizePerInner = elem.size.getOrElse(-1)
-
-    if (childrenEntries.isEmpty)
-      s"""{"name":"${elem.innerHitsName}","size":$sizePerInner, "_source": {"includes": [${elem.sources
-        .map(s => s""""$s"""")
-        .mkString(",")}]}}}"""
-    else
-      s"""{"name":"${elem.innerHitsName}","size":$sizePerInner, "_source": {"includes": [${elem.sources
-        .map(s => s""""$s"""")
-        .mkString(",")}]},"inner_hits":{$childrenEntries}"""
-  }
-
-  def raw: String = buildInnerHitsObject(this)
-
   lazy val root: NestedElement = {
     parent match {
       case Some(p) => p.root

@@ -62,267 +62,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s+", "")
   }
 
-  it should "perform complex query" in {
-    val select: ElasticSearchRequest =
-      SQLQuery(
-        s"""SELECT
-           |  inner_products.category as cat,
-           |  min(inner_products.price) as min_price,
-           |  max(inner_products.price) as max_price
-           |FROM
-           |  stores store
-           |  JOIN UNNEST(store.products) as inner_products
-           |WHERE
-           |  (
-           |    firstName is not null AND
-           |    lastName is not null AND
-           |    description is not null AND
-           |    preparationTime <= 120 AND
-           |    store.deliveryPeriods.dayOfWeek=6 AND
-           |    blockedCustomers not like "%uuid%" AND
-           |    NOT receiptOfOrdersDisabled=true AND
-           |    (
-           |      distance(pickup.location, POINT(0.0, 0.0)) <= 7000 m OR
-           |      distance(withdrawals.location, POINT(0.0, 0.0)) <= 7000 m
-           |    )
-           |  )
-           |GROUP BY
-           |  inner_products.category
-           |HAVING inner_products.deleted=false AND
-           |  inner_products.upForSale=true AND
-           |  inner_products.stock > 0 AND
-           |  match (
-           |    inner_products.name,
-           |    inner_products.description,
-           |    inner_products.ingredients
-           |  ) against ("lasagnes") AND
-           |  min(inner_products.price) > 5.0 AND
-           |  max(inner_products.price) < 50.0 AND
-           |  inner_products.category <> "coffee"
-           |  LIMIT 10""".stripMargin
-      ).minScore(1.0)
-    val query = select.query
-    println(query)
-    query shouldBe
-    """
-        |{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "bool": {
-        |            "filter": [
-        |              {
-        |                "exists": {
-        |                  "field": "firstName"
-        |                }
-        |              },
-        |              {
-        |                "exists": {
-        |                  "field": "lastName"
-        |                }
-        |              },
-        |              {
-        |                "exists": {
-        |                  "field": "description"
-        |                }
-        |              },
-        |              {
-        |                "range": {
-        |                  "preparationTime": {
-        |                    "lte": 120
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "term": {
-        |                  "deliveryPeriods.dayOfWeek": {
-        |                    "value": 6
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "must_not": [
-        |                    {
-        |                      "regexp": {
-        |                        "blockedCustomers": {
-        |                          "value": ".*uuid.*"
-        |                        }
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "must_not": [
-        |                    {
-        |                      "term": {
-        |                        "receiptOfOrdersDisabled": {
-        |                          "value": true
-        |                        }
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "should": [
-        |                    {
-        |                      "geo_distance": {
-        |                        "distance": "7000m",
-        |                        "pickup.location": [
-        |                          0.0,
-        |                          0.0
-        |                        ]
-        |                      }
-        |                    },
-        |                    {
-        |                      "geo_distance": {
-        |                        "distance": "7000m",
-        |                        "withdrawals.location": [
-        |                          0.0,
-        |                          0.0
-        |                        ]
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              }
-        |            ]
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "min_score": 1.0,
-        |  "_source": true,
-        |  "aggs": {
-        |    "nested_products": {
-        |      "nested": {
-        |        "path": "products"
-        |      },
-        |      "aggs": {
-        |        "filtered_agg": {
-        |          "filter": {
-        |            "bool": {
-        |              "filter": [
-        |                {
-        |                  "term": {
-        |                    "products.deleted": {
-        |                      "value": false
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "term": {
-        |                    "products.upForSale": {
-        |                      "value": true
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "range": {
-        |                    "products.stock": {
-        |                      "gt": 0
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "bool": {
-        |                    "should": [
-        |                      {
-        |                        "match": {
-        |                          "products.name": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      },
-        |                      {
-        |                        "match": {
-        |                          "products.description": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      },
-        |                      {
-        |                        "match": {
-        |                          "products.ingredients": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      }
-        |                    ]
-        |                  }
-        |                },
-        |                {
-        |                  "match_all": {}
-        |                },
-        |                {
-        |                  "match_all": {}
-        |                },
-        |                {
-        |                  "bool": {
-        |                    "must_not": [
-        |                      {
-        |                        "term": {
-        |                          "products.category": {
-        |                            "value": "coffee"
-        |                          }
-        |                        }
-        |                      }
-        |                    ]
-        |                  }
-        |                }
-        |              ]
-        |            }
-        |          },
-        |          "aggs": {
-        |            "cat": {
-        |              "terms": {
-        |                "field": "products.category.keyword"
-        |              },
-        |              "aggs": {
-        |                "min_price": {
-        |                  "min": {
-        |                    "field": "products.price"
-        |                  }
-        |                },
-        |                "max_price": {
-        |                  "max": {
-        |                    "field": "products.price"
-        |                  }
-        |                },
-        |                "having_filter": {
-        |                  "bucket_selector": {
-        |                    "buckets_path": {
-        |                      "min_price": "min_price",
-        |                      "max_price": "max_price"
-        |                    },
-        |                    "script": {
-        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
-        |                    }
-        |                  }
-        |                }
-        |              }
-        |            }
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin
-      .replaceAll("\\s+", "")
-      .replaceAll("==", " == ")
-      .replaceAll("&&", " && ")
-      .replaceAll("<", " < ")
-      .replaceAll(">", " > ")
-
-  }
-
   it should "perform count distinct" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = \"Nom\"")
@@ -872,6 +611,267 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+  }
+
+  it should "perform complex query" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(
+        s"""SELECT
+           |  inner_products.category as cat,
+           |  min(inner_products.price) as min_price,
+           |  max(inner_products.price) as max_price
+           |FROM
+           |  stores store
+           |  JOIN UNNEST(store.products) as inner_products
+           |WHERE
+           |  (
+           |    firstName is not null AND
+           |    lastName is not null AND
+           |    description is not null AND
+           |    preparationTime <= 120 AND
+           |    store.deliveryPeriods.dayOfWeek=6 AND
+           |    blockedCustomers not like "%uuid%" AND
+           |    NOT receiptOfOrdersDisabled=true AND
+           |    (
+           |      distance(pickup.location, POINT(0.0, 0.0)) <= 7000 m OR
+           |      distance(withdrawals.location, POINT(0.0, 0.0)) <= 7000 m
+           |    )
+           |  )
+           |GROUP BY
+           |  inner_products.category
+           |HAVING inner_products.deleted=false AND
+           |  inner_products.upForSale=true AND
+           |  inner_products.stock > 0 AND
+           |  match (
+           |    inner_products.name,
+           |    inner_products.description,
+           |    inner_products.ingredients
+           |  ) against ("lasagnes") AND
+           |  min(inner_products.price) > 5.0 AND
+           |  max(inner_products.price) < 50.0 AND
+           |  inner_products.category <> "coffee"
+           |  LIMIT 10""".stripMargin
+      ).minScore(1.0)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "bool": {
+        |            "filter": [
+        |              {
+        |                "exists": {
+        |                  "field": "firstName"
+        |                }
+        |              },
+        |              {
+        |                "exists": {
+        |                  "field": "lastName"
+        |                }
+        |              },
+        |              {
+        |                "exists": {
+        |                  "field": "description"
+        |                }
+        |              },
+        |              {
+        |                "range": {
+        |                  "preparationTime": {
+        |                    "lte": 120
+        |                  }
+        |                }
+        |              },
+        |              {
+        |                "term": {
+        |                  "deliveryPeriods.dayOfWeek": {
+        |                    "value": 6
+        |                  }
+        |                }
+        |              },
+        |              {
+        |                "bool": {
+        |                  "must_not": [
+        |                    {
+        |                      "regexp": {
+        |                        "blockedCustomers": {
+        |                          "value": ".*uuid.*"
+        |                        }
+        |                      }
+        |                    }
+        |                  ]
+        |                }
+        |              },
+        |              {
+        |                "bool": {
+        |                  "must_not": [
+        |                    {
+        |                      "term": {
+        |                        "receiptOfOrdersDisabled": {
+        |                          "value": true
+        |                        }
+        |                      }
+        |                    }
+        |                  ]
+        |                }
+        |              },
+        |              {
+        |                "bool": {
+        |                  "should": [
+        |                    {
+        |                      "geo_distance": {
+        |                        "distance": "7000m",
+        |                        "pickup.location": [
+        |                          0.0,
+        |                          0.0
+        |                        ]
+        |                      }
+        |                    },
+        |                    {
+        |                      "geo_distance": {
+        |                        "distance": "7000m",
+        |                        "withdrawals.location": [
+        |                          0.0,
+        |                          0.0
+        |                        ]
+        |                      }
+        |                    }
+        |                  ]
+        |                }
+        |              }
+        |            ]
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "min_score": 1.0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "nested_products": {
+        |      "nested": {
+        |        "path": "products"
+        |      },
+        |      "aggs": {
+        |        "filtered_agg": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "term": {
+        |                    "products.deleted": {
+        |                      "value": false
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.upForSale": {
+        |                      "value": true
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "range": {
+        |                    "products.stock": {
+        |                      "gt": 0
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "should": [
+        |                      {
+        |                        "match": {
+        |                          "products.name": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.description": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.ingredients": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "must_not": [
+        |                      {
+        |                        "term": {
+        |                          "products.category": {
+        |                            "value": "coffee"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                }
+        |              ]
+        |            }
+        |          },
+        |          "aggs": {
+        |            "cat": {
+        |              "terms": {
+        |                "field": "products.category.keyword"
+        |              },
+        |              "aggs": {
+        |                "min_price": {
+        |                  "min": {
+        |                    "field": "products.price"
+        |                  }
+        |                },
+        |                "max_price": {
+        |                  "max": {
+        |                    "field": "products.price"
+        |                  }
+        |                },
+        |                "having_filter": {
+        |                  "bucket_selector": {
+        |                    "buckets_path": {
+        |                      "min_price": "min_price",
+        |                      "max_price": "max_price"
+        |                    },
+        |                    "script": {
+        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+        |                    }
+        |                  }
+        |                }
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll("<", " < ")
+      .replaceAll(">", " > ")
+
   }
 
   it should "add script fields" in {
@@ -3419,6 +3419,40 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("lat,arg", "lat, arg")
       .replaceAll("false:", "false : ")
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
+  it should "determine the aggregation context" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(determinationOfTheAggregationContext)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |    "query": {
+        |        "match_all": {}
+        |    },
+        |    "size": 0,
+        |    "_source": true,
+        |    "aggs": {
+        |        "avg_popularity": {
+        |            "avg": {
+        |                "field": "blogs.popularity"
+        |            }
+        |        },
+        |        "nested_comments": {
+        |            "nested": {
+        |                "path": "comments"
+        |            },
+        |            "aggs": {
+        |                "avg_comment_likes": {
+        |                    "avg": {
+        |                        "field": "comments.likes"
+        |                    }
+        |                }
+        |            }
+        |        }
+        |    }
+        |}""".stripMargin.replaceAll("\\s+", "")
   }
 
 }

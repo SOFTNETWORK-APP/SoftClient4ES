@@ -188,6 +188,12 @@ object Queries {
 
   val nestedWithoutCriteria =
     "SELECT matched_comments.author AS comment_authors, matched_comments.comments AS comments, matched_replies.reply_author, matched_replies.reply_text FROM blogs AS blogs JOIN UNNEST(blogs.comments) AS matched_comments JOIN UNNEST(matched_comments.replies) AS matched_replies WHERE blogs.lastUpdated::DATE < CURRENT_DATE LIMIT 5" // GROUP BY 1
+
+  val determinationOfTheAggregationContext: String =
+    """SELECT AVG(blogs.popularity) AS avg_popularity,
+      |AVG(comments.likes) AS avg_comment_likes
+      |FROM blogs
+      |JOIN UNNEST(blogs.comments) AS comments""".stripMargin.replaceAll("\n", " ")
 }
 
 /** Created by smanciot on 15/02/17.
@@ -874,4 +880,10 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .getOrElse("") shouldBe nestedWithoutCriteria
   }
 
+  it should "parse determination of the aggregation context" in {
+    val result = Parser(determinationOfTheAggregationContext)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe determinationOfTheAggregationContext
+  }
 }
