@@ -7,6 +7,8 @@ import app.softnetwork.elastic.sql.query.{
   Field,
   Criteria,
   Desc,
+  NestedElement,
+  NestedElements,
   SortOrder
 }
 import app.softnetwork.elastic.sql.function._
@@ -46,8 +48,9 @@ case class ElasticAggregation(
   filteredAgg: Option[FilterAggregation] = None,
   aggType: AggregateFunction,
   agg: Aggregation,
-  direction: Option[SortOrder] = None) {
-  val nested: Boolean = nestedAgg.nonEmpty
+  direction: Option[SortOrder] = None,
+  nestedElement: Option[NestedElement] = None) {
+  val nested: Boolean = nestedElement.nonEmpty
   val filtered: Boolean = filteredAgg.nonEmpty
 }
 
@@ -58,7 +61,7 @@ object ElasticAggregation {
              bucketsDirection: Map[String, SortOrder]
   ): ElasticAggregation = {
     import sqlAgg._
-    val sourceField = identifier.name
+    val sourceField = identifier.path
 
     val direction = bucketsDirection.get(identifier.identifierName)
 
@@ -172,17 +175,44 @@ object ElasticAggregation {
           aggPath ++= Seq(aggName)
       }
 
+    val nestedElement = identifier.nestedElement
+
+    val nestedElements: Seq[NestedElement] =
+      nestedElement.map(n => NestedElements.buildNestedTrees(Seq(n))).getOrElse(Nil)
+
     val nestedAgg =
-      if (identifier.nested) {
-        val path = sourceField.split("\\.").head
-        val nestedAgg = s"nested_${identifier.nestedType.getOrElse(aggName)}"
-        aggPath ++= Seq(nestedAgg)
-        filtered()
-        Some(nestedAggregation(nestedAgg, path))
-      } else {
-        filtered()
-        None
+      nestedElements match {
+        case Nil =>
+          None
+        case nestedElements =>
+          def buildNested(n: NestedElement): NestedAggregation = {
+            aggPath ++= Seq(n.innerHitsName)
+            val children = n.children
+            if (children.nonEmpty) {
+              val innerAggs = children.map(buildNested)
+              val combinedAgg = if (innerAggs.size == 1) {
+                innerAggs.head
+              } else {
+                innerAggs.reduceLeft { (agg1, agg2) =>
+                  agg1.copy(subaggs = agg1.subaggs ++ Seq(agg2))
+                }
+              }
+              nestedAggregation(
+                n.innerHitsName,
+                n.path
+              ) subaggs Seq(combinedAgg)
+            } else {
+              nestedAggregation(
+                n.innerHitsName,
+                n.path
+              )
+            }
+          }
+
+          Some(buildNested(nestedElements.head))
       }
+
+    filtered()
 
     ElasticAggregation(
       aggPath.mkString("."),
@@ -192,7 +222,8 @@ object ElasticAggregation {
       nestedAgg = nestedAgg,
       aggType = aggType,
       agg = _agg,
-      direction = direction
+      direction = direction,
+      nestedElement = nestedElement
     )
   }
 
@@ -208,13 +239,13 @@ object ElasticAggregation {
       val agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {
           case Some(direction) =>
-            termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+            termsAgg(bucket.name, s"${bucket.identifier.path}.keyword")
               .order(Seq(direction match {
                 case Asc => TermsOrder(bucket.name, asc = true)
                 case _   => TermsOrder(bucket.name, asc = false)
               }))
           case None =>
-            termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+            termsAgg(bucket.name, s"${bucket.identifier.path}.keyword")
         }
       }
       current match {

@@ -3455,4 +3455,40 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s+", "")
   }
 
+  it should "handle aggregation with nested of nested context" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(aggregationWithNestedOfNestedContext)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "comments": {
+        |      "nested": {
+        |        "path": "comments"
+        |      },
+        |      "aggs": {
+        |        "replies": {
+        |          "nested": {
+        |            "path": "comments.replies"
+        |          },
+        |          "aggs": {
+        |            "avg_reply_likes": {
+        |              "avg": {
+        |                "field": "comments.replies.likes"
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
 }

@@ -11,7 +11,7 @@ import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.script.ScriptType.Source
-import com.sksamuel.elastic4s.searches.aggs.{Aggregation, FilterAggregation}
+import com.sksamuel.elastic4s.searches.aggs.{Aggregation, FilterAggregation, NestedAggregation}
 import com.sksamuel.elastic4s.searches.queries.{InnerHit, Query}
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
 import com.sksamuel.elastic4s.searches.sort.FieldSort
@@ -19,6 +19,192 @@ import com.sksamuel.elastic4s.searches.sort.FieldSort
 import scala.language.implicitConversions
 
 package object bridge {
+
+  implicit def requestToFilterAggregation(
+    request: SQLSearchRequest
+  ): Option[FilterAggregation] =
+    request.having.flatMap(_.criteria) match {
+      case Some(f) =>
+        val boolQuery = Option(ElasticBoolQuery(group = true))
+        Some(
+          filterAgg(
+            "filtered_agg",
+            f.asFilter(boolQuery)
+              .query(request.aggregates.flatMap(_.identifier.innerHitsName).toSet, boolQuery)
+          )
+        )
+      case _ =>
+        None
+    }
+
+  implicit def requestToRootAggregations(
+    request: SQLSearchRequest
+  ): Seq[Aggregation] = {
+    val aggregations = request.aggregates.map(
+      ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+    )
+
+    val notNestedAggregations = aggregations.filterNot(_.nested)
+
+    val filteredAgg: Option[FilterAggregation] =
+      requestToFilterAggregation(request)
+
+    val rootAggregations = notNestedAggregations match {
+      case Nil => Nil
+      case aggs =>
+        val directions: Map[String, SortOrder] = aggs
+          .filter(_.direction.isDefined)
+          .map(agg => agg.agg.name -> agg.direction.get)
+          .toMap
+        val aggregations = aggs.map(_.agg)
+        val buckets = ElasticAggregation.buildBuckets(
+          request.buckets.filterNot(_.nested),
+          request.sorts -- directions.keys,
+          aggregations,
+          directions,
+          request.having.flatMap(_.criteria)
+        ) match {
+          case Some(b) => Seq(b)
+          case _       => aggregations
+        }
+        val filtered: Option[Aggregation] =
+          filteredAgg.map(filtered => filtered.subAggregations(buckets))
+        filtered.map(Seq(_)).getOrElse(buckets)
+    }
+    rootAggregations
+  }
+
+  implicit def requestToScopedAggregations(
+    request: SQLSearchRequest
+  ): Seq[NestedAggregation] = {
+    val aggregations = request.aggregates.map(
+      ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+    )
+
+    val nestedAggregations: Map[String, Seq[ElasticAggregation]] = aggregations
+      .filter(_.nested)
+      .groupBy(
+        _.nestedElement
+          .map(_.path)
+          .getOrElse(
+            throw new IllegalArgumentException("Nested aggregation must have a nested element")
+          )
+      )
+
+    val scopedAggregations = NestedElements
+      .buildNestedTrees(
+        nestedAggregations.values.flatMap(_.flatMap(_.nestedElement)).toSeq.distinct
+      )
+      .map { tree =>
+        def buildNestedAgg(n: NestedElement): NestedAggregation = {
+          val elasticAggregations = nestedAggregations.getOrElse(n.path, Seq.empty)
+          val aggregations = elasticAggregations.map(_.agg)
+          val directions: Map[String, SortOrder] =
+            elasticAggregations
+              .filter(_.direction.isDefined)
+              .map(elasticAggregation =>
+                elasticAggregation.agg.name -> elasticAggregation.direction.getOrElse(Asc)
+              )
+              .toMap
+          val buckets: Seq[Aggregation] =
+            ElasticAggregation.buildBuckets(
+              request.buckets
+                .filter(_.nested)
+                .groupBy(_.nestedBucket.getOrElse(""))
+                .getOrElse(n.innerHitsName, Seq.empty),
+              request.sorts -- directions.keys,
+              aggregations,
+              directions,
+              request.having.flatMap(_.criteria)
+            ) match {
+              case Some(b) => Seq(b)
+              case _       => aggregations
+            }
+          val filtered: Option[Aggregation] =
+            requestToFilterAggregation(request).map(filtered => filtered.subAggregations(buckets))
+          val children = n.children
+          if (children.nonEmpty) {
+            val innerAggs = children.map(buildNestedAgg)
+            val combinedAgg = if (innerAggs.size == 1) {
+              innerAggs.head
+            } else {
+              innerAggs.reduceLeft { (agg1, agg2) =>
+                agg1.copy(subaggs = agg1.subaggs ++ Seq(agg2))
+              }
+            }
+            nestedAggregation(
+              n.innerHitsName,
+              n.path
+            ) subaggs buckets ++ Seq(combinedAgg)
+          } else {
+            nestedAggregation(
+              n.innerHitsName,
+              n.path
+            ) subaggs filtered.map(Seq(_)).getOrElse(buckets)
+          }
+        }
+        buildNestedAgg(tree)
+      }
+    scopedAggregations
+  }
+
+  implicit def requestToNestedWithoutCriteriaQuery(request: SQLSearchRequest): Option[Query] =
+    NestedElements.buildNestedTrees(request.nestedElementsWithoutCriteria) match {
+      case Nil => None
+      case nestedTrees =>
+        def nestedInner(n: NestedElement): InnerHit = {
+          var inner = innerHits(n.innerHitsName)
+          n.size match {
+            case Some(s) =>
+              inner = inner.from(0).size(s)
+            case _ =>
+          }
+          if (n.sources.nonEmpty) {
+            inner = inner.fetchSource(
+              FetchSourceContext(
+                fetchSource = true,
+                includes = n.sources.toArray
+              )
+            )
+          }
+          inner
+        }
+
+        def buildNestedQuery(n: NestedElement): Query = {
+          val children = n.children
+          if (children.nonEmpty) {
+            val innerQueries = children.map(child => buildNestedQuery(child))
+            val combinedQuery = if (innerQueries.size == 1) {
+              innerQueries.head
+            } else {
+              must(innerQueries)
+            }
+            nestedQuery(
+              n.path,
+              combinedQuery
+            ) /*.scoreMode(ScoreMode.None)*/
+              .inner(
+                nestedInner(n)
+              )
+          } else {
+            nestedQuery(
+              n.path,
+              matchAllQuery()
+            ) /*.scoreMode(ScoreMode.None)*/
+              .inner(
+                nestedInner(n)
+              )
+          }
+        }
+
+        if (nestedTrees.size == 1) {
+          Some(buildNestedQuery(nestedTrees.head))
+        } else {
+          val innerQueries = nestedTrees.map(nested => buildNestedQuery(nested))
+          Some(boolQuery().filter(innerQueries))
+        }
+    }
+
   implicit def requestToElasticSearchRequest(request: SQLSearchRequest): ElasticSearchRequest =
     ElasticSearchRequest(
       request.select.fields,
@@ -36,136 +222,14 @@ package object bridge {
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
-    val notNestedBuckets = buckets.filterNot(_.nested)
 
-    val nestedBuckets = buckets.filter(_.nested).groupBy(_.nestedBucket.getOrElse(""))
+    val rootAggregations = requestToRootAggregations(request)
 
-    val filteredAgg: Option[FilterAggregation] =
-      request.having.flatMap(_.criteria) match {
-        case Some(f) =>
-          val boolQuery = Option(ElasticBoolQuery(group = true))
-          Some(
-            filterAgg(
-              "filtered_agg",
-              f.asFilter(boolQuery)
-                .query(aggregates.flatMap(_.identifier.innerHitsName).toSet, boolQuery)
-            )
-          )
-        case _ =>
-          None
-      }
+    val scopedAggregations = requestToScopedAggregations(request)
 
-    val aggregations =
-      aggregates.map(
-        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
-          .copy(filteredAgg = filteredAgg)
-      )
+    val aggregations = rootAggregations ++ scopedAggregations
 
-    val rootAggregations = aggregations.filterNot(_.nested) match {
-      case Nil => Nil
-      case aggs =>
-        val aggregationDirections: Map[String, SortOrder] = aggs
-          .filter(_.direction.isDefined)
-          .map(agg => agg.agg.name -> agg.direction.get)
-          .toMap
-        val aggregations = aggs.map(_.agg)
-        val buckets = ElasticAggregation.buildBuckets(
-          notNestedBuckets,
-          request.sorts -- aggregationDirections.keys,
-          aggregations,
-          aggregationDirections,
-          request.having.flatMap(_.criteria)
-        ) match {
-          case Some(b) => Seq(b)
-          case _       => aggregations
-        }
-        val filtered: Option[Aggregation] =
-          filteredAgg.map(filtered => filtered.subAggregations(buckets))
-        filtered.map(Seq(_)).getOrElse(buckets)
-    }
-
-    val scopedAggregations =
-      aggregations.filter(_.nested).groupBy(_.nestedAgg.map(_.name).getOrElse("")).map {
-        case (nested, aggs) =>
-          val first = aggs.head
-          val aggregations = aggs.map(_.agg)
-          val aggregationDirections: Map[String, SortOrder] =
-            aggs
-              .filter(_.direction.isDefined)
-              .map(agg => agg.agg.name -> agg.direction.getOrElse(Asc))
-              .toMap
-          val buckets =
-            ElasticAggregation.buildBuckets(
-              nestedBuckets.getOrElse(nested, Seq.empty),
-              request.sorts -- aggregationDirections.keys,
-              aggregations,
-              aggregationDirections,
-              request.having.flatMap(_.criteria)
-            ) match {
-              case Some(b) => Seq(b)
-              case _       => aggregations
-            }
-          val filtered: Option[Aggregation] =
-            filteredAgg.map(filtered => filtered.subAggregations(buckets))
-          first.nestedAgg.get.subAggregations(filtered.map(Seq(_)).getOrElse(buckets))
-      }
-
-    val nestedWithoutCriteriaQuery: Option[Query] =
-      NestedElements.buildNestedTrees(request.nestedElementsWithoutCriteria) match {
-        case Nil => None
-        case nestedTrees =>
-          def nestedInner(n: NestedElement): InnerHit = {
-            var inner = innerHits(n.innerHitsName)
-            n.size match {
-              case Some(s) =>
-                inner = inner.from(0).size(s)
-              case _ =>
-            }
-            if (n.sources.nonEmpty) {
-              inner = inner.fetchSource(
-                FetchSourceContext(
-                  fetchSource = true,
-                  includes = n.sources.toArray
-                )
-              )
-            }
-            inner
-          }
-
-          def buildNestedQuery(n: NestedElement): Query = {
-            val children = n.children
-            if (children.nonEmpty) {
-              val innerQueries = children.map(child => buildNestedQuery(child))
-              val combinedQuery = if (innerQueries.size == 1) {
-                innerQueries.head
-              } else {
-                must(innerQueries)
-              }
-              nestedQuery(
-                n.path,
-                combinedQuery
-              ) /*.scoreMode(ScoreMode.None)*/
-                .inner(
-                  nestedInner(n)
-                )
-            } else {
-              nestedQuery(
-                n.path,
-                matchAllQuery()
-              ) /*.scoreMode(ScoreMode.None)*/
-                .inner(
-                  nestedInner(n)
-                )
-            }
-          }
-
-          if (nestedTrees.size == 1) {
-            Some(buildNestedQuery(nestedTrees.head))
-          } else {
-            val innerQueries = nestedTrees.map(nested => buildNestedQuery(nested))
-            Some(boolQuery().filter(innerQueries))
-          }
-      }
+    val nestedWithoutCriteriaQuery: Option[Query] = requestToNestedWithoutCriteriaQuery(request)
 
     var _search: SearchRequest = search("") query {
       where.flatMap(_.criteria.map(_.asQuery())) match {
@@ -180,9 +244,9 @@ package object bridge {
       }
     } sourceFiltering (fields, excludes)
 
-    _search = if (scopedAggregations.nonEmpty || rootAggregations.nonEmpty) {
+    _search = if (aggregations.nonEmpty) {
       _search aggregations {
-        rootAggregations ++ scopedAggregations
+        aggregations
       }
     } else {
       _search
@@ -650,6 +714,7 @@ package object bridge {
     ElasticQuery(filter)
   }
 
+  @deprecated
   implicit def sqlQueryToAggregations(
     query: SQLQuery
   ): Seq[ElasticAggregation] = {
@@ -657,20 +722,7 @@ package object bridge {
     request
       .map {
         case Left(l) =>
-          val filteredAgg: Option[FilterAggregation] =
-            l.having.flatMap(_.criteria) match {
-              case Some(f) =>
-                val boolQuery = Option(ElasticBoolQuery(group = true))
-                Some(
-                  filterAgg(
-                    "filtered_agg",
-                    f.asFilter(boolQuery)
-                      .query(l.aggregates.flatMap(_.identifier.innerHitsName).toSet, boolQuery)
-                  )
-                )
-              case _ =>
-                None
-            }
+          val filteredAgg: Option[FilterAggregation] = requestToFilterAggregation(l)
           l.aggregates
             .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts))
             .map(aggregation => {

@@ -194,6 +194,12 @@ object Queries {
       |AVG(comments.likes) AS avg_comment_likes
       |FROM blogs
       |JOIN UNNEST(blogs.comments) AS comments""".stripMargin.replaceAll("\n", " ")
+
+  val aggregationWithNestedOfNestedContext =
+    """SELECT AVG(replies.likes) AS avg_reply_likes
+      |FROM blogs
+      |JOIN UNNEST(blogs.comments) AS comments
+      |JOIN UNNEST(comments.replies) AS replies""".stripMargin.replaceAll("\n", " ")
 }
 
 /** Created by smanciot on 15/02/17.
@@ -880,10 +886,17 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .getOrElse("") shouldBe nestedWithoutCriteria
   }
 
-  it should "parse determination of the aggregation context" in {
+  it should "determine the aggregation context" in {
     val result = Parser(determinationOfTheAggregationContext)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("") shouldBe determinationOfTheAggregationContext
+  }
+
+  it should "parse aggregation with nested of nested context" in {
+    val result = Parser(aggregationWithNestedOfNestedContext)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe aggregationWithNestedOfNestedContext
   }
 }
