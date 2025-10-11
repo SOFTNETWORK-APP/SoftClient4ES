@@ -20,6 +20,31 @@ import scala.language.implicitConversions
 
 package object bridge {
 
+  implicit def requestToNestedFilterAggregation(
+    request: SQLSearchRequest,
+    innerHitsName: String
+  ): Option[FilterAggregation] =
+    request.where.flatMap(_.criteria) match {
+      case Some(f) =>
+        f.nestedCriteria(innerHitsName) match {
+          case Nil => None
+          case cs =>
+            val boolQuery = ElasticBoolQuery(group = true)
+            cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
+            Some(
+              filterAgg(
+                s"filtered_$innerHitsName",
+                boolQuery.query(
+                  request.aggregates.flatMap(_.identifier.innerHitsName).toSet,
+                  Option(boolQuery)
+                )
+              )
+            )
+        }
+      case _ =>
+        None
+    }
+
   implicit def requestToFilterAggregation(
     request: SQLSearchRequest
   ): Option[FilterAggregation] =
@@ -120,6 +145,8 @@ package object bridge {
               case Some(b) => Seq(b)
               case _       => aggregations
             }
+          val nestedFilteredAgg: Option[FilterAggregation] =
+            requestToNestedFilterAggregation(request, n.innerHitsName)
           val filtered: Option[Aggregation] =
             requestToFilterAggregation(request).map(filtered => filtered.subAggregations(buckets))
           val children = n.children
@@ -135,12 +162,20 @@ package object bridge {
             nestedAggregation(
               n.innerHitsName,
               n.path
-            ) subaggs buckets ++ Seq(combinedAgg)
+            ) subaggs (nestedFilteredAgg match {
+              case Some(filteredAgg) =>
+                Seq(filteredAgg subaggs buckets ++ Seq(combinedAgg))
+              case _ => buckets ++ Seq(combinedAgg)
+            })
           } else {
             nestedAggregation(
               n.innerHitsName,
               n.path
-            ) subaggs filtered.map(Seq(_)).getOrElse(buckets)
+            ) subaggs (nestedFilteredAgg match {
+              case Some(filteredAgg) =>
+                Seq(filteredAgg subaggs filtered.map(Seq(_)).getOrElse(buckets))
+              case _ => filtered.map(Seq(_)).getOrElse(buckets)
+            })
           }
         }
         buildNestedAgg(tree)
@@ -258,7 +293,7 @@ package object bridge {
         _search scriptfields scriptFields.map { field =>
           scriptField(
             field.scriptName,
-            Script(script = field.painless)
+            Script(script = field.painless(None))
               .lang("painless")
               .scriptType("source")
               .params(field.identifier.functions.headOption match {
@@ -313,7 +348,7 @@ package object bridge {
         case _           => true
       }))
     ) {
-      return scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
+      return scriptQuery(Script(script = painless(None)).lang("painless").scriptType("source"))
     }
     // Geo distance special case
     identifier.functions.headOption match {
@@ -527,10 +562,10 @@ package object bridge {
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
-                scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
+                scriptQuery(Script(script = painless(None)).lang("painless").scriptType("source"))
             }
           case _ =>
-            scriptQuery(Script(script = painless).lang("painless").scriptType("source"))
+            scriptQuery(Script(script = painless(None)).lang("painless").scriptType("source"))
         }
       case _ => matchAllQuery()
     }
@@ -684,7 +719,7 @@ package object bridge {
       case _ =>
         scriptQuery(
           Script(
-            script = distanceCriteria.painless,
+            script = distanceCriteria.painless(None),
             lang = Some("painless"),
             scriptType = Source,
             params = distance.params

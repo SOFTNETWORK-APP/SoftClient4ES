@@ -28,6 +28,17 @@ sealed trait Criteria extends Updateable with PainlessScript {
       case _                  => Nil
     }
 
+  def nestedCriteria(innerHitsName: String): Seq[Criteria] = {
+    this match {
+      case e: ElasticNested => e.criteria.nestedCriteria(innerHitsName)
+      case _ =>
+        nestedElement
+          .filter(_ => nestedElement.exists(_.innerHitsName == innerHitsName))
+          .map(_ => this)
+          .toSeq
+    }
+  }
+
   def limit: Option[Limit] = None
 
   def update(request: SQLSearchRequest): Criteria
@@ -140,6 +151,9 @@ case class Predicate(
       _ <- leftCriteria.validate()
       _ <- rightCriteria.validate()
     } yield ()
+
+  override def nestedCriteria(innerHitsName: String): Seq[Criteria] =
+    leftCriteria.nestedCriteria(innerHitsName) ++ rightCriteria.nestedCriteria(innerHitsName)
 }
 
 sealed trait ElasticFilter

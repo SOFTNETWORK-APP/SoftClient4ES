@@ -3490,4 +3490,76 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin.replaceAll("\\s+", "")
   }
+
+  it should "handle where filters according to scope" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(whereFiltersAccordingToScope)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "term": {
+        |            "status": {
+        |              "value": "active"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "nested": {
+        |            "path": "comments",
+        |            "query": {
+        |              "term": {
+        |                "comments.sentiment": {
+        |                  "value": "positive"
+        |                }
+        |              }
+        |            },
+        |            "inner_hits": {
+        |              "name": "comments"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "comments": {
+        |      "nested": {
+        |        "path": "comments"
+        |      },
+        |      "aggs": {
+        |        "filtered_comments": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "term": {
+        |                    "comments.sentiment": {
+        |                      "value": "positive"
+        |                    }
+        |                  }
+        |                }
+        |              ]
+        |            }
+        |          },
+        |          "aggs": {
+        |            "nb_comments": {
+        |              "value_count": {
+        |                "field": "comments.id"
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
 }

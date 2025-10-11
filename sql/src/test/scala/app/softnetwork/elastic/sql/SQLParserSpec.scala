@@ -195,11 +195,18 @@ object Queries {
       |FROM blogs
       |JOIN UNNEST(blogs.comments) AS comments""".stripMargin.replaceAll("\n", " ")
 
-  val aggregationWithNestedOfNestedContext =
+  val aggregationWithNestedOfNestedContext: String =
     """SELECT AVG(replies.likes) AS avg_reply_likes
       |FROM blogs
       |JOIN UNNEST(blogs.comments) AS comments
       |JOIN UNNEST(comments.replies) AS replies""".stripMargin.replaceAll("\n", " ")
+
+  val whereFiltersAccordingToScope: String =
+    """SELECT COUNT(comments.id) AS nb_comments
+      |FROM blogs
+      |JOIN UNNEST(blogs.comments) AS comments
+      |WHERE blogs.status = 'active'
+      |AND comments.sentiment = 'positive'""".stripMargin.replaceAll("\n", " ")
 }
 
 /** Created by smanciot on 15/02/17.
@@ -898,5 +905,12 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
       .getOrElse("") shouldBe aggregationWithNestedOfNestedContext
+  }
+
+  it should "parse where filters according to scope" in {
+    val result = Parser(whereFiltersAccordingToScope)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe whereFiltersAccordingToScope
   }
 }
