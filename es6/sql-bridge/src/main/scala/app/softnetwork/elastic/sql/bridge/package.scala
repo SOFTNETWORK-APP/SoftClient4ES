@@ -71,9 +71,6 @@ package object bridge {
 
     val notNestedAggregations = aggregations.filterNot(_.nested)
 
-    val filteredAgg: Option[FilterAggregation] =
-      requestToFilterAggregation(request)
-
     val rootAggregations = notNestedAggregations match {
       case Nil => Nil
       case aggs =>
@@ -92,9 +89,7 @@ package object bridge {
           case Some(b) => Seq(b)
           case _       => aggregations
         }
-        val filtered: Option[Aggregation] =
-          filteredAgg.map(filtered => filtered.subAggregations(buckets))
-        filtered.map(Seq(_)).getOrElse(buckets)
+        buckets
     }
     rootAggregations
   }
@@ -116,6 +111,19 @@ package object bridge {
           )
       )
 
+    val nestedGroupedBuckets =
+      request.buckets
+        .filter(_.nested)
+        .groupBy(
+          _.nestedBucket.getOrElse(
+            throw new IllegalArgumentException(
+              "Nested bucket must have a nested element"
+            )
+          )
+        )
+
+    val havingCriteria = request.having.flatMap(_.criteria)
+
     val scopedAggregations = NestedElements
       .buildNestedTrees(
         nestedAggregations.values.flatMap(_.flatMap(_.nestedElement)).toSeq.distinct
@@ -133,22 +141,18 @@ package object bridge {
               .toMap
           val buckets: Seq[Aggregation] =
             ElasticAggregation.buildBuckets(
-              request.buckets
-                .filter(_.nested)
-                .groupBy(_.nestedBucket.getOrElse(""))
+              nestedGroupedBuckets
                 .getOrElse(n.innerHitsName, Seq.empty),
               request.sorts -- directions.keys,
               aggregations,
               directions,
-              request.having.flatMap(_.criteria)
+              havingCriteria
             ) match {
               case Some(b) => Seq(b)
               case _       => aggregations
             }
           val nestedFilteredAgg: Option[FilterAggregation] =
             requestToNestedFilterAggregation(request, n.innerHitsName)
-          val filtered: Option[Aggregation] =
-            requestToFilterAggregation(request).map(filtered => filtered.subAggregations(buckets))
           val children = n.children
           if (children.nonEmpty) {
             val innerAggs = children.map(buildNestedAgg)
@@ -173,8 +177,8 @@ package object bridge {
               n.path
             ) subaggs (nestedFilteredAgg match {
               case Some(filteredAgg) =>
-                Seq(filteredAgg subaggs filtered.map(Seq(_)).getOrElse(buckets))
-              case _ => filtered.map(Seq(_)).getOrElse(buckets)
+                Seq(filteredAgg subaggs buckets)
+              case _ => buckets
             })
           }
         }
@@ -293,7 +297,7 @@ package object bridge {
         _search scriptfields scriptFields.map { field =>
           scriptField(
             field.scriptName,
-            Script(script = field.painless(None))
+            Script(script = field.painless())
               .lang("painless")
               .scriptType("source")
               .params(field.identifier.functions.headOption match {
@@ -348,7 +352,7 @@ package object bridge {
         case _           => true
       }))
     ) {
-      return scriptQuery(Script(script = painless(None)).lang("painless").scriptType("source"))
+      return scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
     }
     // Geo distance special case
     identifier.functions.headOption match {
@@ -562,10 +566,10 @@ package object bridge {
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
-                scriptQuery(Script(script = painless(None)).lang("painless").scriptType("source"))
+                scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
             }
           case _ =>
-            scriptQuery(Script(script = painless(None)).lang("painless").scriptType("source"))
+            scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
         }
       case _ => matchAllQuery()
     }
@@ -719,7 +723,7 @@ package object bridge {
       case _ =>
         scriptQuery(
           Script(
-            script = distanceCriteria.painless(None),
+            script = distanceCriteria.painless(),
             lang = Some("painless"),
             scriptType = Source,
             params = distance.params

@@ -463,6 +463,19 @@ package object sql {
     def limit: Option[Limit]
     def fieldAlias: Option[String]
     def bucket: Option[Bucket]
+    def hasBucket: Boolean = bucket.isDefined
+    def metricsPath: Map[String, String] = { // TODO add bucket context ?
+      if (aggregation) {
+        val metricName = aliasOrName
+        nestedElement match {
+          case Some(ne) => Map(metricName -> s"${ne.bucketPath}>$metricName")
+          case _        => Map(metricName -> metricName)
+        }
+      } else {
+        Map.empty
+      }
+    }
+
     override def sql: String = {
       var parts: Seq[String] = name.split("\\.").toSeq
       tableAlias match {

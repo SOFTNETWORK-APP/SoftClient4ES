@@ -45,7 +45,7 @@ package object aggregate {
     def topHits: TopHits
     def limit: Option[Limit]
 
-    lazy val buckets: Seq[Bucket] = partitionBy.map(Bucket)
+    lazy val buckets: Seq[Bucket] = partitionBy.map(identifier => Bucket(identifier, None))
 
     lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
       b.identifier.identifierName -> b

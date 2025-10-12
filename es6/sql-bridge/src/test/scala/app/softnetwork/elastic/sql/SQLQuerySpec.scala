@@ -531,73 +531,36 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": true,
       |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "bool": {
-      |          "filter": [
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "Country": {
-      |                        "value": "USA"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "City": {
-      |                        "value": "Berlin"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "match_all": {}
-      |            }
-      |          ]
+      |    "Country": {
+      |      "terms": {
+      |        "field": "Country.keyword",
+      |        "exclude": "USA",
+      |        "order": {
+      |          "_key": "asc"
       |        }
       |      },
       |      "aggs": {
-      |        "Country": {
+      |        "City": {
       |          "terms": {
-      |            "field": "Country.keyword",
+      |            "field": "City.keyword",
+      |            "exclude": "Berlin",
       |            "order": {
-      |              "Country": "asc"
+      |              "cnt": "desc"
       |            }
       |          },
       |          "aggs": {
-      |            "City": {
-      |              "terms": {
-      |                "field": "City.keyword",
-      |                "order": {
-      |                  "cnt": "desc"
-      |                }
-      |              },
-      |              "aggs": {
-      |                "cnt": {
-      |                  "value_count": {
-      |                    "field": "CustomerID"
-      |                  }
+      |            "cnt": {
+      |              "value_count": {
+      |                "field": "CustomerID"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "cnt": "cnt"
       |                },
-      |                "having_filter": {
-      |                  "bucket_selector": {
-      |                    "buckets_path": {
-      |                      "cnt": "cnt"
-      |                    },
-      |                    "script": {
-      |                      "source": "params.cnt > 1"
-      |                    }
-      |                  }
+      |                "script": {
+      |                  "source": "params.cnt > 1"
       |                }
       |              }
       |            }
@@ -655,222 +618,144 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-    """
-        |{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "bool": {
-        |            "filter": [
-        |              {
-        |                "exists": {
-        |                  "field": "firstName"
-        |                }
-        |              },
-        |              {
-        |                "exists": {
-        |                  "field": "lastName"
-        |                }
-        |              },
-        |              {
-        |                "exists": {
-        |                  "field": "description"
-        |                }
-        |              },
-        |              {
-        |                "range": {
-        |                  "preparationTime": {
-        |                    "lte": 120
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "term": {
-        |                  "deliveryPeriods.dayOfWeek": {
-        |                    "value": 6
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "must_not": [
-        |                    {
-        |                      "regexp": {
-        |                        "blockedCustomers": {
-        |                          "value": ".*uuid.*"
-        |                        }
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "must_not": [
-        |                    {
-        |                      "term": {
-        |                        "receiptOfOrdersDisabled": {
-        |                          "value": true
-        |                        }
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "should": [
-        |                    {
-        |                      "geo_distance": {
-        |                        "distance": "7000m",
-        |                        "pickup.location": [
-        |                          0.0,
-        |                          0.0
-        |                        ]
-        |                      }
-        |                    },
-        |                    {
-        |                      "geo_distance": {
-        |                        "distance": "7000m",
-        |                        "withdrawals.location": [
-        |                          0.0,
-        |                          0.0
-        |                        ]
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              }
-        |            ]
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "min_score": 1.0,
-        |  "_source": true,
-        |  "aggs": {
-        |    "inner_products": {
-        |      "nested": {
-        |        "path": "products"
-        |      },
-        |      "aggs": {
-        |        "filtered_agg": {
-        |          "filter": {
-        |            "bool": {
-        |              "filter": [
-        |                {
-        |                  "term": {
-        |                    "products.deleted": {
-        |                      "value": false
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "term": {
-        |                    "products.upForSale": {
-        |                      "value": true
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "range": {
-        |                    "products.stock": {
-        |                      "gt": 0
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "bool": {
-        |                    "should": [
-        |                      {
-        |                        "match": {
-        |                          "products.name": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      },
-        |                      {
-        |                        "match": {
-        |                          "products.description": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      },
-        |                      {
-        |                        "match": {
-        |                          "products.ingredients": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      }
-        |                    ]
-        |                  }
-        |                },
-        |                {
-        |                  "match_all": {}
-        |                },
-        |                {
-        |                  "match_all": {}
-        |                },
-        |                {
-        |                  "bool": {
-        |                    "must_not": [
-        |                      {
-        |                        "term": {
-        |                          "products.category": {
-        |                            "value": "coffee"
-        |                          }
-        |                        }
-        |                      }
-        |                    ]
-        |                  }
-        |                }
-        |              ]
-        |            }
-        |          },
-        |          "aggs": {
-        |            "cat": {
-        |              "terms": {
-        |                "field": "products.category.keyword"
-        |              },
-        |              "aggs": {
-        |                "min_price": {
-        |                  "min": {
-        |                    "field": "products.price"
-        |                  }
-        |                },
-        |                "max_price": {
-        |                  "max": {
-        |                    "field": "products.price"
-        |                  }
-        |                },
-        |                "having_filter": {
-        |                  "bucket_selector": {
-        |                    "buckets_path": {
-        |                      "min_price": "min_price",
-        |                      "max_price": "max_price"
-        |                    },
-        |                    "script": {
-        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
-        |                    }
-        |                  }
-        |                }
-        |              }
-        |            }
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "filter": [
+      |              {
+      |                "exists": {
+      |                  "field": "firstName"
+      |                }
+      |              },
+      |              {
+      |                "exists": {
+      |                  "field": "lastName"
+      |                }
+      |              },
+      |              {
+      |                "exists": {
+      |                  "field": "description"
+      |                }
+      |              },
+      |              {
+      |                "range": {
+      |                  "preparationTime": {
+      |                    "lte": 120
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "term": {
+      |                  "deliveryPeriods.dayOfWeek": {
+      |                    "value": 6
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "bool": {
+      |                  "must_not": [
+      |                    {
+      |                      "regexp": {
+      |                        "blockedCustomers": {
+      |                          "value": ".*uuid.*"
+      |                        }
+      |                      }
+      |                    }
+      |                  ]
+      |                }
+      |              },
+      |              {
+      |                "bool": {
+      |                  "must_not": [
+      |                    {
+      |                      "term": {
+      |                        "receiptOfOrdersDisabled": {
+      |                          "value": true
+      |                        }
+      |                      }
+      |                    }
+      |                  ]
+      |                }
+      |              },
+      |              {
+      |                "bool": {
+      |                  "should": [
+      |                    {
+      |                      "geo_distance": {
+      |                        "distance": "7000m",
+      |                        "pickup.location": [
+      |                          0.0,
+      |                          0.0
+      |                        ]
+      |                      }
+      |                    },
+      |                    {
+      |                      "geo_distance": {
+      |                        "distance": "7000m",
+      |                        "withdrawals.location": [
+      |                          0.0,
+      |                          0.0
+      |                        ]
+      |                      }
+      |                    }
+      |                  ]
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "min_score": 1.0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "inner_products": {
+      |      "nested": {
+      |        "path": "products"
+      |      },
+      |      "aggs": {
+      |        "cat": {
+      |          "terms": {
+      |            "field": "products.category.keyword"
+      |          },
+      |          "aggs": {
+      |            "min_price": {
+      |              "min": {
+      |                "field": "products.price"
+      |              }
+      |            },
+      |            "max_price": {
+      |              "max": {
+      |                "field": "products.price"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "min_price": "inner_products>min_price",
+      |                  "max_price": "inner_products>max_price"
+      |                },
+      |                "script": {
+      |                  "source": "params.min_price > 5.0 && params.max_price < 50.0"
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s+", "")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
-      .replaceAll("<", " < ")
-      .replaceAll(">", " > ")
+      .replaceAll("<(\\d)", " < $1")
+      .replaceAll(">(\\d)", " > $1")
 
   }
 
@@ -1047,30 +932,23 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": true,
       |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "match_all": {}
+      |    "userId": {
+      |      "terms": {
+      |        "field": "userId.keyword"
       |      },
       |      "aggs": {
-      |        "userId": {
-      |          "terms": {
-      |            "field": "userId.keyword"
-      |          },
-      |          "aggs": {
-      |            "lastSeen": {
-      |              "max": {
-      |                "field": "createdAt"
-      |              }
+      |        "lastSeen": {
+      |          "max": {
+      |            "field": "createdAt"
+      |          }
+      |        },
+      |        "having_filter": {
+      |          "bucket_selector": {
+      |            "buckets_path": {
+      |              "lastSeen": "lastSeen"
       |            },
-      |            "having_filter": {
-      |              "bucket_selector": {
-      |                "buckets_path": {
-      |                  "lastSeen": "lastSeen"
-      |                },
-      |                "script": {
-      |                  "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)"
-      |                }
-      |              }
+      |            "script": {
+      |              "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
       |            }
       |          }
       |        }
@@ -1098,82 +976,39 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": true,
       |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "bool": {
-      |          "filter": [
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "Country": {
-      |                        "value": "USA"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "City": {
-      |                        "value": "Berlin"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "match_all": {}
-      |            },
-      |            {
-      |              "range": {
-      |                "lastSeen": {
-      |                  "gt": "now-7d"
-      |                }
-      |              }
-      |            }
-      |          ]
+      |    "Country": {
+      |      "terms": {
+      |        "field": "Country.keyword",
+      |        "exclude": "USA",
+      |        "order": {
+      |          "_key": "asc"
       |        }
       |      },
       |      "aggs": {
-      |        "Country": {
+      |        "City": {
       |          "terms": {
-      |            "field": "Country.keyword",
-      |            "order": {
-      |              "Country": "asc"
-      |            }
+      |            "field": "City.keyword",
+      |            "exclude": "Berlin"
       |          },
       |          "aggs": {
-      |            "City": {
-      |              "terms": {
-      |                "field": "City.keyword"
-      |              },
-      |              "aggs": {
-      |                "cnt": {
-      |                  "value_count": {
-      |                    "field": "CustomerID"
-      |                  }
+      |            "cnt": {
+      |              "value_count": {
+      |                "field": "CustomerID"
+      |              }
+      |            },
+      |            "lastSeen": {
+      |              "max": {
+      |                "field": "createdAt"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "cnt": "cnt",
+      |                  "lastSeen": "lastSeen"
       |                },
-      |                "lastSeen": {
-      |                  "max": {
-      |                    "field": "createdAt"
-      |                  }
-      |                },
-      |                "having_filter": {
-      |                  "bucket_selector": {
-      |                    "buckets_path": {
-      |                      "cnt": "cnt"
-      |                    },
-      |                    "script": {
-      |                      "source": "params.cnt > 1"
-      |                    }
-      |                  }
+      |                "script": {
+      |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
       |                }
       |              }
       |            }
@@ -3497,7 +3332,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-      """{
+    """{
         |  "query": {
         |    "bool": {
         |      "filter": [

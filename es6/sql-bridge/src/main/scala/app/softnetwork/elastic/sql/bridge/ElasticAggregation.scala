@@ -3,10 +3,11 @@ package app.softnetwork.elastic.sql.bridge
 import app.softnetwork.elastic.sql.query.{
   Asc,
   Bucket,
-  BucketSelectorScript,
+  BucketIncludesExcludes,
   Criteria,
   Desc,
   Field,
+  MetricSelectorScript,
   NestedElement,
   NestedElements,
   SortOrder
@@ -104,7 +105,7 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val scriptSrc = identifier.painless
+        val scriptSrc = identifier.painless()
         val script = Script(scriptSrc).lang("painless")
         buildScript(aggName, script)
       } else {
@@ -144,7 +145,7 @@ object ElasticAggregation {
               .copy(
                 scripts = th.fields
                   .filter(_.isScriptField)
-                  .map(f => f.sourceField -> Script(f.painless).lang("painless"))
+                  .map(f => f.sourceField -> Script(f.painless()).lang("painless"))
                   .toMap
               )
               .size(limit) sortBy th.orderBy.sorts.map(sort =>
@@ -238,17 +239,36 @@ object ElasticAggregation {
     having: Option[Criteria]
   ): Option[TermsAggregation] = {
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
-      val agg = {
+      var agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {
           case Some(direction) =>
             termsAgg(bucket.name, s"${bucket.identifier.path}.keyword")
               .order(Seq(direction match {
-                case Asc => TermsOrder(bucket.name, asc = true)
-                case _   => TermsOrder(bucket.name, asc = false)
+                case Asc => TermsOrder("_key", asc = true)
+                case _   => TermsOrder("_key", asc = false)
               }))
           case None =>
             termsAgg(bucket.name, s"${bucket.identifier.path}.keyword")
         }
+      }
+      bucket.size.foreach(s => agg = agg.size(s))
+      having match {
+        case Some(criteria) =>
+          criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
+            case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+              agg = agg.include(regex)
+            case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+              agg = agg.include(values.toArray)
+            case _ =>
+          }
+          criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
+            case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+              agg = agg.exclude(regex)
+            case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+              agg = agg.exclude(values.toArray)
+            case _ =>
+          }
+        case _ =>
       }
       current match {
         case Some(subAgg) => Some(agg.copy(subaggs = Seq(subAgg)))
@@ -266,9 +286,8 @@ object ElasticAggregation {
               agg
           val withHaving = having match {
             case Some(criteria) =>
-              import BucketSelectorScript._
-              val script = toPainless(criteria)
-              val bucketsPath = extractBucketsPath(criteria)
+              val script = MetricSelectorScript.metricSelector(criteria)
+              val bucketsPath = criteria.extractMetricsPath
 
               val bucketSelector =
                 bucketSelectorAggregation(
