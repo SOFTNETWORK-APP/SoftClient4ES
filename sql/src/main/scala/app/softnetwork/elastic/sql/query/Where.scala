@@ -790,7 +790,7 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
   }
 
   def nestedElements: Seq[NestedElement] = criteria match {
-    case Some(c) => c.nestedElements.distinctBy(_.path)
+    case Some(c) => c.nestedElements.groupBy(_.path).map(_._2.head).toList
     case _       => Nil
   }
 }

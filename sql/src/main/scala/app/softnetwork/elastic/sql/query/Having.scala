@@ -15,5 +15,5 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
   override def validate(): Either[String, Unit] = criteria.map(_.validate()).getOrElse(Right(()))
 
   def nestedElements: Seq[NestedElement] =
-    criteria.map(_.nestedElements).getOrElse(Seq.empty).distinctBy(_.path)
+    criteria.map(_.nestedElements).getOrElse(Seq.empty).groupBy(_.path).map(_._2.head).toList
 }

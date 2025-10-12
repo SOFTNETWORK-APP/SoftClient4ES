@@ -29,12 +29,17 @@ case class SQLSearchRequest(
       .filterNot(_.aggregation)
       .filter(_.nested)
       .groupBy(_.identifier.innerHitsName.getOrElse(""))
-  lazy val nested: Seq[NestedElement] = from.unnests.map(toNestedElement).distinctBy(_.path)
+  lazy val nested: Seq[NestedElement] =
+    from.unnests.map(toNestedElement).groupBy(_.path).map(_._2.head).toList
   private[this] lazy val nestedFieldsWithoutCriteria: Map[String, Seq[Field]] = {
     // nested fields that are not part of where, having or group by clauses
     val innerHitsWithCriteria = (where.map(_.nestedElements).getOrElse(Seq.empty) ++
       having.map(_.nestedElements).getOrElse(Seq.empty) ++
-      groupBy.map(_.nestedElements).getOrElse(Seq.empty)).distinctBy(_.path).map(_.innerHitsName)
+      groupBy.map(_.nestedElements).getOrElse(Seq.empty))
+      .groupBy(_.path)
+      .map(_._2.head)
+      .toList
+      .map(_.innerHitsName)
     val ret = nestedFields.filterNot { case (innerHitsName, _) =>
       innerHitsWithCriteria.contains(innerHitsName)
     }

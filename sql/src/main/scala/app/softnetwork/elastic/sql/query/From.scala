@@ -215,7 +215,7 @@ object NestedElements {
     val nestedParentsPath: collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
       collection.mutable.Map.empty
 
-    val distinctNestedElements = nestedElements.distinctBy(_.path)
+    val distinctNestedElements = nestedElements.groupBy(_.path).map(_._2.head).toList
 
     @tailrec
     def getNestedParents(
