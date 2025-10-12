@@ -10,6 +10,8 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 
+import scala.annotation.tailrec
+
 case object From extends Expr("FROM") with TokenRegex
 
 sealed trait JoinType extends TokenRegex
@@ -39,47 +41,126 @@ sealed trait Join extends Updateable {
   def on: Option[On]
   def alias: Option[Alias]
   override def sql: String =
-    s"${asString(joinType)} $Join $source${asString(on)}"
+    s" ${asString(joinType)} $Join $source${asString(on)}${asString(alias)}"
 
   override def update(request: SQLSearchRequest): Join
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- source.validate()
+      _ <- alias match {
+        case Some(a) if a.alias.nonEmpty => Right(())
+        case _                           => Left(s"JOIN $this requires an alias")
+      }
+      _ <- this match {
+        case j if joinType.isDefined && on.isEmpty && joinType.get != CrossJoin =>
+          Left(s"JOIN $j requires an ON clause")
+        case j if joinType.isEmpty && on.isDefined =>
+          Left(s"JOIN $j requires a JOIN type")
+        case j if alias.isEmpty =>
+          Left(s"JOIN $j requires an alias")
+        case _ => Right(())
+      }
+    } yield ()
 }
 
 case object Unnest extends Expr("UNNEST") with TokenRegex
 
-case class Unnest(identifier: Identifier, limit: Option[Limit], alias: Option[Alias] = None)
-    extends Source
+case class Unnest(
+  identifier: Identifier,
+  limit: Option[Limit],
+  alias: Option[Alias] = None,
+  parent: Option[Unnest] = None
+) extends Source
     with Join {
-  override def sql: String = s"$Join $Unnest($identifier${asString(limit)})"
-  def update(request: SQLSearchRequest): Unnest =
-    this.copy(identifier = identifier.update(request))
-  override val name: String = identifier.name
+  override def sql: String = s"$Join $Unnest($identifier)${asString(alias)}"
+  def update(request: SQLSearchRequest): Unnest = {
+    val updated = this.copy(
+      identifier = identifier.withNested(true).update(request),
+      limit = limit.orElse(request.limit)
+    )
+    updated.identifier.tableAlias match {
+      case Some(alias) if updated.identifier.nested =>
+        request.unnests.get(alias) match {
+          case Some(parent) if parent.path != updated.path =>
+            return updated.copy(parent = Some(parent))
+          case _ =>
+        }
+      case _ =>
+    }
+    updated
+  }
 
-  override def source: Source = this
+  override val name: String = {
+    val parts = identifier.name.split('.')
+    if (parts.length <= 1) identifier.name
+    else parts.tail.mkString(".")
+  }
+
+  def innerHitsName: String = alias.map(_.alias).getOrElse(name)
+
+  def path: String = parent match {
+    case Some(p) => s"${p.path}.$name"
+    case None    => name
+  }
+
+  override def source: Source = identifier
 
   override def joinType: Option[JoinType] = None
 
   override def on: Option[On] = None
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- super.validate()
+      _ <-
+        if (identifier.name.contains('.')) Right(())
+        else Left(s"UNNEST identifier $identifier must be a nested field")
+    } yield ()
+
 }
 
 case class Table(name: String, tableAlias: Option[Alias] = None, joins: Seq[Join] = Nil)
     extends Source {
-  override def sql: String = s"$name${asString(tableAlias)}${joins.map(_.sql).mkString(" ")}"
+  override def sql: String = s"$name${asString(tableAlias)} ${joins.map(_.sql).mkString(" ")}".trim
   def update(request: SQLSearchRequest): Table = this.copy(joins = joins.map(_.update(request)))
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- tableAlias match {
+        case Some(a) if a.alias.isEmpty => Left(s"Table $name alias cannot be empty")
+        case _                          => Right(())
+      }
+      _ <- joins.map(_.validate()).filter(_.isLeft) match {
+        case Nil    => Right(())
+        case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+      }
+    } yield ()
 }
 
 case class From(tables: Seq[Table]) extends Updateable {
   override def sql: String = s" $From ${tables.map(_.sql).mkString(",")}"
-  lazy val tableAliases: Map[String, String] = tables
-    .flatMap((table: Table) => table.tableAlias.map(alias => table.name -> alias.alias))
-    .toMap ++ unnests.map(unnest => unnest._2 -> unnest._1).toMap
-  lazy val unnests: Seq[(String, String, Option[Limit])] = tables
+  lazy val unnests: Seq[Unnest] = tables
     .map(_.joins)
     .collect { case j =>
-      j.collect { case u: Unnest => // extract unnest info
-        (u.alias.map(_.alias).getOrElse(u.identifier.name), u.identifier.name, u.limit)
-      }
+      j.collect { case u: Unnest => u }
     }
     .flatten
+
+  lazy val tableAliases: Map[String, String] = tables
+    .flatMap((table: Table) =>
+      table.tableAlias match {
+        case Some(alias) if alias.alias.nonEmpty => Some(table.name -> alias.alias)
+        case _                                   => Some(table.name -> table.name)
+      }
+    )
+    .toMap ++ unnestAliases.map(unnest => unnest._2._1 -> unnest._1)
+
+  lazy val unnestAliases: Map[String, (String, Option[Limit])] = unnests
+    .map(u => // extract unnest info
+      (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
+    )
+    .toMap
   def update(request: SQLSearchRequest): From =
     this.copy(tables = tables.map(_.update(request)))
 
@@ -87,7 +168,97 @@ case class From(tables: Seq[Table]) extends Updateable {
     if (tables.isEmpty) {
       Left("At least one table is required in FROM clause")
     } else {
-      Right(())
+      for {
+        _ <- tables.map(_.validate()).filter(_.isLeft) match {
+          case Nil    => Right(())
+          case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+        }
+      } yield ()
     }
+  }
+}
+
+case class NestedElement(
+  path: String,
+  innerHitsName: String,
+  size: Option[Int],
+  children: Seq[NestedElement] = Nil, // TODO remove and use parent instead
+  sources: Seq[String] = Nil,
+  parent: Option[NestedElement]
+) {
+  lazy val root: NestedElement = {
+    parent match {
+      case Some(p) => p.root
+      case None    => this
+    }
+  }
+
+  lazy val level: Int = {
+    parent match {
+      case Some(p) => 1 + p.level
+      case None    => 0
+    }
+  }
+
+  lazy val bucketPath: String = {
+    parent match {
+      case Some(p) => s"${p.bucketPath}>$innerHitsName"
+      case None    => innerHitsName
+    }
+  }
+}
+
+object NestedElements {
+
+  def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
+    if (nestedElements.isEmpty) return Nil
+    val nestedParentsPath: collection.mutable.Map[String, (NestedElement, Seq[NestedElement])] =
+      collection.mutable.Map.empty
+
+    val distinctNestedElements = nestedElements.distinctBy(_.path)
+
+    @tailrec
+    def getNestedParents(
+      n: NestedElement,
+      parents: Seq[NestedElement]
+    ): Seq[NestedElement] = {
+      n.parent match {
+        case Some(p) =>
+          if (!nestedParentsPath.contains(p.path)) {
+            p.copy(children = Nil)
+            nestedParentsPath += p.path -> (p, Seq(n))
+            getNestedParents(p, p +: parents)
+          } else {
+            nestedParentsPath += p.path -> (p, nestedParentsPath(p.path)._2 :+ n)
+            parents
+          }
+        case _ => parents
+      }
+    }
+
+    val deepestNestedElement =
+      distinctNestedElements.maxBy(_.level) // FIXME we may have multiple deepest elements
+    val nestedParents = getNestedParents(deepestNestedElement, Seq.empty)
+
+    def innerBuildNestedTree(n: NestedElement): NestedElement = {
+      val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
+      if (children.nonEmpty) {
+        val updatedChildren = children.map(innerBuildNestedTree)
+        n.copy(children = updatedChildren)
+      } else {
+        n
+      }
+    }
+
+    if (nestedParents.nonEmpty) {
+      nestedParents.map(innerBuildNestedTree)
+    } else {
+      distinctNestedElements
+    }
+  }
+
+  def walkNestedTree(n: NestedElement)(f: NestedElement => Unit): Unit = {
+    f(n)
+    n.children.foreach(child => walkNestedTree(child)(f))
   }
 }

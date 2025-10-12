@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.aggregate.TopHitsAggregation
-import app.softnetwork.elastic.sql.{asString, Identifier, Token}
+import app.softnetwork.elastic.sql.{asString, Token}
 
 case class SQLSearchRequest(
   select: Select = Select(),
@@ -18,21 +18,62 @@ case class SQLSearchRequest(
 
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
-  lazy val unnests: Seq[(String, String, Option[Limit])] = from.unnests
+  lazy val unnestAliases: Map[String, (String, Option[Limit])] = from.unnestAliases
   lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
     b.identifier.identifierName -> b
   }.toMap
+  lazy val unnests: Map[String, Unnest] =
+    from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
+  lazy val nestedFields: Map[String, Seq[Field]] =
+    select.fields
+      .filterNot(_.aggregation)
+      .filter(_.nested)
+      .groupBy(_.identifier.innerHitsName.getOrElse(""))
+  lazy val nested: Seq[NestedElement] = from.unnests.map(toNestedElement).distinctBy(_.path)
+  private[this] lazy val nestedFieldsWithoutCriteria: Map[String, Seq[Field]] = {
+    // nested fields that are not part of where, having or group by clauses
+    val innerHitsWithCriteria = (where.map(_.nestedElements).getOrElse(Seq.empty) ++
+      having.map(_.nestedElements).getOrElse(Seq.empty) ++
+      groupBy.map(_.nestedElements).getOrElse(Seq.empty)).distinctBy(_.path).map(_.innerHitsName)
+    val ret = nestedFields.filterNot { case (innerHitsName, _) =>
+      innerHitsWithCriteria.contains(innerHitsName)
+    }
+    ret
+  }
+  lazy val nestedElementsWithoutCriteria: Seq[NestedElement] =
+    nested.filter(n => nestedFieldsWithoutCriteria.keys.toSeq.contains(n.innerHitsName))
+
+  def toNestedElement(u: Unnest): NestedElement = {
+    NestedElement(
+      path = u.path,
+      innerHitsName = u.innerHitsName,
+      size = limit.map(_.limit),
+      children = Nil,
+      sources = nestedFields
+        .get(u.innerHitsName)
+        .map(_.map(_.identifier.name.split('.').tail.mkString(".")))
+        .getOrElse(Nil),
+      parent = u.parent.map(toNestedElement)
+    )
+  }
 
   lazy val sorts: Map[String, SortOrder] =
     orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
 
   def update(): SQLSearchRequest = {
-    val updated = this.copy(from = from.update(this))
-    updated.copy(
-      select = select.update(updated),
-      where = where.map(_.update(updated)),
-      groupBy = groupBy.map(_.update(updated)),
-      having = having.map(_.update(updated))
+    (for {
+      from <- Option(this.copy(from = from.update(this)))
+      select <- Option(
+        from.copy(
+          select = select.update(from),
+          groupBy = groupBy.map(_.update(from)),
+          having = having.map(_.update(from))
+        )
+      )
+      where   <- Option(select.copy(where = where.map(_.update(select))))
+      updated <- Option(where.copy(orderBy = orderBy.map(_.update(where))))
+    } yield updated).getOrElse(
+      throw new IllegalStateException("Failed to update SQLSearchRequest")
     )
   }
 
@@ -42,6 +83,7 @@ case class SQLSearchRequest(
     if (aggregates.isEmpty && buckets.isEmpty)
       select.fields
         .filterNot(_.isScriptField)
+        .filterNot(_.nested)
         .map(_.sourceField)
         .filterNot(f => excludes.contains(f))
     else

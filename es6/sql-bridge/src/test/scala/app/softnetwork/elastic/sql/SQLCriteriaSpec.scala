@@ -413,80 +413,84 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "filter nested predicate" in {
-    asQuery(nestedPredicate) shouldBe """{
-
-        |"query":{
-        |    "bool":{
-        |      "filter" : [
-        |        {
-        |          "term" : {
-        |            "identifier1" : {
-        |              "value" : 1
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "nested" : {
-        |            "path" : "nested",
-        |            "query" : {
-        |              "bool" : {
-        |                "should" : [
-        |                  {
-        |                    "range" : {
-        |                      "nested.identifier2" : {
-        |                        "gt" : 2
-        |                      }
-        |                    }
-        |                  },
-        |                  {
-        |                    "term" : {
-        |                      "nested.identifier3" : {
-        |                        "value" : 3
-        |                      }
-        |                    }
-        |                  }
-        |                ]
-        |              }
-        |            },
-        |            "inner_hits":{"name":"nested","from":0,"size":3}
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s", "")
+    asQuery(nestedPredicate) shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "term": {
+      |            "identifier1": {
+      |              "value": 1
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "nested",
+      |            "query": {
+      |              "bool": {
+      |                "should": [
+      |                  {
+      |                    "range": {
+      |                      "nested.identifier2": {
+      |                        "gt": 2
+      |                      }
+      |                    }
+      |                  },
+      |                  {
+      |                    "term": {
+      |                      "nested.identifier3": {
+      |                        "value": 3
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "nested"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "")
   }
 
   it should "filter nested criteria" in {
-    asQuery(nestedCriteria) shouldBe """{
-
-        |"query":{
-        |    "bool":{
-        |      "filter" : [
-        |        {
-        |          "term" : {
-        |            "identifier1" : {
-        |              "value" : 1
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "nested" : {
-        |            "path" : "nested",
-        |            "query" : {
-        |              "term" : {
-        |                "nested.identifier3" : {
-        |                  "value" : 3
-        |                }
-        |              }
-        |            },
-        |            "inner_hits":{"name":"nested","from":0,"size":3}
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s", "")
+    asQuery(nestedCriteria) shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "term": {
+      |            "identifier1": {
+      |              "value": 1
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "nested",
+      |            "query": {
+      |              "term": {
+      |                "nested.identifier3": {
+      |                  "value": 3
+      |                }
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "nested"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "")
   }
 
   it should "filter child predicate" in {
@@ -670,36 +674,44 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "filter nested with between" in {
-    asQuery(nestedWithBetween) shouldBe """{
-
-        |"query":{
-        |    "bool":{"filter":[{"nested" : {
-        |      "path" : "ciblage",
-        |      "query" : {
-        |        "bool" : {
-        |          "filter" : [
-        |            {
-        |              "range" : {
-        |                "ciblage.Archivage_CreationDate" : {
-        |                  "gte" : "NOW-3M/M",
-        |                  "lte" : "NOW"
-        |                }
-        |              }
-        |            },
-        |            {
-        |              "term" : {
-        |                "ciblage.statutComportement" : {
-        |                  "value" : 1
-        |                }
-        |              }
-        |            }
-        |          ]
-        |        }
-        |      },
-        |      "inner_hits":{"name":"ciblage","from":0,"size":3}
-        |    }
-        |  }
-        |]}}}""".stripMargin.replaceAll("\\s", "")
+    asQuery(nestedWithBetween) shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "ciblage",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "range": {
+      |                      "ciblage.Archivage_CreationDate": {
+      |                        "gte": "now-3M/M",
+      |                        "lte": "now"
+      |                      }
+      |                    }
+      |                  },
+      |                  {
+      |                    "term": {
+      |                      "ciblage.statutComportement": {
+      |                        "value": 1
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "ciblage"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s", "")
   }
 
   it should "filter boolean eq" in {

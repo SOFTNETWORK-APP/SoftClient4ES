@@ -18,8 +18,8 @@ trait FromParser {
   self: Parser with WhereParser with LimitParser =>
 
   def unnest: PackratParser[Unnest] =
-    Unnest.regex ~ start ~ identifier ~ limit.? ~ end ~ alias.? ^^ { case _ ~ i ~ l ~ _ ~ a =>
-      Unnest(i, l, a)
+    Unnest.regex ~ start ~ identifier ~ end ~ alias.? ^^ { case _ ~ i ~ _ ~ a =>
+      Unnest(i, None, a)
     }
 
   def inner_join: PackratParser[JoinType] = InnerJoin.regex ^^ { _ => InnerJoin }

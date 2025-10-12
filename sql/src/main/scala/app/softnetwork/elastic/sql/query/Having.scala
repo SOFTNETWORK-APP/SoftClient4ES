@@ -13,4 +13,7 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
     this.copy(criteria = criteria.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = criteria.map(_.validate()).getOrElse(Right(()))
+
+  def nestedElements: Seq[NestedElement] =
+    criteria.map(_.nestedElements).getOrElse(Seq.empty).distinctBy(_.path)
 }

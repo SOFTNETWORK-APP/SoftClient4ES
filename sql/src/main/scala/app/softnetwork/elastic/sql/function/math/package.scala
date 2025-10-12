@@ -6,7 +6,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLType, SQLTypes}
 package object math {
 
   sealed trait MathOp extends PainlessScript with TokenRegex {
-    override def painless: String = s"Math.${sql.toLowerCase()}"
+    override def painless(): String = s"Math.${sql.toLowerCase()}"
     override def toString: String = s" $sql "
 
     override def baseType: SQLNumeric = SQLTypes.Numeric
@@ -79,7 +79,8 @@ package object math {
       List(arg) ++ scale.map(IntValue(_)).toList
 
     override def toPainlessCall(callArgs: List[String]): String =
-      s"(def p = ${Pow(IntValue(10), scale.getOrElse(0)).painless}; ${mathOp.painless}((${callArgs.head} * p) / p))"
+      s"(def p = ${Pow(IntValue(10), scale.getOrElse(0))
+        .painless()}; ${mathOp.painless()}((${callArgs.head} * p) / p))"
   }
 
   case class Sign(arg: PainlessScript) extends MathematicalFunction {
@@ -87,12 +88,12 @@ package object math {
 
     override def args: List[PainlessScript] = List(arg)
 
-    override def painless: String = {
+    override def painless(): String = {
       val ret = "arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)"
       if (arg.nullable)
-        s"(def arg0 = ${arg.painless}; arg0 != null ? ($ret) : null)"
+        s"(def arg0 = ${arg.painless()}; arg0 != null ? ($ret) : null)"
       else
-        s"(def arg0 = ${arg.painless}; $ret)"
+        s"(def arg0 = ${arg.painless()}; $ret)"
     }
   }
 

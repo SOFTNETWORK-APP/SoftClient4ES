@@ -2,11 +2,7 @@ package app.softnetwork.elastic
 
 import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
-import app.softnetwork.elastic.sql.function.time.{
-  CurrentDateFunction,
-  CurrentDateTimeFunction,
-  CurrentFunction
-}
+import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
@@ -56,7 +52,7 @@ package object sql {
   }
 
   trait PainlessScript extends Token {
-    def painless: String
+    def painless(): String
     def nullValue: String = "null"
   }
 
@@ -118,7 +114,7 @@ package object sql {
           case _               => values.headOption
         }
     }
-    override def painless: String =
+    override def painless(): String =
       SQLTypeUtils.coerce(
         value match {
           case s: String  => s""""$s""""
@@ -136,7 +132,7 @@ package object sql {
 
   case object Null extends Value[Null](null) with TokenRegex {
     override def sql: String = "NULL"
-    override def painless: String = "null"
+    override def painless(): String = "null"
     override def nullable: Boolean = true
     override def baseType: SQLType = SQLTypes.Null
   }
@@ -240,13 +236,13 @@ package object sql {
 
   case object PiValue extends Value[Double](Math.PI) with TokenRegex {
     override def sql: String = "PI"
-    override def painless: String = "Math.PI"
+    override def painless(): String = "Math.PI"
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
   case object EValue extends Value[Double](Math.E) with TokenRegex {
     override def sql: String = "E"
-    override def painless: String = "Math.E"
+    override def painless(): String = "Math.E"
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
@@ -256,7 +252,7 @@ package object sql {
     override def baseType: SQLNumeric = SQLTypes.Double
     override def sql: String = s"$longValue $unit"
     def geoDistance: String = s"$longValue$unit"
-    override def painless: String = s"$value"
+    override def painless(): String = s"$value"
   }
 
   sealed abstract class FromTo(val from: TokenValue, val to: TokenValue) extends Token {
@@ -321,7 +317,8 @@ package object sql {
       extends Token
       with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
-    override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
+    override def painless(): String =
+      s"[${values.map(_.painless()).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
@@ -463,9 +460,23 @@ package object sql {
     def tableAlias: Option[String]
     def distinct: Boolean
     def nested: Boolean
+    def nestedElement: Option[NestedElement]
     def limit: Option[Limit]
     def fieldAlias: Option[String]
     def bucket: Option[Bucket]
+    def hasBucket: Boolean = bucket.isDefined
+    def metricsPath: Map[String, String] = { // TODO add bucket context ?
+      if (aggregation) {
+        val metricName = aliasOrName
+        nestedElement match {
+          case Some(ne) => Map(metricName -> s"${ne.bucketPath}>$metricName")
+          case _        => Map(metricName -> metricName)
+        }
+      } else {
+        Map.empty
+      }
+    }
+
     override def sql: String = {
       var parts: Seq[String] = name.split("\\.").toSeq
       tableAlias match {
@@ -491,16 +502,24 @@ package object sql {
         fun.toSQL(expr)
       }) // FIXME use AliasUtils.normalize?
 
-    lazy val nestedType: Option[String] = if (nested) Some(name.split('.').head) else None
-
     lazy val innerHitsName: Option[String] = if (nested) tableAlias else None
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
+    def path: String =
+      nestedElement match {
+        case Some(ne) =>
+          name.split("\\.") match {
+            case Array(_, _*) => s"${ne.path}.${name.split("\\.").tail.mkString(".")}"
+            case _            => s"${ne.path}.$name"
+          }
+        case None => name
+      }
+
     def paramName: String =
       if (aggregation && functions.size == 1) s"params.$aliasOrName"
-      else if (name.nonEmpty)
-        s"doc['$name'].value"
+      else if (path.nonEmpty)
+        s"doc['$path'].value"
       else ""
 
     def toPainless(base: String): String = {
@@ -509,7 +528,7 @@ package object sql {
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
           case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx)
-          case f: PainlessScript          => expr = s"$expr${f.painless}"
+          case f: PainlessScript          => expr = s"$expr${f.painless()}"
           case f                          => expr = f.toSQL(expr) // fallback
         }
       }
@@ -567,11 +586,11 @@ package object sql {
     override def dateMathScript: Boolean = isTemporal
 
     def checkNotNull: String =
-      if (name.isEmpty) ""
+      if (path.isEmpty) ""
       else
-        s"(!doc.containsKey('$name') || doc['$name'].empty ? $nullValue : doc['$name'].value)"
+        s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value)"
 
-    override def painless: String = toPainless(
+    override def painless(): String = toPainless(
       if (nullable)
         checkNotNull
       else
@@ -581,17 +600,27 @@ package object sql {
     private[this] var _nullable =
       this.name.nonEmpty && (!aggregation || functions.size > 1)
 
-    def nullable_=(b: Boolean): Unit = {
+    protected def nullable_=(b: Boolean): Unit = {
       _nullable = b
     }
 
     override def nullable: Boolean = _nullable
 
+    def withNullable(b: Boolean): Identifier = {
+      this.nullable = b
+      this
+    }
+
     override def value: String =
       script match {
         case Some(s) => s
-        case _       => painless
+        case _       => painless()
       }
+
+    def withNested(nested: Boolean): Identifier = this match {
+      case g: GenericIdentifier => g.copy(nested = nested)
+      case _                    => this
+    }
   }
 
   object Identifier {
@@ -611,21 +640,48 @@ package object sql {
     limit: Option[Limit] = None,
     functions: List[Function] = List.empty,
     fieldAlias: Option[String] = None,
-    bucket: Option[Bucket] = None
+    bucket: Option[Bucket] = None,
+    nestedElement: Option[NestedElement] = None
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
 
+    override def withNullable(b: Boolean): Identifier = {
+      val id = this.copy()
+      id.nullable = b
+      id
+    }
+
     def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
       if (request.tableAliases.values.toSeq.contains(parts.head)) {
-        request.unnests.find(_._1 == parts.head) match {
-          case Some(tuple) =>
+        request.unnestAliases.find(_._1 == parts.head) match {
+          case Some(tuple) if !nested =>
             this.copy(
               tableAlias = Some(parts.head),
-              name = s"${tuple._2}.${parts.tail.mkString(".")}",
+              name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
               nested = true,
-              limit = tuple._3,
+              limit = tuple._2._2,
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket),
+              nestedElement = {
+                request.unnests.get(parts.head) match {
+                  case Some(unnest) => Some(request.toNestedElement(unnest))
+                  case None         => None
+                }
+              }
+            )
+          case Some(tuple) if nested =>
+            this.copy(
+              tableAlias = Some(parts.head),
+              name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+              limit = tuple._2._2,
+              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+              bucket = request.bucketNames.get(identifierName).orElse(bucket)
+            )
+          case None if nested =>
+            this.copy(
+              tableAlias = Some(parts.head),
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )

@@ -15,7 +15,71 @@ case object Where extends Expr("WHERE") with TokenRegex
 sealed trait Criteria extends Updateable with PainlessScript {
   def operator: Operator
 
+  def identifiers: Seq[Identifier] = this match {
+    case Predicate(left, _, right, _, _) => left.identifiers ++ right.identifiers
+    case c: Expression                   => c.identifiers
+    case relation: ElasticRelation       => relation.criteria.identifiers
+    case m: MatchCriteria                => m.identifiers
+    case _                               => Nil
+  }
+
   def nested: Boolean = false
+
+  def nestedElement: Option[NestedElement]
+
+  def nestedElements: Seq[NestedElement] =
+    this match {
+      case p: Predicate       => p.nestedElements
+      case r: ElasticRelation => r.criteria.nestedElements
+      case e: Expression      => e.nestedElement.toSeq
+      case m: MatchCriteria   => m.criteria.nestedElements
+      case _                  => Nil
+    }
+
+  def nestedCriteria(innerHitsName: String): Seq[Criteria] = {
+    this match {
+      case e: ElasticNested => e.criteria.nestedCriteria(innerHitsName)
+      case _ =>
+        nestedElement
+          .filter(_ => nestedElement.exists(_.innerHitsName == innerHitsName))
+          .map(_ => this)
+          .toSeq
+    }
+  }
+
+  def extractMetricsPath: Map[String, String] = this match { // used for bucket_selector
+    case Predicate(left, _, right, _, _) =>
+      left.extractMetricsPath ++ right.extractMetricsPath
+    case relation: ElasticRelation => relation.criteria.extractMetricsPath
+    case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
+    case e: Expression             => e.extractMetricsPath
+    case _                         => Map.empty
+  }
+
+  def includes(
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes = this match {
+    case Predicate(left, _, right, n, _) =>
+      right.includes(
+        bucket,
+        (!not && n.isDefined) || (not && n.isEmpty),
+        left.includes(bucket, not, bucketIncludesExcludes)
+      )
+    case relation: ElasticRelation =>
+      relation.criteria.includes(bucket, not, bucketIncludesExcludes)
+    case m: MatchCriteria => m.criteria.includes(bucket, not, bucketIncludesExcludes)
+    case e: Expression    => e.includes(bucket, not, bucketIncludesExcludes)
+    case _                => bucketIncludesExcludes
+  }
+
+  def excludes(
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes =
+    includes(bucket, !not, bucketIncludesExcludes)
 
   def limit: Option[Limit] = None
 
@@ -42,22 +106,22 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   override def out: SQLType = SQLTypes.Boolean
 
-  override def painless: String = this match {
+  override def painless(): String = this match {
     case Predicate(left, op, right, maybeNot, group) =>
-      val leftStr = left.painless
-      val rightStr = right.painless
+      val leftStr = left.painless()
+      val rightStr = right.painless()
       val opStr = op match {
-        case AND | OR => op.painless
+        case AND | OR => op.painless()
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
       if (group || not)
-        s"${maybeNot.map(_.painless).getOrElse("")}($leftStr $opStr $rightStr)"
+        s"${maybeNot.map(_.painless()).getOrElse("")}($leftStr $opStr $rightStr)"
       else
         s"$leftStr $opStr $rightStr"
-    case relation: ElasticRelation => asGroup(relation.criteria.painless)
-    case m: MatchCriteria          => asGroup(m.criteria.painless)
-    case expr: Expression          => asGroup(expr.painless)
+    case relation: ElasticRelation => asGroup(relation.criteria.painless())
+    case m: MatchCriteria          => asGroup(m.criteria.painless())
+    case expr: Expression          => asGroup(expr.painless())
     case _ => throw new IllegalArgumentException(s"Unsupported criteria: $this")
   }
 }
@@ -71,7 +135,7 @@ case class Predicate(
 ) extends Criteria {
   override def sql = s"${if (group) s"($leftCriteria"
   else leftCriteria} $operator${not
-    .map(_ => " not")
+    .map(_ => " NOT")
     .getOrElse("")} ${if (group) s"$rightCriteria)" else rightCriteria}"
   override def update(request: SQLSearchRequest): Criteria = {
     val updatedPredicate = this.copy(
@@ -113,7 +177,14 @@ case class Predicate(
     }
   }
 
-  override def nested: Boolean = leftCriteria.nested && rightCriteria.nested
+  def nestedElement: Option[NestedElement] = None
+
+  override def nestedElements: Seq[NestedElement] = {
+    leftCriteria.nestedElements ++ rightCriteria.nestedElements
+  }
+
+  override def nested: Boolean =
+    leftCriteria.nested && rightCriteria.nested
 
   override def matchCriteria: Boolean = leftCriteria.matchCriteria || rightCriteria.matchCriteria
 
@@ -122,6 +193,9 @@ case class Predicate(
       _ <- leftCriteria.validate()
       _ <- rightCriteria.validate()
     } yield ()
+
+  override def nestedCriteria(innerHitsName: String): Seq[Criteria] =
+    leftCriteria.nestedCriteria(innerHitsName) ++ rightCriteria.nestedCriteria(innerHitsName)
 }
 
 sealed trait ElasticFilter
@@ -182,6 +256,7 @@ case class ElasticBoolQuery(
 
 sealed trait Expression extends FunctionChain with ElasticFilter with Criteria { // to fix output type as Boolean
   def identifier: Identifier
+  def nestedElement: Option[NestedElement] = identifier.nestedElement
   override def nested: Boolean = identifier.nested
   override def group: Boolean = false
   override lazy val limit: Option[Limit] = identifier.limit
@@ -192,24 +267,96 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   def valueAsString: String = maybeValue.map(v => s" $v").getOrElse("")
   override def sql = s"$identifier $notAsString$operator$valueAsString"
 
+  override def identifiers: Seq[Identifier] =
+    maybeValue match {
+      case Some(id: Identifier) => Seq(identifier, id)
+      case _                    => Seq(identifier)
+    }
+
+  override def extractMetricsPath: Map[String, String] = maybeValue match {
+    case Some(v: Identifier) => identifier.metricsPath ++ v.metricsPath
+    case _                   => identifier.metricsPath
+  }
+
+  override def includes(
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes = {
+    identifier.bucket.find(_.name == bucket.name) match {
+      case Some(_) =>
+        operator match {
+          case EQ =>
+            if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+              maybeValue match {
+                case Some(v: Value[_]) if v.sql.nonEmpty =>
+                  bucketIncludesExcludes.copy(values =
+                    bucketIncludesExcludes.values ++ Set(v.sql.replaceAll("'", ""))
+                  )
+                case _ => bucketIncludesExcludes
+              }
+            else bucketIncludesExcludes
+          case NE | DIFF =>
+            if ((not && maybeNot.isEmpty) || (!not && maybeNot.isDefined))
+              maybeValue match {
+                case Some(v: Value[_]) if v.sql.nonEmpty =>
+                  bucketIncludesExcludes.copy(values =
+                    bucketIncludesExcludes.values ++ Set(v.sql.replaceAll("'", ""))
+                  )
+                case _ => bucketIncludesExcludes
+              }
+            else bucketIncludesExcludes
+          case LIKE =>
+            if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+              maybeValue match {
+                case Some(v: StringValue) if v.sql.nonEmpty =>
+                  bucketIncludesExcludes.copy(regex =
+                    bucketIncludesExcludes.regex.orElse(Option(v.sql.replaceAll("%", ".*")))
+                  )
+                case _ => bucketIncludesExcludes
+              }
+            else bucketIncludesExcludes
+          case RLIKE =>
+            if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+              maybeValue match {
+                case Some(v: StringValue) if v.sql.nonEmpty =>
+                  bucketIncludesExcludes.copy(regex =
+                    bucketIncludesExcludes.regex.orElse(Option(v.sql))
+                  )
+                case _ => bucketIncludesExcludes
+              }
+            else bucketIncludesExcludes
+          case _ =>
+            bucketIncludesExcludes
+        }
+      case _ => bucketIncludesExcludes
+    }
+  }
+
   override lazy val aggregation: Boolean = maybeValue match {
     case Some(v: FunctionChain) => identifier.aggregation || v.aggregation
     case _                      => identifier.aggregation
   }
 
+  def hasBucket: Boolean = identifier.hasBucket || maybeValue.exists {
+    case v: Identifier => v.hasBucket
+    case v: Expression => v.hasBucket
+    case _             => false
+  }
+
   def painlessNot: String = operator match {
     case _: ComparisonOperator => ""
-    case _                     => maybeNot.map(_.painless).getOrElse("")
+    case _                     => maybeNot.map(_.painless()).getOrElse("")
   }
 
   def painlessOp: String = operator match {
-    case o: ComparisonOperator if maybeNot.isDefined => o.not.painless
-    case _                                           => operator.painless
+    case o: ComparisonOperator if maybeNot.isDefined => o.not.painless()
+    case _                                           => operator.painless()
   }
 
   def painlessValue: String = maybeValue
     .map {
-      case v: PainlessScript => v.painless
+      case v: PainlessScript => v.painless()
       case v                 => v.sql
     }
     .getOrElse("") /*{
@@ -233,7 +380,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case _                     => s"$painlessOp($painlessValue)"
     }
 
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : ${painlessNot}left$check"
     }
@@ -349,7 +496,7 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
     } else
       updated
   }
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null"
     }
@@ -372,7 +519,7 @@ case class IsNotNullCriteria(identifier: Identifier)
       updated
   }
 
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left != null"
     }
@@ -403,9 +550,27 @@ case class InExpr[R, +T <: Value[R]](
 
   override def maybeValue: Option[Token] = Some(values)
 
+  override def includes(
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes = {
+    identifier.bucket.find(_.name == bucket.name) match {
+      case Some(_) =>
+        if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+          bucketIncludesExcludes.copy(values =
+            bucketIncludesExcludes.values ++ values.values.map(_.sql.replaceAll("'", "")).toSet
+          )
+        else bucketIncludesExcludes
+      case _ => bucketIncludesExcludes
+    }
+  }
+
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
-  override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
+  override def painless(): String =
+    s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
+
 }
 
 case class BetweenExpr(
@@ -435,7 +600,7 @@ case class BetweenExpr(
     } yield ()
   }
 
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
     }
@@ -465,8 +630,9 @@ case class DistanceCriteria(
 }
 
 case class MatchCriteria(
-  identifiers: Seq[Identifier],
-  value: StringValue
+  override val identifiers: Seq[Identifier],
+  value: StringValue,
+  nestedElement: Option[NestedElement] = None
 ) extends Criteria {
   override def sql: String =
     s"$operator (${identifiers.mkString(",")}) $AGAINST ($value)"
@@ -521,9 +687,27 @@ case class ElasticMatch(
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
+  override def includes(
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes = {
+    identifier.bucket.find(_.name == bucket.name) match {
+      case Some(_) =>
+        if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+          bucketIncludesExcludes.copy(regex =
+            bucketIncludesExcludes.regex.orElse(Option(value.sql))
+          )
+        else bucketIncludesExcludes
+      case _ => bucketIncludesExcludes
+    }
+  }
+
   override def matchCriteria: Boolean = true
 
-  override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
+  override def painless(): String =
+    s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
+
 }
 
 sealed abstract class ElasticRelation(val criteria: Criteria, val operator: ElasticOperator)
@@ -534,7 +718,9 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
   private[this] def rtype(criteria: Criteria): Option[String] = criteria match {
     case Predicate(left, _, right, _, _) => rtype(left).orElse(rtype(right))
     case c: Expression =>
-      c.identifier.nestedType.orElse(c.identifier.name.split('.').headOption)
+      c.identifier.nestedElement
+        .map(_.innerHitsName)
+        .orElse(c.identifier.name.split('.').headOption)
     case relation: ElasticRelation => relation.relationType
     case _                         => None
   }
@@ -547,8 +733,17 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
 
 }
 
-case class ElasticNested(override val criteria: Criteria, override val limit: Option[Limit])
-    extends ElasticRelation(criteria, Nested) {
+case class ElasticNested(
+  override val criteria: Criteria,
+  override val limit: Option[Limit],
+  fromCriteria: Boolean = true
+) extends ElasticRelation(criteria, Nested) {
+  override def sql: String =
+    if (!fromCriteria) s"$operator($criteria)"
+    else s"$criteria"
+
+  def nestedElement: Option[NestedElement] = None
+
   override def update(request: SQLSearchRequest): ElasticNested =
     this.copy(criteria = criteria.update(request))
 
@@ -565,13 +760,18 @@ case class ElasticNested(override val criteria: Criteria, override val limit: Op
   lazy val innerHitsName: Option[String] = name(criteria)
 }
 
-case class ElasticChild(override val criteria: Criteria) extends ElasticRelation(criteria, Child) {
+case class ElasticChild(
+  override val criteria: Criteria
+) extends ElasticRelation(criteria, Child) {
+  def nestedElement: Option[NestedElement] = None
   override def update(request: SQLSearchRequest): ElasticChild =
     this.copy(criteria = criteria.update(request))
 }
 
-case class ElasticParent(override val criteria: Criteria)
-    extends ElasticRelation(criteria, Parent) {
+case class ElasticParent(
+  override val criteria: Criteria
+) extends ElasticRelation(criteria, Parent) {
+  def nestedElement: Option[NestedElement] = None
   override def update(request: SQLSearchRequest): ElasticParent =
     this.copy(criteria = criteria.update(request))
 }
@@ -589,4 +789,8 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
     case _       => Right(())
   }
 
+  def nestedElements: Seq[NestedElement] = criteria match {
+    case Some(c) => c.nestedElements.distinctBy(_.path)
+    case _       => Nil
+  }
 }

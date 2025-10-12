@@ -124,7 +124,7 @@ package object function {
 
     override def toSQL(base: String): String = s"$base$sql"
 
-    override def painless: String = {
+    override def painless(): String = {
       val nullCheck =
         args.zipWithIndex
           .filter(_._1.nullable)
@@ -135,7 +135,7 @@ package object function {
         args.zipWithIndex
           .filter(_._1.nullable)
           .map { case (a, i) =>
-            s"def arg$i = ${SQLTypeUtils.coerce(a.painless, a.baseType, argTypes(i), nullable = false)};"
+            s"def arg$i = ${SQLTypeUtils.coerce(a.painless(), a.baseType, argTypes(i), nullable = false)};"
           }
           .mkString(" ")
 
@@ -144,7 +144,7 @@ package object function {
           if (a.nullable)
             s"arg$i"
           else
-            SQLTypeUtils.coerce(a.painless, a.baseType, argTypes(i), nullable = false)
+            SQLTypeUtils.coerce(a.painless(), a.baseType, argTypes(i), nullable = false)
         }
 
       if (args.exists(_.nullable))
@@ -155,9 +155,9 @@ package object function {
 
     def toPainlessCall(callArgs: List[String]): String =
       if (callArgs.nonEmpty)
-        s"${fun.map(_.painless).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
+        s"${fun.map(_.painless()).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
       else
-        fun.map(_.painless).getOrElse("")
+        fun.map(_.painless()).getOrElse("")
   }
 
   trait BinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType] extends FunctionN[In2, Out] {
@@ -174,9 +174,9 @@ package object function {
   trait TransformFunction[In <: SQLType, Out <: SQLType] extends FunctionN[In, Out] {
     def toPainless(base: String, idx: Int): String = {
       if (nullable && base.nonEmpty)
-        s"(def e$idx = $base; e$idx != null ? e$idx$painless : null)"
+        s"(def e$idx = $base; e$idx != null ? e$idx${painless()} : null)"
       else
-        s"$base$painless"
+        s"$base${painless()}"
     }
   }
 

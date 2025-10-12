@@ -59,9 +59,9 @@ package object time {
 
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
-        s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.baseType, out, nullable = false)}$painless : null)"
+        s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.baseType, out, nullable = false)}${painless()} : null)"
       else
-        s"${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = expr.nullable)}$painless"
+        s"${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = expr.nullable)}${painless()}"
   }
 
   sealed trait AddInterval[IO <: SQLTemporal] extends IntervalFunction[IO] {
@@ -104,17 +104,17 @@ package object time {
   }
 
   sealed trait CurrentDateTimeFunction extends DateTimeFunction with CurrentFunction {
-    override def painless: String =
+    override def painless(): String =
       SQLTypeUtils.coerce(now, this.baseType, this.out, nullable = false)
   }
 
   sealed trait CurrentDateFunction extends DateFunction with CurrentFunction {
-    override def painless: String =
+    override def painless(): String =
       SQLTypeUtils.coerce(s"$now.toLocalDate()", this.baseType, this.out, nullable = false)
   }
 
   sealed trait CurrentTimeFunction extends TimeFunction with CurrentFunction {
-    override def painless: String =
+    override def painless(): String =
       SQLTypeUtils.coerce(s"$now.toLocalTime()", this.baseType, this.out, nullable = false)
   }
 
@@ -161,7 +161,7 @@ package object time {
   }
 
   case object DateTrunc extends Expr("DATE_TRUNC") with TokenRegex with PainlessScript {
-    override def painless: String = ".truncatedTo"
+    override def painless(): String = ".truncatedTo"
     override lazy val words: List[String] = List(sql, "DATETRUNC")
   }
 
@@ -188,7 +188,7 @@ package object time {
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
-    override def painless: String = ".get"
+    override def painless(): String = ".get"
   }
 
   case class Extract(field: TimeField)
@@ -248,7 +248,7 @@ package object time {
   class WeekOfWeekBasedYear extends TimeFieldExtract(WEEK_OF_WEEK_BASED_YEAR)
 
   case object LastDayOfMonth extends Expr("LAST_DAY") with TokenRegex with PainlessScript {
-    override def painless: String = ".withDayOfMonth"
+    override def painless(): String = ".withDayOfMonth"
     override lazy val words: List[String] = List(sql, "LASTDAY")
   }
 
@@ -281,7 +281,7 @@ package object time {
 
     override def toPainlessCall(callArgs: List[String]): String = {
       callArgs match {
-        case arg :: Nil => s"$arg${LastDayOfMonth.painless}($arg.lengthOfMonth())"
+        case arg :: Nil => s"$arg${LastDayOfMonth.painless()}($arg.lengthOfMonth())"
         case _ => throw new IllegalArgumentException("LastDayOfMonth requires exactly one argument")
       }
     }
@@ -289,7 +289,7 @@ package object time {
   }
 
   case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {
-    override def painless: String = ".between"
+    override def painless(): String = ".between"
     override lazy val words: List[String] = List(sql, "DATEDIFF")
   }
 
@@ -310,7 +310,7 @@ package object time {
     override def toSQL(base: String): String = s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
 
     override def toPainlessCall(callArgs: List[String]): String =
-      s"${unit.painless}${DateDiff.painless}(${callArgs.mkString(", ")})"
+      s"${unit.painless()}${DateDiff.painless()}(${callArgs.mkString(", ")})"
   }
 
   case object DateAdd extends Expr("DATE_ADD") with TokenRegex {
@@ -395,7 +395,7 @@ package object time {
   }
 
   case object DateParse extends Expr("DATE_PARSE") with TokenRegex with PainlessScript {
-    override def painless: String = ".parse"
+    override def painless(): String = ".parse"
   }
 
   case class DateParse(identifier: Identifier, format: String)
@@ -416,7 +416,9 @@ package object time {
       s"$sql($base, '$format')"
     }
 
-    override def painless: String = throw new NotImplementedError("Use toPainless instead")
+    override def painless(): String = throw new NotImplementedError(
+      "Use toPainless instead"
+    )
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
         s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert()}').parse(e$idx, LocalDate::from) : null)"
@@ -440,7 +442,7 @@ package object time {
   }
 
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
-    override def painless: String = ".format"
+    override def painless(): String = ".format"
   }
 
   case class DateFormat(identifier: Identifier, format: String)
@@ -460,7 +462,9 @@ package object time {
       s"$sql($base, '$format')"
     }
 
-    override def painless: String = throw new NotImplementedError("Use toPainless instead")
+    override def painless(): String = throw new NotImplementedError(
+      "Use toPainless instead"
+    )
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
         s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert()}').format(e$idx) : null)"
@@ -505,7 +509,7 @@ package object time {
   }
 
   case object DateTimeParse extends Expr("DATETIME_PARSE") with TokenRegex with PainlessScript {
-    override def painless: String = ".parse"
+    override def painless(): String = ".parse"
   }
 
   case class DateTimeParse(identifier: Identifier, format: String)
@@ -526,7 +530,9 @@ package object time {
       s"$sql($base, '$format')"
     }
 
-    override def painless: String = throw new NotImplementedError("Use toPainless instead")
+    override def painless(): String = throw new NotImplementedError(
+      "Use toPainless instead"
+    )
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
         s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').parse(e$idx, ZonedDateTime::from) : null)"
@@ -550,7 +556,7 @@ package object time {
   }
 
   case object DateTimeFormat extends Expr("DATETIME_FORMAT") with TokenRegex with PainlessScript {
-    override def painless: String = ".format"
+    override def painless(): String = ".format"
   }
 
   case class DateTimeFormat(identifier: Identifier, format: String)
@@ -570,7 +576,9 @@ package object time {
       s"$sql($base, '$format')"
     }
 
-    override def painless: String = throw new NotImplementedError("Use toPainless instead")
+    override def painless(): String = throw new NotImplementedError(
+      "Use toPainless instead"
+    )
     override def toPainless(base: String, idx: Int): String =
       if (nullable)
         s"(def e$idx = $base; e$idx != null ? DateTimeFormatter.ofPattern('${convert(includeTimeZone = true)}').format(e$idx) : null)"

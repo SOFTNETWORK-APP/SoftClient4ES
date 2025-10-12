@@ -12,18 +12,18 @@ object Queries {
   val numericalGt = "SELECT * FROM Table WHERE identifier > 1"
   val numericalGe = "SELECT * FROM Table WHERE identifier >= 1"
   val numericalNe = "SELECT * FROM Table WHERE identifier <> 1"
-  val literalEq = """SELECT * FROM Table WHERE identifier = 'un'"""
-  val literalLt = "SELECT * FROM Table WHERE createdAt < 'NOW-35M/M'"
-  val literalLe = "SELECT * FROM Table WHERE createdAt <= 'NOW-35M/M'"
-  val literalGt = "SELECT * FROM Table WHERE createdAt > 'NOW-35M/M'"
-  val literalGe = "SELECT * FROM Table WHERE createdAt >= 'NOW-35M/M'"
-  val literalNe = """SELECT * FROM Table WHERE identifier <> 'un'"""
-  val boolEq = """SELECT * FROM Table WHERE identifier = true"""
-  val boolNe = """SELECT * FROM Table WHERE identifier <> false"""
-  val literalLike = """SELECT * FROM Table WHERE identifier LIKE '%u_n%'"""
-  val literalRlike = """SELECT * FROM Table WHERE identifier RLIKE '.*u.n.*'"""
-  val literalNotLike = """SELECT * FROM Table WHERE identifier NOT LIKE '%un%'"""
-  val betweenExpression = """SELECT * FROM Table WHERE identifier BETWEEN '1' AND '2'"""
+  val literalEq = "SELECT * FROM Table WHERE identifier = 'un'"
+  val literalLt = "SELECT * FROM Table WHERE createdAt < 'now-35M/M'"
+  val literalLe = "SELECT * FROM Table WHERE createdAt <= 'now-35M/M'"
+  val literalGt = "SELECT * FROM Table WHERE createdAt > 'now-35M/M'"
+  val literalGe = "SELECT * FROM Table WHERE createdAt >= 'now-35M/M'"
+  val literalNe = "SELECT * FROM Table WHERE identifier <> 'un'"
+  val boolEq = "SELECT * FROM Table WHERE identifier = true"
+  val boolNe = "SELECT * FROM Table WHERE identifier <> false"
+  val literalLike = "SELECT * FROM Table WHERE identifier LIKE '%u_n%'"
+  val literalRlike = "SELECT * FROM Table WHERE identifier RLIKE '.*u.n.*'"
+  val literalNotLike = "SELECT * FROM Table WHERE identifier NOT LIKE '%un%'"
+  val betweenExpression = "SELECT * FROM Table WHERE identifier BETWEEN '1' AND '2'"
   val andPredicate = "SELECT * FROM Table WHERE identifier1 = 1 AND identifier2 > 2"
   val orPredicate = "SELECT * FROM Table WHERE identifier1 = 1 OR identifier2 > 2"
   val leftPredicate =
@@ -33,9 +33,9 @@ object Queries {
   val predicates =
     "SELECT * FROM Table WHERE (identifier1 = 1 AND identifier2 > 2) OR (identifier3 = 3 AND identifier4 = 4)"
   val nestedPredicate =
-    "SELECT * FROM Table WHERE identifier1 = 1 AND nested(nested.identifier2 > 2 OR nested.identifier3 = 3)"
+    "SELECT * FROM Table JOIN UNNEST(Table.nested) AS nested WHERE identifier1 = 1 AND (nested.identifier2 > 2 OR nested.identifier3 = 3)"
   val nestedCriteria =
-    "SELECT * FROM Table WHERE identifier1 = 1 AND nested(nested.identifier3 = 3)"
+    "SELECT * FROM Table JOIN UNNEST(Table.nested) AS nested WHERE identifier1 = 1 AND nested.identifier3 = 3"
   val childPredicate =
     "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 > 2 OR child.identifier3 = 3)"
   val childCriteria = "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier3 = 3)"
@@ -53,7 +53,7 @@ object Queries {
   val notInNumericalExpressionWithDoubleValues =
     "SELECT * FROM Table WHERE identifier NOT IN (1.0,2.1,3.4)"
   val nestedWithBetween =
-    "SELECT * FROM Table WHERE nested(ciblage.Archivage_CreationDate BETWEEN 'NOW-3M/M' AND 'NOW' AND ciblage.statutComportement = 1)"
+    "SELECT * FROM Table JOIN UNNEST(Table.ciblage) AS ciblage WHERE ciblage.Archivage_CreationDate BETWEEN 'now-3M/M' AND 'now' AND ciblage.statutComportement = 1"
   val COUNT = "SELECT COUNT(t.id) AS c1 FROM Table AS t WHERE t.nom = 'Nom'"
   val countDistinct = "SELECT COUNT(distinct t.id) AS c2 FROM Table AS t WHERE t.nom = 'Nom'"
   val countNested =
@@ -96,7 +96,7 @@ object Queries {
     """SELECT COUNT(CustomerID) AS cnt, City, Country, MAX(createdAt) AS lastSeen
       |FROM Table
       |GROUP BY Country, City
-      |HAVING Country <> 'USA' AND City != 'Berlin' AND COUNT(CustomerID) > 1 AND lastSeen > NOW - INTERVAL 7 DAY
+      |HAVING Country <> 'USA' AND City != 'Berlin' AND COUNT(CustomerID) > 1 AND MAX(createdAt) > NOW - INTERVAL 7 DAY
       |ORDER BY Country ASC""".stripMargin
       .replaceAll("\n", " ")
   val dateParse =
@@ -166,7 +166,7 @@ object Queries {
     "SELECT identifier, LENGTH(identifier2) AS len, LOWER(identifier2) AS low, UPPER(identifier2) AS upp, SUBSTRING(identifier2, 1, 3) AS sub, TRIM(identifier2) AS tr, LTRIM(identifier2) AS ltr, RTRIM(identifier2) AS rtr, CONCAT(identifier2, '_test', 1) AS con, LEFT(identifier2, 5) AS l, RIGHT(identifier2, 3) AS r, REPLACE(identifier2, 'el', 'le') AS rep, REVERSE(identifier2) AS rev, POSITION('soft', identifier2, 1) AS pos, REGEXP_LIKE(identifier2, 'soft', 'im') AS reg FROM Table WHERE LENGTH(TRIM(identifier2)) > 10"
 
   val topHits: String =
-    "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary, ARRAY_AGG(name) OVER (PARTITION BY department ORDER BY hire_date ASC, salary DESC LIMIT 1000) AS employees FROM emp"
+    "SELECT department AS dept, firstName, CAST(hire_date AS DATE) AS hire_date, COUNT(DISTINCT salary) AS cnt, FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS first_salary, LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY hire_date ASC) AS last_salary, ARRAY_AGG(name) OVER (PARTITION BY department ORDER BY hire_date ASC, salary DESC) AS employees FROM emp LIMIT 1000"
 
   val lastDay: String =
     "SELECT LAST_DAY(CAST(createdAt AS DATE)) AS ld, identifier FROM Table WHERE EXTRACT(DAY FROM LAST_DAY(CURRENT_TIMESTAMP)) > 28"
@@ -179,6 +179,34 @@ object Queries {
 
   val betweenTemporal =
     "SELECT * FROM Table WHERE createdAt BETWEEN CURRENT_DATE - INTERVAL 1 MONTH AND CURRENT_DATE AND lastUpdated BETWEEN LAST_DAY('2025-09-11'::DATE) AND DATE_TRUNC(CURRENT_TIMESTAMP, DAY)"
+
+  val nestedOfNested =
+    "SELECT matched_comments.author AS comment_authors, matched_comments.comments AS comments, matched_replies.reply_author, matched_replies.reply_text FROM blogs AS blogs JOIN UNNEST(blogs.comments) AS matched_comments JOIN UNNEST(matched_comments.replies) AS matched_replies WHERE MATCH (matched_comments.content) AGAINST ('Nice') AND matched_replies.lastUpdated < LAST_DAY('2025-09-10'::DATE) LIMIT 5" // GROUP BY 1
+
+  val predicateWithDistinctNested =
+    "SELECT matched_comments.author AS comment_authors, matched_comments.comments AS comments, matched_replies.reply_author, matched_replies.reply_text FROM blogs AS blogs JOIN UNNEST(blogs.comments) AS matched_comments JOIN UNNEST(blogs.replies) AS matched_replies WHERE MATCH (matched_comments.content) AGAINST ('Nice') AND NOT matched_replies.lastUpdated < LAST_DAY('2025-09-10'::DATE) LIMIT 5" // GROUP BY 1
+
+  val nestedWithoutCriteria =
+    "SELECT matched_comments.author AS comment_authors, matched_comments.comments AS comments, matched_replies.reply_author, matched_replies.reply_text FROM blogs AS blogs JOIN UNNEST(blogs.comments) AS matched_comments JOIN UNNEST(matched_comments.replies) AS matched_replies WHERE blogs.lastUpdated::DATE < CURRENT_DATE LIMIT 5" // GROUP BY 1
+
+  val determinationOfTheAggregationContext: String =
+    """SELECT AVG(blogs.popularity) AS avg_popularity,
+      |AVG(comments.likes) AS avg_comment_likes
+      |FROM blogs
+      |JOIN UNNEST(blogs.comments) AS comments""".stripMargin.replaceAll("\n", " ")
+
+  val aggregationWithNestedOfNestedContext: String =
+    """SELECT AVG(replies.likes) AS avg_reply_likes
+      |FROM blogs
+      |JOIN UNNEST(blogs.comments) AS comments
+      |JOIN UNNEST(comments.replies) AS replies""".stripMargin.replaceAll("\n", " ")
+
+  val whereFiltersAccordingToScope: String =
+    """SELECT COUNT(comments.id) AS nb_comments
+      |FROM blogs
+      |JOIN UNNEST(blogs.comments) AS comments
+      |WHERE blogs.status = 'active'
+      |AND comments.sentiment = 'positive'""".stripMargin.replaceAll("\n", " ")
 }
 
 /** Created by smanciot on 15/02/17.
@@ -372,8 +400,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(nestedPredicate)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(nestedPredicate) shouldBe true
+      .getOrElse("") shouldBe nestedPredicate
   }
 
   it should "parse nested criteria" in {
@@ -845,4 +872,45 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
       .getOrElse("") shouldBe betweenTemporal
   }
 
+  it should "parse nested of nested" in {
+    val result = Parser(nestedOfNested)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe nestedOfNested
+  }
+
+  it should "parse predicate with distinct nested" in {
+    val result = Parser(predicateWithDistinctNested)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe predicateWithDistinctNested
+  }
+
+  it should "parse nested without criteria" in {
+    val result = Parser(nestedWithoutCriteria)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe nestedWithoutCriteria
+  }
+
+  it should "determine the aggregation context" in {
+    val result = Parser(determinationOfTheAggregationContext)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe determinationOfTheAggregationContext
+  }
+
+  it should "parse aggregation with nested of nested context" in {
+    val result = Parser(aggregationWithNestedOfNestedContext)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe aggregationWithNestedOfNestedContext
+  }
+
+  it should "parse where filters according to scope" in {
+    val result = Parser(whereFiltersAccordingToScope)
+    result.toOption
+      .flatMap(_.left.toOption.map(_.sql))
+      .getOrElse("") shouldBe whereFiltersAccordingToScope
+  }
 }

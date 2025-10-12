@@ -3,7 +3,6 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.Queries._
 import app.softnetwork.elastic.sql.query.SQLQuery
-import com.google.gson.{JsonArray, JsonObject, JsonParser, JsonPrimitive}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -102,13 +101,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as email from index i join unnest(emails) as inner_emails where i.nom = \"Nom\""
+        "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = \"Nom\""
       )
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.email"
+    result.aggName shouldBe "inner_emails.email"
     result.field shouldBe "email"
     result.sources shouldBe Seq[String]("index")
     result.query.getOrElse("") shouldBe
@@ -128,7 +127,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  },
         |  "size": 0,
         |  "aggs": {
-        |    "nested_emails": {
+        |    "inner_emails": {
         |      "nested": {
         |        "path": "emails"
         |      },
@@ -147,273 +146,279 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count with nested criteria" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
+        "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
       )
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.count_emails"
+    result.aggName shouldBe "inner_emails.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
     """{
-        |  "query": {
-        |    "bool":{
-        |      "filter": [
-        |          {
-        |            "term": {
-        |              "nom": {
-        |                "value": "Nom"
-        |              }
-        |            }
-        |          },
-        |          {
-        |            "nested": {
-        |              "path": "profiles",
-        |              "query": {
-        |                "terms": {
-        |                  "profiles.postalCode": [
-        |                    "75001",
-        |                    "75002"
-        |                  ]
-        |                }
-        |              },
-        |              "inner_hits":{"name":"inner_profiles","from":0,"size":3}
-        |            }
-        |          }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "count_emails": {
-        |          "value_count": {
-        |            "field": "emails.value"
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "term": {
+      |            "nom": {
+      |              "value": "Nom"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "terms": {
+      |                "profiles.postalCode": [
+      |                  "75001",
+      |                  "75002"
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "inner_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "count_emails": {
+      |          "value_count": {
+      |            "field": "emails.value"
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
   }
 
   it should "perform nested count with filter" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
+        "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
       )
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "nested_emails.filtered_agg.count_emails"
+    result.aggName shouldBe "inner_emails.filtered_agg.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
     """{
-        |  "query": {
-        |    "bool":{
-        |      "filter": [
-        |        {
-        |          "term": {
-        |            "nom": {
-        |              "value": "Nom"
-        |            }
-        |          }
-        |        },
-        |        {
-        |          "nested": {
-        |            "path": "profiles",
-        |            "query": {
-        |              "terms": {
-        |                "profiles.postalCode": [
-        |                  "75001",
-        |                  "75002"
-        |                ]
-        |              }
-        |            },
-        |            "inner_hits":{"name":"inner_profiles","from":0,"size":3}
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "filtered_agg": {
-        |          "filter": {
-        |            "term": {
-        |              "emails.context": {
-        |                "value": "profile"
-        |              }
-        |            }
-        |          },
-        |          "aggs": {
-        |            "count_emails": {
-        |              "value_count": {
-        |                "field": "emails.value"
-        |              }
-        |            }
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "term": {
+      |            "nom": {
+      |              "value": "Nom"
+      |            }
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "terms": {
+      |                "profiles.postalCode": [
+      |                  "75001",
+      |                  "75002"
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "inner_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "filtered_agg": {
+      |          "filter": {
+      |            "term": {
+      |              "emails.context": {
+      |                "value": "profile"
+      |              }
+      |            }
+      |          },
+      |          "aggs": {
+      |            "count_emails": {
+      |              "value_count": {
+      |                "field": "emails.value"
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
   }
 
   it should "perform nested count with \"and not\" operator" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(distinct inner_emails.value) as count_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
+        "select count(distinct inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
       )
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe true
-    result.aggName shouldBe "nested_emails.count_emails"
+    result.aggName shouldBe "inner_emails.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
-    """
-        |{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "nested": {
-        |            "path": "profiles",
-        |            "query": {
-        |              "bool": {
-        |                "filter": [
-        |                  {
-        |                    "term": {
-        |                      "profiles.postalCode": {
-        |                        "value": "33600"
-        |                      }
-        |                    }
-        |                  },
-        |                  {
-        |                    "bool": {
-        |                      "must_not": [
-        |                        {
-        |                          "term": {
-        |                            "profiles.postalCode": {
-        |                              "value": "75001"
-        |                            }
-        |                          }
-        |                        }
-        |                      ]
-        |                    }
-        |                  }
-        |                ]
-        |              }
-        |            },
-        |            "inner_hits": {
-        |              "name": "inner_profiles",
-        |              "from": 0,
-        |              "size": 3
-        |            }
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "aggs": {
-        |    "nested_emails": {
-        |      "nested": {
-        |        "path": "emails"
-        |      },
-        |      "aggs": {
-        |        "count_emails": {
-        |          "cardinality": {
-        |            "field": "emails.value"
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}
-        |""".stripMargin.replaceAll("\\s+", "")
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "term": {
+      |                      "profiles.postalCode": {
+      |                        "value": "33600"
+      |                      }
+      |                    }
+      |                  },
+      |                  {
+      |                    "bool": {
+      |                      "must_not": [
+      |                        {
+      |                          "term": {
+      |                            "profiles.postalCode": {
+      |                              "value": "75001"
+      |                            }
+      |                          }
+      |                        }
+      |                      ]
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "inner_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "count_emails": {
+      |          "cardinality": {
+      |            "field": "emails.value"
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin.replaceAll("\\s+", "")
   }
 
   it should "perform nested count with date filtering" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(emails) as inner_emails join unnest(profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
+        "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
       )
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe true
-    result.aggName shouldBe "nested_emails.count_distinct_emails"
+    result.aggName shouldBe "inner_emails.count_distinct_emails"
     result.field shouldBe "count_distinct_emails"
     result.sources shouldBe Seq[String]("index")
-    result.query.getOrElse("") shouldBe
+    val query = result.query.getOrElse("")
+    println(query)
+    query shouldBe
     """{
-    "query": {
-      |        "bool": {
-      |            "filter": [
-      |                {
-      |                    "nested": {
-      |                        "path": "profiles",
-      |                        "query": {
-      |                            "bool": {
-      |                                "filter": [
-      |                                    {
-      |                                        "term": {
-      |                                            "profiles.postalCode": {
-      |                                                "value": "33600"
-      |                                            }
-      |                                        }
-      |                                    },
-      |                                    {
-      |                                        "range": {
-      |                                            "profiles.createdDate": {
-      |                                                "lte": "now-35M/M"
-      |                                            }
-      |                                        }
-      |                                    }
-      |                                ]
-      |                            }
-      |                        },
-      |                        "inner_hits": {
-      |                            "name": "inner_profiles",
-      |                            "from": 0,
-      |                            "size": 3
-      |                        }
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "term": {
+      |                      "profiles.postalCode": {
+      |                        "value": "33600"
+      |                      }
       |                    }
-      |                }
-      |            ]
-      |        }
-      |    },
-      |    "size": 0,
-      |    "aggs": {
-      |        "nested_emails": {
-      |            "nested": {
-      |                "path": "emails"
+      |                  },
+      |                  {
+      |                    "range": {
+      |                      "profiles.createdDate": {
+      |                        "lte": "now-35M/M"
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
       |            },
-      |            "aggs": {
-      |                "count_distinct_emails": {
-      |                    "cardinality": {
-      |                        "field": "emails.value"
-      |                    }
-      |                }
+      |            "inner_hits": {
+      |              "name": "inner_profiles"
       |            }
+      |          }
       |        }
+      |      ]
       |    }
+      |  },
+      |  "size": 0,
+      |  "aggs": {
+      |    "inner_emails": {
+      |      "nested": {
+      |        "path": "emails"
+      |      },
+      |      "aggs": {
+      |        "count_distinct_emails": {
+      |          "cardinality": {
+      |            "field": "emails.value"
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
       |}""".stripMargin.replaceAll("\\s+", "")
   }
 
@@ -428,76 +433,71 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |profile_ccm.lastName as lastName,
         |profile_ccm.postalCode as postalCode,
         |profile_ccm.birthYear as birthYear
-        |FROM index join unnest(profiles) as profile_ccm
+        |FROM index join unnest(index.profiles) as profile_ccm
         |WHERE
         |((profile_ccm.postalCode BETWEEN "10" AND "99999")
         |AND
         |(profile_ccm.birthYear <= 2000))
         |limit 100""".stripMargin)
     val query = select.query
-    val queryWithoutSource = query.substring(0, query.indexOf("_source") - 2) + "}"
-    queryWithoutSource shouldBe
+    println(query)
+    query shouldBe
     """{
-      |    "query": {
-      |        "bool": {
-      |            "filter": [
-      |                {
-      |                    "nested": {
-      |                        "path": "profiles",
-      |                        "query": {
-      |                            "bool": {
-      |                                "filter": [
-      |                                    {
-      |                                        "range": {
-      |                                            "profiles.postalCode": {
-      |                                                "gte": "10",
-      |                                                "lte": "99999"
-      |                                            }
-      |                                        }
-      |                                    },
-      |                                    {
-      |                                        "range": {
-      |                                            "profiles.birthYear": {
-      |                                                "lte": 2000
-      |                                            }
-      |                                        }
-      |                                    }
-      |                                ]
-      |                            }
-      |                        },
-      |                        "inner_hits": {
-      |                            "name": "profile_ccm",
-      |                            "from": 0,
-      |                            "size": 3
-      |                        }
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "profiles",
+      |            "query": {
+      |              "bool": {
+      |                "filter": [
+      |                  {
+      |                    "range": {
+      |                      "profiles.postalCode": {
+      |                        "gte": "10",
+      |                        "lte": "99999"
+      |                      }
       |                    }
-      |                }
-      |            ]
+      |                  },
+      |                  {
+      |                    "range": {
+      |                      "profiles.birthYear": {
+      |                        "lte": 2000
+      |                      }
+      |                    }
+      |                  }
+      |                ]
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "profile_ccm",
+      |              "from": 0,
+      |              "_source": {
+      |                "includes": [
+      |                  "profiles.email",
+      |                  "profiles.city",
+      |                  "profiles.firstName",
+      |                  "profiles.lastName",
+      |                  "profiles.postalCode",
+      |                  "profiles.birthYear"
+      |                ]
+      |              },
+      |              "size": 100
+      |            }
+      |          }
       |        }
-      |    },
-      |    "from": 0,
-      |    "size": 100
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 100,
+      |  "_source": {
+      |    "includes": [
+      |      "profileId"
+      |    ]
+      |  }
       |}""".stripMargin.replaceAll("\\s+", "")
-    val includes = new JsonParser()
-      .parse(query.substring(query.indexOf("_source") + 9, query.length - 1))
-      .asInstanceOf[JsonObject]
-      .get("includes")
-      .asInstanceOf[JsonArray]
-      .iterator()
-      .asScala
-    val sourceIncludes: Seq[String] = (
-      for (i <- includes) yield i.asInstanceOf[JsonPrimitive].getAsString
-    ).toSeq
-    val expectedSourceIncludes = Seq(
-      "profileId",
-      "profile_ccm.email",
-      "profile_ccm.city",
-      "profile_ccm.firstName",
-      "profile_ccm.lastName",
-      "profile_ccm.postalCode",
-      "profile_ccm.birthYear"
-    )
-    sourceIncludes should contain theSameElementsAs expectedSourceIncludes
   }
 
   it should "exclude fields from select" in {
@@ -531,73 +531,36 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": true,
       |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "bool": {
-      |          "filter": [
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "Country": {
-      |                        "value": "USA"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "City": {
-      |                        "value": "Berlin"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "match_all": {}
-      |            }
-      |          ]
+      |    "Country": {
+      |      "terms": {
+      |        "field": "Country.keyword",
+      |        "exclude": "USA",
+      |        "order": {
+      |          "_key": "asc"
       |        }
       |      },
       |      "aggs": {
-      |        "Country": {
+      |        "City": {
       |          "terms": {
-      |            "field": "Country.keyword",
+      |            "field": "City.keyword",
+      |            "exclude": "Berlin",
       |            "order": {
-      |              "Country": "asc"
+      |              "cnt": "desc"
       |            }
       |          },
       |          "aggs": {
-      |            "City": {
-      |              "terms": {
-      |                "field": "City.keyword",
-      |                "order": {
-      |                  "cnt": "desc"
-      |                }
-      |              },
-      |              "aggs": {
-      |                "cnt": {
-      |                  "value_count": {
-      |                    "field": "CustomerID"
-      |                  }
+      |            "cnt": {
+      |              "value_count": {
+      |                "field": "CustomerID"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "cnt": "cnt"
       |                },
-      |                "having_filter": {
-      |                  "bucket_selector": {
-      |                    "buckets_path": {
-      |                      "cnt": "cnt"
-      |                    },
-      |                    "script": {
-      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1"
-      |                    }
-      |                  }
+      |                "script": {
+      |                  "source": "params.cnt > 1"
       |                }
       |              }
       |            }
@@ -622,7 +585,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |  max(inner_products.price) as max_price
            |FROM
            |  stores store
-           |  JOIN UNNEST(store.products LIMIT 10) as inner_products
+           |  JOIN UNNEST(store.products) as inner_products
            |WHERE
            |  (
            |    firstName is not null AND
@@ -642,231 +605,157 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
            |HAVING inner_products.deleted=false AND
            |  inner_products.upForSale=true AND
            |  inner_products.stock > 0 AND
-           |  match (inner_products.name) against ("lasagnes") AND
-           |  match (inner_products.description, inner_products.ingredients) against ("lasagnes") AND
+           |  match (
+           |    inner_products.name,
+           |    inner_products.description,
+           |    inner_products.ingredients
+           |  ) against ("lasagnes") AND
            |  min(inner_products.price) > 5.0 AND
            |  max(inner_products.price) < 50.0 AND
-           |  inner_products.category <> "coffee"""".stripMargin
+           |  inner_products.category <> "coffee"
+           |  LIMIT 10""".stripMargin
       ).minScore(1.0)
     val query = select.query
     println(query)
     query shouldBe
-    """
-        |{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "bool": {
-        |            "filter": [
-        |              {
-        |                "exists": {
-        |                  "field": "firstName"
-        |                }
-        |              },
-        |              {
-        |                "exists": {
-        |                  "field": "lastName"
-        |                }
-        |              },
-        |              {
-        |                "exists": {
-        |                  "field": "description"
-        |                }
-        |              },
-        |              {
-        |                "range": {
-        |                  "preparationTime": {
-        |                    "lte": 120
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "term": {
-        |                  "deliveryPeriods.dayOfWeek": {
-        |                    "value": 6
-        |                  }
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "must_not": [
-        |                    {
-        |                      "regexp": {
-        |                        "blockedCustomers": {
-        |                          "value": ".*uuid.*"
-        |                        }
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "must_not": [
-        |                    {
-        |                      "term": {
-        |                        "receiptOfOrdersDisabled": {
-        |                          "value": true
-        |                        }
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              },
-        |              {
-        |                "bool": {
-        |                  "should": [
-        |                    {
-        |                      "geo_distance": {
-        |                        "distance": "7000m",
-        |                        "pickup.location": [
-        |                          0.0,
-        |                          0.0
-        |                        ]
-        |                      }
-        |                    },
-        |                    {
-        |                      "geo_distance": {
-        |                        "distance": "7000m",
-        |                        "withdrawals.location": [
-        |                          0.0,
-        |                          0.0
-        |                        ]
-        |                      }
-        |                    }
-        |                  ]
-        |                }
-        |              }
-        |            ]
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "size": 0,
-        |  "min_score": 1.0,
-        |  "_source": true,
-        |  "aggs": {
-        |    "nested_products": {
-        |      "nested": {
-        |        "path": "products"
-        |      },
-        |      "aggs": {
-        |        "filtered_agg": {
-        |          "filter": {
-        |            "bool": {
-        |              "filter": [
-        |                {
-        |                  "term": {
-        |                    "products.deleted": {
-        |                      "value": false
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "term": {
-        |                    "products.upForSale": {
-        |                      "value": true
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "range": {
-        |                    "products.stock": {
-        |                      "gt": 0
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "match": {
-        |                    "products.name": {
-        |                      "query": "lasagnes"
-        |                    }
-        |                  }
-        |                },
-        |                {
-        |                  "bool": {
-        |                    "should": [
-        |                      {
-        |                        "match": {
-        |                          "products.description": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      },
-        |                      {
-        |                        "match": {
-        |                          "products.ingredients": {
-        |                            "query": "lasagnes"
-        |                          }
-        |                        }
-        |                      }
-        |                    ]
-        |                  }
-        |                },
-        |                {
-        |                  "match_all": {}
-        |                },
-        |                {
-        |                  "match_all": {}
-        |                },
-        |                {
-        |                  "bool": {
-        |                    "must_not": [
-        |                      {
-        |                        "term": {
-        |                          "products.category": {
-        |                            "value": "coffee"
-        |                          }
-        |                        }
-        |                      }
-        |                    ]
-        |                  }
-        |                }
-        |              ]
-        |            }
-        |          },
-        |          "aggs": {
-        |            "cat": {
-        |              "terms": {
-        |                "field": "products.category.keyword"
-        |              },
-        |              "aggs": {
-        |                "min_price": {
-        |                  "min": {
-        |                    "field": "products.price"
-        |                  }
-        |                },
-        |                "max_price": {
-        |                  "max": {
-        |                    "field": "products.price"
-        |                  }
-        |                },
-        |                "having_filter": {
-        |                  "bucket_selector": {
-        |                    "buckets_path": {
-        |                      "min_price": "min_price",
-        |                      "max_price": "max_price"
-        |                    },
-        |                    "script": {
-        |                      "source": "1 == 1 && 1 == 1 && 1 == 1 && 1 == 1 && 1 == 1 && params.min_price > 5.0 && params.max_price < 50.0 && 1 == 1"
-        |                    }
-        |                  }
-        |                }
-        |              }
-        |            }
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "filter": [
+      |              {
+      |                "exists": {
+      |                  "field": "firstName"
+      |                }
+      |              },
+      |              {
+      |                "exists": {
+      |                  "field": "lastName"
+      |                }
+      |              },
+      |              {
+      |                "exists": {
+      |                  "field": "description"
+      |                }
+      |              },
+      |              {
+      |                "range": {
+      |                  "preparationTime": {
+      |                    "lte": 120
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "term": {
+      |                  "deliveryPeriods.dayOfWeek": {
+      |                    "value": 6
+      |                  }
+      |                }
+      |              },
+      |              {
+      |                "bool": {
+      |                  "must_not": [
+      |                    {
+      |                      "regexp": {
+      |                        "blockedCustomers": {
+      |                          "value": ".*uuid.*"
+      |                        }
+      |                      }
+      |                    }
+      |                  ]
+      |                }
+      |              },
+      |              {
+      |                "bool": {
+      |                  "must_not": [
+      |                    {
+      |                      "term": {
+      |                        "receiptOfOrdersDisabled": {
+      |                          "value": true
+      |                        }
+      |                      }
+      |                    }
+      |                  ]
+      |                }
+      |              },
+      |              {
+      |                "bool": {
+      |                  "should": [
+      |                    {
+      |                      "geo_distance": {
+      |                        "distance": "7000m",
+      |                        "pickup.location": [
+      |                          0.0,
+      |                          0.0
+      |                        ]
+      |                      }
+      |                    },
+      |                    {
+      |                      "geo_distance": {
+      |                        "distance": "7000m",
+      |                        "withdrawals.location": [
+      |                          0.0,
+      |                          0.0
+      |                        ]
+      |                      }
+      |                    }
+      |                  ]
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "size": 0,
+      |  "min_score": 1.0,
+      |  "_source": true,
+      |  "aggs": {
+      |    "inner_products": {
+      |      "nested": {
+      |        "path": "products"
+      |      },
+      |      "aggs": {
+      |        "cat": {
+      |          "terms": {
+      |            "field": "products.category.keyword"
+      |          },
+      |          "aggs": {
+      |            "min_price": {
+      |              "min": {
+      |                "field": "products.price"
+      |              }
+      |            },
+      |            "max_price": {
+      |              "max": {
+      |                "field": "products.price"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "min_price": "inner_products>min_price",
+      |                  "max_price": "inner_products>max_price"
+      |                },
+      |                "script": {
+      |                  "source": "params.min_price > 5.0 && params.max_price < 50.0"
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s+", "")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
-      .replaceAll("<", " < ")
-      .replaceAll(">", " > ")
+      .replaceAll("<(\\d)", " < $1")
+      .replaceAll(">(\\d)", " > $1")
 
   }
 
@@ -1043,30 +932,23 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": true,
       |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "match_all": {}
+      |    "userId": {
+      |      "terms": {
+      |        "field": "userId.keyword"
       |      },
       |      "aggs": {
-      |        "userId": {
-      |          "terms": {
-      |            "field": "userId.keyword"
-      |          },
-      |          "aggs": {
-      |            "lastSeen": {
-      |              "max": {
-      |                "field": "createdAt"
-      |              }
+      |        "lastSeen": {
+      |          "max": {
+      |            "field": "createdAt"
+      |          }
+      |        },
+      |        "having_filter": {
+      |          "bucket_selector": {
+      |            "buckets_path": {
+      |              "lastSeen": "lastSeen"
       |            },
-      |            "having_filter": {
-      |              "bucket_selector": {
-      |                "buckets_path": {
-      |                  "lastSeen": "lastSeen"
-      |                },
-      |                "script": {
-      |                  "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)"
-      |                }
-      |              }
+      |            "script": {
+      |              "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
       |            }
       |          }
       |        }
@@ -1094,82 +976,39 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": true,
       |  "aggs": {
-      |    "filtered_agg": {
-      |      "filter": {
-      |        "bool": {
-      |          "filter": [
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "Country": {
-      |                        "value": "USA"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "bool": {
-      |                "must_not": [
-      |                  {
-      |                    "term": {
-      |                      "City": {
-      |                        "value": "Berlin"
-      |                      }
-      |                    }
-      |                  }
-      |                ]
-      |              }
-      |            },
-      |            {
-      |              "match_all": {}
-      |            },
-      |            {
-      |              "range": {
-      |                "lastSeen": {
-      |                  "gt": "now-7d"
-      |                }
-      |              }
-      |            }
-      |          ]
+      |    "Country": {
+      |      "terms": {
+      |        "field": "Country.keyword",
+      |        "exclude": "USA",
+      |        "order": {
+      |          "_key": "asc"
       |        }
       |      },
       |      "aggs": {
-      |        "Country": {
+      |        "City": {
       |          "terms": {
-      |            "field": "Country.keyword",
-      |            "order": {
-      |              "Country": "asc"
-      |            }
+      |            "field": "City.keyword",
+      |            "exclude": "Berlin"
       |          },
       |          "aggs": {
-      |            "City": {
-      |              "terms": {
-      |                "field": "City.keyword"
-      |              },
-      |              "aggs": {
-      |                "cnt": {
-      |                  "value_count": {
-      |                    "field": "CustomerID"
-      |                  }
+      |            "cnt": {
+      |              "value_count": {
+      |                "field": "CustomerID"
+      |              }
+      |            },
+      |            "lastSeen": {
+      |              "max": {
+      |                "field": "createdAt"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "cnt": "cnt",
+      |                  "lastSeen": "lastSeen"
       |                },
-      |                "lastSeen": {
-      |                  "max": {
-      |                    "field": "createdAt"
-      |                  }
-      |                },
-      |                "having_filter": {
-      |                  "bucket_selector": {
-      |                    "buckets_path": {
-      |                      "cnt": "cnt"
-      |                    },
-      |                    "script": {
-      |                      "source": "1 == 1 && 1 == 1 && params.cnt > 1 && 1 == 1"
-      |                    }
-      |                  }
+      |                "script": {
+      |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
       |                }
       |              }
       |            }
@@ -3094,4 +2933,468 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("false:", "false : ")
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
   }
+
+  it should "handle nested of nested" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(nestedOfNested)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "nested": {
+      |            "path": "comments",
+      |            "query": {
+      |              "nested": {
+      |                "path": "comments.replies",
+      |                "query": {
+      |                  "bool": {
+      |                    "filter": [
+      |                      {
+      |                        "match": {
+      |                          "comments.content": {
+      |                            "query": "Nice"
+      |                          }
+      |                        }
+      |                      },
+      |                      {
+      |                        "script": {
+      |                          "script": {
+      |                            "lang": "painless",
+      |                            "source": "def left = (!doc.containsKey('comments.replies.lastUpdated') || doc['comments.replies.lastUpdated'].empty ? null : doc['comments.replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+      |                          }
+      |                        }
+      |                      }
+      |                    ]
+      |                  }
+      |                },
+      |                "inner_hits": {
+      |                  "name": "matched_replies",
+      |                  "from": 0,
+      |                  "_source": {
+      |                    "includes": [
+      |                      "comments.replies.reply_author",
+      |                      "comments.replies.reply_text"
+      |                    ]
+      |                  },
+      |                  "size": 5
+      |                }
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "matched_comments",
+      |              "from": 0,
+      |              "_source": {
+      |                "includes": [
+      |                  "comments.author",
+      |                  "comments.comments"
+      |                ]
+      |              },
+      |              "size": 5
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 5,
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
+  it should "handle predicate with distinct nested" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(predicateWithDistinctNested)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "must_not": [
+      |              {
+      |                "nested": {
+      |                  "path": "replies",
+      |                  "query": {
+      |                    "script": {
+      |                      "script": {
+      |                        "lang": "painless",
+      |                        "source": "def left = (!doc.containsKey('replies.lastUpdated') || doc['replies.lastUpdated'].empty ? null : doc['replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+      |                      }
+      |                    }
+      |                  },
+      |                  "inner_hits": {
+      |                    "name": "matched_replies",
+      |                    "from": 0,
+      |                    "_source": {
+      |                      "includes": [
+      |                        "replies.reply_author",
+      |                        "replies.reply_text"
+      |                      ]
+      |                    },
+      |                    "size": 5
+      |                  }
+      |                }
+      |              }
+      |            ],
+      |            "filter": [
+      |              {
+      |                "nested": {
+      |                  "path": "comments",
+      |                  "query": {
+      |                    "match": {
+      |                      "comments.content": {
+      |                        "query": "Nice"
+      |                      }
+      |                    }
+      |                  },
+      |                  "inner_hits": {
+      |                    "name": "matched_comments",
+      |                    "from": 0,
+      |                    "_source": {
+      |                      "includes": [
+      |                        "comments.author",
+      |                        "comments.comments"
+      |                      ]
+      |                    },
+      |                    "size": 5
+      |                  }
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 5,
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
+  it should "handle nested without criteria" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(nestedWithoutCriteria)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "filter": [
+      |              {
+      |                "script": {
+      |                  "script": {
+      |                    "lang": "painless",
+      |                    "source": "def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()"
+      |                  }
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        },
+      |        {
+      |          "nested": {
+      |            "path": "comments",
+      |            "query": {
+      |              "nested": {
+      |                "path": "comments.replies",
+      |                "query": {
+      |                  "match_all": {}
+      |                },
+      |                "inner_hits": {
+      |                  "name": "matched_replies",
+      |                  "from": 0,
+      |                  "_source": {
+      |                    "includes": [
+      |                      "reply_author",
+      |                      "reply_text"
+      |                    ]
+      |                  },
+      |                  "size": 5
+      |                }
+      |              }
+      |            },
+      |            "inner_hits": {
+      |              "name": "matched_comments",
+      |              "from": 0,
+      |              "_source": {
+      |                "includes": [
+      |                  "author",
+      |                  "comments"
+      |                ]
+      |              },
+      |              "size": 5
+      |            }
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 5,
+      |  "_source": true
+      |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("\\s+", "")
+      .replaceAll("defv", " def v")
+      .replaceAll("defa", "def a")
+      .replaceAll("defe", "def e")
+      .replaceAll("defl", "def l")
+      .replaceAll("def_", "def _")
+      .replaceAll("=_", " = _")
+      .replaceAll(",_", ", _")
+      .replaceAll(",\\(", ", (")
+      .replaceAll("if\\(", "if (")
+      .replaceAll(">=", " >= ")
+      .replaceAll("=\\(", " = (")
+      .replaceAll(":\\(", " : (")
+      .replaceAll(",(\\d)", ", $1")
+      .replaceAll("\\?", " ? ")
+      .replaceAll(":null", " : null")
+      .replaceAll("null:", "null : ")
+      .replaceAll("return", " return ")
+      .replaceAll(";", "; ")
+      .replaceAll("; if", ";if")
+      .replaceAll("==", " == ")
+      .replaceAll("\\+", " + ")
+      .replaceAll(">(\\d)", " > $1")
+      .replaceAll("=(\\d)", "= $1")
+      .replaceAll("<", " < ")
+      .replaceAll("!=", " != ")
+      .replaceAll("&&", " && ")
+      .replaceAll("\\|\\|", " || ")
+      .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",params", ", params")
+      .replaceAll("GeoPoint", " GeoPoint")
+      .replaceAll("lat,arg", "lat, arg")
+      .replaceAll("false:", "false : ")
+      .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+  }
+
+  it should "determine the aggregation context" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(determinationOfTheAggregationContext)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |    "query": {
+        |        "match_all": {}
+        |    },
+        |    "size": 0,
+        |    "_source": true,
+        |    "aggs": {
+        |        "avg_popularity": {
+        |            "avg": {
+        |                "field": "popularity"
+        |            }
+        |        },
+        |        "comments": {
+        |            "nested": {
+        |                "path": "comments"
+        |            },
+        |            "aggs": {
+        |                "avg_comment_likes": {
+        |                    "avg": {
+        |                        "field": "comments.likes"
+        |                    }
+        |                }
+        |            }
+        |        }
+        |    }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "handle aggregation with nested of nested context" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(aggregationWithNestedOfNestedContext)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "comments": {
+        |      "nested": {
+        |        "path": "comments"
+        |      },
+        |      "aggs": {
+        |        "replies": {
+        |          "nested": {
+        |            "path": "comments.replies"
+        |          },
+        |          "aggs": {
+        |            "avg_reply_likes": {
+        |              "avg": {
+        |                "field": "comments.replies.likes"
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "handle where filters according to scope" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(whereFiltersAccordingToScope)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "term": {
+        |            "status": {
+        |              "value": "active"
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "nested": {
+        |            "path": "comments",
+        |            "query": {
+        |              "term": {
+        |                "comments.sentiment": {
+        |                  "value": "positive"
+        |                }
+        |              }
+        |            },
+        |            "inner_hits": {
+        |              "name": "comments"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "comments": {
+        |      "nested": {
+        |        "path": "comments"
+        |      },
+        |      "aggs": {
+        |        "filtered_comments": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "term": {
+        |                    "comments.sentiment": {
+        |                      "value": "positive"
+        |                    }
+        |                  }
+        |                }
+        |              ]
+        |            }
+        |          },
+        |          "aggs": {
+        |            "nb_comments": {
+        |              "value_count": {
+        |                "field": "comments.id"
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
 }

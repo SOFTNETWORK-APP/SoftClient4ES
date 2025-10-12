@@ -3,11 +3,13 @@ package app.softnetwork.elastic.sql.bridge
 import app.softnetwork.elastic.sql.query.{
   Asc,
   Bucket,
-  BucketSelectorScript,
+  BucketIncludesExcludes,
   Criteria,
   Desc,
-  ElasticBoolQuery,
   Field,
+  MetricSelectorScript,
+  NestedElement,
+  NestedElements,
   SortOrder
 }
 import app.softnetwork.elastic.sql.function._
@@ -16,7 +18,6 @@ import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
   bucketSelectorAggregation,
   cardinalityAgg,
-  filterAgg,
   maxAgg,
   minAgg,
   nestedAggregation,
@@ -48,9 +49,10 @@ case class ElasticAggregation(
   filteredAgg: Option[FilterAggregation] = None,
   aggType: AggregateFunction,
   agg: Aggregation,
-  direction: Option[SortOrder] = None
+  direction: Option[SortOrder] = None,
+  nestedElement: Option[NestedElement] = None
 ) {
-  val nested: Boolean = nestedAgg.nonEmpty
+  val nested: Boolean = nestedElement.nonEmpty
   val filtered: Boolean = filteredAgg.nonEmpty
 }
 
@@ -61,7 +63,7 @@ object ElasticAggregation {
     bucketsDirection: Map[String, SortOrder]
   ): ElasticAggregation = {
     import sqlAgg._
-    val sourceField = identifier.name
+    val sourceField = identifier.path
 
     val direction = bucketsDirection.get(identifier.identifierName)
 
@@ -103,7 +105,7 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val scriptSrc = identifier.painless
+        val scriptSrc = identifier.painless()
         val script = Script(scriptSrc).lang("painless")
         buildScript(aggName, script)
       } else {
@@ -143,7 +145,7 @@ object ElasticAggregation {
               .copy(
                 scripts = th.fields
                   .filter(_.isScriptField)
-                  .map(f => f.sourceField -> Script(f.painless).lang("painless"))
+                  .map(f => f.sourceField -> Script(f.painless()).lang("painless"))
                   .toMap
               )
               .size(limit) sortBy th.orderBy.sorts.map(sort =>
@@ -160,31 +162,13 @@ object ElasticAggregation {
                   }
               }
             )
-          /*th.fields.filter(_.isScriptField).foldLeft(topHits) { (agg, f) =>
-            agg.script(f.sourceField, Script(f.painless, lang = Some("painless")))
-          }*/
           topHits
       }
 
     val filteredAggName = "filtered_agg"
 
-    val filteredAgg: Option[FilterAggregation] =
-      having match {
-        case Some(f) =>
-          val boolQuery = Option(ElasticBoolQuery(group = true))
-          Some(
-            filterAgg(
-              filteredAggName,
-              f.asFilter(boolQuery)
-                .query(Set(identifier.innerHitsName).flatten, boolQuery)
-            )
-          )
-        case _ =>
-          None
-      }
-
     def filtered(): Unit =
-      filteredAgg match {
+      having match {
         case Some(_) =>
           aggPath ++= Seq(filteredAggName)
           aggPath ++= Seq(aggName)
@@ -192,17 +176,44 @@ object ElasticAggregation {
           aggPath ++= Seq(aggName)
       }
 
+    val nestedElement = identifier.nestedElement
+
+    val nestedElements: Seq[NestedElement] =
+      nestedElement.map(n => NestedElements.buildNestedTrees(Seq(n))).getOrElse(Nil)
+
     val nestedAgg =
-      if (identifier.nested) {
-        val path = sourceField.split("\\.").head
-        val nestedAgg = s"nested_${identifier.nestedType.getOrElse(aggName)}"
-        aggPath ++= Seq(nestedAgg)
-        filtered()
-        Some(nestedAggregation(nestedAgg, path))
-      } else {
-        filtered()
-        None
+      nestedElements match {
+        case Nil =>
+          None
+        case nestedElements =>
+          def buildNested(n: NestedElement): NestedAggregation = {
+            aggPath ++= Seq(n.innerHitsName)
+            val children = n.children
+            if (children.nonEmpty) {
+              val innerAggs = children.map(buildNested)
+              val combinedAgg = if (innerAggs.size == 1) {
+                innerAggs.head
+              } else {
+                innerAggs.reduceLeft { (agg1, agg2) =>
+                  agg1.copy(subaggs = agg1.subaggs ++ Seq(agg2))
+                }
+              }
+              nestedAggregation(
+                n.innerHitsName,
+                n.path
+              ) subaggs Seq(combinedAgg)
+            } else {
+              nestedAggregation(
+                n.innerHitsName,
+                n.path
+              )
+            }
+          }
+
+          Some(buildNested(nestedElements.head))
       }
+
+    filtered()
 
     ElasticAggregation(
       aggPath.mkString("."),
@@ -210,10 +221,10 @@ object ElasticAggregation {
       sourceField,
       distinct = distinct,
       nestedAgg = nestedAgg,
-      filteredAgg = filteredAgg,
       aggType = aggType,
       agg = _agg,
-      direction = direction
+      direction = direction,
+      nestedElement = nestedElement
     )
   }
 
@@ -224,19 +235,37 @@ object ElasticAggregation {
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria]
   ): Option[TermsAggregation] = {
-    Console.println(bucketsDirection)
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
-      val agg = {
+      var agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {
           case Some(direction) =>
-            termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+            termsAgg(bucket.name, s"${bucket.identifier.path}.keyword")
               .order(Seq(direction match {
-                case Asc => TermsOrder(bucket.name, asc = true)
-                case _   => TermsOrder(bucket.name, asc = false)
+                case Asc => TermsOrder("_key", asc = true)
+                case _   => TermsOrder("_key", asc = false)
               }))
           case None =>
-            termsAgg(bucket.name, s"${bucket.identifier.name}.keyword")
+            termsAgg(bucket.name, s"${bucket.identifier.path}.keyword")
         }
+      }
+      bucket.size.foreach(s => agg = agg.size(s))
+      having match {
+        case Some(criteria) =>
+          criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
+            case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+              agg = agg.include(regex)
+            case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+              agg = agg.include(values.toArray)
+            case _ =>
+          }
+          criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
+            case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+              agg = agg.exclude(regex)
+            case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+              agg = agg.exclude(values.toArray)
+            case _ =>
+          }
+        case _ =>
       }
       current match {
         case Some(subAgg) => Some(agg.copy(subaggs = Seq(subAgg)))
@@ -254,12 +283,15 @@ object ElasticAggregation {
               agg
           val withHaving = having match {
             case Some(criteria) =>
-              import BucketSelectorScript._
-              val script = toPainless(criteria)
-              val bucketsPath = extractBucketsPath(criteria)
+              val script = MetricSelectorScript.metricSelector(criteria)
+              val bucketsPath = criteria.extractMetricsPath
 
               val bucketSelector =
-                bucketSelectorAggregation("having_filter", Script(script), bucketsPath)
+                bucketSelectorAggregation(
+                  "having_filter",
+                  Script(script.replaceAll("1 == 1 &&", "").replaceAll("&& 1 == 1", "").trim),
+                  bucketsPath
+                )
 
               withAggregationOrders.copy(subaggs = aggregations :+ bucketSelector)
 

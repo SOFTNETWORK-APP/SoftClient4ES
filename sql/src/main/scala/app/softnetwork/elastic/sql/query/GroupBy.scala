@@ -21,10 +21,14 @@ case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
       Right(())
     }
   }
+
+  def nestedElements: Seq[NestedElement] =
+    buckets.flatMap(_.nestedElement).distinct
 }
 
 case class Bucket(
-  identifier: Identifier
+  identifier: Identifier,
+  size: Option[Int] = None
 ) extends Updateable {
   override def sql: String = s"$identifier"
   def update(request: SQLSearchRequest): Bucket = {
@@ -38,7 +42,7 @@ case class Bucket(
           )
         } else {
           val field = request.select.fields(func.value.toInt - 1)
-          this.copy(identifier = field.identifier)
+          this.copy(identifier = field.identifier, size = request.limit.map(_.limit))
         }
       case _ => this.copy(identifier = identifier.update(request))
     }
@@ -52,35 +56,36 @@ case class Bucket(
     } else {
       identifier.name
     }
+  lazy val nested: Boolean = nestedElement.isDefined
+  lazy val nestedElement: Option[NestedElement] = identifier.nestedElement
   lazy val nestedBucket: Option[String] =
-    identifier.nestedType.map(t => s"nested_$t")
+    identifier.nestedElement.map(_.innerHitsName)
 
   lazy val name: String = identifier.fieldAlias.getOrElse(sourceBucket.replace(".", "_"))
 }
 
-object BucketSelectorScript {
+object MetricSelectorScript {
 
-  def extractBucketsPath(criteria: Criteria): Map[String, String] = criteria match {
+  def extractMetricsPath(criteria: Criteria): Map[String, String] = criteria match {
     case Predicate(left, _, right, _, _) =>
-      extractBucketsPath(left) ++ extractBucketsPath(right)
-    case relation: ElasticRelation => extractBucketsPath(relation.criteria)
+      extractMetricsPath(left) ++ extractMetricsPath(right)
+    case relation: ElasticRelation => extractMetricsPath(relation.criteria)
     case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
     case e: Expression if e.aggregation =>
       import e._
       maybeValue match {
-        case Some(v: Identifier) if v.aggregation =>
-          Map(identifier.aliasOrName -> identifier.aliasOrName, v.aliasOrName -> v.aliasOrName)
-        case _ => Map(identifier.aliasOrName -> identifier.aliasOrName)
+        case Some(v: Identifier) => identifier.metricsPath ++ v.metricsPath
+        case _                   => identifier.metricsPath
       }
     case _ => Map.empty
   }
 
-  def toPainless(expr: Criteria): String = expr match {
+  def metricSelector(expr: Criteria): String = expr match {
     case Predicate(left, op, right, maybeNot, group) =>
-      val leftStr = toPainless(left)
-      val rightStr = toPainless(right)
+      val leftStr = metricSelector(left)
+      val rightStr = metricSelector(right)
       val opStr = op match {
-        case AND | OR => op.painless
+        case AND | OR => op.painless()
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
@@ -89,24 +94,28 @@ object BucketSelectorScript {
       else
         s"$leftStr $opStr $rightStr"
 
-    case relation: ElasticRelation => toPainless(relation.criteria)
+    case relation: ElasticRelation => metricSelector(relation.criteria)
 
     case _: MatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
-      val paramName = e.identifier.paramName
-      e.out match {
-        case SQLTypes.Date if e.operator.isInstanceOf[ComparisonOperator] =>
-          // protect against null params and compare epoch millis
-          s"($paramName != null) && (${e.painless}.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli())"
-        case SQLTypes.Time if e.operator.isInstanceOf[ComparisonOperator] =>
-          s"($paramName != null) && (${e.painless}.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli())"
-        case SQLTypes.DateTime if e.operator.isInstanceOf[ComparisonOperator] =>
-          s"($paramName != null) && (${e.painless}.toInstant().toEpochMilli())"
-        case _ =>
-          e.painless
+      val painless = e.painless()
+      e.maybeValue match {
+        case Some(value) if e.operator.isInstanceOf[ComparisonOperator] =>
+          value.out match { // compare epoch millis
+            case SQLTypes.Date =>
+              s"$painless.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()"
+            case SQLTypes.Time if e.operator.isInstanceOf[ComparisonOperator] =>
+              s"$painless.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli()"
+            case SQLTypes.DateTime if e.operator.isInstanceOf[ComparisonOperator] =>
+              s"$painless.toInstant().toEpochMilli()"
+            case _ => painless
+          }
+        case _ => painless
       }
 
     case _ => "1 == 1" //throw new IllegalArgumentException(s"Unsupported SQLCriteria type: $expr")
   }
 }
+
+case class BucketIncludesExcludes(values: Set[String] = Set.empty, regex: Option[String] = None)

@@ -64,13 +64,17 @@ case class Field(
     this.copy(identifier = updated.update(request))
   }
 
-  def painless: String = identifier.painless
+  def painless(): String = identifier.painless()
 
   def script: Option[String] = identifier.script
 
   lazy val scriptName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
 
   override def validate(): Either[String, Unit] = identifier.validate()
+
+  lazy val nested: Boolean = identifier.nested
+
+  lazy val path: String = identifier.path
 }
 
 case object Except extends Expr("except") with TokenRegex
@@ -97,6 +101,9 @@ case class Select(
     if (fields.isEmpty) {
       Left("At least one field is required in SELECT clause")
     } else {
-      fields.map(_.validate()).find(_.isLeft).getOrElse(Right(()))
+      fields.map(_.validate()).filter(_.isLeft) match {
+        case Nil    => Right(())
+        case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+      }
     }
 }
