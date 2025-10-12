@@ -162,9 +162,6 @@ object ElasticAggregation {
                   }
               }
             )
-          /*th.fields.filter(_.isScriptField).foldLeft(topHits) { (agg, f) =>
-            agg.script(f.sourceField, Script(f.painless, lang = Some("painless")))
-          }*/
           topHits
       }
 

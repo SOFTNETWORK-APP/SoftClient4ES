@@ -475,12 +475,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "from": 0,
       |              "_source": {
       |                "includes": [
-      |                  "email",
-      |                  "city",
-      |                  "firstName",
-      |                  "lastName",
-      |                  "postalCode",
-      |                  "birthYear"
+      |                  "profiles.email",
+      |                  "profiles.city",
+      |                  "profiles.firstName",
+      |                  "profiles.lastName",
+      |                  "profiles.postalCode",
+      |                  "profiles.birthYear"
       |                ]
       |              },
       |              "size": 100
@@ -2976,8 +2976,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                  "from": 0,
       |                  "_source": {
       |                    "includes": [
-      |                      "reply_author",
-      |                      "reply_text"
+      |                      "comments.replies.reply_author",
+      |                      "comments.replies.reply_text"
       |                    ]
       |                  },
       |                  "size": 5
@@ -2989,8 +2989,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "from": 0,
       |              "_source": {
       |                "includes": [
-      |                  "author",
-      |                  "comments"
+      |                  "comments.author",
+      |                  "comments.comments"
       |                ]
       |              },
       |              "size": 5
@@ -3049,71 +3049,71 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "bool": {
-        |            "must_not": [
-        |              {
-        |                "nested": {
-        |                  "path": "replies",
-        |                  "query": {
-        |                    "script": {
-        |                      "script": {
-        |                        "lang": "painless",
-        |                        "source": "def left = (!doc.containsKey('replies.lastUpdated') || doc['replies.lastUpdated'].empty ? null : doc['replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
-        |                      }
-        |                    }
-        |                  },
-        |                  "inner_hits": {
-        |                    "name": "matched_replies",
-        |                    "from": 0,
-        |                    "_source": {
-        |                      "includes": [
-        |                        "reply_author",
-        |                        "reply_text"
-        |                      ]
-        |                    },
-        |                    "size": 5
-        |                  }
-        |                }
-        |              }
-        |            ],
-        |            "filter": [
-        |              {
-        |                "nested": {
-        |                  "path": "comments",
-        |                  "query": {
-        |                    "match": {
-        |                      "comments.content": {
-        |                        "query": "Nice"
-        |                      }
-        |                    }
-        |                  },
-        |                  "inner_hits": {
-        |                    "name": "matched_comments",
-        |                    "from": 0,
-        |                    "_source": {
-        |                      "includes": [
-        |                        "author",
-        |                        "comments"
-        |                      ]
-        |                    },
-        |                    "size": 5
-        |                  }
-        |                }
-        |              }
-        |            ]
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "from": 0,
-        |  "size": 5,
-        |  "_source": true
-        |}""".stripMargin
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "bool": {
+      |            "must_not": [
+      |              {
+      |                "nested": {
+      |                  "path": "replies",
+      |                  "query": {
+      |                    "script": {
+      |                      "script": {
+      |                        "lang": "painless",
+      |                        "source": "def left = (!doc.containsKey('replies.lastUpdated') || doc['replies.lastUpdated'].empty ? null : doc['replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+      |                      }
+      |                    }
+      |                  },
+      |                  "inner_hits": {
+      |                    "name": "matched_replies",
+      |                    "from": 0,
+      |                    "_source": {
+      |                      "includes": [
+      |                        "replies.reply_author",
+      |                        "replies.reply_text"
+      |                      ]
+      |                    },
+      |                    "size": 5
+      |                  }
+      |                }
+      |              }
+      |            ],
+      |            "filter": [
+      |              {
+      |                "nested": {
+      |                  "path": "comments",
+      |                  "query": {
+      |                    "match": {
+      |                      "comments.content": {
+      |                        "query": "Nice"
+      |                      }
+      |                    }
+      |                  },
+      |                  "inner_hits": {
+      |                    "name": "matched_comments",
+      |                    "from": 0,
+      |                    "_source": {
+      |                      "includes": [
+      |                        "comments.author",
+      |                        "comments.comments"
+      |                      ]
+      |                    },
+      |                    "size": 5
+      |                  }
+      |                }
+      |              }
+      |            ]
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "from": 0,
+      |  "size": 5,
+      |  "_source": true
+      |}""".stripMargin
       .replaceAll("\\s+", "")
       .replaceAll("\\s+", "")
       .replaceAll("\\s+", "")

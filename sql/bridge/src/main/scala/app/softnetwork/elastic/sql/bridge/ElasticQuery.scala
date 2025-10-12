@@ -64,7 +64,9 @@ case class ElasticQuery(filter: ElasticFilter) {
                   inner = inner.fetchSource(
                     FetchSourceContext(
                       fetchSource = true,
-                      includes = n.sources.toArray
+                      includes = n.sources.map {source =>
+                        (n.path.split('.').toSeq ++ Seq(source)).mkString(".")
+                      }.toArray
                     )
                   )
                 }

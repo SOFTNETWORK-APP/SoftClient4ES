@@ -475,12 +475,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "from": 0,
         |              "_source": {
         |                "includes": [
-        |                  "city",
-        |                  "email",
-        |                  "birthYear",
-        |                  "postalCode",
-        |                  "lastName",
-        |                  "firstName"
+        |                  "profiles.email",
+        |                  "profiles.postalCode",
+        |                  "profiles.firstName",
+        |                  "profiles.lastName",
+        |                  "profiles.birthYear",
+        |                  "profiles.city"
         |                ]
         |              },
         |              "size": 100
@@ -2976,8 +2976,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "from": 0,
         |                  "_source": {
         |                    "includes": [
-        |                      "reply_author",
-        |                      "reply_text"
+        |                      "comments.replies.reply_author",
+        |                      "comments.replies.reply_text"
         |                    ]
         |                  },
         |                  "size": 5
@@ -2989,8 +2989,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "from": 0,
         |              "_source": {
         |                "includes": [
-        |                  "author",
-        |                  "comments"
+        |                  "comments.author",
+        |                  "comments.comments"
         |                ]
         |              },
         |              "size": 5
@@ -3071,8 +3071,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    "from": 0,
         |                    "_source": {
         |                      "includes": [
-        |                        "reply_author",
-        |                        "reply_text"
+        |                        "replies.reply_author",
+        |                        "replies.reply_text"
         |                      ]
         |                    },
         |                    "size": 5
@@ -3096,8 +3096,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    "from": 0,
         |                    "_source": {
         |                      "includes": [
-        |                        "author",
-        |                        "comments"
+        |                        "comments.author",
+        |                        "comments.comments"
         |                      ]
         |                    },
         |                    "size": 5
