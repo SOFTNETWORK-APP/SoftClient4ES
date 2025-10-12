@@ -475,23 +475,10 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
       |          "nested": {
       |            "path": "nested",
       |            "query": {
-      |              "bool": {
-      |                "should": [
-      |                  {
-      |                    "range": {
-      |                      "nested.identifier2": {
-      |                        "gt": 2
-      |                      }
-      |                    }
-      |                  },
-      |                  {
-      |                    "term": {
-      |                      "nested.identifier3": {
-      |                        "value": 3
-      |                      }
-      |                    }
-      |                  }
-      |                ]
+      |              "term": {
+      |                "nested.identifier3": {
+      |                  "value": 3
+      |                }
       |              }
       |            },
       |            "inner_hits": {
