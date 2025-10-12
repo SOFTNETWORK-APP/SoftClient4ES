@@ -33,9 +33,9 @@ object Queries {
   val predicates =
     "SELECT * FROM Table WHERE (identifier1 = 1 AND identifier2 > 2) OR (identifier3 = 3 AND identifier4 = 4)"
   val nestedPredicate =
-    "SELECT * FROM Table WHERE identifier1 = 1 AND NESTED(nested.identifier2 > 2 OR nested.identifier3 = 3)"
+    "SELECT * FROM Table JOIN UNNEST(Table.nested) AS nested WHERE identifier1 = 1 AND (nested.identifier2 > 2 OR nested.identifier3 = 3)"
   val nestedCriteria =
-    "SELECT * FROM Table WHERE identifier1 = 1 AND NESTED(nested.identifier3 = 3)"
+    "SELECT * FROM Table JOIN UNNEST(Table.nested) AS nested WHERE identifier1 = 1 AND nested.identifier3 = 3"
   val childPredicate =
     "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 > 2 OR child.identifier3 = 3)"
   val childCriteria = "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier3 = 3)"
@@ -53,7 +53,7 @@ object Queries {
   val notInNumericalExpressionWithDoubleValues =
     "SELECT * FROM Table WHERE identifier NOT IN (1.0,2.1,3.4)"
   val nestedWithBetween =
-    "SELECT * FROM Table WHERE NESTED(ciblage.Archivage_CreationDate BETWEEN 'now-3M/M' AND 'now' AND ciblage.statutComportement = 1)"
+    "SELECT * FROM Table JOIN UNNEST(Table.ciblage) AS ciblage WHERE ciblage.Archivage_CreationDate BETWEEN 'now-3M/M' AND 'now' AND ciblage.statutComportement = 1"
   val COUNT = "SELECT COUNT(t.id) AS c1 FROM Table AS t WHERE t.nom = 'Nom'"
   val countDistinct = "SELECT COUNT(distinct t.id) AS c2 FROM Table AS t WHERE t.nom = 'Nom'"
   val countNested =

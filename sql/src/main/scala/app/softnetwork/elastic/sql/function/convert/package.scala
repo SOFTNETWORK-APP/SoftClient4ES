@@ -19,7 +19,7 @@ package object convert {
 
     //override def nullable: Boolean = value.nullable
 
-    override def painless: String = SQLTypeUtils.coerce(value, targetType)
+    override def painless(): String = SQLTypeUtils.coerce(value, targetType)
 
     override def toPainless(base: String, idx: Int): String = {
       val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable)

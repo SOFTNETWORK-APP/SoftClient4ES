@@ -7,7 +7,7 @@ import app.softnetwork.elastic.sql.query.Expression
 package object cond {
 
   sealed trait ConditionalOp extends PainlessScript with TokenRegex {
-    override def painless: String = sql
+    override def painless(): String = sql
   }
 
   case object Coalesce extends Expr("COALESCE") with ConditionalOp
@@ -32,7 +32,7 @@ package object cond {
 
     override def outputType: SQLBool = SQLTypes.Boolean
 
-    override def toPainless(base: String, idx: Int): String = s"($base$painless)"
+    override def toPainless(base: String, idx: Int): String = s"($base${painless()})"
   }
 
   case class IsNull(identifier: Identifier) extends ConditionalFunction[SQLAny] {
@@ -44,12 +44,12 @@ package object cond {
 
     override def toSQL(base: String): String = sql
 
-    override def painless: String = s" == null"
+    override def painless(): String = s" == null"
     override def toPainless(base: String, idx: Int): String = {
       if (nullable)
-        s"(def e$idx = $base; e$idx$painless)"
+        s"(def e$idx = $base; e$idx${painless()})"
       else
-        s"$base$painless"
+        s"$base${painless()}"
     }
   }
 
@@ -62,12 +62,12 @@ package object cond {
 
     override def toSQL(base: String): String = sql
 
-    override def painless: String = s" != null"
+    override def painless(): String = s" != null"
     override def toPainless(base: String, idx: Int): String = {
       if (nullable)
-        s"(def e$idx = $base; e$idx$painless)"
+        s"(def e$idx = $base; e$idx${painless()})"
       else
-        s"$base$painless"
+        s"$base${painless()}"
     }
   }
 
@@ -99,9 +99,9 @@ package object cond {
       else Right(())
     }
 
-    override def toPainless(base: String, idx: Int): String = s"$base$painless"
+    override def toPainless(base: String, idx: Int): String = s"$base${painless()}"
 
-    override def painless: String = {
+    override def painless(): String = {
       require(values.nonEmpty, "COALESCE requires at least one argument")
 
       val checks = values
@@ -183,7 +183,7 @@ package object cond {
       else Right(())
     }
 
-    override def painless: String = {
+    override def painless(): String = {
       val base =
         expression match {
           case Some(expr) =>
@@ -208,11 +208,11 @@ package object cond {
               } else {
                 res match {
                   case i: Identifier if i.name == name && cond.isInstanceOf[Identifier] =>
-                    i.nullable = false
+                    i.withNullable(false)
                     if (cond.asInstanceOf[Identifier].functions.isEmpty)
                       s"def val$idx = $c; if (expr == val$idx) return ${SQLTypeUtils.coerce(i.toPainless(s"val$idx"), i.baseType, out, nullable = false)};"
                     else {
-                      cond.asInstanceOf[Identifier].nullable = false
+                      cond.asInstanceOf[Identifier].withNullable(false)
                       s"def e$idx = ${i.checkNotNull}; def val$idx = e$idx != null ? ${SQLTypeUtils
                         .coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.baseType, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
                         .coerce(i.toPainless(s"e$idx"), i.baseType, out, nullable = false)};"
@@ -226,7 +226,7 @@ package object cond {
               val r =
                 res match {
                   case i: Identifier if i.name == name && cond.isInstanceOf[Expression] =>
-                    i.nullable = false
+                    i.withNullable(false)
                     SQLTypeUtils.coerce(i.toPainless("left"), i.baseType, out, nullable = false)
                   case _ => SQLTypeUtils.coerce(res, out)
                 }
@@ -240,7 +240,7 @@ package object cond {
       s"{ $base$cases $defaultCase }"
     }
 
-    override def toPainless(base: String, idx: Int): String = s"$base$painless"
+    override def toPainless(base: String, idx: Int): String = s"$base${painless()}"
 
     override def nullable: Boolean =
       conditions.exists { case (_, res) => res.nullable } || default.forall(_.nullable)

@@ -13,14 +13,14 @@ import app.softnetwork.elastic.sql.`type`.{
 package object string {
 
   sealed trait StringOp extends PainlessScript with TokenRegex {
-    override def painless: String = s".${sql.toLowerCase()}()"
+    override def painless(): String = s".${sql.toLowerCase()}()"
   }
 
   case object Concat extends Expr("CONCAT") with StringOp {
-    override def painless: String = " + "
+    override def painless(): String = " + "
   }
   case object Pipe extends Expr("\\|\\|") with StringOp {
-    override def painless: String = " + "
+    override def painless(): String = " + "
   }
   case object Lower extends Expr("LOWER") with StringOp {
     override lazy val words: List[String] = List(sql, "LCASE")
@@ -30,13 +30,13 @@ package object string {
   }
   case object Trim extends Expr("TRIM") with StringOp
   case object Ltrim extends Expr("LTRIM") with StringOp {
-    override def painless: String = ".replaceAll(\"^\\\\s+\",\"\")"
+    override def painless(): String = ".replaceAll(\"^\\\\s+\",\"\")"
   }
   case object Rtrim extends Expr("RTRIM") with StringOp {
-    override def painless: String = ".replaceAll(\"\\\\s+$\",\"\")"
+    override def painless(): String = ".replaceAll(\"\\\\s+$\",\"\")"
   }
   case object Substring extends Expr("SUBSTRING") with StringOp {
-    override def painless: String = ".substring"
+    override def painless(): String = ".substring"
     override lazy val words: List[String] = List(sql, "SUBSTR")
   }
   case object LeftOp extends Expr("LEFT") with StringOp
@@ -47,22 +47,22 @@ package object string {
   }
   case object Replace extends Expr("REPLACE") with StringOp {
     override lazy val words: List[String] = List(sql, "STR_REPLACE")
-    override def painless: String = ".replace"
+    override def painless(): String = ".replace"
   }
   case object Reverse extends Expr("REVERSE") with StringOp
   case object Position extends Expr("POSITION") with StringOp {
     override lazy val words: List[String] = List(sql, "STRPOS")
-    override def painless: String = ".indexOf"
+    override def painless(): String = ".indexOf"
   }
 
   case object RegexpLike extends Expr("REGEXP_LIKE") with StringOp {
     override lazy val words: List[String] = List(sql, "REGEXP")
-    override def painless: String = ".matches"
+    override def painless(): String = ".matches"
   }
 
   case class MatchFlags(flags: String) extends PainlessScript {
     override def sql: String = s"'$flags'"
-    override def painless: String = flags.toCharArray
+    override def painless(): String = flags.toCharArray
       .map {
         case 'i' => "java.util.regex.Pattern.CASE_INSENSITIVE"
         case 'c' => "0"
@@ -158,7 +158,7 @@ package object string {
           .map { case (arg, idx) =>
             SQLTypeUtils.coerce(arg, values(idx).baseType, SQLTypes.Varchar, nullable = false)
           }
-          .mkString(stringOp.painless)
+          .mkString(stringOp.painless())
     }
 
     override def validate(): Either[String, Unit] =

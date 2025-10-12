@@ -106,22 +106,22 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   override def out: SQLType = SQLTypes.Boolean
 
-  override def painless: String = this match {
+  override def painless(): String = this match {
     case Predicate(left, op, right, maybeNot, group) =>
-      val leftStr = left.painless
-      val rightStr = right.painless
+      val leftStr = left.painless()
+      val rightStr = right.painless()
       val opStr = op match {
-        case AND | OR => op.painless
+        case AND | OR => op.painless()
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
       if (group || not)
-        s"${maybeNot.map(_.painless).getOrElse("")}($leftStr $opStr $rightStr)"
+        s"${maybeNot.map(_.painless()).getOrElse("")}($leftStr $opStr $rightStr)"
       else
         s"$leftStr $opStr $rightStr"
-    case relation: ElasticRelation => asGroup(relation.criteria.painless)
-    case m: MatchCriteria          => asGroup(m.criteria.painless)
-    case expr: Expression          => asGroup(expr.painless)
+    case relation: ElasticRelation => asGroup(relation.criteria.painless())
+    case m: MatchCriteria          => asGroup(m.criteria.painless())
+    case expr: Expression          => asGroup(expr.painless())
     case _ => throw new IllegalArgumentException(s"Unsupported criteria: $this")
   }
 }
@@ -346,17 +346,17 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
 
   def painlessNot: String = operator match {
     case _: ComparisonOperator => ""
-    case _                     => maybeNot.map(_.painless).getOrElse("")
+    case _                     => maybeNot.map(_.painless()).getOrElse("")
   }
 
   def painlessOp: String = operator match {
-    case o: ComparisonOperator if maybeNot.isDefined => o.not.painless
-    case _                                           => operator.painless
+    case o: ComparisonOperator if maybeNot.isDefined => o.not.painless()
+    case _                                           => operator.painless()
   }
 
   def painlessValue: String = maybeValue
     .map {
-      case v: PainlessScript => v.painless
+      case v: PainlessScript => v.painless()
       case v                 => v.sql
     }
     .getOrElse("") /*{
@@ -380,7 +380,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case _                     => s"$painlessOp($painlessValue)"
     }
 
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : ${painlessNot}left$check"
     }
@@ -496,7 +496,7 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
     } else
       updated
   }
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null"
     }
@@ -519,7 +519,7 @@ case class IsNotNullCriteria(identifier: Identifier)
       updated
   }
 
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left != null"
     }
@@ -551,10 +551,10 @@ case class InExpr[R, +T <: Value[R]](
   override def maybeValue: Option[Token] = Some(values)
 
   override def includes(
-                         bucket: Bucket,
-                         not: Boolean,
-                         bucketIncludesExcludes: BucketIncludesExcludes
-                       ): BucketIncludesExcludes = {
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes = {
     identifier.bucket.find(_.name == bucket.name) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
@@ -568,7 +568,9 @@ case class InExpr[R, +T <: Value[R]](
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
-  override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
+  override def painless(): String =
+    s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
+
 }
 
 case class BetweenExpr(
@@ -598,7 +600,7 @@ case class BetweenExpr(
     } yield ()
   }
 
-  override def painless: String = {
+  override def painless(): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
     }
@@ -685,9 +687,27 @@ case class ElasticMatch(
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
+  override def includes(
+    bucket: Bucket,
+    not: Boolean,
+    bucketIncludesExcludes: BucketIncludesExcludes
+  ): BucketIncludesExcludes = {
+    identifier.bucket.find(_.name == bucket.name) match {
+      case Some(_) =>
+        if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+          bucketIncludesExcludes.copy(regex =
+            bucketIncludesExcludes.regex.orElse(Option(value.sql))
+          )
+        else bucketIncludesExcludes
+      case _ => bucketIncludesExcludes
+    }
+  }
+
   override def matchCriteria: Boolean = true
 
-  override def painless: String = s"$painlessNot${identifier.painless}$painlessOp($painlessValue)"
+  override def painless(): String =
+    s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
+
 }
 
 sealed abstract class ElasticRelation(val criteria: Criteria, val operator: ElasticOperator)

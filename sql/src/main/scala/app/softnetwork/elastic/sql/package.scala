@@ -52,7 +52,7 @@ package object sql {
   }
 
   trait PainlessScript extends Token {
-    def painless: String
+    def painless(): String
     def nullValue: String = "null"
   }
 
@@ -114,7 +114,7 @@ package object sql {
           case _               => values.headOption
         }
     }
-    override def painless: String =
+    override def painless(): String =
       SQLTypeUtils.coerce(
         value match {
           case s: String  => s""""$s""""
@@ -132,7 +132,7 @@ package object sql {
 
   case object Null extends Value[Null](null) with TokenRegex {
     override def sql: String = "NULL"
-    override def painless: String = "null"
+    override def painless(): String = "null"
     override def nullable: Boolean = true
     override def baseType: SQLType = SQLTypes.Null
   }
@@ -236,13 +236,13 @@ package object sql {
 
   case object PiValue extends Value[Double](Math.PI) with TokenRegex {
     override def sql: String = "PI"
-    override def painless: String = "Math.PI"
+    override def painless(): String = "Math.PI"
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
   case object EValue extends Value[Double](Math.E) with TokenRegex {
     override def sql: String = "E"
-    override def painless: String = "Math.E"
+    override def painless(): String = "Math.E"
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
@@ -252,7 +252,7 @@ package object sql {
     override def baseType: SQLNumeric = SQLTypes.Double
     override def sql: String = s"$longValue $unit"
     def geoDistance: String = s"$longValue$unit"
-    override def painless: String = s"$value"
+    override def painless(): String = s"$value"
   }
 
   sealed abstract class FromTo(val from: TokenValue, val to: TokenValue) extends Token {
@@ -317,7 +317,8 @@ package object sql {
       extends Token
       with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
-    override def painless: String = s"[${values.map(_.painless).mkString(",")}]"
+    override def painless(): String =
+      s"[${values.map(_.painless()).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
@@ -527,7 +528,7 @@ package object sql {
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
           case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx)
-          case f: PainlessScript          => expr = s"$expr${f.painless}"
+          case f: PainlessScript          => expr = s"$expr${f.painless()}"
           case f                          => expr = f.toSQL(expr) // fallback
         }
       }
@@ -589,7 +590,7 @@ package object sql {
       else
         s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value)"
 
-    override def painless: String = toPainless(
+    override def painless(): String = toPainless(
       if (nullable)
         checkNotNull
       else
@@ -599,16 +600,21 @@ package object sql {
     private[this] var _nullable =
       this.name.nonEmpty && (!aggregation || functions.size > 1)
 
-    def nullable_=(b: Boolean): Unit = {
+    protected def nullable_=(b: Boolean): Unit = {
       _nullable = b
     }
 
     override def nullable: Boolean = _nullable
 
+    def withNullable(b: Boolean): Identifier = {
+      this.nullable = b
+      this
+    }
+
     override def value: String =
       script match {
         case Some(s) => s
-        case _       => painless
+        case _       => painless()
       }
 
     def withNested(nested: Boolean): Identifier = this match {
@@ -639,6 +645,12 @@ package object sql {
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
+
+    override def withNullable(b: Boolean): Identifier = {
+      val id = this.copy()
+      id.nullable = b
+      id
+    }
 
     def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq

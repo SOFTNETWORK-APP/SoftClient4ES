@@ -64,7 +64,7 @@ case class Field(
     this.copy(identifier = updated.update(request))
   }
 
-  def painless: String = identifier.painless
+  def painless(): String = identifier.painless()
 
   def script: Option[String] = identifier.script
 

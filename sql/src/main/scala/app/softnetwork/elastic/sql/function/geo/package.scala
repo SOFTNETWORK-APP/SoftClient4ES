@@ -57,7 +57,7 @@ package object geo {
   case object Distance extends Expr("ST_DISTANCE") with Function with Operator {
     override def words: List[String] = List(sql, "DISTANCE")
 
-    override def painless: String = ".arcDistance"
+    override def painless(): String = ".arcDistance"
 
     def haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double = {
       val R = 6371e3 // Radius of the earth in meters
@@ -125,7 +125,7 @@ package object geo {
       else
         Map.empty
 
-    override def painless: String = {
+    override def painless(): String = {
       val nullCheck =
         identifiers.zipWithIndex
           .map { case (_, i) => s"arg$i == null" }
@@ -141,7 +141,7 @@ package object geo {
 
       val ret =
         if (oneIdentifier) {
-          s"arg0${fun.map(_.painless).getOrElse("")}(params.lat, params.lon)"
+          s"arg0${fun.map(_.painless()).getOrElse("")}(params.lat, params.lon)"
         } else if (identifiers.isEmpty) {
           s"${Distance.haversine(
             fromPoint.get.lat.value,
@@ -150,7 +150,7 @@ package object geo {
             toPoint.get.lon.value
           )}"
         } else {
-          s"arg0${fun.map(_.painless).getOrElse("")}(arg1.lat, arg1.lon)"
+          s"arg0${fun.map(_.painless()).getOrElse("")}(arg1.lat, arg1.lon)"
         }
 
       if (identifiers.nonEmpty)

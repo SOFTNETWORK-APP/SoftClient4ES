@@ -46,12 +46,12 @@ case class ArithmeticExpression(
       val l = left match {
         case t: TransformFunction[_, _] =>
           SQLTypeUtils.coerce(t.toPainless("", idx + 1), left.baseType, out, nullable = false)
-        case _ => SQLTypeUtils.coerce(left.painless, left.baseType, out, nullable = false)
+        case _ => SQLTypeUtils.coerce(left.painless(), left.baseType, out, nullable = false)
       }
       val r = right match {
         case t: TransformFunction[_, _] =>
           SQLTypeUtils.coerce(t.toPainless("", idx + 1), right.baseType, out, nullable = false)
-        case _ => SQLTypeUtils.coerce(right.painless, right.baseType, out, nullable = false)
+        case _ => SQLTypeUtils.coerce(right.painless(), right.baseType, out, nullable = false)
       }
       var expr = ""
       if (left.nullable)
@@ -59,22 +59,22 @@ case class ArithmeticExpression(
       if (right.nullable)
         expr += s"def rv$idx = ($r); "
       if (left.nullable && right.nullable)
-        expr += s"(lv$idx == null || rv$idx == null) ? null : (lv$idx ${operator.painless} rv$idx)"
+        expr += s"(lv$idx == null || rv$idx == null) ? null : (lv$idx ${operator.painless()} rv$idx)"
       else if (left.nullable)
-        expr += s"(lv$idx == null) ? null : (lv$idx ${operator.painless} $r)"
+        expr += s"(lv$idx == null) ? null : (lv$idx ${operator.painless()} $r)"
       else
-        expr += s"(rv$idx == null) ? null : ($l ${operator.painless} rv$idx)"
+        expr += s"(rv$idx == null) ? null : ($l ${operator.painless()} rv$idx)"
       if (group)
         expr = s"($expr)"
       return s"$base$expr"
     }
-    s"$base$painless"
+    s"$base${painless()}"
   }
 
-  override def painless: String = {
+  override def painless(): String = {
     val l = SQLTypeUtils.coerce(left, out)
     val r = SQLTypeUtils.coerce(right, out)
-    val expr = s"$l ${operator.painless} $r"
+    val expr = s"$l ${operator.painless()} $r"
     if (group)
       s"($expr)"
     else
