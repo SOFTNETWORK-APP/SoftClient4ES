@@ -124,7 +124,7 @@ package object function {
 
     override def toSQL(base: String): String = s"$base$sql"
 
-    override def painless(): String = {
+    override def painless(context: Option[PainlessContext]): String = {
       val nullCheck =
         args.zipWithIndex
           .filter(_._1.nullable)

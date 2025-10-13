@@ -106,22 +106,22 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   override def out: SQLType = SQLTypes.Boolean
 
-  override def painless(): String = this match {
+  override def painless(context: Option[PainlessContext]): String = this match {
     case Predicate(left, op, right, maybeNot, group) =>
-      val leftStr = left.painless()
-      val rightStr = right.painless()
+      val leftStr = left.painless(context)
+      val rightStr = right.painless(context)
       val opStr = op match {
-        case AND | OR => op.painless()
+        case AND | OR => op.painless(context)
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
       if (group || not)
-        s"${maybeNot.map(_.painless()).getOrElse("")}($leftStr $opStr $rightStr)"
+        s"${maybeNot.map(_.painless(context)).getOrElse("")}($leftStr $opStr $rightStr)"
       else
         s"$leftStr $opStr $rightStr"
-    case relation: ElasticRelation => asGroup(relation.criteria.painless())
-    case m: MatchCriteria          => asGroup(m.criteria.painless())
-    case expr: Expression          => asGroup(expr.painless())
+    case relation: ElasticRelation => asGroup(relation.criteria.painless(context))
+    case m: MatchCriteria          => asGroup(m.criteria.painless(context))
+    case expr: Expression          => asGroup(expr.painless(context))
     case _ => throw new IllegalArgumentException(s"Unsupported criteria: $this")
   }
 }
@@ -380,7 +380,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case _                     => s"$painlessOp($painlessValue)"
     }
 
-  override def painless(): String = {
+  override def painless(context: Option[PainlessContext]): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : ${painlessNot}left$check"
     }
@@ -496,7 +496,7 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
     } else
       updated
   }
-  override def painless(): String = {
+  override def painless(context: Option[PainlessContext]): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null"
     }
@@ -519,7 +519,7 @@ case class IsNotNullCriteria(identifier: Identifier)
       updated
   }
 
-  override def painless(): String = {
+  override def painless(context: Option[PainlessContext]): String = {
     if (identifier.nullable) {
       return s"def left = $left; left != null"
     }
@@ -568,7 +568,7 @@ case class InExpr[R, +T <: Value[R]](
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
-  override def painless(): String =
+  override def painless(context: Option[PainlessContext]): String =
     s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
 
 }
@@ -600,7 +600,7 @@ case class BetweenExpr(
     } yield ()
   }
 
-  override def painless(): String = {
+  override def painless(context: Option[PainlessContext]): String = {
     if (identifier.nullable) {
       return s"def left = $left; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
     }
@@ -705,7 +705,7 @@ case class ElasticMatch(
 
   override def matchCriteria: Boolean = true
 
-  override def painless(): String =
+  override def painless(context: Option[PainlessContext]): String =
     s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
 
 }

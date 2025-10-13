@@ -71,7 +71,7 @@ case class ArithmeticExpression(
     s"$base${painless()}"
   }
 
-  override def painless(): String = {
+  override def painless(context: Option[PainlessContext]): String = {
     val l = SQLTypeUtils.coerce(left, out)
     val r = SQLTypeUtils.coerce(right, out)
     val expr = s"$l ${operator.painless()} $r"

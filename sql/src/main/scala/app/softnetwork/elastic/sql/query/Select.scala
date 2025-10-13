@@ -9,6 +9,7 @@ import app.softnetwork.elastic.sql.{
   DateMathScript,
   Expr,
   Identifier,
+  PainlessContext,
   PainlessScript,
   TokenRegex,
   Updateable
@@ -64,7 +65,7 @@ case class Field(
     this.copy(identifier = updated.update(request))
   }
 
-  def painless(): String = identifier.painless()
+  def painless(context: Option[PainlessContext]): String = identifier.painless(context)
 
   def script: Option[String] = identifier.script
 

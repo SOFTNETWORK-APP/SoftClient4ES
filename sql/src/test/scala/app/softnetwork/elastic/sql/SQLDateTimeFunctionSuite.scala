@@ -4,7 +4,6 @@ import org.scalatest.funsuite.AnyFunSuite
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.time._
 import app.softnetwork.elastic.sql.time._
-import TimeField._
 import app.softnetwork.elastic.sql.`type`.SQLType
 
 class SQLDateTimeFunctionSuite extends AnyFunSuite {
@@ -81,9 +80,6 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
     val names = chain.map(_.sql).mkString(" -> ")
     test(s"Valid chain $idx: $names") {
       val chained = chainTransformsTyped(baseDate, chain)
-      val expected = chain.reverse.tail.foldLeft(chain.last.toPainless(baseDate, 0)) { (expr, f) =>
-        f.toPainless(expr, 0)
-      }
       // On ne teste que la génération de code Painless sans évaluer le résultat
       assert(chained.nonEmpty)
     }

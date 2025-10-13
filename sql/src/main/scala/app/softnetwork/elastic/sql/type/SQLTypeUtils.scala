@@ -88,7 +88,7 @@ object SQLTypeUtils {
   }
 
   def coerce(in: PainlessScript, to: SQLType): String = {
-    val expr = in.painless
+    val expr = in.painless()
     val from = in.baseType
     val nullable = in.nullable
     coerce(expr, from, to, nullable)

@@ -1,6 +1,13 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Alias, DateMathRounding, Expr, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  Alias,
+  DateMathRounding,
+  Expr,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex
+}
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
 
 package object convert {
@@ -19,7 +26,8 @@ package object convert {
 
     //override def nullable: Boolean = value.nullable
 
-    override def painless(): String = SQLTypeUtils.coerce(value, targetType)
+    override def painless(context: Option[PainlessContext] = None): String =
+      SQLTypeUtils.coerce(value, targetType)
 
     override def toPainless(base: String, idx: Int): String = {
       val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable)

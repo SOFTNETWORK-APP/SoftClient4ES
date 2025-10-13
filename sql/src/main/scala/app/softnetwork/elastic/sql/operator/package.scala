@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql
 package object operator {
 
   trait Operator extends Token with PainlessScript with TokenRegex {
-    override def painless(): String = this match {
+    override def painless(context: Option[PainlessContext]): String = this match {
       case AND                  => "&&"
       case OR                   => "||"
       case NOT                  => "!"

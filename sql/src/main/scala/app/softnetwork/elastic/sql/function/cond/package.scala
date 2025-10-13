@@ -1,13 +1,13 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, Identifier, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{Expr, Identifier, PainlessContext, PainlessScript, TokenRegex}
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLBool, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.query.Expression
 
 package object cond {
 
   sealed trait ConditionalOp extends PainlessScript with TokenRegex {
-    override def painless(): String = sql
+    override def painless(context: Option[PainlessContext] = None): String = sql
   }
 
   case object Coalesce extends Expr("COALESCE") with ConditionalOp
@@ -44,7 +44,7 @@ package object cond {
 
     override def toSQL(base: String): String = sql
 
-    override def painless(): String = s" == null"
+    override def painless(context: Option[PainlessContext] = None): String = s" == null"
     override def toPainless(base: String, idx: Int): String = {
       if (nullable)
         s"(def e$idx = $base; e$idx${painless()})"
@@ -62,7 +62,7 @@ package object cond {
 
     override def toSQL(base: String): String = sql
 
-    override def painless(): String = s" != null"
+    override def painless(context: Option[PainlessContext] = None): String = s" != null"
     override def toPainless(base: String, idx: Int): String = {
       if (nullable)
         s"(def e$idx = $base; e$idx${painless()})"
@@ -101,7 +101,7 @@ package object cond {
 
     override def toPainless(base: String, idx: Int): String = s"$base${painless()}"
 
-    override def painless(): String = {
+    override def painless(context: Option[PainlessContext] = None): String = {
       require(values.nonEmpty, "COALESCE requires at least one argument")
 
       val checks = values
@@ -183,7 +183,7 @@ package object cond {
       else Right(())
     }
 
-    override def painless(): String = {
+    override def painless(context: Option[PainlessContext] = None): String = {
       val base =
         expression match {
           case Some(expr) =>

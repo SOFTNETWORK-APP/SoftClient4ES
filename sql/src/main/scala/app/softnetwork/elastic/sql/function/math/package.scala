@@ -1,12 +1,20 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, Identifier, IntValue, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  Expr,
+  Identifier,
+  IntValue,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex
+}
 import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLType, SQLTypes}
 
 package object math {
 
   sealed trait MathOp extends PainlessScript with TokenRegex {
-    override def painless(): String = s"Math.${sql.toLowerCase()}"
+    override def painless(context: Option[PainlessContext] = None): String =
+      s"Math.${sql.toLowerCase()}"
     override def toString: String = s" $sql "
 
     override def baseType: SQLNumeric = SQLTypes.Numeric
@@ -88,7 +96,7 @@ package object math {
 
     override def args: List[PainlessScript] = List(arg)
 
-    override def painless(): String = {
+    override def painless(context: Option[PainlessContext]): String = {
       val ret = "arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)"
       if (arg.nullable)
         s"(def arg0 = ${arg.painless()}; arg0 != null ? ($ret) : null)"

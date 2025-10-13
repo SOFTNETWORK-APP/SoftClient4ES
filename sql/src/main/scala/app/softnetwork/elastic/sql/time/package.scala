@@ -7,7 +7,7 @@ import scala.util.matching.Regex
 package object time {
 
   sealed trait TimeField extends PainlessScript with TokenRegex {
-    override def painless(): String = s"ChronoField.$timeField"
+    override def painless(context: Option[PainlessContext]): String = s"ChronoField.$timeField"
 
     override def nullable: Boolean = false
 
@@ -62,7 +62,8 @@ package object time {
   sealed trait IsoField extends TimeField {
     def isoField: String
     def timeField: String = isoField
-    override def painless(): String = s"java.time.temporal.IsoFields.$isoField"
+    override def painless(context: Option[PainlessContext]): String =
+      s"java.time.temporal.IsoFields.$isoField"
   }
 
   object IsoField {
@@ -82,7 +83,7 @@ package object time {
 
     def timeUnit: String = sql.toUpperCase() + "S"
 
-    override def painless(): String = s"ChronoUnit.$timeUnit"
+    override def painless(context: Option[PainlessContext]): String = s"ChronoUnit.$timeUnit"
 
     override def nullable: Boolean = false
 
@@ -134,7 +135,7 @@ package object time {
     def unit: TimeUnit
     override def sql: String = s"$Interval $value ${unit.sql}"
 
-    override def painless(): String = s"$value, ${unit.painless()}"
+    override def painless(context: Option[PainlessContext]): String = s"$value, ${unit.painless()}"
 
     override def script: Option[String] = Some(TimeInterval.script(this))
 

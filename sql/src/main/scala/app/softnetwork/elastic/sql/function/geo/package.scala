@@ -5,6 +5,7 @@ import app.softnetwork.elastic.sql.{
   DoubleValue,
   Expr,
   Identifier,
+  PainlessContext,
   PainlessParams,
   PainlessScript,
   Token,
@@ -57,7 +58,7 @@ package object geo {
   case object Distance extends Expr("ST_DISTANCE") with Function with Operator {
     override def words: List[String] = List(sql, "DISTANCE")
 
-    override def painless(): String = ".arcDistance"
+    override def painless(context: Option[PainlessContext] = None): String = ".arcDistance"
 
     def haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double = {
       val R = 6371e3 // Radius of the earth in meters
@@ -125,7 +126,7 @@ package object geo {
       else
         Map.empty
 
-    override def painless(): String = {
+    override def painless(context: Option[PainlessContext]): String = {
       val nullCheck =
         identifiers.zipWithIndex
           .map { case (_, i) => s"arg$i == null" }
