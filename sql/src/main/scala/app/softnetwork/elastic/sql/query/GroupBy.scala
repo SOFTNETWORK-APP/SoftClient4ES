@@ -85,7 +85,7 @@ object MetricSelectorScript {
       val leftStr = metricSelector(left)
       val rightStr = metricSelector(right)
       val opStr = op match {
-        case AND | OR => op.painless()
+        case AND | OR => op.painless(None)
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
@@ -99,7 +99,7 @@ object MetricSelectorScript {
     case _: MatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
-      val painless = e.painless()
+      val painless = e.painless(None)
       e.maybeValue match {
         case Some(value) if e.operator.isInstanceOf[ComparisonOperator] =>
           value.out match { // compare epoch millis

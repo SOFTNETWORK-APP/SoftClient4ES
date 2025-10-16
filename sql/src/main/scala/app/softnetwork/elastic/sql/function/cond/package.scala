@@ -1,8 +1,16 @@
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, Identifier, PainlessContext, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  Expr,
+  Identifier,
+  LiteralParam,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex
+}
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLBool, SQLType, SQLTypeUtils, SQLTypes}
-import app.softnetwork.elastic.sql.query.Expression
+import app.softnetwork.elastic.sql.parser.Validator
+import app.softnetwork.elastic.sql.query.{CriteriaWithConditionalFunction, Expression}
 
 package object cond {
 
@@ -32,7 +40,6 @@ package object cond {
 
     override def outputType: SQLBool = SQLTypes.Boolean
 
-    override def toPainless(base: String, idx: Int): String = s"($base${painless()})"
   }
 
   case class IsNull(identifier: Identifier) extends ConditionalFunction[SQLAny] {
@@ -44,13 +51,14 @@ package object cond {
 
     override def toSQL(base: String): String = sql
 
-    override def painless(context: Option[PainlessContext] = None): String = s" == null"
-    override def toPainless(base: String, idx: Int): String = {
-      if (nullable)
-        s"(def e$idx = $base; e$idx${painless()})"
-      else
-        s"$base${painless()}"
-    }
+    override def checkIfNullable: Boolean = false
+
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case List(arg) =>
+          s"${arg.trim} == null" // TODO check when identifier is nullable and has functions
+        case _ => throw new IllegalArgumentException("ISNULL requires exactly one argument")
+      }
   }
 
   case class IsNotNull(identifier: Identifier) extends ConditionalFunction[SQLAny] {
@@ -62,13 +70,14 @@ package object cond {
 
     override def toSQL(base: String): String = sql
 
-    override def painless(context: Option[PainlessContext] = None): String = s" != null"
-    override def toPainless(base: String, idx: Int): String = {
-      if (nullable)
-        s"(def e$idx = $base; e$idx${painless()})"
-      else
-        s"$base${painless()}"
-    }
+    override def checkIfNullable: Boolean = false
+
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case List(arg) =>
+          s"${arg.trim} != null" // TODO check when identifier is nullable and has functions
+        case _ => throw new IllegalArgumentException("ISNOTNULL requires exactly one argument")
+      }
   }
 
   case class Coalesce(values: List[PainlessScript])
@@ -99,23 +108,19 @@ package object cond {
       else Right(())
     }
 
-    override def toPainless(base: String, idx: Int): String = s"$base${painless()}"
+    override def checkIfNullable: Boolean = false
 
-    override def painless(context: Option[PainlessContext] = None): String = {
-      require(values.nonEmpty, "COALESCE requires at least one argument")
-
-      val checks = values
-        .take(values.length - 1)
-        .zipWithIndex
-        .map { case (v, index) =>
-          var check = s"def v$index = ${SQLTypeUtils.coerce(v, out)};"
-          check += s"if (v$index != null) return v$index;"
-          check
-        }
-        .mkString(" ")
-      // final fallback
-      s"{ $checks return ${SQLTypeUtils.coerce(values.last, out)}; }"
-    }
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case Nil => throw new IllegalArgumentException("COALESCE requires at least one argument")
+        case _ =>
+          callArgs
+            .take(values.length - 1)
+            .map { arg =>
+              s"${arg.trim} != null ? ${arg.trim}" // TODO check when value is nullable and has functions
+            }
+            .mkString(" : ") + s" : ${callArgs.last}"
+      }
 
     override def nullable: Boolean = values.forall(_.nullable)
   }
@@ -134,11 +139,38 @@ package object cond {
 
     override def applyType(in: SQLType): SQLType = out
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def checkIfNullable: Boolean = expr1.nullable && (expr1 match {
+      case f: FunctionChain if f.functions.nonEmpty => true
+      case _                                        => false
+    })
+
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
-        case List(arg0, arg1) => s"${arg0.trim} == ${arg1.trim} ? null : $arg0"
+        case List(arg0, arg1) =>
+          val expr =
+            s"${arg0.trim} == ${arg1.trim} ? null : $arg0" // TODO check when expr1 and expr2 are nullable and have functions
+          context match {
+            case Some(ctx) =>
+              ctx.addParam(LiteralParam(expr)) match {
+                case Some(e) => return e
+                case _       =>
+              }
+            case _ =>
+          }
+          expr
         case _ => throw new IllegalArgumentException("NULLIF requires exactly two arguments")
       }
+    }
+
+    override def validate(): Either[String, Unit] = {
+      for {
+        _ <- expr1.validate()
+        _ <- expr2.validate()
+        _ <- Validator.validateTypesMatching(expr1.out, expr2.out)
+      } yield ()
     }
   }
 
@@ -184,63 +216,119 @@ package object cond {
     }
 
     override def painless(context: Option[PainlessContext] = None): String = {
-      val base =
-        expression match {
-          case Some(expr) =>
-            s"def expr = ${SQLTypeUtils.coerce(expr, expr.out)}; "
-          case _ => ""
-        }
-      val cases = conditions.zipWithIndex
-        .map { case ((cond, res), idx) =>
-          val name =
-            cond match {
-              case e: Expression =>
-                e.identifier.name
-              case i: Identifier =>
-                i.name
-              case _ => ""
-            }
-          expression match {
-            case Some(expr) =>
-              val c = SQLTypeUtils.coerce(cond, expr.out)
-              if (cond.sql == res.sql) {
-                s"def val$idx = $c; if (expr == val$idx) return val$idx;"
-              } else {
-                res match {
-                  case i: Identifier if i.name == name && cond.isInstanceOf[Identifier] =>
-                    i.withNullable(false)
-                    if (cond.asInstanceOf[Identifier].functions.isEmpty)
-                      s"def val$idx = $c; if (expr == val$idx) return ${SQLTypeUtils.coerce(i.toPainless(s"val$idx"), i.baseType, out, nullable = false)};"
-                    else {
-                      cond.asInstanceOf[Identifier].withNullable(false)
-                      s"def e$idx = ${i.checkNotNull}; def val$idx = e$idx != null ? ${SQLTypeUtils
-                        .coerce(cond.asInstanceOf[Identifier].toPainless(s"e$idx"), cond.baseType, out, nullable = false)} : null; if (expr == val$idx) return ${SQLTypeUtils
-                        .coerce(i.toPainless(s"e$idx"), i.baseType, out, nullable = false)};"
+      context match {
+        case Some(ctx) =>
+          var cases =
+            expression match {
+              case Some(expr) => // case with expression to evaluate
+                val e = SQLTypeUtils.coerce(expr, expr.out, context)
+                val expParam = ctx.addParam(
+                  LiteralParam(e)
+                )
+                conditions
+                  .map { case (cond, res) =>
+                    val name =
+                      cond match {
+                        case e: Expression =>
+                          e.identifier.name
+                        case f: FunctionWithIdentifier =>
+                          f.identifier.name
+                        case i: Identifier =>
+                          i.name
+                        case _ => ""
+                      }
+                    val c = SQLTypeUtils.coerce(cond, expr.out, context)
+                    val r =
+                      res match {
+                        case i: Identifier if i.name == name && name.nonEmpty =>
+                          i.withNullable(false)
+                          SQLTypeUtils.coerce(
+                            i.painless(context),
+                            i.baseType,
+                            out,
+                            nullable = false,
+                            context
+                          )
+                        case _ =>
+                          SQLTypeUtils.coerce(res, out, context)
+                      }
+                    expParam match {
+                      case Some(e) =>
+                        if (cond.nullable) {
+                          ctx.addParam(LiteralParam(c)) match {
+                            case Some(c) => s"$e == $c ? $r"
+                            case _       => s"$e == $c ? $r"
+                          }
+                        } else {
+                          s"$e == $c ? $r"
+                        }
+                      case _ =>
+                        s"$e == $c ? $r"
                     }
-                  case _ =>
-                    s"if (expr == $c) return ${SQLTypeUtils.coerce(res, out)};"
+                  }
+                  .mkString(" : ")
+              case _ =>
+                conditions
+                  .map { case (cond, res) =>
+                    val name =
+                      cond match {
+                        case e: Expression =>
+                          e.identifier.name
+                        case f: FunctionWithIdentifier =>
+                          f.identifier.name
+                        case i: Identifier =>
+                          i.name
+                        case _ => ""
+                      }
+                    val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean, context)
+                    val r =
+                      res match {
+                        case i: Identifier if i.name == name && name.nonEmpty =>
+                          i.withNullable(false)
+                          SQLTypeUtils.coerce(
+                            i.painless(context),
+                            i.baseType,
+                            out,
+                            nullable = false,
+                            context
+                          )
+                        case _ =>
+                          SQLTypeUtils.coerce(res, out, context)
+                      }
+                    if (!cond.isInstanceOf[CriteriaWithConditionalFunction[_]] && cond.nullable) {
+                      ctx.addParam(LiteralParam(c)) match {
+                        case Some(c) => s"$c ? $r"
+                        case _       => s"$c ? $r"
+                      }
+                    } else {
+                      s"$c ? $r"
+                    }
+                  }
+                  .mkString(" : ")
+            }
+          default match {
+            case Some(df) =>
+              val d = SQLTypeUtils.coerce(df, out, context)
+              if (df.nullable) {
+                ctx.addParam(LiteralParam(d)) match {
+                  case Some(d) => cases = s"$cases : $d"
+                  case _       => cases = s"$cases : $d"
                 }
+              } else {
+                cases = s"$cases : $d"
               }
-            case None =>
-              val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean)
-              val r =
-                res match {
-                  case i: Identifier if i.name == name && cond.isInstanceOf[Expression] =>
-                    i.withNullable(false)
-                    SQLTypeUtils.coerce(i.toPainless("left"), i.baseType, out, nullable = false)
-                  case _ => SQLTypeUtils.coerce(res, out)
-                }
-              s"if ($c) return $r;"
+            case _ =>
           }
-        }
-        .mkString(" ")
-      val defaultCase = default
-        .map(d => s"def dval = ${SQLTypeUtils.coerce(d, out)}; return dval;")
-        .getOrElse("return null;")
-      s"{ $base$cases $defaultCase }"
+
+          cases
+
+        case _ =>
+          throw new IllegalArgumentException(s"Painless context is required for $sql")
+      }
     }
 
-    override def toPainless(base: String, idx: Int): String = s"$base${painless()}"
+    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String =
+      s"$base${painless(context)}"
 
     override def nullable: Boolean =
       conditions.exists { case (_, res) => res.nullable } || default.forall(_.nullable)

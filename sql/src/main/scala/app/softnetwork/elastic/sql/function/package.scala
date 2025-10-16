@@ -100,6 +100,18 @@ package object function {
           this.baseType
       }
     }
+
+    def find(function: Function): Option[Function] = {
+      functions.find(_ == function)
+    }
+
+    def contains(function: Function): Boolean = {
+      functions.contains(function)
+    }
+
+    def indexOf(function: Function): Int = {
+      functions.indexOf(function)
+    }
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
@@ -124,40 +136,65 @@ package object function {
 
     override def toSQL(base: String): String = s"$base$sql"
 
+    def checkIfNullable: Boolean = args.exists(_.nullable)
+
     override def painless(context: Option[PainlessContext]): String = {
+      context match {
+        case Some(ctx) =>
+          args.foreach(arg => ctx.addParam(arg)) // ensure all args are added to the context
+        case _ =>
+      }
+
       val nullCheck =
-        args.zipWithIndex
-          .filter(_._1.nullable)
-          .map { case (_, i) => s"arg$i == null" }
-          .mkString(" || ")
+        if (checkIfNullable) {
+          args.zipWithIndex
+            .filter(_._1.nullable)
+            .map { case (a, i) =>
+              context.flatMap(ctx => ctx.get(a)).getOrElse(s"arg$i") + " == null"
+            }
+            .mkString(" || ")
+        } else
+          ""
 
       val assignments =
         args.zipWithIndex
           .filter(_._1.nullable)
           .map { case (a, i) =>
-            s"def arg$i = ${SQLTypeUtils.coerce(a.painless(), a.baseType, argTypes(i), nullable = false)};"
+            context
+              .flatMap(ctx => ctx.get(a).map(_ => ""))
+              .getOrElse(
+                s"def arg$i = ${SQLTypeUtils
+                  .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)};"
+              )
           }
           .mkString(" ")
+          .trim
 
       val callArgs = args.zipWithIndex
         .map { case (a, i) =>
-          if (a.nullable)
-            s"arg$i"
-          else
-            SQLTypeUtils.coerce(a.painless(), a.baseType, argTypes(i), nullable = false)
+          context.flatMap(ctx => ctx.get(a)).getOrElse {
+            if (a.nullable) s"arg$i"
+            else
+              SQLTypeUtils
+                .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)
+          }
         }
 
-      if (args.exists(_.nullable))
-        s"($assignments ($nullCheck) ? null : ${toPainlessCall(callArgs)})"
-      else
-        s"${toPainlessCall(callArgs)}"
+      val painlessCall = toPainlessCall(callArgs, context)
+
+      if (checkIfNullable) {
+        if (assignments.nonEmpty)
+          s"$assignments ($nullCheck) ? $nullValue : $painlessCall"
+        else s"($nullCheck) ? $nullValue : $painlessCall"
+      } else
+        s"$painlessCall"
     }
 
-    def toPainlessCall(callArgs: List[String]): String =
+    def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       if (callArgs.nonEmpty)
-        s"${fun.map(_.painless()).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
+        s"${fun.map(_.painless(context)).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
       else
-        fun.map(_.painless()).getOrElse("")
+        fun.map(_.painless(context)).getOrElse("")
   }
 
   trait BinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType] extends FunctionN[In2, Out] {
@@ -172,11 +209,31 @@ package object function {
   }
 
   trait TransformFunction[In <: SQLType, Out <: SQLType] extends FunctionN[In, Out] {
-    def toPainless(base: String, idx: Int): String = {
-      if (nullable && base.nonEmpty)
-        s"(def e$idx = $base; e$idx != null ? e$idx${painless()} : null)"
-      else
-        s"$base${painless()}"
+    override def checkIfNullable: Boolean =
+      super.checkIfNullable && (this match {
+        case f: FunctionWithIdentifier
+            if f.identifier.functions.size > 1 && f.identifier.functions.reverse.headOption.exists(
+              !_.equals(this)
+            ) =>
+          false
+        case _ =>
+          true
+      })
+
+    def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      context match {
+        case Some(_) =>
+          val p = painless(context)
+          if (p.startsWith(".")) // method call
+            s"$base$p"
+          else
+            p
+        case None =>
+          if (checkIfNullable && base.nonEmpty)
+            s"(def e$idx = $base; e$idx != null ? e$idx${painless(context)} : null)"
+          else
+            s"$base${painless(context)}"
+      }
     }
   }
 

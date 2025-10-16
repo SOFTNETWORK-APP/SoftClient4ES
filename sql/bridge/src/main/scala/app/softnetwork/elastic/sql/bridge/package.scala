@@ -296,9 +296,11 @@ package object bridge {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
+          val context = PainlessContext()
+          val script = field.painless(Some(context))
           scriptField(
             field.scriptName,
-            Script(script = field.painless())
+            Script(script = s"$context$script")
               .lang("painless")
               .scriptType("source")
               .params(field.identifier.functions.headOption match {
@@ -353,7 +355,11 @@ package object bridge {
         case _           => true
       }))
     ) {
-      return scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
+      val context = PainlessContext()
+      val script = painless(Some(context))
+      return scriptQuery(
+        Script(script = s"$context$script").lang("painless").scriptType("source")
+      )
     }
     // Geo distance special case
     identifier.functions.headOption match {
@@ -567,10 +573,22 @@ package object bridge {
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
-                scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
+                val context = PainlessContext()
+                val script = painless(Some(context))
+                scriptQuery(
+                  Script(script = s"$context$script")
+                    .lang("painless")
+                    .scriptType("source")
+                )
             }
           case _ =>
-            scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
+            val context = PainlessContext()
+            val script = painless(Some(context))
+            scriptQuery(
+              Script(script = s"$context$script")
+                .lang("painless")
+                .scriptType("source")
+            )
         }
       case _ => matchAllQuery()
     }
@@ -724,7 +742,7 @@ package object bridge {
       case _ =>
         scriptQuery(
           Script(
-            script = distanceCriteria.painless(),
+            script = distanceCriteria.painless(None),
             lang = Some("painless"),
             scriptType = Source,
             params = distance.params

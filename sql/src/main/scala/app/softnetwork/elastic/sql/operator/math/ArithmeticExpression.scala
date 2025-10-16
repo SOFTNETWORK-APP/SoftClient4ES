@@ -41,40 +41,71 @@ case class ArithmeticExpression(
 
   override def nullable: Boolean = left.nullable || right.nullable
 
-  override def toPainless(base: String, idx: Int): String = {
+  override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+    context match {
+      case Some(ctx) =>
+        ctx.addParam(left)
+        ctx.addParam(right)
+      case _ =>
+    }
     if (nullable) {
-      val l = left match {
-        case t: TransformFunction[_, _] =>
-          SQLTypeUtils.coerce(t.toPainless("", idx + 1), left.baseType, out, nullable = false)
-        case _ => SQLTypeUtils.coerce(left.painless(), left.baseType, out, nullable = false)
-      }
-      val r = right match {
-        case t: TransformFunction[_, _] =>
-          SQLTypeUtils.coerce(t.toPainless("", idx + 1), right.baseType, out, nullable = false)
-        case _ => SQLTypeUtils.coerce(right.painless(), right.baseType, out, nullable = false)
-      }
+      val l = context
+        .flatMap(ctx => ctx.get(left))
+        .getOrElse(left match {
+          case t: TransformFunction[_, _] =>
+            SQLTypeUtils.coerce(
+              t.toPainless("", idx + 1, context),
+              left.baseType,
+              out,
+              nullable = false,
+              context
+            )
+          case _ =>
+            SQLTypeUtils
+              .coerce(left.painless(context), left.baseType, out, nullable = false, context)
+        })
+      val r = context
+        .flatMap(ctx => ctx.get(right))
+        .getOrElse(right match {
+          case t: TransformFunction[_, _] =>
+            SQLTypeUtils.coerce(
+              t.toPainless("", idx + 1, context),
+              right.baseType,
+              out,
+              nullable = false,
+              context
+            )
+          case _ =>
+            SQLTypeUtils
+              .coerce(right.painless(context), right.baseType, out, nullable = false, context)
+        })
       var expr = ""
+      val leftParam = context.flatMap(ctx => ctx.get(left)).getOrElse(s"lv$idx")
+      val rightParam = context.flatMap(ctx => ctx.get(right)).getOrElse(s"rv$idx")
       if (left.nullable)
-        expr += s"def lv$idx = ($l); "
+        expr += (if (context.exists(ctx => ctx.get(left).nonEmpty)) ""
+                 else s"def $leftParam = $l; ")
       if (right.nullable)
-        expr += s"def rv$idx = ($r); "
+        expr += (if (context.exists(ctx => ctx.get(right).nonEmpty)) ""
+                 else s"def $rightParam = $r; ")
       if (left.nullable && right.nullable)
-        expr += s"(lv$idx == null || rv$idx == null) ? null : (lv$idx ${operator.painless()} rv$idx)"
+        expr += s"($leftParam == null || $rightParam == null) ? null : ($leftParam ${operator
+          .painless(context)} $rightParam)"
       else if (left.nullable)
-        expr += s"(lv$idx == null) ? null : (lv$idx ${operator.painless()} $r)"
+        expr += s"($leftParam == null) ? null : ($leftParam ${operator.painless(context)} $r)"
       else
-        expr += s"(rv$idx == null) ? null : ($l ${operator.painless()} rv$idx)"
+        expr += s"($rightParam == null) ? null : ($l ${operator.painless(context)} $rightParam)"
       if (group)
         expr = s"($expr)"
       return s"$base$expr"
     }
-    s"$base${painless()}"
+    s"$base${painless(context)}"
   }
 
   override def painless(context: Option[PainlessContext]): String = {
-    val l = SQLTypeUtils.coerce(left, out)
-    val r = SQLTypeUtils.coerce(right, out)
-    val expr = s"$l ${operator.painless()} $r"
+    val l = SQLTypeUtils.coerce(left, out, context)
+    val r = SQLTypeUtils.coerce(right, out, context)
+    val expr = s"$l ${operator.painless(context)} $r"
     if (group)
       s"($expr)"
     else

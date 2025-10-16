@@ -106,7 +106,7 @@ trait Parser
   }
 
   def sql_function: PackratParser[Function] =
-    aggregate_function | time_function | conditional_function | string_function
+    aggregate_function | time_function | conditional_function
 
   private val reservedKeywords = Seq(
     "select",

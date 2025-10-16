@@ -27,12 +27,12 @@ package object convert {
     //override def nullable: Boolean = value.nullable
 
     override def painless(context: Option[PainlessContext] = None): String =
-      SQLTypeUtils.coerce(value, targetType)
+      SQLTypeUtils.coerce(value, targetType, context)
 
-    override def toPainless(base: String, idx: Int): String = {
-      val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable)
+    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
-      val retWithBrackets = if (bloc) ret else s"{ return $ret; }"
+      val retWithBrackets = if (bloc) ret else s"{ $ret }"
       if (safe) s"try $retWithBrackets catch (Exception e) { return null; }"
       else ret
     }

@@ -5,6 +5,7 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   IntValue,
   PainlessContext,
+  PainlessParam,
   PainlessScript,
   TokenRegex
 }
@@ -80,15 +81,32 @@ package object math {
     override def nullable: Boolean = arg.nullable
   }
 
+  case class PowParam(scale: Int) extends PainlessParam with PainlessScript {
+    override def param: String = s"Math.pow(10, $scale)"
+    override def checkNotNull: String = ""
+    override def sql: String = param
+    override def nullable: Boolean = true
+
+    /** Generate painless script for this token
+      *
+      * @param context
+      *   the painless context
+      * @return
+      *   the painless script
+      */
+    override def painless(context: Option[PainlessContext]): String = param
+  }
+
   case class Round(arg: PainlessScript, scale: Option[Int]) extends MathematicalFunction {
     override def mathOp: MathOp = Round
 
-    override def args: List[PainlessScript] =
-      List(arg) ++ scale.map(IntValue(_)).toList
+    override def args: List[PainlessScript] = List(arg, PowParam(scale.getOrElse(0)))
 
-    override def toPainlessCall(callArgs: List[String]): String =
-      s"(def p = ${Pow(IntValue(10), scale.getOrElse(0))
-        .painless()}; ${mathOp.painless()}((${callArgs.head} * p) / p))"
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case List(a, p) => s"${mathOp.painless(context)}(($a * $p) / $p)"
+        case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
+      }
   }
 
   case class Sign(arg: PainlessScript) extends MathematicalFunction {
@@ -96,13 +114,12 @@ package object math {
 
     override def args: List[PainlessScript] = List(arg)
 
-    override def painless(context: Option[PainlessContext]): String = {
-      val ret = "arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)"
-      if (arg.nullable)
-        s"(def arg0 = ${arg.painless()}; arg0 != null ? ($ret) : null)"
-      else
-        s"(def arg0 = ${arg.painless()}; $ret)"
-    }
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case List(a) => s"($a > 0 ? 1 : ($a < 0 ? -1 : 0))"
+        case _ => throw new IllegalArgumentException("Sign function requires exactly one argument")
+      }
+
   }
 
   case class Atan2(y: PainlessScript, x: PainlessScript) extends MathematicalFunction {

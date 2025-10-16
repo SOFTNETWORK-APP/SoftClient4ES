@@ -142,7 +142,7 @@ package object geo {
 
       val ret =
         if (oneIdentifier) {
-          s"arg0${fun.map(_.painless()).getOrElse("")}(params.lat, params.lon)"
+          s"arg0${fun.map(_.painless(context)).getOrElse("")}(params.lat, params.lon)"
         } else if (identifiers.isEmpty) {
           s"${Distance.haversine(
             fromPoint.get.lat.value,
@@ -151,7 +151,7 @@ package object geo {
             toPoint.get.lon.value
           )}"
         } else {
-          s"arg0${fun.map(_.painless()).getOrElse("")}(arg1.lat, arg1.lon)"
+          s"arg0${fun.map(_.painless(context)).getOrElse("")}(arg1.lat, arg1.lon)"
         }
 
       if (identifiers.nonEmpty)

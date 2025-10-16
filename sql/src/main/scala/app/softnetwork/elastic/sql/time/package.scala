@@ -135,7 +135,8 @@ package object time {
     def unit: TimeUnit
     override def sql: String = s"$Interval $value ${unit.sql}"
 
-    override def painless(context: Option[PainlessContext]): String = s"$value, ${unit.painless()}"
+    override def painless(context: Option[PainlessContext]): String =
+      s"$value, ${unit.painless(context)}"
 
     override def script: Option[String] = Some(TimeInterval.script(this))
 

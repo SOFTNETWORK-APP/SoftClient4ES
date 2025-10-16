@@ -64,44 +64,53 @@ package object string {
           )
       }
 
-    def stringFunctionWithIdentifier: PackratParser[Identifier] =
-      (concat | substr | left | right | replace | reverse | position | regexp) ^^ { sf =>
-        sf.identifier
-      }
-
     def length: PackratParser[StringFunction[SQLBigInt]] =
-      Length.regex ^^ { _ =>
-        Length()
+      Length.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        Length(v)
       }
 
     def lower: PackratParser[StringFunction[SQLVarchar]] =
-      Lower.regex ^^ { _ =>
-        StringFunctionWithOp(Lower)
+      Lower.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Lower)
       }
 
     def upper: PackratParser[StringFunction[SQLVarchar]] =
-      Upper.regex ^^ { _ =>
-        StringFunctionWithOp(Upper)
+      Upper.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Upper)
       }
 
     def trim: PackratParser[StringFunction[SQLVarchar]] =
-      Trim.regex ^^ { _ =>
-        StringFunctionWithOp(Trim)
+      Trim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Trim)
       }
 
     def ltrim: PackratParser[StringFunction[SQLVarchar]] =
-      Ltrim.regex ^^ { _ =>
-        StringFunctionWithOp(Ltrim)
+      Ltrim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Ltrim)
       }
 
     def rtrim: PackratParser[StringFunction[SQLVarchar]] =
-      Rtrim.regex ^^ { _ =>
-        StringFunctionWithOp(Rtrim)
+      Rtrim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Rtrim)
       }
 
-    def string_function: Parser[
-      StringFunction[_]
-    ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim | ltrim | rtrim
+    def stringFunctionWithIdentifier: PackratParser[Identifier] =
+      (concat |
+      substr |
+      left |
+      right |
+      replace |
+      reverse |
+      position |
+      regexp |
+      length |
+      lower |
+      upper |
+      trim |
+      ltrim |
+      rtrim) ^^ { sf =>
+        sf.identifier
+      }
 
   }
 }

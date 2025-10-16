@@ -346,17 +346,17 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
 
   def painlessNot: String = operator match {
     case _: ComparisonOperator => ""
-    case _                     => maybeNot.map(_.painless()).getOrElse("")
+    case _                     => maybeNot.map(_.painless(None)).getOrElse("")
   }
 
   def painlessOp: String = operator match {
-    case o: ComparisonOperator if maybeNot.isDefined => o.not.painless()
-    case _                                           => operator.painless()
+    case o: ComparisonOperator if maybeNot.isDefined => o.not.painless(None)
+    case _                                           => operator.painless(None)
   }
 
-  def painlessValue: String = maybeValue
+  def painlessValue(context: Option[PainlessContext]): String = maybeValue
     .map {
-      case v: PainlessScript => v.painless()
+      case v: PainlessScript => v.painless(context)
       case v                 => v.sql
     }
     .getOrElse("") /*{
@@ -366,25 +366,37 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       }
     }*/
 
-  protected lazy val left: String = {
+  protected def left(context: Option[PainlessContext]): String = {
     val targetedType = maybeValue match {
-      case Some(v) => v.out
+      case Some(v) => SQLTypeUtils.leastCommonSuperType(List(identifier.out, v.out))
       case None    => identifier.out
     }
-    SQLTypeUtils.coerce(identifier, targetedType)
+    SQLTypeUtils.coerce(identifier, targetedType, context)
   }
 
-  protected lazy val check: String =
+  protected def check(context: Option[PainlessContext]): String =
     operator match {
-      case _: ComparisonOperator => s" $painlessOp $painlessValue"
-      case _                     => s"$painlessOp($painlessValue)"
+      case _: ComparisonOperator => s" $painlessOp ${painlessValue(context)}"
+      case _                     => s"$painlessOp(${painlessValue(context)})"
     }
 
   override def painless(context: Option[PainlessContext]): String = {
-    if (identifier.nullable) {
-      return s"def left = $left; left == null ? false : ${painlessNot}left$check"
+    context match {
+      case Some(ctx) =>
+        ctx.addParam(identifier) match {
+          case Some(p) =>
+            if (identifier.nullable)
+              return s"$p == null ? false : $painlessNot($p${check(context)})"
+            else
+              return s"$painlessNot($p${check(context)})"
+          case _ =>
+        }
+      case _ =>
     }
-    s"$painlessNot$left$check"
+    if (identifier.nullable) {
+      return s"def left = ${left(context)}; left == null ? false : ${painlessNot}left${check(context)}"
+    }
+    s"$painlessNot${left(context)}${check(context)}"
   }
 
   override def validate(): Either[String, Unit] = {
@@ -497,10 +509,18 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
       updated
   }
   override def painless(context: Option[PainlessContext]): String = {
-    if (identifier.nullable) {
-      return s"def left = $left; left == null"
+    context match {
+      case Some(ctx) =>
+        ctx.addParam(identifier) match {
+          case Some(p) => return s"$p == null" // TODO check with not
+          case _       =>
+        }
+      case _ =>
     }
-    s"$painlessNot$left$check"
+    if (identifier.nullable) {
+      return s"def left = ${left(context)}; left == null"
+    }
+    s"${left(context)} == null"
   }
 
 }
@@ -520,10 +540,18 @@ case class IsNotNullCriteria(identifier: Identifier)
   }
 
   override def painless(context: Option[PainlessContext]): String = {
-    if (identifier.nullable) {
-      return s"def left = $left; left != null"
+    context match {
+      case Some(ctx) =>
+        ctx.addParam(identifier) match {
+          case Some(p) => return s"$p != null" // TODO check with not
+          case _       =>
+        }
+      case _ =>
     }
-    s"$painlessNot$left$check"
+    if (identifier.nullable) {
+      return s"def left = ${left(context)}; left != null"
+    }
+    s"${left(context)} != null"
   }
 
 }
@@ -569,7 +597,7 @@ case class InExpr[R, +T <: Value[R]](
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
   override def painless(context: Option[PainlessContext]): String =
-    s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
+    s"$painlessNot${identifier.painless(context)}$painlessOp(${painlessValue(context)})"
 
 }
 
@@ -601,10 +629,22 @@ case class BetweenExpr(
   }
 
   override def painless(context: Option[PainlessContext]): String = {
-    if (identifier.nullable) {
-      return s"def left = $left; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
+    context match {
+      case Some(ctx) =>
+        ctx.addParam(identifier) match {
+          case Some(p) =>
+            if (identifier.nullable)
+              return s"$p == null ? false : $painlessNot($p >= ${fromTo.from} && $p <= ${fromTo.to})"
+            else
+              return s"$painlessNot($p >= ${fromTo.from} && $p <= ${fromTo.to})"
+          case _ =>
+        }
+      case _ =>
     }
-    s"$painlessNot(${fromTo.from} <= $left <= ${fromTo.to})"
+    if (identifier.nullable) {
+      return s"def left = ${left(context)}; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
+    }
+    s"$painlessNot(${fromTo.from} <= ${left(context)} <= ${fromTo.to})"
   }
 
 }
@@ -706,7 +746,7 @@ case class ElasticMatch(
   override def matchCriteria: Boolean = true
 
   override def painless(context: Option[PainlessContext]): String =
-    s"$painlessNot${identifier.painless()}$painlessOp($painlessValue)"
+    s"$painlessNot${identifier.painless(context)}$painlessOp(${painlessValue(context)})"
 
 }
 

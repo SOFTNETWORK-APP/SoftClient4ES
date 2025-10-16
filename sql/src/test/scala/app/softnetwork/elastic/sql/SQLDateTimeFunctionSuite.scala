@@ -39,7 +39,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
     require(transforms.nonEmpty, "No transforms provided")
 
     val initial: (String, SQLType) =
-      (transforms.head.toPainless(base, 0), transforms.head.outputType.asInstanceOf[SQLType])
+      (transforms.head.toPainless(base, 0, None), transforms.head.outputType.asInstanceOf[SQLType])
 
     val (finalExpr, _) = transforms.tail.foldLeft(initial) {
       case ((expr, currentType), t: FunctionN[_, _]) =>
@@ -48,7 +48,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
             s"Type mismatch: expected ${currentType.getClass.getSimpleName}, got ${t.inputType.getClass.getSimpleName}"
           )
         }
-        (t.toPainless(expr, 0), t.outputType.asInstanceOf[SQLType])
+        (t.toPainless(expr, 0, None), t.outputType.asInstanceOf[SQLType])
     }
 
     finalExpr
@@ -88,7 +88,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
   // Test simple pour chaque fonction individuelle
   transformFunctions.foreach { f =>
     test(s"Single transformation ${f.sql}") {
-      val result = f.toPainless(baseDate, 0)
+      val result = f.toPainless(baseDate, 0, None)
       assert(result.nonEmpty)
     }
   }

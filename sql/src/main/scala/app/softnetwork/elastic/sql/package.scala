@@ -82,38 +82,94 @@ package object sql {
     }
 
     override def toString: String =
-      if (nullable)
+      if (nullable && checkNotNull.nonEmpty)
         checkNotNull
       else
         param
   }
 
+  case class LiteralParam(param: String) extends PainlessParam {
+    override def sql: String = ""
+    override def checkNotNull: String = ""
+  }
+
   /** Context for painless scripts
     */
   case class PainlessContext() {
-    // Map of parameters to their names
-    private[this] var params: collection.mutable.Map[PainlessParam, String] =
-      collection.mutable.Map.empty
+    // List of parameter keys
+    private[this] var _keys: collection.mutable.Seq[PainlessParam] = collection.mutable.Seq.empty
 
-    /** Add a parameter to the context if not already present
+    // List of parameter names
+    private[this] var _values: collection.mutable.Seq[String] = collection.mutable.Seq.empty
+
+    // Last parameter name added
+    private[this] var _lastParam: Option[String] = None
+
+    /** Add a token parameter to the context if not already present
       *
-      * @param param
-      *   the parameter to add
+      * @param token
+      *   the token parameter to add
       * @return
-      *   the parameter name
+      *   the optional parameter name
       */
-    def addParam(param: PainlessParam): String = {
-      params.get(param) match {
-        case Some(p) => p
-        case _ =>
-          val paramName = s"param${params.size + 1}"
-          params = params ++ Map((param -> paramName))
-          paramName
+    def addParam(token: Token): Option[String] = {
+      token match {
+        case param: PainlessParam
+            if param.param.nonEmpty && (param.isInstanceOf[LiteralParam] || param.nullable) =>
+          get(param) match {
+            case Some(p) => Some(p)
+            case _ =>
+              val index = _values.indexOf(param.param)
+              if (index >= 0) {
+                Some(param.param)
+              } else {
+                val paramName = s"param${_keys.size + 1}"
+                _keys = _keys :+ param
+                _values = _values :+ paramName
+                _lastParam = Some(paramName)
+                _lastParam
+              }
+          }
+        case _ => None
       }
     }
 
-    override def toString: String =
-      params.map { case (k, v) => s"def $v=$k" }.mkString("; ")
+    def get(token: Token): Option[String] = {
+      token match {
+        case param: PainlessParam =>
+          if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
+          else None
+        case f: FunctionWithIdentifier => get(f.identifier)
+        case _                         => None
+      }
+    }
+
+    def exists(token: Token): Boolean = {
+      token match {
+        case param: PainlessParam      => _keys.contains(param)
+        case f: FunctionWithIdentifier => exists(f.identifier)
+        case _                         => false
+      }
+    }
+
+    def isEmpty: Boolean = _keys.isEmpty
+
+    def nonEmpty: Boolean = _keys.nonEmpty
+
+    def last: Option[String] = _lastParam
+
+    override def toString: String = {
+      if (isEmpty) ""
+      else
+        _keys
+          .flatMap { param =>
+            get(param) match {
+              case Some(v) => Some(s"def $v = $param; ")
+              case None    => None // should not happen
+            }
+          }
+          .mkString("")
+    }
   }
 
   trait PainlessParams extends PainlessScript {
@@ -184,7 +240,8 @@ package object sql {
         },
         this.baseType,
         this.out,
-        nullable = false
+        nullable = false,
+        context
       )
 
     override def nullable: Boolean = false
@@ -378,7 +435,7 @@ package object sql {
       with PainlessScript {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
     override def painless(context: Option[PainlessContext]): String =
-      s"[${values.map(_.painless()).mkString(",")}]"
+      s"[${values.map(_.painless(context)).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
@@ -587,13 +644,13 @@ package object sql {
         s"doc['$path'].value"
       else ""
 
-    def toPainless(base: String): String = {
+    def toPainless(base: String, context: Option[PainlessContext]): String = {
       val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       var expr = base
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
-          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx)
-          case f: PainlessScript          => expr = s"$expr${f.painless()}"
+          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx, context)
+          case f: PainlessScript          => expr = s"$expr${f.painless(context)}"
           case f                          => expr = f.toSQL(expr) // fallback
         }
       }
@@ -656,27 +713,18 @@ package object sql {
         s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value)"
 
     override def painless(context: Option[PainlessContext]): String = {
-      val base =
+      toPainless(
         context match {
           case Some(ctx) =>
-            ctx.addParam(this)
-            ctx.toString
+            ctx.addParam(this).getOrElse("")
           case _ =>
             if (nullable)
               checkNotNull
             else
               paramName
-        }
-      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
-      var expr = base
-      orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
-        f match {
-          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx)
-          case f: PainlessScript          => expr = s"$expr${f.painless(context)}"
-          case f                          => expr = f.toSQL(expr) // fallback
-        }
-      }
-      expr
+        },
+        context
+      )
     }
 
     override def param: String = paramName
@@ -698,7 +746,7 @@ package object sql {
     override def value: String =
       script match {
         case Some(s) => s
-        case _       => painless()
+        case _       => painless(None)
       }
 
     def withNested(nested: Boolean): Identifier = this match {

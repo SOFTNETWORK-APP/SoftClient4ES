@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql.parser.function
 
 import app.softnetwork.elastic.sql.{function, Identifier, StringValue}
-import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLNumeric, SQLTemporal}
+import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLNumeric, SQLTemporal, SQLTypes}
 import app.softnetwork.elastic.sql.function.{
   BinaryFunction,
   FunctionWithIdentifier,
@@ -83,7 +83,9 @@ package object time {
 
     def last_day: Parser[DateFunction with FunctionWithIdentifier] =
       LastDayOfMonth.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
-        case _ ~ _ ~ i ~ _ => LastDayOfMonth(i)
+        case _ ~ _ ~ i ~ _ =>
+          i.cast(SQLTypes.Date)
+          LastDayOfMonth(i)
       }
 
     def date_function: PackratParser[DateFunction with FunctionWithIdentifier] =
