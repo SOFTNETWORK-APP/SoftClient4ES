@@ -24,7 +24,7 @@ ThisBuild / version := "0.9.3"
 ThisBuild / scalaVersion := scala213
 
 ThisBuild / organizationName := "SOFTNETWORK"
-ThisBuild / startYear := Some(2015)
+ThisBuild / startYear := Some(2025)
 ThisBuild / licenses += ("Apache-2.0", url("https://www.apache.org/licenses/LICENSE-2.0.txt"))
 
 ThisBuild / dependencyOverrides ++= Seq(
