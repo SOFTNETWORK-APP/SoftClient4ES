@@ -19,7 +19,7 @@ sealed trait Criteria extends Updateable with PainlessScript {
     case Predicate(left, _, right, _, _) => left.identifiers ++ right.identifiers
     case c: Expression                   => c.identifiers
     case relation: ElasticRelation       => relation.criteria.identifiers
-    case m: MatchCriteria                => m.identifiers
+    case m: MultiMatchCriteria           => m.identifiers
     case _                               => Nil
   }
 
@@ -29,50 +29,52 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   def nestedElements: Seq[NestedElement] =
     this match {
-      case p: Predicate       => p.nestedElements
-      case r: ElasticRelation => r.criteria.nestedElements
-      case e: Expression      => e.nestedElement.toSeq
-      case m: MatchCriteria   => m.criteria.nestedElements
-      case _                  => Nil
+      case p: Predicate          => p.nestedElements
+      case r: ElasticRelation    => r.criteria.nestedElements
+      case e: Expression         => e.nestedElement.toSeq
+      case m: MultiMatchCriteria => m.criteria.nestedElements
+      case _                     => Nil
     }
 
   def nestedCriteria(innerHitsName: String): Seq[Criteria] = {
     this match {
       case e: ElasticNested => e.criteria.nestedCriteria(innerHitsName)
       case _ =>
-        nestedElement
-          .filter(_ => nestedElement.exists(_.innerHitsName == innerHitsName))
+        nestedElements
+          .find(n => n.innerHitsName == innerHitsName)
           .map(_ => this)
           .toSeq
     }
   }
 
-  def extractMetricsPath: Map[String, String] = this match { // used for bucket_selector
-    case Predicate(left, _, right, _, _) =>
-      left.extractMetricsPath ++ right.extractMetricsPath
-    case relation: ElasticRelation => relation.criteria.extractMetricsPath
-    case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
-    case e: Expression             => e.extractMetricsPath
-    case _                         => Map.empty
-  }
+  def extractMetricsPath: Map[String, String] =
+    this match { // used for bucket_selector
+      case Predicate(left, _, right, _, _) =>
+        left.extractMetricsPath ++ right.extractMetricsPath
+      case relation: ElasticRelation => relation.criteria.extractMetricsPath
+      case _: MultiMatchCriteria     => Map.empty //MATCH is not supported in bucket_selector
+      case e: Expression             => e.extractMetricsPath
+      case _                         => Map.empty
+    }
 
   def includes(
     bucket: Bucket,
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
-  ): BucketIncludesExcludes = this match {
-    case Predicate(left, _, right, n, _) =>
-      right.includes(
-        bucket,
-        (!not && n.isDefined) || (not && n.isEmpty),
-        left.includes(bucket, not, bucketIncludesExcludes)
-      )
-    case relation: ElasticRelation =>
-      relation.criteria.includes(bucket, not, bucketIncludesExcludes)
-    case m: MatchCriteria => m.criteria.includes(bucket, not, bucketIncludesExcludes)
-    case e: Expression    => e.includes(bucket, not, bucketIncludesExcludes)
-    case _                => bucketIncludesExcludes
-  }
+  ): BucketIncludesExcludes =
+    this match {
+      case Predicate(left, _, right, n, _) =>
+        right.includes(
+          bucket,
+          (!not && n.isDefined) || (not && n.isEmpty),
+          left.includes(bucket, not, bucketIncludesExcludes)
+        )
+      case relation: ElasticRelation =>
+        relation.criteria.includes(bucket, not, bucketIncludesExcludes)
+      case m: MultiMatchCriteria => m.criteria.includes(bucket, not, bucketIncludesExcludes)
+      case e: Expression         => e.includes(bucket, not, bucketIncludesExcludes)
+      case _                     => bucketIncludesExcludes
+    }
 
   def excludes(
     bucket: Bucket,
@@ -120,7 +122,7 @@ sealed trait Criteria extends Updateable with PainlessScript {
       else
         s"$leftStr $opStr $rightStr"
     case relation: ElasticRelation => asGroup(relation.criteria.painless(context))
-    case m: MatchCriteria          => asGroup(m.criteria.painless(context))
+    case m: MultiMatchCriteria     => asGroup(m.criteria.painless(context))
     case expr: Expression          => asGroup(expr.painless(context))
     case _ => throw new IllegalArgumentException(s"Unsupported criteria: $this")
   }
@@ -669,11 +671,11 @@ case class DistanceCriteria(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
-case class MatchCriteria(
+case class MultiMatchCriteria(
   override val identifiers: Seq[Identifier],
   value: StringValue,
   nestedElement: Option[NestedElement] = None
-) extends Criteria {
+) extends Criteria { // FIXME map to multi_match
   override def sql: String =
     s"$operator (${identifiers.mkString(",")}) $AGAINST ($value)"
   override def operator: Operator = MATCH
@@ -683,7 +685,7 @@ case class MatchCriteria(
   override lazy val nested: Boolean = identifiers.forall(_.nested)
 
   @tailrec
-  private[this] def toCriteria(matches: List[ElasticMatch], curr: Criteria): Criteria =
+  private[this] def toCriteria(matches: List[MatchCriteria], curr: Criteria): Criteria =
     matches match {
       case Nil           => curr
       case single :: Nil => Predicate(curr, OR, single)
@@ -691,7 +693,7 @@ case class MatchCriteria(
     }
 
   lazy val criteria: Criteria =
-    (identifiers.map(id => ElasticMatch(id, value, None)) match {
+    (identifiers.map(id => MatchCriteria(id, value, None)) match {
       case Nil           => throw new IllegalArgumentException("No identifiers for MATCH")
       case single :: Nil => single
       case first :: rest => toCriteria(rest, first)
@@ -710,7 +712,7 @@ case class MatchCriteria(
   override def group: Boolean = false
 }
 
-case class ElasticMatch(
+case class MatchCriteria(
   identifier: Identifier,
   value: StringValue,
   options: Option[String]

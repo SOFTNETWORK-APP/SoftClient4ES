@@ -752,7 +752,7 @@ package object bridge {
   }
 
   implicit def matchToQuery(
-    matchExpression: ElasticMatch
+    matchExpression: MatchCriteria
   ): Query = {
     import matchExpression._
     matchQuery(identifier.name, value.value)

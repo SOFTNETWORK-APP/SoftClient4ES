@@ -70,7 +70,7 @@ object MetricSelectorScript {
     case Predicate(left, _, right, _, _) =>
       extractMetricsPath(left) ++ extractMetricsPath(right)
     case relation: ElasticRelation => extractMetricsPath(relation.criteria)
-    case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
+    case _: MultiMatchCriteria     => Map.empty //MATCH is not supported in bucket_selector
     case e: Expression if e.aggregation =>
       import e._
       maybeValue match {
@@ -96,7 +96,7 @@ object MetricSelectorScript {
 
     case relation: ElasticRelation => metricSelector(relation.criteria)
 
-    case _: MatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
+    case _: MultiMatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
       val painless = e.painless(None)

@@ -54,7 +54,7 @@ import app.softnetwork.elastic.sql.query.{
   InExpr,
   IsNotNullExpr,
   IsNullExpr,
-  MatchCriteria,
+  MultiMatchCriteria,
   Predicate,
   Where
 }
@@ -193,12 +193,12 @@ trait WhereParser {
       DistanceCriteria(d, o, g)
     }*/
 
-  def matchCriteria: PackratParser[MatchCriteria] =
+  def matchCriteria: PackratParser[MultiMatchCriteria] =
     MATCH.regex ~ start ~ rep1sep(
       any_identifier,
       separator
     ) ~ end ~ AGAINST.regex ~ start ~ literal ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ ~ l ~ _ =>
-      MatchCriteria(i, l)
+      MultiMatchCriteria(i, l)
     }
 
   def and: PackratParser[PredicateOperator] = AND.regex ^^ (_ => AND)

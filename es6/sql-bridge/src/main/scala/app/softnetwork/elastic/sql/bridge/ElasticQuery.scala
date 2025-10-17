@@ -6,7 +6,6 @@ import app.softnetwork.elastic.sql.query.{
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
-  ElasticMatch,
   ElasticNested,
   ElasticParent,
   GenericExpression,
@@ -15,6 +14,7 @@ import app.softnetwork.elastic.sql.query.{
   IsNotNullExpr,
   IsNullCriteria,
   IsNullExpr,
+  MatchCriteria,
   NestedElement,
   NestedElements,
   Predicate
@@ -152,9 +152,9 @@ case class ElasticQuery(filter: ElasticFilter) {
       case in: InExpr[_, _]              => in
       case between: BetweenExpr          => between
       // case geoDistance: DistanceCriteria => geoDistance
-      case matchExpression: ElasticMatch => matchExpression
-      case isNull: IsNullCriteria        => isNull
-      case isNotNull: IsNotNullCriteria  => isNotNull
+      case matchExpression: MatchCriteria => matchExpression
+      case isNull: IsNullCriteria         => isNull
+      case isNotNull: IsNotNullCriteria   => isNotNull
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }
