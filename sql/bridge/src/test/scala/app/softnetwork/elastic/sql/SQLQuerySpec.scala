@@ -1026,6 +1026,75 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(">", " > ")
   }
 
+  it should "handle group by index" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(
+        groupByWithHavingAndDateTimeFunctions.replace("GROUP BY Country, City", "GROUP BY 3, 2")
+      )
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country.keyword",
+        |        "exclude": [
+        |          "USA"
+        |        ],
+        |        "order": {
+        |          "_key": "asc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "City": {
+        |          "terms": {
+        |            "field": "City.keyword",
+        |            "exclude": [
+        |              "Berlin"
+        |            ]
+        |          },
+        |          "aggs": {
+        |            "cnt": {
+        |              "value_count": {
+        |                "field": "CustomerID"
+        |              }
+        |            },
+        |            "lastSeen": {
+        |              "max": {
+        |                "field": "createdAt"
+        |              }
+        |            },
+        |            "having_filter": {
+        |              "bucket_selector": {
+        |                "buckets_path": {
+        |                  "cnt": "cnt",
+        |                  "lastSeen": "lastSeen"
+        |                },
+        |                "script": {
+        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+        |                }
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s", "")
+        .replaceAll("ChronoUnit", " ChronoUnit")
+        .replaceAll("==", " == ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll(">", " > ")
+  }
+
   it should "handle date_parse function" in {
     val select: ElasticSearchRequest =
       SQLQuery(dateParse)

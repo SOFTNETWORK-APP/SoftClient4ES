@@ -19,8 +19,18 @@ case class SQLSearchRequest(
   lazy val fieldAliases: Map[String, String] = select.fieldAliases
   lazy val tableAliases: Map[String, String] = from.tableAliases
   lazy val unnestAliases: Map[String, (String, Option[Limit])] = from.unnestAliases
-  lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
-    b.identifier.identifierName -> b
+  lazy val bucketNames: Map[String, Bucket] = buckets.flatMap { b =>
+    val name = b.identifier.identifierName
+    "\\d+".r.findFirstIn(name) match {
+      case Some(n) =>
+        val identifier = select.fields(n.toInt - 1).identifier
+        val updated = b.copy(identifier = select.fields(n.toInt - 1).identifier)
+        Map(
+          n                         -> updated, // also map numeric bucket to field name
+          identifier.identifierName -> updated
+        )
+      case _ => Map(name -> b)
+    }
   }.toMap
   lazy val unnests: Map[String, Unnest] =
     from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
@@ -32,7 +42,6 @@ case class SQLSearchRequest(
   lazy val nested: Seq[NestedElement] =
     from.unnests.map(toNestedElement).groupBy(_.path).map(_._2.head).toList
   private[this] lazy val nestedFieldsWithoutCriteria: Map[String, Seq[Field]] = {
-    // nested fields that are not part of where, having or group by clauses
     val innerHitsWithCriteria = (where.map(_.nestedElements).getOrElse(Seq.empty) ++
       having.map(_.nestedElements).getOrElse(Seq.empty) ++
       groupBy.map(_.nestedElements).getOrElse(Seq.empty))
@@ -45,6 +54,7 @@ case class SQLSearchRequest(
     }
     ret
   }
+  // nested fields that are not part of where, having or group by clauses
   lazy val nestedElementsWithoutCriteria: Seq[NestedElement] =
     nested.filter(n => nestedFieldsWithoutCriteria.keys.toSeq.contains(n.innerHitsName))
 
