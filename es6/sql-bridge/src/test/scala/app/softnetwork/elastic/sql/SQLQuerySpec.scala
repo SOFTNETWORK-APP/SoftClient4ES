@@ -1287,7 +1287,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",LocalDate", ", LocalDate")
   }
 
-  it should "handle datetime_parse function" in {
+  it should "handle datetime_parse function" in { // #25
     val select: ElasticSearchRequest =
       SQLQuery(dateTimeParse)
     val query = select.query
