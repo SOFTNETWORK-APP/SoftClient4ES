@@ -1258,10 +1258,52 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    }
         |  },
         |  "script_fields": {
-        |    "lastSeen": {
+        |    "y": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "q": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def param2 = param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param3.format(param1)"
+        |      }
+        |    },
+        |    "m": {
         |      "script": {
         |        "lang": "painless",
         |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "w": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "d": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "h": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "m2": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "lastSeen": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1284,6 +1326,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(",ChronoUnit", ", ChronoUnit")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
         .replaceAll("==", " == ")
+        .replaceAll("-(\\d)", " - $1")
+        .replaceAll("\\+", " + ")
+        .replaceAll("/", " / ")
+        .replaceAll("\\*", " * ")
+        .replaceAll("=p", " = p")
         .replaceAll("!=", " != ")
         .replaceAll("&&", " && ")
         .replaceAll("\\|\\|", " || ")

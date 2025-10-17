@@ -241,7 +241,7 @@ package object time {
               ctx.addParam(identifier) match {
                 case Some(p) =>
                   val quarterExpr =
-                    s".withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null"
+                    s"$p.withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null"
                   ctx.addParam(
                     LiteralParam(
                       quarterExpr
