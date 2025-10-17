@@ -1,12 +1,37 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, Identifier, IntValue, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  Expr,
+  Identifier,
+  IntValue,
+  PainlessContext,
+  PainlessParam,
+  PainlessScript,
+  TokenRegex
+}
 import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLType, SQLTypes}
 
 package object math {
 
   sealed trait MathOp extends PainlessScript with TokenRegex {
-    override def painless(): String = s"Math.${sql.toLowerCase()}"
+    override def painless(context: Option[PainlessContext] = None): String =
+      s"Math.${sql.toLowerCase()}"
     override def toString: String = s" $sql "
 
     override def baseType: SQLNumeric = SQLTypes.Numeric
@@ -72,15 +97,37 @@ package object math {
     override def nullable: Boolean = arg.nullable
   }
 
+  case class PowParam(scale: Int) extends PainlessParam with PainlessScript {
+    override def param: String = s"Math.pow(10, $scale)"
+    override def checkNotNull: String = ""
+    override def sql: String = param
+    override def nullable: Boolean = true
+
+    /** Generate painless script for this token
+      *
+      * @param context
+      *   the painless context
+      * @return
+      *   the painless script
+      */
+    override def painless(context: Option[PainlessContext]): String = param
+  }
+
   case class Round(arg: PainlessScript, scale: Option[Int]) extends MathematicalFunction {
     override def mathOp: MathOp = Round
 
-    override def args: List[PainlessScript] =
-      List(arg) ++ scale.map(IntValue(_)).toList
+    override def args: List[PainlessScript] = List(arg, PowParam(scale.getOrElse(0)))
 
-    override def toPainlessCall(callArgs: List[String]): String =
-      s"(def p = ${Pow(IntValue(10), scale.getOrElse(0))
-        .painless()}; ${mathOp.painless()}((${callArgs.head} * p) / p))"
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case List(a, p) => s"${mathOp.painless(context)}(($a * $p) / $p)"
+        case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
+      }
+
+    override def sql: String = {
+      s"${fun.map(_.sql).getOrElse("")}($arg${scale.map(s => s", $s").getOrElse("")})"
+    }
+
   }
 
   case class Sign(arg: PainlessScript) extends MathematicalFunction {
@@ -88,13 +135,12 @@ package object math {
 
     override def args: List[PainlessScript] = List(arg)
 
-    override def painless(): String = {
-      val ret = "arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)"
-      if (arg.nullable)
-        s"(def arg0 = ${arg.painless()}; arg0 != null ? ($ret) : null)"
-      else
-        s"(def arg0 = ${arg.painless()}; $ret)"
-    }
+    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
+      callArgs match {
+        case List(a) => s"($a > 0 ? 1 : ($a < 0 ? -1 : 0))"
+        case _ => throw new IllegalArgumentException("Sign function requires exactly one argument")
+      }
+
   }
 
   case class Atan2(y: PainlessScript, x: PainlessScript) extends MathematicalFunction {

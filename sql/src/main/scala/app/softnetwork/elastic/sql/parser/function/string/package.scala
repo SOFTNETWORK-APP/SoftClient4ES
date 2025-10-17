@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.parser.function
 
 import app.softnetwork.elastic.sql.Identifier
@@ -64,44 +80,53 @@ package object string {
           )
       }
 
-    def stringFunctionWithIdentifier: PackratParser[Identifier] =
-      (concat | substr | left | right | replace | reverse | position | regexp) ^^ { sf =>
-        sf.identifier
-      }
-
     def length: PackratParser[StringFunction[SQLBigInt]] =
-      Length.regex ^^ { _ =>
-        Length()
+      Length.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        Length(v)
       }
 
     def lower: PackratParser[StringFunction[SQLVarchar]] =
-      Lower.regex ^^ { _ =>
-        StringFunctionWithOp(Lower)
+      Lower.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Lower)
       }
 
     def upper: PackratParser[StringFunction[SQLVarchar]] =
-      Upper.regex ^^ { _ =>
-        StringFunctionWithOp(Upper)
+      Upper.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Upper)
       }
 
     def trim: PackratParser[StringFunction[SQLVarchar]] =
-      Trim.regex ^^ { _ =>
-        StringFunctionWithOp(Trim)
+      Trim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Trim)
       }
 
     def ltrim: PackratParser[StringFunction[SQLVarchar]] =
-      Ltrim.regex ^^ { _ =>
-        StringFunctionWithOp(Ltrim)
+      Ltrim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Ltrim)
       }
 
     def rtrim: PackratParser[StringFunction[SQLVarchar]] =
-      Rtrim.regex ^^ { _ =>
-        StringFunctionWithOp(Rtrim)
+      Rtrim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
+        StringFunctionWithOp(v, Rtrim)
       }
 
-    def string_function: Parser[
-      StringFunction[_]
-    ] = /*concatFunction | substringFunction |*/ length | lower | upper | trim | ltrim | rtrim
+    def stringFunctionWithIdentifier: PackratParser[Identifier] =
+      (concat |
+      substr |
+      left |
+      right |
+      replace |
+      reverse |
+      position |
+      regexp |
+      length |
+      lower |
+      upper |
+      trim |
+      ltrim |
+      rtrim) ^^ { sf =>
+        sf.identifier
+      }
 
   }
 }

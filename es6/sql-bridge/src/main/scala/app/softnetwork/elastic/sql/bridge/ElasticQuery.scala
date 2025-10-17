@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.operator.AND
@@ -6,7 +22,6 @@ import app.softnetwork.elastic.sql.query.{
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
-  ElasticMatch,
   ElasticNested,
   ElasticParent,
   GenericExpression,
@@ -15,6 +30,7 @@ import app.softnetwork.elastic.sql.query.{
   IsNotNullExpr,
   IsNullCriteria,
   IsNullExpr,
+  MatchCriteria,
   NestedElement,
   NestedElements,
   Predicate
@@ -152,9 +168,9 @@ case class ElasticQuery(filter: ElasticFilter) {
       case in: InExpr[_, _]              => in
       case between: BetweenExpr          => between
       // case geoDistance: DistanceCriteria => geoDistance
-      case matchExpression: ElasticMatch => matchExpression
-      case isNull: IsNullCriteria        => isNull
-      case isNotNull: IsNotNullCriteria  => isNotNull
+      case matchExpression: MatchCriteria => matchExpression
+      case isNull: IsNullCriteria         => isNull
+      case isNotNull: IsNotNullCriteria   => isNotNull
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }

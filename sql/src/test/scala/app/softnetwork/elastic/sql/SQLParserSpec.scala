@@ -123,8 +123,19 @@ object Queries {
   val aggregationWithDateDiff =
     "SELECT MAX(date_diff(datetime_parse(createdAt, '%Y-%m-%d %H:%i:%s.%f'), updatedAt, DAY)) AS max_diff FROM Table GROUP BY identifier"
 
-  val dateFormat =
-    "SELECT identifier, date_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d') AS lastSeen FROM Table WHERE identifier2 is NOT null"
+  val dateFormat: String =
+    """SELECT
+      |identifier,
+      |date_format(date_trunc(lastUpdated, YEAR), '%Y-%m-%d') AS y,
+      |date_format(date_trunc(lastUpdated, QUARTER), '%Y-%m-%d') AS q,
+      |date_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d') AS m,
+      |date_format(date_trunc(lastUpdated, WEEK), '%Y-%m-%d') AS w,
+      |date_format(date_trunc(lastUpdated, DAY), '%Y-%m-%d') AS d,
+      |date_format(date_trunc(lastUpdated, HOUR), '%Y-%m-%d') AS h,
+      |date_format(date_trunc(lastUpdated, MINUTE), '%Y-%m-%d') AS m2,
+      |date_format(date_trunc(lastUpdated, SECOND), '%Y-%m-%d') AS lastSeen
+      |FROM Table
+      |WHERE identifier2 IS NOT NULL""".stripMargin.replaceAll("\n", " ")
   val dateTimeFormat =
     "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d %H:%i:%s') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
@@ -826,8 +837,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(mathematical)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(mathematical) shouldBe true
+      .getOrElse("") shouldBe mathematical
   }
 
   it should "parse string functions" in {

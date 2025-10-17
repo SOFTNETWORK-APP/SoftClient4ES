@@ -27,24 +27,69 @@ package object bridge {
   implicit def requestToNestedFilterAggregation(
     request: SQLSearchRequest,
     innerHitsName: String
-  ): Option[FilterAggregation] =
-    request.where.flatMap(_.criteria) match {
-      case Some(f) =>
-        f.nestedCriteria(innerHitsName) match {
-          case Nil => None
-          case cs  =>
-            val boolQuery = ElasticBoolQuery(group = true)
-            cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
-            Some(
-              filterAgg(
-                s"filtered_$innerHitsName",
-                boolQuery.query(request.aggregates.flatMap(_.identifier.innerHitsName).toSet, Option(boolQuery))
+  ): Option[FilterAggregation] = {
+    val having: Option[Query] =
+      request.having.flatMap(_.criteria) match {
+        case Some(f) =>
+          f.nestedCriteria(innerHitsName) match {
+            case Nil => None
+            case cs =>
+              val boolQuery = ElasticBoolQuery(group = true)
+              cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
+              Some(
+                boolQuery.query(
+                  request.aggregates.flatMap(_.identifier.innerHitsName).toSet,
+                  Option(boolQuery)
+                )
               )
-            )
-        }
+          }
+        case _ =>
+          None
+      }
+    val where: Option[Query] =
+      request.where.flatMap(_.criteria) match {
+        case Some(f) =>
+          f.nestedCriteria(innerHitsName) match {
+            case Nil => None
+            case cs =>
+              val boolQuery = ElasticBoolQuery(group = true)
+              cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
+              Some(
+                boolQuery.query(
+                  request.aggregates.flatMap(_.identifier.innerHitsName).toSet,
+                  Option(boolQuery)
+                )
+              )
+          }
+        case _ =>
+          None
+      }
+    (having, where) match {
+      case (Some(h), Some(w)) =>
+        Some(
+          filterAgg(
+            s"filtered_$innerHitsName",
+            boolQuery().filter(h, w)
+          )
+        )
+      case (Some(h), None) =>
+        Some(
+          filterAgg(
+            s"filtered_$innerHitsName",
+            h
+          )
+        )
+      case (None, Some(w)) =>
+        Some(
+          filterAgg(
+            s"filtered_$innerHitsName",
+            w
+          )
+        )
       case _ =>
         None
     }
+  }
 
   implicit def requestToFilterAggregation(
     request: SQLSearchRequest
@@ -296,9 +341,11 @@ package object bridge {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
+          val context = PainlessContext()
+          val script = field.painless(Some(context))
           scriptField(
             field.scriptName,
-            Script(script = field.painless())
+            Script(script = s"$context$script")
               .lang("painless")
               .scriptType("source")
               .params(field.identifier.functions.headOption match {
@@ -353,7 +400,11 @@ package object bridge {
         case _           => true
       }))
     ) {
-      return scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
+      val context = PainlessContext()
+      val script = painless(Some(context))
+      return scriptQuery(
+        Script(script = s"$context$script").lang("painless").scriptType("source")
+      )
     }
     // Geo distance special case
     identifier.functions.headOption match {
@@ -567,10 +618,22 @@ package object bridge {
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
-                scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
+                val context = PainlessContext()
+                val script = painless(Some(context))
+                scriptQuery(
+                  Script(script = s"$context$script")
+                    .lang("painless")
+                    .scriptType("source")
+                )
             }
           case _ =>
-            scriptQuery(Script(script = painless()).lang("painless").scriptType("source"))
+            val context = PainlessContext()
+            val script = painless(Some(context))
+            scriptQuery(
+              Script(script = s"$context$script")
+                .lang("painless")
+                .scriptType("source")
+            )
         }
       case _ => matchAllQuery()
     }
@@ -724,7 +787,7 @@ package object bridge {
       case _ =>
         scriptQuery(
           Script(
-            script = distanceCriteria.painless(),
+            script = distanceCriteria.painless(None),
             lang = Some("painless"),
             scriptType = Source,
             params = distance.params
@@ -734,7 +797,7 @@ package object bridge {
   }
 
   implicit def matchToQuery(
-    matchExpression: ElasticMatch
+    matchExpression: MatchCriteria
   ): Query = {
     import matchExpression._
     matchQuery(identifier.name, value.value)
