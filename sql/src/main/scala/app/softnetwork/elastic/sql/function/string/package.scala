@@ -99,13 +99,15 @@ package object string {
 
     override def identifier: Identifier = Identifier(this)
 
-    override def toSQL(base: String): String = s"$sql($base)"
+    override def toSQL(base: String): String =
+      if (base.nonEmpty) s"$sql($base)"
+      else sql
 
     override def sql: String =
       if (args.isEmpty)
         s"${fun.map(_.sql).getOrElse("")}"
       else
-        super.sql
+        s"$stringOp(${args.map(_.sql).mkString(argsSeparator)})"
 
     override def toPainlessCall(
       callArgs: List[String],

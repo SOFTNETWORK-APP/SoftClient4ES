@@ -107,6 +107,11 @@ package object math {
         case List(a, p) => s"${mathOp.painless(context)}(($a * $p) / $p)"
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
       }
+
+    override def sql: String = {
+      s"${fun.map(_.sql).getOrElse("")}($arg${scale.map(s => s", $s").getOrElse("")})"
+    }
+
   }
 
   case class Sign(arg: PainlessScript) extends MathematicalFunction {

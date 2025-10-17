@@ -826,8 +826,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(mathematical)
     result.toOption
       .flatMap(_.left.toOption.map(_.sql))
-      .getOrElse("")
-      .equalsIgnoreCase(mathematical) shouldBe true
+      .getOrElse("") shouldBe mathematical
   }
 
   it should "parse string functions" in {

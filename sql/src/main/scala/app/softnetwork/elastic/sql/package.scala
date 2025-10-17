@@ -81,7 +81,7 @@ package object sql {
       }
     }
 
-    override def toString: String =
+    def pvalue: String =
       if (nullable && checkNotNull.nonEmpty)
         checkNotNull
       else
@@ -164,7 +164,7 @@ package object sql {
         _keys
           .flatMap { param =>
             get(param) match {
-              case Some(v) => Some(s"def $v = $param; ")
+              case Some(v) => Some(s"def $v = ${param.pvalue}; ")
               case None    => None // should not happen
             }
           }
