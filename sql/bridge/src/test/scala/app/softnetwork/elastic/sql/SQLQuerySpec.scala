@@ -719,29 +719,106 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        "path": "products"
         |      },
         |      "aggs": {
-        |        "cat": {
-        |          "terms": {
-        |            "field": "products.category.keyword"
+        |        "filtered_inner_products": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "bool": {
+        |                    "must_not": [
+        |                      {
+        |                        "term": {
+        |                          "products.category": {
+        |                            "value": "coffee"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "should": [
+        |                      {
+        |                        "match": {
+        |                          "products.name": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.description": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.ingredients": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                },
+        |                {
+        |                  "range": {
+        |                    "products.stock": {
+        |                      "gt": 0
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.upForSale": {
+        |                      "value": true
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.deleted": {
+        |                      "value": false
+        |                    }
+        |                  }
+        |                }
+        |              ]
+        |            }
         |          },
         |          "aggs": {
-        |            "min_price": {
-        |              "min": {
-        |                "field": "products.price"
-        |              }
-        |            },
-        |            "max_price": {
-        |              "max": {
-        |                "field": "products.price"
-        |              }
-        |            },
-        |            "having_filter": {
-        |              "bucket_selector": {
-        |                "buckets_path": {
-        |                  "min_price": "inner_products>min_price",
-        |                  "max_price": "inner_products>max_price"
+        |            "cat": {
+        |              "terms": {
+        |                "field": "products.category.keyword"
+        |              },
+        |              "aggs": {
+        |                "min_price": {
+        |                  "min": {
+        |                    "field": "products.price"
+        |                  }
         |                },
-        |                "script": {
-        |                  "source": "params.min_price > 5.0 && params.max_price < 50.0"
+        |                "max_price": {
+        |                  "max": {
+        |                    "field": "products.price"
+        |                  }
+        |                },
+        |                "having_filter": {
+        |                  "bucket_selector": {
+        |                    "buckets_path": {
+        |                      "min_price": "inner_products>min_price",
+        |                      "max_price": "inner_products>max_price"
+        |                    },
+        |                    "script": {
+        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+        |                    }
+        |                  }
         |                }
         |              }
         |            }
@@ -1633,7 +1710,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
-  it should "handle is_null function as script field" in { // TODO replace with param1 == null
+  it should "handle is_null function as script field" in {
     val select: ElasticSearchRequest =
       SQLQuery(isnull)
     val query = select.query

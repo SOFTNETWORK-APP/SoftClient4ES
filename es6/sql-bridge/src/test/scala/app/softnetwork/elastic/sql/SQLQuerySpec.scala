@@ -28,7 +28,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   "SQLQuery" should "perform native count" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(t.id) c2 from Table t where t.nom = \"Nom\"")
+      SQLQuery("select count(t.id) c2 from Table t where t.nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -64,7 +64,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform count distinct" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = \"Nom\"")
+      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -101,7 +101,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = \"Nom\""
+        "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = 'Nom'"
       )
     results.size shouldBe 1
     val result = results.head
@@ -719,29 +719,106 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "path": "products"
       |      },
       |      "aggs": {
-      |        "cat": {
-      |          "terms": {
-      |            "field": "products.category.keyword"
+      |        "filtered_inner_products": {
+      |          "filter": {
+      |            "bool": {
+      |              "filter": [
+      |                {
+      |                  "bool": {
+      |                    "must_not": [
+      |                      {
+      |                        "term": {
+      |                          "products.category": {
+      |                            "value": "coffee"
+      |                          }
+      |                        }
+      |                      }
+      |                    ]
+      |                  }
+      |                },
+      |                {
+      |                  "match_all": {}
+      |                },
+      |                {
+      |                  "match_all": {}
+      |                },
+      |                {
+      |                  "bool": {
+      |                    "should": [
+      |                      {
+      |                        "match": {
+      |                          "products.name": {
+      |                            "query": "lasagnes"
+      |                          }
+      |                        }
+      |                      },
+      |                      {
+      |                        "match": {
+      |                          "products.description": {
+      |                            "query": "lasagnes"
+      |                          }
+      |                        }
+      |                      },
+      |                      {
+      |                        "match": {
+      |                          "products.ingredients": {
+      |                            "query": "lasagnes"
+      |                          }
+      |                        }
+      |                      }
+      |                    ]
+      |                  }
+      |                },
+      |                {
+      |                  "range": {
+      |                    "products.stock": {
+      |                      "gt": 0
+      |                    }
+      |                  }
+      |                },
+      |                {
+      |                  "term": {
+      |                    "products.upForSale": {
+      |                      "value": true
+      |                    }
+      |                  }
+      |                },
+      |                {
+      |                  "term": {
+      |                    "products.deleted": {
+      |                      "value": false
+      |                    }
+      |                  }
+      |                }
+      |              ]
+      |            }
       |          },
       |          "aggs": {
-      |            "min_price": {
-      |              "min": {
-      |                "field": "products.price"
-      |              }
-      |            },
-      |            "max_price": {
-      |              "max": {
-      |                "field": "products.price"
-      |              }
-      |            },
-      |            "having_filter": {
-      |              "bucket_selector": {
-      |                "buckets_path": {
-      |                  "min_price": "inner_products>min_price",
-      |                  "max_price": "inner_products>max_price"
+      |            "cat": {
+      |              "terms": {
+      |                "field": "products.category.keyword"
+      |              },
+      |              "aggs": {
+      |                "min_price": {
+      |                  "min": {
+      |                    "field": "products.price"
+      |                  }
       |                },
-      |                "script": {
-      |                  "source": "params.min_price > 5.0 && params.max_price < 50.0"
+      |                "max_price": {
+      |                  "max": {
+      |                    "field": "products.price"
+      |                  }
+      |                },
+      |                "having_filter": {
+      |                  "bucket_selector": {
+      |                    "buckets_path": {
+      |                      "min_price": "inner_products>min_price",
+      |                      "max_price": "inner_products>max_price"
+      |                    },
+      |                    "script": {
+      |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+      |                    }
+      |                  }
       |                }
       |              }
       |            }
@@ -965,7 +1042,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle group by with having and date time functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHavingAndDateTimeFunctions.replace("GROUP BY 3, 2", "GROUP BY 3, 2"))
+      SQLQuery(groupByWithHavingAndDateTimeFunctions)
     val query = select.query
     println(query)
     query shouldBe
@@ -1629,7 +1706,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
-  it should "handle is_null function as script field" in { // TODO replace with param1 == null
+  it should "handle is_null function as script field" in {
     val select: ElasticSearchRequest =
       SQLQuery(isnull)
     val query = select.query

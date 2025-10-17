@@ -27,24 +27,69 @@ package object bridge {
   implicit def requestToNestedFilterAggregation(
     request: SQLSearchRequest,
     innerHitsName: String
-  ): Option[FilterAggregation] =
-    request.where.flatMap(_.criteria) match {
-      case Some(f) =>
-        f.nestedCriteria(innerHitsName) match {
-          case Nil => None
-          case cs  =>
-            val boolQuery = ElasticBoolQuery(group = true)
-            cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
-            Some(
-              filterAgg(
-                s"filtered_$innerHitsName",
-                boolQuery.query(request.aggregates.flatMap(_.identifier.innerHitsName).toSet, Option(boolQuery))
+  ): Option[FilterAggregation] = {
+    val having: Option[Query] =
+      request.having.flatMap(_.criteria) match {
+        case Some(f) =>
+          f.nestedCriteria(innerHitsName) match {
+            case Nil => None
+            case cs =>
+              val boolQuery = ElasticBoolQuery(group = true)
+              cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
+              Some(
+                boolQuery.query(
+                  request.aggregates.flatMap(_.identifier.innerHitsName).toSet,
+                  Option(boolQuery)
+                )
               )
-            )
-        }
+          }
+        case _ =>
+          None
+      }
+    val where: Option[Query] =
+      request.where.flatMap(_.criteria) match {
+        case Some(f) =>
+          f.nestedCriteria(innerHitsName) match {
+            case Nil => None
+            case cs =>
+              val boolQuery = ElasticBoolQuery(group = true)
+              cs.map(c => boolQuery.filter(c.asFilter(Option(boolQuery))))
+              Some(
+                boolQuery.query(
+                  request.aggregates.flatMap(_.identifier.innerHitsName).toSet,
+                  Option(boolQuery)
+                )
+              )
+          }
+        case _ =>
+          None
+      }
+    (having, where) match {
+      case (Some(h), Some(w)) =>
+        Some(
+          filterAgg(
+            s"filtered_$innerHitsName",
+            boolQuery().filter(h, w)
+          )
+        )
+      case (Some(h), None) =>
+        Some(
+          filterAgg(
+            s"filtered_$innerHitsName",
+            h
+          )
+        )
+      case (None, Some(w)) =>
+        Some(
+          filterAgg(
+            s"filtered_$innerHitsName",
+            w
+          )
+        )
       case _ =>
         None
     }
+  }
 
   implicit def requestToFilterAggregation(
     request: SQLSearchRequest
