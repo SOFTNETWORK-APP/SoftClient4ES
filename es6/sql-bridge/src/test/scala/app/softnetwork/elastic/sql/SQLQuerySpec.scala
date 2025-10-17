@@ -2425,13 +2425,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.pow(param1, 3)"
       |      }
       |    },
-      |    "round_identifier_math_pow_10_0": {
+      |    "round_identifier": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
       |      }
       |    },
-      |    "round_identifier_math_pow_10_2": {
+      |    "round_identifier_2": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
