@@ -210,7 +210,7 @@ package object time {
       extends DateTimeFunction
       with TransformFunction[SQLTemporal, SQLTemporal]
       with FunctionWithIdentifier
-      with DateMathRounding {
+      with DateMathRounding { // FIXME check Unit compatibility with inputType
     override def fun: Option[PainlessScript] = Some(DateTrunc)
 
     override def args: List[PainlessScript] = List(unit)
@@ -226,6 +226,38 @@ package object time {
     override def roundingScript: Option[String] = unit.roundingScript
 
     override def dateMathScript: Boolean = identifier.dateMathScript
+
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      unit match {
+        case TimeUnit.YEARS  => ".withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)"
+        case TimeUnit.MONTHS => ".withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)"
+        case TimeUnit.WEEKS  => ".with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)"
+        case TimeUnit.QUARTERS =>
+          context match {
+            case Some(ctx) =>
+              ctx.addParam(identifier) match {
+                case Some(p) =>
+                  val quarterExpr =
+                    s".withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null"
+                  ctx.addParam(
+                    LiteralParam(
+                      quarterExpr
+                    )
+                  ) match {
+                    case Some(p) => return p
+                    case _       =>
+                  }
+                case _ =>
+              }
+            case _ =>
+          }
+          super.toPainlessCall(callArgs, context)
+        case _ => super.toPainlessCall(callArgs, context)
+      }
+    }
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {

@@ -238,11 +238,17 @@ package object function {
 
     def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
       context match {
-        case Some(_) =>
+        case Some(ctx) =>
           val p = painless(context)
-          if (p.startsWith(".")) // method call
-            s"$base$p"
-          else
+          if (p.startsWith(".") && base.nonEmpty) { // method call
+            ctx.find(base) match {
+              case Some(param) =>
+                param.addPainlessMethod(p)
+                base
+              case _ =>
+                s"$base$p"
+            }
+          } else
             p
         case None =>
           if (checkIfNullable && base.nonEmpty)

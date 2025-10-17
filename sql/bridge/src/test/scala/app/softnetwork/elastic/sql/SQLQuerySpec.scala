@@ -1261,7 +1261,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1381,7 +1381,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss XXX'); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss XXX'); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -2160,91 +2160,91 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "dom": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.DAY_OF_MONTH)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "dow": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.DAY_OF_WEEK)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_WEEK)); param1"
         |      }
         |    },
         |    "doy": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.DAY_OF_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MONTH_OF_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.HOUR_OF_DAY)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MINUTE_OF_HOUR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.SECOND_OF_MINUTE)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.NANO_OF_SECOND)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MICRO_OF_SECOND)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MILLI_OF_SECOND)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.EPOCH_DAY)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.OFFSET_SECONDS)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
@@ -2284,7 +2284,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param1 == null) ? null : (param1 * (param2.get(ChronoField.YEAR) - 10)) > 10000"
+        |              "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000"
         |            }
         |          }
         |        }
@@ -2890,91 +2890,91 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MONTH_OF_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "wd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.DAY_OF_WEEK)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_WEEK)); param1"
         |      }
         |    },
         |    "yd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.DAY_OF_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "d": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.DAY_OF_MONTH)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.HOUR_OF_DAY)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MINUTE_OF_HOUR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.SECOND_OF_MINUTE)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.NANO_OF_SECOND)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MICRO_OF_SECOND)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.MILLI_OF_SECOND)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.EPOCH_DAY)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(ChronoField.OFFSET_SECONDS)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param1.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },

@@ -97,11 +97,22 @@ package object sql {
       }
     }
 
-    def pvalue: String =
+    def paramValue: String =
       if (nullable && checkNotNull.nonEmpty)
         checkNotNull
       else
-        param
+        s"$param${painlessMethods.mkString("")}"
+
+    private[this] var _painlessMethods: collection.mutable.Seq[String] =
+      collection.mutable.Seq.empty
+
+    def addPainlessMethod(method: String): PainlessParam = {
+      _painlessMethods = _painlessMethods :+ method
+      this
+    }
+
+    def painlessMethods: Seq[String] = _painlessMethods.toSeq
+
   }
 
   case class LiteralParam(param: String) extends PainlessParam {
@@ -174,13 +185,19 @@ package object sql {
 
     def last: Option[String] = _lastParam
 
+    def find(paramName: String): Option[PainlessParam] = {
+      val index = _values.indexOf(paramName)
+      if (index >= 0) Some(_keys(index))
+      else None
+    }
+
     override def toString: String = {
       if (isEmpty) ""
       else
         _keys
           .flatMap { param =>
             get(param) match {
-              case Some(v) => Some(s"def $v = ${param.pvalue}; ")
+              case Some(v) => Some(s"def $v = ${param.paramValue}; ")
               case None    => None // should not happen
             }
           }
@@ -660,19 +677,6 @@ package object sql {
         s"doc['$path'].value"
       else ""
 
-    def toPainless(base: String, context: Option[PainlessContext]): String = {
-      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
-      var expr = base
-      orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
-        f match {
-          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx, context)
-          case f: PainlessScript          => expr = s"$expr${f.painless(context)}"
-          case f                          => expr = f.toSQL(expr) // fallback
-        }
-      }
-      expr
-    }
-
     def script: Option[String] =
       if (isTemporal) {
         var orderedFunctions = FunctionUtils.transformFunctions(this).reverse
@@ -726,10 +730,11 @@ package object sql {
     def checkNotNull: String =
       if (path.isEmpty) ""
       else
-        s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value)"
+        s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value${painlessMethods
+          .mkString("")})"
 
     override def painless(context: Option[PainlessContext]): String = {
-      toPainless(
+      val base =
         context match {
           case Some(ctx) =>
             ctx.addParam(this).getOrElse("")
@@ -738,9 +743,17 @@ package object sql {
               checkNotNull
             else
               paramName
-        },
-        context
-      )
+        }
+      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
+      var expr = base
+      orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
+        f match {
+          case f: TransformFunction[_, _] => expr = f.toPainless(expr, idx, context)
+          case f: PainlessScript          => expr = s"$expr${f.painless(context)}"
+          case f                          => expr = f.toSQL(expr) // fallback
+        }
+      }
+      expr
     }
 
     override def param: String = paramName
