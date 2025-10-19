@@ -2603,13 +2603,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "low": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.lower()"
+      |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.toLowerCase()"
       |      }
       |    },
       |    "upp": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.upper()"
+      |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.toUpperCase()"
       |      }
       |    },
       |    "sub": {

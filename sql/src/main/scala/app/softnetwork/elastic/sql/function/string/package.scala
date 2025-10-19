@@ -47,9 +47,13 @@ package object string {
   }
   case object Lower extends Expr("LOWER") with StringOp {
     override lazy val words: List[String] = List(sql, "LCASE")
+
+    override def painless(context: Option[PainlessContext]): String = s".toLowerCase()"
   }
   case object Upper extends Expr("UPPER") with StringOp {
     override lazy val words: List[String] = List(sql, "UCASE")
+
+    override def painless(context: Option[PainlessContext]): String = s".toUpperCase()"
   }
   case object Trim extends Expr("TRIM") with StringOp
   case object Ltrim extends Expr("LTRIM") with StringOp {
