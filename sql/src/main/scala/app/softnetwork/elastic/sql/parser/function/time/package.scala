@@ -191,14 +191,21 @@ package object time {
 
     import TimeField._
 
+    def day_of_week_tr: PackratParser[FunctionWithIdentifier] =
+      DAY_OF_WEEK.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
+        case _ ~ _ ~ i ~ _ => new DayOfWeek(i)
+      }
+
+    def day_of_week_identifier: PackratParser[Identifier] = day_of_week_tr ^^ { dw =>
+      dw.identifier.withFunctions(dw +: dw.identifier.functions)
+    }
+
     def year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       YEAR.regex ^^ (_ => new Year)
     def month_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       MONTH_OF_YEAR.regex ^^ (_ => new MonthOfYear)
     def day_of_month_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       DAY_OF_MONTH.regex ^^ (_ => new DayOfMonth)
-    def day_of_week_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      DAY_OF_WEEK.regex ^^ (_ => new DayOfWeek)
     def day_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       DAY_OF_YEAR.regex ^^ (_ => new DayOfYear)
     def hour_of_day_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
@@ -228,7 +235,6 @@ package object time {
       year_tr |
       month_of_year_tr |
       day_of_month_tr |
-      day_of_week_tr |
       day_of_year_tr |
       hour_of_day_tr |
       minute_of_hour_tr |
@@ -250,6 +256,7 @@ package object time {
       dateTimeFunctionWithIdentifier |
       date_diff_identifier |
       date_trunc_identifier |
+      day_of_week_identifier |
       extract_identifier) ~ rep(intervalFunction) ^^ { case i ~ f =>
         i.withFunctions(f ++ i.functions)
       }

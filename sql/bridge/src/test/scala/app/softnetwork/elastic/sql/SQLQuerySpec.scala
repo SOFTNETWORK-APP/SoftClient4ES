@@ -2949,7 +2949,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "wd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_WEEK)); param1"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null) ? null : (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7"
         |      }
         |    },
         |    "yd": {
@@ -3051,6 +3051,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("-", " - ")
         .replaceAll("\\*", " * ")
         .replaceAll("/", " / ")
+        .replaceAll("%", " % ")
         .replaceAll(">", " > ")
         .replaceAll("<", " < ")
         .replaceAll("!=", " != ")

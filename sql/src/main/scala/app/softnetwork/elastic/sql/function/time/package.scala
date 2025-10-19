@@ -294,7 +294,23 @@ package object time {
 
   class DayOfMonth extends TimeFieldExtract(DAY_OF_MONTH)
 
-  class DayOfWeek extends TimeFieldExtract(DAY_OF_WEEK)
+  class DayOfWeek(date: Identifier)
+      extends TimeFieldExtract(DAY_OF_WEEK)
+      with FunctionWithIdentifier {
+    override def identifier: Identifier = date
+    override def args: List[PainlessScript] = List(identifier)
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      callArgs match {
+        case arg :: Nil =>
+          s"($arg.get(${field.painless(context)}) + 6) % 7"
+        case _ => throw new IllegalArgumentException("DayOfWeek requires exactly one argument")
+      }
+    }
+
+  }
 
   class DayOfYear extends TimeFieldExtract(DAY_OF_YEAR)
 
