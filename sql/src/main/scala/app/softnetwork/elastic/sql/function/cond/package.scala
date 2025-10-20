@@ -167,7 +167,7 @@ package object cond {
       callArgs match {
         case List(arg0, arg1) =>
           val expr =
-            s"${arg0.trim} == ${arg1.trim} ? null : $arg0" // TODO check when expr1 and expr2 are nullable and have functions
+            s"${arg0.trim} == ${arg1.trim} ? null : $arg0"
           context match {
             case Some(ctx) =>
               ctx.addParam(LiteralParam(expr)) match {

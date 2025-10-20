@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
@@ -147,6 +147,8 @@ package object function {
 
     override def applyType(in: SQLType): SQLType = outputType
 
+    lazy val targetedType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
+
     override def sql: String =
       s"${fun.map(_.sql).getOrElse("")}(${args.map(_.sql).mkString(argsSeparator)})"
 
@@ -215,6 +217,19 @@ package object function {
                       else {
                         ctx.addParam(LiteralParam(ret))
                       }
+                    case identifier: Identifier =>
+                      identifier.baseType match {
+                        case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                          targetedType match {
+                            case SQLTypes.Date =>
+                              identifier.addPainlessMethod(".toLocalDate()")
+                            case SQLTypes.Time =>
+                              identifier.addPainlessMethod(".toLocalTime()")
+                            case _ =>
+                          }
+                        case _ =>
+                      }
+                      Option(paramName)
                     case _ =>
                       Option(paramName)
                   }
