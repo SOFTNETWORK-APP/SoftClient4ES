@@ -52,11 +52,11 @@ package object sql {
     def in: SQLType = baseType
     private[this] var _out: SQLType = SQLTypes.Null
     def out: SQLType = if (_out == SQLTypes.Null) baseType else _out
-    def out_=(t: SQLType): Unit = {
+    /*def out_=(t: SQLType): Unit = {
       _out = t
-    }
+    }*/
     def cast(targetType: SQLType): SQLType = {
-      this.out = targetType
+      this._out = targetType
       this.out
     }
     def system: Boolean = false

@@ -20,11 +20,12 @@ import app.softnetwork.elastic.sql.{
   Alias,
   DateMathRounding,
   Expr,
+  Identifier,
   PainlessContext,
   PainlessScript,
   TokenRegex
 }
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 
 package object convert {
 
@@ -46,6 +47,29 @@ package object convert {
       SQLTypeUtils.coerce(value, targetType, context)
 
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      context match {
+        case Some(ctx) =>
+          value match {
+            case _: Identifier =>
+              inputType match {
+                case SQLTypes.Any =>
+                  ctx.find(base) match {
+                    case Some(identifier) =>
+                      outputType match {
+                        case SQLTypes.Date =>
+                          identifier.addPainlessMethod(".toLocalDate()")
+                        case SQLTypes.Time =>
+                          identifier.addPainlessMethod(".toLocalTime()")
+                        case _ => // do nothing
+                      }
+                    case _ => // do nothing
+                  }
+                case _ => // do nothing
+              }
+            case _ => // do nothing
+          }
+        case _ => // do nothing
+      }
       val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
       val retWithBrackets = if (bloc) ret else s"{ $ret }"

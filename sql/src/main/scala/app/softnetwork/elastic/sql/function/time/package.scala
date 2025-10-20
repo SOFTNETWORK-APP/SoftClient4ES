@@ -62,13 +62,17 @@ package object time {
       case _                    => None
     }
 
-    private[this] var _out: SQLType = outputType
+    //private[this] var _out: SQLType = outputType
 
-    override def out: SQLType = _out
+    //override def out: SQLType = _out
 
     override def applyType(in: SQLType): SQLType = {
-      _out = interval.checkType(in).getOrElse(out)
-      _out
+      interval.checkType(in) match {
+        case Left(_)  => baseType
+        case Right(_) => cast(in)
+      }
+      //_out = interval.checkType(in).getOrElse(out)
+      //_out
     }
 
     override def validate(): Either[String, Unit] = interval.checkType(out) match {

@@ -147,8 +147,6 @@ package object function {
 
     override def applyType(in: SQLType): SQLType = outputType
 
-    lazy val targetedType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
-
     override def sql: String =
       s"${fun.map(_.sql).getOrElse("")}(${args.map(_.sql).mkString(argsSeparator)})"
 
@@ -198,27 +196,10 @@ package object function {
                     case chain: FunctionChain if chain.functions.nonEmpty =>
                       val ret = SQLTypeUtils
                         .coerce(
-                          a.painless(context),
-                          a.baseType,
+                          a,
                           argTypes(i),
-                          nullable = a.nullable,
                           context
                         )
-                      a match {
-                        case identifier: Identifier =>
-                          identifier.baseType match {
-                            case SQLTypes.Any => // in painless context, Any is ZonedDateTime
-                              targetedType match {
-                                case SQLTypes.Date =>
-                                  identifier.addPainlessMethod(".toLocalDate()")
-                                case SQLTypes.Time =>
-                                  identifier.addPainlessMethod(".toLocalTime()")
-                                case _ =>
-                              }
-                            case _ =>
-                          }
-                        case _ =>
-                      }
                       if (ret.startsWith(".")) {
                         // apply methods
                         ctx.find(paramName) match {
@@ -235,7 +216,7 @@ package object function {
                     case identifier: Identifier =>
                       identifier.baseType match {
                         case SQLTypes.Any => // in painless context, Any is ZonedDateTime
-                          targetedType match {
+                          out match {
                             case SQLTypes.Date =>
                               identifier.addPainlessMethod(".toLocalDate()")
                             case SQLTypes.Time =>

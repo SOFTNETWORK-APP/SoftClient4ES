@@ -105,7 +105,8 @@ package object cond {
 
     override def args: List[PainlessScript] = values
 
-    override def outputType: SQLType = SQLTypeUtils.leastCommonSuperType(args.map(_.baseType))
+    override def outputType: SQLType =
+      baseType //SQLTypeUtils.leastCommonSuperType(args.map(_.baseType))
 
     override def identifier: Identifier = Identifier()
 
@@ -114,10 +115,9 @@ package object cond {
     override def sql: String = s"$Coalesce(${values.map(_.sql).mkString(", ")})"
 
     // Reprend l’idée de SQLValues mais pour n’importe quel token
-    override def baseType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(values.map(_.baseType).distinct)
+    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
-    override def applyType(in: SQLType): SQLType = out
+    override def applyType(in: SQLType): SQLType = baseType
 
     override def validate(): Either[String, Unit] = {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
@@ -151,14 +151,17 @@ package object cond {
 
     override def inputType: SQLAny = SQLTypes.Any
 
-    override def baseType: SQLType = expr1.out
+    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
-    override def applyType(in: SQLType): SQLType = out
+    override def applyType(in: SQLType): SQLType = baseType
 
-    override def checkIfNullable: Boolean = expr1.nullable && (expr1 match {
+    private[this] def checkIfExpressionNullable(expr: PainlessScript): Boolean = expr match {
       case f: FunctionChain if f.functions.nonEmpty => true
       case _                                        => false
-    })
+    }
+
+    override def checkIfNullable: Boolean =
+      false //checkIfExpressionNullable(expr1) || checkIfExpressionNullable(expr2)
 
     override def toPainlessCall(
       callArgs: List[String],
@@ -195,7 +198,9 @@ package object cond {
     conditions: List[(PainlessScript, PainlessScript)],
     default: Option[PainlessScript]
   ) extends TransformFunction[SQLAny, SQLAny] {
-    override def args: List[PainlessScript] = List.empty
+    override def args: List[PainlessScript] = expression.toList ++
+      conditions.map { case (_, res) => res } ++
+      default.toList
 
     override def inputType: SQLAny = SQLTypes.Any
     override def outputType: SQLAny = SQLTypes.Any
@@ -210,9 +215,7 @@ package object cond {
     }
 
     override def baseType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(
-        conditions.map(_._2.baseType) ++ default.map(_.baseType).toList
-      )
+      SQLTypeUtils.leastCommonSuperType(argTypes)
 
     override def applyType(in: SQLType): SQLType = baseType
 
@@ -237,7 +240,7 @@ package object cond {
           var cases =
             expression match {
               case Some(expr) => // case with expression to evaluate
-                val e = SQLTypeUtils.coerce(expr, expr.out, context)
+                val e = SQLTypeUtils.coerce(expr, out, context)
                 val expParam = ctx.addParam(
                   LiteralParam(e)
                 )
@@ -253,16 +256,14 @@ package object cond {
                           i.name
                         case _ => ""
                       }
-                    val c = SQLTypeUtils.coerce(cond, expr.out, context)
+                    val c = SQLTypeUtils.coerce(cond, out, context)
                     val r =
                       res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
                           SQLTypeUtils.coerce(
-                            i.painless(context),
-                            i.baseType,
+                            i,
                             out,
-                            nullable = false,
                             context
                           )
                         case _ =>
@@ -302,10 +303,8 @@ package object cond {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
                           SQLTypeUtils.coerce(
-                            i.painless(context),
-                            i.baseType,
+                            i,
                             out,
-                            nullable = false,
                             context
                           )
                         case _ =>

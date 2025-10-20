@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.`type`
 
-import app.softnetwork.elastic.sql.{LiteralParam, PainlessContext, PainlessScript}
+import app.softnetwork.elastic.sql.{Identifier, LiteralParam, PainlessContext, PainlessScript}
 import app.softnetwork.elastic.sql.`type`.SQLTypes._
 
 object SQLTypeUtils {
@@ -104,6 +104,25 @@ object SQLTypeUtils {
   }
 
   def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
+    context match {
+      case Some(_) =>
+        in match {
+          case identifier: Identifier =>
+            identifier.baseType match {
+              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                to match {
+                  case SQLTypes.Date =>
+                    identifier.addPainlessMethod(".toLocalDate()")
+                  case SQLTypes.Time =>
+                    identifier.addPainlessMethod(".toLocalTime()")
+                  case _ => // do nothing
+                }
+              case _ => // do nothing
+            }
+          case _ => // do nothing
+        }
+      case _ => // do nothing
+    }
     val expr = in.painless(context)
     val from = in.baseType
     val nullable = in.nullable

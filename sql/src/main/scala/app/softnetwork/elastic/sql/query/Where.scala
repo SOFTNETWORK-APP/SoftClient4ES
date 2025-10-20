@@ -389,6 +389,25 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case Some(v) => SQLTypeUtils.leastCommonSuperType(List(identifier.out, v.out))
       case None    => identifier.out
     }
+    context match {
+      case Some(ctx) =>
+        ctx.addParam(identifier) match {
+          case Some(_) =>
+            identifier.baseType match {
+              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                maybeValue.map(_.out).getOrElse(SQLTypes.Any) match {
+                  case SQLTypes.Date =>
+                    identifier.addPainlessMethod(".toLocalDate()")
+                  case SQLTypes.Time =>
+                    identifier.addPainlessMethod(".toLocalTime()")
+                  case _ =>
+                }
+              case _ =>
+            }
+          case _ => // do nothing
+        }
+      case _ => // do nothing
+    }
     SQLTypeUtils.coerce(identifier, targetedType, context)
   }
 
@@ -452,21 +471,11 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   }
 
   override def painless(context: Option[PainlessContext]): String = {
+    val innerLeft = left(context)
     context match {
       case Some(ctx) =>
-        ctx.addParam(identifier) match {
+        ctx.get(identifier) match {
           case Some(p) =>
-            identifier.baseType match {
-              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
-                maybeValue.map(_.out).getOrElse(SQLTypes.Any) match {
-                  case SQLTypes.Date =>
-                    identifier.addPainlessMethod(".toLocalDate()")
-                  case SQLTypes.Time =>
-                    identifier.addPainlessMethod(".toLocalTime()")
-                  case _ =>
-                }
-              case _ =>
-            }
             if (identifier.nullable)
               return s"$p == null ? false : $painlessNot(${check(context, p)})"
             else
@@ -476,9 +485,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case _ =>
     }
     if (identifier.nullable) {
-      return s"def left = ${left(context)}; left == null ? false : $painlessNot(${check(context, "left")})"
+      return s"def left = $innerLeft; left == null ? false : $painlessNot(${check(context, "left")})"
     }
-    s"$painlessNot${check(context, left(context))}"
+    s"$painlessNot${check(context, innerLeft)}"
   }
 
   override def validate(): Either[String, Unit] = {
