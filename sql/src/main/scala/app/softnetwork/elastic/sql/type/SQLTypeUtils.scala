@@ -193,26 +193,30 @@ object SQLTypeUtils {
           context match {
             case Some(ctx) =>
               ctx.addParam(
-                LiteralParam(s"LocalDate.parse($expr, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))")
+                LiteralParam(
+                  "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+                )
               ) match {
                 case Some(p) => return p
                 case None    => // continue
               }
             case None => // continue
           }
-          s"LocalDate.parse($expr, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+          "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
         case (SQLTypes.Varchar, SQLTypes.Time) =>
           context match {
             case Some(ctx) =>
               ctx.addParam(
-                LiteralParam(s"LocalTime.parse($expr, DateTimeFormatter.ofPattern(\"HH:mm:ss\"))")
+                LiteralParam(
+                  "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
+                )
               ) match {
                 case Some(p) => return p
                 case None    => // continue
               }
             case None => // continue
           }
-          s"LocalTime.parse($expr, DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
+          "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
         case (SQLTypes.Varchar, SQLTypes.DateTime) =>
           context match {
             case Some(ctx) =>
