@@ -2157,7 +2157,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.toLocalDate()); param1 == param2 ? param2 : param1 == param3 ? param3 : param4"
+        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4"
         |      }
         |    }
         |  },

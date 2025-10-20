@@ -239,6 +239,16 @@ package object cond {
       else Right(())
     }
 
+    private[this] def checkCase(e: String, c: String, v: String): String = {
+      out match {
+        case SQLTypes.Varchar =>
+          s"$e != null && $e.compareTo($c) == 0 ? $v"
+        case _: SQLTemporal =>
+          s"$e != null && $e.isEqual($c) ? $v"
+        case _ => s"$e == $c ? $v"
+      }
+    }
+
     override def painless(context: Option[PainlessContext] = None): String = {
       context match {
         case Some(ctx) =>
@@ -278,14 +288,14 @@ package object cond {
                       case Some(e) =>
                         if (cond.nullable) {
                           ctx.addParam(LiteralParam(c)) match {
-                            case Some(c) => s"$e == $c ? $r"
-                            case _       => s"$e == $c ? $r"
+                            case Some(c) => checkCase(e, c, r)
+                            case _       => checkCase(e, c, r)
                           }
                         } else {
-                          s"$e == $c ? $r"
+                          checkCase(e, c, r)
                         }
                       case _ =>
-                        s"$e == $c ? $r"
+                        checkCase(e, c, r)
                     }
                   }
                   .mkString(" : ")
