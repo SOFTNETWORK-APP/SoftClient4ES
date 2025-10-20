@@ -188,7 +188,40 @@ package object function {
 
       val callArgs = args.zipWithIndex
         .map { case (a, i) =>
-          context.flatMap(ctx => ctx.get(a)).getOrElse {
+          (context match {
+            case Some(ctx) =>
+              ctx.get(a) match {
+                case Some(paramName) =>
+                  a match {
+                    case chain: FunctionChain if chain.functions.nonEmpty =>
+                      val ret = SQLTypeUtils
+                        .coerce(
+                          a.painless(context),
+                          a.baseType,
+                          argTypes(i),
+                          nullable = a.nullable,
+                          context
+                        )
+                      if (ret.startsWith(".")) {
+                        // apply methods
+                        ctx.find(paramName) match {
+                          case Some(p) =>
+                            p.addPainlessMethod(ret)
+                          case _ =>
+                        }
+                        Option(paramName)
+                      } else if (ret == paramName)
+                        Option(paramName)
+                      else {
+                        ctx.addParam(LiteralParam(ret))
+                      }
+                    case _ =>
+                      Option(paramName)
+                  }
+                case _ => None
+              }
+            case _ => None
+          }).getOrElse {
             if (a.nullable) s"arg$i"
             else
               SQLTypeUtils

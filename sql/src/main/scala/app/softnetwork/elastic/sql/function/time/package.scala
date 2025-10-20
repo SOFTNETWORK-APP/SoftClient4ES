@@ -76,21 +76,28 @@ package object time {
       case Right(_)  => Right(())
     }
 
-    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String =
+    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      context match {
+        case Some(ctx) =>
+          ctx.last match {
+            case Some(p) =>
+              ctx.find(p) match {
+                case Some(param) =>
+                  param.addPainlessMethod(painless(context))
+                  return p
+                case _ =>
+                  return s"($p != null ? ${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = false, context)}${painless(context)} : null)"
+              }
+            case _ =>
+          }
+        case _ =>
+      }
       if (nullable) {
-        context match {
-          case Some(ctx) =>
-            ctx.last match {
-              case Some(p) =>
-                return s"($p != null ? ${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = false, context)}${painless(context)} : null)"
-              case _ =>
-            }
-          case _ =>
-        }
         // ensure unique variable names
         s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.baseType, out, nullable = false, context)}${painless(context)} : null)"
       } else
         s"${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = expr.nullable, context)}${painless(context)}"
+    }
   }
 
   sealed trait AddInterval[IO <: SQLTemporal] extends IntervalFunction[IO] {
@@ -240,8 +247,14 @@ package object time {
             case Some(ctx) =>
               ctx.addParam(identifier) match {
                 case Some(p) =>
+                  val quarter =
+                    s"$p.withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)"
                   val quarterExpr =
-                    s"$p.withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null"
+                    if (identifier.nullable) {
+                      s"$p != null ? $quarter : null"
+                    } else {
+                      quarter
+                    }
                   ctx.addParam(
                     LiteralParam(
                       quarterExpr

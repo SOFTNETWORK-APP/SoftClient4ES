@@ -107,7 +107,8 @@ package object sql {
       collection.mutable.Seq.empty
 
     def addPainlessMethod(method: String): PainlessParam = {
-      _painlessMethods = _painlessMethods :+ method
+      if (!_painlessMethods.contains(method))
+        _painlessMethods = _painlessMethods :+ method // FIXME we should apply functions only once
       this
     }
 
