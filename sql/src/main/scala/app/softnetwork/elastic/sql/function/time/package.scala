@@ -522,20 +522,15 @@ package object time {
             case Some(ctx) =>
               identifier.baseType match {
                 case SQLTypes.Varchar =>
-                  ctx.addParam(LiteralParam(s"$param.parse($arg, LocalDate::from)")) match {
+                  ctx.addParam(LiteralParam(s"LocalDate.parse($arg, $param)")) match {
                     case Some(p) => return p
                     case _       =>
                   }
                 case _ =>
-                  ctx.addParam(LiteralParam(param)) match {
-                    case Some(p) => return s"$p.parse($arg, LocalDate::from)"
-                    case _       =>
-                  }
-
               }
             case _ =>
           }
-          s"$param.parse($arg, LocalDate::from)"
+          s"LocalDate.parse($arg, $param)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 
@@ -647,7 +642,7 @@ package object time {
       with FunctionWithIdentifier
       with FunctionWithDateTimeFormat
       with DateMathScript {
-    override def fun: Option[PainlessScript] = Some(DateTimeParse)
+    override def fun: Option[PainlessScript] = None
 
     override def args: List[PainlessScript] = List(identifier)
 
@@ -668,20 +663,15 @@ package object time {
             case Some(ctx) =>
               identifier.baseType match {
                 case SQLTypes.Varchar =>
-                  ctx.addParam(LiteralParam(s"$param.parse($arg, ZonedDateTime::from)")) match {
+                  ctx.addParam(LiteralParam(s"ZonedDateTime.parse($arg, $param)")) match {
                     case Some(p) => return p
                     case _       =>
                   }
                 case _ =>
-                  ctx.addParam(LiteralParam(param)) match {
-                    case Some(p) => return s"$p.parse($arg, ZonedDateTime::from)"
-                    case _       =>
-                  }
-
               }
             case _ =>
           }
-          s"$param.parse($arg, ZonedDateTime::from)"
+          s"ZonedDateTime.parse($arg, $param)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 

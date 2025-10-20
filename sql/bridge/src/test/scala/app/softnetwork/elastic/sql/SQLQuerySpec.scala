@@ -1211,7 +1211,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd'); (param1 == null) ? null : param2.parse(param1, LocalDate::from)"
+        |              "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
         |            }
         |          }
         |        }
@@ -1231,6 +1231,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(";", "; ")
         .replaceAll(",ChronoUnit", ", ChronoUnit")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("==", " == ")
         .replaceAll("!=", " != ")
         .replaceAll("&&", " && ")
@@ -1377,7 +1378,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX'); (param1 == null) ? null : param2.parse(param1, ZonedDateTime::from).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
+        |              "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX')).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
         |            }
         |          }
         |        }
@@ -1402,6 +1403,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(">", " > ")
         .replaceAll(",ZonedDateTime", ", ZonedDateTime")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("SSSXXX", "SSS XXX")
         .replaceAll("ddHH", "dd HH")
   }
@@ -1524,7 +1526,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def param2 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param3 = DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX'); def param4 = (param2 == null) ? null : param3.parse(param2, ZonedDateTime::from); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param4)"
+        |              "source": "def param1 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def param2 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param3 = (param2 == null) ? null : ZonedDateTime.parse(param2, DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX')); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param3)"
         |            }
         |          }
         |        }
@@ -1548,8 +1550,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("!=", " != ")
         .replaceAll("&&", " && ")
         .replaceAll("\\|\\|", " || ")
-        .replaceAll("ZonedDateTime", " ZonedDateTime")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("SSSXXX", "SSS XXX")
         .replaceAll("ddHH", "dd HH")
   }
@@ -1960,7 +1962,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from).minus(2, ChronoUnit.DAYS); def param3 = param1 == param2 ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param3 != null ? param3 : param4"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd')).minus(2, ChronoUnit.DAYS); def param3 = param1 == param2 ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param3 != null ? param3 : param4"
         |      }
         |    }
         |  },
@@ -1997,7 +1999,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(";\\s\\s", "; ")
         .replaceAll("ChronoUnit", " ChronoUnit")
         .replaceAll(",LocalDate", ", LocalDate")
+        .replaceAll("=LocalDate", " = LocalDate")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("=ZonedDateTime", " = ZonedDateTime")
         .replaceAll(":ZonedDateTime", " : ZonedDateTime")
   }
@@ -2016,7 +2020,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param2 = DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from); def param3 = param1 == param2 ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { param3 != null ? param3 : param4 } catch (Exception e) { return null; }"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); def param3 = param1 == param2 ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { param3 != null ? param3 : param4 } catch (Exception e) { return null; }"
         |      }
         |    },
         |    "c2": {
