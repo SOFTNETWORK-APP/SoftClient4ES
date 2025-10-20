@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLDouble, SQLTypes}
@@ -5,6 +21,7 @@ import app.softnetwork.elastic.sql.{
   DoubleValue,
   Expr,
   Identifier,
+  PainlessContext,
   PainlessParams,
   PainlessScript,
   Token,
@@ -57,7 +74,7 @@ package object geo {
   case object Distance extends Expr("ST_DISTANCE") with Function with Operator {
     override def words: List[String] = List(sql, "DISTANCE")
 
-    override def painless(): String = ".arcDistance"
+    override def painless(context: Option[PainlessContext] = None): String = ".arcDistance"
 
     def haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double = {
       val R = 6371e3 // Radius of the earth in meters
@@ -125,7 +142,7 @@ package object geo {
       else
         Map.empty
 
-    override def painless(): String = {
+    override def painless(context: Option[PainlessContext]): String = {
       val nullCheck =
         identifiers.zipWithIndex
           .map { case (_, i) => s"arg$i == null" }
@@ -141,7 +158,7 @@ package object geo {
 
       val ret =
         if (oneIdentifier) {
-          s"arg0${fun.map(_.painless()).getOrElse("")}(params.lat, params.lon)"
+          s"arg0${fun.map(_.painless(context)).getOrElse("")}(params.lat, params.lon)"
         } else if (identifiers.isEmpty) {
           s"${Distance.haversine(
             fromPoint.get.lat.value,
@@ -150,7 +167,7 @@ package object geo {
             toPoint.get.lon.value
           )}"
         } else {
-          s"arg0${fun.map(_.painless()).getOrElse("")}(arg1.lat, arg1.lon)"
+          s"arg0${fun.map(_.painless(context)).getOrElse("")}(arg1.lat, arg1.lon)"
         }
 
       if (identifiers.nonEmpty)

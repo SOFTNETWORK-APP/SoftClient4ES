@@ -1,6 +1,22 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
@@ -100,6 +116,18 @@ package object function {
           this.baseType
       }
     }
+
+    def find(function: Function): Option[Function] = {
+      functions.find(_ == function)
+    }
+
+    def contains(function: Function): Boolean = {
+      functions.contains(function)
+    }
+
+    def indexOf(function: Function): Int = {
+      functions.indexOf(function)
+    }
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
@@ -117,47 +145,116 @@ package object function {
     override def in: SQLType = inputType
     override def baseType: SQLType = outputType
 
-    override def applyType(in: SQLType): SQLType = outputType
+    override def applyType(in: SQLType): SQLType = baseType
 
     override def sql: String =
       s"${fun.map(_.sql).getOrElse("")}(${args.map(_.sql).mkString(argsSeparator)})"
 
     override def toSQL(base: String): String = s"$base$sql"
 
-    override def painless(): String = {
+    def checkIfNullable: Boolean = args.exists(_.nullable)
+
+    override def painless(context: Option[PainlessContext]): String = {
+      context match {
+        case Some(ctx) =>
+          args.foreach(arg => ctx.addParam(arg)) // ensure all args are added to the context
+        case _ =>
+      }
+
       val nullCheck =
-        args.zipWithIndex
-          .filter(_._1.nullable)
-          .map { case (_, i) => s"arg$i == null" }
-          .mkString(" || ")
+        if (checkIfNullable) {
+          args.zipWithIndex
+            .filter(_._1.nullable)
+            .map { case (a, i) =>
+              context.flatMap(ctx => ctx.get(a)).getOrElse(s"arg$i") + " == null"
+            }
+            .mkString(" || ")
+        } else
+          ""
 
       val assignments =
         args.zipWithIndex
           .filter(_._1.nullable)
           .map { case (a, i) =>
-            s"def arg$i = ${SQLTypeUtils.coerce(a.painless(), a.baseType, argTypes(i), nullable = false)};"
+            context
+              .flatMap(ctx => ctx.get(a).map(_ => ""))
+              .getOrElse(
+                s"def arg$i = ${SQLTypeUtils
+                  .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)};"
+              )
           }
           .mkString(" ")
+          .trim
 
       val callArgs = args.zipWithIndex
         .map { case (a, i) =>
-          if (a.nullable)
-            s"arg$i"
-          else
-            SQLTypeUtils.coerce(a.painless(), a.baseType, argTypes(i), nullable = false)
+          (context match {
+            case Some(ctx) =>
+              ctx.get(a) match {
+                case Some(paramName) =>
+                  a match {
+                    case chain: FunctionChain if chain.functions.nonEmpty =>
+                      val ret = SQLTypeUtils
+                        .coerce(
+                          a,
+                          argTypes(i),
+                          context
+                        )
+                      if (ret.startsWith(".")) {
+                        // apply methods
+                        ctx.find(paramName) match {
+                          case Some(p) =>
+                            p.addPainlessMethod(ret)
+                          case _ =>
+                        }
+                        Option(paramName)
+                      } else if (ret == paramName)
+                        Option(paramName)
+                      else {
+                        ctx.addParam(LiteralParam(ret))
+                      }
+                    case identifier: Identifier =>
+                      identifier.baseType match {
+                        case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                          out match {
+                            case SQLTypes.Date =>
+                              identifier.addPainlessMethod(".toLocalDate()")
+                            case SQLTypes.Time =>
+                              identifier.addPainlessMethod(".toLocalTime()")
+                            case _ =>
+                          }
+                        case _ =>
+                      }
+                      Option(paramName)
+                    case _ =>
+                      Option(paramName)
+                  }
+                case _ => None
+              }
+            case _ => None
+          }).getOrElse {
+            if (a.nullable) s"arg$i"
+            else
+              SQLTypeUtils
+                .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)
+          }
         }
 
-      if (args.exists(_.nullable))
-        s"($assignments ($nullCheck) ? null : ${toPainlessCall(callArgs)})"
-      else
-        s"${toPainlessCall(callArgs)}"
+      val painlessCall = toPainlessCall(callArgs, context)
+
+      if (checkIfNullable) {
+        if (assignments.nonEmpty)
+          s"$assignments ($nullCheck) ? $nullValue : $painlessCall"
+        else s"($nullCheck) ? $nullValue : $painlessCall"
+      } else
+        s"$painlessCall"
     }
 
-    def toPainlessCall(callArgs: List[String]): String =
+    def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       if (callArgs.nonEmpty)
-        s"${fun.map(_.painless()).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
+        s"${fun.map(_.painless(context)).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
       else
-        fun.map(_.painless()).getOrElse("")
+        fun.map(_.painless(context)).getOrElse("")
   }
 
   trait BinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType] extends FunctionN[In2, Out] {
@@ -172,11 +269,37 @@ package object function {
   }
 
   trait TransformFunction[In <: SQLType, Out <: SQLType] extends FunctionN[In, Out] {
-    def toPainless(base: String, idx: Int): String = {
-      if (nullable && base.nonEmpty)
-        s"(def e$idx = $base; e$idx != null ? e$idx${painless()} : null)"
-      else
-        s"$base${painless()}"
+    override def checkIfNullable: Boolean =
+      super.checkIfNullable && (this match {
+        case f: FunctionWithIdentifier
+            if f.identifier.functions.size > 1 && f.identifier.functions.reverse.headOption.exists(
+              !_.equals(this)
+            ) =>
+          false
+        case _ =>
+          true
+      })
+
+    def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      context match {
+        case Some(ctx) =>
+          val p = painless(context)
+          if (p.startsWith(".") && base.nonEmpty) { // method call
+            ctx.find(base) match {
+              case Some(param) =>
+                param.addPainlessMethod(p)
+                base
+              case _ =>
+                s"$base$p"
+            }
+          } else
+            p
+        case None =>
+          if (checkIfNullable && base.nonEmpty)
+            s"(def e$idx = $base; e$idx != null ? e$idx${painless(context)} : null)"
+          else
+            s"$base${painless(context)}"
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.bridge
 
+import app.softnetwork.elastic.sql.PainlessContext
 import app.softnetwork.elastic.sql.query.{
   Asc,
   Bucket,
@@ -104,8 +105,9 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val scriptSrc = identifier.painless()
-        val script = Script(scriptSrc).lang("painless")
+        val context = PainlessContext()
+        val scriptSrc = identifier.painless(Some(context))
+        val script = Script(s"$context$scriptSrc").lang("painless")
         buildScript(aggName, script)
       } else {
         buildField(aggName, sourceField)
@@ -142,7 +144,7 @@ object ElasticAggregation {
                 Array.empty
               ).copy(
               scripts = th.fields.filter(_.isScriptField).map(f =>
-                f.sourceField -> Script(f.painless()).lang("painless")
+                f.sourceField -> Script(f.painless(None)).lang("painless")
               ).toMap
             )
               .size(limit) sortBy th.orderBy.sorts.map(sort =>

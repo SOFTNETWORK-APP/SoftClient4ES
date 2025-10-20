@@ -1,7 +1,31 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Alias, DateMathRounding, Expr, PainlessScript, TokenRegex}
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
+import app.softnetwork.elastic.sql.{
+  Alias,
+  DateMathRounding,
+  Expr,
+  Identifier,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex
+}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 
 package object convert {
 
@@ -19,12 +43,36 @@ package object convert {
 
     //override def nullable: Boolean = value.nullable
 
-    override def painless(): String = SQLTypeUtils.coerce(value, targetType)
+    override def painless(context: Option[PainlessContext] = None): String =
+      SQLTypeUtils.coerce(value, targetType, context)
 
-    override def toPainless(base: String, idx: Int): String = {
-      val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable)
+    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      context match {
+        case Some(ctx) =>
+          value match {
+            case _: Identifier =>
+              inputType match {
+                case SQLTypes.Any =>
+                  ctx.find(base) match {
+                    case Some(identifier) =>
+                      outputType match {
+                        case SQLTypes.Date =>
+                          identifier.addPainlessMethod(".toLocalDate()")
+                        case SQLTypes.Time =>
+                          identifier.addPainlessMethod(".toLocalTime()")
+                        case _ => // do nothing
+                      }
+                    case _ => // do nothing
+                  }
+                case _ => // do nothing
+              }
+            case _ => // do nothing
+          }
+        case _ => // do nothing
+      }
+      val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
-      val retWithBrackets = if (bloc) ret else s"{ return $ret; }"
+      val retWithBrackets = if (bloc) ret else s"{ $ret }"
       if (safe) s"try $retWithBrackets catch (Exception e) { return null; }"
       else ret
     }

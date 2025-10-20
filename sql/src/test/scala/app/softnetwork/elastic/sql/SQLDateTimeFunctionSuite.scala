@@ -4,7 +4,6 @@ import org.scalatest.funsuite.AnyFunSuite
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.time._
 import app.softnetwork.elastic.sql.time._
-import TimeField._
 import app.softnetwork.elastic.sql.`type`.SQLType
 
 class SQLDateTimeFunctionSuite extends AnyFunSuite {
@@ -40,7 +39,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
     require(transforms.nonEmpty, "No transforms provided")
 
     val initial: (String, SQLType) =
-      (transforms.head.toPainless(base, 0), transforms.head.outputType.asInstanceOf[SQLType])
+      (transforms.head.toPainless(base, 0, None), transforms.head.outputType.asInstanceOf[SQLType])
 
     val (finalExpr, _) = transforms.tail.foldLeft(initial) {
       case ((expr, currentType), t: FunctionN[_, _]) =>
@@ -49,7 +48,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
             s"Type mismatch: expected ${currentType.getClass.getSimpleName}, got ${t.inputType.getClass.getSimpleName}"
           )
         }
-        (t.toPainless(expr, 0), t.outputType.asInstanceOf[SQLType])
+        (t.toPainless(expr, 0, None), t.outputType.asInstanceOf[SQLType])
     }
 
     finalExpr
@@ -81,9 +80,6 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
     val names = chain.map(_.sql).mkString(" -> ")
     test(s"Valid chain $idx: $names") {
       val chained = chainTransformsTyped(baseDate, chain)
-      val expected = chain.reverse.tail.foldLeft(chain.last.toPainless(baseDate, 0)) { (expr, f) =>
-        f.toPainless(expr, 0)
-      }
       // On ne teste que la génération de code Painless sans évaluer le résultat
       assert(chained.nonEmpty)
     }
@@ -92,7 +88,7 @@ class SQLDateTimeFunctionSuite extends AnyFunSuite {
   // Test simple pour chaque fonction individuelle
   transformFunctions.foreach { f =>
     test(s"Single transformation ${f.sql}") {
-      val result = f.toPainless(baseDate, 0)
+      val result = f.toPainless(baseDate, 0, None)
       assert(result.nonEmpty)
     }
   }

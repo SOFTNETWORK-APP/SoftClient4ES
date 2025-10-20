@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.SQLTypes
@@ -70,7 +86,7 @@ object MetricSelectorScript {
     case Predicate(left, _, right, _, _) =>
       extractMetricsPath(left) ++ extractMetricsPath(right)
     case relation: ElasticRelation => extractMetricsPath(relation.criteria)
-    case _: MatchCriteria          => Map.empty //MATCH is not supported in bucket_selector
+    case _: MultiMatchCriteria     => Map.empty //MATCH is not supported in bucket_selector
     case e: Expression if e.aggregation =>
       import e._
       maybeValue match {
@@ -85,7 +101,7 @@ object MetricSelectorScript {
       val leftStr = metricSelector(left)
       val rightStr = metricSelector(right)
       val opStr = op match {
-        case AND | OR => op.painless()
+        case AND | OR => op.painless(None)
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
       }
       val not = maybeNot.nonEmpty
@@ -96,10 +112,10 @@ object MetricSelectorScript {
 
     case relation: ElasticRelation => metricSelector(relation.criteria)
 
-    case _: MatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
+    case _: MultiMatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
 
     case e: Expression if e.aggregation =>
-      val painless = e.painless()
+      val painless = e.painless(None)
       e.maybeValue match {
         case Some(value) if e.operator.isInstanceOf[ComparisonOperator] =>
           value.out match { // compare epoch millis

@@ -1,6 +1,22 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.`type`
 
-import app.softnetwork.elastic.sql.PainlessScript
+import app.softnetwork.elastic.sql.{Identifier, LiteralParam, PainlessContext, PainlessScript}
 import app.softnetwork.elastic.sql.`type`.SQLTypes._
 
 object SQLTypeUtils {
@@ -87,14 +103,39 @@ object SQLTypeUtils {
     SQLTypes.Any
   }
 
-  def coerce(in: PainlessScript, to: SQLType): String = {
-    val expr = in.painless
+  def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
+    context match {
+      case Some(_) =>
+        in match {
+          case identifier: Identifier =>
+            identifier.baseType match {
+              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                to match {
+                  case SQLTypes.Date =>
+                    identifier.addPainlessMethod(".toLocalDate()")
+                  case SQLTypes.Time =>
+                    identifier.addPainlessMethod(".toLocalTime()")
+                  case _ => // do nothing
+                }
+              case _ => // do nothing
+            }
+          case _ => // do nothing
+        }
+      case _ => // do nothing
+    }
+    val expr = in.painless(context)
     val from = in.baseType
     val nullable = in.nullable
-    coerce(expr, from, to, nullable)
+    coerce(expr, from, to, nullable, context)
   }
 
-  def coerce(expr: String, from: SQLType, to: SQLType, nullable: Boolean): String = {
+  def coerce(
+    expr: String,
+    from: SQLType,
+    to: SQLType,
+    nullable: Boolean,
+    context: Option[PainlessContext]
+  ): String = {
     val ret = {
       (from, to) match {
         // ---- DATE & TIME ----
@@ -149,12 +190,52 @@ object SQLTypeUtils {
 
         // ---- VARCHAR -> TEMPORAL ----
         case (SQLTypes.Varchar, SQLTypes.Date) =>
-          s"LocalDate.parse($expr, DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
+          context match {
+            case Some(ctx) =>
+              ctx.addParam(
+                LiteralParam(s"LocalDate.parse($expr, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))")
+              ) match {
+                case Some(p) => return p
+                case None    => // continue
+              }
+            case None => // continue
+          }
+          s"LocalDate.parse($expr, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
         case (SQLTypes.Varchar, SQLTypes.Time) =>
-          s"LocalTime.parse($expr, DateTimeFormatter.ofPattern('HH:mm:ss'))"
+          context match {
+            case Some(ctx) =>
+              ctx.addParam(
+                LiteralParam(s"LocalTime.parse($expr, DateTimeFormatter.ofPattern(\"HH:mm:ss\"))")
+              ) match {
+                case Some(p) => return p
+                case None    => // continue
+              }
+            case None => // continue
+          }
+          s"LocalTime.parse($expr, DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
         case (SQLTypes.Varchar, SQLTypes.DateTime) =>
-          s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
+          context match {
+            case Some(ctx) =>
+              ctx.addParam(
+                LiteralParam(s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)")
+              ) match {
+                case Some(p) => return p
+                case None    => // continue
+              }
+            case None => // continue
+          }
+          s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
         case (SQLTypes.Varchar, SQLTypes.Timestamp) =>
+          context match {
+            case Some(ctx) =>
+              ctx.addParam(
+                LiteralParam(s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)")
+              ) match {
+                case Some(p) => return p
+                case None    => // continue
+              }
+            case None => // continue
+          }
           s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)"
 
         // ---- IDENTITY ----

@@ -1,7 +1,23 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.parser.function
 
 import app.softnetwork.elastic.sql.{function, Identifier, StringValue}
-import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLNumeric, SQLTemporal}
+import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLNumeric, SQLTemporal, SQLTypes}
 import app.softnetwork.elastic.sql.function.{
   BinaryFunction,
   FunctionWithIdentifier,
@@ -83,7 +99,9 @@ package object time {
 
     def last_day: Parser[DateFunction with FunctionWithIdentifier] =
       LastDayOfMonth.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
-        case _ ~ _ ~ i ~ _ => LastDayOfMonth(i)
+        case _ ~ _ ~ i ~ _ =>
+          i.cast(SQLTypes.Date)
+          LastDayOfMonth(i)
       }
 
     def date_function: PackratParser[DateFunction with FunctionWithIdentifier] =
@@ -173,14 +191,21 @@ package object time {
 
     import TimeField._
 
+    def day_of_week_tr: PackratParser[FunctionWithIdentifier] =
+      DAY_OF_WEEK.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
+        case _ ~ _ ~ i ~ _ => new DayOfWeek(i)
+      }
+
+    def day_of_week_identifier: PackratParser[Identifier] = day_of_week_tr ^^ { dw =>
+      dw.identifier.withFunctions(dw +: dw.identifier.functions)
+    }
+
     def year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       YEAR.regex ^^ (_ => new Year)
     def month_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       MONTH_OF_YEAR.regex ^^ (_ => new MonthOfYear)
     def day_of_month_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       DAY_OF_MONTH.regex ^^ (_ => new DayOfMonth)
-    def day_of_week_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
-      DAY_OF_WEEK.regex ^^ (_ => new DayOfWeek)
     def day_of_year_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
       DAY_OF_YEAR.regex ^^ (_ => new DayOfYear)
     def hour_of_day_tr: PackratParser[TransformFunction[SQLTemporal, SQLNumeric]] =
@@ -210,7 +235,6 @@ package object time {
       year_tr |
       month_of_year_tr |
       day_of_month_tr |
-      day_of_week_tr |
       day_of_year_tr |
       hour_of_day_tr |
       minute_of_hour_tr |
@@ -232,6 +256,7 @@ package object time {
       dateTimeFunctionWithIdentifier |
       date_diff_identifier |
       date_trunc_identifier |
+      day_of_week_identifier |
       extract_identifier) ~ rep(intervalFunction) ^^ { case i ~ f =>
         i.withFunctions(f ++ i.functions)
       }

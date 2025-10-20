@@ -28,7 +28,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   "SQLQuery" should "perform native count" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(t.id) c2 from Table t where t.nom = \"Nom\"")
+      SQLQuery("select count(t.id) c2 from Table t where t.nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -64,7 +64,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform count distinct" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = \"Nom\"")
+      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -101,7 +101,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested count" in {
     val results: Seq[ElasticAggregation] =
       SQLQuery(
-        "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = \"Nom\""
+        "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = 'Nom'"
       )
     results.size shouldBe 1
     val result = results.head
@@ -719,29 +719,106 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        "path": "products"
         |      },
         |      "aggs": {
-        |        "cat": {
-        |          "terms": {
-        |            "field": "products.category.keyword"
+        |        "filtered_inner_products": {
+        |          "filter": {
+        |            "bool": {
+        |              "filter": [
+        |                {
+        |                  "bool": {
+        |                    "must_not": [
+        |                      {
+        |                        "term": {
+        |                          "products.category": {
+        |                            "value": "coffee"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "match_all": {}
+        |                },
+        |                {
+        |                  "bool": {
+        |                    "should": [
+        |                      {
+        |                        "match": {
+        |                          "products.name": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.description": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      },
+        |                      {
+        |                        "match": {
+        |                          "products.ingredients": {
+        |                            "query": "lasagnes"
+        |                          }
+        |                        }
+        |                      }
+        |                    ]
+        |                  }
+        |                },
+        |                {
+        |                  "range": {
+        |                    "products.stock": {
+        |                      "gt": 0
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.upForSale": {
+        |                      "value": true
+        |                    }
+        |                  }
+        |                },
+        |                {
+        |                  "term": {
+        |                    "products.deleted": {
+        |                      "value": false
+        |                    }
+        |                  }
+        |                }
+        |              ]
+        |            }
         |          },
         |          "aggs": {
-        |            "min_price": {
-        |              "min": {
-        |                "field": "products.price"
-        |              }
-        |            },
-        |            "max_price": {
-        |              "max": {
-        |                "field": "products.price"
-        |              }
-        |            },
-        |            "having_filter": {
-        |              "bucket_selector": {
-        |                "buckets_path": {
-        |                  "min_price": "inner_products>min_price",
-        |                  "max_price": "inner_products>max_price"
+        |            "cat": {
+        |              "terms": {
+        |                "field": "products.category.keyword"
+        |              },
+        |              "aggs": {
+        |                "min_price": {
+        |                  "min": {
+        |                    "field": "products.price"
+        |                  }
         |                },
-        |                "script": {
-        |                  "source": "params.min_price > 5.0 && params.max_price < 50.0"
+        |                "max_price": {
+        |                  "max": {
+        |                    "field": "products.price"
+        |                  }
+        |                },
+        |                "having_filter": {
+        |                  "bucket_selector": {
+        |                    "buckets_path": {
+        |                      "min_price": "inner_products>min_price",
+        |                      "max_price": "inner_products>max_price"
+        |                    },
+        |                    "script": {
+        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+        |                    }
+        |                  }
         |                }
         |              }
         |            }
@@ -773,7 +850,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "ct": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.minus(35, ChronoUnit.MINUTES) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); param1"
         |      }
         |    }
         |  },
@@ -784,7 +861,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("if\\(", "if (")
         .replaceAll("!=null", " != null")
@@ -965,7 +1042,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle group by with having and date time functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHavingAndDateTimeFunctions.replace("GROUP BY 3, 2", "GROUP BY 3, 2"))
+      SQLQuery(groupByWithHavingAndDateTimeFunctions)
     val query = select.query
     println(query)
     query shouldBe
@@ -1026,7 +1103,76 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(">", " > ")
   }
 
-  it should "handle parse_date function" in {
+  it should "handle group by index" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(
+        groupByWithHavingAndDateTimeFunctions.replace("GROUP BY Country, City", "GROUP BY 3, 2")
+      )
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": true,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country.keyword",
+        |        "exclude": [
+        |          "USA"
+        |        ],
+        |        "order": {
+        |          "_key": "asc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "City": {
+        |          "terms": {
+        |            "field": "City.keyword",
+        |            "exclude": [
+        |              "Berlin"
+        |            ]
+        |          },
+        |          "aggs": {
+        |            "cnt": {
+        |              "value_count": {
+        |                "field": "CustomerID"
+        |              }
+        |            },
+        |            "lastSeen": {
+        |              "max": {
+        |                "field": "createdAt"
+        |              }
+        |            },
+        |            "having_filter": {
+        |              "bucket_selector": {
+        |                "buckets_path": {
+        |                  "cnt": "cnt",
+        |                  "lastSeen": "lastSeen"
+        |                },
+        |                "script": {
+        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+        |                }
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s", "")
+        .replaceAll("ChronoUnit", " ChronoUnit")
+        .replaceAll("==", " == ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll(">", " > ")
+  }
+
+  it should "handle date_parse function" in {
     val select: ElasticSearchRequest =
       SQLQuery(dateParse)
     val query = select.query
@@ -1065,7 +1211,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(e0, LocalDate::from) : null)"
+        |              "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
         |            }
         |          }
         |        }
@@ -1074,7 +1220,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("if\\(", "if (")
         .replaceAll("=\\(", " = (")
@@ -1084,6 +1230,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("return", " return ")
         .replaceAll(";", "; ")
         .replaceAll(",ChronoUnit", ", ChronoUnit")
+        .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("==", " == ")
         .replaceAll("!=", " != ")
         .replaceAll("&&", " && ")
@@ -1092,7 +1240,106 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(",LocalDate", ", LocalDate")
   }
 
-  it should "handle parse_datetime function" in {
+  it should "handle date_format function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateFormat)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "script_fields": {
+        |    "y": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "q": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
+        |      }
+        |    },
+        |    "m": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "w": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "d": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "h": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "m2": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    },
+        |    "lastSeen": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "identifier"
+        |    ]
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s", "")
+        .replaceAll("defp", "def p")
+        .replaceAll("defe", "def e")
+        .replaceAll("if\\(", "if (")
+        .replaceAll("=\\(", " = (")
+        .replaceAll("\\?", " ? ")
+        .replaceAll(":null", " : null")
+        .replaceAll("null:", "null : ")
+        .replaceAll("return", " return ")
+        .replaceAll(";", "; ")
+        .replaceAll(",ChronoUnit", ", ChronoUnit")
+        .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll("==", " == ")
+        .replaceAll("-(\\d)", " - $1")
+        .replaceAll("\\+", " + ")
+        .replaceAll("/", " / ")
+        .replaceAll("\\*", " * ")
+        .replaceAll("=p", " = p")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll("\\|\\|", " || ")
+        .replaceAll(">", " > ")
+        .replaceAll(",LocalDate", ", LocalDate")
+  }
+
+  it should "handle datetime_parse function" in { // #25
     val select: ElasticSearchRequest =
       SQLQuery(dateTimeParse)
     val query = select.query
@@ -1131,7 +1378,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def e2 = (def e1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX').parse(e0, ZonedDateTime::from) : null); e1 != null ? e1.truncatedTo(ChronoUnit.MINUTES) : null); e2 != null ? e2.get(ChronoField.YEAR) : null)"
+        |              "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
         |            }
         |          }
         |        }
@@ -1140,7 +1387,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("if\\(", "if (")
         .replaceAll("=\\(", " = (")
@@ -1155,8 +1402,64 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("\\|\\|", " || ")
         .replaceAll(">", " > ")
         .replaceAll(",ZonedDateTime", ", ZonedDateTime")
+        .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("SSSXXX", "SSS XXX")
         .replaceAll("ddHH", "dd HH")
+  }
+
+  it should "handle datetime_format function" in {
+    val select: ElasticSearchRequest =
+      SQLQuery(dateTimeFormat)
+    val query = select.query
+    println(query)
+    query shouldBe
+      """{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "script_fields": {
+        |    "lastSeen": {
+        |      "script": {
+        |        "lang": "painless",
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss XXX\"); (param1 == null) ? null : param2.format(param1)"
+        |      }
+        |    }
+        |  },
+        |  "_source": {
+        |    "includes": [
+        |      "identifier"
+        |    ]
+        |  }
+        |}""".stripMargin
+        .replaceAll("\\s", "")
+        .replaceAll("defp", "def p")
+        .replaceAll("defe", "def e")
+        .replaceAll("if\\(", "if (")
+        .replaceAll("=\\(", " = (")
+        .replaceAll("\\?", " ? ")
+        .replaceAll(":null", " : null")
+        .replaceAll("null:", "null : ")
+        .replaceAll("return", " return ")
+        .replaceAll(";", "; ")
+        .replaceAll("==", " == ")
+        .replaceAll("!=", " != ")
+        .replaceAll("&&", " && ")
+        .replaceAll("\\|\\|", " || ")
+        .replaceAll(">", " > ")
+        .replaceAll(",ZonedDateTime", ", ZonedDateTime")
+        .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll("SSSXXX", "SSS XXX")
+        .replaceAll("ddHH", "dd HH")
+        .replaceAll("XXX", " XXX")
   }
 
   it should "handle date_diff function as script field" in {
@@ -1173,7 +1476,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "diff": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
+        |        "source": "def param1 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def param2 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param2)"
         |      }
         |    }
         |  },
@@ -1184,7 +1487,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defa", "def a")
         .replaceAll("if\\(", "if (")
@@ -1193,7 +1496,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(":null", " : null")
         .replaceAll("null:", "null : ")
         .replaceAll("return", " return ")
-        .replaceAll(",a", ", a")
+        .replaceAll(",p", ", p")
         .replaceAll(";", "; ")
         .replaceAll("==", " == ")
         .replaceAll("!=", " != ")
@@ -1223,7 +1526,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def arg0 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def arg1 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm:ss.SSS XXX').parse(e0, ZonedDateTime::from) : null); (arg0 == null || arg1 == null) ? null : ChronoUnit.DAYS.between(arg0, arg1))"
+        |              "source": "def param1 = (!doc.containsKey('updatedAt') || doc['updatedAt'].empty ? null : doc['updatedAt'].value); def param2 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); def param3 = (param2 == null) ? null : ZonedDateTime.parse(param2, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param3)"
         |            }
         |          }
         |        }
@@ -1232,7 +1535,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defa", "def a")
         .replaceAll("if\\(", "if (")
@@ -1241,13 +1544,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(":null", " : null")
         .replaceAll("null:", "null : ")
         .replaceAll("return", " return ")
-        .replaceAll(",a", ", a")
+        .replaceAll(",p", ", p")
         .replaceAll(";", "; ")
         .replaceAll("==", " == ")
         .replaceAll("!=", " != ")
         .replaceAll("&&", " && ")
         .replaceAll("\\|\\|", " || ")
-        .replaceAll("ZonedDateTime", " ZonedDateTime")
+        .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
         .replaceAll("SSSXXX", "SSS XXX")
         .replaceAll("ddHH", "dd HH")
   }
@@ -1274,7 +1578,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.plus(10, ChronoUnit.DAYS) : null)"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)); param1"
         |      }
         |    }
         |  },
@@ -1285,7 +1589,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defs", "def s")
         .replaceAll("if\\(", "if (")
@@ -1303,7 +1607,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
-  it should "handle date_sub function as script field" in {
+  it should "handle date_sub function as script field" in { // 30
     val select: ElasticSearchRequest =
       SQLQuery(dateSub)
     val query = select.query
@@ -1325,7 +1629,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.minus(10, ChronoUnit.DAYS) : null)"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)); param1"
         |      }
         |    }
         |  },
@@ -1336,7 +1640,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defs", "def s")
         .replaceAll("if\\(", "if (")
@@ -1376,7 +1680,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.plus(10, ChronoUnit.DAYS) : null)"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)); param1"
         |      }
         |    }
         |  },
@@ -1387,7 +1691,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defs", "def s")
         .replaceAll("if\\(", "if (")
@@ -1427,7 +1731,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); e0 != null ? e0.minus(10, ChronoUnit.DAYS) : null)"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)); param1"
         |      }
         |    }
         |  },
@@ -1438,7 +1742,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defs", "def s")
         .replaceAll("if\\(", "if (")
@@ -1470,20 +1774,20 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "flag": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); e0 == null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); param1 == null"
         |      }
         |    }
         |  },
         |  "_source": true
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defs", "def s")
         .replaceAll("if\\(", "if (")
         .replaceAll("=\\(", " = (")
         .replaceAll("\\?", " ? ")
-        .replaceAll(":null", " : null")
+        .replaceAll(":false", " : false")
         .replaceAll("null:", "null : ")
         .replaceAll("return", " return ")
         .replaceAll("between\\(s,", "between(s, ")
@@ -1508,7 +1812,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "flag": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); param1 != null"
         |      }
         |    }
         |  },
@@ -1519,13 +1823,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defs", "def s")
         .replaceAll("if\\(", "if (")
         .replaceAll("=\\(", " = (")
         .replaceAll("\\?", " ? ")
-        .replaceAll(":null", " : null")
+        .replaceAll(":true", " : true")
         .replaceAll("null:", "null : ")
         .replaceAll("return", " return ")
         .replaceAll("between\\(s,", "between(s, ")
@@ -1608,7 +1912,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "{ def v0 = (def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.minus(35, ChronoUnit.MINUTES) : null);if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().atStartOfDay(ZoneId.of('Z')); }"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param1 != null ? param1 : param2"
         |      }
         |    }
         |  },
@@ -1619,6 +1923,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
+        .replaceAll(";defp", "; defp")
+        .replaceAll("defp", "def p")
         .replaceAll("defv", " def v")
         .replaceAll("defe", "def e")
         .replaceAll("if\\(", "if (")
@@ -1627,6 +1933,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(":null", " : null")
         .replaceAll(";}", "; }")
         .replaceAll(";e", "; e")
+        .replaceAll(";v", "; v")
+        .replaceAll(":p", " : p")
+        .replaceAll(";p", "; p")
         .replaceAll(":null", " : null")
         .replaceAll("null:", "null : ")
         .replaceAll("return", " return ")
@@ -1635,6 +1944,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("&&", " && ")
         .replaceAll("\\|\\|", " || ")
         .replaceAll("ChronoUnit", " ChronoUnit")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+        .replaceAll(":ZonedDateTime", " : ZonedDateTime")
   }
 
   it should "handle nullif function as script field" in {
@@ -1651,7 +1962,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "{ def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from).minus(2, ChronoUnit.DAYS) ? null : arg0));if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); }"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param3 != null ? param3 : param4"
         |      }
         |    }
         |  },
@@ -1662,6 +1973,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
+        .replaceAll("defp", "def p")
         .replaceAll("defv", " def v")
         .replaceAll("defa", "def a")
         .replaceAll("if\\(", "if (")
@@ -1672,6 +1984,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("between\\(s,", "between(s, ")
         .replaceAll(";def", "; def")
         .replaceAll(";return", "; return")
+        .replaceAll(";v", "; v")
+        .replaceAll("(\\d)=p", "$1 = p")
+        .replaceAll(";p", "; p")
+        .replaceAll(":p", " : p")
         .replaceAll("returnv", " return v")
         .replaceAll("returne", " return e")
         .replaceAll(";}", "; }")
@@ -1683,8 +1999,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(";\\s\\s", "; ")
         .replaceAll("ChronoUnit", " ChronoUnit")
         .replaceAll(",LocalDate", ", LocalDate")
+        .replaceAll("=LocalDate", " = LocalDate")
         .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
-        .replaceAll("ZonedDateTime", " ZonedDateTime")
+        .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+        .replaceAll(":ZonedDateTime", " : ZonedDateTime")
   }
 
   it should "handle cast function as script field" in {
@@ -1701,19 +2020,19 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "try { def v0 = ((def arg0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (arg0 == null) ? null : arg0 == DateTimeFormatter.ofPattern('yyyy-MM-dd').parse(\"2025-09-11\", LocalDate::from) ? null : arg0));if (v0 != null) return v0; return ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS).toInstant().toEpochMilli(); } catch (Exception e) { return null; }"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { param3 != null ? param3 : param4 } catch (Exception e) { return null; }"
         |      }
         |    },
         |    "c2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "ZonedDateTime.now(ZoneId.of('Z')).toInstant().toEpochMilli()"
+        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toInstant().toEpochMilli()"
         |      }
         |    },
         |    "c3": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()"
+        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toLocalDate()"
         |      }
         |    },
         |    "c4": {
@@ -1725,7 +2044,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c5": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd'))"
+        |        "source": "def param1 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1"
         |      }
         |    }
         |  },
@@ -1736,6 +2055,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
+        .replaceAll(";defp", "; defp")
+        .replaceAll("defp", "def p")
         .replaceAll("defv", " def v")
         .replaceAll("defa", "def a")
         .replaceAll("if\\(", "if (")
@@ -1759,6 +2080,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("\\}catch", "} catch ")
         .replaceAll("Exceptione\\)", "Exception e) ")
         .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
+        .replaceAll("(\\d)=p", "$1 = p")
+        .replaceAll(";p", "; p")
+        .replaceAll(":p", " : p")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+        .replaceAll("=LocalDate", " = LocalDate")
+        .replaceAll(":ZonedDateTime", " : ZonedDateTime")
+        .replaceAll("try \\{", "try { ")
+        .replaceAll("} catch", " } catch")
   }
 
   it should "handle case function as script field" in {
@@ -1775,7 +2104,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "{ if (def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)) return left; if (def left = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); left != null) return left.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+        |        "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value.plus(2, ChronoUnit.DAYS)); def param5 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param4 : param5"
         |      }
         |    }
         |  },
@@ -1786,7 +2115,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defd", " def d")
         .replaceAll("defe", " def e")
         .replaceAll("defl", " def l")
@@ -1809,6 +2138,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll(">", " > ")
         .replaceAll("if \\(\\s*def", "if (def")
         .replaceAll("ChronoUnit", " ChronoUnit")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+        .replaceAll("=p", " = p")
+        .replaceAll(":p", " : p")
   }
 
   it should "handle case with expression function as script field" in {
@@ -1825,7 +2157,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "{ def expr = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def e0 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); def val0 = e0 != null ? e0.minus(3, ChronoUnit.DAYS).atStartOfDay(ZoneId.of('Z')) : null; if (expr == val0) return e0; def val1 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value); if (expr == val1) return val1.plus(2, ChronoUnit.DAYS); def dval = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); return dval; }"
+        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (!doc.containsKey('lastSeen') || doc['lastSeen'].empty ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4"
         |      }
         |    }
         |  },
@@ -1836,7 +2168,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defd", " def d")
         .replaceAll("defe", " def e")
         .replaceAll("defl", " def l")
@@ -1861,6 +2193,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("ChronoUnit", " ChronoUnit")
         .replaceAll("=ZonedDateTime", " = ZonedDateTime")
         .replaceAll("=e", " = e")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
+        .replaceAll("=p", " = p")
+        .replaceAll(":p", " : p")
   }
 
   it should "handle extract function as script field" in {
@@ -1877,98 +2212,98 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "dom": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_MONTH) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "dow": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_WEEK) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_WEEK)); param1"
         |      }
         |    },
         |    "doy": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MONTH_OF_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.HOUR_OF_DAY) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MINUTE_OF_HOUR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.NANO_OF_SECOND) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MICRO_OF_SECOND) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MILLI_OF_SECOND) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.EPOCH_DAY) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.OFFSET_SECONDS) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
         |  "_source": true
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defe", "def e")
+        .replaceAll("defp", "def p")
         .replaceAll("if\\(", "if (")
         .replaceAll("=\\(", " = (")
         .replaceAll("\\?", " ? ")
@@ -2001,7 +2336,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * (ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR) - 10)) > 10000"
+        |              "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000"
         |            }
         |          }
         |        }
@@ -2012,37 +2347,37 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "add": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 + 1)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : (param1 + 1)"
         |      }
         |    },
         |    "sub": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 - 1)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : (param1 - 1)"
         |      }
         |    },
         |    "mul": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 * 2)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : (param1 * 2)"
         |      }
         |    },
         |    "div": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 / 2)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : (param1 / 2)"
         |      }
         |    },
         |    "mod": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def lv0 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); ( lv0 == null ) ? null : (lv0 % 2)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : (param1 % 2)"
         |      }
         |    },
         |    "identifier_mul_identifier2_minus_10": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def lv0 = ((def lv1 = ((!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value)); def rv1 = ((!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value)); ( lv1 == null || rv1 == null ) ? null : (lv1 * rv1))); ( lv0 == null ) ? null : (lv0 - 10)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); def lv0 = ((param1 == null || param2 == null) ? null : (param1 * param2)); (lv0 == null) ? null : (lv0 - 10)"
         |      }
         |    }
         |  },
@@ -2053,12 +2388,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s", "")
-        .replaceAll("defv", "def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
         .replaceAll("defr", "def r")
         .replaceAll("if\\(", "if (")
         .replaceAll("=\\(", " = (")
+        // .replaceAll("(\\d)=", "$1 =")
+        .replaceAll("=ZonedDateTime", " = ZonedDateTime")
         .replaceAll("\\?", " ? ")
         .replaceAll(":null", " : null")
         .replaceAll("null:", "null : ")
@@ -2088,7 +2425,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.sqrt(arg0)) > 100.0"
+        |              "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.sqrt(param1) > 100.0"
         |            }
         |          }
         |        }
@@ -2099,109 +2436,109 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "abs_identifier_plus_1_0_mul_2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "((def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.abs(arg0)) + 1.0) * ((double) 2)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); ((param1 == null) ? null : Math.abs(param1) + 1.0) * ((double) 2)"
         |      }
         |    },
         |    "ceil_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.ceil(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.ceil(param1)"
         |      }
         |    },
         |    "floor_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.floor(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.floor(param1)"
         |      }
         |    },
         |    "sqrt_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.sqrt(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.sqrt(param1)"
         |      }
         |    },
         |    "exp_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.exp(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.exp(param1)"
         |      }
         |    },
         |    "log_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.log(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.log(param1)"
         |      }
         |    },
         |    "log10_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.log10(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.log10(param1)"
         |      }
         |    },
         |    "pow_identifier_3": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.pow(arg0, 3))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.pow(param1, 3)"
         |      }
         |    },
         |    "round_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : (def p = Math.pow(10, 0); Math.round((arg0 * p) / p)))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
         |      }
         |    },
         |    "round_identifier_2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : (def p = Math.pow(10, 2); Math.round((arg0 * p) / p)))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
         |      }
         |    },
         |    "sign_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); arg0 != null ? (arg0 > 0 ? 1 : (arg0 < 0 ? -1 : 0)) : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : (param1 > 0 ? 1 : (param1 < 0 ? -1 : 0))"
         |      }
         |    },
         |    "cos_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.cos(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.cos(param1)"
         |      }
         |    },
         |    "acos_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.acos(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.acos(param1)"
         |      }
         |    },
         |    "sin_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.sin(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.sin(param1)"
         |      }
         |    },
         |    "asin_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.asin(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.asin(param1)"
         |      }
         |    },
         |    "tan_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.tan(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.tan(param1)"
         |      }
         |    },
         |    "atan_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.atan(arg0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.atan(param1)"
         |      }
         |    },
         |    "atan2_identifier_3_0": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (arg0 == null) ? null : Math.atan2(arg0, 3.0))"
+        |        "source": "def param1 = (!doc.containsKey('identifier') || doc['identifier'].empty ? null : doc['identifier'].value); (param1 == null) ? null : Math.atan2(param1, 3.0)"
         |      }
         |    }
         |  },
@@ -2212,7 +2549,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defp", "def p")
         .replaceAll("if\\(", "if (")
@@ -2258,7 +2595,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def left = (def e1 = (def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.trim() : null); e1 != null ? e1.length() : null); left == null ? false : left > 10"
+        |              "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.trim().length() > 10"
         |            }
         |          }
         |        }
@@ -2269,85 +2606,85 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "len": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.length() : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.length()"
         |      }
         |    },
         |    "low": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.lower() : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.toLowerCase()"
         |      }
         |    },
         |    "upp": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.upper() : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.toUpperCase()"
         |      }
         |    },
         |    "sub": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.substring(1 - 1, Math.min(1 - 1 + 3, arg0.length())))"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(0, Math.min(3, param1.length()))"
         |      }
         |    },
         |    "tr": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.trim() : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.trim()"
         |      }
         |    },
         |    "ltr": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"^\\\\s+\",\"\") : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.replaceAll(\"^\\\\s+\",\"\")"
         |      }
         |    },
         |    "rtr": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); e0 != null ? e0.replaceAll(\"\\\\s+$\",\"\") : null)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.replaceAll(\"\\\\s+$\",\"\")"
         |      }
         |    },
         |    "con": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : String.valueOf(arg0) + \"_test\" + String.valueOf(1))"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : String.valueOf(param1) + \"_test\" + String.valueOf(1)"
         |      }
         |    },
         |    "l": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.substring(0, Math.min(5, arg0.length())))"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(0, Math.min(5, param1.length()))"
         |      }
         |    },
         |    "r": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : 3 == 0 ? \"\" : arg0.substring(arg0.length() - Math.min(3, arg0.length())))"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(param1.length() - Math.min(3, param1.length()))"
         |      }
         |    },
         |    "rep": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : arg0.replace(\"el\", \"le\"))"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.replace(\"el\", \"le\")"
         |      }
         |    },
         |    "rev": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : new StringBuilder(arg0).reverse().toString())"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : new StringBuilder(param1).reverse().toString()"
         |      }
         |    },
         |    "pos": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg1 == null) ? null : arg1.indexOf(\"soft\", 1 - 1) + 1)"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : param1.indexOf(\"soft\", 0) + 1"
         |      }
         |    },
         |    "reg": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (arg0 == null) ? null : java.util.regex.Pattern.compile(\"soft\", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE).matcher(arg0).find())"
+        |        "source": "def param1 = (!doc.containsKey('identifier2') || doc['identifier2'].empty ? null : doc['identifier2'].value); (param1 == null) ? null : java.util.regex.Pattern.compile(\"soft\", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE).matcher(param1).find()"
         |      }
         |    }
         |  },
@@ -2358,7 +2695,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -2415,7 +2752,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "hire_date": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(!doc.containsKey('hire_date') || doc['hire_date'].empty ? null : doc['hire_date'].value)"
+        |        "source": "def param1 = (!doc.containsKey('hire_date') || doc['hire_date'].empty ? null : doc['hire_date'].value.toLocalDate()); param1"
         |      }
         |    }
         |  },
@@ -2494,7 +2831,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -2538,7 +2875,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def e1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); e1.withDayOfMonth(e1.lengthOfMonth())).get(ChronoField.DAY_OF_MONTH) > 28"
+        |              "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toLocalDate().withDayOfMonth(param1.toLocalDate().lengthOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28"
         |            }
         |          }
         |        }
@@ -2549,7 +2886,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "ld": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e1 != null ? e1.withDayOfMonth(e1.lengthOfMonth()) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.toLocalDate()); (param1 == null) ? null : param1.withDayOfMonth(param1.lengthOfMonth())"
         |      }
         |    }
         |  },
@@ -2560,7 +2897,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -2605,98 +2942,98 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MONTH_OF_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "wd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_WEEK) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); (param1 == null) ? null : (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7"
         |      }
         |    },
         |    "yd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "d": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.DAY_OF_MONTH) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.HOUR_OF_DAY) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MINUTE_OF_HOUR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.SECOND_OF_MINUTE) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.NANO_OF_SECOND) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MICRO_OF_SECOND) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.MILLI_OF_SECOND) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.EPOCH_DAY) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(ChronoField.OFFSET_SECONDS) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def e0 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value); e0 != null ? e0.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR) : null)"
+        |        "source": "def param1 = (!doc.containsKey('createdAt') || doc['createdAt'].empty ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
         |  "_source": true
         |}""".stripMargin
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -2719,6 +3056,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("-", " - ")
         .replaceAll("\\*", " * ")
         .replaceAll("/", " / ")
+        .replaceAll("%", " % ")
         .replaceAll(">", " > ")
         .replaceAll("<", " < ")
         .replaceAll("!=", " != ")
@@ -2874,7 +3212,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left >= (def e2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+        |                    "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())) == false)"
         |                  }
         |                }
         |              },
@@ -2899,7 +3237,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -2964,7 +3302,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                        "script": {
         |                          "script": {
         |                            "lang": "painless",
-        |                            "source": "def left = (!doc.containsKey('comments.replies.lastUpdated') || doc['comments.replies.lastUpdated'].empty ? null : doc['comments.replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+        |                            "source": "def param1 = (!doc.containsKey('comments.replies.lastUpdated') || doc['comments.replies.lastUpdated'].empty ? null : doc['comments.replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
         |                          }
         |                        }
         |                      }
@@ -3007,7 +3345,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -3062,7 +3400,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    "script": {
         |                      "script": {
         |                        "lang": "painless",
-        |                        "source": "def left = (!doc.containsKey('replies.lastUpdated') || doc['replies.lastUpdated'].empty ? null : doc['replies.lastUpdated'].value); left == null ? false : left < (def e2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern('yyyy-MM-dd')); e2.withDayOfMonth(e2.lengthOfMonth()))"
+        |                        "source": "def param1 = (!doc.containsKey('replies.lastUpdated') || doc['replies.lastUpdated'].empty ? null : doc['replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
         |                      }
         |                    }
         |                  },
@@ -3117,7 +3455,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")
@@ -3169,7 +3507,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "def left = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value); left == null ? false : left < ZonedDateTime.now(ZoneId.of('Z')).toLocalDate()"
+        |                    "source": "def param1 = (!doc.containsKey('lastUpdated') || doc['lastUpdated'].empty ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param1 == null ? false : (param1.isBefore(param2))"
         |                  }
         |                }
         |              }
@@ -3221,7 +3559,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
         .replaceAll("\\s+", "")
-        .replaceAll("defv", " def v")
+        .replaceAll("defp", "def p")
         .replaceAll("defa", "def a")
         .replaceAll("defe", "def e")
         .replaceAll("defl", "def l")

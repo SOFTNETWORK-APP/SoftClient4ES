@@ -1,6 +1,29 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, Identifier, IntValue, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  Expr,
+  Identifier,
+  IntValue,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex
+}
 import app.softnetwork.elastic.sql.`type`.{
   SQLBigInt,
   SQLBool,
@@ -13,30 +36,36 @@ import app.softnetwork.elastic.sql.`type`.{
 package object string {
 
   sealed trait StringOp extends PainlessScript with TokenRegex {
-    override def painless(): String = s".${sql.toLowerCase()}()"
+    override def painless(context: Option[PainlessContext]): String = s".${sql.toLowerCase()}()"
   }
 
   case object Concat extends Expr("CONCAT") with StringOp {
-    override def painless(): String = " + "
+    override def painless(context: Option[PainlessContext]): String = " + "
   }
   case object Pipe extends Expr("\\|\\|") with StringOp {
-    override def painless(): String = " + "
+    override def painless(context: Option[PainlessContext]): String = " + "
   }
   case object Lower extends Expr("LOWER") with StringOp {
     override lazy val words: List[String] = List(sql, "LCASE")
+
+    override def painless(context: Option[PainlessContext]): String = s".toLowerCase()"
   }
   case object Upper extends Expr("UPPER") with StringOp {
     override lazy val words: List[String] = List(sql, "UCASE")
+
+    override def painless(context: Option[PainlessContext]): String = s".toUpperCase()"
   }
   case object Trim extends Expr("TRIM") with StringOp
   case object Ltrim extends Expr("LTRIM") with StringOp {
-    override def painless(): String = ".replaceAll(\"^\\\\s+\",\"\")"
+    override def painless(context: Option[PainlessContext]): String =
+      ".replaceAll(\"^\\\\s+\",\"\")"
   }
   case object Rtrim extends Expr("RTRIM") with StringOp {
-    override def painless(): String = ".replaceAll(\"\\\\s+$\",\"\")"
+    override def painless(context: Option[PainlessContext]): String =
+      ".replaceAll(\"\\\\s+$\",\"\")"
   }
   case object Substring extends Expr("SUBSTRING") with StringOp {
-    override def painless(): String = ".substring"
+    override def painless(context: Option[PainlessContext]): String = ".substring"
     override lazy val words: List[String] = List(sql, "SUBSTR")
   }
   case object LeftOp extends Expr("LEFT") with StringOp
@@ -47,22 +76,22 @@ package object string {
   }
   case object Replace extends Expr("REPLACE") with StringOp {
     override lazy val words: List[String] = List(sql, "STR_REPLACE")
-    override def painless(): String = ".replace"
+    override def painless(context: Option[PainlessContext]): String = ".replace"
   }
   case object Reverse extends Expr("REVERSE") with StringOp
   case object Position extends Expr("POSITION") with StringOp {
     override lazy val words: List[String] = List(sql, "STRPOS")
-    override def painless(): String = ".indexOf"
+    override def painless(context: Option[PainlessContext]): String = ".indexOf"
   }
 
   case object RegexpLike extends Expr("REGEXP_LIKE") with StringOp {
     override lazy val words: List[String] = List(sql, "REGEXP")
-    override def painless(): String = ".matches"
+    override def painless(context: Option[PainlessContext]): String = ".matches"
   }
 
   case class MatchFlags(flags: String) extends PainlessScript {
     override def sql: String = s"'$flags'"
-    override def painless(): String = flags.toCharArray
+    override def painless(context: Option[PainlessContext]): String = flags.toCharArray
       .map {
         case 'i' => "java.util.regex.Pattern.CASE_INSENSITIVE"
         case 'c' => "0"
@@ -88,22 +117,33 @@ package object string {
 
     def stringOp: StringOp
 
-    override def fun: Option[PainlessScript] = Some(stringOp)
-
     override def identifier: Identifier = Identifier(this)
 
-    override def toSQL(base: String): String = s"$sql($base)"
+    override def toSQL(base: String): String =
+      if (base.nonEmpty) s"$sql($base)"
+      else sql
 
     override def sql: String =
       if (args.isEmpty)
         s"${fun.map(_.sql).getOrElse("")}"
       else
-        super.sql
+        s"$stringOp(${args.map(_.sql).mkString(argsSeparator)})"
+
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      callArgs match {
+        case List(str) => s"$str${stringOp.painless(context)}"
+        case _         => throw new IllegalArgumentException(s"${stringOp.sql} requires 1 argument")
+      }
+    }
   }
 
-  case class StringFunctionWithOp(stringOp: StringOp) extends StringFunction[SQLVarchar] {
+  case class StringFunctionWithOp(str: PainlessScript, stringOp: StringOp)
+      extends StringFunction[SQLVarchar] {
     override def outputType: SQLVarchar = SQLTypes.Varchar
-    override def args: List[PainlessScript] = List.empty
+    override def args: List[PainlessScript] = List(str)
   }
 
   case class Substring(str: PainlessScript, start: Int, length: Option[Int])
@@ -116,15 +156,18 @@ package object string {
 
     override def nullable: Boolean = str.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
         // SUBSTRING(expr, start, length)
-        case List(arg0, arg1, arg2) =>
-          s"$arg0.substring($arg1 - 1, Math.min($arg1 - 1 + $arg2, $arg0.length()))"
+        case List(arg0, _, _) =>
+          s"$arg0.substring(${start - 1}, Math.min(${start - 1 + length.get}, $arg0.length()))"
 
         // SUBSTRING(expr, start)
         case List(arg0, arg1) =>
-          s"$arg0.substring(Math.min($arg1 - 1, $arg0.length() - 1))"
+          s"$arg0.substring(Math.min(${start - 1}, $arg0.length() - 1))"
 
         case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
       }
@@ -150,15 +193,24 @@ package object string {
 
     override def nullable: Boolean = values.exists(_.nullable)
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       if (callArgs.isEmpty)
         throw new IllegalArgumentException("CONCAT requires at least one argument")
       else
         callArgs.zipWithIndex
           .map { case (arg, idx) =>
-            SQLTypeUtils.coerce(arg, values(idx).baseType, SQLTypes.Varchar, nullable = false)
+            SQLTypeUtils.coerce(
+              arg,
+              values(idx).baseType,
+              SQLTypes.Varchar,
+              nullable = false,
+              context
+            )
           }
-          .mkString(stringOp.painless())
+          .mkString(stringOp.painless(context))
     }
 
     override def validate(): Either[String, Unit] =
@@ -172,10 +224,10 @@ package object string {
     override def toSQL(base: String): String = sql
   }
 
-  case class Length() extends StringFunction[SQLBigInt] {
+  case class Length(str: PainlessScript) extends StringFunction[SQLBigInt] {
     override def outputType: SQLBigInt = SQLTypes.BigInt
     override def stringOp: StringOp = Length
-    override def args: List[PainlessScript] = List.empty
+    override def args: List[PainlessScript] = List(str)
   }
 
   case class LeftFunction(str: PainlessScript, length: Int) extends StringFunction[SQLVarchar] {
@@ -186,7 +238,10 @@ package object string {
 
     override def nullable: Boolean = str.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
         case List(arg0, arg1) =>
           s"$arg0.substring(0, Math.min($arg1, $arg0.length()))"
@@ -211,10 +266,14 @@ package object string {
 
     override def nullable: Boolean = str.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
         case List(arg0, arg1) =>
-          s"""$arg1 == 0 ? "" : $arg0.substring($arg0.length() - Math.min($arg1, $arg0.length()))"""
+          if (length == 0) ""
+          else s"""$arg0.substring($arg0.length() - Math.min($arg1, $arg0.length()))"""
         case _ => throw new IllegalArgumentException("RIGHT requires 2 arguments")
       }
     }
@@ -237,7 +296,10 @@ package object string {
 
     override def nullable: Boolean = str.nullable || search.nullable || replace.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
         case List(arg0, arg1, arg2) =>
           s"$arg0.replace($arg1, $arg2)"
@@ -262,7 +324,10 @@ package object string {
 
     override def nullable: Boolean = str.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
         case List(arg0) => s"new StringBuilder($arg0).reverse().toString()"
         case _          => throw new IllegalArgumentException("REVERSE requires 1 argument")
@@ -284,9 +349,12 @@ package object string {
 
     override def nullable: Boolean = substr.nullable || str.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
-        case List(arg0, arg1, arg2) => s"$arg1.indexOf($arg0, $arg2 - 1) + 1"
+        case List(arg0, arg1, _) => s"$arg1.indexOf($arg0, ${start - 1}) + 1"
         case _ => throw new IllegalArgumentException("POSITION requires 3 arguments")
       }
     }
@@ -317,7 +385,10 @@ package object string {
 
     override def nullable: Boolean = str.nullable || pattern.nullable
 
-    override def toPainlessCall(callArgs: List[String]): String = {
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
       callArgs match {
         case List(arg0, arg1) => s"java.util.regex.Pattern.compile($arg1).matcher($arg0).find()"
         case List(arg0, arg1, arg2) =>

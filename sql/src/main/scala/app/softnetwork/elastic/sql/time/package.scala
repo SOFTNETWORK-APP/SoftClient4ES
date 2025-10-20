@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`._
@@ -7,7 +23,7 @@ import scala.util.matching.Regex
 package object time {
 
   sealed trait TimeField extends PainlessScript with TokenRegex {
-    override def painless(): String = s"ChronoField.$timeField"
+    override def painless(context: Option[PainlessContext]): String = s"ChronoField.$timeField"
 
     override def nullable: Boolean = false
 
@@ -62,7 +78,8 @@ package object time {
   sealed trait IsoField extends TimeField {
     def isoField: String
     def timeField: String = isoField
-    override def painless(): String = s"java.time.temporal.IsoFields.$isoField"
+    override def painless(context: Option[PainlessContext]): String =
+      s"java.time.temporal.IsoFields.$isoField"
   }
 
   object IsoField {
@@ -82,7 +99,7 @@ package object time {
 
     def timeUnit: String = sql.toUpperCase() + "S"
 
-    override def painless(): String = s"ChronoUnit.$timeUnit"
+    override def painless(context: Option[PainlessContext]): String = s"ChronoUnit.$timeUnit"
 
     override def nullable: Boolean = false
 
@@ -134,7 +151,8 @@ package object time {
     def unit: TimeUnit
     override def sql: String = s"$Interval $value ${unit.sql}"
 
-    override def painless(): String = s"$value, ${unit.painless()}"
+    override def painless(context: Option[PainlessContext]): String =
+      s"$value, ${unit.painless(context)}"
 
     override def script: Option[String] = Some(TimeInterval.script(this))
 
