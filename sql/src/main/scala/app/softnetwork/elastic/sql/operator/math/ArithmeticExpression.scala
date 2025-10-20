@@ -44,8 +44,9 @@ case class ArithmeticExpression(
       expr
   }
 
-  override def baseType: SQLType =
-    SQLTypeUtils.leastCommonSuperType(List(left.baseType, right.baseType))
+  override def args: List[PainlessScript] = List(left, right)
+
+  override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
   override def validate(): Either[String, Unit] = {
     for {
