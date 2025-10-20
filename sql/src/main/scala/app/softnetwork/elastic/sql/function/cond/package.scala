@@ -24,7 +24,14 @@ import app.softnetwork.elastic.sql.{
   PainlessScript,
   TokenRegex
 }
-import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLBool, SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{
+  SQLAny,
+  SQLBool,
+  SQLTemporal,
+  SQLType,
+  SQLTypeUtils,
+  SQLTypes
+}
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.query.{CriteriaWithConditionalFunction, Expression}
 
@@ -117,8 +124,6 @@ package object cond {
     // Reprend l’idée de SQLValues mais pour n’importe quel token
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
-    override def applyType(in: SQLType): SQLType = baseType
-
     override def validate(): Either[String, Unit] = {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
       else Right(())
@@ -153,8 +158,6 @@ package object cond {
 
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
-    override def applyType(in: SQLType): SQLType = baseType
-
     private[this] def checkIfExpressionNullable(expr: PainlessScript): Boolean = expr match {
       case f: FunctionChain if f.functions.nonEmpty => true
       case _                                        => false
@@ -170,7 +173,12 @@ package object cond {
       callArgs match {
         case List(arg0, arg1) =>
           val expr =
-            s"${arg0.trim} == ${arg1.trim} ? null : $arg0"
+            out match {
+              case SQLTypes.Varchar =>
+                s"$arg0 == null || $arg0.compareTo($arg1) == 0 ? null : $arg0"
+              case _: SQLTemporal => s"$arg0 == null || $arg0.isEqual($arg1) ? null : $arg0"
+              case _              => s"$arg0 == $arg1 ? null : $arg0"
+            }
           context match {
             case Some(ctx) =>
               ctx.addParam(LiteralParam(expr)) match {
@@ -214,10 +222,7 @@ package object cond {
       s"$exprPart $whenThen$elsePart $END"
     }
 
-    override def baseType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(argTypes)
-
-    override def applyType(in: SQLType): SQLType = baseType
+    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
     override def validate(): Either[String, Unit] = {
       if (conditions.isEmpty) Left("CASE WHEN requires at least one condition")

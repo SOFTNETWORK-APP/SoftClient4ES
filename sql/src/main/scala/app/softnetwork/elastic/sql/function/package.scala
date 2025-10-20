@@ -145,7 +145,7 @@ package object function {
     override def in: SQLType = inputType
     override def baseType: SQLType = outputType
 
-    override def applyType(in: SQLType): SQLType = outputType
+    override def applyType(in: SQLType): SQLType = baseType
 
     override def sql: String =
       s"${fun.map(_.sql).getOrElse("")}(${args.map(_.sql).mkString(argsSeparator)})"
