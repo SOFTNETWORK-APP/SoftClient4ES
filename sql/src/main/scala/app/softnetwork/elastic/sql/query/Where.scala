@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLTemporal, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
 import app.softnetwork.elastic.sql.function.geo.Distance
@@ -392,29 +392,93 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     SQLTypeUtils.coerce(identifier, targetedType, context)
   }
 
-  protected def check(context: Option[PainlessContext]): String =
+  protected def check(context: Option[PainlessContext], param: String): String = {
     operator match {
-      case _: ComparisonOperator => s" $painlessOp ${painlessValue(context)}"
-      case _                     => s"$painlessOp(${painlessValue(context)})"
+      case comparison: ComparisonOperator =>
+        comparison match {
+          case LT =>
+            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+              case SQLTypes.Varchar =>
+                return s"$param.compareTo(${painlessValue(context)}) < 0"
+              case _: SQLTemporal if !aggregation && !hasBucket =>
+                return s"$param.isBefore(${painlessValue(context)})"
+              case _ =>
+            }
+          case GT =>
+            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+              case SQLTypes.Varchar =>
+                return s"$param.compareTo(${painlessValue(context)}) > 0"
+              case _: SQLTemporal if !aggregation && !hasBucket =>
+                return s"$param.isAfter(${painlessValue(context)})"
+              case _ =>
+            }
+          case EQ =>
+            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+              case SQLTypes.Varchar =>
+                return s"$param.compareTo(${painlessValue(context)}) == 0"
+              case _: SQLTemporal if !aggregation && !hasBucket =>
+                return s"$param.isEqual(${painlessValue(context)})"
+              case _ =>
+            }
+          case NE | DIFF =>
+            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+              case SQLTypes.Varchar =>
+                return s"$param.compareTo(${painlessValue(context)}) != 0"
+              case _: SQLTemporal if !aggregation && !hasBucket =>
+                return s"$param.isEqual(${painlessValue(context)}) == false"
+              case _ =>
+            }
+          case GE =>
+            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+              case SQLTypes.Varchar =>
+                return s"$param.compareTo(${painlessValue(context)}) >= 0"
+              case _: SQLTemporal if !aggregation && !hasBucket =>
+                return s"$param.isBefore(${painlessValue(context)}) == false"
+              case _ =>
+            }
+          case LE =>
+            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+              case SQLTypes.Varchar =>
+                return s"$param.compareTo(${painlessValue(context)}) <= 0"
+              case _: SQLTemporal if !aggregation && !hasBucket =>
+                return s"$param.isAfter(${painlessValue(context)}) == false"
+              case _ =>
+            }
+          case _ =>
+        }
+        s"$param $painlessOp ${painlessValue(context)}"
+      case _ => s"$param$painlessOp(${painlessValue(context)})"
     }
+  }
 
   override def painless(context: Option[PainlessContext]): String = {
     context match {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
           case Some(p) =>
+            identifier.baseType match {
+              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                maybeValue.map(_.out).getOrElse(SQLTypes.Any) match {
+                  case SQLTypes.Date =>
+                    identifier.addPainlessMethod(".toLocalDate()")
+                  case SQLTypes.Time =>
+                    identifier.addPainlessMethod(".toLocalTime()")
+                  case _ =>
+                }
+              case _ =>
+            }
             if (identifier.nullable)
-              return s"$p == null ? false : $painlessNot($p${check(context)})"
+              return s"$p == null ? false : $painlessNot(${check(context, p)})"
             else
-              return s"$painlessNot($p${check(context)})"
+              return s"$painlessNot(${check(context, p)})"
           case _ =>
         }
       case _ =>
     }
     if (identifier.nullable) {
-      return s"def left = ${left(context)}; left == null ? false : ${painlessNot}left${check(context)}"
+      return s"def left = ${left(context)}; left == null ? false : $painlessNot(${check(context, "left")})"
     }
-    s"$painlessNot${left(context)}${check(context)}"
+    s"$painlessNot${check(context, left(context))}"
   }
 
   override def validate(): Either[String, Unit] = {

@@ -449,7 +449,7 @@ package object time {
 
     def includeTimeZone: Boolean = false
 
-    protected def param: String = s"DateTimeFormatter.ofPattern('${convert()}')"
+    protected def param: String = s"DateTimeFormatter.ofPattern(\"${convert()}\")"
 
     val sqlToJava: Map[String, String] = Map(
       "%Y" -> "yyyy",

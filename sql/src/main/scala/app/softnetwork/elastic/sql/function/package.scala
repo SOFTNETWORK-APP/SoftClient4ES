@@ -204,6 +204,21 @@ package object function {
                           nullable = a.nullable,
                           context
                         )
+                      a match {
+                        case identifier: Identifier =>
+                          identifier.baseType match {
+                            case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+                              targetedType match {
+                                case SQLTypes.Date =>
+                                  identifier.addPainlessMethod(".toLocalDate()")
+                                case SQLTypes.Time =>
+                                  identifier.addPainlessMethod(".toLocalTime()")
+                                case _ =>
+                              }
+                            case _ =>
+                          }
+                        case _ =>
+                      }
                       if (ret.startsWith(".")) {
                         // apply methods
                         ctx.find(paramName) match {
