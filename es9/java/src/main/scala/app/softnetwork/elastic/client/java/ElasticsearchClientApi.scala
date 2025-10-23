@@ -39,6 +39,7 @@ import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source}
 import co.elastic.clients.elasticsearch.core.search.SearchRequestBody
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
+import co.elastic.clients.json.JsonpSerializable
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import com.google.gson.{Gson, JsonParser}
 
@@ -326,134 +327,7 @@ trait ElasticsearchClientCountApi extends CountApi with ElasticsearchClientCompa
 
 trait ElasticsearchClientSingleValueAggregateApi
     extends SingleValueAggregateApi
-    with ElasticsearchClientCountApi { _: SearchApi with ElasticConversion =>
-  /*private[this] def aggregateValue(value: Double, valueAsString: String): AggregateValue =
-    if (valueAsString.nonEmpty) StringValue(valueAsString)
-    else NumericValue(value)
-
-  override def aggregate(
-    sqlQuery: SQLQuery
-  )(implicit ec: ExecutionContext): Future[Seq[SingleValueAggregateResult]] = {
-    val aggregations: Seq[ElasticAggregation] = sqlQuery
-    val futures = for (aggregation <- aggregations) yield {
-      val promise: Promise[SingleValueAggregateResult] = Promise()
-      val field = aggregation.field
-      val sourceField = aggregation.sourceField
-      val aggType = aggregation.aggType
-      val aggName = aggregation.aggName
-      val query = aggregation.query.getOrElse("")
-      val sources = aggregation.sources
-      sourceField match {
-        case "_id" if aggType.sql.toLowerCase == "count" =>
-          countAsync(
-            JSONQuery(
-              query,
-              collection.immutable.Seq(sources: _*),
-              collection.immutable.Seq.empty[String]
-            )
-          ).onComplete {
-            case Success(result) =>
-              promise.success(
-                SingleValueAggregateResult(
-                  field,
-                  aggType,
-                  NumericValue(result.getOrElse(0d)),
-                  None
-                )
-              )
-            case Failure(f) =>
-              logger.error(f.getMessage, f.fillInStackTrace())
-              promise.success(
-                SingleValueAggregateResult(field, aggType, EmptyValue, Some(f.getMessage))
-              )
-          }
-          promise.future
-        case _ =>
-          val jsonQuery = JSONQuery(
-            query,
-            collection.immutable.Seq(sources: _*),
-            collection.immutable.Seq.empty[String]
-          )
-          import jsonQuery._
-          logger.info(
-            s"Aggregating with query: ${jsonQuery.query} on indices: ${indices.mkString(", ")}"
-          )
-          // Create a parser for the query
-          Try(
-            apply().search(
-              new SearchRequest.Builder()
-                .index(indices.asJava)
-                .withJson(
-                  new StringReader(jsonQuery.query)
-                )
-                .build()
-            )
-          ) match {
-            case Success(response) =>
-              logger.debug(
-                s"Aggregation response: ${response.toString}"
-              )
-              val agg = aggName.split("\\.").last
-
-              val itAgg = aggName.split("\\.").iterator
-
-              var root =
-                if (aggregation.nested) {
-                  response.aggregations().get(itAgg.next()).nested().aggregations()
-                } else {
-                  response.aggregations()
-                }
-
-              if (aggregation.filtered) {
-                root = root.get(itAgg.next()).filter().aggregations()
-              }
-
-              promise.success(
-                SingleValueAggregateResult(
-                  field,
-                  aggType,
-                  aggType match {
-                    case sql.function.aggregate.COUNT =>
-                      NumericValue(
-                        if (aggregation.distinct) {
-                          root.get(agg).cardinality().value().toDouble
-                        } else {
-                          root.get(agg).valueCount().value()
-                        }
-                      )
-                    case sql.function.aggregate.SUM =>
-                      NumericValue(root.get(agg).sum().value())
-                    case sql.function.aggregate.AVG =>
-                      val avgAgg = root.get(agg).avg()
-                      aggregateValue(avgAgg.value(), avgAgg.valueAsString())
-                    case sql.function.aggregate.MIN =>
-                      val minAgg = root.get(agg).min()
-                      aggregateValue(minAgg.value(), minAgg.valueAsString())
-                    case sql.function.aggregate.MAX =>
-                      val maxAgg = root.get(agg).max()
-                      aggregateValue(maxAgg.value(), maxAgg.valueAsString())
-                    case _ => EmptyValue
-                  },
-                  None
-                )
-              )
-            case Failure(exception) =>
-              logger.error(s"Failed to execute search for aggregation: $aggName", exception)
-              promise.success(
-                SingleValueAggregateResult(
-                  field,
-                  aggType,
-                  EmptyValue,
-                  Some(exception.getMessage)
-                )
-              )
-          }
-          promise.future
-      }
-    }
-    Future.sequence(futures)
-  }*/
-}
+    with ElasticsearchClientCountApi { _: SearchApi with ElasticConversion => }
 
 trait ElasticsearchClientIndexApi extends IndexApi with ElasticsearchClientCompanion {
   _: ElasticsearchClientRefreshApi =>
@@ -687,22 +561,8 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
 
   private[this] val jsonpMapper = new JacksonJsonpMapper(mapper)
 
-  /** Convert SearchResponse to JSON string */
-  def searchResponseToJson(response: SearchResponse[JMap[String, Object]]): String = {
-    val stringWriter = new StringWriter()
-    val generator = jsonpMapper.jsonProvider().createGenerator(stringWriter)
-
-    try {
-      response.serialize(generator, jsonpMapper)
-      generator.flush()
-      stringWriter.toString
-    } finally {
-      generator.close()
-    }
-  }
-
-  /** Convert MsearchResponse to JSON string */
-  def msearchResponseToJson(response: MsearchResponse[JMap[String, Object]]): String = {
+  /** Convert any Elasticsearch response to JSON string */
+  private[this] def convertToJson[T <: JsonpSerializable](response: T): String = {
     val stringWriter = new StringWriter()
     val generator = jsonpMapper.jsonProvider().createGenerator(stringWriter)
 
@@ -746,7 +606,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
     // Return the SQL search response
     val sqlResponse = SQLSearchResponse(
       query,
-      searchResponseToJson(response),
+      convertToJson(response),
       fieldAliases,
       aggregations
     )
@@ -792,7 +652,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
     // Return the SQL search response
     val sqlResponse = SQLSearchResponse(
       query,
-      msearchResponseToJson(responses),
+      convertToJson(responses),
       fieldAliases,
       aggregations
     )
