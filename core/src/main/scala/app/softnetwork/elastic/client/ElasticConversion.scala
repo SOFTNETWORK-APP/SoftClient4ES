@@ -1,50 +1,98 @@
 package app.softnetwork.elastic.client
 
-import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.{DeserializationFeature, JsonNode, ObjectMapper}
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
-import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Success, Try}
-import java.time._
+import org.json4s.{Extraction, Formats}
+
+import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDateTime}
 import java.time.format.DateTimeFormatter
+import scala.reflect.ClassTag
+import scala.util.Try
 
-object ElasticResponseParser {
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
-  private val mapper = new ObjectMapper()
+trait ElasticConversion {
+  private[this] val mapper = new ObjectMapper()
   mapper.registerModule(DefaultScalaModule)
+  mapper.registerModule(new JavaTimeModule())
+
+  // Ignore unknown properties during deserialization
+  mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+
+  def convertTo[T](map: Map[String, Any])(implicit m: Manifest[T], formats: Formats): T = {
+    val jValue = Extraction.decompose(map)
+    jValue.extract[T]
+  }
 
   // Formatters for elasticsearch ISO 8601 date/time strings
   private val isoDateTimeFormatter = DateTimeFormatter.ISO_DATE_TIME
   private val isoDateFormatter = DateTimeFormatter.ISO_DATE
   private val isoTimeFormatter = DateTimeFormatter.ISO_TIME
 
-  /** main entry point : parse json response from elasticsearch
+  /** main entry point : parse json response from elasticsearch Handles both single search and
+    * multi-search (msearch/UNION ALL) responses
     */
-  def parseResponse(jsonString: String): Either[String, Seq[Map[String, Any]]] = {
-    Try(mapper.readTree(jsonString)) match {
-      case Success(json) =>
-        // check if it is an error response
-        if (json.has("error")) {
-          val errorMsg = Option(json.get("error").get("reason"))
-            .map(_.asText())
-            .getOrElse("Unknown Elasticsearch error")
-          Left(s"Elasticsearch error: $errorMsg")
-        } else {
-          Right(jsonToRows(json))
-        }
-      case Failure(ex) =>
-        Left(s"Failed to parse JSON: ${ex.getMessage}")
+  def parseResponse(jsonString: SQLResult): Try[Seq[Map[String, Any]]] = {
+    val json = mapper.readTree(jsonString)
+    // Check if it's a multi-search response (array of responses)
+    if (json.isArray) {
+      parseMultiSearchResponse(json)
+    } else {
+      // Single search response
+      parseSingleSearchResponse(json)
     }
   }
+
+  /** Parse a multi-search response (array of search responses) Used for UNION ALL queries
+    */
+  def parseMultiSearchResponse(jsonArray: JsonNode): Try[Seq[Map[String, Any]]] =
+    Try {
+      val responses = jsonArray.elements().asScala.toList
+
+      // Collect all errors
+      val errors = responses.zipWithIndex.collect {
+        case (response, idx) if response.has("error") =>
+          val errorMsg = Option(response.get("error").get("reason"))
+            .map(_.asText())
+            .getOrElse("Unknown error")
+          s"Query ${idx + 1}: $errorMsg"
+      }
+
+      if (errors.nonEmpty) {
+        throw new Exception(s"Elasticsearch errors in multi-search:\n${errors.mkString("\n")}")
+      } else {
+        // Parse each response and combine all rows
+        val allRows = responses.flatMap { response =>
+          if (!response.has("error")) {
+            jsonToRows(response)
+          } else {
+            Seq.empty
+          }
+        }
+        allRows
+      }
+    }
+
+  /** Parse a single search response
+    */
+  def parseSingleSearchResponse(json: JsonNode): Try[Seq[Map[String, Any]]] =
+    Try {
+      // check if it is an error response
+      if (json.has("error")) {
+        val errorMsg = Option(json.get("error").get("reason"))
+          .map(_.asText())
+          .getOrElse("Unknown Elasticsearch error")
+        throw new Exception(s"Elasticsearch error: $errorMsg")
+      } else {
+        jsonToRows(json)
+      }
+    }
 
   /** convert JsonNode to Rows
     */
   def jsonToRows(json: JsonNode): Seq[Map[String, Any]] = {
-    jsonToTableRows(json)
-  }
-
-  /** detect the structure of the response and parse accordingly
-    */
-  def jsonToTableRows(json: JsonNode): Seq[Map[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
       .map(_.elements().asScala.toList)
@@ -195,9 +243,14 @@ object ElasticResponseParser {
 
           if (subAggFields.nonEmpty) {
             val subAggsNode = mapper.createObjectNode()
-            subAggFields.foreach { entry =>
+            val jsubAggFields = subAggFields.asJava.iterator()
+            while (jsubAggFields.hasNext) {
+              val entry = jsubAggFields.next()
               subAggsNode.set(entry.getKey, entry.getValue)
             }
+            /*subAggFields.foreach { entry =>
+              subAggsNode.set(entry.getKey, entry.getValue) // FIXME
+            }*/
             parseAggregations(subAggsNode, currentContext)
           } else {
             Seq(currentContext)

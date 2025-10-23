@@ -24,7 +24,9 @@ import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLMultiSearchRequest, SQLQuery, SQLSearchRequest}
+import com.fasterxml.jackson.databind.{DeserializationFeature, ObjectMapper}
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
 import org.json4s.{DefaultFormats, Formats}
@@ -54,7 +56,8 @@ trait ElasticClientApi
     with BulkApi
     with DeleteApi
     with RefreshApi
-    with FlushApi {
+    with FlushApi
+    with ElasticConversion {
 
   def config: Config = ConfigFactory.load()
 
@@ -1038,6 +1041,22 @@ trait SearchApi {
         )
     }
   }
+
+  /** Search for entities matching the given SQL query.
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL Result containing the results of the query
+    */
+  def search(sql: SQLSearchRequest): SQLResult
+
+  /** Perform a multi-search operation with the given SQL query.
+    * @param sql
+    *   - the SQL multi-search query to perform
+    * @return
+    *   the SQL Result containing the results of the multi-search query
+    */
+  def multisearch(sql: SQLMultiSearchRequest): SQLResult
 
   /** Search for entities matching the given JSON query.
     * @param jsonQuery

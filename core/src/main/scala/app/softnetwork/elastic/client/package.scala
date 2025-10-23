@@ -36,6 +36,10 @@ import scala.collection.JavaConverters._
   */
 package object client {
 
+  type SQL = String
+
+  type SQLResult = String
+
   case class ElasticCredentials(
     url: String = "http://localhost:9200",
     username: String = "",

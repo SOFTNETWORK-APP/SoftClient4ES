@@ -20,7 +20,7 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLMultiSearchRequest, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.{client, sql}
 import app.softnetwork.persistence.model.Timestamped
@@ -50,6 +50,7 @@ import org.elasticsearch.client.indices.{
   GetMappingsRequest,
   PutMappingRequest
 }
+import org.elasticsearch.common.Strings
 import org.elasticsearch.common.io.stream.InputStreamStreamInput
 import org.elasticsearch.common.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
@@ -681,6 +682,76 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCompanion {
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
+
+  /** Search for entities matching the given SQL query.
+    *
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL Result containing the results of the query
+    */
+  override def search(sql: SQLSearchRequest): SQLResult = {
+    // Build the JSON query from the SQL query
+    val query =
+      JSONQuery(
+        sql,
+        collection.immutable.Seq(sql.sources: _*)
+      )
+    // Create a parser for the query
+    val xContentParser = XContentType.JSON
+      .xContent()
+      .createParser(
+        namedXContentRegistry,
+        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+        query.query
+      )
+    // Execute the search
+    val response = apply().search(
+      new SearchRequest(query.indices: _*)
+        .types(query.types: _*)
+        .source(
+          SearchSourceBuilder.fromXContent(xContentParser)
+        ),
+      RequestOptions.DEFAULT
+    )
+    // Return the SQL Result as json
+    Strings.toString(response)
+  }
+
+  /** Perform a multi-search operation with the given SQL query.
+    *
+    * @param sql
+    *   - the SQL multi-search query to perform
+    * @return
+    *   the SQL Result containing the results of the multi-search query
+    */
+  override def multisearch(sql: SQLMultiSearchRequest): SQLResult = {
+    val request = new MultiSearchRequest()
+    for (
+      query <- sql.requests.map(request =>
+        JSONQuery(
+          request,
+          collection.immutable.Seq(request.sources: _*)
+        )
+      )
+    ) {
+      request.add(
+        new SearchRequest(query.indices: _*)
+          .types(query.types: _*)
+          .source(
+            new SearchSourceBuilder(
+              new InputStreamStreamInput(
+                new ByteArrayInputStream(
+                  query.query.getBytes()
+                )
+              )
+            )
+          )
+      )
+    }
+    val responses = apply().msearch(request, RequestOptions.DEFAULT)
+    Strings.toString(responses)
+  }
 
   override def search[U](
     jsonQuery: JSONQuery

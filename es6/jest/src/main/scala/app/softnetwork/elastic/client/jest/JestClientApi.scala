@@ -21,7 +21,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLMultiSearchRequest, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
@@ -639,6 +639,58 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   import JestClientApi._
+
+  /** Search for entities matching the given SQL query.
+    *
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL Result containing the results of the query
+    */
+  override def search(sql: SQLSearchRequest): SQLResult =
+    tryOrElse(
+      {
+        apply()
+          .execute(
+            JSONQuery(
+              sql,
+              collection.immutable.Seq(sql.sources: _*)
+            ).search
+          )
+          .getJsonString
+      },
+      ""
+    )(logger)
+
+  /** Perform a multi-search operation with the given SQL query.
+    *
+    * @param sql
+    *   - the SQL multi-search query to perform
+    * @return
+    *   the SQL Result containing the results of the multi-search query
+    */
+  override def multisearch(sql: SQLMultiSearchRequest): SQLResult =
+    tryOrElse(
+      {
+        val multiSearchResult =
+          apply().execute(
+            new MultiSearch.Builder(
+              sql.requests
+                .map(request =>
+                  JSONQuery(
+                    request,
+                    collection.immutable.Seq(request.sources: _*)
+                  )
+                )
+                .toList
+                .map(_.search)
+                .asJava
+            ).build()
+          )
+        multiSearchResult.getJsonString
+      },
+      ""
+    )(logger)
 
   override def search[U](
     jsonQuery: JSONQuery
