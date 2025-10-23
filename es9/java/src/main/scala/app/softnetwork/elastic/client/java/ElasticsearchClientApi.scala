@@ -40,8 +40,6 @@ import co.elastic.clients.elasticsearch.core.search.SearchRequestBody
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.google.gson.{Gson, JsonParser}
 
 import _root_.java.io.{StringReader, StringWriter}
@@ -687,8 +685,35 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
-  private[this] val objectMapper = new ObjectMapper()
-  objectMapper.registerModule(DefaultScalaModule)
+  private[this] val jsonpMapper = new JacksonJsonpMapper(mapper)
+
+  /** Convert SearchResponse to JSON string */
+  def searchResponseToJson(response: SearchResponse[JMap[String, Object]]): String = {
+    val stringWriter = new StringWriter()
+    val generator = jsonpMapper.jsonProvider().createGenerator(stringWriter)
+
+    try {
+      response.serialize(generator, jsonpMapper)
+      generator.flush()
+      stringWriter.toString
+    } finally {
+      generator.close()
+    }
+  }
+
+  /** Convert MsearchResponse to JSON string */
+  def msearchResponseToJson(response: MsearchResponse[JMap[String, Object]]): String = {
+    val stringWriter = new StringWriter()
+    val generator = jsonpMapper.jsonProvider().createGenerator(stringWriter)
+
+    try {
+      response.serialize(generator, jsonpMapper)
+      generator.flush()
+      stringWriter.toString
+    } finally {
+      generator.close()
+    }
+  }
 
   /** Search for entities matching the given JSON query.
     *
@@ -721,7 +746,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
     // Return the SQL search response
     val sqlResponse = SQLSearchResponse(
       query,
-      objectMapper.writeValueAsString(response),
+      searchResponseToJson(response),
       fieldAliases,
       aggregations
     )
@@ -767,7 +792,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCom
     // Return the SQL search response
     val sqlResponse = SQLSearchResponse(
       query,
-      objectMapper.writeValueAsString(responses),
+      msearchResponseToJson(responses),
       fieldAliases,
       aggregations
     )
