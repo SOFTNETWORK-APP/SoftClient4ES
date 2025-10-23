@@ -177,7 +177,7 @@ trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] {
   override def searchDocuments(
     query: String
   )(implicit m: Manifest[T], formats: Formats): List[T] = {
-    Try(search(SQLQuery(query))) match {
+    Try(searchAs(SQLQuery(query))) match {
       case Success(s) => s
       case Failure(f) =>
         logger.error(f.getMessage, f)

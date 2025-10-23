@@ -24,9 +24,12 @@ import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import app.softnetwork.elastic.sql.query.{SQLMultiSearchRequest, SQLQuery, SQLSearchRequest}
-import com.fasterxml.jackson.databind.{DeserializationFeature, ObjectMapper}
-import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import app.softnetwork.elastic.sql.query.{
+  SQLAggregation,
+  SQLMultiSearchRequest,
+  SQLQuery,
+  SQLSearchRequest
+}
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
 import org.json4s.{DefaultFormats, Formats}
@@ -967,7 +970,49 @@ trait AggregateApi[T <: AggregateResult] {
   ): Future[_root_.scala.collection.Seq[T]]
 }
 
-trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult]
+trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
+  _: SearchApi with ElasticConversion =>
+
+  /** Aggregate the results of the given SQL query.
+    *
+    * @param sqlQuery
+    *   - the query to aggregate the results for
+    * @return
+    *   a sequence of aggregated results
+    */
+  override def aggregate(
+    sqlQuery: SQLQuery
+  )(implicit ec: ExecutionContext): Future[collection.Seq[SingleValueAggregateResult]] = {
+    Future {
+      val response = search(sqlQuery)
+      parseResponse(response) match {
+        case Success(results) =>
+          results.flatMap(result =>
+            response.aggregations
+              .filterNot(_._2.multivalued)
+              .map { case (name, aggregation) =>
+                SingleValueAggregateResult(
+                  name,
+                  aggregation.aggType,
+                  result.getOrElse(name, null) match {
+                    case n: Number           => NumericValue(n.doubleValue())
+                    case s: String           => StringValue(s)
+                    case m: Map[String, Any] => ObjectValue(m)
+                    case _                   => EmptyValue
+                  }
+                )
+              }
+              .toSeq
+          )
+        case Failure(exception) =>
+          throw new IllegalArgumentException(
+            s"Failed to parse search results for SQL query: ${sqlQuery.query}",
+            exception
+          )
+      }
+    }
+  }
+}
 
 trait GetApi {
 
@@ -1008,7 +1053,7 @@ trait GetApi {
   }
 }
 
-trait SearchApi {
+trait SearchApi { _: ElasticConversion =>
   implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String
 
   implicit def sqlQueryToJSONQuery(sqlQuery: SQLQuery): JSONQuery = {
@@ -1046,21 +1091,93 @@ trait SearchApi {
     * @param sql
     *   - the SQL query to search for
     * @return
-    *   the SQL Result containing the results of the query
+    *   the SQL search response containing the results of the query
     */
-  def search(sql: SQLSearchRequest): SQLResult
+  final def search(sql: SQLQuery): SQLSearchResponse = {
+    sql.request match {
+      case Some(Left(single)) => search(single.copy(score = sql.score))
+      case Some(Right(multiple)) =>
+        multisearch(multiple.copy(requests = multiple.requests.map(r => r.copy(score = sql.score))))
+      case None =>
+        throw new IllegalArgumentException("SQL query does not contain a valid search request")
+    }
+  }
+
+  /** Search for entities matching the given SQL query.
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  private[this] def search(sql: SQLSearchRequest): SQLSearchResponse = {
+    // Build the JSON query from the SQL query
+    val jsonQuery =
+      JSONQuery(
+        sql,
+        collection.immutable.Seq(sql.sources: _*)
+      )
+    search(jsonQuery, sql.fieldAliases, sql.sqlAggregations)
+  }
+
+  /** Search for entities matching the given JSON query.
+    * @param jsonQuery
+    *   - the query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  def search(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse
 
   /** Perform a multi-search operation with the given SQL query.
     * @param sql
     *   - the SQL multi-search query to perform
     * @return
-    *   the SQL Result containing the results of the multi-search query
+    *   the SQL search response containing the results of the multi-search query
     */
-  def multisearch(sql: SQLMultiSearchRequest): SQLResult
+  private[this] def multisearch(sql: SQLMultiSearchRequest): SQLSearchResponse = {
+    // Build the JSON queries from the SQL multi-search query
+    val jsonQueries: JSONQueries =
+      JSONQueries(
+        sql.requests.map { query =>
+          JSONQuery(
+            query,
+            collection.immutable.Seq(query.sources: _*)
+          )
+        }.toList
+      )
+    multisearch(jsonQueries, sql.fieldAliases, sql.sqlAggregations)
+  }
+
+  /** Perform a multi-search operation with the given JSON queries.
+    * @param jsonQueries
+    *   - the JSON queries to perform the multi-search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  def multisearch(
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse
 
   /** Search for entities matching the given JSON query.
     * @param jsonQuery
     *   - the query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @param m
     *   - the manifest of the type to search for
     * @param formats
@@ -1068,7 +1185,16 @@ trait SearchApi {
     * @return
     *   a list of entities matching the query
     */
-  def search[U](jsonQuery: JSONQuery)(implicit m: Manifest[U], formats: Formats): List[U]
+  def searchAs[U](
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )(implicit
+    m: Manifest[U],
+    formats: Formats
+  ): List[U] = {
+    convertTo[U](search(jsonQuery, fieldAliases, aggregations)).getOrElse(Seq.empty).toList
+  }
 
   /** Search for entities matching the given SQL query.
     * @param sqlQuery
@@ -1080,8 +1206,8 @@ trait SearchApi {
     * @return
     *   a list of entities matching the query
     */
-  def search[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
-    search[U](implicitly[JSONQuery](sqlQuery))(m, formats)
+  final def searchAs[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](search(sqlQuery)).getOrElse(Seq.empty).toList
   }
 
   /** Search for entities matching the given SQL query asynchronously.
@@ -1094,10 +1220,10 @@ trait SearchApi {
     * @return
     *   a Future that completes with a list of entities matching the query
     */
-  def searchAsync[U](
+  def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = Future(
-    this.search[U](sqlQuery)
+    this.searchAs[U](sqlQuery)
   )
 
   /** Search for entities matching the given JSON query with inner hits.
@@ -1123,8 +1249,8 @@ trait SearchApi {
   }
 
   /** Search for entities matching the given JSON query with inner hits.
-    * @param sqlQuery
-    *   - the SQL query to search for
+    * @param jsonQuery
+    *   - the JSON query to search for
     * @param innerField
     *   - the field to use for inner hits
     * @param m1
@@ -1152,15 +1278,19 @@ trait SearchApi {
     * @return
     *   a list of lists of entities matching the queries in the multi-search request
     */
-  def multiSearch[U](
+  final def multisearchAs[U](
     sqlQuery: SQLQuery
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    multiSearch[U](implicitly[JSONQueries](sqlQuery))(m, formats)
+  )(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](search(sqlQuery)).getOrElse(Seq.empty).toList
   }
 
   /** Perform a multi-search operation with the given JSON queries.
     * @param jsonQueries
     *   - the JSON queries to perform the multi-search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @param m
     *   - the manifest of the type to search for
     * @param formats
@@ -1168,9 +1298,17 @@ trait SearchApi {
     * @return
     *   a list of lists of entities matching the queries in the multi-search request
     */
-  def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]]
+  def multisearchAs[U](
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](
+      multisearch(jsonQueries, fieldAliases, aggregations)
+    )
+      .getOrElse(Seq.empty)
+      .toList
+  }
 
   /** Perform a multi-search operation with the given SQL query and inner hits.
     * @param sqlQuery
@@ -1186,12 +1324,12 @@ trait SearchApi {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multiSearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    multiSearchWithInnerHits[U, I](implicitly[JSONQueries](sqlQuery), innerField)(m1, m2, formats)
+    multisearchWithInnerHits[U, I](implicitly[JSONQueries](sqlQuery), innerField)(m1, m2, formats)
   }
 
   /** Perform a multi-search operation with the given JSON queries and inner hits.
@@ -1208,7 +1346,7 @@ trait SearchApi {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats

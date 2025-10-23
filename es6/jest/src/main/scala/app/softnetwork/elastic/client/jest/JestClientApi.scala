@@ -20,15 +20,13 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql
-import app.softnetwork.elastic.sql.query.{SQLMultiSearchRequest, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
 import com.google.gson.JsonParser
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
-import io.searchbox.core.search.aggregation.RootAggregation
 import io.searchbox.indices._
 import io.searchbox.indices.aliases.{AddAliasMapping, ModifyAliases, RemoveAliasMapping}
 import io.searchbox.indices.mapping.{GetMapping, PutMapping}
@@ -334,7 +332,8 @@ trait JestCountApi extends CountApi with JestClientCompanion {
 }
 
 trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCountApi {
-  override def aggregate(
+  _: SearchApi with ElasticConversion =>
+  /*override def aggregate(
     sqlQuery: SQLQuery
   )(implicit ec: ExecutionContext): Future[Seq[SingleValueAggregateResult]] = {
     val aggregations: Seq[ElasticAggregation] = sqlQuery
@@ -438,7 +437,7 @@ trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCount
       }
     }
     Future.sequence(futures)
-  }
+  }*/
 }
 
 trait JestIndexApi extends IndexApi with JestClientCompanion {
@@ -633,57 +632,70 @@ trait JestGetApi extends GetApi with JestClientCompanion {
 
 }
 
-trait JestSearchApi extends SearchApi with JestClientCompanion {
+trait JestSearchApi extends SearchApi with JestClientCompanion { _: ElasticConversion =>
 
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   import JestClientApi._
 
-  /** Search for entities matching the given SQL query.
+  /** Search for entities matching the given JSON query.
     *
-    * @param sql
-    *   - the SQL query to search for
+    * @param jsonQuery
+    *   - the JSON query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @return
-    *   the SQL Result containing the results of the query
+    *   the SQL search response containing the results of the query
     */
-  override def search(sql: SQLSearchRequest): SQLResult =
-    tryOrElse(
+  override def search(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    // Create a parser for the query
+    val search = jsonQuery.search
+    val query = search._2
+    val response = tryOrElse(
       {
         apply()
           .execute(
-            JSONQuery(
-              sql,
-              collection.immutable.Seq(sql.sources: _*)
-            ).search
+            search._1
           )
           .getJsonString
       },
       ""
     )(logger)
+    SQLSearchResponse(query, response, fieldAliases, aggregations)
+  }
 
-  /** Perform a multi-search operation with the given SQL query.
+  /** Perform a multi-search operation with the given JSON multi-search query.
     *
-    * @param sql
-    *   - the SQL multi-search query to perform
+    * @param jsonQueries
+    *   - the JSON multi-search query to perform
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @return
-    *   the SQL Result containing the results of the multi-search query
+    *   the SQL search response containing the results of the multi-search query
     */
-  override def multisearch(sql: SQLMultiSearchRequest): SQLResult =
-    tryOrElse(
+  override def multisearch(
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    val queries = jsonQueries.queries.map(_.search)
+    val query = queries.map(_._2).mkString("\n")
+    val response = tryOrElse(
       {
         val multiSearchResult =
           apply().execute(
             new MultiSearch.Builder(
-              sql.requests
-                .map(request =>
-                  JSONQuery(
-                    request,
-                    collection.immutable.Seq(request.sources: _*)
-                  )
-                )
-                .toList
-                .map(_.search)
+              queries
+                .map(_._1)
                 .asJava
             ).build()
           )
@@ -691,30 +703,10 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
       },
       ""
     )(logger)
-
-  override def search[U](
-    jsonQuery: JSONQuery
-  )(implicit m: Manifest[U], formats: Formats): List[U] = {
-    import jsonQuery._
-    val search = new Search.Builder(query)
-    for (indice <- indices) search.addIndex(indice)
-    for (t      <- types) search.addType(t)
-    Try(
-      apply()
-        .execute(search.build())
-        .getSourceAsStringList
-        .asScala
-        .map(source => serialization.read[U](source))
-        .toList
-    ) match {
-      case Success(s) => s
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
-        List.empty
-    }
+    SQLSearchResponse(query, response, fieldAliases, aggregations)
   }
 
-  override def searchAsync[U](
+  override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
     val promise = Promise[List[U]]()
@@ -742,7 +734,7 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    Try(apply().execute(jsonQuery.search)).toOption match {
+    Try(apply().execute(jsonQuery.search._1)).toOption match {
       case Some(result) =>
         if (!result.isSucceeded) {
           logger.error(result.getErrorMessage)
@@ -758,31 +750,12 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     }
   }
 
-  override def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    tryOrElse(
-      {
-        val multiSearchResult =
-          apply().execute(new MultiSearch.Builder(jsonQueries.queries.map(_.search).asJava).build())
-        multiSearchResult.getResponses.asScala
-          .map(searchResponse =>
-            searchResponse.searchResult.getSourceAsStringList.asScala
-              .map(source => serialization.read[U](source))
-              .toList
-          )
-          .toList
-      },
-      List.empty
-    )(logger)
-  }
-
-  override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    val multiSearch = new MultiSearch.Builder(jsonQueries.queries.map(_.search).asJava).build()
+    val multiSearch = new MultiSearch.Builder(jsonQueries.queries.map(_.search._1).asJava).build()
     Try(apply().execute(multiSearch)).toOption match {
       case Some(multiSearchResult) =>
         if (!multiSearchResult.isSucceeded) {
@@ -896,12 +869,12 @@ object JestClientApi {
   }
 
   implicit class SearchJSONQuery(jsonQuery: JSONQuery) {
-    def search: Search = {
+    def search: (Search, ESQuery) = {
       import jsonQuery._
       val _search = new Search.Builder(query)
       for (indice <- indices) _search.addIndex(indice)
       for (t      <- types) _search.addType(t)
-      _search.build()
+      (_search.build(), query)
     }
   }
 

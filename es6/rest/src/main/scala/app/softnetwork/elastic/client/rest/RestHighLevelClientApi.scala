@@ -20,9 +20,9 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql.query.{SQLMultiSearchRequest, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.{client, sql}
+import app.softnetwork.elastic.client
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization.serialization
 import com.google.gson.JsonParser
@@ -54,14 +54,6 @@ import org.elasticsearch.common.Strings
 import org.elasticsearch.common.io.stream.InputStreamStreamInput
 import org.elasticsearch.common.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
-import org.elasticsearch.search.aggregations.bucket.filter.Filter
-import org.elasticsearch.search.aggregations.bucket.nested.Nested
-import org.elasticsearch.search.aggregations.metrics.avg.Avg
-import org.elasticsearch.search.aggregations.metrics.cardinality.Cardinality
-import org.elasticsearch.search.aggregations.metrics.max.Max
-import org.elasticsearch.search.aggregations.metrics.min.Min
-import org.elasticsearch.search.aggregations.metrics.sum.Sum
-import org.elasticsearch.search.aggregations.metrics.valuecount.ValueCount
 import org.elasticsearch.search.builder.SearchSourceBuilder
 import org.json4s.Formats
 
@@ -364,8 +356,8 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompa
 
 trait RestHighLevelClientSingleValueAggregateApi
     extends SingleValueAggregateApi
-    with RestHighLevelClientCountApi {
-  override def aggregate(
+    with RestHighLevelClientCountApi { _: SearchApi with ElasticConversion =>
+  /*override def aggregate(
     sqlQuery: SQLQuery
   )(implicit ec: ExecutionContext): Future[Seq[SingleValueAggregateResult]] = {
     val aggregations: Seq[ElasticAggregation] = sqlQuery
@@ -474,7 +466,7 @@ trait RestHighLevelClientSingleValueAggregateApi
       }
     }
     Future.sequence(futures)
-  }
+  }*/
 }
 
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompanion {
@@ -680,61 +672,89 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
 }
 
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCompanion {
+  _: ElasticConversion =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
-  /** Search for entities matching the given SQL query.
+  /** Search for entities matching the given JSON query.
     *
-    * @param sql
-    *   - the SQL query to search for
+    * @param jsonQuery
+    *   - the JSON query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @return
-    *   the SQL Result containing the results of the query
+    *   the SQL search response containing the results of the query
     */
-  override def search(sql: SQLSearchRequest): SQLResult = {
-    // Build the JSON query from the SQL query
-    val query =
-      JSONQuery(
-        sql,
-        collection.immutable.Seq(sql.sources: _*)
-      )
+  override def search(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    val query = jsonQuery.query
     // Create a parser for the query
     val xContentParser = XContentType.JSON
       .xContent()
       .createParser(
         namedXContentRegistry,
         DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        query.query
+        query
       )
     // Execute the search
     val response = apply().search(
-      new SearchRequest(query.indices: _*)
-        .types(query.types: _*)
+      new SearchRequest(jsonQuery.indices: _*)
+        .types(jsonQuery.types: _*)
         .source(
           SearchSourceBuilder.fromXContent(xContentParser)
         ),
       RequestOptions.DEFAULT
     )
-    // Return the SQL Result as json
-    Strings.toString(response)
+    // Return the SQL search response
+    val sqlResponse =
+      SQLSearchResponse(query, Strings.toString(response), fieldAliases, aggregations)
+    logger.info(s"Search response: $sqlResponse")
+    sqlResponse
   }
 
-  /** Perform a multi-search operation with the given SQL query.
+  /** Perform a multi-search operation with the given JSON multi-search query.
     *
-    * @param sql
-    *   - the SQL multi-search query to perform
+    * @param jsonQueries
+    *   - the JSON multi-search query to perform
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @return
-    *   the SQL Result containing the results of the multi-search query
+    *   the SQL search response containing the results of the multi-search query
     */
-  override def multisearch(sql: SQLMultiSearchRequest): SQLResult = {
+  override def multisearch(
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
     val request = new MultiSearchRequest()
-    for (
-      query <- sql.requests.map(request =>
-        JSONQuery(
-          request,
-          collection.immutable.Seq(request.sources: _*)
-        )
+    val queries = jsonQueries.queries.map(_.query)
+    val query = queries.mkString("\n")
+    jsonQueries.queries.zipWithIndex.map { case (q, i) =>
+      val query = queries(i)
+      logger.info(s"Searching with query ${i + 1}: $query on indices: ${q.indices
+        .mkString(", ")}")
+      request.add(
+        new SearchRequest(q.indices: _*)
+          .types(q.types: _*)
+          .source(
+            new SearchSourceBuilder(
+              new InputStreamStreamInput(
+                new ByteArrayInputStream(
+                  query.getBytes()
+                )
+              )
+            )
+          )
       )
-    ) {
+    }
+    /*for (query <- jsonQueries.queries) {
       request.add(
         new SearchRequest(query.indices: _*)
           .types(query.types: _*)
@@ -748,43 +768,12 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
             )
           )
       )
-    }
+    }*/
     val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    Strings.toString(responses)
+    SQLSearchResponse(query, Strings.toString(responses), fieldAliases, aggregations)
   }
 
-  override def search[U](
-    jsonQuery: JSONQuery
-  )(implicit m: Manifest[U], formats: Formats): List[U] = {
-    import jsonQuery._
-    logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
-    // Create a parser for the query
-    val xContentParser = XContentType.JSON
-      .xContent()
-      .createParser(
-        namedXContentRegistry,
-        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        query
-      )
-    val response = apply().search(
-      new SearchRequest(indices: _*)
-        .types(types: _*)
-        .source(
-          SearchSourceBuilder.fromXContent(xContentParser)
-        ),
-      RequestOptions.DEFAULT
-    )
-    if (response.getHits.getTotalHits > 0) {
-      response.getHits.getHits.toList.map { hit =>
-        logger.info(s"Deserializing hit: ${hit.getSourceAsString}")
-        serialization.read[U](hit.getSourceAsString)
-      }
-    } else {
-      List.empty[U]
-    }
-  }
-
-  override def searchAsync[U](
+  override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
     val jsonQuery: JSONQuery = sqlQuery
@@ -854,40 +843,7 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
     }
   }
 
-  override def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    import jsonQueries._
-    val request = new MultiSearchRequest()
-    for (query <- queries) {
-      request.add(
-        new SearchRequest(query.indices: _*)
-          .types(query.types: _*)
-          .source(
-            new SearchSourceBuilder(
-              new InputStreamStreamInput(
-                new ByteArrayInputStream(
-                  query.query.getBytes()
-                )
-              )
-            )
-          )
-      )
-    }
-    val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    responses.getResponses.toList.map { response =>
-      if (response.isFailure) {
-        logger.error(s"Error in multi search: ${response.getFailureMessage}")
-        List.empty[U]
-      } else {
-        response.getResponse.getHits.getHits.toList.map { hit =>
-          serialization.read[U](hit.getSourceAsString)
-        }
-      }
-    }
-  }
-
-  override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats

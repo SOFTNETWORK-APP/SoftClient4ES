@@ -19,6 +19,7 @@ package app.softnetwork.elastic
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStage, GraphStageLogic}
 import app.softnetwork.elastic.client.BulkAction.BulkAction
+import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
 import org.json4s.Formats
@@ -38,7 +39,16 @@ package object client {
 
   type SQL = String
 
-  type SQLResult = String
+  type ESQuery = String
+
+  type ESResults = String
+
+  case class SQLSearchResponse(
+    query: ESQuery,
+    results: ESResults,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )
 
   case class ElasticCredentials(
     url: String = "http://localhost:9200",

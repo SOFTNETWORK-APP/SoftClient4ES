@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.Token
 
 case class SQLMultiSearchRequest(requests: Seq[SQLSearchRequest]) extends Token {
-  override def sql: String = s"${requests.map(_.sql).mkString(" union ")}"
+  override def sql: String = s"${requests.map(_.sql).mkString(" UNION ALL ")}"
 
   def update(): SQLMultiSearchRequest = this.copy(requests = requests.map(_.update()))
 
@@ -29,4 +29,10 @@ case class SQLMultiSearchRequest(requests: Seq[SQLSearchRequest]) extends Token 
       case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
     }
   }
+
+  lazy val sqlAggregations: Map[String, SQLAggregation] =
+    requests.flatMap(_.sqlAggregations).distinct.toMap
+
+  lazy val fieldAliases: Map[String, String] =
+    requests.flatMap(_.fieldAliases).distinct.toMap
 }

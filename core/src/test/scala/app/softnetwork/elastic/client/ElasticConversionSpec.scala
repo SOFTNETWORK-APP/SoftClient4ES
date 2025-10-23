@@ -1,5 +1,8 @@
 package app.softnetwork.elastic.client
 
+import app.softnetwork.elastic.sql.Identifier
+import app.softnetwork.elastic.sql.function.aggregate.ArrayAgg
+import app.softnetwork.elastic.sql.query.{OrderBy, SQLAggregation}
 import app.softnetwork.serialization.commonFormats
 import org.json4s.Formats
 import org.scalatest.flatspec.AnyFlatSpec
@@ -46,7 +49,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         |  }
         |}""".stripMargin
 
-    parseResponse(results) match {
+    parseResponse(SQLSearchResponse("", results, Map.empty, Map.empty)) match {
       case Success(rows) =>
         rows.foreach(println)
       // Map(name -> Laptop, price -> 999.99, category -> Electronics, tags -> List(computer, portable), _id -> 1, _index -> products, _score -> 1.0)
@@ -55,7 +58,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         throw error
     }
   }
-  it should "parse aggregations with top_hits" in {
+  it should "parse aggregations with top hits" in {
     val results = """{
                     |  "took": 10,
                     |  "hits": { "total": { "value": 100 }, "hits": [] },
@@ -130,23 +133,37 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |  }
                     |}""".stripMargin
 
-    parseResponse(results) match {
+    parseResponse(
+      SQLSearchResponse(
+        "",
+        results,
+        Map.empty,
+        Map(
+          "top_products" -> SQLAggregation(
+            "top_products",
+            "products",
+            "products",
+            aggType = ArrayAgg(Identifier(), orderBy = OrderBy(Seq.empty))
+          )
+        )
+      )
+    ) match {
       case Success(rows) =>
         rows.foreach(println)
-        // HashMap(_score -> 1.0, name -> Laptop, _id -> 1, avg_price -> 450.5, by_category_doc_count -> 50, stock -> 15, category -> Electronics, max_price -> 999.99, price -> 999.99)
-        // HashMap(_score -> 0.95, name -> Phone, _id -> 2, avg_price -> 450.5, by_category_doc_count -> 50, stock -> 25, category -> Electronics, max_price -> 999.99, price -> 699.99)
-        // HashMap(name -> Programming Book, _id -> 3, avg_price -> 25.0, by_category_doc_count -> 30, stock -> 50, category -> Books, max_price -> 45.0, price -> 45.0)
-        val products = rows.map(row => convertTo[Product](row))
+        //HashMap(top_products -> List(HashMap(_score -> 1.0, stock -> 15, name -> Laptop, _id -> 1, price -> 999.99), HashMap(_score -> 0.95, stock -> 25, name -> Phone, _id -> 2, price -> 699.99)), max_price -> 999.99, category -> Electronics, avg_price -> 450.5, category_doc_count -> 50)
+        //HashMap(top_products -> List(HashMap(_score -> 0.0, stock -> 50, name -> Programming Book, _id -> 3, price -> 45.0)), max_price -> 45.0, category -> Books, avg_price -> 25.0, category_doc_count -> 30)
+        val products = rows.map(row => convertTo[Products](row))
         products.foreach(println)
-        // Product(Laptop,450.5,Electronics,15,None)
-        // Product(Phone,450.5,Electronics,25,None)
-        // Product(Programming Book,25.0,Books,50,None)
-        products.size shouldBe 3
-        products.count(_.category == "Electronics") shouldBe 2
+        // Products(Electronics,List(Product(Laptop,999.99,15,None), Product(Phone,699.99,25,None)),450.5)
+        // Products(Books,List(Product(Programming Book,45.0,50,None)),25.0)
+        products.size shouldBe 2
+        products.count(_.category == "Electronics") shouldBe 1
         products.count(_.category == "Books") shouldBe 1
         products.minBy(_.avg_price).avg_price shouldBe 25.0
         products.maxBy(_.avg_price).avg_price shouldBe 450.5
-        products.map(_.name) should contain allOf ("Laptop", "Phone", "Programming Book")
+        products.flatMap(
+          _.top_products.map(_.name)
+        ) should contain allOf ("Laptop", "Phone", "Programming Book")
       case Failure(error) =>
         throw error
     }
@@ -225,7 +242,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |    }
                     |  }
                     |}""".stripMargin
-    parseResponse(results) match {
+    parseResponse(SQLSearchResponse("", results, Map.empty, Map.empty)) match {
       case Success(rows) =>
         rows.foreach(println)
         // Map(country -> France, country_doc_count -> 100, city -> Paris, city_doc_count -> 60, product -> Laptop, product_doc_count -> 30, total_sales -> 29997.0, avg_price -> 999.9)
@@ -272,7 +289,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |    }
                     |  }
                     |}""".stripMargin
-    parseResponse(results) match {
+    parseResponse(SQLSearchResponse("", results, Map.empty, Map.empty)) match {
       case Success(rows) =>
         rows.foreach(println)
         // Map(date -> 2024-01-01T00:00:00.000Z, doc_count -> 100, total_sales -> 50000.0)
@@ -289,12 +306,319 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         throw error
     }
   }
+
+  it should "parse aggregations with FIRST, LAST and ARRAY_AGG" in {
+    val results = """{
+                    |  "took": 45,
+                    |  "timed_out": false,
+                    |  "_shards": {
+                    |    "total": 5,
+                    |    "successful": 5,
+                    |    "skipped": 0,
+                    |    "failed": 0
+                    |  },
+                    |  "hits": {
+                    |    "total": {
+                    |      "value": 150,
+                    |      "relation": "eq"
+                    |    },
+                    |    "max_score": null,
+                    |    "hits": []
+                    |  },
+                    |  "aggregations": {
+                    |    "dept": {
+                    |      "doc_count_error_upper_bound": 0,
+                    |      "sum_other_doc_count": 0,
+                    |      "buckets": [
+                    |        {
+                    |          "key": "Engineering",
+                    |          "doc_count": 45,
+                    |          "cnt": {
+                    |            "value": 38
+                    |          },
+                    |          "first_salary": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 45,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "1",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "salary": 55000,
+                    |                    "firstName": "John"
+                    |                  },
+                    |                  "sort": [
+                    |                    1420070400000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          },
+                    |          "last_salary": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 45,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "45",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "salary": 95000,
+                    |                    "firstName": "Sarah"
+                    |                  },
+                    |                  "sort": [
+                    |                    1672531200000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          },
+                    |          "employees": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 45,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "1",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "name": "John Doe"
+                    |                  },
+                    |                  "sort": [
+                    |                    1420070400000,
+                    |                    95000
+                    |                  ]
+                    |                },
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "2",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "name": "Jane Smith"
+                    |                  },
+                    |                  "sort": [
+                    |                    1425254400000,
+                    |                    88000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          }
+                    |        },
+                    |        {
+                    |          "key": "Sales",
+                    |          "doc_count": 32,
+                    |          "cnt": {
+                    |            "value": 28
+                    |          },
+                    |          "first_salary": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 32,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "50",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "salary": 48000,
+                    |                    "firstName": "Michael"
+                    |                  },
+                    |                  "sort": [
+                    |                    1388534400000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          },
+                    |          "last_salary": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 32,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "82",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "salary": 72000,
+                    |                    "firstName": "Emily"
+                    |                  },
+                    |                  "sort": [
+                    |                    1667260800000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          },
+                    |          "employees": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 32,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "50",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "name": "Michael Brown"
+                    |                  },
+                    |                  "sort": [
+                    |                    1388534400000,
+                    |                    72000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          }
+                    |        },
+                    |        {
+                    |          "key": "Marketing",
+                    |          "doc_count": 28,
+                    |          "cnt": {
+                    |            "value": 25
+                    |          },
+                    |          "first_salary": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 28,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "100",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "salary": 52000,
+                    |                    "firstName": "David"
+                    |                  },
+                    |                  "sort": [
+                    |                    1404172800000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          },
+                    |          "last_salary": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 28,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "128",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "salary": 78000,
+                    |                    "firstName": "Lisa"
+                    |                  },
+                    |                  "sort": [
+                    |                    1672531200000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          },
+                    |          "employees": {
+                    |            "hits": {
+                    |              "total": {
+                    |                "value": 28,
+                    |                "relation": "eq"
+                    |              },
+                    |              "max_score": null,
+                    |              "hits": [
+                    |                {
+                    |                  "_index": "employees",
+                    |                  "_type": "_doc",
+                    |                  "_id": "100",
+                    |                  "_score": null,
+                    |                  "_source": {
+                    |                    "name": "David Wilson"
+                    |                  },
+                    |                  "sort": [
+                    |                    1404172800000,
+                    |                    78000
+                    |                  ]
+                    |                }
+                    |              ]
+                    |            }
+                    |          }
+                    |        }
+                    |      ]
+                    |    }
+                    |  },
+                    |  "fields": {
+                    |    "hire_date": []
+                    |  }
+                    |}""".stripMargin
+
+    parseResponse(
+      SQLSearchResponse(
+        "",
+        results,
+        Map.empty,
+        Map(
+          "employees" -> SQLAggregation(
+            "employees",
+            "employee",
+            "employee",
+            aggType = ArrayAgg(Identifier(), orderBy = OrderBy(Seq.empty))
+          )
+        )
+      )
+    ) match {
+      case Success(rows) =>
+        rows.foreach(println)
+      //HashMap(dept_doc_count -> 45, last_salary -> HashMap(_score -> 0.0, salary -> 95000, firstName -> Sarah, _id -> 45, _index -> employees), first_salary -> HashMap(_score -> 0.0, salary -> 55000, firstName -> John, _id -> 1, _index -> employees), cnt -> 38, employees -> List(Map(name -> John Doe, _id -> 1, _index -> employees, _score -> 0.0), Map(name -> Jane Smith, _id -> 2, _index -> employees, _score -> 0.0)), dept -> Engineering)
+      //HashMap(dept_doc_count -> 32, last_salary -> HashMap(_score -> 0.0, salary -> 72000, firstName -> Emily, _id -> 82, _index -> employees), first_salary -> HashMap(_score -> 0.0, salary -> 48000, firstName -> Michael, _id -> 50, _index -> employees), cnt -> 28, employees -> Map(name -> Michael Brown, _id -> 50, _index -> employees, _score -> 0.0), dept -> Sales)
+      //HashMap(dept_doc_count -> 28, last_salary -> HashMap(_score -> 0.0, salary -> 78000, firstName -> Lisa, _id -> 128, _index -> employees), first_salary -> HashMap(_score -> 0.0, salary -> 52000, firstName -> David, _id -> 100, _index -> employees), cnt -> 25, employees -> Map(name -> David Wilson, _id -> 100, _index -> employees, _score -> 0.0), dept -> Marketing)
+      case Failure(error) =>
+        throw error
+    }
+  }
 }
+
+case class Products(category: String, top_products: List[Product], avg_price: Double)
 
 case class Product(
   name: String,
-  avg_price: Double,
-  category: String,
+  price: Double,
   stock: Int,
   tags: Option[List[String]] = None
 )

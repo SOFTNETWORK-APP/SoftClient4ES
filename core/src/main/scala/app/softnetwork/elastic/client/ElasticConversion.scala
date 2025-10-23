@@ -1,5 +1,22 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.client
 
+import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.fasterxml.jackson.databind.{DeserializationFeature, JsonNode, ObjectMapper}
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
@@ -7,7 +24,6 @@ import org.json4s.{Extraction, Formats}
 
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDateTime}
 import java.time.format.DateTimeFormatter
-import scala.reflect.ClassTag
 import scala.util.Try
 
 //import scala.jdk.CollectionConverters._
@@ -26,6 +42,17 @@ trait ElasticConversion {
     jValue.extract[T]
   }
 
+  def convertTo[T](response: SQLSearchResponse)(implicit
+    m: Manifest[T],
+    formats: Formats
+  ): Try[Seq[T]] = {
+    parseResponse(response).map { rows =>
+      rows.map { row =>
+        convertTo[T](row)
+      }
+    }
+  }
+
   // Formatters for elasticsearch ISO 8601 date/time strings
   private val isoDateTimeFormatter = DateTimeFormatter.ISO_DATE_TIME
   private val isoDateFormatter = DateTimeFormatter.ISO_DATE
@@ -34,20 +61,26 @@ trait ElasticConversion {
   /** main entry point : parse json response from elasticsearch Handles both single search and
     * multi-search (msearch/UNION ALL) responses
     */
-  def parseResponse(jsonString: SQLResult): Try[Seq[Map[String, Any]]] = {
-    val json = mapper.readTree(jsonString)
+  def parseResponse(
+    response: SQLSearchResponse
+  ): Try[Seq[Map[String, Any]]] = {
+    val json = mapper.readTree(response.results)
     // Check if it's a multi-search response (array of responses)
     if (json.isArray) {
-      parseMultiSearchResponse(json)
+      parseMultiSearchResponse(json, response.fieldAliases, response.aggregations)
     } else {
       // Single search response
-      parseSingleSearchResponse(json)
+      parseSingleSearchResponse(json, response.fieldAliases, response.aggregations)
     }
   }
 
   /** Parse a multi-search response (array of search responses) Used for UNION ALL queries
     */
-  def parseMultiSearchResponse(jsonArray: JsonNode): Try[Seq[Map[String, Any]]] =
+  def parseMultiSearchResponse(
+    jsonArray: JsonNode,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): Try[Seq[Map[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
 
@@ -66,7 +99,7 @@ trait ElasticConversion {
         // Parse each response and combine all rows
         val allRows = responses.flatMap { response =>
           if (!response.has("error")) {
-            jsonToRows(response)
+            jsonToRows(response, fieldAliases, aggregations)
           } else {
             Seq.empty
           }
@@ -77,7 +110,11 @@ trait ElasticConversion {
 
   /** Parse a single search response
     */
-  def parseSingleSearchResponse(json: JsonNode): Try[Seq[Map[String, Any]]] =
+  def parseSingleSearchResponse(
+    json: JsonNode,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): Try[Seq[Map[String, Any]]] =
     Try {
       // check if it is an error response
       if (json.has("error")) {
@@ -86,13 +123,17 @@ trait ElasticConversion {
           .getOrElse("Unknown Elasticsearch error")
         throw new Exception(s"Elasticsearch error: $errorMsg")
       } else {
-        jsonToRows(json)
+        jsonToRows(json, fieldAliases, aggregations)
       }
     }
 
   /** convert JsonNode to Rows
     */
-  def jsonToRows(json: JsonNode): Seq[Map[String, Any]] = {
+  def jsonToRows(
+    json: JsonNode,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): Seq[Map[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
       .map(_.elements().asScala.toList)
@@ -103,21 +144,21 @@ trait ElasticConversion {
     (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
-        parseSimpleHits(hits)
+        parseSimpleHits(hits, fieldAliases)
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
-        parseAggregations(aggs, Map.empty)
+        parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
-        parseAggregations(aggs, Map.empty)
+        parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations
         val globalMetrics = extractGlobalMetrics(aggs)
         hits.map { hit =>
-          val source = extractSource(hit)
+          val source = extractSource(hit, fieldAliases)
           val metadata = extractHitMetadata(hit)
           globalMetrics ++ source ++ metadata
         }
@@ -129,9 +170,12 @@ trait ElasticConversion {
 
   /** Parse simple hits (without aggregations)
     */
-  def parseSimpleHits(hits: List[JsonNode]): Seq[Map[String, Any]] = {
+  def parseSimpleHits(
+    hits: List[JsonNode],
+    fieldAliases: Map[String, String]
+  ): Seq[Map[String, Any]] = {
     hits.map { hit =>
-      val source = extractSource(hit)
+      val source = extractSource(hit, fieldAliases)
       val metadata = extractHitMetadata(hit)
       source ++ metadata
     }
@@ -151,10 +195,10 @@ trait ElasticConversion {
 
   /** Extract hit _source
     */
-  def extractSource(hit: JsonNode): Map[String, Any] = {
+  def extractSource(hit: JsonNode, fieldAliases: Map[String, String]): Map[String, Any] = {
     Option(hit.get("_source"))
       .filter(_.isObject)
-      .map(jsonNodeToMap)
+      .map(jsonNodeToMap(_, fieldAliases))
       .getOrElse(Map.empty)
   }
 
@@ -162,7 +206,9 @@ trait ElasticConversion {
     */
   def parseAggregations(
     aggsNode: JsonNode,
-    parentContext: Map[String, Any]
+    parentContext: Map[String, Any],
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {
@@ -174,7 +220,7 @@ trait ElasticConversion {
       .properties()
       .asScala
       .flatMap { entry =>
-        val aggName = entry.getKey
+        val aggName = normalizeAggregationKey(entry.getKey)
         val aggValue = entry.getValue
 
         // Détecter les agrégations avec buckets
@@ -207,12 +253,33 @@ trait ElasticConversion {
     if (bucketAggs.isEmpty) {
       // No buckets : it is a leaf aggregation (metrics or top_hits)
       val metrics = extractMetrics(aggsNode)
-      val topHits = extractTopHits(aggsNode)
+      val allTopHits = extractAllTopHits(aggsNode)
 
-      if (topHits.nonEmpty) {
-        topHits.map { hit =>
-          parentContext ++ metrics ++ extractSource(hit) ++ extractHitMetadata(hit)
+      if (allTopHits.nonEmpty) {
+        // Process each top_hits aggregation with their names
+        val topHitsData = allTopHits.map { case (topHitName, hits) =>
+          val processedHits = hits.map { hit =>
+            extractSource(hit, fieldAliases) ++ extractHitMetadata(hit)
+          }
+
+          // Determine if it is a multivalued aggregation
+          val isMultipleValues = aggregations.get(topHitName) match {
+            case Some(agg) => agg.multivalued
+            case None      =>
+              // Fallback on naming convention if aggregation is not found
+              !topHitName.toLowerCase.matches("(first|last)_.*")
+          }
+
+          // If multipleValues = true OR more than one hit, return a list
+          // If multipleValues = false AND only one hit, return an object
+          topHitName -> (if (!isMultipleValues && processedHits.size == 1)
+                           processedHits.head
+                         else
+                           processedHits)
         }
+
+        Seq(parentContext ++ metrics ++ topHitsData)
+
       } else if (metrics.nonEmpty || parentContext.nonEmpty) {
         Seq(parentContext ++ metrics)
       } else {
@@ -251,7 +318,7 @@ trait ElasticConversion {
             /*subAggFields.foreach { entry =>
               subAggsNode.set(entry.getKey, entry.getValue) // FIXME
             }*/
-            parseAggregations(subAggsNode, currentContext)
+            parseAggregations(subAggsNode, currentContext, fieldAliases, aggregations)
           } else {
             Seq(currentContext)
           }
@@ -315,7 +382,7 @@ trait ElasticConversion {
       .properties()
       .asScala
       .flatMap { entry =>
-        val name = entry.getKey
+        val name = normalizeAggregationKey(entry.getKey)
         val value = entry.getValue
 
         // Detect simple metric values
@@ -367,24 +434,25 @@ trait ElasticConversion {
       .toMap
   }
 
-  /** Extract all top hits from an aggregation node
-    */
-  def extractTopHits(aggsNode: JsonNode): Seq[JsonNode] = {
-    if (!aggsNode.isObject) return Seq.empty
+  /** Extract all top_hits aggregations with their names and hits */
+  def extractAllTopHits(aggsNode: JsonNode): Map[String, Seq[JsonNode]] = {
+    if (!aggsNode.isObject) return Map.empty
 
     aggsNode
       .properties()
       .asScala
-      .collectFirst {
+      .collect {
         case entry if entry.getValue.has("hits") =>
+          val normalizedKey = normalizeAggregationKey(entry.getKey)
           val hitsNode = entry.getValue.path("hits").path("hits")
-          if (hitsNode.isArray) {
+          val hits = if (hitsNode.isArray) {
             hitsNode.elements().asScala.toSeq
           } else {
             Seq.empty
           }
+          normalizedKey -> hits
       }
-      .getOrElse(Seq.empty)
+      .toMap
   }
 
   /** Extract global metrics from aggregations (for hits + aggs case)
@@ -422,21 +490,22 @@ trait ElasticConversion {
 
   /** Convert recursively a JsonNode to Map
     */
-  def jsonNodeToMap(node: JsonNode): Map[String, Any] = {
+  def jsonNodeToMap(node: JsonNode, fieldAliases: Map[String, String]): Map[String, Any] = {
     if (!node.isObject) return Map.empty
 
     node
       .properties()
       .asScala
       .map { entry =>
-        entry.getKey -> jsonNodeToAny(entry.getValue)
+        val name = entry.getKey
+        fieldAliases.getOrElse(name, name) -> jsonNodeToAny(entry.getValue, fieldAliases)
       }
       .toMap
   }
 
   /** Convert a JsonNode to Any (primitive types, List, Map)
     */
-  def jsonNodeToAny(node: JsonNode): Any = {
+  def jsonNodeToAny(node: JsonNode, fieldAliases: Map[String, String]): Any = {
     if (node == null || node.isNull) null
     else if (node.isBoolean) node.booleanValue()
     else if (node.isNumber) node.numberValue()
@@ -445,11 +514,21 @@ trait ElasticConversion {
       // Try to parse as date/time
       tryParseAsDateTime(text).getOrElse(text)
     } else if (node.isArray) {
-      node.elements().asScala.map(jsonNodeToAny).toList
+      node.elements().asScala.map(jsonNodeToAny(_, fieldAliases)).toList
     } else if (node.isObject) {
-      jsonNodeToMap(node)
+      jsonNodeToMap(node, fieldAliases)
     } else {
       node.asText()
+    }
+  }
+
+  /** Normalize aggregation key by removing ES type prefix Examples: "cardinality#c" -> "c"
+    * "terms#category" -> "category" "c" -> "c" (unchanged)
+    */
+  private[this] def normalizeAggregationKey(key: String): String = {
+    key.split('#') match {
+      case Array(_, suffix) if suffix.nonEmpty => suffix
+      case _                                   => key
     }
   }
 }
