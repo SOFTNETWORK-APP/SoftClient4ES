@@ -19,14 +19,15 @@ package app.softnetwork.elastic
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStage, GraphStageLogic}
 import app.softnetwork.elastic.client.BulkAction.BulkAction
-import app.softnetwork.elastic.sql.query.SQLAggregation
+import app.softnetwork.elastic.sql.query.{Asc, SQLAggregation, SortOrder}
 import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
 import org.json4s.Formats
 import org.slf4j.Logger
 
-import scala.collection.immutable.Seq
 import scala.collection.mutable
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
 
@@ -186,5 +187,73 @@ package object client {
         logger.error("An error occurred while executing the block", e)
         default
     }
+  }
+
+  /** Scroll configuration
+    */
+  case class ScrollConfig(
+    scrollTimeout: String = "1m",
+    scrollSize: Int = 1000,
+    maxDocuments: Option[Long] = None,
+    preferSearchAfter: Boolean = true, // Préférence pour search_after si possible
+    metrics: ScrollMetrics = ScrollMetrics(),
+    retryConfig: RetryConfig = RetryConfig()
+  )
+
+  /** Scroll strategy based on query type
+    */
+  sealed trait ScrollStrategy
+  case object UseScroll extends ScrollStrategy // Pour agrégations ou requêtes complexes
+  case object UseSearchAfter extends ScrollStrategy // Pour hits simples (plus performant)
+
+  /** Scroll metrics
+    */
+  case class ScrollMetrics(
+    totalDocuments: Long = 0,
+    totalBatches: Long = 0,
+    startTime: Long = System.currentTimeMillis(),
+    var endTime: Option[Long] = None
+  ) {
+    def duration: Long = endTime.getOrElse(System.currentTimeMillis()) - startTime
+    def documentsPerSecond: Double = totalDocuments.toDouble / (duration / 1000.0)
+  }
+
+  /** Retry configuration
+    */
+  case class RetryConfig(
+    maxRetries: Int = 3,
+    initialDelay: FiniteDuration = 1.second,
+    maxDelay: FiniteDuration = 10.seconds,
+    backoffFactor: Double = 2.0
+  )
+
+  /** Retry logic with exponential backoff
+    */
+  private[client] def retryWithBackoff[T](config: RetryConfig)(
+    operation: => Future[T]
+  )(implicit ec: ExecutionContext, logger: Logger): Future[T] = {
+
+    def attempt(retriesLeft: Int, delay: FiniteDuration): Future[T] = {
+      operation.recoverWith {
+        case ex if retriesLeft > 0 && isRetriableError(ex) =>
+          logger.warn(s"Retrying after failure (${retriesLeft} retries left): ${ex.getMessage}")
+
+          akka.pattern.after(delay, akka.actor.ActorSystem("retry").scheduler) {
+            val nextDelay = (delay * config.backoffFactor).min(config.maxDelay).asInstanceOf
+            attempt(retriesLeft - 1, nextDelay)
+          }
+      }
+    }
+
+    attempt(config.maxRetries, config.initialDelay)
+  }
+
+  /** Determine if an error is retriable
+    */
+  private def isRetriableError(ex: Throwable): Boolean = ex match {
+    case _: java.net.SocketTimeoutException => true
+    case _: java.io.IOException             => true
+    // case _: TransportException => true
+    case _ => false
   }
 }

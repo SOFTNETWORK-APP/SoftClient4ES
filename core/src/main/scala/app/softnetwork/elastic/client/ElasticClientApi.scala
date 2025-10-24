@@ -28,7 +28,8 @@ import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SQLMultiSearchRequest,
   SQLQuery,
-  SQLSearchRequest
+  SQLSearchRequest,
+  SortOrder
 }
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
@@ -39,7 +40,7 @@ import org.slf4j.Logger
 import java.util.UUID
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
-import scala.language.{implicitConversions, postfixOps}
+import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
@@ -52,15 +53,14 @@ trait ElasticClientApi
     with MappingApi
     with CountApi
     with SingleValueAggregateApi
-    with SearchApi
+    with ScrollApi
     with IndexApi
     with UpdateApi
     with GetApi
     with BulkApi
     with DeleteApi
     with RefreshApi
-    with FlushApi
-    with ElasticConversion {
+    with FlushApi { _: { def logger: Logger } =>
 
   def config: Config = ConfigFactory.load()
 
@@ -1053,7 +1053,7 @@ trait GetApi {
   }
 }
 
-trait SearchApi { _: ElasticConversion =>
+trait SearchApi extends ElasticConversion {
   implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String
 
   implicit def sqlQueryToJSONQuery(sqlQuery: SQLQuery): JSONQuery = {
@@ -1351,4 +1351,168 @@ trait SearchApi { _: ElasticConversion =>
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]]
+}
+
+/** API for scrolling through search results using Akka Streams
+  */
+trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
+
+  /** Determine the best scroll strategy based on the query
+    */
+  private[this] def determineScrollStrategy(
+    jsonQuery: JSONQuery,
+    aggregations: Map[String, SQLAggregation]
+  ): ScrollStrategy = {
+    // Si des agrégations sont présentes, utiliser le scroll classique
+    if (aggregations.nonEmpty) {
+      UseScroll
+    } else {
+      // Vérifier si la requête contient des agrégations dans le JSON
+      val hasAggregations = jsonQuery.query.contains("\"aggregations\"") ||
+        jsonQuery.query.contains("\"aggs\"")
+
+      if (hasAggregations) {
+        UseScroll
+      } else {
+        UseSearchAfter
+      }
+    }
+  }
+
+  /** Create a scrolling source with automatic strategy selection
+    */
+  final def scrollSource(
+    sql: SQLQuery,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit ec: ExecutionContext): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+    sql.request match {
+      case Some(Left(single)) =>
+        val sqlRequest = single.copy(score = sql.score)
+        val jsonQuery = JSONQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+        scrollSourceWithMetrics(
+          jsonQuery,
+          sqlRequest.fieldAliases,
+          sqlRequest.sqlAggregations,
+          config,
+          single.sorts
+        )
+
+      case Some(Right(_)) =>
+        Source.failed(
+          new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
+        )
+
+      case None =>
+        Source.failed(
+          new IllegalArgumentException("SQL query does not contain a valid search request")
+        )
+    }
+  }
+
+  /** Scroll with metrics tracking
+    */
+  private[this] def scrollSourceWithMetrics(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    sorts: Map[String, SortOrder] = Map.empty
+  )(implicit ec: ExecutionContext): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+
+    var metrics = config.metrics
+
+    scrollSource(jsonQuery, fieldAliases, aggregations, config, sorts)
+      .grouped(config.scrollSize)
+      .map { batch =>
+        metrics = metrics.copy(
+          totalDocuments = metrics.totalDocuments + batch.size,
+          totalBatches = metrics.totalBatches + 1
+        )
+
+        if (metrics.totalBatches % 10 == 0) {
+          logger.info(
+            s"Scroll progress: ${metrics.totalDocuments} docs, " +
+            s"${metrics.totalBatches} batches, " +
+            s"${metrics.documentsPerSecond} docs/sec"
+          )
+        }
+
+        batch.map(doc => (doc, metrics))
+      }
+      .mapConcat(identity)
+      .watchTermination() { (_, done) =>
+        done.onComplete { _ =>
+          metrics = metrics.copy(endTime = Some(System.currentTimeMillis()))
+          logger.info(
+            s"Scroll completed: ${metrics.totalDocuments} docs in ${metrics.duration}ms " +
+            s"(${metrics.documentsPerSecond} docs/sec)"
+          )
+        }
+        NotUsed
+      }
+  }
+
+  /** Create a scrolling source for JSON query with automatic strategy
+    */
+  private[this] def scrollSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    sorts: Map[String, SortOrder]
+  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed] = {
+    val strategy = determineScrollStrategy(jsonQuery, aggregations)
+
+    logger.info(
+      s"Using scroll strategy: $strategy for query on ${jsonQuery.indices.mkString(", ")}"
+    )
+
+    strategy match {
+      case UseScroll =>
+        logger.info("Using classic scroll (supports aggregations)")
+        scrollSourceClassic(jsonQuery, fieldAliases, aggregations, config)
+
+      case UseSearchAfter if config.preferSearchAfter =>
+        logger.info("Using search_after (optimized for hits only)")
+        searchAfterSource(jsonQuery, fieldAliases, aggregations, config, sorts)
+
+      case _ =>
+        logger.info("Falling back to classic scroll")
+        scrollSourceClassic(jsonQuery, fieldAliases, aggregations, config)
+    }
+  }
+
+  /** Classic scroll (works for both hits and aggregations)
+    */
+  def scrollSourceClassic(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed]
+
+  /** Search After (only for hits, more efficient)
+    */
+  def searchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    sorts: Map[String, SortOrder] = Map.empty
+  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed]
+
+  /** Typed scroll source
+    */
+  final def scrollSourceAs[T](
+    sql: SQLQuery,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit
+    ec: ExecutionContext,
+    m: Manifest[T],
+    formats: Formats
+  ): Source[T, NotUsed] = {
+    scrollSource(sql, config).map(_._1).mapConcat { row =>
+      Seq(convertTo[T](row)(m, formats)) // FIXME
+    }
+  }
 }
