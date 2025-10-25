@@ -20,11 +20,11 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest, SortOrder}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import com.google.gson.{JsonObject, JsonParser}
+import com.google.gson.{JsonNull, JsonObject, JsonParser}
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
 import io.searchbox.indices._
@@ -34,6 +34,8 @@ import io.searchbox.indices.reindex.Reindex
 import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 import io.searchbox.params.Parameters
 import org.json4s.Formats
+
+import java.io.IOException
 
 //import scala.jdk.CollectionConverters._
 import scala.collection.JavaConverters._
@@ -744,7 +746,7 @@ trait JestBulkApi
 
 }
 
-trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchApi =>
+trait JestScrollApi extends ScrollApi with JestClientCompanion {
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -753,7 +755,8 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchAp
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
@@ -761,7 +764,7 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchAp
             scrollIdOpt match {
               case None =>
                 logger.info(
-                  s"Starting scroll with retry on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
                 )
 
                 val searchBuilder =
@@ -773,68 +776,57 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchAp
                 for (t      <- jsonQuery.types) searchBuilder.addType(t)
 
                 val result = apply().execute(searchBuilder.build())
-
                 if (!result.isSucceeded) {
-                  logger.error(s"Initial scroll failed: ${result.getErrorMessage}")
+                  throw new IOException(s"Initial scroll failed: ${result.getErrorMessage}")
+                }
+
+                val scrollId = result.getJsonObject.get("_scroll_id").getAsString
+
+                // Extract ALL results (hits + aggregations)
+                val results =
+                  extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
+
+                logger.info(
+                  s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
+                )
+
+                if (results.isEmpty) {
                   None
                 } else {
-                  val scrollId = result.getJsonObject.get("_scroll_id").getAsString
-
-                  // Extract ALL results (hits + aggregations)
-                  val results =
-                    extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
-
-                  logger.info(
-                    s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
-                  )
-
-                  if (results.isEmpty) {
-                    None
-                  } else {
-                    Some((Some(scrollId), results))
-                  }
+                  Some((Some(scrollId), results))
                 }
 
               case Some(scrollId) =>
-                logger.debug(s"Continuing Jest scroll with scrollId: $scrollId")
+                logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
 
                 val scrollBuilder = new SearchScroll.Builder(scrollId, config.scrollTimeout)
 
-                Try(apply().execute(scrollBuilder.build())) match {
-                  case Success(result) if result.isSucceeded =>
-                    val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
-                    val results =
-                      extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
+                val result = apply().execute(scrollBuilder.build())
+                if (!result.isSucceeded) {
+                  // Lancer une exception pour trigger le retry
+                  throw new IOException(s"Scroll failed: ${result.getErrorMessage}")
+                }
+                val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
+                val results =
+                  extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
 
-                    logger.debug(s"Scroll returned ${results.size} results")
+                logger.debug(s"Scroll returned ${results.size} results")
 
-                    if (results.isEmpty) {
-                      clearJestScroll(scrollId)
-                      None
-                    } else {
-                      Some((Some(newScrollId), results))
-                    }
-
-                  case Success(result) =>
-                    logger.error(s"Scroll failed: ${result.getErrorMessage}")
-                    clearJestScroll(scrollId)
-                    None
-
-                  case Failure(ex) =>
-                    logger.error(s"Scroll exception: ${ex.getMessage}", ex)
-                    clearJestScroll(scrollId)
-                    None
+                if (results.isEmpty) {
+                  clearJestScroll(scrollId)
+                  None
+                } else {
+                  Some((Some(newScrollId), results))
                 }
             }
           }
-        }(ec, logger).recover { case ex: Exception =>
+        }(system, logger).recover { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
           scrollIdOpt.foreach(clearJestScroll)
           None
         }
       }
       .mapConcat(identity)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
   }
 
   /** Search After (only for hits, more efficient)
@@ -844,48 +836,75 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchAp
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
-    sorts: Map[String, SortOrder] = Map.empty
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed] = {
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
-        Future {
-          val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
-
-          // Add sort fields if required
-          if (sorts.isEmpty) {
-            logger.warn(
-              s"No sort fields provided for search after, defaulting to _id ascending. This may lead to inconsistent results."
-            )
-            val sortArray = new com.google.gson.JsonArray()
-            val sortObj = new JsonObject()
-            sortObj.addProperty("_id", "asc")
-            sortArray.add(sortObj)
-            queryJson.add("sort", sortArray)
-          }
-
-          queryJson.addProperty("size", config.scrollSize)
-
-          // Add search_after
-          searchAfterOpt.foreach { searchAfter =>
-            val searchAfterArray = new com.google.gson.JsonArray()
-            searchAfter.foreach {
-              case s: String => searchAfterArray.add(s)
-              case n: Number => searchAfterArray.add(n)
-              case other     => searchAfterArray.add(other.toString)
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            searchAfterOpt match {
+              case None =>
+                logger.info(
+                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+              case Some(values) =>
+                logger.debug(s"Fetching next search_after batch (after: ${values.mkString(", ")})")
             }
-            queryJson.add("search_after", searchAfterArray)
-          }
 
-          val searchBuilder = new Search.Builder(queryJson.toString)
-          for (indice <- jsonQuery.indices) searchBuilder.addIndex(indice)
-          for (t      <- jsonQuery.types) searchBuilder.addType(t)
+            val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
 
-          val result = apply().execute(searchBuilder.build())
+            // Check if sorts already exist in the query
+            if (!hasSorts && !queryJson.has("sort")) {
+              // No sorting defined, add _id by default
+              logger.warn(
+                "No sort fields in query for search_after, adding default _id sort. " +
+                "This may lead to inconsistent results if documents are updated during scroll."
+              )
+              val sortArray = new com.google.gson.JsonArray()
+              val sortObj = new JsonObject()
+              sortObj.addProperty("_id", "asc")
+              sortArray.add(sortObj)
+              queryJson.add("sort", sortArray)
+            } else if (hasSorts && queryJson.has("sort")) {
+              // Sorts already present, check that a tie-breaker exists
+              val existingSorts = queryJson.getAsJsonArray("sort")
+              val hasIdSort = existingSorts.asScala.exists { sortElem =>
+                sortElem.isJsonObject && sortElem.getAsJsonObject.has("_id")
+              }
+              if (!hasIdSort) {
+                // Add _id as tie-breaker
+                logger.debug("Adding _id as tie-breaker to existing sorts")
+                val tieBreaker = new JsonObject()
+                tieBreaker.addProperty("_id", "asc")
+                existingSorts.add(tieBreaker)
+              }
+            }
 
-          if (!result.isSucceeded) {
-            logger.error(s"Search after failed: ${result.getErrorMessage}")
-            None
-          } else {
+            queryJson.addProperty("size", config.scrollSize)
+
+            // Add search_after
+            searchAfterOpt.foreach { searchAfter =>
+              val searchAfterArray = new com.google.gson.JsonArray()
+              searchAfter.foreach {
+                case s: String  => searchAfterArray.add(s)
+                case n: Number  => searchAfterArray.add(n)
+                case b: Boolean => searchAfterArray.add(b)
+                case null       => searchAfterArray.add(JsonNull.INSTANCE)
+                case other      => searchAfterArray.add(other.toString)
+              }
+              queryJson.add("search_after", searchAfterArray)
+            }
+
+            val searchBuilder = new Search.Builder(queryJson.toString)
+            for (indice <- jsonQuery.indices) searchBuilder.addIndex(indice)
+            for (t      <- jsonQuery.types) searchBuilder.addType(t)
+
+            val result = apply().execute(searchBuilder.build())
+
+            if (!result.isSucceeded) {
+              throw new IOException(s"Search after failed: ${result.getErrorMessage}")
+            }
             // Extract ONLY hits (no aggregations)
             val hits = extractHitsOnlyFromJest(result.getJsonObject, fieldAliases)
 
@@ -906,8 +925,14 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchAp
                       if (elem.isJsonPrimitive) {
                         val prim = elem.getAsJsonPrimitive
                         if (prim.isString) prim.getAsString
-                        else if (prim.isNumber) prim.getAsLong
-                        else prim.getAsString
+                        else if (prim.isBoolean) prim.getAsBoolean
+                        else if (prim.isNumber) {
+                          val num = prim.getAsNumber
+                          if (num.toString.contains(".")) num.doubleValue()
+                          else num.longValue()
+                        } else prim.getAsString
+                      } else if (elem.isJsonNull) {
+                        null
                       } else {
                         elem.toString
                       }
@@ -921,14 +946,12 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion { _: JestSearchAp
               Some((nextSearchAfter, hits))
             }
           }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
+          None
         }
       }
-      .recover { case ex: Exception =>
-        logger.error(s"Search after error: ${ex.getMessage}", ex)
-        None
-      }
       .mapConcat(identity)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
   }
 
   /** Extract ALL results: hits + aggregations

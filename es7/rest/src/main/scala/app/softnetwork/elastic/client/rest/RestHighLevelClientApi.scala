@@ -21,7 +21,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest, SortOrder}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.client
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization.serialization
@@ -62,11 +62,12 @@ import org.elasticsearch.core.TimeValue
 import org.elasticsearch.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
 import org.elasticsearch.search.builder.SearchSourceBuilder
-import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder => ESSortOrder}
+import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.Formats
 
-import java.io.ByteArrayInputStream
-import scala.collection.JavaConverters.mapAsScalaMapConverter
+import java.io.{ByteArrayInputStream, IOException}
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -869,7 +870,6 @@ trait RestHighLevelClientBulkApi
 }
 
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientSearchApi =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -878,7 +878,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
@@ -887,7 +888,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
               case None =>
                 // Initial search with scroll
                 logger.info(
-                  s"Starting scroll with retry on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
                 )
 
                 val query = jsonQuery.query
@@ -913,14 +914,22 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
 
                 val response = apply().search(searchRequest, RequestOptions.DEFAULT)
 
+                if (response.status() != RestStatus.OK) {
+                  throw new IOException(s"Initial scroll failed with status: ${response.status()}")
+                }
+
                 val scrollId = response.getScrollId
+
+                if (scrollId == null) {
+                  throw new IllegalStateException("Scroll ID is null in response")
+                }
 
                 // Extract both hits AND aggregations
                 val results = extractAllResults(response, fieldAliases, aggregations)
 
                 logger.info(s"Initial scroll returned ${results.size} results, scrollId: $scrollId")
 
-                if (results.isEmpty || scrollId == null) {
+                if (results.isEmpty) {
                   None
                 } else {
                   Some((Some(scrollId), results))
@@ -928,115 +937,154 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
 
               case Some(scrollId) =>
                 // Subsequent scroll requests
-                logger.debug(s"Continuing scroll with scrollId: $scrollId")
+                logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
 
                 val scrollRequest = new SearchScrollRequest(scrollId)
                 scrollRequest.scroll(
                   TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
                 )
 
-                Try(apply().scroll(scrollRequest, RequestOptions.DEFAULT)) match {
-                  case Success(response) =>
-                    val newScrollId = response.getScrollId
-                    val results = extractAllResults(response, fieldAliases, aggregations)
+                val result = apply().scroll(scrollRequest, RequestOptions.DEFAULT)
 
-                    logger.debug(s"Scroll returned ${results.size} results")
+                if (result.status() != RestStatus.OK) {
+                  clearScroll(scrollId)
+                  throw new IOException(
+                    s"Scroll continuation failed with status: ${result.status()}"
+                  )
+                }
 
-                    if (results.isEmpty) {
-                      clearScroll(scrollId)
-                      None
-                    } else {
-                      Some((Some(newScrollId), results))
-                    }
+                val newScrollId = result.getScrollId
+                val results = extractAllResults(result, fieldAliases, aggregations)
 
-                  case Failure(ex) =>
-                    logger.error(s"Scroll failed: ${ex.getMessage}", ex)
-                    clearScroll(scrollId)
-                    None
+                logger.debug(s"Scroll returned ${results.size} results")
+
+                if (results.isEmpty) {
+                  clearScroll(scrollId)
+                  None
+                } else {
+                  Some((Some(newScrollId), results))
                 }
             }
           }
-        }(ec, logger).recover { case ex: Exception =>
+        }(system, logger).recover { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
           scrollIdOpt.foreach(clearScroll)
           None
         }
       }
       .mapConcat(identity)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
   }
 
   /** Search After (only for hits, more efficient)
+    * @note
+    *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
     */
   override def searchAfterSource(
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
-    sorts: Map[String, SortOrder] = Map.empty
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed] = {
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
-        Future {
-          logger.debug(s"Search after: ${searchAfterOpt.map(_.mkString(","))}")
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            searchAfterOpt match {
+              case None =>
+                logger.info(
+                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+              case Some(values) =>
+                logger.debug(s"Fetching next search_after batch (after: ${if (values.length > 3)
+                  s"[${values.take(3).mkString(", ")}...]"
+                else values.mkString(", ")})")
+            }
 
-          // Create a parser for the query
-          val xContentParser = XContentType.JSON
-            .xContent()
-            .createParser(
-              namedXContentRegistry,
-              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-              jsonQuery.query
-            )
-          val sourceBuilder =
-            SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+            val query = jsonQuery.query
+            // Create a parser for the query
+            val xContentParser = XContentType.JSON
+              .xContent()
+              .createParser(
+                namedXContentRegistry,
+                DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                query
+              )
+            val sourceBuilder =
+              SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
 
-          // Add sort fields if required
-          if (sorts.isEmpty) {
-            logger.warn(
-              s"No sort fields provided for search after, defaulting to _id ascending. This may lead to inconsistent results."
-            )
-            sourceBuilder.sort(new FieldSortBuilder("_id").order(ESSortOrder.ASC))
-          }
+            // Check if sorts already exist in the query
+            if (!hasSorts && sourceBuilder.sorts() == null) {
+              logger.warn(
+                "No sort fields in query for search_after, adding default _id sort. " +
+                "This may lead to inconsistent results if documents are updated during scroll."
+              )
+              sourceBuilder.sort("_id", SortOrder.ASC)
+            } else if (hasSorts && sourceBuilder.sorts() != null) {
+              // Sorts already present, check that a tie-breaker exists
+              val hasIdSort = sourceBuilder.sorts().asScala.exists { sortBuilder =>
+                sortBuilder match {
+                  case fieldSort: FieldSortBuilder =>
+                    fieldSort.getFieldName == "_id"
+                  case _ =>
+                    false
+                }
+              }
+              if (!hasIdSort) {
+                // Add _id as tie-breaker
+                logger.debug("Adding _id as tie-breaker to existing sorts")
+                sourceBuilder.sort("_id", SortOrder.ASC)
+              }
+            }
 
-          // Add search_after if available
-          searchAfterOpt.foreach { searchAfter =>
-            sourceBuilder.searchAfter(searchAfter)
-          }
+            // Add search_after if available
+            searchAfterOpt.foreach { searchAfter =>
+              sourceBuilder.searchAfter(searchAfter)
+            }
 
-          // Execute the search
-          val searchRequest =
-            new SearchRequest(jsonQuery.indices: _*)
-              .types(jsonQuery.types: _*)
-              .source(
-                sourceBuilder
+            // Execute the search
+            val searchRequest =
+              new SearchRequest(jsonQuery.indices: _*)
+                .types(jsonQuery.types: _*)
+                .source(
+                  sourceBuilder
+                )
+
+            val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+            if (response.status() != RestStatus.OK) {
+              throw new IOException(s"Search after failed with status: ${response.status()}")
+            }
+
+            // Extract ONLY hits (no aggregations for search_after)
+            val hits = extractHitsOnly(response, fieldAliases)
+
+            if (hits.isEmpty) {
+              None
+            } else {
+              val searchHits = response.getHits.getHits
+              val lastHit = searchHits.last
+              val nextSearchAfter = Option(lastHit.getSortValues)
+
+              logger.debug(
+                s"Retrieved ${hits.size} hits, next search_after: ${nextSearchAfter
+                  .map(arr =>
+                    if (arr.length > 3) s"[${arr.take(3).mkString(", ")}...]"
+                    else arr.mkString(", ")
+                  )
+                  .getOrElse("None")}"
               )
 
-          val response = apply().search(searchRequest, RequestOptions.DEFAULT)
-
-          // Extract ONLY hits (no aggregations for search_after)
-          val hits = extractHitsOnly(response, fieldAliases)
-
-          if (hits.isEmpty) {
-            None
-          } else {
-            val searchHits = response.getHits.getHits
-            val lastHit = searchHits.last
-            val nextSearchAfter = Option(lastHit.getSortValues)
-
-            logger.debug(
-              s"Retrieved ${hits.size} hits, next search_after: ${nextSearchAfter.map(_.mkString(","))}"
-            )
-
-            Some((nextSearchAfter, hits))
+              Some((nextSearchAfter, hits))
+            }
           }
-        }.recover { case ex: Exception =>
-          logger.error(s"Search after error: ${ex.getMessage}", ex)
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
           None
         }
       }
       .mapConcat(identity)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
   }
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations

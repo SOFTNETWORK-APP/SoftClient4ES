@@ -22,17 +22,11 @@ import akka.stream.scaladsl
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest, SortOrder}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.{client, sql}
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization.serialization
-import co.elastic.clients.elasticsearch._types.{
-  FieldSort,
-  FieldValue,
-  SortOptions,
-  SortOrder => ESSortOrder,
-  Time
-}
+import co.elastic.clients.elasticsearch._types.{FieldSort, FieldValue, SortOptions, SortOrder, Time}
 import co.elastic.clients.elasticsearch.core.bulk.{
   BulkOperation,
   BulkResponseItem,
@@ -51,7 +45,7 @@ import co.elastic.clients.json.JsonpSerializable
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import com.google.gson.{Gson, JsonParser}
 
-import _root_.java.io.{StringReader, StringWriter}
+import _root_.java.io.{IOException, StringReader, StringWriter}
 import _root_.java.util.{Map => JMap}
 //import scala.jdk.CollectionConverters._
 import scala.collection.JavaConverters._
@@ -563,26 +557,35 @@ trait ElasticsearchClientGetApi extends GetApi with ElasticsearchClientCompanion
   }
 }
 
-trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientCompanion {
-  _: ElasticConversion =>
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
-    implicitly[ElasticSearchRequest](sqlSearch).query
-
+trait ElasticsearchConversion extends ElasticConversion { _: ElasticsearchClientCompanion =>
   private[this] val jsonpMapper = new JacksonJsonpMapper(mapper)
 
   /** Convert any Elasticsearch response to JSON string */
   protected def convertToJson[T <: JsonpSerializable](response: T): String = {
     val stringWriter = new StringWriter()
     val generator = jsonpMapper.jsonProvider().createGenerator(stringWriter)
-
     try {
       response.serialize(generator, jsonpMapper)
       generator.flush()
       stringWriter.toString
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to convert response to JSON: ${ex.getMessage}", ex)
+        throw new IOException("Failed to serialize Elasticsearch response", ex)
     } finally {
-      generator.close()
+      Try(generator.close()).failed.foreach { ex =>
+        logger.warn(s"Failed to close JSON generator: ${ex.getMessage}")
+      }
     }
   }
+}
+
+trait ElasticsearchClientSearchApi
+    extends SearchApi
+    with ElasticsearchConversion
+    with ElasticsearchClientCompanion {
+  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
+    implicitly[ElasticSearchRequest](sqlSearch).query
 
   /** Search for entities matching the given JSON query.
     *
@@ -930,8 +933,10 @@ trait ElasticsearchClientBulkApi
   }
 }
 
-trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientCompanion {
-  self: ElasticsearchClientSearchApi =>
+trait ElasticsearchClientScrollApi
+    extends ScrollApi
+    with ElasticsearchConversion
+    with ElasticsearchClientCompanion {
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -940,15 +945,18 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientCom
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit ec: ExecutionContext): scaladsl.Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             scrollIdOpt match {
               case None =>
-                // Initial search
-                logger.info(s"Starting scroll with retry on ${jsonQuery.indices.mkString(", ")}")
+                // Initial search with scroll
+                logger.info(
+                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
 
                 val searchRequest = new SearchRequest.Builder()
                   .index(jsonQuery.indices.asJava)
@@ -958,7 +966,27 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientCom
                   .build()
 
                 val response = apply().search(searchRequest, classOf[JMap[String, Object]])
+
+                if (
+                  response.shards() != null && response
+                    .shards()
+                    .failed() != null && response.shards().failed().intValue() > 0
+                ) {
+                  val failures = response.shards().failures()
+                  val errorMsg = if (failures != null && !failures.isEmpty) {
+                    failures.asScala.map(_.reason()).mkString("; ")
+                  } else {
+                    "Unknown shard failure"
+                  }
+                  throw new IOException(s"Initial scroll failed: $errorMsg")
+                }
+
                 val scrollId = response.scrollId()
+
+                if (scrollId == null) {
+                  throw new IllegalStateException("Scroll ID is null in response")
+                }
+
                 val results = extractAllResults(Left(response), fieldAliases, aggregations)
 
                 if (results.isEmpty || scrollId == null) None
@@ -966,12 +994,30 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientCom
 
               case Some(scrollId) =>
                 // Subsequent scroll
+                logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
+
                 val scrollRequest = new ScrollRequest.Builder()
                   .scrollId(scrollId)
                   .scroll(Time.of(t => t.time(config.scrollTimeout)))
                   .build()
 
                 val response = apply().scroll(scrollRequest, classOf[JMap[String, Object]])
+
+                if (
+                  response.shards() != null && response
+                    .shards()
+                    .failed() != null && response.shards().failed().intValue() > 0
+                ) {
+                  clearScroll(scrollId)
+                  val failures = response.shards().failures()
+                  val errorMsg = if (failures != null && !failures.isEmpty) {
+                    failures.asScala.map(_.reason()).mkString("; ")
+                  } else {
+                    "Unknown shard failure"
+                  }
+                  throw new IOException(s"Scroll continuation failed: $errorMsg")
+                }
+
                 val newScrollId = response.scrollId()
                 val results = extractAllResults(Right(response), fieldAliases, aggregations)
 
@@ -983,14 +1029,13 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientCom
                 }
             }
           }
-        }(ec, logger).recover { case ex: Exception =>
+        }(system, logger).recover { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
           scrollIdOpt.foreach(clearScroll)
           None
         }
       }
       .mapConcat(identity)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
   }
 
   /** Search After (only for hits, more efficient)
@@ -1000,88 +1045,135 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientCom
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
-    sorts: Map[String, SortOrder] = Map.empty
-  )(implicit ec: ExecutionContext): scaladsl.Source[Map[String, Any], NotUsed] = {
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
-        Future {
-          logger.debug(s"Search after: $searchAfterOpt")
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            searchAfterOpt match {
+              case None =>
+                logger.info(
+                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+              case Some(values) =>
+                logger.debug(s"Fetching next search_after batch (after: ${if (values.length > 3)
+                  s"[${values.take(3).mkString(", ")}...]"
+                else values.mkString(", ")})")
+            }
 
-          // Build search request with search_after
-          val requestBuilder = new SearchRequest.Builder()
-            .index(jsonQuery.indices.asJava)
-            .withJson(new StringReader(jsonQuery.query))
-            .size(config.scrollSize)
+            // Build search request with search_after
+            val requestBuilder = new SearchRequest.Builder()
+              .index(jsonQuery.indices.asJava)
+              .withJson(new StringReader(jsonQuery.query))
+              .size(config.scrollSize)
 
-          // Add sort fields
-          if (sorts.isEmpty) {
-            logger.warn(
-              s"No sort fields provided for search after, defaulting to _id ascending. This may lead to inconsistent results."
-            )
-            requestBuilder.sort(
-              SortOptions.of { sortBuilder =>
-                sortBuilder
-                  .field(
+            // Parse la query pour vérifier les sorts existants
+            val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
+
+            // Check if sorts already exist in the query
+            if (!hasSorts && !queryJson.has("sort")) {
+              logger.warn(
+                "No sort fields in query for search_after, adding default _id sort. " +
+                "This may lead to inconsistent results if documents are updated during scroll."
+              )
+              requestBuilder.sort(
+                SortOptions.of { sortBuilder =>
+                  sortBuilder.field(
                     FieldSort.of(fieldSortBuilder =>
-                      fieldSortBuilder.field("_id").order(ESSortOrder.Asc)
+                      fieldSortBuilder.field("_id").order(SortOrder.Asc)
                     )
                   )
+                }
+              )
+            } else if (hasSorts && queryJson.has("sort")) {
+              // Sorts already present, check that a tie-breaker exists
+              val existingSorts = queryJson.getAsJsonArray("sort")
+              val hasIdSort = existingSorts.asScala.exists { sortElem =>
+                sortElem.isJsonObject && sortElem.getAsJsonObject.has("_id")
               }
-            )
-          }
-
-          // Add search_after if available
-          searchAfterOpt.foreach { searchAfter =>
-            val fieldValues: Seq[FieldValue] = searchAfter.map {
-              case s: String  => FieldValue.of(s)
-              case i: Int     => FieldValue.of(i.toLong)
-              case l: Long    => FieldValue.of(l)
-              case d: Double  => FieldValue.of(d)
-              case b: Boolean => FieldValue.of(b)
-              case other      => FieldValue.of(other.toString)
+              if (!hasIdSort) {
+                // Add _id as tie-breaker
+                logger.debug("Adding _id as tie-breaker to existing sorts")
+                requestBuilder.sort(
+                  SortOptions.of { sortBuilder =>
+                    sortBuilder.field(
+                      FieldSort.of(fieldSortBuilder =>
+                        fieldSortBuilder.field("_id").order(SortOrder.Asc)
+                      )
+                    )
+                  }
+                )
+              }
             }
 
-            requestBuilder.searchAfter(fieldValues.asJava)
-          }
+            // Add search_after if available
+            searchAfterOpt.foreach { searchAfter =>
+              val fieldValues: Seq[FieldValue] = searchAfter.map {
+                case s: String  => FieldValue.of(s)
+                case i: Int     => FieldValue.of(i.toLong)
+                case l: Long    => FieldValue.of(l)
+                case d: Double  => FieldValue.of(d)
+                case b: Boolean => FieldValue.of(b)
+                case other      => FieldValue.of(other.toString)
+              }
 
-          val response = apply().search(requestBuilder.build(), classOf[JMap[String, Object]])
+              requestBuilder.searchAfter(fieldValues.asJava)
+            }
 
-          // Extract ONLY hits (no aggregations for search_after)
-          val hits = extractHitsOnly(response, fieldAliases)
+            val response = apply().search(requestBuilder.build(), classOf[JMap[String, Object]])
 
-          if (hits.isEmpty) {
-            None
-          } else {
-            // Extract sort values from last hit for next iteration
-            val lastHit = response.hits().hits().asScala.lastOption
-            val nextSearchAfter = lastHit.flatMap { hit =>
-              val sortValues = hit.sort().asScala
-              if (sortValues.nonEmpty) {
-                Some(sortValues.map { fieldValue =>
-                  // FIXED: Proper FieldValue extraction
-                  if (fieldValue.isString) fieldValue.stringValue()
-                  else if (fieldValue.isDouble) fieldValue.doubleValue()
-                  else if (fieldValue.isLong) fieldValue.longValue()
-                  else if (fieldValue.isBoolean) fieldValue.booleanValue()
-                  else if (fieldValue.isNull) null
-                  else fieldValue.toString
-                }.toSeq)
+            if (
+              response.shards() != null && response
+                .shards()
+                .failed() != null && response.shards().failed().intValue() > 0
+            ) {
+              val failures = response.shards().failures()
+              val errorMsg = if (failures != null && !failures.isEmpty) {
+                failures.asScala.map(_.reason()).mkString("; ")
               } else {
-                None
+                "Unknown shard failure"
               }
+              throw new IOException(s"Search after failed: $errorMsg")
             }
 
-            logger.debug(s"Retrieved ${hits.size} documents, next search_after: $nextSearchAfter")
+            // Extract ONLY hits (no aggregations for search_after)
+            val hits = extractHitsOnly(response, fieldAliases)
 
-            Some((nextSearchAfter, hits))
+            if (hits.isEmpty) {
+              None
+            } else {
+              // Extract sort values from last hit for next iteration
+              val lastHit = response.hits().hits().asScala.lastOption
+              val nextSearchAfter = lastHit.flatMap { hit =>
+                val sortValues = hit.sort().asScala
+                if (sortValues.nonEmpty) {
+                  Some(sortValues.map { fieldValue =>
+                    // FIXED: Proper FieldValue extraction
+                    if (fieldValue.isString) fieldValue.stringValue()
+                    else if (fieldValue.isDouble) fieldValue.doubleValue()
+                    else if (fieldValue.isLong) fieldValue.longValue()
+                    else if (fieldValue.isBoolean) fieldValue.booleanValue()
+                    else if (fieldValue.isNull) null
+                    else fieldValue.toString
+                  }.toSeq)
+                } else {
+                  None
+                }
+              }
+
+              logger.debug(s"Retrieved ${hits.size} documents, next search_after: $nextSearchAfter")
+
+              Some((nextSearchAfter, hits))
+            }
           }
-        }.recover { case ex: Exception =>
-          logger.error(s"Search after error: ${ex.getMessage}", ex)
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
           None
         }
       }
       .mapConcat(identity)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
   }
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations (GROUP

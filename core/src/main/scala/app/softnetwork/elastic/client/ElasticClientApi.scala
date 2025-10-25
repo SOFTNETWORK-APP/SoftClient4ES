@@ -33,7 +33,7 @@ import app.softnetwork.elastic.sql.query.{
 }
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
-import org.json4s.{DefaultFormats, Formats}
+import org.json4s.{DefaultFormats, Formats, JNothing}
 import org.json4s.jackson.JsonMethods._
 import org.slf4j.Logger
 
@@ -1363,15 +1363,12 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     jsonQuery: JSONQuery,
     aggregations: Map[String, SQLAggregation]
   ): ScrollStrategy = {
-    // Si des agrégations sont présentes, utiliser le scroll classique
+    // If aggregations are present, use classic scrolling
     if (aggregations.nonEmpty) {
       UseScroll
     } else {
-      // Vérifier si la requête contient des agrégations dans le JSON
-      val hasAggregations = jsonQuery.query.contains("\"aggregations\"") ||
-        jsonQuery.query.contains("\"aggs\"")
-
-      if (hasAggregations) {
+      // Check if the query contains aggregations in the JSON
+      if (hasAggregations(jsonQuery.query)) {
         UseScroll
       } else {
         UseSearchAfter
@@ -1384,7 +1381,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
   final def scrollSource(
     sql: SQLQuery,
     config: ScrollConfig = ScrollConfig()
-  )(implicit ec: ExecutionContext): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     sql.request match {
       case Some(Left(single)) =>
         val sqlRequest = single.copy(score = sql.score)
@@ -1394,7 +1391,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
           sqlRequest.fieldAliases,
           sqlRequest.sqlAggregations,
           config,
-          single.sorts
+          single.sorts.nonEmpty
         )
 
       case Some(Right(_)) =>
@@ -1416,12 +1413,13 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
-    sorts: Map[String, SortOrder] = Map.empty
-  )(implicit ec: ExecutionContext): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
 
-    var metrics = config.metrics
+    var metrics = config.metrics // FIXME should be immutable
 
-    scrollSource(jsonQuery, fieldAliases, aggregations, config, sorts)
+    scrollSource(jsonQuery, fieldAliases, aggregations, config, hasSorts)
+      .take(config.maxDocuments.getOrElse(Long.MaxValue))
       .grouped(config.scrollSize)
       .map { batch =>
         metrics = metrics.copy(
@@ -1442,14 +1440,23 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
       .mapConcat(identity)
       .watchTermination() { (_, done) =>
         done.onComplete { _ =>
-          metrics = metrics.copy(endTime = Some(System.currentTimeMillis()))
+          val finalMetrics = metrics.complete
           logger.info(
-            s"Scroll completed: ${metrics.totalDocuments} docs in ${metrics.duration}ms " +
-            s"(${metrics.documentsPerSecond} docs/sec)"
+            s"Scroll completed: ${finalMetrics.totalDocuments} docs in ${finalMetrics.duration}ms " +
+            s"(${finalMetrics.documentsPerSecond} docs/sec)"
           )
-        }
+        }(system.dispatcher)
         NotUsed
       }
+  }
+
+  private[this] def hasAggregations(query: String): Boolean = {
+    try {
+      val json = parse(query)
+      (json \ "aggregations") != JNothing || (json \ "aggs") != JNothing
+    } catch {
+      case _: Exception => false
+    }
   }
 
   /** Create a scrolling source for JSON query with automatic strategy
@@ -1459,8 +1466,8 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
-    sorts: Map[String, SortOrder]
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed] = {
+    hasSorts: Boolean
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
     val strategy = determineScrollStrategy(jsonQuery, aggregations)
 
     logger.info(
@@ -1474,7 +1481,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
       case UseSearchAfter if config.preferSearchAfter =>
         logger.info("Using search_after (optimized for hits only)")
-        searchAfterSource(jsonQuery, fieldAliases, aggregations, config, sorts)
+        searchAfterSource(jsonQuery, fieldAliases, aggregations, config, hasSorts)
 
       case _ =>
         logger.info("Falling back to classic scroll")
@@ -1489,7 +1496,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed]
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
 
   /** Search After (only for hits, more efficient)
     */
@@ -1498,8 +1505,8 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
-    sorts: Map[String, SortOrder] = Map.empty
-  )(implicit ec: ExecutionContext): Source[Map[String, Any], NotUsed]
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
 
   /** Typed scroll source
     */
@@ -1507,7 +1514,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     sql: SQLQuery,
     config: ScrollConfig = ScrollConfig()
   )(implicit
-    ec: ExecutionContext,
+    system: ActorSystem,
     m: Manifest[T],
     formats: Formats
   ): Source[T, NotUsed] = {

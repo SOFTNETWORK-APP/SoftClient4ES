@@ -16,15 +16,17 @@
 
 package app.softnetwork.elastic
 
+import akka.actor.ActorSystem
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStage, GraphStageLogic}
 import app.softnetwork.elastic.client.BulkAction.BulkAction
-import app.softnetwork.elastic.sql.query.{Asc, SQLAggregation, SortOrder}
+import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
 import org.json4s.Formats
 import org.slf4j.Logger
 
+import java.util.concurrent.TimeUnit
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
@@ -212,10 +214,11 @@ package object client {
     totalDocuments: Long = 0,
     totalBatches: Long = 0,
     startTime: Long = System.currentTimeMillis(),
-    var endTime: Option[Long] = None
+    endTime: Option[Long] = None
   ) {
     def duration: Long = endTime.getOrElse(System.currentTimeMillis()) - startTime
     def documentsPerSecond: Double = totalDocuments.toDouble / (duration / 1000.0)
+    def complete: ScrollMetrics = copy(endTime = Some(System.currentTimeMillis()))
   }
 
   /** Retry configuration
@@ -229,28 +232,34 @@ package object client {
 
   /** Retry logic with exponential backoff
     */
+  // Passer le scheduler en paramètre implicite
   private[client] def retryWithBackoff[T](config: RetryConfig)(
     operation: => Future[T]
-  )(implicit ec: ExecutionContext, logger: Logger): Future[T] = {
-
+  )(implicit
+    system: ActorSystem,
+    logger: Logger
+  ): Future[T] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    val scheduler = system.scheduler
     def attempt(retriesLeft: Int, delay: FiniteDuration): Future[T] = {
       operation.recoverWith {
         case ex if retriesLeft > 0 && isRetriableError(ex) =>
-          logger.warn(s"Retrying after failure (${retriesLeft} retries left): ${ex.getMessage}")
-
-          akka.pattern.after(delay, akka.actor.ActorSystem("retry").scheduler) {
-            val nextDelay = (delay * config.backoffFactor).min(config.maxDelay).asInstanceOf
+          logger.warn(s"Retrying after failure ($retriesLeft retries left): ${ex.getMessage}")
+          akka.pattern.after(delay, scheduler) {
+            val nextDelay = FiniteDuration(
+              (delay * config.backoffFactor).min(config.maxDelay).toMillis,
+              TimeUnit.MILLISECONDS
+            )
             attempt(retriesLeft - 1, nextDelay)
           }
       }
     }
-
     attempt(config.maxRetries, config.initialDelay)
   }
 
   /** Determine if an error is retriable
     */
-  private def isRetriableError(ex: Throwable): Boolean = ex match {
+  private[client] def isRetriableError(ex: Throwable): Boolean = ex match {
     case _: java.net.SocketTimeoutException => true
     case _: java.io.IOException             => true
     // case _: TransportException => true
