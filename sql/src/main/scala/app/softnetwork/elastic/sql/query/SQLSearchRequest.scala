@@ -128,6 +128,9 @@ case class SQLSearchRequest(
   lazy val aggregates: Seq[Field] =
     select.fields.filter(_.aggregation).filterNot(_.topHits.isDefined) ++ topHitsFields
 
+  lazy val sqlAggregations: Map[String, SQLAggregation] =
+    aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
+
   lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
   lazy val sources: Seq[String] = from.tables.map(_.name)

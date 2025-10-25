@@ -18,17 +18,15 @@ package app.softnetwork.elastic.client.jest
 
 import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Flow
+import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import com.google.gson.JsonParser
+import com.google.gson.{JsonNull, JsonObject, JsonParser}
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
-import io.searchbox.core.search.aggregation.RootAggregation
 import io.searchbox.indices._
 import io.searchbox.indices.aliases.{AddAliasMapping, ModifyAliases, RemoveAliasMapping}
 import io.searchbox.indices.mapping.{GetMapping, PutMapping}
@@ -36,6 +34,8 @@ import io.searchbox.indices.reindex.Reindex
 import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 import io.searchbox.params.Parameters
 import org.json4s.Formats
+
+import java.io.IOException
 
 //import scala.jdk.CollectionConverters._
 import scala.collection.JavaConverters._
@@ -60,7 +60,9 @@ trait JestClientApi
     with JestDeleteApi
     with JestGetApi
     with JestSearchApi
+    with JestScrollApi
     with JestBulkApi
+    with JestClientCompanion
 
 trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientCompanion {
   override def createIndex(index: String, settings: String = defaultSettings): Boolean =
@@ -334,111 +336,7 @@ trait JestCountApi extends CountApi with JestClientCompanion {
 }
 
 trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCountApi {
-  override def aggregate(
-    sqlQuery: SQLQuery
-  )(implicit ec: ExecutionContext): Future[Seq[SingleValueAggregateResult]] = {
-    val aggregations: Seq[ElasticAggregation] = sqlQuery
-    val futures = for (aggregation <- aggregations) yield {
-      val promise: Promise[SingleValueAggregateResult] = Promise()
-      val field = aggregation.field
-      val sourceField = aggregation.sourceField
-      val aggType = aggregation.aggType
-      val aggName = aggregation.aggName
-      val query = aggregation.query
-      val sources = aggregation.sources
-      sourceField match {
-        case "_id" if aggType.sql == "count" =>
-          countAsync(
-            JSONQuery(
-              query,
-              collection.immutable.Seq(sources: _*),
-              collection.immutable.Seq.empty[String]
-            )
-          ).onComplete {
-            case Success(result) =>
-              promise.success(
-                SingleValueAggregateResult(
-                  field,
-                  aggType,
-                  result.map(r => NumericValue(r.doubleValue())).getOrElse(EmptyValue),
-                  None
-                )
-              )
-            case Failure(f) =>
-              logger.error(f.getMessage, f.fillInStackTrace())
-              promise.success(
-                SingleValueAggregateResult(field, aggType, EmptyValue, Some(f.getMessage))
-              )
-          }
-          promise.future
-        case _ =>
-          import JestClientApi._
-          import JestClientResultHandler._
-          apply()
-            .executeAsyncPromise(
-              JSONQuery(
-                query,
-                collection.immutable.Seq(sources: _*),
-                collection.immutable.Seq.empty[String]
-              ).search
-            )
-            .onComplete {
-              case Success(result) =>
-                val agg = aggName.split("\\.").last
-
-                val itAgg = aggName.split("\\.").iterator
-
-                var root =
-                  if (aggregation.nested)
-                    result.getAggregations.getAggregation(itAgg.next(), classOf[RootAggregation])
-                  else
-                    result.getAggregations
-
-                if (aggregation.filtered) {
-                  root = root.getAggregation(itAgg.next(), classOf[RootAggregation])
-                }
-
-                promise.success(
-                  SingleValueAggregateResult(
-                    field,
-                    aggType,
-                    aggType match {
-                      case sql.function.aggregate.COUNT =>
-                        if (aggregation.distinct)
-                          NumericValue(
-                            root.getCardinalityAggregation(agg).getCardinality.doubleValue()
-                          )
-                        else {
-                          NumericValue(
-                            root.getValueCountAggregation(agg).getValueCount.doubleValue()
-                          )
-                        }
-                      case sql.function.aggregate.SUM =>
-                        NumericValue(root.getSumAggregation(agg).getSum)
-                      case sql.function.aggregate.AVG =>
-                        NumericValue(root.getAvgAggregation(agg).getAvg)
-                      case sql.function.aggregate.MIN =>
-                        NumericValue(root.getMinAggregation(agg).getMin)
-                      case sql.function.aggregate.MAX =>
-                        NumericValue(root.getMaxAggregation(agg).getMax)
-                      case _ => EmptyValue
-                    },
-                    None
-                  )
-                )
-
-              case Failure(f) =>
-                logger.error(f.getMessage, f.fillInStackTrace())
-                promise.success(
-                  SingleValueAggregateResult(field, aggType, EmptyValue, Some(f.getMessage))
-                )
-            }
-
-          promise.future
-      }
-    }
-    Future.sequence(futures)
-  }
+  _: SearchApi with ElasticConversion =>
 }
 
 trait JestIndexApi extends IndexApi with JestClientCompanion {
@@ -633,36 +531,81 @@ trait JestGetApi extends GetApi with JestClientCompanion {
 
 }
 
-trait JestSearchApi extends SearchApi with JestClientCompanion {
+trait JestSearchApi extends SearchApi with JestClientCompanion { _: ElasticConversion =>
 
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   import JestClientApi._
 
-  override def search[U](
-    jsonQuery: JSONQuery
-  )(implicit m: Manifest[U], formats: Formats): List[U] = {
-    import jsonQuery._
-    val search = new Search.Builder(query)
-    for (indice <- indices) search.addIndex(indice)
-    for (t      <- types) search.addType(t)
-    Try(
-      apply()
-        .execute(search.build())
-        .getSourceAsStringList
-        .asScala
-        .map(source => serialization.read[U](source))
-        .toList
-    ) match {
-      case Success(s) => s
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
-        List.empty
-    }
+  /** Search for entities matching the given JSON query.
+    *
+    * @param jsonQuery
+    *   - the JSON query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  override def search(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    // Create a parser for the query
+    val search = jsonQuery.search
+    val query = search._2
+    val response = tryOrElse(
+      {
+        apply()
+          .execute(
+            search._1
+          )
+          .getJsonString
+      },
+      ""
+    )(logger)
+    SQLSearchResponse(query, response, fieldAliases, aggregations)
   }
 
-  override def searchAsync[U](
+  /** Perform a multi-search operation with the given JSON multi-search query.
+    *
+    * @param jsonQueries
+    *   - the JSON multi-search query to perform
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  override def multisearch(
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    val queries = jsonQueries.queries.map(_.search)
+    val query = queries.map(_._2).mkString("\n")
+    val response = tryOrElse(
+      {
+        val multiSearchResult =
+          apply().execute(
+            new MultiSearch.Builder(
+              queries
+                .map(_._1)
+                .asJava
+            ).build()
+          )
+        multiSearchResult.getJsonString
+      },
+      ""
+    )(logger)
+    SQLSearchResponse(query, response, fieldAliases, aggregations)
+  }
+
+  override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
     val promise = Promise[List[U]]()
@@ -690,7 +633,7 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    Try(apply().execute(jsonQuery.search)).toOption match {
+    Try(apply().execute(jsonQuery.search._1)).toOption match {
       case Some(result) =>
         if (!result.isSucceeded) {
           logger.error(result.getErrorMessage)
@@ -706,31 +649,12 @@ trait JestSearchApi extends SearchApi with JestClientCompanion {
     }
   }
 
-  override def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    tryOrElse(
-      {
-        val multiSearchResult =
-          apply().execute(new MultiSearch.Builder(jsonQueries.queries.map(_.search).asJava).build())
-        multiSearchResult.getResponses.asScala
-          .map(searchResponse =>
-            searchResponse.searchResult.getSourceAsStringList.asScala
-              .map(source => serialization.read[U](source))
-              .toList
-          )
-          .toList
-      },
-      List.empty
-    )(logger)
-  }
-
-  override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    val multiSearch = new MultiSearch.Builder(jsonQueries.queries.map(_.search).asJava).build()
+    val multiSearch = new MultiSearch.Builder(jsonQueries.queries.map(_.search._1).asJava).build()
     Try(apply().execute(multiSearch)).toOption match {
       case Some(multiSearchResult) =>
         if (!multiSearchResult.isSucceeded) {
@@ -822,6 +746,261 @@ trait JestBulkApi
 
 }
 
+trait JestScrollApi extends ScrollApi with JestClientCompanion {
+
+  /** Classic scroll (works for both hits and aggregations)
+    */
+  override def scrollSourceClassic(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    Source
+      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            scrollIdOpt match {
+              case None =>
+                logger.info(
+                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+
+                val searchBuilder =
+                  new Search.Builder(jsonQuery.query)
+                    .setParameter(Parameters.SIZE, config.scrollSize)
+                    .setParameter(Parameters.SCROLL, config.scrollTimeout)
+
+                for (indice <- jsonQuery.indices) searchBuilder.addIndex(indice)
+                for (t      <- jsonQuery.types) searchBuilder.addType(t)
+
+                val result = apply().execute(searchBuilder.build())
+                if (!result.isSucceeded) {
+                  throw new IOException(s"Initial scroll failed: ${result.getErrorMessage}")
+                }
+
+                val scrollId = result.getJsonObject.get("_scroll_id").getAsString
+
+                // Extract ALL results (hits + aggregations)
+                val results =
+                  extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
+
+                logger.info(
+                  s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
+                )
+
+                if (results.isEmpty) {
+                  None
+                } else {
+                  Some((Some(scrollId), results))
+                }
+
+              case Some(scrollId) =>
+                logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
+
+                val scrollBuilder = new SearchScroll.Builder(scrollId, config.scrollTimeout)
+
+                val result = apply().execute(scrollBuilder.build())
+                if (!result.isSucceeded) {
+                  // Lancer une exception pour trigger le retry
+                  throw new IOException(s"Scroll failed: ${result.getErrorMessage}")
+                }
+                val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
+                val results =
+                  extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
+
+                logger.debug(s"Scroll returned ${results.size} results")
+
+                if (results.isEmpty) {
+                  clearJestScroll(scrollId)
+                  None
+                } else {
+                  Some((Some(newScrollId), results))
+                }
+            }
+          }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
+          scrollIdOpt.foreach(clearJestScroll)
+          None
+        }
+      }
+      .mapConcat(identity)
+  }
+
+  /** Search After (only for hits, more efficient)
+    */
+  override def searchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    Source
+      .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            searchAfterOpt match {
+              case None =>
+                logger.info(
+                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+              case Some(values) =>
+                logger.debug(s"Fetching next search_after batch (after: ${values.mkString(", ")})")
+            }
+
+            val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
+
+            // Check if sorts already exist in the query
+            if (!hasSorts && !queryJson.has("sort")) {
+              // No sorting defined, add _id by default
+              logger.warn(
+                "No sort fields in query for search_after, adding default _id sort. " +
+                "This may lead to inconsistent results if documents are updated during scroll."
+              )
+              val sortArray = new com.google.gson.JsonArray()
+              val sortObj = new JsonObject()
+              sortObj.addProperty("_id", "asc")
+              sortArray.add(sortObj)
+              queryJson.add("sort", sortArray)
+            } else if (hasSorts && queryJson.has("sort")) {
+              // Sorts already present, check that a tie-breaker exists
+              val existingSorts = queryJson.getAsJsonArray("sort")
+              val hasIdSort = existingSorts.asScala.exists { sortElem =>
+                sortElem.isJsonObject && sortElem.getAsJsonObject.has("_id")
+              }
+              if (!hasIdSort) {
+                // Add _id as tie-breaker
+                logger.debug("Adding _id as tie-breaker to existing sorts")
+                val tieBreaker = new JsonObject()
+                tieBreaker.addProperty("_id", "asc")
+                existingSorts.add(tieBreaker)
+              }
+            }
+
+            queryJson.addProperty("size", config.scrollSize)
+
+            // Add search_after
+            searchAfterOpt.foreach { searchAfter =>
+              val searchAfterArray = new com.google.gson.JsonArray()
+              searchAfter.foreach {
+                case s: String  => searchAfterArray.add(s)
+                case n: Number  => searchAfterArray.add(n)
+                case b: Boolean => searchAfterArray.add(b)
+                case null       => searchAfterArray.add(JsonNull.INSTANCE)
+                case other      => searchAfterArray.add(other.toString)
+              }
+              queryJson.add("search_after", searchAfterArray)
+            }
+
+            val searchBuilder = new Search.Builder(queryJson.toString)
+            for (indice <- jsonQuery.indices) searchBuilder.addIndex(indice)
+            for (t      <- jsonQuery.types) searchBuilder.addType(t)
+
+            val result = apply().execute(searchBuilder.build())
+
+            if (!result.isSucceeded) {
+              throw new IOException(s"Search after failed: ${result.getErrorMessage}")
+            }
+            // Extract ONLY hits (no aggregations)
+            val hits = extractHitsOnlyFromJest(result.getJsonObject, fieldAliases)
+
+            if (hits.isEmpty) {
+              None
+            } else {
+              val hitsArray = result.getJsonObject
+                .getAsJsonObject("hits")
+                .getAsJsonArray("hits")
+
+              val lastHit = hitsArray.get(hitsArray.size() - 1).getAsJsonObject
+              val nextSearchAfter = if (lastHit.has("sort")) {
+                Some(
+                  lastHit
+                    .getAsJsonArray("sort")
+                    .asScala
+                    .map { elem =>
+                      if (elem.isJsonPrimitive) {
+                        val prim = elem.getAsJsonPrimitive
+                        if (prim.isString) prim.getAsString
+                        else if (prim.isBoolean) prim.getAsBoolean
+                        else if (prim.isNumber) {
+                          val num = prim.getAsNumber
+                          if (num.toString.contains(".")) num.doubleValue()
+                          else num.longValue()
+                        } else prim.getAsString
+                      } else if (elem.isJsonNull) {
+                        null
+                      } else {
+                        elem.toString
+                      }
+                    }
+                    .toSeq
+                )
+              } else {
+                None
+              }
+
+              Some((nextSearchAfter, hits))
+            }
+          }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
+          None
+        }
+      }
+      .mapConcat(identity)
+  }
+
+  /** Extract ALL results: hits + aggregations
+    */
+  private def extractAllResultsFromJest(
+    jsonObject: JsonObject,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): Seq[Map[String, Any]] = {
+    val jsonString = jsonObject.toString
+    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, aggregations)
+
+    parseResponse(sqlResponse) match {
+      case Success(rows) => rows
+      case Failure(ex) =>
+        logger.error(s"Failed to parse Jest scroll response: ${ex.getMessage}", ex)
+        Seq.empty
+    }
+  }
+
+  /** Extract ONLY hits (for search_after)
+    */
+  private def extractHitsOnlyFromJest(
+    jsonObject: JsonObject,
+    fieldAliases: Map[String, String]
+  ): Seq[Map[String, Any]] = {
+    val jsonString = jsonObject.toString
+    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, Map.empty)
+
+    parseResponse(sqlResponse) match {
+      case Success(rows) => rows
+      case Failure(ex) =>
+        logger.error(s"Failed to parse Jest search after response: ${ex.getMessage}", ex)
+        Seq.empty
+    }
+  }
+
+  private def clearJestScroll(scrollId: String): Unit = {
+    Try {
+      logger.debug(s"Clearing Jest scroll: $scrollId")
+      val clearScroll = new ClearScroll.Builder()
+        .addScrollId(scrollId)
+        .build()
+      apply().execute(clearScroll)
+    }.recover { case ex: Exception =>
+      logger.warn(s"Failed to clear Jest scroll $scrollId: ${ex.getMessage}")
+    }
+  }
+}
+
 object JestClientApi {
 
   implicit def requestToSearch(elasticSelect: ElasticSearchRequest): Search = {
@@ -844,12 +1023,12 @@ object JestClientApi {
   }
 
   implicit class SearchJSONQuery(jsonQuery: JSONQuery) {
-    def search: Search = {
+    def search: (Search, ESQuery) = {
       import jsonQuery._
       val _search = new Search.Builder(query)
       for (indice <- indices) _search.addIndex(indice)
       for (t      <- types) _search.addType(t)
-      _search.build()
+      (_search.build(), query)
     }
   }
 

@@ -18,11 +18,11 @@ package app.softnetwork.elastic.client.rest
 
 import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Flow
+import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
-import app.softnetwork.elastic.{client, sql}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.client
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization.serialization
 import com.google.gson.JsonParser
@@ -38,7 +38,15 @@ import org.elasticsearch.action.bulk.{BulkItemResponse, BulkRequest, BulkRespons
 import org.elasticsearch.action.delete.{DeleteRequest, DeleteResponse}
 import org.elasticsearch.action.get.{GetRequest, GetResponse}
 import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
-import org.elasticsearch.action.search.{MultiSearchRequest, SearchRequest, SearchResponse}
+import org.elasticsearch.action.search.{
+  ClearScrollRequest,
+  ClosePointInTimeRequest,
+  MultiSearchRequest,
+  OpenPointInTimeRequest,
+  SearchRequest,
+  SearchResponse,
+  SearchScrollRequest
+}
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest}
 import org.elasticsearch.client.{Request, RequestOptions}
@@ -50,17 +58,18 @@ import org.elasticsearch.client.indices.{
   GetMappingsRequest,
   PutMappingRequest
 }
+import org.elasticsearch.common.Strings
 import org.elasticsearch.common.io.stream.InputStreamStreamInput
+import org.elasticsearch.core.TimeValue
 import org.elasticsearch.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
-import org.elasticsearch.search.aggregations.bucket.filter.Filter
-import org.elasticsearch.search.aggregations.bucket.nested.Nested
-import org.elasticsearch.search.aggregations.metrics.{Avg, Cardinality, Max, Min, Sum, ValueCount}
-import org.elasticsearch.search.builder.SearchSourceBuilder
+import org.elasticsearch.search.builder.{PointInTimeBuilder, SearchSourceBuilder}
+import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.Formats
 
-import java.io.ByteArrayInputStream
-import scala.collection.JavaConverters.mapAsScalaMapConverter
+import java.io.{ByteArrayInputStream, IOException}
+//import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -81,6 +90,7 @@ trait RestHighLevelClientApi
     with RestHighLevelClientGetApi
     with RestHighLevelClientSearchApi
     with RestHighLevelClientBulkApi
+    with RestHighLevelClientScrollApi
 
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientCompanion {
   override def createIndex(index: String, settings: String): Boolean = {
@@ -357,118 +367,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompa
 
 trait RestHighLevelClientSingleValueAggregateApi
     extends SingleValueAggregateApi
-    with RestHighLevelClientCountApi {
-  override def aggregate(
-    sqlQuery: SQLQuery
-  )(implicit ec: ExecutionContext): Future[Seq[SingleValueAggregateResult]] = {
-    val aggregations: Seq[ElasticAggregation] = sqlQuery
-    val futures = for (aggregation <- aggregations) yield {
-      val promise: Promise[SingleValueAggregateResult] = Promise()
-      val field = aggregation.field
-      val sourceField = aggregation.sourceField
-      val aggType = aggregation.aggType
-      val aggName = aggregation.aggName
-      val query = aggregation.query.getOrElse("")
-      val sources = aggregation.sources
-      sourceField match {
-        case "_id" if aggType.sql == "count" =>
-          countAsync(
-            JSONQuery(
-              query,
-              collection.immutable.Seq(sources: _*),
-              collection.immutable.Seq.empty[String]
-            )
-          ).onComplete {
-            case Success(result) =>
-              promise.success(
-                SingleValueAggregateResult(
-                  field,
-                  aggType,
-                  result.map(r => NumericValue(r.doubleValue())).getOrElse(EmptyValue),
-                  None
-                )
-              )
-            case Failure(f) =>
-              logger.error(f.getMessage, f.fillInStackTrace())
-              promise.success(
-                SingleValueAggregateResult(field, aggType, EmptyValue, Some(f.getMessage))
-              )
-          }
-          promise.future
-        case _ =>
-          val jsonQuery = JSONQuery(
-            query,
-            collection.immutable.Seq(sources: _*),
-            collection.immutable.Seq.empty[String]
-          )
-          import jsonQuery._
-          // Create a parser for the query
-          val xContentParser = XContentType.JSON
-            .xContent()
-            .createParser(
-              namedXContentRegistry,
-              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-              jsonQuery.query
-            )
-          apply().searchAsync(
-            new SearchRequest(indices: _*)
-              .types(types: _*)
-              .source(
-                SearchSourceBuilder.fromXContent(xContentParser)
-              ),
-            RequestOptions.DEFAULT,
-            new ActionListener[SearchResponse] {
-              override def onResponse(response: SearchResponse): Unit = {
-                val agg = aggName.split("\\.").last
-
-                val itAgg = aggName.split("\\.").iterator
-
-                var root =
-                  if (aggregation.nested) {
-                    response.getAggregations.get(itAgg.next()).asInstanceOf[Nested].getAggregations
-                  } else {
-                    response.getAggregations
-                  }
-
-                if (aggregation.filtered) {
-                  root = root.get(itAgg.next()).asInstanceOf[Filter].getAggregations
-                }
-
-                promise.success(
-                  SingleValueAggregateResult(
-                    field,
-                    aggType,
-                    aggType match {
-                      case sql.function.aggregate.COUNT =>
-                        if (aggregation.distinct) {
-                          NumericValue(root.get(agg).asInstanceOf[Cardinality].value())
-                        } else {
-                          NumericValue(root.get(agg).asInstanceOf[ValueCount].value())
-                        }
-                      case sql.function.aggregate.SUM =>
-                        NumericValue(root.get(agg).asInstanceOf[Sum].value())
-                      case sql.function.aggregate.AVG =>
-                        NumericValue(root.get(agg).asInstanceOf[Avg].value())
-                      case sql.function.aggregate.MIN =>
-                        NumericValue(root.get(agg).asInstanceOf[Min].value())
-                      case sql.function.aggregate.MAX =>
-                        NumericValue(root.get(agg).asInstanceOf[Max].value())
-                      case _ => EmptyValue
-                    },
-                    None
-                  )
-                )
-              }
-
-              override def onFailure(e: Exception): Unit = promise.failure(e)
-            }
-          )
-          promise.future
-      }
-    }
-    Future.sequence(futures)
-  }
-}
+    with RestHighLevelClientCountApi { _: SearchApi with ElasticConversion => }
 
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompanion {
   _: RestHighLevelClientRefreshApi =>
@@ -669,14 +568,27 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
 }
 
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCompanion {
+  _: ElasticConversion =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
-  override def search[U](
-    jsonQuery: JSONQuery
-  )(implicit m: Manifest[U], formats: Formats): List[U] = {
-    import jsonQuery._
-    logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
+  /** Search for entities matching the given JSON query.
+    *
+    * @param jsonQuery
+    *   - the JSON query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  override def search(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    val query = jsonQuery.query
     // Create a parser for the query
     val xContentParser = XContentType.JSON
       .xContent()
@@ -685,25 +597,79 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
         DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
         query
       )
+    // Execute the search
     val response = apply().search(
-      new SearchRequest(indices: _*)
-        .types(types: _*)
+      new SearchRequest(jsonQuery.indices: _*)
+        .types(jsonQuery.types: _*)
         .source(
           SearchSourceBuilder.fromXContent(xContentParser)
         ),
       RequestOptions.DEFAULT
     )
-    if (response.getHits.getTotalHits.value > 0) {
-      response.getHits.getHits.toList.map { hit =>
-        logger.info(s"Deserializing hit: ${hit.getSourceAsString}")
-        serialization.read[U](hit.getSourceAsString)
-      }
-    } else {
-      List.empty[U]
-    }
+    // Return the SQL search response
+    val sqlResponse =
+      SQLSearchResponse(query, Strings.toString(response), fieldAliases, aggregations)
+    logger.info(s"Search response: $sqlResponse")
+    sqlResponse
   }
 
-  override def searchAsync[U](
+  /** Perform a multi-search operation with the given JSON multi-search query.
+    *
+    * @param jsonQueries
+    *   - the JSON multi-search query to perform
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  override def multisearch(
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse = {
+    val request = new MultiSearchRequest()
+    val queries = jsonQueries.queries.map(_.query)
+    val query = queries.mkString("\n")
+    jsonQueries.queries.zipWithIndex.map { case (q, i) =>
+      val query = queries(i)
+      logger.info(s"Searching with query ${i + 1}: $query on indices: ${q.indices
+        .mkString(", ")}")
+      request.add(
+        new SearchRequest(q.indices: _*)
+          .types(q.types: _*)
+          .source(
+            new SearchSourceBuilder(
+              new InputStreamStreamInput(
+                new ByteArrayInputStream(
+                  query.getBytes()
+                )
+              )
+            )
+          )
+      )
+    }
+    /*for (query <- jsonQueries.queries) {
+      request.add(
+        new SearchRequest(query.indices: _*)
+          .types(query.types: _*)
+          .source(
+            new SearchSourceBuilder(
+              new InputStreamStreamInput(
+                new ByteArrayInputStream(
+                  query.query.getBytes()
+                )
+              )
+            )
+          )
+      )
+    }*/
+    val responses = apply().msearch(request, RequestOptions.DEFAULT)
+    SQLSearchResponse(query, Strings.toString(responses), fieldAliases, aggregations)
+  }
+
+  override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
     val jsonQuery: JSONQuery = sqlQuery
@@ -773,40 +739,7 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
     }
   }
 
-  override def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    import jsonQueries._
-    val request = new MultiSearchRequest()
-    for (query <- queries) {
-      request.add(
-        new SearchRequest(query.indices: _*)
-          .types(query.types: _*)
-          .source(
-            new SearchSourceBuilder(
-              new InputStreamStreamInput(
-                new ByteArrayInputStream(
-                  query.query.getBytes()
-                )
-              )
-            )
-          )
-      )
-    }
-    val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    responses.getResponses.toList.map { response =>
-      if (response.isFailure) {
-        logger.error(s"Error in multi search: ${response.getFailureMessage}")
-        List.empty[U]
-      } else {
-        response.getResponse.getHits.getHits.toList.map { hit =>
-          serialization.read[U](hit.getSourceAsString)
-        }
-      }
-    }
-  }
-
-  override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -934,6 +867,522 @@ trait RestHighLevelClientBulkApi
     new BulkElasticResult {
       override def items: List[BulkElasticResultItem] =
         r.getItems.toList.map(toBulkElasticResultItem)
+    }
+  }
+}
+
+trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCompanion {
+
+  // Cache ES version (avoids calling it every time)
+  @volatile private var cachedVersion: Option[String] = None
+
+  /** Get Elasticsearch version (cached)
+    */
+  protected def getElasticsearchVersion()(implicit ec: ExecutionContext): Future[String] = {
+    cachedVersion match {
+      case Some(version) =>
+        Future.successful(version)
+      case None =>
+        Future {
+          val info = apply().info(RequestOptions.DEFAULT)
+          val version = info.getVersion.getNumber
+          cachedVersion = Some(version)
+          logger.info(s"Detected Elasticsearch version: $version")
+          version
+        }.recoverWith { case ex: Exception =>
+          logger.error(s"Failed to get ES version: ${ex.getMessage}", ex)
+          // Fallback to a safe version (no PIT)
+          val fallbackVersion = "7.0.0"
+          logger.warn(s"Using fallback version: $fallbackVersion")
+          cachedVersion = Some(fallbackVersion)
+          Future.successful(fallbackVersion)
+        }
+    }
+  }
+
+  /** Classic scroll (works for both hits and aggregations)
+    */
+  override def scrollSourceClassic(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    Source
+      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            scrollIdOpt match {
+              case None =>
+                // Initial search with scroll
+                logger.info(
+                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+
+                val query = jsonQuery.query
+                // Create a parser for the query
+                val xContentParser = XContentType.JSON
+                  .xContent()
+                  .createParser(
+                    namedXContentRegistry,
+                    DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                    query
+                  )
+                // Execute the search
+                val searchRequest =
+                  new SearchRequest(jsonQuery.indices: _*)
+                    .types(jsonQuery.types: _*)
+                    .source(
+                      SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+                    )
+
+                searchRequest.scroll(
+                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                )
+
+                val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+                if (response.status() != RestStatus.OK) {
+                  throw new IOException(s"Initial scroll failed with status: ${response.status()}")
+                }
+
+                val scrollId = response.getScrollId
+
+                if (scrollId == null) {
+                  throw new IllegalStateException("Scroll ID is null in response")
+                }
+
+                // Extract both hits AND aggregations
+                val results = extractAllResults(response, fieldAliases, aggregations)
+
+                logger.info(s"Initial scroll returned ${results.size} results, scrollId: $scrollId")
+
+                if (results.isEmpty) {
+                  None
+                } else {
+                  Some((Some(scrollId), results))
+                }
+
+              case Some(scrollId) =>
+                // Subsequent scroll requests
+                logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
+
+                val scrollRequest = new SearchScrollRequest(scrollId)
+                scrollRequest.scroll(
+                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                )
+
+                val result = apply().scroll(scrollRequest, RequestOptions.DEFAULT)
+
+                if (result.status() != RestStatus.OK) {
+                  clearScroll(scrollId)
+                  throw new IOException(
+                    s"Scroll continuation failed with status: ${result.status()}"
+                  )
+                }
+
+                val newScrollId = result.getScrollId
+                val results = extractAllResults(result, fieldAliases, aggregations)
+
+                logger.debug(s"Scroll returned ${results.size} results")
+
+                if (results.isEmpty) {
+                  clearScroll(scrollId)
+                  None
+                } else {
+                  Some((Some(newScrollId), results))
+                }
+            }
+          }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
+          scrollIdOpt.foreach(clearScroll)
+          None
+        }
+      }
+      .mapConcat(identity)
+  }
+
+  /** Search After (only for hits, more efficient)
+    */
+  override def searchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // Detect version and choose implementation
+    Source
+      .futureSource {
+        getElasticsearchVersion().map { version =>
+          if (ElasticsearchVersion.supportsPit(version)) {
+            logger.info(s"ES version $version supports PIT, using pitSearchAfterSource")
+            pitSearchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+          } else {
+            logger.info(s"ES version $version does not support PIT, using classic search_after")
+            classicSearchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+          }
+        }
+      }
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  /** Classic Search After (only for hits, more efficient)
+    *
+    * @note
+    *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
+    */
+  private def classicSearchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    Source
+      .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            searchAfterOpt match {
+              case None =>
+                logger.info(
+                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                )
+              case Some(values) =>
+                logger.debug(s"Fetching next search_after batch (after: ${if (values.length > 3)
+                  s"[${values.take(3).mkString(", ")}...]"
+                else values.mkString(", ")})")
+            }
+
+            val query = jsonQuery.query
+            // Create a parser for the query
+            val xContentParser = XContentType.JSON
+              .xContent()
+              .createParser(
+                namedXContentRegistry,
+                DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                query
+              )
+            val sourceBuilder =
+              SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+
+            // Check if sorts already exist in the query
+            if (!hasSorts && sourceBuilder.sorts() == null) {
+              logger.warn(
+                "No sort fields in query for search_after, adding default _id sort. " +
+                "This may lead to inconsistent results if documents are updated during scroll."
+              )
+              sourceBuilder.sort("_id", SortOrder.ASC)
+            } else if (hasSorts && sourceBuilder.sorts() != null) {
+              // Sorts already present, check that a tie-breaker exists
+              val hasIdSort = sourceBuilder.sorts().asScala.exists { sortBuilder =>
+                sortBuilder match {
+                  case fieldSort: FieldSortBuilder =>
+                    fieldSort.getFieldName == "_id"
+                  case _ =>
+                    false
+                }
+              }
+              if (!hasIdSort) {
+                // Add _id as tie-breaker
+                logger.debug("Adding _id as tie-breaker to existing sorts")
+                sourceBuilder.sort("_id", SortOrder.ASC)
+              }
+            }
+
+            // Add search_after if available
+            searchAfterOpt.foreach { searchAfter =>
+              sourceBuilder.searchAfter(searchAfter)
+            }
+
+            // Execute the search
+            val searchRequest =
+              new SearchRequest(jsonQuery.indices: _*)
+                .types(jsonQuery.types: _*)
+                .source(
+                  sourceBuilder
+                )
+
+            val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+            if (response.status() != RestStatus.OK) {
+              throw new IOException(s"Search after failed with status: ${response.status()}")
+            }
+
+            // Extract ONLY hits (no aggregations for search_after)
+            val hits = extractHitsOnly(response, fieldAliases)
+
+            if (hits.isEmpty) {
+              None
+            } else {
+              val searchHits = response.getHits.getHits
+              val lastHit = searchHits.last
+              val nextSearchAfter = Option(lastHit.getSortValues)
+
+              logger.debug(
+                s"Retrieved ${hits.size} hits, next search_after: ${nextSearchAfter
+                  .map(arr =>
+                    if (arr.length > 3) s"[${arr.take(3).mkString(", ")}...]"
+                    else arr.mkString(", ")
+                  )
+                  .getOrElse("None")}"
+              )
+
+              Some((nextSearchAfter, hits))
+            }
+          }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
+          None
+        }
+      }
+      .mapConcat(identity)
+  }
+
+  /** PIT + search_after for ES 7.10+
+    *
+    * @note
+    *   Requires ES 7.10+. For ES 6.x, use searchAfterSource instead.
+    */
+  private def pitSearchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    // Open PIT
+    val pitIdFuture: Future[String] = openPit(jsonQuery.indices, config.scrollTimeout)
+
+    Source
+      .futureSource {
+        pitIdFuture.map { pitId =>
+          logger.info(
+            s"Opened PIT: ${pitId.take(20)}... for indices: ${jsonQuery.indices.mkString(", ")}"
+          )
+
+          Source
+            .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+              retryWithBackoff(config.retryConfig) {
+                Future {
+                  searchAfterOpt match {
+                    case None =>
+                      logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
+                    case Some(values) =>
+                      logger.debug(
+                        s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
+                          s"[${values.take(3).mkString(", ")}...]"
+                        else values.mkString(", ")})"
+                      )
+                  }
+
+                  // Parse query
+                  val xContentParser = XContentType.JSON
+                    .xContent()
+                    .createParser(
+                      namedXContentRegistry,
+                      DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                      jsonQuery.query
+                    )
+
+                  val sourceBuilder = SearchSourceBuilder
+                    .fromXContent(xContentParser)
+                    .size(config.scrollSize)
+
+                  // Check if sorts already exist in the query
+                  if (!hasSorts && sourceBuilder.sorts() == null) {
+                    logger.warn(
+                      "No sort fields in query for PIT search_after, adding default _shard_doc sort."
+                    )
+                    sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                  } else if (hasSorts && sourceBuilder.sorts() != null) {
+                    // Sorts already present, check that a tie-breaker exists
+                    val hasShardDocSort = sourceBuilder.sorts().asScala.exists {
+                      case fieldSort: FieldSortBuilder =>
+                        fieldSort.getFieldName == "_shard_doc" || fieldSort.getFieldName == "_id"
+                      case _ =>
+                        false
+                    }
+
+                    if (!hasShardDocSort) {
+                      // Add _id as tie-breaker
+                      logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
+                      sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                    }
+                  }
+
+                  // Add search_after
+                  searchAfterOpt.foreach { searchAfter =>
+                    sourceBuilder.searchAfter(searchAfter)
+                  }
+
+                  // Set PIT
+                  val pitBuilder = new PointInTimeBuilder(pitId)
+                  pitBuilder.setKeepAlive(
+                    TimeValue.parseTimeValue(config.scrollTimeout, "pit_keep_alive")
+                  )
+                  sourceBuilder.pointInTimeBuilder(pitBuilder)
+
+                  // Build request with PIT
+                  val searchRequest = new SearchRequest()
+                    .source(sourceBuilder)
+                    .requestCache(false) // Disable cache for PIT
+
+                  val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+                  if (response.status() != RestStatus.OK) {
+                    throw new IOException(
+                      s"PIT search_after failed with status: ${response.status()}"
+                    )
+                  }
+
+                  val hits = extractHitsOnly(response, fieldAliases)
+
+                  if (hits.isEmpty) {
+                    closePit(pitId)
+                    None
+                  } else {
+                    val searchHits = response.getHits.getHits
+                    val lastHit = searchHits.last
+                    val nextSearchAfter = Option(lastHit.getSortValues)
+
+                    logger.debug(s"Retrieved ${hits.size} hits, continuing with PIT")
+                    Some((nextSearchAfter, hits))
+                  }
+                }
+              }(system, logger).recover { case ex: Exception =>
+                logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
+                closePit(pitId)
+                None
+              }
+            }
+            .watchTermination() { (_, done) =>
+              done.onComplete {
+                case scala.util.Success(_) =>
+                  logger.info(s"PIT search_after completed, closing PIT: ${pitId.take(20)}...")
+                  closePit(pitId)
+                case scala.util.Failure(ex) =>
+                  logger.error(
+                    s"PIT search_after failed: ${ex.getMessage}, closing PIT: ${pitId.take(20)}..."
+                  )
+                  closePit(pitId)
+              }
+              NotUsed
+            }
+            .mapConcat(identity)
+        }
+      }
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  /** Open PIT (ES 7.10+)
+    */
+  private def openPit(indices: Seq[String], keepAlive: String)(implicit
+    ec: ExecutionContext
+  ): Future[String] = {
+    Future {
+      logger.debug(s"Opening PIT for indices: ${indices.mkString(", ")}")
+
+      val openPitRequest = new OpenPointInTimeRequest(indices: _*)
+        .keepAlive(TimeValue.parseTimeValue(keepAlive, "pit_keep_alive"))
+
+      val response = apply().openPointInTime(openPitRequest, RequestOptions.DEFAULT)
+      val pitId = response.getPointInTimeId
+
+      if (pitId == null || pitId.isEmpty) {
+        throw new IllegalStateException("PIT ID is null or empty")
+      }
+
+      logger.info(s"PIT opened: ${pitId.take(20)}...")
+      pitId
+    }.recoverWith { case ex: Exception =>
+      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+      Future.failed(
+        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+      )
+    }
+  }
+
+  /** Close PIT
+    */
+  private def closePit(pitId: String): Unit = {
+    Try {
+      logger.debug(s"Closing PIT: ${pitId.take(20)}...")
+
+      val closePitRequest = new ClosePointInTimeRequest(pitId)
+      val response = apply().closePointInTime(closePitRequest, RequestOptions.DEFAULT)
+
+      if (response.isSucceeded) {
+        logger.info(s"PIT closed successfully: ${pitId.take(20)}...")
+      } else {
+        logger.warn(s"PIT close reported failure: ${pitId.take(20)}...")
+      }
+    }.recover { case ex: Exception =>
+      logger.warn(s"Failed to close PIT ${pitId.take(20)}...: ${ex.getMessage}")
+    }
+  }
+
+  /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
+    */
+  private def extractAllResults(
+    response: SearchResponse,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): Seq[Map[String, Any]] = {
+    val jsonString = response.toString
+    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, aggregations)
+
+    parseResponse(sqlResponse) match {
+      case Success(rows) =>
+        logger.debug(s"Parsed ${rows.size} rows from response")
+        rows
+      case Failure(ex) =>
+        logger.error(s"Failed to parse scroll response: ${ex.getMessage}", ex)
+        Seq.empty
+    }
+  }
+
+  /** Extract ONLY hits (for search_after optimization)
+    */
+  private def extractHitsOnly(
+    response: SearchResponse,
+    fieldAliases: Map[String, String]
+  ): Seq[Map[String, Any]] = {
+    val jsonString = response.toString
+    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, Map.empty)
+
+    parseResponse(sqlResponse) match {
+      case Success(rows) => rows
+      case Failure(ex) =>
+        logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)
+        Seq.empty
+    }
+  }
+
+  /*private def parseJsonToSearchSourceBuilder(jsonQuery: String): SearchSourceBuilder = {
+    import org.elasticsearch.common.xcontent.{XContentFactory, XContentType}
+
+    val parser = XContentFactory.xContent(XContentType.JSON)
+      .createParser(
+        org.elasticsearch.common.xcontent.NamedXContentRegistry.EMPTY,
+        org.elasticsearch.common.xcontent.DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+        jsonQuery
+      )
+
+    SearchSourceBuilder.fromXContent(parser)
+  }*/
+
+  private def clearScroll(scrollId: String): Unit = {
+    Try {
+      logger.debug(s"Clearing scroll: $scrollId")
+      val clearScrollRequest = new ClearScrollRequest()
+      clearScrollRequest.addScrollId(scrollId)
+      apply().clearScroll(clearScrollRequest, RequestOptions.DEFAULT)
+    }.recover { case ex: Exception =>
+      logger.warn(s"Failed to clear scroll $scrollId: ${ex.getMessage}")
     }
   }
 }

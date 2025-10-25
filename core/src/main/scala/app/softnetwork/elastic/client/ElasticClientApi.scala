@@ -24,17 +24,23 @@ import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.serialization._
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{
+  SQLAggregation,
+  SQLMultiSearchRequest,
+  SQLQuery,
+  SQLSearchRequest,
+  SortOrder
+}
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
-import org.json4s.{DefaultFormats, Formats}
+import org.json4s.{DefaultFormats, Formats, JNothing}
 import org.json4s.jackson.JsonMethods._
 import org.slf4j.Logger
 
 import java.util.UUID
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
-import scala.language.{implicitConversions, postfixOps}
+import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
@@ -47,14 +53,14 @@ trait ElasticClientApi
     with MappingApi
     with CountApi
     with SingleValueAggregateApi
-    with SearchApi
+    with ScrollApi
     with IndexApi
     with UpdateApi
     with GetApi
     with BulkApi
     with DeleteApi
     with RefreshApi
-    with FlushApi {
+    with FlushApi { _: { def logger: Logger } =>
 
   def config: Config = ConfigFactory.load()
 
@@ -964,7 +970,49 @@ trait AggregateApi[T <: AggregateResult] {
   ): Future[_root_.scala.collection.Seq[T]]
 }
 
-trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult]
+trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
+  _: SearchApi with ElasticConversion =>
+
+  /** Aggregate the results of the given SQL query.
+    *
+    * @param sqlQuery
+    *   - the query to aggregate the results for
+    * @return
+    *   a sequence of aggregated results
+    */
+  override def aggregate(
+    sqlQuery: SQLQuery
+  )(implicit ec: ExecutionContext): Future[collection.Seq[SingleValueAggregateResult]] = {
+    Future {
+      val response = search(sqlQuery)
+      parseResponse(response) match {
+        case Success(results) =>
+          results.flatMap(result =>
+            response.aggregations
+              .filterNot(_._2.multivalued)
+              .map { case (name, aggregation) =>
+                SingleValueAggregateResult(
+                  name,
+                  aggregation.aggType,
+                  result.getOrElse(name, null) match {
+                    case n: Number           => NumericValue(n.doubleValue())
+                    case s: String           => StringValue(s)
+                    case m: Map[String, Any] => ObjectValue(m)
+                    case _                   => EmptyValue
+                  }
+                )
+              }
+              .toSeq
+          )
+        case Failure(exception) =>
+          throw new IllegalArgumentException(
+            s"Failed to parse search results for SQL query: ${sqlQuery.query}",
+            exception
+          )
+      }
+    }
+  }
+}
 
 trait GetApi {
 
@@ -1005,7 +1053,7 @@ trait GetApi {
   }
 }
 
-trait SearchApi {
+trait SearchApi extends ElasticConversion {
   implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String
 
   implicit def sqlQueryToJSONQuery(sqlQuery: SQLQuery): JSONQuery = {
@@ -1039,9 +1087,97 @@ trait SearchApi {
     }
   }
 
+  /** Search for entities matching the given SQL query.
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  final def search(sql: SQLQuery): SQLSearchResponse = {
+    sql.request match {
+      case Some(Left(single)) => search(single.copy(score = sql.score))
+      case Some(Right(multiple)) =>
+        multisearch(multiple.copy(requests = multiple.requests.map(r => r.copy(score = sql.score))))
+      case None =>
+        throw new IllegalArgumentException("SQL query does not contain a valid search request")
+    }
+  }
+
+  /** Search for entities matching the given SQL query.
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  private[this] def search(sql: SQLSearchRequest): SQLSearchResponse = {
+    // Build the JSON query from the SQL query
+    val jsonQuery =
+      JSONQuery(
+        sql,
+        collection.immutable.Seq(sql.sources: _*)
+      )
+    search(jsonQuery, sql.fieldAliases, sql.sqlAggregations)
+  }
+
   /** Search for entities matching the given JSON query.
     * @param jsonQuery
     *   - the query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  def search(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse
+
+  /** Perform a multi-search operation with the given SQL query.
+    * @param sql
+    *   - the SQL multi-search query to perform
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  private[this] def multisearch(sql: SQLMultiSearchRequest): SQLSearchResponse = {
+    // Build the JSON queries from the SQL multi-search query
+    val jsonQueries: JSONQueries =
+      JSONQueries(
+        sql.requests.map { query =>
+          JSONQuery(
+            query,
+            collection.immutable.Seq(query.sources: _*)
+          )
+        }.toList
+      )
+    multisearch(jsonQueries, sql.fieldAliases, sql.sqlAggregations)
+  }
+
+  /** Perform a multi-search operation with the given JSON queries.
+    * @param jsonQueries
+    *   - the JSON queries to perform the multi-search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  def multisearch(
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): SQLSearchResponse
+
+  /** Search for entities matching the given JSON query.
+    * @param jsonQuery
+    *   - the query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @param m
     *   - the manifest of the type to search for
     * @param formats
@@ -1049,7 +1185,16 @@ trait SearchApi {
     * @return
     *   a list of entities matching the query
     */
-  def search[U](jsonQuery: JSONQuery)(implicit m: Manifest[U], formats: Formats): List[U]
+  def searchAs[U](
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )(implicit
+    m: Manifest[U],
+    formats: Formats
+  ): List[U] = {
+    convertTo[U](search(jsonQuery, fieldAliases, aggregations)).getOrElse(Seq.empty).toList
+  }
 
   /** Search for entities matching the given SQL query.
     * @param sqlQuery
@@ -1061,8 +1206,8 @@ trait SearchApi {
     * @return
     *   a list of entities matching the query
     */
-  def search[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
-    search[U](implicitly[JSONQuery](sqlQuery))(m, formats)
+  final def searchAs[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](search(sqlQuery)).getOrElse(Seq.empty).toList
   }
 
   /** Search for entities matching the given SQL query asynchronously.
@@ -1075,10 +1220,10 @@ trait SearchApi {
     * @return
     *   a Future that completes with a list of entities matching the query
     */
-  def searchAsync[U](
+  def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = Future(
-    this.search[U](sqlQuery)
+    this.searchAs[U](sqlQuery)
   )
 
   /** Search for entities matching the given JSON query with inner hits.
@@ -1104,8 +1249,8 @@ trait SearchApi {
   }
 
   /** Search for entities matching the given JSON query with inner hits.
-    * @param sqlQuery
-    *   - the SQL query to search for
+    * @param jsonQuery
+    *   - the JSON query to search for
     * @param innerField
     *   - the field to use for inner hits
     * @param m1
@@ -1133,15 +1278,19 @@ trait SearchApi {
     * @return
     *   a list of lists of entities matching the queries in the multi-search request
     */
-  def multiSearch[U](
+  final def multisearchAs[U](
     sqlQuery: SQLQuery
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    multiSearch[U](implicitly[JSONQueries](sqlQuery))(m, formats)
+  )(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](search(sqlQuery)).getOrElse(Seq.empty).toList
   }
 
   /** Perform a multi-search operation with the given JSON queries.
     * @param jsonQueries
     *   - the JSON queries to perform the multi-search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @param m
     *   - the manifest of the type to search for
     * @param formats
@@ -1149,9 +1298,17 @@ trait SearchApi {
     * @return
     *   a list of lists of entities matching the queries in the multi-search request
     */
-  def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]]
+  def multisearchAs[U](
+    jsonQueries: JSONQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](
+      multisearch(jsonQueries, fieldAliases, aggregations)
+    )
+      .getOrElse(Seq.empty)
+      .toList
+  }
 
   /** Perform a multi-search operation with the given SQL query and inner hits.
     * @param sqlQuery
@@ -1167,12 +1324,12 @@ trait SearchApi {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multiSearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    multiSearchWithInnerHits[U, I](implicitly[JSONQueries](sqlQuery), innerField)(m1, m2, formats)
+    multisearchWithInnerHits[U, I](implicitly[JSONQueries](sqlQuery), innerField)(m1, m2, formats)
   }
 
   /** Perform a multi-search operation with the given JSON queries and inner hits.
@@ -1189,9 +1346,179 @@ trait SearchApi {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]]
+}
+
+/** API for scrolling through search results using Akka Streams
+  */
+trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
+
+  /** Determine the best scroll strategy based on the query
+    */
+  private[this] def determineScrollStrategy(
+    jsonQuery: JSONQuery,
+    aggregations: Map[String, SQLAggregation]
+  ): ScrollStrategy = {
+    // If aggregations are present, use classic scrolling
+    if (aggregations.nonEmpty) {
+      UseScroll
+    } else {
+      // Check if the query contains aggregations in the JSON
+      if (hasAggregations(jsonQuery.query)) {
+        UseScroll
+      } else {
+        UseSearchAfter
+      }
+    }
+  }
+
+  /** Create a scrolling source with automatic strategy selection
+    */
+  final def scrollSource(
+    sql: SQLQuery,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+    sql.request match {
+      case Some(Left(single)) =>
+        val sqlRequest = single.copy(score = sql.score)
+        val jsonQuery = JSONQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+        scrollSourceWithMetrics(
+          jsonQuery,
+          sqlRequest.fieldAliases,
+          sqlRequest.sqlAggregations,
+          config,
+          single.sorts.nonEmpty
+        )
+
+      case Some(Right(_)) =>
+        Source.failed(
+          new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
+        )
+
+      case None =>
+        Source.failed(
+          new IllegalArgumentException("SQL query does not contain a valid search request")
+        )
+    }
+  }
+
+  /** Scroll with metrics tracking
+    */
+  private[this] def scrollSourceWithMetrics(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+
+    var metrics = config.metrics // FIXME should be immutable
+
+    scrollSource(jsonQuery, fieldAliases, aggregations, config, hasSorts)
+      .take(config.maxDocuments.getOrElse(Long.MaxValue))
+      .grouped(config.scrollSize)
+      .map { batch =>
+        metrics = metrics.copy(
+          totalDocuments = metrics.totalDocuments + batch.size,
+          totalBatches = metrics.totalBatches + 1
+        )
+
+        if (metrics.totalBatches % 10 == 0) {
+          logger.info(
+            s"Scroll progress: ${metrics.totalDocuments} docs, " +
+            s"${metrics.totalBatches} batches, " +
+            s"${metrics.documentsPerSecond} docs/sec"
+          )
+        }
+
+        batch.map(doc => (doc, metrics))
+      }
+      .mapConcat(identity)
+      .watchTermination() { (_, done) =>
+        done.onComplete { _ =>
+          val finalMetrics = metrics.complete
+          logger.info(
+            s"Scroll completed: ${finalMetrics.totalDocuments} docs in ${finalMetrics.duration}ms " +
+            s"(${finalMetrics.documentsPerSecond} docs/sec)"
+          )
+        }(system.dispatcher)
+        NotUsed
+      }
+  }
+
+  private[this] def hasAggregations(query: String): Boolean = {
+    try {
+      val json = parse(query)
+      (json \ "aggregations") != JNothing || (json \ "aggs") != JNothing
+    } catch {
+      case _: Exception => false
+    }
+  }
+
+  /** Create a scrolling source for JSON query with automatic strategy
+    */
+  private[this] def scrollSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    hasSorts: Boolean
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    val strategy = determineScrollStrategy(jsonQuery, aggregations)
+
+    logger.info(
+      s"Using scroll strategy: $strategy for query on ${jsonQuery.indices.mkString(", ")}"
+    )
+
+    strategy match {
+      case UseScroll =>
+        logger.info("Using classic scroll (supports aggregations)")
+        scrollSourceClassic(jsonQuery, fieldAliases, aggregations, config)
+
+      case UseSearchAfter if config.preferSearchAfter =>
+        logger.info("Using search_after (optimized for hits only)")
+        searchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+
+      case _ =>
+        logger.info("Falling back to classic scroll")
+        scrollSourceClassic(jsonQuery, fieldAliases, aggregations, config)
+    }
+  }
+
+  /** Classic scroll (works for both hits and aggregations)
+    */
+  def scrollSourceClassic(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+
+  /** Search After (only for hits, more efficient)
+    */
+  def searchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+
+  /** Typed scroll source
+    */
+  final def scrollSourceAs[T](
+    sql: SQLQuery,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit
+    system: ActorSystem,
+    m: Manifest[T],
+    formats: Formats
+  ): Source[T, NotUsed] = {
+    scrollSource(sql, config).map(_._1).mapConcat { row =>
+      Seq(convertTo[T](row)(m, formats)) // FIXME
+    }
+  }
 }

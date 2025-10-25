@@ -16,16 +16,20 @@
 
 package app.softnetwork.elastic
 
+import akka.actor.ActorSystem
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStage, GraphStageLogic}
 import app.softnetwork.elastic.client.BulkAction.BulkAction
+import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
 import org.json4s.Formats
 import org.slf4j.Logger
 
-import scala.collection.immutable.Seq
+import java.util.concurrent.TimeUnit
 import scala.collection.mutable
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
 
@@ -35,6 +39,19 @@ import scala.collection.JavaConverters._
 /** Created by smanciot on 30/06/2018.
   */
 package object client {
+
+  type SQL = String
+
+  type ESQuery = String
+
+  type ESResults = String
+
+  case class SQLSearchResponse(
+    query: ESQuery,
+    results: ESResults,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )
 
   case class ElasticCredentials(
     url: String = "http://localhost:9200",
@@ -171,6 +188,136 @@ package object client {
       case e: Exception =>
         logger.error("An error occurred while executing the block", e)
         default
+    }
+  }
+
+  /** Scroll configuration
+    */
+  case class ScrollConfig(
+    scrollTimeout: String = "1m",
+    scrollSize: Int = 1000,
+    maxDocuments: Option[Long] = None,
+    preferSearchAfter: Boolean = true, // Préférence pour search_after si possible
+    metrics: ScrollMetrics = ScrollMetrics(),
+    retryConfig: RetryConfig = RetryConfig()
+  )
+
+  /** Scroll strategy based on query type
+    */
+  sealed trait ScrollStrategy
+  case object UseScroll extends ScrollStrategy // Pour agrégations ou requêtes complexes
+  case object UseSearchAfter extends ScrollStrategy // Pour hits simples (plus performant)
+
+  /** Scroll metrics
+    */
+  case class ScrollMetrics(
+    totalDocuments: Long = 0,
+    totalBatches: Long = 0,
+    startTime: Long = System.currentTimeMillis(),
+    endTime: Option[Long] = None
+  ) {
+    def duration: Long = endTime.getOrElse(System.currentTimeMillis()) - startTime
+    def documentsPerSecond: Double = totalDocuments.toDouble / (duration / 1000.0)
+    def complete: ScrollMetrics = copy(endTime = Some(System.currentTimeMillis()))
+  }
+
+  /** Retry configuration
+    */
+  case class RetryConfig(
+    maxRetries: Int = 3,
+    initialDelay: FiniteDuration = 1.second,
+    maxDelay: FiniteDuration = 10.seconds,
+    backoffFactor: Double = 2.0
+  )
+
+  /** Retry logic with exponential backoff
+    */
+  // Passer le scheduler en paramètre implicite
+  private[client] def retryWithBackoff[T](config: RetryConfig)(
+    operation: => Future[T]
+  )(implicit
+    system: ActorSystem,
+    logger: Logger
+  ): Future[T] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    val scheduler = system.scheduler
+    def attempt(retriesLeft: Int, delay: FiniteDuration): Future[T] = {
+      operation.recoverWith {
+        case ex if retriesLeft > 0 && isRetriableError(ex) =>
+          logger.warn(s"Retrying after failure ($retriesLeft retries left): ${ex.getMessage}")
+          akka.pattern.after(delay, scheduler) {
+            val nextDelay = FiniteDuration(
+              (delay * config.backoffFactor).min(config.maxDelay).toMillis,
+              TimeUnit.MILLISECONDS
+            )
+            attempt(retriesLeft - 1, nextDelay)
+          }
+      }
+    }
+    attempt(config.maxRetries, config.initialDelay)
+  }
+
+  /** Determine if an error is retriable
+    */
+  private[client] def isRetriableError(ex: Throwable): Boolean = ex match {
+    case _: java.net.SocketTimeoutException => true
+    case _: java.io.IOException             => true
+    // case _: TransportException => true
+    case _ => false
+  }
+
+  /** Elasticsearch version comparison utilities
+    */
+  object ElasticsearchVersion {
+
+    /** Parse Elasticsearch version string (e.g., "7.10.2", "8.11.0")
+      * @return
+      *   (major, minor, patch)
+      */
+    def parse(versionString: String): (Int, Int, Int) = {
+      try {
+        val parts = versionString.split('.').take(3)
+        val major = parts.headOption.map(_.toInt).getOrElse(0)
+        val minor = parts.lift(1).map(_.toInt).getOrElse(0)
+        val patch = parts.lift(2).map(_.toInt).getOrElse(0)
+        (major, minor, patch)
+      } catch {
+        case _: NumberFormatException =>
+          throw new IllegalArgumentException(s"Invalid version format: $versionString")
+      }
+    }
+
+    /** Check if version is >= target version
+      */
+    def isAtLeast(
+      version: String,
+      targetMajor: Int,
+      targetMinor: Int = 0,
+      targetPatch: Int = 0
+    ): Boolean = {
+      val (major, minor, patch) = parse(version)
+
+      if (major > targetMajor) true
+      else if (major < targetMajor) false
+      else { // major == targetMajor
+        if (minor > targetMinor) true
+        else if (minor < targetMinor) false
+        else { // minor == targetMinor
+          patch >= targetPatch
+        }
+      }
+    }
+
+    /** Check if PIT is supported (ES >= 7.10)
+      */
+    def supportsPit(version: String): Boolean = {
+      isAtLeast(version, 7, 10)
+    }
+
+    /** Check if version is ES 8+
+      */
+    def isEs8OrHigher(version: String): Boolean = {
+      isAtLeast(version, 8, 0)
     }
   }
 }

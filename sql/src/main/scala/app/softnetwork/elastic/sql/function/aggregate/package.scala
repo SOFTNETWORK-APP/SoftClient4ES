@@ -21,7 +21,9 @@ import app.softnetwork.elastic.sql.{asString, Expr, Identifier, TokenRegex, Upda
 
 package object aggregate {
 
-  sealed trait AggregateFunction extends Function
+  sealed trait AggregateFunction extends Function {
+    def multivalued: Boolean = false
+  }
 
   case object COUNT extends Expr("COUNT") with AggregateFunction
 
@@ -137,6 +139,7 @@ package object aggregate {
       .copy(
         limit = limit.orElse(request.limit)
       )
+    override def multivalued: Boolean = true
   }
 
 }

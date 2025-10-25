@@ -179,25 +179,25 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_mapping" should haveCount(3)
 
-    pClient.search[Person]("select * from person_mapping") match {
+    pClient.searchAs[Person]("select * from person_mapping") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
       case other => fail(other.toString)
     }
 
-    pClient.search[Person]("select * from person_mapping where uuid = 'A16'") match {
+    pClient.searchAs[Person]("select * from person_mapping where uuid = 'A16'") match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
-    pClient.search[Person]("select * from person_mapping where match (name) against ('gum')") match {
+    pClient.searchAs[Person]("select * from person_mapping where match (name) against ('gum')") match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
-    pClient.search[Person](
+    pClient.searchAs[Person](
       "select * from person_mapping where uuid <> 'A16' and match (name) against ('gum')"
     ) match {
       case r if r.isEmpty =>
@@ -239,7 +239,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_migration" should haveCount(3)
 
-    pClient.search[Person]("select * from person_migration where match (name) against ('gum')") match {
+    pClient.searchAs[Person]("select * from person_migration where match (name) against ('gum')") match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
     }
@@ -288,7 +288,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.shouldUpdateMapping("person_migration", newMapping) shouldBe true
     pClient.updateMapping("person_migration", newMapping) shouldBe true
 
-    pClient.search[Person]("select * from person_migration where match (name) against ('gum')") match {
+    pClient.searchAs[Person]("select * from person_migration where match (name) against ('gum')") match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
@@ -306,7 +306,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person1" should haveCount(3)
 
-    pClient.search[Person]("select * from person1") match {
+    pClient.searchAs[Person]("select * from person1") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -327,7 +327,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person2" should haveCount(3)
 
-    pClient.search[Person]("select * from person2") match {
+    pClient.searchAs[Person]("select * from person2") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -358,7 +358,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person-1967-11-21" should haveCount(2)
     "person-1969-05-09" should haveCount(1)
 
-    pClient.search[Person]("select * from person-1967-11-21, person-1969-05-09") match {
+    pClient.searchAs[Person]("select * from person-1967-11-21, person-1969-05-09") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -396,7 +396,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person4" should haveCount(3)
 
-    pClient.search[Person]("select * from person4") match {
+    pClient.searchAs[Person]("select * from person4") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble2")
@@ -433,7 +433,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person5-1967-11-21" should haveCount(2)
     "person5-1969-05-09" should haveCount(1)
 
-    pClient.search[Person]("select * from person5-1967-11-21, person5-1969-05-09") match {
+    pClient.searchAs[Person]("select * from person5-1967-11-21, person5-1969-05-09") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble2")
@@ -489,22 +489,22 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person7" should haveCount(3)
 
-    val r1 = pClient.search[Person]("select * from person7")
+    val r1 = pClient.searchAs[Person]("select * from person7")
     r1.size should ===(3)
     r1.map(_.uuid) should contain allOf ("A12", "A14", "A16")
 
-    pClient.searchAsync[Person]("select * from person7") onComplete {
+    pClient.searchAsyncAs[Person]("select * from person7") onComplete {
       case Success(r) =>
         r.size should ===(3)
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
       case Failure(f) => fail(f.getMessage)
     }
 
-    val r2 = pClient.search[Person]("select * from person7 where _id=\"A16\"")
+    val r2 = pClient.searchAs[Person]("select * from person7 where _id=\"A16\"")
     r2.size should ===(1)
     r2.map(_.uuid) should contain("A16")
 
-    pClient.searchAsync[Person]("select * from person7 where _id=\"A16\"") onComplete {
+    pClient.searchAsyncAs[Person]("select * from person7 where _id=\"A16\"") onComplete {
       case Success(r) =>
         r.size should ===(1)
         r.map(_.uuid) should contain("A16")
@@ -525,7 +525,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person8" should haveCount(3)
 
-    val response = pClient.search[Person]("select * from person8")
+    val response = pClient.searchAs[Person]("select * from person8")
 
     response.size should ===(3)
 
@@ -878,7 +878,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "parent" should haveCount(3)
 
-    val parents = parentClient.search[Parent]("select * from parent")
+    val parents = parentClient.searchAs[Parent]("select * from parent")
     assert(parents.size == 3)
 
     val results = parentClient.searchWithInnerHits[Parent, Child](

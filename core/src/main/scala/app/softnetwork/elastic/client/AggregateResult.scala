@@ -30,6 +30,10 @@ sealed trait MetricAgregateResult extends AggregateResult {
 sealed trait AggregateValue
 case class NumericValue(value: Double) extends AggregateValue
 case class StringValue(value: String) extends AggregateValue
+case class ObjectValue(value: Map[String, Any]) extends AggregateValue
+//case class ArrayNumericValue(value: Seq[Double]) extends AggregateValue
+//case class ArrayStringValue(value: Seq[String]) extends AggregateValue
+//case class ArrayObjectValue(value: Seq[Map[String, Any]]) extends AggregateValue
 case object EmptyValue extends AggregateValue
 
 case class SingleValueAggregateResult(
@@ -46,6 +50,10 @@ case class SingleValueAggregateResult(
     case StringValue(v) => Some(v)
     case _              => None
   }
+  def asMapOption: Option[Map[String, Any]] = value match {
+    case ObjectValue(v) => Some(v)
+    case _              => None
+  }
 
   def isDouble: Boolean = value match {
     case NumericValue(_) => true
@@ -54,6 +62,11 @@ case class SingleValueAggregateResult(
 
   def isString: Boolean = value match {
     case StringValue(_) => true
+    case _              => false
+  }
+
+  def isMap: Boolean = value match {
+    case ObjectValue(_) => true
     case _              => false
   }
 }
