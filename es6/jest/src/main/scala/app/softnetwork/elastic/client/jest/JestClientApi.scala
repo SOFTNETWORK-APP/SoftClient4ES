@@ -834,7 +834,6 @@ trait JestScrollApi extends ScrollApi with JestClientCompanion {
   override def searchAfterSource(
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {

@@ -42,6 +42,7 @@ import co.elastic.clients.elasticsearch.core.msearch.{
 }
 import co.elastic.clients.elasticsearch.core._
 import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESSource}
+import co.elastic.clients.elasticsearch.core.search.PointInTimeReference
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
 import co.elastic.clients.json.JsonpSerializable
@@ -1048,137 +1049,248 @@ trait ElasticsearchClientScrollApi
   override def searchAfterSource(
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
+    pitSearchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+  }
+
+  /** PIT + search_after (recommended for ES 7.10+, required for ES 8+)
+    *
+    * Advantages:
+    *   - More efficient than classic scroll (stateless)
+    *   - Better for deep pagination
+    *   - Can be parallelized
+    *   - Lower memory footprint on ES cluster
+    *
+    * @note
+    *   Only works for hits, not for aggregations (use scrollSourceClassic for aggregations)
+    */
+  private def pitSearchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
+
+    // Step 1: Open PIT
+    val pitIdFuture: Future[String] = openPit(jsonQuery.indices, config.scrollTimeout)
+
     Source
-      .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
-        retryWithBackoff(config.retryConfig) {
-          Future {
-            searchAfterOpt match {
-              case None =>
-                logger.info(
-                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
-                )
-              case Some(values) =>
-                logger.debug(s"Fetching next search_after batch (after: ${if (values.length > 3)
-                  s"[${values.take(3).mkString(", ")}...]"
-                else values.mkString(", ")})")
-            }
+      .futureSource {
+        pitIdFuture.map { pitId =>
+          logger.info(s"Opened PIT: $pitId for indices: ${jsonQuery.indices.mkString(", ")}")
 
-            // Build search request with search_after
-            val requestBuilder = new SearchRequest.Builder()
-              .index(jsonQuery.indices.asJava)
-              .withJson(new StringReader(jsonQuery.query))
-              .size(config.scrollSize)
-
-            // Parse la query pour vérifier les sorts existants
-            val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
-
-            // Check if sorts already exist in the query
-            if (!hasSorts && !queryJson.has("sort")) {
-              logger.warn(
-                "No sort fields in query for search_after, adding default _id sort. " +
-                "This may lead to inconsistent results if documents are updated during scroll."
-              )
-              requestBuilder.sort(
-                SortOptions.of { sortBuilder =>
-                  sortBuilder.field(
-                    FieldSort.of(fieldSortBuilder =>
-                      fieldSortBuilder.field("_id").order(SortOrder.Asc)
-                    )
-                  )
-                }
-              )
-            } else if (hasSorts && queryJson.has("sort")) {
-              // Sorts already present, check that a tie-breaker exists
-              val existingSorts = queryJson.getAsJsonArray("sort")
-              val hasIdSort = existingSorts.asScala.exists { sortElem =>
-                sortElem.isJsonObject && sortElem.getAsJsonObject.has("_id")
-              }
-              if (!hasIdSort) {
-                // Add _id as tie-breaker
-                logger.debug("Adding _id as tie-breaker to existing sorts")
-                requestBuilder.sort(
-                  SortOptions.of { sortBuilder =>
-                    sortBuilder.field(
-                      FieldSort.of(fieldSortBuilder =>
-                        fieldSortBuilder.field("_id").order(SortOrder.Asc)
+          Source
+            .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+              retryWithBackoff(config.retryConfig) {
+                Future {
+                  searchAfterOpt match {
+                    case None =>
+                      logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
+                    case Some(values) =>
+                      logger.debug(
+                        s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
+                          s"[${values.take(3).mkString(", ")}...]"
+                        else values.mkString(", ")})"
                       )
-                    )
                   }
-                )
-              }
-            }
 
-            // Add search_after if available
-            searchAfterOpt.foreach { searchAfter =>
-              val fieldValues: Seq[FieldValue] = searchAfter.map {
-                case s: String  => FieldValue.of(s)
-                case i: Int     => FieldValue.of(i.toLong)
-                case l: Long    => FieldValue.of(l)
-                case d: Double  => FieldValue.of(d)
-                case b: Boolean => FieldValue.of(b)
-                case other      => FieldValue.of(other.toString)
-              }
+                  // Build search request with PIT
+                  val requestBuilder = new SearchRequest.Builder()
+                    .size(config.scrollSize)
+                    .pit(
+                      PointInTimeReference
+                        .of(p => p.id(pitId).keepAlive(Time.of(t => t.time(config.scrollTimeout))))
+                    )
 
-              requestBuilder.searchAfter(fieldValues.asJava)
-            }
+                  // Parse query to add query clause (not indices, they're in PIT)
+                  val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
 
-            val response = apply().search(requestBuilder.build(), classOf[JMap[String, Object]])
+                  // Extract query clause if present
+                  if (queryJson.has("query")) {
+                    requestBuilder.withJson(new StringReader(jsonQuery.query))
+                  }
 
-            if (
-              response.shards() != null && response
-                .shards()
-                .failed() != null && response.shards().failed().intValue() > 0
-            ) {
-              val failures = response.shards().failures()
-              val errorMsg = if (failures != null && !failures.isEmpty) {
-                failures.asScala.map(_.reason()).mkString("; ")
-              } else {
-                "Unknown shard failure"
-              }
-              throw new IOException(s"Search after failed: $errorMsg")
-            }
+                  // Check if sorts already exist in the query
+                  if (!hasSorts && !queryJson.has("sort")) {
+                    logger.warn(
+                      "No sort fields in query for PIT search_after, adding default _shard_doc sort. " +
+                      "_shard_doc is more efficient than _id for PIT."
+                    )
+                    requestBuilder.sort(
+                      SortOptions.of { sortBuilder =>
+                        sortBuilder.field(
+                          FieldSort.of(fieldSortBuilder =>
+                            fieldSortBuilder.field("_shard_doc").order(SortOrder.Asc)
+                          )
+                        )
+                      }
+                    )
+                  } else if (hasSorts && queryJson.has("sort")) {
+                    // Sorts already present, check that a tie-breaker exists
+                    val existingSorts = queryJson.getAsJsonArray("sort")
+                    val hasShardDocSort = existingSorts.asScala.exists { sortElem =>
+                      sortElem.isJsonObject && (
+                        sortElem.getAsJsonObject.has("_shard_doc") ||
+                        sortElem.getAsJsonObject.has("_id")
+                      )
+                    }
+                    if (!hasShardDocSort) {
+                      // Add _id as tie-breaker
+                      logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
+                      requestBuilder.sort(
+                        SortOptions.of { sortBuilder =>
+                          sortBuilder.field(
+                            FieldSort.of(fieldSortBuilder =>
+                              fieldSortBuilder.field("_shard_doc").order(SortOrder.Asc)
+                            )
+                          )
+                        }
+                      )
+                    }
+                  }
 
-            // Extract ONLY hits (no aggregations for search_after)
-            val hits = extractHitsOnly(response, fieldAliases)
+                  // Add search_after if available
+                  searchAfterOpt.foreach { searchAfter =>
+                    val fieldValues: Seq[FieldValue] = searchAfter.map {
+                      case s: String  => FieldValue.of(s)
+                      case i: Int     => FieldValue.of(i.toLong)
+                      case l: Long    => FieldValue.of(l)
+                      case d: Double  => FieldValue.of(d)
+                      case b: Boolean => FieldValue.of(b)
+                      case other      => FieldValue.of(other.toString)
+                    }
+                    requestBuilder.searchAfter(fieldValues.asJava)
+                  }
 
-            if (hits.isEmpty) {
-              None
-            } else {
-              // Extract sort values from last hit for next iteration
-              val lastHit = response.hits().hits().asScala.lastOption
-              val nextSearchAfter = lastHit.flatMap { hit =>
-                val sortValues = hit.sort().asScala
-                if (sortValues.nonEmpty) {
-                  Some(sortValues.map { fieldValue =>
-                    // FIXED: Proper FieldValue extraction
-                    if (fieldValue.isString) fieldValue.stringValue()
-                    else if (fieldValue.isDouble) fieldValue.doubleValue()
-                    else if (fieldValue.isLong) fieldValue.longValue()
-                    else if (fieldValue.isBoolean) fieldValue.booleanValue()
-                    else if (fieldValue.isNull) null
-                    else fieldValue.toString
-                  }.toSeq)
-                } else {
-                  None
+                  val response = apply().search(
+                    requestBuilder.build(),
+                    classOf[JMap[String, Object]]
+                  )
+
+                  // Check errors
+                  if (
+                    response.shards() != null &&
+                    response.shards().failed() != null &&
+                    response.shards().failed().intValue() > 0
+                  ) {
+                    val failures = response.shards().failures()
+                    val errorMsg = if (failures != null && !failures.isEmpty) {
+                      failures.asScala.map(_.reason()).mkString("; ")
+                    } else {
+                      "Unknown shard failure"
+                    }
+                    throw new IOException(s"PIT search_after failed: $errorMsg")
+                  }
+
+                  val hits = extractHitsOnly(response, fieldAliases)
+
+                  if (hits.isEmpty) {
+                    // Close PIT when done
+                    closePit(pitId)
+                    None
+                  } else {
+                    val lastHit = response.hits().hits().asScala.lastOption
+                    val nextSearchAfter = lastHit.flatMap { hit =>
+                      val sortValues = hit.sort().asScala
+                      if (sortValues.nonEmpty) {
+                        Some(sortValues.map { fieldValue =>
+                          if (fieldValue.isString) fieldValue.stringValue()
+                          else if (fieldValue.isDouble) fieldValue.doubleValue()
+                          else if (fieldValue.isLong) fieldValue.longValue()
+                          else if (fieldValue.isBoolean) fieldValue.booleanValue()
+                          else if (fieldValue.isNull) null
+                          else fieldValue.toString
+                        }.toSeq)
+                      } else {
+                        None
+                      }
+                    }
+
+                    logger.debug(s"Retrieved ${hits.size} documents, continuing with PIT")
+                    Some((nextSearchAfter, hits))
+                  }
                 }
+              }(system, logger).recover { case ex: Exception =>
+                logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
+                closePit(pitId)
+                None
               }
-
-              logger.debug(s"Retrieved ${hits.size} documents, next search_after: $nextSearchAfter")
-
-              Some((nextSearchAfter, hits))
             }
-          }
-        }(system, logger).recover { case ex: Exception =>
-          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
-          None
+            .watchTermination() { (_, done) =>
+              // Cleanup PIT on stream completion/failure
+              done.onComplete {
+                case scala.util.Success(_) =>
+                  logger.info(
+                    s"PIT search_after completed successfully, closing PIT: ${pitId.take(20)}..."
+                  )
+                  closePit(pitId)
+                case scala.util.Failure(ex) =>
+                  logger.error(
+                    s"PIT search_after failed: ${ex.getMessage}, closing PIT: ${pitId.take(20)}..."
+                  )
+                  closePit(pitId)
+              }
+              NotUsed
+            }
+            .mapConcat(identity)
         }
       }
-      .mapConcat(identity)
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  /** Open a Point In Time
+    */
+  private def openPit(indices: Seq[String], keepAlive: String)(implicit
+    ec: ExecutionContext
+  ): Future[String] = {
+    Future {
+      logger.debug(s"Opening PIT for indices: ${indices.mkString(", ")} with keepAlive: $keepAlive")
+
+      val openPitRequest = new OpenPointInTimeRequest.Builder()
+        .index(indices.asJava)
+        .keepAlive(Time.of(t => t.time(keepAlive)))
+        .build()
+
+      val response = apply().openPointInTime(openPitRequest)
+      val pitId = response.id()
+
+      if (pitId == null || pitId.isEmpty) {
+        throw new IllegalStateException("PIT ID is null or empty in response")
+      }
+
+      logger.info(s"PIT opened successfully: ${pitId.take(20)}... (keepAlive: $keepAlive)")
+      pitId
+    }.recoverWith { case ex: Exception =>
+      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+      Future.failed(
+        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+      )
+    }
+  }
+
+  /** Close a Point In Time
+    */
+  private def closePit(pitId: String): Unit = {
+    Try {
+      logger.debug(s"Closing PIT: ${pitId.take(20)}...")
+
+      val closePitRequest = new ClosePointInTimeRequest.Builder()
+        .id(pitId)
+        .build()
+
+      val response = apply().closePointInTime(closePitRequest)
+
+      if (response.succeeded()) {
+        logger.info(s"PIT closed successfully: ${pitId.take(20)}...")
+      } else {
+        logger.warn(s"PIT close reported failure: ${pitId.take(20)}...")
+      }
+    }.recover { case ex: Exception =>
+      logger.warn(s"Failed to close PIT ${pitId.take(20)}...: ${ex.getMessage}")
+    }
   }
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations (GROUP

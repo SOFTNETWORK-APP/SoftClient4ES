@@ -1481,7 +1481,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
       case UseSearchAfter if config.preferSearchAfter =>
         logger.info("Using search_after (optimized for hits only)")
-        searchAfterSource(jsonQuery, fieldAliases, aggregations, config, hasSorts)
+        searchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
 
       case _ =>
         logger.info("Falling back to classic scroll")
@@ -1503,7 +1503,6 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
   def searchAfterSource(
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
