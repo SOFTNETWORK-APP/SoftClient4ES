@@ -40,7 +40,9 @@ import org.elasticsearch.action.get.{GetRequest, GetResponse}
 import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
 import org.elasticsearch.action.search.{
   ClearScrollRequest,
+  ClosePointInTimeRequest,
   MultiSearchRequest,
+  OpenPointInTimeRequest,
   SearchRequest,
   SearchResponse,
   SearchScrollRequest
@@ -61,7 +63,7 @@ import org.elasticsearch.common.io.stream.InputStreamStreamInput
 import org.elasticsearch.core.TimeValue
 import org.elasticsearch.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
-import org.elasticsearch.search.builder.SearchSourceBuilder
+import org.elasticsearch.search.builder.{PointInTimeBuilder, SearchSourceBuilder}
 import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.Formats
 
@@ -871,6 +873,33 @@ trait RestHighLevelClientBulkApi
 
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCompanion {
 
+  // Cache ES version (avoids calling it every time)
+  @volatile private var cachedVersion: Option[String] = None
+
+  /** Get Elasticsearch version (cached)
+    */
+  protected def getElasticsearchVersion()(implicit ec: ExecutionContext): Future[String] = {
+    cachedVersion match {
+      case Some(version) =>
+        Future.successful(version)
+      case None =>
+        Future {
+          val info = apply().info(RequestOptions.DEFAULT)
+          val version = info.getVersion.getNumber
+          cachedVersion = Some(version)
+          logger.info(s"Detected Elasticsearch version: $version")
+          version
+        }.recoverWith { case ex: Exception =>
+          logger.error(s"Failed to get ES version: ${ex.getMessage}", ex)
+          // Fallback to a safe version (no PIT)
+          val fallbackVersion = "7.0.0"
+          logger.warn(s"Using fallback version: $fallbackVersion")
+          cachedVersion = Some(fallbackVersion)
+          Future.successful(fallbackVersion)
+        }
+    }
+  }
+
   /** Classic scroll (works for both hits and aggregations)
     */
   override def scrollSourceClassic(
@@ -976,10 +1005,36 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
   }
 
   /** Search After (only for hits, more efficient)
+    */
+  override def searchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // Detect version and choose implementation
+    Source
+      .futureSource {
+        getElasticsearchVersion().map { version =>
+          if (ElasticsearchVersion.supportsPit(version)) {
+            logger.info(s"ES version $version supports PIT, using pitSearchAfterSource")
+            pitSearchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+          } else {
+            logger.info(s"ES version $version does not support PIT, using classic search_after")
+            classicSearchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+          }
+        }
+      }
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  /** Classic Search After (only for hits, more efficient)
+    *
     * @note
     *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
     */
-  override def searchAfterSource(
+  private def classicSearchAfterSource(
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -1084,6 +1139,190 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
         }
       }
       .mapConcat(identity)
+  }
+
+  /** PIT + search_after for ES 7.10+
+    *
+    * @note
+    *   Requires ES 7.10+. For ES 6.x, use searchAfterSource instead.
+    */
+  private def pitSearchAfterSource(
+    jsonQuery: JSONQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    // Open PIT
+    val pitIdFuture: Future[String] = openPit(jsonQuery.indices, config.scrollTimeout)
+
+    Source
+      .futureSource {
+        pitIdFuture.map { pitId =>
+          logger.info(
+            s"Opened PIT: ${pitId.take(20)}... for indices: ${jsonQuery.indices.mkString(", ")}"
+          )
+
+          Source
+            .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+              retryWithBackoff(config.retryConfig) {
+                Future {
+                  searchAfterOpt match {
+                    case None =>
+                      logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
+                    case Some(values) =>
+                      logger.debug(
+                        s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
+                          s"[${values.take(3).mkString(", ")}...]"
+                        else values.mkString(", ")})"
+                      )
+                  }
+
+                  // Parse query
+                  val xContentParser = XContentType.JSON
+                    .xContent()
+                    .createParser(
+                      namedXContentRegistry,
+                      DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                      jsonQuery.query
+                    )
+
+                  val sourceBuilder = SearchSourceBuilder
+                    .fromXContent(xContentParser)
+                    .size(config.scrollSize)
+
+                  // Check if sorts already exist in the query
+                  if (!hasSorts && sourceBuilder.sorts() == null) {
+                    logger.warn(
+                      "No sort fields in query for PIT search_after, adding default _shard_doc sort."
+                    )
+                    sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                  } else if (hasSorts && sourceBuilder.sorts() != null) {
+                    // Sorts already present, check that a tie-breaker exists
+                    val hasShardDocSort = sourceBuilder.sorts().asScala.exists {
+                      case fieldSort: FieldSortBuilder =>
+                        fieldSort.getFieldName == "_shard_doc" || fieldSort.getFieldName == "_id"
+                      case _ =>
+                        false
+                    }
+
+                    if (!hasShardDocSort) {
+                      // Add _id as tie-breaker
+                      logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
+                      sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                    }
+                  }
+
+                  // Add search_after
+                  searchAfterOpt.foreach { searchAfter =>
+                    sourceBuilder.searchAfter(searchAfter)
+                  }
+
+                  // Set PIT
+                  val pitBuilder = new PointInTimeBuilder(pitId)
+                  pitBuilder.setKeepAlive(
+                    TimeValue.parseTimeValue(config.scrollTimeout, "pit_keep_alive")
+                  )
+                  sourceBuilder.pointInTimeBuilder(pitBuilder)
+
+                  // Build request with PIT
+                  val searchRequest = new SearchRequest()
+                    .source(sourceBuilder)
+                    .requestCache(false) // Disable cache for PIT
+
+                  val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+                  if (response.status() != RestStatus.OK) {
+                    throw new IOException(
+                      s"PIT search_after failed with status: ${response.status()}"
+                    )
+                  }
+
+                  val hits = extractHitsOnly(response, fieldAliases)
+
+                  if (hits.isEmpty) {
+                    closePit(pitId)
+                    None
+                  } else {
+                    val searchHits = response.getHits.getHits
+                    val lastHit = searchHits.last
+                    val nextSearchAfter = Option(lastHit.getSortValues)
+
+                    logger.debug(s"Retrieved ${hits.size} hits, continuing with PIT")
+                    Some((nextSearchAfter, hits))
+                  }
+                }
+              }(system, logger).recover { case ex: Exception =>
+                logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
+                closePit(pitId)
+                None
+              }
+            }
+            .watchTermination() { (_, done) =>
+              done.onComplete {
+                case scala.util.Success(_) =>
+                  logger.info(s"PIT search_after completed, closing PIT: ${pitId.take(20)}...")
+                  closePit(pitId)
+                case scala.util.Failure(ex) =>
+                  logger.error(
+                    s"PIT search_after failed: ${ex.getMessage}, closing PIT: ${pitId.take(20)}..."
+                  )
+                  closePit(pitId)
+              }
+              NotUsed
+            }
+            .mapConcat(identity)
+        }
+      }
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  /** Open PIT (ES 7.10+)
+    */
+  private def openPit(indices: Seq[String], keepAlive: String)(implicit
+    ec: ExecutionContext
+  ): Future[String] = {
+    Future {
+      logger.debug(s"Opening PIT for indices: ${indices.mkString(", ")}")
+
+      val openPitRequest = new OpenPointInTimeRequest(indices: _*)
+        .keepAlive(TimeValue.parseTimeValue(keepAlive, "pit_keep_alive"))
+
+      val response = apply().openPointInTime(openPitRequest, RequestOptions.DEFAULT)
+      val pitId = response.getPointInTimeId
+
+      if (pitId == null || pitId.isEmpty) {
+        throw new IllegalStateException("PIT ID is null or empty")
+      }
+
+      logger.info(s"PIT opened: ${pitId.take(20)}...")
+      pitId
+    }.recoverWith { case ex: Exception =>
+      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+      Future.failed(
+        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+      )
+    }
+  }
+
+  /** Close PIT
+    */
+  private def closePit(pitId: String): Unit = {
+    Try {
+      logger.debug(s"Closing PIT: ${pitId.take(20)}...")
+
+      val closePitRequest = new ClosePointInTimeRequest(pitId)
+      val response = apply().closePointInTime(closePitRequest, RequestOptions.DEFAULT)
+
+      if (response.isSucceeded) {
+        logger.info(s"PIT closed successfully: ${pitId.take(20)}...")
+      } else {
+        logger.warn(s"PIT close reported failure: ${pitId.take(20)}...")
+      }
+    }.recover { case ex: Exception =>
+      logger.warn(s"Failed to close PIT ${pitId.take(20)}...: ${ex.getMessage}")
+    }
   }
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
