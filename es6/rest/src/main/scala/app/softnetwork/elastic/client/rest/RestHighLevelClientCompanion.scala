@@ -17,55 +17,172 @@
 package app.softnetwork.elastic.client.rest
 
 import app.softnetwork.elastic.client.ElasticConfig
-import com.sksamuel.exts.Logging
+import org.elasticsearch.client.{RequestOptions, RestClient, RestClientBuilder, RestHighLevelClient}
 import org.apache.http.HttpHost
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
-import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
-import org.elasticsearch.client.{RestClient, RestClientBuilder, RestHighLevelClient}
+import org.elasticsearch.search.SearchModule
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.xcontent.NamedXContentRegistry
 import org.elasticsearch.plugins.SearchPlugin
-import org.elasticsearch.search.SearchModule
+import org.slf4j.{Logger, LoggerFactory}
 
+//import scala.jdk.CollectionConverters._
 import scala.collection.JavaConverters._
+import scala.util.{Failure, Success, Try}
+import java.io.Closeable
 
-trait RestHighLevelClientCompanion extends Logging {
+/** Thread-safe companion for RestHighLevelClient with lazy initialization and proper resource
+  * management
+  */
+trait RestHighLevelClientCompanion extends Closeable {
+
+  val logger: Logger = LoggerFactory.getLogger(getClass)
 
   def elasticConfig: ElasticConfig
 
-  private var client: Option[RestHighLevelClient] = None
-
+  /** Lazy-initialized NamedXContentRegistry (thread-safe by Scala lazy val)
+    */
   lazy val namedXContentRegistry: NamedXContentRegistry = {
-    // import scala.jdk.CollectionConverters._
     val searchModule = new SearchModule(Settings.EMPTY, false, List.empty[SearchPlugin].asJava)
     new NamedXContentRegistry(searchModule.getNamedXContents)
   }
 
+  /** Thread-safe client instance using double-checked locking pattern
+    * @volatile
+    *   ensures visibility across threads
+    */
+  @volatile private var client: Option[RestHighLevelClient] = None
+
+  /** Lock object for synchronized initialization
+    */
+  private val lock = new Object()
+
+  /** Get or create RestHighLevelClient instance (thread-safe, lazy initialization) Uses
+    * double-checked locking for optimal performance
+    *
+    * @return
+    *   RestHighLevelClient instance
+    * @throws IllegalStateException
+    *   if client creation fails
+    */
   def apply(): RestHighLevelClient = {
+    // First check (no locking) - fast path for already initialized client
     client match {
       case Some(c) => c
-      case _ =>
-        val credentialsProvider = new BasicCredentialsProvider()
-        if (elasticConfig.credentials.username.nonEmpty) {
-          credentialsProvider.setCredentials(
-            AuthScope.ANY,
-            new UsernamePasswordCredentials(
-              elasticConfig.credentials.username,
-              elasticConfig.credentials.password
-            )
-          )
+      case None    =>
+        // Second check with lock - slow path for initialization
+        lock.synchronized {
+          client match {
+            case Some(c) =>
+              c // Another thread initialized while we were waiting
+            case None =>
+              val c = createClient()
+              client = Some(c)
+              logger.info(s"RestHighLevelClient initialized for ${elasticConfig.credentials.url}")
+              c
+          }
         }
-        val restClientBuilder: RestClientBuilder = RestClient
-          .builder(
-            HttpHost.create(elasticConfig.credentials.url)
-          )
-          .setHttpClientConfigCallback((httpAsyncClientBuilder: HttpAsyncClientBuilder) =>
-            httpAsyncClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
-          )
-        val c = new RestHighLevelClient(restClientBuilder)
-        client = Some(c)
-        c
     }
+  }
+
+  /** Create and configure RestHighLevelClient Separated for better testability and error handling
+    */
+  private def createClient(): RestHighLevelClient = {
+    try {
+      val restClientBuilder = buildRestClient()
+      new RestHighLevelClient(restClientBuilder)
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to create RestHighLevelClient: ${ex.getMessage}", ex)
+        throw new IllegalStateException("Cannot create Elasticsearch client", ex)
+    }
+  }
+
+  /** Build RestClientBuilder with credentials and configuration
+    */
+  private def buildRestClient(): RestClientBuilder = {
+    val httpHost = parseHttpHost(elasticConfig.credentials.url)
+
+    val builder = RestClient
+      .builder(httpHost)
+      .setRequestConfigCallback { requestConfigBuilder =>
+        requestConfigBuilder
+          .setConnectTimeout(elasticConfig.connectionTimeout.toMillis.toInt)
+          .setSocketTimeout(elasticConfig.socketTimeout.toMillis.toInt)
+      }
+
+    // Add credentials if provided
+    if (elasticConfig.credentials.username.nonEmpty) {
+      builder.setHttpClientConfigCallback { httpClientBuilder =>
+        val credentialsProvider = new BasicCredentialsProvider()
+        credentialsProvider.setCredentials(
+          AuthScope.ANY,
+          new UsernamePasswordCredentials(
+            elasticConfig.credentials.username,
+            elasticConfig.credentials.password
+          )
+        )
+        httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
+      }
+    } else {
+      builder
+    }
+  }
+
+  /** Parse HTTP host from URL string with validation
+    */
+  private def parseHttpHost(url: String): HttpHost = {
+    Try(HttpHost.create(url)) match {
+      case Success(host) => host
+      case Failure(ex) =>
+        logger.error(s"Invalid Elasticsearch URL: $url", ex)
+        throw new IllegalArgumentException(s"Invalid Elasticsearch URL: $url", ex)
+    }
+  }
+
+  /** Check if client is initialized and connected
+    */
+  def isInitialized: Boolean = client.isDefined
+
+  /** Test connection to Elasticsearch cluster
+    * @return
+    *   true if connection is successful
+    */
+  def testConnection(): Boolean = {
+    Try {
+      val c = apply()
+      val response = c.info(RequestOptions.DEFAULT)
+      logger.info(s"Connected to Elasticsearch ${response.getVersion}")
+      true
+    } match {
+      case Success(result) => result
+      case Failure(ex) =>
+        logger.error(s"Connection test failed: ${ex.getMessage}", ex)
+        false
+    }
+  }
+
+  /** Close the client and release resources Idempotent - safe to call multiple times
+    */
+  override def close(): Unit = {
+    lock.synchronized {
+      client.foreach { c =>
+        Try {
+          c.close()
+          logger.info("RestHighLevelClient closed successfully")
+        }.recover { case ex: Exception =>
+          logger.warn(s"Error closing RestHighLevelClient: ${ex.getMessage}", ex)
+        }
+        client = None
+      }
+    }
+  }
+
+  /** Reset client (force reconnection on next access) Useful for connection recovery scenarios
+    */
+  def reset(): Unit = {
+    logger.info("Resetting RestHighLevelClient")
+    close()
   }
 }

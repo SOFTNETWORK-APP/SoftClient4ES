@@ -8,6 +8,8 @@
 ## Features
 - ✅ Retry with exponential backoff
 - ✅ Automatic tie-breaker for search_after
+- ✅ PIT (Point In Time) support for consistent snapshots
+- ✅ Configurable batch size
 - ✅ Shard failure detection
 - ✅ Resource cleanup
 - ✅ Detailed error messages
