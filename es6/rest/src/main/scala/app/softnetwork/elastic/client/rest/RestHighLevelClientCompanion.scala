@@ -27,6 +27,8 @@ import org.elasticsearch.common.xcontent.NamedXContentRegistry
 import org.elasticsearch.plugins.SearchPlugin
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.net.URI
+
 //import scala.jdk.CollectionConverters._
 import scala.collection.JavaConverters._
 import scala.util.{Failure, Success, Try}
@@ -130,14 +132,68 @@ trait RestHighLevelClientCompanion extends Closeable {
     }
   }
 
-  /** Parse HTTP host from URL string with validation
+  /** Parse and validate HTTP host from URL string
+    * @throws IllegalArgumentException
+    *   if URL is invalid
     */
   private def parseHttpHost(url: String): HttpHost = {
-    Try(HttpHost.create(url)) match {
-      case Success(host) => host
+    // Validation de l'URL
+    validateUrl(url) match {
+      case Success(_) =>
+        Try(HttpHost.create(url)) match {
+          case Success(host) =>
+            host
+          case Failure(ex) =>
+            logger.error(s"Failed to parse Elasticsearch URL: $url", ex)
+            throw new IllegalArgumentException(s"Invalid Elasticsearch URL: $url", ex)
+        }
       case Failure(ex) =>
         logger.error(s"Invalid Elasticsearch URL: $url", ex)
-        throw new IllegalArgumentException(s"Invalid Elasticsearch URL: $url", ex)
+        throw new IllegalArgumentException(s"Invalid Elasticsearch URL format: $url", ex)
+    }
+  }
+
+  /** Validate URL format using java.net.URI
+    */
+  private def validateUrl(url: String): Try[URI] = {
+    Try {
+      if (url == null || url.trim.isEmpty) {
+        throw new IllegalArgumentException("URL cannot be null or empty")
+      }
+
+      val uri = new URI(url)
+
+      // Vérifier le schéma
+      if (uri.getScheme == null) {
+        throw new IllegalArgumentException(
+          s"URL must have a scheme (http:// or https://): $url"
+        )
+      }
+
+      val scheme = uri.getScheme.toLowerCase
+      if (scheme != "http" && scheme != "https") {
+        throw new IllegalArgumentException(
+          s"URL scheme must be http or https, got: $scheme"
+        )
+      }
+
+      // Vérifier l'hôte
+      if (uri.getHost == null || uri.getHost.trim.isEmpty) {
+        throw new IllegalArgumentException(
+          s"URL must have a valid hostname: $url"
+        )
+      }
+
+      // Vérifier le port si présent
+      if (uri.getPort != -1) {
+        if (uri.getPort < 0 || uri.getPort > 65535) {
+          throw new IllegalArgumentException(
+            s"Invalid port number: ${uri.getPort} (must be between 0 and 65535)"
+          )
+        }
+      }
+
+      uri
     }
   }
 
