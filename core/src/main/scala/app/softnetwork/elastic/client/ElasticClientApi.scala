@@ -37,7 +37,7 @@ import org.json4s.jackson.JsonMethods._
 import org.slf4j.Logger
 
 import java.util.UUID
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.Duration
 import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
 import scala.reflect.ClassTag
@@ -331,20 +331,19 @@ trait MappingApi extends IndicesApi with RefreshApi { _: { def logger: Logger } 
     // Check if the mapping needs to be updated
     else if (shouldUpdateMapping(index, mapping)) {
       val tempIndex = index + "_tmp_" + UUID.randomUUID()
-      var tempCreated = false
-      var originalDeleted = false
+      case class MigrationState(tempCreated: Boolean, originalDeleted: Boolean, success: Boolean)
       logger.info("--- Starting dynamic mapping migration ---")
       logger.info("Target index: " + index)
       logger.info("Temporary index: " + tempIndex)
-      def migrate(): Boolean = {
+      def migrate(): MigrationState = {
         // Create a temporary index with the new mapping
-        tempCreated = tryOrElse(this.createIndex(tempIndex, settings), false)(logger)
+        val tempCreated = tryOrElse(this.createIndex(tempIndex, settings), false)(logger)
         if (tempCreated) {
           logger.info(s"Temporary index $tempIndex created successfully.")
           // Set the new mapping on the temporary index
           if (!tryOrElse(this.setMapping(tempIndex, mapping), false)(logger)) {
             logger.error(s"Failed to set mapping for temporary index: $tempIndex")
-            return false
+            return MigrationState(tempCreated = true, originalDeleted = false, success = false)
           }
           logger.info(s"Mapping for temporary index $tempIndex set successfully.")
           // Reindex from the original index to the temporary index
@@ -352,60 +351,60 @@ trait MappingApi extends IndicesApi with RefreshApi { _: { def logger: Logger } 
             logger.error(
               s"Failed to reindex from original index: $index to temporary index: $tempIndex"
             )
-            return false
+            return MigrationState(tempCreated = true, originalDeleted = false, success = false)
           }
           logger.info(
             s"Reindexing from original index $index to temporary index $tempIndex completed successfully."
           )
           // Delete the original index
-          originalDeleted = this.deleteIndex(index)
+          val originalDeleted = this.deleteIndex(index)
           if (originalDeleted) {
             logger.info(s"Original index $index deleted successfully.")
             // Rename the temporary index to the original index name
             if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
               logger.error(s"Failed to recreate original index: $index")
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(s"Original index $index recreated successfully.")
             if (!tryOrElse(this.setMapping(index, mapping), false)(logger)) {
               logger.error(s"Failed to set mapping for original index: $index")
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(s"Mapping for original index $index set successfully.")
             if (!tryOrElse(this.reindex(tempIndex, index), false)(logger)) {
               logger.error(
                 s"Failed to reindex from temporary index: $tempIndex to original index: $index"
               )
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(
               s"Reindexing from temporary index $tempIndex to original index $index completed successfully."
             )
             if (!tryOrElse(this.openIndex(index), false)(logger)) {
               logger.error(s"Failed to open original index: $index")
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(s"Original index $index opened successfully.")
             logger.info("Dynamic mapping migration completed successfully.")
-            true
+            MigrationState(tempCreated = true, originalDeleted = true, success = true)
           } else {
             logger.error(s"Failed to delete original index: $index")
-            false
+            MigrationState(tempCreated = true, originalDeleted = false, success = false)
           }
         } else {
           logger.error(s"Failed to create temporary index: $tempIndex")
-          false
+          MigrationState(tempCreated = false, originalDeleted = false, success = false)
         }
       }
       val migration = Try(migrate()) match {
         case Success(result) => result
         case Failure(exception) =>
           logger.error("Exception during dynamic mapping migration", exception)
-          false
+          MigrationState(tempCreated = false, originalDeleted = false, success = false)
       }
-      if (!migration) {
+      if (!migration.success) {
         logger.error("Error during dynamic mapping migration")
-        if (originalDeleted) {
+        if (migration.originalDeleted) {
           // If the original index was deleted, we need to recreate it
           if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
             logger.error(s"Failed to recreate original index: $index")
@@ -434,7 +433,7 @@ trait MappingApi extends IndicesApi with RefreshApi { _: { def logger: Logger } 
           }
         }
       }
-      if (tempCreated) {
+      if (migration.tempCreated) {
         // Clean up the temporary index if it was created
         if (!tryOrElse(this.deleteIndex(tempIndex), false)(logger)) {
           logger.error(s"Failed to delete temporary index: $tempIndex")
@@ -444,7 +443,7 @@ trait MappingApi extends IndicesApi with RefreshApi { _: { def logger: Logger } 
       } else {
         logger.error(s"Temporary index $tempIndex was not created, skipping deletion.")
       }
-      migration
+      migration.success
     } else {
       false
     }
@@ -1413,38 +1412,49 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
 
-    var metrics = config.metrics // FIXME should be immutable
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    val metricsPromise = Promise[ScrollMetrics]()
 
     scrollSource(jsonQuery, fieldAliases, aggregations, config, hasSorts)
       .take(config.maxDocuments.getOrElse(Long.MaxValue))
       .grouped(config.scrollSize)
-      .map { batch =>
-        metrics = metrics.copy(
-          totalDocuments = metrics.totalDocuments + batch.size,
-          totalBatches = metrics.totalBatches + 1
-        )
-
-        if (metrics.totalBatches % 10 == 0) {
-          logger.info(
-            s"Scroll progress: ${metrics.totalDocuments} docs, " +
-            s"${metrics.totalBatches} batches, " +
-            s"${metrics.documentsPerSecond} docs/sec"
+      .statefulMapConcat { () =>
+        var metrics = config.metrics // Thread-safe as statefulMapConcat is single-threaded
+        batch => {
+          metrics = metrics.copy(
+            totalDocuments = metrics.totalDocuments + batch.size,
+            totalBatches = metrics.totalBatches + 1
           )
+
+          if (metrics.totalBatches % 10 == 0) {
+            logger.info(
+              s"Scroll progress: ${metrics.totalDocuments} docs, " +
+              s"${metrics.totalBatches} batches, " +
+              s"${metrics.documentsPerSecond} docs/sec"
+            )
+          }
+          batch.map(doc => (doc, metrics))
         }
 
-        batch.map(doc => (doc, metrics))
       }
-      .mapConcat(identity)
-      .watchTermination() { (_, done) =>
-        done.onComplete { _ =>
-          val finalMetrics = metrics.complete
-          logger.info(
-            s"Scroll completed: ${finalMetrics.totalDocuments} docs in ${finalMetrics.duration}ms " +
-            s"(${finalMetrics.documentsPerSecond} docs/sec)"
-          )
-        }(system.dispatcher)
-        NotUsed
-      }
+      .alsoTo(Sink.last.mapMaterializedValue { lastFuture =>
+        lastFuture
+          .map(_._2)
+          .onComplete {
+            case Success(finalMetrics) =>
+              val completed = finalMetrics.complete
+              logger.info(
+                s"Scroll completed: ${completed.totalDocuments} docs in ${completed.duration}ms " +
+                s"(${completed.documentsPerSecond} docs/sec)"
+              )
+              metricsPromise.success(completed)
+            case Failure(ex) =>
+              logger.error("Failed to get final metrics", ex)
+              metricsPromise.failure(ex)
+          }(system.dispatcher)
+      })
+      .mapMaterializedValue(_ => NotUsed)
   }
 
   private[this] def hasAggregations(query: String): Boolean = {

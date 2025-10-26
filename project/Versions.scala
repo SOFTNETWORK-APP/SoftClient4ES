@@ -4,7 +4,7 @@ object Versions {
 
   val scalatest = "3.2.19"
 
-  val typesafeConfig = "1.4.2"
+  val typesafeConfig = "1.4.3"
 
   val kxbmap_scala2_12 = "0.4.4"
 
