@@ -44,6 +44,8 @@ jobs:
       uses: sbt/setup-sbt@v1
     - name: Set vm.max_map_count
       run: sudo sysctl -w vm.max_map_count=262144
+    - name: Cross Compile
+      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt + compile
     - name: Run tests
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt compile test
 

@@ -20,10 +20,15 @@ import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.StrictLogging
 import configs.Configs
 
+import java.time.Duration
+
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
   multithreaded: Boolean = true,
-  discoveryEnabled: Boolean = false
+  discoveryEnabled: Boolean = false,
+  discoveryFrequency: Duration,
+  connectionTimeout: Duration,
+  socketTimeout: Duration
 )
 
 object ElasticConfig extends StrictLogging {

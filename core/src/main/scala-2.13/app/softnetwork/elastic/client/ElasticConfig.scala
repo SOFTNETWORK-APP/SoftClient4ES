@@ -21,7 +21,6 @@ import com.typesafe.scalalogging.StrictLogging
 import configs.ConfigReader
 
 import java.time.Duration
-import java.util.concurrent.TimeUnit
 
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
