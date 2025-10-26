@@ -65,5 +65,5 @@ jobs:
 #          cache: 'sbt'
       - name: Setup sbt launcher
         uses: sbt/setup-sbt@v1
-      - name: Formatting
-        run: sbt scalafmtSbtCheck scalafmtCheck test:scalafmtCheck
+      - name: Checks
+        run: sbt headerCheck scalafmtSbtCheck scalafmtCheck test:scalafmtCheck
