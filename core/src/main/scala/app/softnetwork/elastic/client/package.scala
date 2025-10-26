@@ -33,8 +33,7 @@ import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
 
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 /** Created by smanciot on 30/06/2018.
   */

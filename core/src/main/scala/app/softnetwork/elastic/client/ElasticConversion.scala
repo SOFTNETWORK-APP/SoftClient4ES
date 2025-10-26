@@ -26,8 +26,7 @@ import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDat
 import java.time.format.DateTimeFormatter
 import scala.util.Try
 
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 trait ElasticConversion {
   private[this] val mapper = new ObjectMapper()
