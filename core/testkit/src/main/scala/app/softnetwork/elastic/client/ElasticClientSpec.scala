@@ -1,6 +1,7 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
+import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
@@ -21,7 +22,7 @@ import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
 import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, ExecutionContextExecutor}
+import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 28/06/2018.
@@ -191,7 +192,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       case other => fail(other.toString)
     }
 
-    pClient.searchAs[Person]("select * from person_mapping where match (name) against ('gum')") match {
+    pClient.searchAs[Person](
+      "select * from person_mapping where match (name) against ('gum')"
+    ) match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
@@ -239,7 +242,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_migration" should haveCount(3)
 
-    pClient.searchAs[Person]("select * from person_migration where match (name) against ('gum')") match {
+    pClient.searchAs[Person](
+      "select * from person_migration where match (name) against ('gum')"
+    ) match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
     }
@@ -288,7 +293,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.shouldUpdateMapping("person_migration", newMapping) shouldBe true
     pClient.updateMapping("person_migration", newMapping) shouldBe true
 
-    pClient.searchAs[Person]("select * from person_migration where match (name) against ('gum')") match {
+    pClient.searchAs[Person](
+      "select * from person_migration where match (name) against ('gum')"
+    ) match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
@@ -908,5 +915,48 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
     ) should contain allOf ("1999-05-09", "2002-05-09")
     result._2.map(_.parentId) should contain only "A16"
+
+    val query =
+      """SELECT
+        | p.uuid,
+        | p.name,
+        | p.birthDate,
+        | children.name,
+        | children.birthDate,
+        | children.parentId
+        | FROM
+        | parent as p
+        | JOIN UNNEST(p.children) as children
+        |WHERE
+        | children.name is not null AND p.uuid = 'A16'
+        |""".stripMargin
+
+    val searchResults = parentClient.searchAs[Parent](query)
+    searchResults.size shouldBe 1
+    val searchResult = searchResults.head
+    searchResult.uuid shouldBe "A16"
+    searchResult.children.size shouldBe 2
+    searchResult.children.map(_.name) should contain allOf ("Steve Gumble", "Josh Gumble")
+    searchResult.children.map(
+      _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+    ) should contain allOf ("1999-05-09", "2002-05-09")
+    searchResult.children.map(_.parentId) should contain only "A16"
+
+    val scrollResults: Future[Seq[Parent]] = parentClient
+      .scrollSourceAs[Parent](query, config = ScrollConfig(scrollSize = 1))
+      .runWith(Sink.seq)
+    scrollResults.onComplete {
+      case Success(parents) =>
+        parents.size shouldBe 1
+        val scrollResult = parents.head
+        scrollResult.uuid shouldBe "A16"
+        scrollResult.children.size shouldBe 2
+        scrollResult.children.map(_.name) should contain allOf ("Steve Gumble", "Josh Gumble")
+        scrollResult.children.map(
+          _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        ) should contain allOf ("1999-05-09", "2002-05-09")
+        scrollResult.children.map(_.parentId) should contain only "A16"
+      case Failure(f) => fail(f.getMessage)
+    }
   }
 }

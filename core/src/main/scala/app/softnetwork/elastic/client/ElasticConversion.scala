@@ -47,7 +47,7 @@ trait ElasticConversion {
   ): Try[Seq[T]] = {
     parseResponse(response).map { rows =>
       rows.map { row =>
-        convertTo[T](row)
+        convertTo[T](row)(m, formats)
       }
     }
   }
@@ -159,7 +159,8 @@ trait ElasticConversion {
         hits.map { hit =>
           val source = extractSource(hit, fieldAliases)
           val metadata = extractHitMetadata(hit)
-          globalMetrics ++ source ++ metadata
+          val innerHits = extractInnerHits(hit, fieldAliases)
+          globalMetrics ++ source ++ metadata ++ innerHits
         }
 
       case _ =>
@@ -176,7 +177,8 @@ trait ElasticConversion {
     hits.map { hit =>
       val source = extractSource(hit, fieldAliases)
       val metadata = extractHitMetadata(hit)
-      source ++ metadata
+      val innerHits = extractInnerHits(hit, fieldAliases)
+      source ++ metadata ++ innerHits
     }
   }
 
@@ -198,6 +200,49 @@ trait ElasticConversion {
     Option(hit.get("_source"))
       .filter(_.isObject)
       .map(jsonNodeToMap(_, fieldAliases))
+      .getOrElse(Map.empty)
+  }
+
+  /** Extract inner_hits from a hit (for nested or parent-child queries) */
+  private def extractInnerHits(
+    hit: JsonNode,
+    fieldAliases: Map[String, String]
+  ): Map[String, Any] = {
+    Option(hit.get("inner_hits"))
+      .filter(_.isObject)
+      .map { innerHitsNode =>
+        innerHitsNode
+          .properties()
+          .asScala
+          .map { entry =>
+            val innerHitName = entry.getKey
+            val innerHitData = entry.getValue
+
+            // Extract the hits array from inner_hits
+            val innerHitsList = Option(innerHitData.path("hits").path("hits"))
+              .filter(_.isArray)
+              .map { hitsArray =>
+                hitsArray
+                  .elements()
+                  .asScala
+                  .map { innerHit =>
+                    // Extract source and metadata for each inner hit
+                    val source = extractSource(innerHit, fieldAliases)
+                    val metadata = extractHitMetadata(innerHit)
+
+                    // Recursively handle nested inner_hits if present
+                    val nestedInnerHits = extractInnerHits(innerHit, fieldAliases)
+
+                    source ++ metadata ++ nestedInnerHits
+                  }
+                  .toList
+              }
+              .getOrElse(List.empty)
+
+            innerHitName -> innerHitsList
+          }
+          .toMap
+      }
       .getOrElse(Map.empty)
   }
 
@@ -258,7 +303,10 @@ trait ElasticConversion {
         // Process each top_hits aggregation with their names
         val topHitsData = allTopHits.map { case (topHitName, hits) =>
           val processedHits = hits.map { hit =>
-            extractSource(hit, fieldAliases) ++ extractHitMetadata(hit)
+            val source = extractSource(hit, fieldAliases)
+            val metadata = extractHitMetadata(hit)
+            val innerHits = extractInnerHits(hit, fieldAliases)
+            source ++ metadata ++ innerHits
           }
 
           // Determine if it is a multivalued aggregation
@@ -376,7 +424,6 @@ trait ElasticConversion {
     */
   def extractMetrics(aggsNode: JsonNode): Map[String, Any] = {
     if (!aggsNode.isObject) return Map.empty
-
     aggsNode
       .properties()
       .asScala
@@ -436,7 +483,6 @@ trait ElasticConversion {
   /** Extract all top_hits aggregations with their names and hits */
   def extractAllTopHits(aggsNode: JsonNode): Map[String, Seq[JsonNode]] = {
     if (!aggsNode.isObject) return Map.empty
-
     aggsNode
       .properties()
       .asScala
@@ -458,14 +504,12 @@ trait ElasticConversion {
     */
   def extractGlobalMetrics(aggsNode: JsonNode): Map[String, Any] = {
     if (!aggsNode.isObject) return Map.empty
-
     aggsNode
       .properties()
       .asScala
       .flatMap { entry =>
         val name = entry.getKey
         val value = entry.getValue
-
         if (!value.has("buckets") && value.has("value")) {
           val metricValue = value.get("value")
           if (!metricValue.isNull) {
@@ -491,7 +535,6 @@ trait ElasticConversion {
     */
   def jsonNodeToMap(node: JsonNode, fieldAliases: Map[String, String]): Map[String, Any] = {
     if (!node.isObject) return Map.empty
-
     node
       .properties()
       .asScala
