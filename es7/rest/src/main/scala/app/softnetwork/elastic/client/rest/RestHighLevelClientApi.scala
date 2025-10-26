@@ -68,8 +68,7 @@ import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.Formats
 
 import java.io.{ByteArrayInputStream, IOException}
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -91,8 +90,9 @@ trait RestHighLevelClientApi
     with RestHighLevelClientSearchApi
     with RestHighLevelClientBulkApi
     with RestHighLevelClientScrollApi
+    with RestHighLevelClientCompanion
 
-trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientIndicesApi extends IndicesApi { _: RestHighLevelClientCompanion =>
   override def createIndex(index: String, settings: String): Boolean = {
     tryOrElse(
       apply()
@@ -178,7 +178,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientC
 
 }
 
-trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientAliasApi extends AliasApi { _: RestHighLevelClientCompanion =>
   override def addAlias(index: String, alias: String): Boolean = {
     tryOrElse(
       apply()
@@ -216,8 +216,8 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientCompa
   }
 }
 
-trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientIndicesApi =>
+trait RestHighLevelClientSettingsApi extends SettingsApi {
+  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override def updateSettings(index: String, settings: String): Boolean = {
     tryOrElse(
@@ -260,7 +260,7 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
   }
 }
 
-trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientMappingApi extends MappingApi { _: RestHighLevelClientCompanion =>
   override def setMapping(index: String, mapping: String): Boolean = {
     tryOrElse(
       apply()
@@ -300,7 +300,7 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientC
 
 }
 
-trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientRefreshApi extends RefreshApi { _: RestHighLevelClientCompanion =>
   override def refresh(index: String): Boolean = {
     tryOrElse(
       apply()
@@ -316,7 +316,7 @@ trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientC
   }
 }
 
-trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientFlushApi extends FlushApi { _: RestHighLevelClientCompanion =>
   override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean = {
     tryOrElse(
       apply()
@@ -331,7 +331,7 @@ trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientCompa
   }
 }
 
-trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientCountApi extends CountApi { _: RestHighLevelClientCompanion =>
   override def countAsync(
     query: client.JSONQuery
   )(implicit ec: ExecutionContext): Future[Option[Double]] = {
@@ -367,10 +367,12 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompa
 
 trait RestHighLevelClientSingleValueAggregateApi
     extends SingleValueAggregateApi
-    with RestHighLevelClientCountApi { _: SearchApi with ElasticConversion => }
+    with RestHighLevelClientCountApi {
+  _: SearchApi with ElasticConversion with RestHighLevelClientCompanion =>
+}
 
-trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientRefreshApi =>
+trait RestHighLevelClientIndexApi extends IndexApi {
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
   override def index(index: String, id: String, source: String): Boolean = {
     tryOrElse(
       apply()
@@ -406,8 +408,8 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompa
   }
 }
 
-trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientRefreshApi =>
+trait RestHighLevelClientUpdateApi extends UpdateApi {
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
   override def update(
     index: String,
     id: String,
@@ -451,8 +453,8 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientCom
   }
 }
 
-trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientRefreshApi =>
+trait RestHighLevelClientDeleteApi extends DeleteApi {
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
 
   override def delete(uuid: String, index: String): Boolean = {
     tryOrElse(
@@ -485,7 +487,7 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientCom
   }
 }
 
-trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientGetApi extends GetApi { _: RestHighLevelClientCompanion =>
   def get[U <: Timestamped](
     id: String,
     index: Option[String] = None,
@@ -567,8 +569,8 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
   }
 }
 
-trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCompanion {
-  _: ElasticConversion =>
+trait RestHighLevelClientSearchApi extends SearchApi {
+  _: ElasticConversion with RestHighLevelClientCompanion =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
@@ -785,7 +787,7 @@ trait RestHighLevelClientBulkApi
     extends RestHighLevelClientRefreshApi
     with RestHighLevelClientSettingsApi
     with RestHighLevelClientIndicesApi
-    with BulkApi {
+    with BulkApi { _: RestHighLevelClientCompanion =>
   override type A = DocWriteRequest[_]
   override type R = BulkResponse
 

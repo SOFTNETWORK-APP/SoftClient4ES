@@ -47,8 +47,7 @@ import com.google.gson.{Gson, JsonParser}
 
 import _root_.java.io.{IOException, StringReader, StringWriter}
 import _root_.java.util.{Map => JMap}
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -72,8 +71,9 @@ trait ElasticsearchClientApi
     with ElasticsearchClientSearchApi
     with ElasticsearchClientBulkApi
     with ElasticsearchClientScrollApi
+    with ElasticsearchClientCompanion
 
-trait ElasticsearchClientIndicesApi extends IndicesApi with ElasticsearchClientCompanion {
+trait ElasticsearchClientIndicesApi extends IndicesApi { _: ElasticsearchClientCompanion =>
   override def createIndex(index: String, settings: String): Boolean = {
     tryOrElse(
       apply()
@@ -150,7 +150,7 @@ trait ElasticsearchClientIndicesApi extends IndicesApi with ElasticsearchClientC
   }
 }
 
-trait ElasticsearchClientAliasApi extends AliasApi with ElasticsearchClientCompanion {
+trait ElasticsearchClientAliasApi extends AliasApi { _: ElasticsearchClientCompanion =>
   override def addAlias(index: String, alias: String): Boolean = {
     tryOrElse(
       apply()
@@ -188,8 +188,8 @@ trait ElasticsearchClientAliasApi extends AliasApi with ElasticsearchClientCompa
   }
 }
 
-trait ElasticsearchClientSettingsApi extends SettingsApi with ElasticsearchClientCompanion {
-  _: ElasticsearchClientIndicesApi =>
+trait ElasticsearchClientSettingsApi extends SettingsApi {
+  _: ElasticsearchClientIndicesApi with ElasticsearchClientCompanion =>
 
   override def updateSettings(index: String, settings: String): Boolean = {
     tryOrElse(
@@ -232,7 +232,7 @@ trait ElasticsearchClientMappingApi
     extends MappingApi
     with ElasticsearchClientIndicesApi
     with ElasticsearchClientRefreshApi
-    with ElasticsearchClientCompanion {
+    with ElasticsearchClientCompanion { _: ElasticsearchClientCompanion =>
   override def setMapping(index: String, mapping: String): Boolean = {
     tryOrElse(
       apply()
@@ -269,7 +269,7 @@ trait ElasticsearchClientMappingApi
   }
 }
 
-trait ElasticsearchClientRefreshApi extends RefreshApi with ElasticsearchClientCompanion {
+trait ElasticsearchClientRefreshApi extends RefreshApi { _: ElasticsearchClientCompanion =>
   override def refresh(index: String): Boolean = {
     tryOrElse(
       apply()
@@ -285,7 +285,7 @@ trait ElasticsearchClientRefreshApi extends RefreshApi with ElasticsearchClientC
   }
 }
 
-trait ElasticsearchClientFlushApi extends FlushApi with ElasticsearchClientCompanion {
+trait ElasticsearchClientFlushApi extends FlushApi { _: ElasticsearchClientCompanion =>
   override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean = {
     tryOrElse(
       apply()
@@ -301,7 +301,7 @@ trait ElasticsearchClientFlushApi extends FlushApi with ElasticsearchClientCompa
   }
 }
 
-trait ElasticsearchClientCountApi extends CountApi with ElasticsearchClientCompanion {
+trait ElasticsearchClientCountApi extends CountApi { _: ElasticsearchClientCompanion =>
   override def count(query: client.JSONQuery): Option[Double] = {
     tryOrElse(
       Option(
@@ -330,10 +330,12 @@ trait ElasticsearchClientCountApi extends CountApi with ElasticsearchClientCompa
 
 trait ElasticsearchClientSingleValueAggregateApi
     extends SingleValueAggregateApi
-    with ElasticsearchClientCountApi { _: SearchApi with ElasticConversion => }
+    with ElasticsearchClientCountApi {
+  _: SearchApi with ElasticConversion with ElasticsearchClientCompanion =>
+}
 
-trait ElasticsearchClientIndexApi extends IndexApi with ElasticsearchClientCompanion {
-  _: ElasticsearchClientRefreshApi =>
+trait ElasticsearchClientIndexApi extends IndexApi {
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
   override def index(index: String, id: String, source: String): Boolean = {
     tryOrElse(
       apply()
@@ -373,8 +375,8 @@ trait ElasticsearchClientIndexApi extends IndexApi with ElasticsearchClientCompa
   }
 }
 
-trait ElasticsearchClientUpdateApi extends UpdateApi with ElasticsearchClientCompanion {
-  _: ElasticsearchClientRefreshApi =>
+trait ElasticsearchClientUpdateApi extends UpdateApi {
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
   override def update(
     index: String,
     id: String,
@@ -423,8 +425,8 @@ trait ElasticsearchClientUpdateApi extends UpdateApi with ElasticsearchClientCom
   }
 }
 
-trait ElasticsearchClientDeleteApi extends DeleteApi with ElasticsearchClientCompanion {
-  _: ElasticsearchClientRefreshApi =>
+trait ElasticsearchClientDeleteApi extends DeleteApi {
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
 
   override def delete(uuid: String, index: String): Boolean = {
     tryOrElse(
@@ -458,7 +460,7 @@ trait ElasticsearchClientDeleteApi extends DeleteApi with ElasticsearchClientCom
 
 }
 
-trait ElasticsearchClientGetApi extends GetApi with ElasticsearchClientCompanion {
+trait ElasticsearchClientGetApi extends GetApi { _: ElasticsearchClientCompanion =>
 
   def get[U <: Timestamped](
     id: String,
@@ -580,10 +582,8 @@ trait ElasticsearchConversion extends ElasticConversion { _: ElasticsearchClient
   }
 }
 
-trait ElasticsearchClientSearchApi
-    extends SearchApi
-    with ElasticsearchConversion
-    with ElasticsearchClientCompanion {
+trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversion {
+  _: ElasticsearchClientCompanion =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
@@ -820,7 +820,7 @@ trait ElasticsearchClientBulkApi
     extends ElasticsearchClientRefreshApi
     with ElasticsearchClientSettingsApi
     with ElasticsearchClientIndicesApi
-    with BulkApi {
+    with BulkApi { _: ElasticsearchClientCompanion =>
   override type A = BulkOperation
   override type R = BulkResponse
 
@@ -933,10 +933,8 @@ trait ElasticsearchClientBulkApi
   }
 }
 
-trait ElasticsearchClientScrollApi
-    extends ScrollApi
-    with ElasticsearchConversion
-    with ElasticsearchClientCompanion {
+trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversion {
+  _: ElasticsearchClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */

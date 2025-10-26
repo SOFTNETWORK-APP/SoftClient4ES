@@ -25,6 +25,7 @@ import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.persistence.query.ExternalPersistenceProvider
 import app.softnetwork.serialization.commonFormats
 import app.softnetwork.elastic.persistence.typed.Elastic._
+import org.slf4j.Logger
 
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
@@ -32,7 +33,9 @@ import scala.util.{Failure, Success, Try}
 /** Created by smanciot on 16/05/2020.
   */
 trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] {
-  _: ElasticClientApi with ManifestWrapper[T] =>
+  self: ElasticClientApi with ManifestWrapper[T] =>
+
+  protected def logger: Logger
 
   implicit def formats: Formats = commonFormats
 

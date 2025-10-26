@@ -242,9 +242,7 @@ trait SettingsApi { _: IndicesApi =>
   def loadSettings(index: String): String
 }
 
-trait MappingApi extends IndicesApi with RefreshApi {
-
-  protected def logger: Logger
+trait MappingApi extends IndicesApi with RefreshApi { _: { def logger: Logger } =>
 
   /** Set the mapping of an index.
     * @param index

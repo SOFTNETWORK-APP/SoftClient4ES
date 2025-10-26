@@ -36,9 +36,7 @@ import io.searchbox.params.Parameters
 import org.json4s.Formats
 
 import java.io.IOException
-
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -64,7 +62,7 @@ trait JestClientApi
     with JestBulkApi
     with JestClientCompanion
 
-trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientCompanion {
+trait JestIndicesApi extends IndicesApi with JestRefreshApi { _: JestClientCompanion =>
   override def createIndex(index: String, settings: String = defaultSettings): Boolean =
     tryOrElse(
       apply()
@@ -154,7 +152,7 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientCompa
     )(logger)
 }
 
-trait JestAliasApi extends AliasApi with JestClientCompanion {
+trait JestAliasApi extends AliasApi { _: JestClientCompanion =>
   override def addAlias(index: String, alias: String): Boolean = {
     tryOrElse(
       apply()
@@ -182,8 +180,8 @@ trait JestAliasApi extends AliasApi with JestClientCompanion {
   }
 }
 
-trait JestSettingsApi extends SettingsApi with JestClientCompanion {
-  _: IndicesApi =>
+trait JestSettingsApi extends SettingsApi {
+  _: IndicesApi with JestClientCompanion =>
   override def updateSettings(index: String, settings: String = defaultSettings): Boolean =
     closeIndex(index) &&
     tryOrElse(
@@ -220,8 +218,8 @@ trait JestSettingsApi extends SettingsApi with JestClientCompanion {
     )(logger)
 }
 
-trait JestMappingApi extends MappingApi with JestClientCompanion {
-  _: IndicesApi =>
+trait JestMappingApi extends MappingApi {
+  _: IndicesApi with JestClientCompanion =>
   override def setMapping(index: String, mapping: String): Boolean =
     tryOrElse(
       apply()
@@ -270,7 +268,7 @@ trait JestMappingApi extends MappingApi with JestClientCompanion {
   }
 }
 
-trait JestRefreshApi extends RefreshApi with JestClientCompanion {
+trait JestRefreshApi extends RefreshApi { _: JestClientCompanion =>
   override def refresh(index: String): Boolean =
     tryOrElse(
       apply()
@@ -282,7 +280,7 @@ trait JestRefreshApi extends RefreshApi with JestClientCompanion {
     )(logger)
 }
 
-trait JestFlushApi extends FlushApi with JestClientCompanion {
+trait JestFlushApi extends FlushApi { _: JestClientCompanion =>
   override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean =
     tryOrElse(
       apply()
@@ -294,7 +292,7 @@ trait JestFlushApi extends FlushApi with JestClientCompanion {
     )(logger)
 }
 
-trait JestCountApi extends CountApi with JestClientCompanion {
+trait JestCountApi extends CountApi { _: JestClientCompanion =>
   override def countAsync(
     jsonQuery: JSONQuery
   )(implicit ec: ExecutionContext): Future[Option[Double]] = {
@@ -336,11 +334,11 @@ trait JestCountApi extends CountApi with JestClientCompanion {
 }
 
 trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCountApi {
-  _: SearchApi with ElasticConversion =>
+  _: SearchApi with ElasticConversion with JestClientCompanion =>
 }
 
-trait JestIndexApi extends IndexApi with JestClientCompanion {
-  _: RefreshApi =>
+trait JestIndexApi extends IndexApi {
+  _: RefreshApi with JestClientCompanion =>
   override def index(index: String, id: String, source: String): Boolean = {
     Try(
       apply().execute(
@@ -375,8 +373,8 @@ trait JestIndexApi extends IndexApi with JestClientCompanion {
 
 }
 
-trait JestUpdateApi extends UpdateApi with JestClientCompanion {
-  _: RefreshApi =>
+trait JestUpdateApi extends UpdateApi {
+  _: RefreshApi with JestClientCompanion =>
   override def update(
     index: String,
     id: String,
@@ -432,8 +430,8 @@ trait JestUpdateApi extends UpdateApi with JestClientCompanion {
 
 }
 
-trait JestDeleteApi extends DeleteApi with JestClientCompanion {
-  _: RefreshApi =>
+trait JestDeleteApi extends DeleteApi {
+  _: RefreshApi with JestClientCompanion =>
   override def delete(uuid: String, index: String): Boolean = {
     Try(
       apply()
@@ -472,7 +470,7 @@ trait JestDeleteApi extends DeleteApi with JestClientCompanion {
 
 }
 
-trait JestGetApi extends GetApi with JestClientCompanion {
+trait JestGetApi extends GetApi { _: JestClientCompanion =>
 
   // GetApi
   override def get[U <: Timestamped](
@@ -531,7 +529,7 @@ trait JestGetApi extends GetApi with JestClientCompanion {
 
 }
 
-trait JestSearchApi extends SearchApi with JestClientCompanion { _: ElasticConversion =>
+trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientCompanion =>
 
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
@@ -677,12 +675,8 @@ trait JestSearchApi extends SearchApi with JestClientCompanion { _: ElasticConve
 
 }
 
-trait JestBulkApi
-    extends JestRefreshApi
-    with JestSettingsApi
-    with JestIndicesApi
-    with BulkApi
-    with JestClientCompanion {
+trait JestBulkApi extends JestRefreshApi with JestSettingsApi with JestIndicesApi with BulkApi {
+  _: JestClientCompanion =>
   override type A = BulkableAction[DocumentResult]
   override type R = BulkResult
 
@@ -746,7 +740,7 @@ trait JestBulkApi
 
 }
 
-trait JestScrollApi extends ScrollApi with JestClientCompanion {
+trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
