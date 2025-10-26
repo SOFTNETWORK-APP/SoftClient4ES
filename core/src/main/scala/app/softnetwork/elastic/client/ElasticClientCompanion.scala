@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client
 
 import org.apache.http.HttpHost
-import org.slf4j.{Logger, LoggerFactory}
+import org.slf4j.Logger
 
 import java.io.Closeable
 import java.net.URI
