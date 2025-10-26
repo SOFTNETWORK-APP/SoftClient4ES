@@ -28,8 +28,7 @@ import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SQLMultiSearchRequest,
   SQLQuery,
-  SQLSearchRequest,
-  SortOrder
+  SQLSearchRequest
 }
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}

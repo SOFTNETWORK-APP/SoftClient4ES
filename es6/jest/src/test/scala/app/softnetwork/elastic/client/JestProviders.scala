@@ -14,8 +14,7 @@ object JestProviders {
 
     override lazy val config: Config = es
 
-    implicit lazy val jestClient: JestClient =
-      apply(elasticConfig.credentials, elasticConfig.multithreaded)
+    implicit lazy val jestClient: JestClient = apply()
   }
 
   class SampleProvider(es: Config) extends JestProvider[Sample] with ManifestWrapper[Sample] {
@@ -23,8 +22,7 @@ object JestProviders {
 
     override lazy val config: Config = es
 
-    implicit lazy val jestClient: JestClient =
-      apply(elasticConfig.credentials, elasticConfig.multithreaded)
+    implicit lazy val jestClient: JestClient = apply()
   }
 
   class BinaryProvider(es: Config) extends JestProvider[Binary] with ManifestWrapper[Binary] {
@@ -32,8 +30,7 @@ object JestProviders {
 
     override lazy val config: Config = es
 
-    implicit lazy val jestClient: JestClient =
-      apply(elasticConfig.credentials, elasticConfig.multithreaded)
+    implicit lazy val jestClient: JestClient = apply()
   }
 
   class ParentProvider(es: Config) extends JestProvider[Parent] with ManifestWrapper[Parent] {
@@ -41,7 +38,6 @@ object JestProviders {
 
     override lazy val config: Config = es
 
-    implicit lazy val jestClient: JestClient =
-      apply(elasticConfig.credentials, elasticConfig.multithreaded)
+    implicit lazy val jestClient: JestClient = apply()
   }
 }

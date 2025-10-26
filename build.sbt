@@ -75,6 +75,7 @@ val json4s = Seq(
 ).map(_.excludeAll(jacksonExclusions: _*))
 
 ThisBuild / libraryDependencies ++= Seq(
+  "org.scala-lang.modules" %% "scala-collection-compat" % "2.11.0",
   "org.scala-lang.modules" %% "scala-parser-combinators" % "1.1.2"
 ) // ++ configDependencies ++ json4s ++ logging
 
