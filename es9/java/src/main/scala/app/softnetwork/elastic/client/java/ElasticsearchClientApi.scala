@@ -602,7 +602,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse = {
+  ): ElasticResponse = {
     val query = jsonQuery.query
     logger.info(s"Searching with query: $query on indices: ${jsonQuery.indices.mkString(", ")}")
     // Execute the search request
@@ -616,7 +616,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
       classOf[JMap[String, Object]]
     )
     // Return the SQL search response
-    val sqlResponse = SQLSearchResponse(
+    val sqlResponse = ElasticResponse(
       query,
       convertToJson(response),
       fieldAliases,
@@ -641,7 +641,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     jsonQueries: JSONQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse = {
+  ): ElasticResponse = {
     val queries = jsonQueries.queries.map(_.query)
     val query = queries.mkString("\n")
     logger.info(
@@ -662,7 +662,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     // Execute the multi-search request
     val responses = apply().msearch(request, classOf[JMap[String, Object]])
     // Return the SQL search response
-    val sqlResponse = SQLSearchResponse(
+    val sqlResponse = ElasticResponse(
       query,
       convertToJson(responses),
       fieldAliases,
@@ -1298,7 +1298,7 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
         case Left(l)  => convertToJson(l)
         case Right(r) => convertToJson(r)
       }
-    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>
@@ -1317,7 +1317,7 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = convertToJson(response)
-    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, Map.empty)
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>

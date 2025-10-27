@@ -551,7 +551,7 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse = {
+  ): ElasticResponse = {
     // Create a parser for the query
     val search = jsonQuery.search
     val query = search._2
@@ -565,7 +565,7 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
       },
       ""
     )(logger)
-    SQLSearchResponse(query, response, fieldAliases, aggregations)
+    ElasticResponse(query, response, fieldAliases, aggregations)
   }
 
   /** Perform a multi-search operation with the given JSON multi-search query.
@@ -583,7 +583,7 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
     jsonQueries: JSONQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse = {
+  ): ElasticResponse = {
     val queries = jsonQueries.queries.map(_.search)
     val query = queries.map(_._2).mkString("\n")
     val response = tryOrElse(
@@ -600,7 +600,7 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
       },
       ""
     )(logger)
-    SQLSearchResponse(query, response, fieldAliases, aggregations)
+    ElasticResponse(query, response, fieldAliases, aggregations)
   }
 
   override def searchAsyncAs[U](
@@ -955,7 +955,7 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = jsonObject.toString
-    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
 
     parseResponse(sqlResponse) match {
       case Success(rows) => rows
@@ -972,7 +972,7 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = jsonObject.toString
-    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, Map.empty)
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
 
     parseResponse(sqlResponse) match {
       case Success(rows) => rows

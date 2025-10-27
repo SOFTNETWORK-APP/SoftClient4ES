@@ -1089,7 +1089,7 @@ trait SearchApi extends ElasticConversion {
     * @return
     *   the SQL search response containing the results of the query
     */
-  final def search(sql: SQLQuery): SQLSearchResponse = {
+  final def search(sql: SQLQuery): ElasticResponse = {
     sql.request match {
       case Some(Left(single)) => search(single.copy(score = sql.score))
       case Some(Right(multiple)) =>
@@ -1105,7 +1105,7 @@ trait SearchApi extends ElasticConversion {
     * @return
     *   the SQL search response containing the results of the query
     */
-  private[this] def search(sql: SQLSearchRequest): SQLSearchResponse = {
+  private[this] def search(sql: SQLSearchRequest): ElasticResponse = {
     // Build the JSON query from the SQL query
     val jsonQuery =
       JSONQuery(
@@ -1129,7 +1129,7 @@ trait SearchApi extends ElasticConversion {
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse
+  ): ElasticResponse
 
   /** Perform a multi-search operation with the given SQL query.
     * @param sql
@@ -1137,7 +1137,7 @@ trait SearchApi extends ElasticConversion {
     * @return
     *   the SQL search response containing the results of the multi-search query
     */
-  private[this] def multisearch(sql: SQLMultiSearchRequest): SQLSearchResponse = {
+  private[this] def multisearch(sql: SQLMultiSearchRequest): ElasticResponse = {
     // Build the JSON queries from the SQL multi-search query
     val jsonQueries: JSONQueries =
       JSONQueries(
@@ -1165,7 +1165,7 @@ trait SearchApi extends ElasticConversion {
     jsonQueries: JSONQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse
+  ): ElasticResponse
 
   /** Search for entities matching the given JSON query.
     * @param jsonQuery

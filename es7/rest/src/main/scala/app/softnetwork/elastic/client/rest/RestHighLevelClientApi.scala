@@ -589,7 +589,7 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse = {
+  ): ElasticResponse = {
     val query = jsonQuery.query
     // Create a parser for the query
     val xContentParser = XContentType.JSON
@@ -610,7 +610,7 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     )
     // Return the SQL search response
     val sqlResponse =
-      SQLSearchResponse(query, Strings.toString(response), fieldAliases, aggregations)
+      ElasticResponse(query, Strings.toString(response), fieldAliases, aggregations)
     logger.info(s"Search response: $sqlResponse")
     sqlResponse
   }
@@ -630,7 +630,7 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     jsonQueries: JSONQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse = {
+  ): ElasticResponse = {
     val request = new MultiSearchRequest()
     val queries = jsonQueries.queries.map(_.query)
     val query = queries.mkString("\n")
@@ -668,7 +668,7 @@ trait RestHighLevelClientSearchApi extends SearchApi {
       )
     }*/
     val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    SQLSearchResponse(query, Strings.toString(responses), fieldAliases, aggregations)
+    ElasticResponse(query, Strings.toString(responses), fieldAliases, aggregations)
   }
 
   override def searchAsyncAs[U](
@@ -1335,7 +1335,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>
@@ -1354,7 +1354,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCom
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    val sqlResponse = SQLSearchResponse("", jsonString, fieldAliases, Map.empty)
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
 
     parseResponse(sqlResponse) match {
       case Success(rows) => rows

@@ -45,7 +45,7 @@ package object client {
 
   type ESResults = String
 
-  case class SQLSearchResponse(
+  case class ElasticResponse(
     query: ESQuery,
     results: ESResults,
     fieldAliases: Map[String, String],

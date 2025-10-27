@@ -97,8 +97,8 @@ trait MockElasticClientApi extends ElasticClientApi {
     jsonQuery: JSONQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse =
-    SQLSearchResponse(
+  ): ElasticResponse =
+    ElasticResponse(
       """{
         |  "query": {
         |    "match_all": {}
@@ -126,8 +126,8 @@ trait MockElasticClientApi extends ElasticClientApi {
     jsonQueries: JSONQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
-  ): SQLSearchResponse =
-    SQLSearchResponse(
+  ): ElasticResponse =
+    ElasticResponse(
       """{
         |  "query": {
         |    "match_all": {}

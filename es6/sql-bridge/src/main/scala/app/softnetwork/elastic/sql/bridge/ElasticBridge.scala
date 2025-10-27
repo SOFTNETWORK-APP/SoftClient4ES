@@ -41,7 +41,7 @@ import com.sksamuel.elastic4s.searches.queries.{InnerHit, Query}
 
 import scala.annotation.tailrec
 
-case class ElasticQuery(filter: ElasticFilter) {
+case class ElasticBridge(filter: ElasticFilter) {
   def query(
     innerHitsNames: Set[String] = Set.empty,
     currentQuery: Option[ElasticBoolQuery]
@@ -50,9 +50,9 @@ case class ElasticQuery(filter: ElasticFilter) {
       case boolQuery: ElasticBoolQuery =>
         import boolQuery._
         bool(
-          mustFilters.map(implicitly[ElasticQuery](_).query(innerHitsNames, currentQuery)),
-          shouldFilters.map(implicitly[ElasticQuery](_).query(innerHitsNames, currentQuery)),
-          notFilters.map(implicitly[ElasticQuery](_).query(innerHitsNames, currentQuery))
+          mustFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery)),
+          shouldFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery)),
+          notFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery))
         )
           .filter(innerFilters.map(_.query(innerHitsNames, currentQuery)))
       case nested: ElasticNested =>
@@ -115,12 +115,12 @@ case class ElasticQuery(filter: ElasticFilter) {
                 case p: Predicate if nestedTrees.size > 1 =>
                   val leftNested = ElasticNested(p.leftCriteria, p.leftCriteria.limit)
                   val leftBoolQuery = Option(ElasticBoolQuery(group = true))
-                  val leftQuery = ElasticQuery(leftNested)
+                  val leftQuery = ElasticBridge(leftNested)
                     .query(innerHitsNames /*++ leftNested.innerHitsName.toSet*/, leftBoolQuery)
 
                   val rightNested = ElasticNested(p.rightCriteria, p.rightCriteria.limit)
                   val rightBoolQuery = Option(ElasticBoolQuery(group = true))
-                  val rightQuery = ElasticQuery(rightNested)
+                  val rightQuery = ElasticBridge(rightNested)
                     .query(innerHitsNames /*++ rightNested.innerHitsName.toSet*/, rightBoolQuery)
 
                   p.operator match {

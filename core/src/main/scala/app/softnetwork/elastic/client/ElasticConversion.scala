@@ -41,7 +41,7 @@ trait ElasticConversion {
     jValue.extract[T]
   }
 
-  def convertTo[T](response: SQLSearchResponse)(implicit
+  def convertTo[T](response: ElasticResponse)(implicit
     m: Manifest[T],
     formats: Formats
   ): Try[Seq[T]] = {
@@ -61,7 +61,7 @@ trait ElasticConversion {
     * multi-search (msearch/UNION ALL) responses
     */
   def parseResponse(
-    response: SQLSearchResponse
+    response: ElasticResponse
   ): Try[Seq[Map[String, Any]]] = {
     val json = mapper.readTree(response.results)
     // Check if it's a multi-search response (array of responses)
