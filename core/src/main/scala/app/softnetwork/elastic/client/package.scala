@@ -39,15 +39,27 @@ import scala.jdk.CollectionConverters._
   */
 package object client {
 
-  type SQL = String
+  /** Type alias for JSON query
+    */
+  type JSONQuery = String
 
-  type ESQuery = String
+  /** Type alias for JSON results
+    */
+  type JSONResults = String
 
-  type ESResults = String
-
+  /** Elastic response case class
+    * @param query
+    *   - the JSON query
+    * @param results
+    *   - the JSON results
+    * @param fieldAliases
+    *   - the field aliases defined in the SQL query
+    * @param aggregations
+    *   - the SQL aggregations defined in the SQL query
+    */
   case class ElasticResponse(
-    query: ESQuery,
-    results: ESResults,
+    query: JSONQuery,
+    results: JSONResults,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   )
@@ -176,9 +188,17 @@ package object client {
     }
   }
 
-  case class JSONQuery(query: String, indices: Seq[String], types: Seq[String] = Seq.empty)
+  /** Elastic query wrapper
+    * @param query
+    *   - the elasticsearch JSON query
+    * @param indices
+    *   - the target indices
+    * @param types
+    *   - the target types @deprecated types are deprecated in ES 7+
+    */
+  case class ElasticQuery(query: JSONQuery, indices: Seq[String], types: Seq[String] = Seq.empty)
 
-  case class JSONQueries(queries: List[JSONQuery])
+  case class ElasticQueries(queries: List[ElasticQuery])
 
   def tryOrElse[T](block: => T, default: => T)(implicit logger: Logger): T = {
     try {
@@ -195,6 +215,7 @@ package object client {
   case class ScrollConfig(
     scrollTimeout: String = "1m",
     scrollSize: Int = 1000,
+    logEvery: Int = 10,
     maxDocuments: Option[Long] = None,
     preferSearchAfter: Boolean = true, // Préférence pour search_after si possible
     metrics: ScrollMetrics = ScrollMetrics(),

@@ -302,7 +302,7 @@ trait ElasticsearchClientFlushApi extends FlushApi { _: ElasticsearchClientCompa
 }
 
 trait ElasticsearchClientCountApi extends CountApi { _: ElasticsearchClientCompanion =>
-  override def count(query: client.JSONQuery): Option[Double] = {
+  override def count(query: client.ElasticQuery): Option[Double] = {
     tryOrElse(
       Option(
         apply()
@@ -316,7 +316,7 @@ trait ElasticsearchClientCountApi extends CountApi { _: ElasticsearchClientCompa
     )(logger)
   }
 
-  override def countAsync(query: client.JSONQuery)(implicit
+  override def countAsync(query: client.ElasticQuery)(implicit
     ec: ExecutionContext
   ): Future[Option[Double]] = {
     fromCompletableFuture(
@@ -589,7 +589,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
 
   /** Search for entities matching the given JSON query.
     *
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the JSON query to search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -599,16 +599,16 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     *   the SQL search response containing the results of the query
     */
   override def search(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse = {
-    val query = jsonQuery.query
-    logger.info(s"Searching with query: $query on indices: ${jsonQuery.indices.mkString(", ")}")
+    val query = elasticQuery.query
+    logger.info(s"Searching with query: $query on indices: ${elasticQuery.indices.mkString(", ")}")
     // Execute the search request
     val response = apply().search(
       new SearchRequest.Builder()
-        .index(jsonQuery.indices.asJava)
+        .index(elasticQuery.indices.asJava)
         .withJson(
           new StringReader(query)
         )
@@ -628,7 +628,7 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
 
   /** Perform a multi-search operation with the given JSON multi-search query.
     *
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON multi-search query to perform
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -638,17 +638,17 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     *   the SQL search response containing the results of the multi-search query
     */
   override def multisearch(
-    jsonQueries: JSONQueries,
+    elasticQueries: ElasticQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse = {
-    val queries = jsonQueries.queries.map(_.query)
+    val queries = elasticQueries.queries.map(_.query)
     val query = queries.mkString("\n")
     logger.info(
       s"Performing multi-search with ${queries.size} queries."
     )
     // Build the multi-search request
-    val items = jsonQueries.queries.zipWithIndex.map { case (q, i) =>
+    val items = elasticQueries.queries.zipWithIndex.map { case (q, i) =>
       val query = queries(i)
       logger.info(s"Searching with query ${i + 1}: $query on indices: ${q.indices
         .mkString(", ")}")
@@ -675,8 +675,8 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
   override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
-    val jsonQuery: JSONQuery = sqlQuery
-    import jsonQuery._
+    val elasticQuery: ElasticQuery = sqlQuery
+    import elasticQuery._
     fromCompletableFuture(
       async()
         .search(
@@ -708,12 +708,12 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     }
   }
 
-  override def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    import jsonQuery._
+    import elasticQuery._
     logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
     val response = apply()
       .search(
@@ -781,12 +781,13 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversio
     }
   }
 
-  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](elasticQueries: ElasticQueries, innerField: String)(
+    implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    import jsonQueries._
+    import elasticQueries._
     val items = queries.map { query =>
       new RequestItem.Builder()
         .header(new MultisearchHeader.Builder().index(query.indices.asJava).build())
@@ -938,8 +939,8 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollSourceClassic(
-    jsonQuery: JSONQuery,
+  override def scrollClassic(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
@@ -953,12 +954,12 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
               case None =>
                 // Initial search with scroll
                 logger.info(
-                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting classic scroll on indices: ${elasticQuery.indices.mkString(", ")}"
                 )
 
                 val searchRequest = new SearchRequest.Builder()
-                  .index(jsonQuery.indices.asJava)
-                  .withJson(new StringReader(jsonQuery.query))
+                  .index(elasticQuery.indices.asJava)
+                  .withJson(new StringReader(elasticQuery.query))
                   .scroll(Time.of(t => t.time(config.scrollTimeout)))
                   .size(config.scrollSize)
                   .build()
@@ -1038,13 +1039,13 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
 
   /** Search After (only for hits, more efficient)
     */
-  override def searchAfterSource(
-    jsonQuery: JSONQuery,
+  override def searchAfter(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
-    pitSearchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+    pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 
   /** PIT + search_after (recommended for ES 7.10+, required for ES 8+)
@@ -1058,8 +1059,8 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
     * @note
     *   Only works for hits, not for aggregations (use scrollSourceClassic for aggregations)
     */
-  private def pitSearchAfterSource(
-    jsonQuery: JSONQuery,
+  private def pitSearchAfter(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
@@ -1067,12 +1068,12 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
     implicit val ec: ExecutionContext = system.dispatcher
 
     // Step 1: Open PIT
-    val pitIdFuture: Future[String] = openPit(jsonQuery.indices, config.scrollTimeout)
+    val pitIdFuture: Future[String] = openPit(elasticQuery.indices, config.scrollTimeout)
 
     Source
       .futureSource {
         pitIdFuture.map { pitId =>
-          logger.info(s"Opened PIT: $pitId for indices: ${jsonQuery.indices.mkString(", ")}")
+          logger.info(s"Opened PIT: $pitId for indices: ${elasticQuery.indices.mkString(", ")}")
 
           Source
             .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
@@ -1098,11 +1099,11 @@ trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchConversio
                     )
 
                   // Parse query to add query clause (not indices, they're in PIT)
-                  val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
+                  val queryJson = new JsonParser().parse(elasticQuery.query).getAsJsonObject
 
                   // Extract query clause if present
                   if (queryJson.has("query")) {
-                    requestBuilder.withJson(new StringReader(jsonQuery.query))
+                    requestBuilder.withJson(new StringReader(elasticQuery.query))
                   }
 
                   // Check if sorts already exist in the query

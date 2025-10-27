@@ -473,11 +473,11 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     import scala.collection.immutable._
 
     pClient
-      .count(JSONQuery("{}", Seq[String]("person6"), Seq[String]()))
+      .count(ElasticQuery("{}", Seq[String]("person6"), Seq[String]()))
       .getOrElse(0d)
       .toInt should ===(3)
 
-    pClient.countAsync(JSONQuery("{}", Seq[String]("person6"), Seq[String]())).complete() match {
+    pClient.countAsync(ElasticQuery("{}", Seq[String]("person6"), Seq[String]())).complete() match {
       case Success(s) => s.getOrElse(0d).toInt should ===(3)
       case Failure(f) => fail(f.getMessage)
     }

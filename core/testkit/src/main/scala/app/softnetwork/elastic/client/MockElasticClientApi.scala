@@ -84,7 +84,7 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   /** Search for entities matching the given JSON query.
     *
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the JSON query to search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -94,9 +94,9 @@ trait MockElasticClientApi extends ElasticClientApi {
     *   the SQL Result containing the results of the query
     */
   override def search(
-    jsonQuery: JSONQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+                       elasticQuery: ElasticQuery,
+                       fieldAliases: Map[String, String],
+                       aggregations: Map[String, SQLAggregation]
   ): ElasticResponse =
     ElasticResponse(
       """{
@@ -105,7 +105,7 @@ trait MockElasticClientApi extends ElasticClientApi {
         |  }
         |}""".stripMargin,
       allDocumentsAsHits(
-        jsonQuery.indices.headOption.getOrElse("default_index")
+        elasticQuery.indices.headOption.getOrElse("default_index")
       ),
       fieldAliases,
       aggregations
@@ -123,9 +123,9 @@ trait MockElasticClientApi extends ElasticClientApi {
     *   the SQL Result containing the results of the multi-search query
     */
   override def multisearch(
-    jsonQueries: JSONQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+                            jsonQueries: ElasticQueries,
+                            fieldAliases: Map[String, String],
+                            aggregations: Map[String, SQLAggregation]
   ): ElasticResponse =
     ElasticResponse(
       """{
@@ -194,7 +194,7 @@ trait MockElasticClientApi extends ElasticClientApi {
     */
   override def indexExists(index: String): Boolean = false
 
-  override def count(jsonQuery: JSONQuery): Option[Double] =
+  override def count(elasticQuery: ElasticQuery): Option[Double] =
     throw new UnsupportedOperationException
 
   override def get[U <: Timestamped](
@@ -262,21 +262,16 @@ trait MockElasticClientApi extends ElasticClientApi {
   override implicit def toBulkElasticResult(r: R): BulkElasticResult =
     throw new UnsupportedOperationException
 
-  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
-    m1: Manifest[U],
-    m2: Manifest[I],
-    formats: Formats
+  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(implicit
+                                                                                               m1: Manifest[U],
+                                                                                               m2: Manifest[I],
+                                                                                               formats: Formats
   ): List[List[(U, List[I])]] = List.empty
 
-  /*override def searchAs[U](
-    jsonQuery: JSONQuery
-  )(implicit m: Manifest[U], formats: Formats): List[U] =
-    elasticDocuments.getAll.toList.asInstanceOf[List[U]]*/
-
-  override def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
-    m1: Manifest[U],
-    m2: Manifest[I],
-    formats: Formats
+  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
+                                                                                      m1: Manifest[U],
+                                                                                      m2: Manifest[I],
+                                                                                      formats: Formats
   ): List[(U, List[I])] = List.empty
 
   override def getMapping(index: String): String =

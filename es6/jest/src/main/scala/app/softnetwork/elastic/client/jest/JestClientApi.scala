@@ -294,10 +294,10 @@ trait JestFlushApi extends FlushApi { _: JestClientCompanion =>
 
 trait JestCountApi extends CountApi { _: JestClientCompanion =>
   override def countAsync(
-    jsonQuery: JSONQuery
+    elasticQuery: ElasticQuery
   )(implicit ec: ExecutionContext): Future[Option[Double]] = {
     import JestClientResultHandler._
-    import jsonQuery._
+    import elasticQuery._
     val count = new Count.Builder().query(query)
     for (indice <- indices) count.addIndex(indice)
     for (t      <- types) count.addType(t)
@@ -314,8 +314,8 @@ trait JestCountApi extends CountApi { _: JestClientCompanion =>
     promise.future
   }
 
-  override def count(jsonQuery: JSONQuery): Option[Double] = {
-    import jsonQuery._
+  override def count(elasticQuery: ElasticQuery): Option[Double] = {
+    import elasticQuery._
     val count = new Count.Builder().query(query)
     for (indice <- indices) count.addIndex(indice)
     for (t      <- types) count.addType(t)
@@ -538,7 +538,7 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
 
   /** Search for entities matching the given JSON query.
     *
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the JSON query to search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -548,12 +548,12 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
     *   the SQL search response containing the results of the query
     */
   override def search(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse = {
     // Create a parser for the query
-    val search = jsonQuery.search
+    val search = elasticQuery.search
     val query = search._2
     val response = tryOrElse(
       {
@@ -570,7 +570,7 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
 
   /** Perform a multi-search operation with the given JSON multi-search query.
     *
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON multi-search query to perform
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -580,11 +580,11 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
     *   the SQL search response containing the results of the multi-search query
     */
   override def multisearch(
-    jsonQueries: JSONQueries,
+    elasticQueries: ElasticQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse = {
-    val queries = jsonQueries.queries.map(_.search)
+    val queries = elasticQueries.queries.map(_.search)
     val query = queries.map(_._2).mkString("\n")
     val response = tryOrElse(
       {
@@ -626,12 +626,12 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
     promise.future
   }
 
-  override def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    Try(apply().execute(jsonQuery.search._1)).toOption match {
+    Try(apply().execute(elasticQuery.search._1)).toOption match {
       case Some(result) =>
         if (!result.isSucceeded) {
           logger.error(result.getErrorMessage)
@@ -647,12 +647,14 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
     }
   }
 
-  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](elasticQueries: ElasticQueries, innerField: String)(
+    implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    val multiSearch = new MultiSearch.Builder(jsonQueries.queries.map(_.search._1).asJava).build()
+    val multiSearch =
+      new MultiSearch.Builder(elasticQueries.queries.map(_.search._1).asJava).build()
     Try(apply().execute(multiSearch)).toOption match {
       case Some(multiSearchResult) =>
         if (!multiSearchResult.isSucceeded) {
@@ -744,8 +746,8 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollSourceClassic(
-    jsonQuery: JSONQuery,
+  override def scrollClassic(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
@@ -758,16 +760,16 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
             scrollIdOpt match {
               case None =>
                 logger.info(
-                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting classic scroll on indices: ${elasticQuery.indices.mkString(", ")}"
                 )
 
                 val searchBuilder =
-                  new Search.Builder(jsonQuery.query)
+                  new Search.Builder(elasticQuery.query)
                     .setParameter(Parameters.SIZE, config.scrollSize)
                     .setParameter(Parameters.SCROLL, config.scrollTimeout)
 
-                for (indice <- jsonQuery.indices) searchBuilder.addIndex(indice)
-                for (t      <- jsonQuery.types) searchBuilder.addType(t)
+                for (indice <- elasticQuery.indices) searchBuilder.addIndex(indice)
+                for (t      <- elasticQuery.types) searchBuilder.addType(t)
 
                 val result = apply().execute(searchBuilder.build())
                 if (!result.isSucceeded) {
@@ -825,8 +827,8 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
 
   /** Search After (only for hits, more efficient)
     */
-  override def searchAfterSource(
-    jsonQuery: JSONQuery,
+  override def searchAfter(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
@@ -839,13 +841,13 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
             searchAfterOpt match {
               case None =>
                 logger.info(
-                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting search_after on indices: ${elasticQuery.indices.mkString(", ")}"
                 )
               case Some(values) =>
                 logger.debug(s"Fetching next search_after batch (after: ${values.mkString(", ")})")
             }
 
-            val queryJson = new JsonParser().parse(jsonQuery.query).getAsJsonObject
+            val queryJson = new JsonParser().parse(elasticQuery.query).getAsJsonObject
 
             // Check if sorts already exist in the query
             if (!hasSorts && !queryJson.has("sort")) {
@@ -890,8 +892,8 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
             }
 
             val searchBuilder = new Search.Builder(queryJson.toString)
-            for (indice <- jsonQuery.indices) searchBuilder.addIndex(indice)
-            for (t      <- jsonQuery.types) searchBuilder.addType(t)
+            for (indice <- elasticQuery.indices) searchBuilder.addIndex(indice)
+            for (t      <- elasticQuery.types) searchBuilder.addType(t)
 
             val result = apply().execute(searchBuilder.build())
 
@@ -1016,9 +1018,9 @@ object JestClientApi {
     }
   }
 
-  implicit class SearchJSONQuery(jsonQuery: JSONQuery) {
-    def search: (Search, ESQuery) = {
-      import jsonQuery._
+  implicit class SearchElasticQuery(elasticQuery: ElasticQuery) {
+    def search: (Search, JSONQuery) = {
+      import elasticQuery._
       val _search = new Search.Builder(query)
       for (indice <- indices) _search.addIndex(indice)
       for (t      <- types) _search.addType(t)

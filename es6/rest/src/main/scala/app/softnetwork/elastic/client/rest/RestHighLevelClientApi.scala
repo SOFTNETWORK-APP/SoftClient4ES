@@ -331,7 +331,7 @@ trait RestHighLevelClientFlushApi extends FlushApi { _: RestHighLevelClientCompa
 
 trait RestHighLevelClientCountApi extends CountApi { _: RestHighLevelClientCompanion =>
   override def countAsync(
-    query: client.JSONQuery
+    query: client.ElasticQuery
   )(implicit ec: ExecutionContext): Future[Option[Double]] = {
     val promise = Promise[Option[Double]]()
     apply().countAsync(
@@ -347,7 +347,7 @@ trait RestHighLevelClientCountApi extends CountApi { _: RestHighLevelClientCompa
     promise.future
   }
 
-  override def count(query: client.JSONQuery): Option[Double] = {
+  override def count(query: client.ElasticQuery): Option[Double] = {
     tryOrElse(
       Option(
         apply()
@@ -578,7 +578,7 @@ trait RestHighLevelClientSearchApi extends SearchApi {
 
   /** Search for entities matching the given JSON query.
     *
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the JSON query to search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -588,11 +588,11 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     *   the SQL search response containing the results of the query
     */
   override def search(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse = {
-    val query = jsonQuery.query
+    val query = elasticQuery.query
     // Create a parser for the query
     val xContentParser = XContentType.JSON
       .xContent()
@@ -603,8 +603,8 @@ trait RestHighLevelClientSearchApi extends SearchApi {
       )
     // Execute the search
     val response = apply().search(
-      new SearchRequest(jsonQuery.indices: _*)
-        .types(jsonQuery.types: _*)
+      new SearchRequest(elasticQuery.indices: _*)
+        .types(elasticQuery.types: _*)
         .source(
           SearchSourceBuilder.fromXContent(xContentParser)
         ),
@@ -629,7 +629,7 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     *   the SQL search response containing the results of the multi-search query
     */
   override def multisearch(
-    jsonQueries: JSONQueries,
+    jsonQueries: ElasticQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse = {
@@ -676,8 +676,8 @@ trait RestHighLevelClientSearchApi extends SearchApi {
   override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
-    val jsonQuery: JSONQuery = sqlQuery
-    import jsonQuery._
+    val elasticQuery: ElasticQuery = sqlQuery
+    import elasticQuery._
     val promise = Promise[List[U]]()
     logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
     // Create a parser for the query
@@ -713,19 +713,19 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     promise.future
   }
 
-  override def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    import jsonQuery._
+    import elasticQuery._
     // Create a parser for the query
     val xContentParser = XContentType.JSON
       .xContent()
       .createParser(
         namedXContentRegistry,
         DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        jsonQuery.query
+        elasticQuery.query
       )
     val response = apply().search(
       new SearchRequest(indices: _*)
@@ -743,7 +743,8 @@ trait RestHighLevelClientSearchApi extends SearchApi {
     }
   }
 
-  override def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(
+    implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -886,8 +887,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollSourceClassic(
-    jsonQuery: JSONQuery,
+  override def scrollClassic(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
@@ -901,10 +902,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
               case None =>
                 // Initial search with scroll
                 logger.info(
-                  s"Starting classic scroll on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting classic scroll on indices: ${elasticQuery.indices.mkString(", ")}"
                 )
 
-                val query = jsonQuery.query
+                val query = elasticQuery.query
                 // Create a parser for the query
                 val xContentParser = XContentType.JSON
                   .xContent()
@@ -915,8 +916,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
                   )
                 // Execute the search
                 val searchRequest =
-                  new SearchRequest(jsonQuery.indices: _*)
-                    .types(jsonQuery.types: _*)
+                  new SearchRequest(elasticQuery.indices: _*)
+                    .types(elasticQuery.types: _*)
                     .source(
                       SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
                     )
@@ -992,8 +993,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
     * @note
     *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
     */
-  override def searchAfterSource(
-    jsonQuery: JSONQuery,
+  override def searchAfter(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
@@ -1006,7 +1007,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
             searchAfterOpt match {
               case None =>
                 logger.info(
-                  s"Starting search_after on indices: ${jsonQuery.indices.mkString(", ")}"
+                  s"Starting search_after on indices: ${elasticQuery.indices.mkString(", ")}"
                 )
               case Some(values) =>
                 logger.debug(s"Fetching next search_after batch (after: ${if (values.length > 3)
@@ -1014,7 +1015,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
                 else values.mkString(", ")})")
             }
 
-            val query = jsonQuery.query
+            val query = elasticQuery.query
             // Create a parser for the query
             val xContentParser = XContentType.JSON
               .xContent()
@@ -1057,8 +1058,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
 
             // Execute the search
             val searchRequest =
-              new SearchRequest(jsonQuery.indices: _*)
-                .types(jsonQuery.types: _*)
+              new SearchRequest(elasticQuery.indices: _*)
+                .types(elasticQuery.types: _*)
                 .source(
                   sourceBuilder
                 )
@@ -1135,19 +1136,6 @@ trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCom
         Seq.empty
     }
   }
-
-  /*private def parseJsonToSearchSourceBuilder(jsonQuery: String): SearchSourceBuilder = {
-    import org.elasticsearch.common.xcontent.{XContentFactory, XContentType}
-
-    val parser = XContentFactory.xContent(XContentType.JSON)
-      .createParser(
-        org.elasticsearch.common.xcontent.NamedXContentRegistry.EMPTY,
-        org.elasticsearch.common.xcontent.DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        jsonQuery
-      )
-
-    SearchSourceBuilder.fromXContent(parser)
-  }*/
 
   private def clearScroll(scrollId: String): Unit = {
     Try {

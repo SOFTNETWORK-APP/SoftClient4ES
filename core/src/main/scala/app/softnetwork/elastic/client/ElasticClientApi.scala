@@ -937,7 +937,7 @@ trait CountApi {
     * @return
     *   the number of documents matching the query, or None if the count could not be determined
     */
-  def countAsync(query: JSONQuery)(implicit ec: ExecutionContext): Future[Option[Double]] = {
+  def countAsync(query: ElasticQuery)(implicit ec: ExecutionContext): Future[Option[Double]] = {
     Future {
       this.count(query)
     }
@@ -949,7 +949,7 @@ trait CountApi {
     * @return
     *   the number of documents matching the query, or None if the count could not be determined
     */
-  def count(query: JSONQuery): Option[Double]
+  def count(query: ElasticQuery): Option[Double]
 
 }
 
@@ -1052,10 +1052,13 @@ trait GetApi {
 trait SearchApi extends ElasticConversion {
   implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String
 
-  implicit def sqlQueryToJSONQuery(sqlQuery: SQLQuery): JSONQuery = {
+  implicit def sqlQueryToElasticQuery(sqlQuery: SQLQuery): ElasticQuery = {
     sqlQuery.request match {
       case Some(Left(value)) =>
-        JSONQuery(value.copy(score = sqlQuery.score), collection.immutable.Seq(value.sources: _*))
+        ElasticQuery(
+          value.copy(score = sqlQuery.score),
+          collection.immutable.Seq(value.sources: _*)
+        )
       case _ =>
         throw new IllegalArgumentException(
           s"SQL query ${sqlQuery.query} does not contain a valid search request"
@@ -1063,13 +1066,13 @@ trait SearchApi extends ElasticConversion {
     }
   }
 
-  implicit def sqlQueryToJSONQueries(sqlQuery: SQLQuery): JSONQueries = {
+  implicit def sqlQueryToElasticQueries(sqlQuery: SQLQuery): ElasticQueries = {
     sqlQuery.request match {
       case Some(Right(value)) =>
-        JSONQueries(
+        ElasticQueries(
           value.requests
             .map(request =>
-              JSONQuery(
+              ElasticQuery(
                 request.copy(score = sqlQuery.score),
                 collection.immutable.Seq(request.sources: _*)
               )
@@ -1106,17 +1109,17 @@ trait SearchApi extends ElasticConversion {
     *   the SQL search response containing the results of the query
     */
   private[this] def search(sql: SQLSearchRequest): ElasticResponse = {
-    // Build the JSON query from the SQL query
-    val jsonQuery =
-      JSONQuery(
+    // Build the elasticsearch query from the SQL query
+    val elasticQuery =
+      ElasticQuery(
         sql,
         collection.immutable.Seq(sql.sources: _*)
       )
-    search(jsonQuery, sql.fieldAliases, sql.sqlAggregations)
+    search(elasticQuery, sql.fieldAliases, sql.sqlAggregations)
   }
 
   /** Search for entities matching the given JSON query.
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the query to search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -1126,7 +1129,7 @@ trait SearchApi extends ElasticConversion {
     *   the SQL search response containing the results of the query
     */
   def search(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse
@@ -1139,20 +1142,20 @@ trait SearchApi extends ElasticConversion {
     */
   private[this] def multisearch(sql: SQLMultiSearchRequest): ElasticResponse = {
     // Build the JSON queries from the SQL multi-search query
-    val jsonQueries: JSONQueries =
-      JSONQueries(
+    val elasticQueries: ElasticQueries =
+      ElasticQueries(
         sql.requests.map { query =>
-          JSONQuery(
+          ElasticQuery(
             query,
             collection.immutable.Seq(query.sources: _*)
           )
         }.toList
       )
-    multisearch(jsonQueries, sql.fieldAliases, sql.sqlAggregations)
+    multisearch(elasticQueries, sql.fieldAliases, sql.sqlAggregations)
   }
 
   /** Perform a multi-search operation with the given JSON queries.
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON queries to perform the multi-search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -1162,13 +1165,13 @@ trait SearchApi extends ElasticConversion {
     *   the SQL search response containing the results of the multi-search query
     */
   def multisearch(
-    jsonQueries: JSONQueries,
+    elasticQueries: ElasticQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   ): ElasticResponse
 
   /** Search for entities matching the given JSON query.
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the query to search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -1182,14 +1185,14 @@ trait SearchApi extends ElasticConversion {
     *   a list of entities matching the query
     */
   def searchAs[U](
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     formats: Formats
   ): List[U] = {
-    convertTo[U](search(jsonQuery, fieldAliases, aggregations)).getOrElse(Seq.empty).toList
+    convertTo[U](search(elasticQuery, fieldAliases, aggregations)).getOrElse(Seq.empty).toList
   }
 
   /** Search for entities matching the given SQL query.
@@ -1241,11 +1244,11 @@ trait SearchApi extends ElasticConversion {
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    searchWithInnerHits[U, I](implicitly[JSONQuery](sqlQuery), innerField)(m1, m2, formats)
+    searchWithInnerHits[U, I](implicitly[ElasticQuery](sqlQuery), innerField)(m1, m2, formats)
   }
 
   /** Search for entities matching the given JSON query with inner hits.
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the JSON query to search for
     * @param innerField
     *   - the field to use for inner hits
@@ -1258,7 +1261,7 @@ trait SearchApi extends ElasticConversion {
     * @return
     *   a list of tuples containing the main entity and a list of inner hits
     */
-  def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -1281,7 +1284,7 @@ trait SearchApi extends ElasticConversion {
   }
 
   /** Perform a multi-search operation with the given JSON queries.
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON queries to perform the multi-search for
     * @param fieldAliases
     *   - the field aliases to use for the search
@@ -1295,12 +1298,12 @@ trait SearchApi extends ElasticConversion {
     *   a list of lists of entities matching the queries in the multi-search request
     */
   def multisearchAs[U](
-    jsonQueries: JSONQueries,
+    elasticQueries: ElasticQueries,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): List[U] = {
     convertTo[U](
-      multisearch(jsonQueries, fieldAliases, aggregations)
+      multisearch(elasticQueries, fieldAliases, aggregations)
     )
       .getOrElse(Seq.empty)
       .toList
@@ -1325,11 +1328,15 @@ trait SearchApi extends ElasticConversion {
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    multisearchWithInnerHits[U, I](implicitly[JSONQueries](sqlQuery), innerField)(m1, m2, formats)
+    multisearchWithInnerHits[U, I](implicitly[ElasticQueries](sqlQuery), innerField)(
+      m1,
+      m2,
+      formats
+    )
   }
 
   /** Perform a multi-search operation with the given JSON queries and inner hits.
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON queries to perform the multi-search for
     * @param innerField
     *   - the field to use for inner hits
@@ -1342,7 +1349,7 @@ trait SearchApi extends ElasticConversion {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multisearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](elasticQueries: ElasticQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -1356,7 +1363,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
   /** Determine the best scroll strategy based on the query
     */
   private[this] def determineScrollStrategy(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     aggregations: Map[String, SQLAggregation]
   ): ScrollStrategy = {
     // If aggregations are present, use classic scrolling
@@ -1364,7 +1371,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
       UseScroll
     } else {
       // Check if the query contains aggregations in the JSON
-      if (hasAggregations(jsonQuery.query)) {
+      if (hasAggregations(elasticQuery.query)) {
         UseScroll
       } else {
         UseSearchAfter
@@ -1381,9 +1388,10 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     sql.request match {
       case Some(Left(single)) =>
         val sqlRequest = single.copy(score = sql.score)
-        val jsonQuery = JSONQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+        val elasticQuery =
+          ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
         scrollSourceWithMetrics(
-          jsonQuery,
+          elasticQuery,
           sqlRequest.fieldAliases,
           sqlRequest.sqlAggregations,
           config,
@@ -1405,7 +1413,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
   /** Scroll with metrics tracking
     */
   private[this] def scrollSourceWithMetrics(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
@@ -1416,7 +1424,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
     val metricsPromise = Promise[ScrollMetrics]()
 
-    scrollSource(jsonQuery, fieldAliases, aggregations, config, hasSorts)
+    scrollSource(elasticQuery, fieldAliases, aggregations, config, hasSorts)
       .take(config.maxDocuments.getOrElse(Long.MaxValue))
       .grouped(config.scrollSize)
       .statefulMapConcat { () =>
@@ -1469,37 +1477,37 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
   /** Create a scrolling source for JSON query with automatic strategy
     */
   private[this] def scrollSource(
-    jsonQuery: JSONQuery,
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
-    val strategy = determineScrollStrategy(jsonQuery, aggregations)
+    val strategy = determineScrollStrategy(elasticQuery, aggregations)
 
     logger.info(
-      s"Using scroll strategy: $strategy for query on ${jsonQuery.indices.mkString(", ")}"
+      s"Using scroll strategy: $strategy for query on ${elasticQuery.indices.mkString(", ")}"
     )
 
     strategy match {
       case UseScroll =>
         logger.info("Using classic scroll (supports aggregations)")
-        scrollSourceClassic(jsonQuery, fieldAliases, aggregations, config)
+        scrollClassic(elasticQuery, fieldAliases, aggregations, config)
 
       case UseSearchAfter if config.preferSearchAfter =>
         logger.info("Using search_after (optimized for hits only)")
-        searchAfterSource(jsonQuery, fieldAliases, config, hasSorts)
+        searchAfter(elasticQuery, fieldAliases, config, hasSorts)
 
       case _ =>
         logger.info("Falling back to classic scroll")
-        scrollSourceClassic(jsonQuery, fieldAliases, aggregations, config)
+        scrollClassic(elasticQuery, fieldAliases, aggregations, config)
     }
   }
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  def scrollSourceClassic(
-    jsonQuery: JSONQuery,
+  def scrollClassic(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
@@ -1507,8 +1515,8 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
   /** Search After (only for hits, more efficient)
     */
-  def searchAfterSource(
-    jsonQuery: JSONQuery,
+  def searchAfter(
+    elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
