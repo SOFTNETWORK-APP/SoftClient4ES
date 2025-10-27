@@ -36,7 +36,9 @@ import org.json4s.{DefaultFormats, Formats, JNothing}
 import org.json4s.jackson.JsonMethods._
 import org.slf4j.Logger
 
+import java.time.temporal.Temporal
 import java.util.UUID
+import scala.annotation.tailrec
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.Duration
 import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
@@ -981,24 +983,53 @@ trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
   )(implicit ec: ExecutionContext): Future[collection.Seq[SingleValueAggregateResult]] = {
     Future {
       val response = search(sqlQuery)
+      @tailrec
+      def findAggregation(
+        name: String,
+        aggregation: SQLAggregation,
+        results: Map[String, Any]
+      ): Option[Any] = {
+        name.split("\\.") match {
+          case Array(_, tail @ _*) if tail.nonEmpty =>
+            findAggregation(
+              tail.mkString("."),
+              aggregation,
+              results
+            )
+          case _ => results.get(name)
+        }
+      }
       parseResponse(response) match {
         case Success(results) =>
           results.flatMap(result =>
-            response.aggregations
-              .filterNot(_._2.multivalued)
-              .map { case (name, aggregation) =>
-                SingleValueAggregateResult(
-                  name,
-                  aggregation.aggType,
-                  result.getOrElse(name, null) match {
-                    case n: Number           => NumericValue(n.doubleValue())
-                    case s: String           => StringValue(s)
-                    case m: Map[String, Any] => ObjectValue(m)
-                    case _                   => EmptyValue
-                  }
-                )
-              }
-              .toSeq
+            response.aggregations.map { case (name, aggregation) =>
+              val value =
+                findAggregation(name, aggregation, result).orNull match {
+                  case n: Number      => NumericValue(n.doubleValue())
+                  case s: String      => StringValue(s)
+                  case t: Temporal    => TemporalValue(t)
+                  case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
+                  case s: Seq[_] =>
+                    s.headOption match {
+                      case Some(_: Boolean) =>
+                        MultiBooleanValue(s.asInstanceOf[Seq[Boolean]])
+                      case Some(_: Number)   => MultiNumericValue(s.asInstanceOf[Seq[Number]])
+                      case Some(_: Temporal) => MultiTemporalValue(s.asInstanceOf[Seq[Temporal]])
+                      case Some(_: String)   => MultiStringValue(s.map(_.toString))
+                      case Some(_: Map[_, Any]) =>
+                        MultiObjectValue(
+                          s.map(_.asInstanceOf[Map[_, Any]].map(kv => kv._1.toString -> kv._2))
+                        )
+                      case _ => EmptyValue
+                    }
+                  case _ => EmptyValue
+                }
+              SingleValueAggregateResult(
+                name,
+                aggregation.aggType,
+                value
+              )
+            }.toSeq
           )
         case Failure(exception) =>
           throw new IllegalArgumentException(

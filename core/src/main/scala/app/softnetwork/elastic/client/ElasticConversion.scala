@@ -294,7 +294,58 @@ trait ElasticConversion {
       }
       .toList
 
-    if (bucketAggs.isEmpty) {
+    val wrapperAggs = aggsNode
+      .properties()
+      .asScala
+      .filter { entry =>
+        val aggValue = entry.getValue
+        // These aggregations have a doc_count but no buckets, and contain sub-aggregations
+        aggValue.has("doc_count") &&
+        !aggValue.has("buckets") &&
+        !aggValue.has("value") &&
+        hasSubAggregations(aggValue)
+      }
+      .toList
+
+    if (wrapperAggs.nonEmpty) {
+      // Process wrapper aggregations
+      wrapperAggs.flatMap { entry =>
+        val aggName = normalizeAggregationKey(entry.getKey)
+        val aggValue = entry.getValue
+        val docCount = Option(aggValue.get("doc_count"))
+          .map(_.asLong())
+          .getOrElse(0L)
+
+        // Add the doc_count to the context if necessary
+        val currentContext = if (docCount > 0) {
+          parentContext + (s"${aggName}_doc_count" -> docCount)
+        } else {
+          parentContext
+        }
+
+        // Extract subaggregations (excluding doc_count)
+        val subAggsNode = mapper.createObjectNode()
+
+        val subAggFields = aggValue
+          .properties()
+          .asScala
+          .filterNot { subEntry =>
+            Set("doc_count", "doc_count_error_upper_bound", "sum_other_doc_count")
+              .contains(subEntry.getKey)
+          }
+          .toList
+
+        // Use a Java iterator to avoid casting problems
+        val jSubAggFields = subAggFields.asJava.iterator()
+        while (jSubAggFields.hasNext) {
+          val subEntry = jSubAggFields.next()
+          subAggsNode.set(subEntry.getKey, subEntry.getValue)
+        }
+
+        // Recursively parse subaggregations
+        parseAggregations(subAggsNode, currentContext, fieldAliases, aggregations)
+      }
+    } else if (bucketAggs.isEmpty) {
       // No buckets : it is a leaf aggregation (metrics or top_hits)
       val metrics = extractMetrics(aggsNode)
       val allTopHits = extractAllTopHits(aggsNode)
@@ -314,7 +365,7 @@ trait ElasticConversion {
             case Some(agg) => agg.multivalued
             case None      =>
               // Fallback on naming convention if aggregation is not found
-              !topHitName.toLowerCase.matches("(first|last)_.*")
+              !topHitName.toLowerCase.matches("(first|last|array)_.*")
           }
 
           // If multipleValues = true OR more than one hit, return a list
@@ -409,6 +460,17 @@ trait ElasticConversion {
         }
       }
       .getOrElse("")
+  }
+
+  /** Helper method to check if a node contains sub-aggregations */
+  private def hasSubAggregations(node: JsonNode): Boolean = {
+    node.properties().asScala.exists { entry =>
+      val key = entry.getKey
+      val value = entry.getValue
+      // Une sous-agrégation est un objet qui n'est pas un champ métadata
+      !Set("doc_count", "doc_count_error_upper_bound", "sum_other_doc_count", "bg_count", "score")
+        .contains(key) && value.isObject
+    }
   }
 
   /** Try to parse a string as ZonedDateTime, LocalDateTime, LocalDate or LocalTime

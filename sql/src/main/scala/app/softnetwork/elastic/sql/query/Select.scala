@@ -68,17 +68,18 @@ case class Field(
     functions.collectFirst { case th: TopHitsAggregation => th }
 
   def update(request: SQLSearchRequest): Field = {
-    val updated =
-      topHits match {
-        case Some(th) =>
-          val topHitsAggregation = th.update(request)
-          identifier.functions match {
-            case _ :: tail => identifier.withFunctions(functions = topHitsAggregation +: tail)
-            case _         => identifier.withFunctions(functions = List(topHitsAggregation))
-          }
-        case None => identifier
-      }
-    this.copy(identifier = updated.update(request))
+    topHits match {
+      case Some(th) =>
+        val topHitsAggregation = th.update(request)
+        val identifier = topHitsAggregation.identifier
+        identifier.functions match {
+          case _ :: tail =>
+            this.copy(identifier = identifier.withFunctions(functions = topHitsAggregation +: tail))
+          case _ =>
+            this.copy(identifier = identifier.withFunctions(functions = List(topHitsAggregation)))
+        }
+      case None => this.copy(identifier = identifier.update(request))
+    }
   }
 
   def painless(context: Option[PainlessContext]): String = identifier.painless(context)

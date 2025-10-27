@@ -20,6 +20,7 @@ import _root_.java.nio.file.{Files, Paths}
 import _root_.java.time.format.DateTimeFormatter
 import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
+import java.time.temporal.Temporal
 import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor, Future}
@@ -826,6 +827,76 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       case Failure(f) => fail(f.getMessage)
     }
 
+    // test first aggregation on date field
+    pClient.aggregate("select first(p.birthDate) as c from person10 p").complete() match {
+      case Success(s) =>
+        s.headOption match {
+          case Some(value) if value.isDouble =>
+            value.asDoubleOption.getOrElse(0d) should ===(
+              LocalDate.parse("1967-11-21").toEpochDay.toDouble * 3600 * 24 * 1000
+            )
+          case Some(value) if value.isString =>
+            value.asStringOption.getOrElse("") should ===("1967-11-21T00:00:00.000Z")
+          case Some(value) if value.isMap =>
+            // Elasticsearch 7.14+ returns an object for first/last aggregations on date fields
+            value.asMapOption.getOrElse(Map.empty).get("birthDate") match {
+              case Some(t: Temporal) =>
+                t should ===(LocalDate.parse("1967-11-21"))
+              case Some(d: Double) =>
+                d should ===(LocalDate
+                  .parse("1967-11-21")
+                  .toEpochDay.toDouble * 3600 * 24 * 1000)
+              case Some(s: String) =>
+                s should ===("1967-11-21T00:00:00.000Z")
+              case other => fail(s"Unexpected value type: $other")
+            }
+          case None => fail("No result found for first aggregation")
+        }
+      case Failure(f) => fail(f.getMessage)
+    }
+
+    // test last aggregation on date field
+    pClient.aggregate("select last(p.birthDate) as c from person10 p").complete() match {
+      case Success(s) =>
+        s.headOption match {
+          case Some(value) if value.isDouble =>
+            value.asDoubleOption.getOrElse(0d) should ===(
+              LocalDate.parse("1969-05-09").toEpochDay.toDouble * 3600 * 24 * 1000
+            )
+          case Some(value) if value.isString =>
+            value.asStringOption.getOrElse("") should ===("1969-05-09T00:00:00.000Z")
+          case Some(value) if value.isMap =>
+            // Elasticsearch 7.14+ returns an object for first/last aggregations on date fields
+            value.asMapOption.getOrElse(Map.empty).get("birthDate") match {
+              case Some(t: Temporal) =>
+                t should ===(LocalDate.parse("1969-05-09"))
+              case Some(d: Double) =>
+                d should ===(LocalDate
+                  .parse("1969-05-09")
+                  .toEpochDay.toDouble * 3600 * 24 * 1000)
+              case Some(s: String) =>
+                s should ===("1969-05-09T00:00:00.000Z")
+              case other => fail(s"Unexpected value type: $other")
+            }
+          case None => fail("No result found for last aggregation")
+        }
+      case Failure(f) => fail(f.getMessage)
+    }
+
+    // test array aggregation on children.name field
+    pClient
+      .aggregate(
+        "select array(child.name) as names from person10 p JOIN UNNEST(p.children) as child LIMIT 10"
+      )
+      .complete() match {
+      case Success(s) =>
+        val names = s.headOption.flatMap(_.asSeqOption).getOrElse(Seq.empty).map {
+          case m: Map[_, Any] => m.asInstanceOf[Map[String, Any]].getOrElse("name", null).toString
+          case other => fail(s"Unexpected name type: $other")
+        }
+        names should contain allOf("Steve Gumble", "Josh Gumble")
+      case Failure(f) => fail(f.getMessage)
+    }
   }
 
   "Nested queries" should "work" in {

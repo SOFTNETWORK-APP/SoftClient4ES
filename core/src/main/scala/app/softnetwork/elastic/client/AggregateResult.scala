@@ -18,6 +18,8 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 
+import java.time.temporal.Temporal
+
 sealed trait AggregateResult {
   def field: String
   def error: Option[String]
@@ -30,10 +32,13 @@ sealed trait MetricAgregateResult extends AggregateResult {
 sealed trait AggregateValue
 case class NumericValue(value: Double) extends AggregateValue
 case class StringValue(value: String) extends AggregateValue
+case class TemporalValue(value: Temporal) extends AggregateValue
 case class ObjectValue(value: Map[String, Any]) extends AggregateValue
-//case class ArrayNumericValue(value: Seq[Double]) extends AggregateValue
-//case class ArrayStringValue(value: Seq[String]) extends AggregateValue
-//case class ArrayObjectValue(value: Seq[Map[String, Any]]) extends AggregateValue
+case class MultiBooleanValue(value: Seq[Boolean]) extends AggregateValue
+case class MultiNumericValue(value: Seq[Number]) extends AggregateValue
+case class MultiStringValue(value: Seq[String]) extends AggregateValue
+case class MultiTemporalValue(value: Seq[Temporal]) extends AggregateValue
+case class MultiObjectValue(value: Seq[Map[String, Any]]) extends AggregateValue
 case object EmptyValue extends AggregateValue
 
 case class SingleValueAggregateResult(
@@ -53,6 +58,14 @@ case class SingleValueAggregateResult(
   def asMapOption: Option[Map[String, Any]] = value match {
     case ObjectValue(v) => Some(v)
     case _              => None
+  }
+  def asSeqOption: Option[Seq[Any]] = value match {
+    case MultiBooleanValue(v)  => Some(v)
+    case MultiNumericValue(v)  => Some(v)
+    case MultiStringValue(v)   => Some(v)
+    case MultiTemporalValue(v) => Some(v)
+    case MultiObjectValue(v)   => Some(v)
+    case _                     => None
   }
 
   def isDouble: Boolean = value match {
