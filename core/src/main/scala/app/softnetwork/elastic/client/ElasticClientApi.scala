@@ -1381,7 +1381,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
   /** Create a scrolling source with automatic strategy selection
     */
-  final def scrollSource(
+  final def scroll(
     sql: SQLQuery,
     config: ScrollConfig = ScrollConfig()
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
@@ -1390,7 +1390,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
         val sqlRequest = single.copy(score = sql.score)
         val elasticQuery =
           ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
-        scrollSourceWithMetrics(
+        scrollWithMetrics(
           elasticQuery,
           sqlRequest.fieldAliases,
           sqlRequest.sqlAggregations,
@@ -1412,7 +1412,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
   /** Scroll with metrics tracking
     */
-  private[this] def scrollSourceWithMetrics(
+  private[this] def scrollWithMetrics(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
@@ -1424,7 +1424,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
     val metricsPromise = Promise[ScrollMetrics]()
 
-    scrollSource(elasticQuery, fieldAliases, aggregations, config, hasSorts)
+    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts)
       .take(config.maxDocuments.getOrElse(Long.MaxValue))
       .grouped(config.scrollSize)
       .statefulMapConcat { () =>
@@ -1435,7 +1435,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
             totalBatches = metrics.totalBatches + 1
           )
 
-          if (metrics.totalBatches % 10 == 0) {
+          if (metrics.totalBatches % config.logEvery == 0) {
             logger.info(
               s"Scroll progress: ${metrics.totalDocuments} docs, " +
               s"${metrics.totalBatches} batches, " +
@@ -1476,7 +1476,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
   /** Create a scrolling source for JSON query with automatic strategy
     */
-  private[this] def scrollSource(
+  private[this] def scroll(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
@@ -1524,7 +1524,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
 
   /** Typed scroll source
     */
-  final def scrollSourceAs[T](
+  final def scrollAs[T](
     sql: SQLQuery,
     config: ScrollConfig = ScrollConfig()
   )(implicit
@@ -1532,7 +1532,7 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     m: Manifest[T],
     formats: Formats
   ): Source[T, NotUsed] = {
-    scrollSource(sql, config).map(_._1).mapConcat { row =>
+    scroll(sql, config).map(_._1).mapConcat { row =>
       Seq(convertTo[T](row)(m, formats)) // FIXME
     }
   }

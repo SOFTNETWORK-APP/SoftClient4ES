@@ -943,7 +943,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     searchResult.children.map(_.parentId) should contain only "A16"
 
     val scrollResults: Future[Seq[Parent]] = parentClient
-      .scrollSourceAs[Parent](query, config = ScrollConfig(scrollSize = 1))
+      .scrollAs[Parent](query, config = ScrollConfig(logEvery = 1))
       .runWith(Sink.seq)
     scrollResults.onComplete {
       case Success(parents) =>

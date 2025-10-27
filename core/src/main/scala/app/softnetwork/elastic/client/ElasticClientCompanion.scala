@@ -22,6 +22,7 @@ import org.slf4j.Logger
 import java.io.Closeable
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
+import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
 
 trait ElasticClientCompanion[T <: Closeable] extends Closeable { _: { def logger: Logger } =>
