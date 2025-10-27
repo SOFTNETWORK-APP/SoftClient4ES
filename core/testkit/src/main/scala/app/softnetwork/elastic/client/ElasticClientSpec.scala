@@ -942,21 +942,20 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     ) should contain allOf ("1999-05-09", "2002-05-09")
     searchResult.children.map(_.parentId) should contain only "A16"
 
-    val scrollResults: Future[Seq[Parent]] = parentClient
+    val scrollResults: Future[Seq[(Parent, ScrollMetrics)]] = parentClient
       .scrollAs[Parent](query, config = ScrollConfig(logEvery = 1))
       .runWith(Sink.seq)
-    scrollResults.onComplete {
-      case Success(parents) =>
-        parents.size shouldBe 1
-        val scrollResult = parents.head
-        scrollResult.uuid shouldBe "A16"
-        scrollResult.children.size shouldBe 2
-        scrollResult.children.map(_.name) should contain allOf ("Steve Gumble", "Josh Gumble")
-        scrollResult.children.map(
-          _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-        ) should contain allOf ("1999-05-09", "2002-05-09")
-        scrollResult.children.map(_.parentId) should contain only "A16"
-      case Failure(f) => fail(f.getMessage)
+    scrollResults await { rows =>
+      val parents = rows.map(_._1)
+      parents.size shouldBe 1
+      val scrollResult = parents.head
+      scrollResult.uuid shouldBe "A16"
+      scrollResult.children.size shouldBe 2
+      scrollResult.children.map(_.name) should contain allOf ("Steve Gumble", "Josh Gumble")
+      scrollResult.children.map(
+        _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+      ) should contain allOf ("1999-05-09", "2002-05-09")
+      scrollResult.children.map(_.parentId) should contain only "A16"
     }
   }
 }

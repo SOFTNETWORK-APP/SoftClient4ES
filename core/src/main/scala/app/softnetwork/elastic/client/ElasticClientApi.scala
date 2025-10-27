@@ -1531,9 +1531,9 @@ trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats
-  ): Source[T, NotUsed] = {
-    scroll(sql, config).map(_._1).mapConcat { row =>
-      Seq(convertTo[T](row)(m, formats)) // FIXME
+  ): Source[(T, ScrollMetrics), NotUsed] = {
+    scroll(sql, config).map { row =>
+      (convertTo[T](row._1)(m, formats), row._2)
     }
   }
 }
