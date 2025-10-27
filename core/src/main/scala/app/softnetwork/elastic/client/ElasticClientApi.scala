@@ -982,7 +982,6 @@ trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
     sqlQuery: SQLQuery
   )(implicit ec: ExecutionContext): Future[collection.Seq[SingleValueAggregateResult]] = {
     Future {
-      val response = search(sqlQuery)
       @tailrec
       def findAggregation(
         name: String,
@@ -1049,35 +1048,59 @@ trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
           case _ => EmptyValue
         }
       }
-      parseResponse(response) match {
-        case Success(results) =>
-          results.flatMap(result =>
-            response.aggregations.map { case (name, aggregation) =>
-              val value =
-                findAggregation(name, aggregation, result).orNull match {
-                  case b: Boolean     => BooleanValue(b)
-                  case n: Number      => NumericValue(n)
-                  case s: String      => StringValue(s)
-                  case t: Temporal    => TemporalValue(t)
-                  case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
-                  case s: Seq[_]
-                      if aggregation.multivalued => // Multi-value aggregation like array_agg
-                    getAggregateValue(s, aggregation.distinct)
-                  case _ => EmptyValue
-                }
-              SingleValueAggregateResult(
-                name,
-                aggregation.aggType,
-                value
+      Try(search(sqlQuery)) match {
+        case Success(response) =>
+          parseResponse(response) match {
+            case Success(results) =>
+              results.flatMap(result =>
+                response.aggregations.map { case (name, aggregation) =>
+                  Try {
+                    val value =
+                      findAggregation(name, aggregation, result).orNull match {
+                        case b: Boolean     => BooleanValue(b)
+                        case n: Number      => NumericValue(n)
+                        case s: String      => StringValue(s)
+                        case t: Temporal    => TemporalValue(t)
+                        case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
+                        case s: Seq[_]
+                            if aggregation.multivalued => // Multi-value aggregation like array_agg
+                          getAggregateValue(s, aggregation.distinct)
+                        case _ => EmptyValue
+                      }
+                    SingleValueAggregateResult(
+                      name,
+                      aggregation.aggType,
+                      value
+                    )
+                  } match {
+                    case Success(result) => result
+                    case Failure(ex) =>
+                      SingleValueAggregateResult(
+                        name,
+                        aggregation.aggType,
+                        EmptyValue,
+                        error = Some(s"Failed to process aggregation: ${ex.getMessage}")
+                      )
+                  }
+                }.toSeq
               )
-            }.toSeq
-          )
+            case Failure(exception) =>
+              response.aggregations.map { case (name, aggregation) =>
+                SingleValueAggregateResult(
+                  name,
+                  aggregation.aggType,
+                  EmptyValue,
+                  error = Some(s"Parse error: ${exception.getMessage}")
+                )
+              }.toSeq
+          }
         case Failure(exception) =>
           throw new IllegalArgumentException(
-            s"Failed to parse search results for SQL query: ${sqlQuery.query}",
+            s"Failed to execute search for SQL query: ${sqlQuery.query}",
             exception
           )
       }
+
     }
   }
 }
