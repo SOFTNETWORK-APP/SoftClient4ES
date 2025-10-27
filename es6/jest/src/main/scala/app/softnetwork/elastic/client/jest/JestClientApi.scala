@@ -679,8 +679,8 @@ trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientComp
 
 trait JestBulkApi extends JestRefreshApi with JestSettingsApi with JestIndicesApi with BulkApi {
   _: JestClientCompanion =>
-  override type A = BulkableAction[DocumentResult]
-  override type R = BulkResult
+  override type BulkActionType = BulkableAction[DocumentResult]
+  override type BulkResultType = BulkResult
 
   override implicit def toBulkElasticAction(a: A): BulkElasticAction =
     new BulkElasticAction {

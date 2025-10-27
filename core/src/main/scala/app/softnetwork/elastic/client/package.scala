@@ -47,6 +47,22 @@ package object client {
     */
   type JSONResults = String
 
+  sealed trait ElasticResult[+T] {
+    def success: Boolean
+  }
+  case class ElasticSuccess[T](value: T) extends ElasticResult[T] {
+    override def success: Boolean = true
+  }
+  case class ElasticFailure(error: ElasticError) extends ElasticResult[Nothing] {
+    override def success: Boolean = false
+  }
+
+  case class ElasticError(
+    message: String,
+    cause: Option[Throwable] = None,
+    statusCode: Option[Int] = None
+  )
+
   /** Elastic response case class
     * @param query
     *   - the JSON query

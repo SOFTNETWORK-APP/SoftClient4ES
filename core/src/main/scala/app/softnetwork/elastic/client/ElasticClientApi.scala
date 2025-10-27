@@ -61,7 +61,9 @@ trait ElasticClientApi
     with BulkApi
     with DeleteApi
     with RefreshApi
-    with FlushApi { _: { def logger: Logger } =>
+    with FlushApi { //self: { def logger: Logger } =>
+
+  protected def logger: Logger
 
   def config: Config = ConfigFactory.load()
 
@@ -713,19 +715,28 @@ trait DeleteApi { _: RefreshApi =>
 
 }
 
-trait BulkApi { _: RefreshApi with SettingsApi =>
-  type A
-  type R
+trait BulkTypes {
+  type BulkActionType
+  type BulkResultType
+}
 
-  def toBulkAction(bulkItem: BulkItem): A
+trait BulkApi extends BulkTypes { _: RefreshApi with SettingsApi =>
 
-  implicit def toBulkElasticAction(a: A): BulkElasticAction
+  type A = BulkActionType
+  type R = BulkResultType
 
-  implicit def toBulkElasticResult(r: R): BulkElasticResult
+  def toBulkAction(bulkItem: BulkItem): BulkActionType
 
-  def bulk(implicit bulkOptions: BulkOptions, system: ActorSystem): Flow[Seq[A], R, NotUsed]
+  implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction
 
-  def bulkResult: Flow[R, Set[String], NotUsed]
+  implicit def toBulkElasticResult(r: BulkResultType): BulkElasticResult
+
+  def bulk(implicit
+    bulkOptions: BulkOptions,
+    system: ActorSystem
+  ): Flow[Seq[BulkActionType], BulkResultType, NotUsed]
+
+  def bulkResult: Flow[BulkResultType, Set[String], NotUsed]
 
   /** +----------+
     * |          |

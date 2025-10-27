@@ -822,8 +822,8 @@ trait ElasticsearchClientBulkApi
     with ElasticsearchClientSettingsApi
     with ElasticsearchClientIndicesApi
     with BulkApi { _: ElasticsearchClientCompanion =>
-  override type A = BulkOperation
-  override type R = BulkResponse
+  override type BulkActionType = BulkOperation
+  override type BulkResultType = BulkResponse
 
   override def toBulkAction(bulkItem: BulkItem): A = {
     import bulkItem._

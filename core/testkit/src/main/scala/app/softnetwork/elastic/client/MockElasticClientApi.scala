@@ -240,7 +240,7 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   override def flush(index: String, force: Boolean, wait: Boolean): Boolean = true
 
-  override type A = this.type
+  override type BulkActionType = this.type
 
   override def bulk(implicit
     bulkOptions: BulkOptions,
@@ -251,7 +251,7 @@ trait MockElasticClientApi extends ElasticClientApi {
   override def bulkResult: Flow[R, Set[String], NotUsed] =
     throw new UnsupportedOperationException
 
-  override type R = this.type
+  override type BulkResultType = this.type
 
   override def toBulkAction(bulkItem: BulkItem): A =
     throw new UnsupportedOperationException

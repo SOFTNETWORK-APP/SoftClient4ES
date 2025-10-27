@@ -85,9 +85,9 @@ trait JestClientCompanion extends ElasticClientCompanion[JestClient] with Loggin
       )
       .preemptiveAuthTargetHosts(httpHosts.asJava)
       .multiThreaded(elasticConfig.multithreaded)
-      .discoveryEnabled(elasticConfig.discoveryEnabled)
+      .discoveryEnabled(elasticConfig.discovery.enabled)
       .discoveryFrequency(
-        elasticConfig.discoveryFrequency.getSeconds,
+        elasticConfig.discovery.frequency.getSeconds,
         TimeUnit.SECONDS
       )
       .connTimeout(elasticConfig.connectionTimeout.toMillis.toInt)

@@ -791,8 +791,8 @@ trait RestHighLevelClientBulkApi
     with RestHighLevelClientSettingsApi
     with RestHighLevelClientIndicesApi
     with BulkApi { _: RestHighLevelClientCompanion =>
-  override type A = DocWriteRequest[_]
-  override type R = BulkResponse
+  override type BulkActionType = DocWriteRequest[_]
+  override type BulkResultType = BulkResponse
 
   override def toBulkAction(bulkItem: BulkItem): A = {
     import bulkItem._

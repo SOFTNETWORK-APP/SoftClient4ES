@@ -22,13 +22,28 @@ import configs.Configs
 
 import java.time.Duration
 
+/** Complete Elasticsearch client configuration.
+ *
+ * @param credentials
+ *   Connection credentials (url, username, password)
+ * @param multithreaded
+ *   Enables multi-threaded mode for parallel operations
+ * @param discovery
+ *   Automatic cluster node discovery configuration
+ * @param connectionTimeout
+ *   Connection timeout to the cluster
+ * @param socketTimeout
+ *   Socket operation timeout
+ * @param metrics
+ *   Metrics and monitoring configuration
+ */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
   multithreaded: Boolean = true,
-  discoveryEnabled: Boolean = false,
-  discoveryFrequency: Duration,
+  discovery: DiscoveryConfig,
   connectionTimeout: Duration,
-  socketTimeout: Duration
+  socketTimeout: Duration,
+  metrics: MetricsConfig
 )
 
 object ElasticConfig extends StrictLogging {
