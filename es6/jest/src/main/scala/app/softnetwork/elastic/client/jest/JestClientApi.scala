@@ -1001,7 +1001,6 @@ object JestClientApi {
 
   implicit def requestToSearch(elasticSelect: ElasticSearchRequest): Search = {
     import elasticSelect._
-    Console.println(query)
     val search = new Search.Builder(query)
     for (source <- sources) search.addIndex(source)
     search.build()

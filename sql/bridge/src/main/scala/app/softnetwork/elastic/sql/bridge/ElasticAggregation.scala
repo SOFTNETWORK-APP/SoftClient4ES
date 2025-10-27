@@ -237,7 +237,6 @@ object ElasticAggregation {
                     aggregationsDirection: Map[String, SortOrder],
                     having: Option[Criteria]
   ): Option[TermsAggregation] = {
-    Console.println(bucketsDirection)
     buckets.reverse.foldLeft(Option.empty[TermsAggregation]) { (current, bucket) =>
       var agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {

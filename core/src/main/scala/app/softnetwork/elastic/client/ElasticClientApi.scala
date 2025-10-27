@@ -999,29 +999,70 @@ trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
           case _ => results.get(name)
         }
       }
+      @tailrec
+      def getAggregateValue(s: Seq[_], distinct: Boolean): AggregateValue = {
+        if (s.isEmpty) return EmptyValue
+
+        s.headOption match {
+          case Some(_: Boolean) =>
+            val values = s.asInstanceOf[Seq[Boolean]]
+            ArrayOfBooleanValue(if (distinct) values.distinct else values)
+
+          case Some(_: Number) =>
+            val values = s.asInstanceOf[Seq[Number]]
+            ArrayOfNumericValue(if (distinct) values.distinct else values)
+
+          case Some(_: Temporal) =>
+            val values = s.asInstanceOf[Seq[Temporal]]
+            ArrayOfTemporalValue(if (distinct) values.distinct else values)
+
+          case Some(_: String) =>
+            val values = s.map(_.toString)
+            ArrayOfStringValue(if (distinct) values.distinct else values)
+
+          case Some(_: Map[_, _]) =>
+            val typedMaps = s.asInstanceOf[Seq[Map[String, Any]]]
+            val metadataKeys = Set("_id", "_index", "_score", "_sort")
+
+            // Check if all maps have the same single non-metadata key
+            val nonMetadataKeys = typedMaps.flatMap(_.keys.filterNot(metadataKeys.contains))
+            val uniqueKeys = nonMetadataKeys.distinct
+
+            if (uniqueKeys.size == 1) {
+              // Extract values from the single key
+              val key = uniqueKeys.head
+              val extractedValues = typedMaps.flatMap(_.get(key))
+              getAggregateValue(extractedValues, distinct)
+            } else {
+              // Multiple keys: return as object array
+              val cleanMaps = typedMaps.map(m =>
+                m.filterNot(k => metadataKeys.contains(k.toString))
+                  .map(kv => kv._1 -> kv._2)
+              )
+              ArrayOfObjectValue(if (distinct) cleanMaps.distinct else cleanMaps)
+            }
+
+          case Some(_: Seq[_]) =>
+            // Handle nested sequences (flatten them)
+            getAggregateValue(s.asInstanceOf[Seq[Seq[_]]].flatten, distinct)
+
+          case _ => EmptyValue
+        }
+      }
       parseResponse(response) match {
         case Success(results) =>
           results.flatMap(result =>
             response.aggregations.map { case (name, aggregation) =>
               val value =
                 findAggregation(name, aggregation, result).orNull match {
-                  case n: Number      => NumericValue(n.doubleValue())
+                  case b: Boolean     => BooleanValue(b)
+                  case n: Number      => NumericValue(n)
                   case s: String      => StringValue(s)
                   case t: Temporal    => TemporalValue(t)
                   case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
-                  case s: Seq[_] =>
-                    s.headOption match {
-                      case Some(_: Boolean) =>
-                        MultiBooleanValue(s.asInstanceOf[Seq[Boolean]])
-                      case Some(_: Number)   => MultiNumericValue(s.asInstanceOf[Seq[Number]])
-                      case Some(_: Temporal) => MultiTemporalValue(s.asInstanceOf[Seq[Temporal]])
-                      case Some(_: String)   => MultiStringValue(s.map(_.toString))
-                      case Some(_: Map[_, Any]) =>
-                        MultiObjectValue(
-                          s.map(_.asInstanceOf[Map[_, Any]].map(kv => kv._1.toString -> kv._2))
-                        )
-                      case _ => EmptyValue
-                    }
+                  case s: Seq[_]
+                      if aggregation.multivalued => // Multi-value aggregation like array_agg
+                    getAggregateValue(s, aggregation.distinct)
                   case _ => EmptyValue
                 }
               SingleValueAggregateResult(

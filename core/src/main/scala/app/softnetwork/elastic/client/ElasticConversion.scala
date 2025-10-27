@@ -190,7 +190,10 @@ trait ElasticConversion {
       "_index" -> Option(hit.get("_index")).map(_.asText()),
       "_score" -> Option(hit.get("_score")).map(n =>
         if (n.isDouble || n.isFloat) n.asDouble() else n.asLong().toDouble
-      )
+      ),
+      "_sort" -> Option(hit.get("sort"))
+        .filter(_.isArray)
+        .map(sortNode => sortNode.elements().asScala.map(jsonNodeToAny(_, Map.empty)).toList)
     ).collect { case (k, Some(v)) => k -> v }
   }
 
@@ -353,27 +356,52 @@ trait ElasticConversion {
       if (allTopHits.nonEmpty) {
         // Process each top_hits aggregation with their names
         val topHitsData = allTopHits.map { case (topHitName, hits) =>
-          val processedHits = hits.map { hit =>
-            val source = extractSource(hit, fieldAliases)
-            val metadata = extractHitMetadata(hit)
-            val innerHits = extractInnerHits(hit, fieldAliases)
-            source ++ metadata ++ innerHits
-          }
-
-          // Determine if it is a multivalued aggregation
-          val isMultipleValues = aggregations.get(topHitName) match {
+          // Determine if it is a multivalued aggregation (array_agg, ...)
+          val hasMultipleValues = aggregations.get(topHitName) match {
             case Some(agg) => agg.multivalued
             case None      =>
               // Fallback on naming convention if aggregation is not found
-              !topHitName.toLowerCase.matches("(first|last|array)_.*")
+              !topHitName.toLowerCase.matches("(first|last)_.*")
+          }
+
+          val processedHits = hits.map { hit =>
+            val source = extractSource(hit, fieldAliases)
+            if (hasMultipleValues) {
+              source.size match {
+                case 0 => null
+                case 1 =>
+                  // If only one field in source and multivalued, return the value directly
+                  val value = source.head._2
+                  value match {
+                    case list: List[_]  => list
+                    case map: Map[_, _] => map
+                    case other          => other
+                  }
+                case _ =>
+                  // Multiple fields: return as object
+                  val metadata = extractHitMetadata(hit)
+                  val innerHits = extractInnerHits(hit, fieldAliases)
+                  source ++ metadata ++ innerHits
+              }
+            } else {
+              val metadata = extractHitMetadata(hit)
+              val innerHits = extractInnerHits(hit, fieldAliases)
+              source ++ metadata ++ innerHits
+            }
           }
 
           // If multipleValues = true OR more than one hit, return a list
           // If multipleValues = false AND only one hit, return an object
-          topHitName -> (if (!isMultipleValues && processedHits.size == 1)
-                           processedHits.head
-                         else
-                           processedHits)
+          topHitName -> {
+            if (!hasMultipleValues && processedHits.size == 1)
+              processedHits.head
+            else {
+              if (aggregations.get(topHitName).exists(_.distinct))
+                processedHits.distinct
+              else
+                processedHits
+            }
+          }
         }
 
         Seq(parentContext ++ metrics ++ topHitsData)
