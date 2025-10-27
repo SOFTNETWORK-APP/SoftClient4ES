@@ -676,27 +676,44 @@ WHERE category = 'electronics' AND price < 100
    OR on_sale = true;
 ```
 
-**3. Break Complex Expressions into CTEs**
-```sql
--- Good: Readable with CTE
-WITH affordable_electronics AS (
-  SELECT * FROM products
-  WHERE category = 'electronics' AND price < 100
-),
-sale_items AS (
-  SELECT * FROM products
-  WHERE on_sale = true
-)
-SELECT * FROM affordable_electronics
-UNION
-SELECT * FROM sale_items;
+[//]: # (**3. Break Complex Expressions into CTEs**)
 
--- Avoid: Complex single query
-SELECT * FROM products
-WHERE category = 'electronics' AND price < 100 OR on_sale = true;
-```
+[//]: # (```sql)
 
-**4. Document Complex Logic**
+[//]: # (-- Good: Readable with CTE)
+
+[//]: # (WITH affordable_electronics AS &#40;)
+
+[//]: # (  SELECT * FROM products)
+
+[//]: # (  WHERE category = 'electronics' AND price < 100)
+
+[//]: # (&#41;,)
+
+[//]: # (sale_items AS &#40;)
+
+[//]: # (  SELECT * FROM products)
+
+[//]: # (  WHERE on_sale = true)
+
+[//]: # (&#41;)
+
+[//]: # (SELECT * FROM affordable_electronics)
+
+[//]: # (UNION)
+
+[//]: # (SELECT * FROM sale_items;)
+
+[//]: # ()
+[//]: # (-- Avoid: Complex single query)
+
+[//]: # (SELECT * FROM products)
+
+[//]: # (WHERE category = 'electronics' AND price < 100 OR on_sale = true;)
+
+[//]: # (```)
+
+**3. Document Complex Logic**
 ```sql
 -- Good: Commented for clarity
 SELECT * FROM orders
