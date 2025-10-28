@@ -36,10 +36,20 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   implicit val executionContext: ExecutionContextExecutor = system.dispatcher
 
-  def pClient: ElasticProvider[Person] with ElasticClientApi
-  def sClient: ElasticProvider[Sample] with ElasticClientApi
-  def bClient: ElasticProvider[Binary] with ElasticClientApi
-  def parentClient: ElasticProvider[Parent] with ElasticClientApi
+  import ElasticProviders._
+
+  lazy val pClient: ElasticProvider[Person] = new PersonProvider(
+    elasticConfig
+  )
+  lazy val sClient: ElasticProvider[Sample] = new SampleProvider(
+    elasticConfig
+  )
+  lazy val bClient: ElasticProvider[Binary] = new BinaryProvider(
+    elasticConfig
+  )
+  lazy val parentClient: ElasticProvider[Parent] = new ParentProvider(
+    elasticConfig
+  )
 
   import scala.language.implicitConversions
 

@@ -40,7 +40,7 @@ class JestClientSpi extends ElasticClientSpi {
     */
   override def client(conf: Config): ElasticClientApi = {
     new JestClientApi {
-      override def config: Config = conf
+      override lazy val config: Config = conf
     }
   }
 

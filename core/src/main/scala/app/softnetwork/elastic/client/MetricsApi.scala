@@ -26,7 +26,7 @@ import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
+import java.util.concurrent.atomic.AtomicLong
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
@@ -301,40 +301,65 @@ class MetricsCollector extends MetricsApi {
     val successOps = new AtomicLong(0)
     val failureOps = new AtomicLong(0)
     val totalDuration = new AtomicLong(0)
-    val minDuration = new AtomicReference[Long](Long.MaxValue)
-    val maxDuration = new AtomicReference[Long](0L)
+    val minDuration = new AtomicLong(Long.MaxValue)
+    val maxDuration = new AtomicLong(Long.MinValue)
     val lastExecution = new AtomicLong(0)
 
+    /** Records an operation with its duration and success status. Thread-safe implementation using
+      * atomic operations.
+      *
+      * @param duration
+      *   Operation duration in milliseconds
+      * @param success
+      *   Whether the operation succeeded
+      */
     def record(duration: Long, success: Boolean): Unit = {
+      // Update counters
       totalOps.incrementAndGet()
       if (success) successOps.incrementAndGet() else failureOps.incrementAndGet()
       totalDuration.addAndGet(duration)
       lastExecution.set(System.currentTimeMillis())
 
-      // Update min
-      var currentMin = minDuration.get()
-      while (duration < currentMin && !minDuration.compareAndSet(currentMin, duration)) {
-        currentMin = minDuration.get()
-      }
+      // Update min duration using atomic operation
+      minDuration.updateAndGet(current => Math.min(current, duration))
 
-      // Update max
-      var currentMax = maxDuration.get()
-      while (duration > currentMax && !maxDuration.compareAndSet(currentMax, duration)) {
-        currentMax = maxDuration.get()
-      }
+      // Update max duration using atomic operation
+      maxDuration.updateAndGet(current => Math.max(current, duration))
     }
 
+    /** Converts accumulated metrics to an OperationMetrics object.
+      *
+      * @param operation
+      *   The operation name
+      * @return
+      *   OperationMetrics snapshot
+      */
     def toMetrics(operation: String): OperationMetrics = {
+      val min = minDuration.get()
+      val max = maxDuration.get()
+
       OperationMetrics(
         operation = operation,
         totalOperations = totalOps.get(),
         successCount = successOps.get(),
         failureCount = failureOps.get(),
         totalDuration = totalDuration.get(),
-        minDuration = if (minDuration.get() == Long.MaxValue) 0 else minDuration.get(),
-        maxDuration = maxDuration.get(),
+        minDuration = if (min == Long.MaxValue) 0 else min,
+        maxDuration = if (max == Long.MinValue) 0 else max,
         lastExecutionTime = lastExecution.get()
       )
+    }
+
+    /** Resets all metrics to initial values. Useful for testing or periodic metric resets.
+      */
+    def reset(): Unit = {
+      totalOps.set(0)
+      successOps.set(0)
+      failureOps.set(0)
+      totalDuration.set(0)
+      minDuration.set(Long.MaxValue)
+      maxDuration.set(Long.MinValue)
+      lastExecution.set(0)
     }
   }
 
@@ -413,16 +438,16 @@ class MetricsCollector extends MetricsApi {
   *   - The Metrics Collector
   */
 class MetricsElasticClient(
-  delegate: ElasticClientApi,
+  val delegate: ElasticClientApi,
   val metricsCollector: MetricsCollector
-) extends ElasticClientApi
+) extends ElasticClientDelegator
     with MetricsApi {
 
   // Delegate the logger to the underlying client
-  protected lazy val logger: Logger = LoggerFactory getLogger getClass.getName
+  // protected lazy val logger: Logger = LoggerFactory getLogger getClass.getName
 
   // Delegate config to the underlying client
-  override def config: Config = delegate.config
+  //override def config: Config = delegate.config
 
   // Helper for measuring operations
   private def measure[T](operation: String, index: Option[String] = None)(block: => T): T = {
@@ -701,7 +726,7 @@ class MetricsElasticClient(
     aggregations: Map[String, SQLAggregation],
     config: ScrollConfig
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
-    // Note: Pour les streams, on mesure au début mais pas chaque élément
+    // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
     val source = delegate.scrollClassic(elasticQuery, fieldAliases, aggregations, config)
 
@@ -745,18 +770,6 @@ class MetricsElasticClient(
   }
 
   // ==================== BulkApi ====================
-
-  //override type BulkActionType = delegate.BulkActionType
-  //override type BulkResultType = delegate.BulkResultType
-
-  override def toBulkAction(bulkItem: BulkItem): BulkActionType =
-    delegate.toBulkAction(bulkItem).asInstanceOf[BulkActionType]
-
-  override implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction =
-    delegate.toBulkElasticAction(a.asInstanceOf[delegate.BulkActionType])
-
-  override implicit def toBulkElasticResult(r: BulkResultType): BulkElasticResult =
-    delegate.toBulkElasticResult(r.asInstanceOf[delegate.BulkResultType])
 
   override def bulk(implicit
     bulkOptions: BulkOptions,

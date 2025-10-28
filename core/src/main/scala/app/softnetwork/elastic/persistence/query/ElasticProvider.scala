@@ -16,7 +16,8 @@
 
 package app.softnetwork.elastic.persistence.query
 
-import app.softnetwork.elastic.client.ElasticClientApi
+import app.softnetwork.elastic.client.spi.ElasticClientFactory
+import app.softnetwork.elastic.client.{ElasticClientApi, ElasticClientDelegator}
 import app.softnetwork.elastic.sql.query.SQLQuery
 import mustache.Mustache
 import org.json4s.Formats
@@ -32,8 +33,12 @@ import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 16/05/2020.
   */
-trait ElasticProvider[T <: Timestamped] extends ExternalPersistenceProvider[T] {
-  self: ElasticClientApi with ManifestWrapper[T] =>
+trait ElasticProvider[T <: Timestamped]
+    extends ExternalPersistenceProvider[T]
+    with ElasticClientDelegator {
+  self: ManifestWrapper[T] =>
+
+  lazy val delegate: ElasticClientApi = ElasticClientFactory.create(self.config)
 
   protected def logger: Logger
 

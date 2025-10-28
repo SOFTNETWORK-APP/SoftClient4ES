@@ -36,6 +36,7 @@ import org.json4s.{DefaultFormats, Formats, JNothing}
 import org.json4s.jackson.JsonMethods._
 import org.slf4j.Logger
 
+import java.io.Closeable
 import java.time.temporal.Temporal
 import java.util.UUID
 import scala.annotation.tailrec
@@ -61,7 +62,8 @@ trait ElasticClientApi
     with BulkApi
     with DeleteApi
     with RefreshApi
-    with FlushApi { //self: { def logger: Logger } =>
+    with FlushApi
+    with Closeable { //self: { def logger: Logger } =>
 
   protected def logger: Logger
 

@@ -54,6 +54,22 @@ lazy val moduleSettings = Seq(
 
 ThisBuild / javacOptions ++= Seq("-source", "1.8", "-target", "1.8")
 
+ThisBuild / javaOptions ++= Seq(
+  "--add-opens=java.base/java.util=ALL-UNNAMED",
+  "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+  "--add-opens=java.base/java.lang=ALL-UNNAMED",
+  "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+  "--add-opens=java.base/java.math=ALL-UNNAMED",
+  "--add-opens=java.base/java.io=ALL-UNNAMED",
+  "--add-opens=java.base/java.net=ALL-UNNAMED",
+  "--add-opens=java.base/java.nio=ALL-UNNAMED",
+  "--add-opens=java.base/java.text=ALL-UNNAMED",
+  "--add-opens=java.base/java.time=ALL-UNNAMED",
+  "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+)
+
+Test / javaOptions ++= (javaOptions.value)
+
 ThisBuild / resolvers ++= Seq(
   "Softnetwork Server" at "https://softnetwork.jfrog.io/artifactory/releases/",
   "Softnetwork Snapshots" at "https://softnetwork.jfrog.io/artifactory/snapshots/",

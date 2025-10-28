@@ -18,18 +18,33 @@ package app.softnetwork.elastic.client
 
 import akka.actor.{ActorSystem, Cancellable}
 
+import java.util.concurrent.atomic.AtomicBoolean
+import scala.concurrent.duration._
+import scala.util.control.NonFatal
+
 class MonitoredElasticClient(
   delegate: ElasticClientApi,
   metricsCollector: MetricsCollector,
   monitoringConfig: MonitoringConfig
-)(implicit system: ActorSystem)
-    extends MetricsElasticClient(delegate, metricsCollector) {
+)(implicit system: ActorSystem = ActorSystem("monitoring-system"))
+    extends MetricsElasticClient(delegate, metricsCollector)
+    with AutoCloseable {
 
   import system.dispatcher
 
+  private val isShutdown = new AtomicBoolean(false)
+
+  // Shutdown hook pour sécurité
+  sys.addShutdownHook {
+    if (!isShutdown.get()) {
+      logger.warn("JVM shutdown detected, forcing client shutdown")
+      shutdown()
+    }
+  }
+
   private val cancellable: Cancellable = system.scheduler.scheduleAtFixedRate(
-    monitoringConfig.interval.asInstanceOf,
-    monitoringConfig.interval.asInstanceOf
+    FiniteDuration(monitoringConfig.interval.toSeconds, SECONDS),
+    FiniteDuration(monitoringConfig.interval.toSeconds, SECONDS)
   ) { () =>
     logMetrics()
     checkAlerts()
@@ -87,6 +102,19 @@ class MonitoredElasticClient(
   }
 
   def shutdown(): Unit = {
-    cancellable.cancel()
+    if (!isShutdown.getAndSet(true)) {
+      logger.info("Shutting down MonitoredElasticClient")
+      try {
+        logMetrics()
+        cancellable.cancel()
+        logger.info("MonitoredElasticClient shut down successfully")
+      } catch {
+        case NonFatal(ex) =>
+          logger.error(s"Error during shutdown: ${ex.getMessage}", ex)
+          throw ex
+      }
+    }
   }
+
+  override def close(): Unit = shutdown()
 }

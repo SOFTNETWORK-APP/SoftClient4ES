@@ -84,7 +84,7 @@ trait JestClientCompanion extends ElasticClientCompanion[JestClient] with Loggin
         elasticConfig.credentials.password
       )
       .preemptiveAuthTargetHosts(httpHosts.asJava)
-      .multiThreaded(elasticConfig.multithreaded)
+      .multiThreaded(true) //elasticConfig.multithreaded
       .discoveryEnabled(elasticConfig.discovery.enabled)
       .discoveryFrequency(
         elasticConfig.discovery.frequency.getSeconds,
@@ -92,6 +92,8 @@ trait JestClientCompanion extends ElasticClientCompanion[JestClient] with Loggin
       )
       .connTimeout(elasticConfig.connectionTimeout.toMillis.toInt)
       .readTimeout(elasticConfig.socketTimeout.toMillis.toInt)
+      .maxTotalConnection(100)
+      .defaultMaxTotalConnectionPerRoute(50)
       .build()
   }
 }
