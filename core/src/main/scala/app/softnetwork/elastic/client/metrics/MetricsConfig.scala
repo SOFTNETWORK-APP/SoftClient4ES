@@ -14,34 +14,30 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client
+package app.softnetwork.elastic.client.metrics
 
-import scala.concurrent.duration._
+import app.softnetwork.elastic.client.monitoring.MonitoringConfig
 
-/** Automatic monitoring configuration.
+/** Performance metrics configuration.
   *
   * @param enabled
-  *   Enables/disables automatic monitoring
-  * @param interval
-  *   Interval between metric reports
-  * @param failureRateThreshold
-  *   Alert threshold for failure rate (%)
-  * @param latencyThreshold
-  *   Alert threshold for average latency (ms)
-  *
+  *   Enables/disables metrics collection
+  * @param monitoring
+  *   Automatic monitoring configuration
   * @example
   * {{{
-  * val monitoring = MonitoringConfig(
+  * val metricsConfig = MetricsConfig(
   *   enabled = true,
-  *   interval = 30.seconds,
-  *   failureRateThreshold = 10.0,  // Alert if > 10% failures
-  *   latencyThreshold = 1000.0      // Alert if > 1000ms
+  *   monitoring = MonitoringConfig(
+  *     enabled = true,
+  *     interval = 1.minute,
+  *     failureRateThreshold = 5.0,
+  *     latencyThreshold = 500.0
+  *   )
   * )
   * }}}
   */
-case class MonitoringConfig(
+case class MetricsConfig(
   enabled: Boolean = true,
-  interval: Duration = 30.seconds,
-  failureRateThreshold: Double = 10.0,
-  latencyThreshold: Double = 1000.0
+  monitoring: MonitoringConfig = MonitoringConfig()
 )

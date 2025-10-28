@@ -3,6 +3,8 @@ package app.softnetwork.elastic.client
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
+import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.query.SQLQuery

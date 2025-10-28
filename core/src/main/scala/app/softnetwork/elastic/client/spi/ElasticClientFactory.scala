@@ -17,6 +17,8 @@
 package app.softnetwork.elastic.client.spi
 
 import app.softnetwork.elastic.client._
+import app.softnetwork.elastic.client.metrics.{MetricsCollector, MetricsElasticClient}
+import app.softnetwork.elastic.client.monitoring.MonitoredElasticClient
 import com.typesafe.config.{Config, ConfigFactory}
 import org.slf4j.{Logger, LoggerFactory}
 

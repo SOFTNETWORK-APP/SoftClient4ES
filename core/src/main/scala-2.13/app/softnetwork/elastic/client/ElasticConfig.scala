@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.client
 
+import app.softnetwork.elastic.client.metrics.MetricsConfig
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.StrictLogging
 import configs.ConfigReader

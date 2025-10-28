@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client
+package app.softnetwork.elastic.client.monitoring
 
 import akka.actor.{ActorSystem, Cancellable}
+import app.softnetwork.elastic.client.metrics.{MetricsCollector, MetricsElasticClient}
+import app.softnetwork.elastic.client.ElasticClientApi
 
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.concurrent.duration._

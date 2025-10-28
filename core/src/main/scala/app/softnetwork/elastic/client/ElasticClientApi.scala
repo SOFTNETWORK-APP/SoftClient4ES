@@ -22,6 +22,8 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
+import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SQLMultiSearchRequest,

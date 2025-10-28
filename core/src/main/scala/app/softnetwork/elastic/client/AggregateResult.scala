@@ -125,7 +125,7 @@ case class SingleValueAggregateResult(
     case _                       => Failure(new ClassCastException(s"Cannot cast $value to Seq"))
   }
 
-  // Pretty print pour debugging
+  // Pretty print for debugging
   def prettyPrint: String = {
     val errorMsg = error.map(e => s" [ERROR: $e]").getOrElse("")
     s"$function($field) = ${formatValue(value)}$errorMsg"
