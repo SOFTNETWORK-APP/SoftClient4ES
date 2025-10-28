@@ -17,12 +17,9 @@
 package app.softnetwork.elastic.persistence.typed
 
 import app.softnetwork.persistence._
-
 import app.softnetwork.persistence.model.Timestamped
 
 import scala.language.implicitConversions
-
-import app.softnetwork.persistence._
 
 /** Created by smanciot on 10/04/2020.
   */

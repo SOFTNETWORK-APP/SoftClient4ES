@@ -21,7 +21,6 @@ import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStage, GraphStageLogic}
 import app.softnetwork.elastic.client.BulkAction.BulkAction
 import app.softnetwork.elastic.sql.query.SQLAggregation
-import app.softnetwork.serialization._
 import com.google.gson.{Gson, JsonElement, JsonObject}
 import org.json4s.Formats
 import org.slf4j.Logger
@@ -37,7 +36,7 @@ import scala.jdk.CollectionConverters._
 
 /** Created by smanciot on 30/06/2018.
   */
-package object client {
+package object client extends SerializationApi {
 
   /** Type alias for JSON query
     */
@@ -50,10 +49,10 @@ package object client {
   sealed trait ElasticResult[+T] {
     def success: Boolean
   }
-  case class ElasticSuccess[T](value: T) extends ElasticResult[T] {
+  case class Succeeded[T](value: T) extends ElasticResult[T] {
     override def success: Boolean = true
   }
-  case class ElasticFailure(error: ElasticError) extends ElasticResult[Nothing] {
+  case class Failed(error: ElasticError) extends ElasticResult[Nothing] {
     override def success: Boolean = false
   }
 

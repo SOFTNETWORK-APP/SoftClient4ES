@@ -3,8 +3,9 @@ package app.softnetwork.elastic.client
 import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.function.aggregate.ArrayAgg
 import app.softnetwork.elastic.sql.query.{OrderBy, SQLAggregation}
-import app.softnetwork.serialization.commonFormats
-import org.json4s.Formats
+import org.json4s.ext.{JavaTimeSerializers, JavaTypesSerializers, JodaTimeSerializers}
+import org.json4s.jackson.Serialization
+import org.json4s.{Formats, NoTypeHints}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -13,7 +14,11 @@ import scala.util.{Failure, Success}
 
 class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConversion {
 
-  implicit val formats: Formats = commonFormats
+  implicit val formats: Formats =
+    Serialization.formats(NoTypeHints) ++
+    JodaTimeSerializers.all ++
+    JavaTypesSerializers.all ++
+    JavaTimeSerializers.all
 
   "elastic conversion" should "parse simple hits" in {
     val results =

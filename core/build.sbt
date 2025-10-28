@@ -4,8 +4,17 @@ organization := "app.softnetwork.elastic"
 
 name := "softclient4es-core"
 
+val akka = Seq(
+  "com.typesafe.akka" %% "akka-actor" % Versions.akka,
+  "com.typesafe.akka" %% "akka-cluster-sharding-typed" % Versions.akka,
+  "com.typesafe.akka" %% "akka-slf4j" % Versions.akka,
+  "com.typesafe.akka" %% "akka-discovery" % Versions.akka,
+  "com.typesafe.akka" %% "akka-stream" % Versions.akka
+)
+
 val typesafeConfig = Seq(
-  "com.typesafe" % "config" % Versions.typesafeConfig
+  "com.typesafe" % "config" % Versions.typesafeConfig,
+  "com.github.kxbmap" %% "configs" % Versions.kxbmap
 )
 
 val http = Seq(
@@ -17,6 +26,6 @@ val json4s = Seq(
   "org.json4s" %% "json4s-ext" % Versions.json4s
 ).map(_.excludeAll(jacksonExclusions *))
 
-libraryDependencies ++= typesafeConfig ++ http ++
+libraryDependencies ++= akka ++ typesafeConfig ++ http ++
 json4s :+ "com.google.code.gson" % "gson" % Versions.gson :+
-("app.softnetwork.persistence" %% "persistence-core" % Versions.genericPersistence excludeAll (jacksonExclusions *))
+  "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging

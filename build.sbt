@@ -118,6 +118,17 @@ lazy val core = project
     sql % "compile->compile;test->test;it->it"
   )
 
+lazy val persistence = project
+  .in(file("persistence"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings
+  )
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
+  )
+
 def copyTestkit(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
   val src = file("core/testkit")
   val target = baseDirectory.value
@@ -153,7 +164,7 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     .settings(ss: _*)
     .enablePlugins(BuildInfoPlugin)
     .dependsOn(
-      core % "compile->compile;test->test;it->it"
+      persistence % "compile->compile;test->test;it->it"
     )
 }
 
@@ -400,6 +411,7 @@ lazy val root = project
   .aggregate(
     sql,
     core,
+    persistence,
     es6,
     es7,
     es8,

@@ -1,6 +1,6 @@
 object Versions {
 
-  // val akka = "2.6.20" // TODO 2.6.20 -> 2.8.3
+  val akka = "2.6.20" // TODO 2.6.20 -> 2.8.3
 
   val scalatest = "3.2.19"
 
