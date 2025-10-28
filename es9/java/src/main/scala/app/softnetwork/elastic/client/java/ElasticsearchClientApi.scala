@@ -23,9 +23,7 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
-import app.softnetwork.elastic.{client, sql}
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization.serialization
+import app.softnetwork.elastic.client
 import co.elastic.clients.elasticsearch._types.{FieldSort, FieldValue, SortOptions, SortOrder, Time}
 import co.elastic.clients.elasticsearch.core.bulk.{
   BulkOperation,
@@ -72,6 +70,7 @@ trait ElasticsearchClientApi
     with ElasticsearchClientBulkApi
     with ElasticsearchClientScrollApi
     with ElasticsearchClientCompanion
+    with SerializationApi
 
 trait ElasticsearchClientIndicesApi extends IndicesApi { _: ElasticsearchClientCompanion =>
   override def createIndex(index: String, settings: String): Boolean = {
@@ -335,7 +334,7 @@ trait ElasticsearchClientSingleValueAggregateApi
 }
 
 trait ElasticsearchClientIndexApi extends IndexApi {
-  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion with SerializationApi =>
   override def index(index: String, id: String, source: String): Boolean = {
     tryOrElse(
       apply()
@@ -376,7 +375,7 @@ trait ElasticsearchClientIndexApi extends IndexApi {
 }
 
 trait ElasticsearchClientUpdateApi extends UpdateApi {
-  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion with SerializationApi =>
   override def update(
     index: String,
     id: String,
@@ -428,11 +427,11 @@ trait ElasticsearchClientUpdateApi extends UpdateApi {
 trait ElasticsearchClientDeleteApi extends DeleteApi {
   _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
 
-  override def delete(uuid: String, index: String): Boolean = {
+  override def delete(id: String, index: String): Boolean = {
     tryOrElse(
       apply()
         .delete(
-          new DeleteRequest.Builder().index(index).id(uuid).build()
+          new DeleteRequest.Builder().index(index).id(id).build()
         )
         .shards()
         .failed()
@@ -441,28 +440,29 @@ trait ElasticsearchClientDeleteApi extends DeleteApi {
     )(logger)
   }
 
-  override def deleteAsync(uuid: String, index: String)(implicit
+  override def deleteAsync(id: String, index: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
     fromCompletableFuture(
       async()
         .delete(
-          new DeleteRequest.Builder().index(index).id(uuid).build()
+          new DeleteRequest.Builder().index(index).id(id).build()
         )
     ).flatMap { response =>
       if (response.shards().failed().intValue() == 0) {
         Future.successful(true)
       } else {
-        Future.failed(new Exception(s"Failed to delete document with id: $uuid in index: $index"))
+        Future.failed(new Exception(s"Failed to delete document with id: $id in index: $index"))
       }
     }
   }
 
 }
 
-trait ElasticsearchClientGetApi extends GetApi { _: ElasticsearchClientCompanion =>
+trait ElasticsearchClientGetApi extends GetApi {
+  _: ElasticsearchClientCompanion with SerializationApi =>
 
-  def get[U <: Timestamped](
+  def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -513,7 +513,7 @@ trait ElasticsearchClientGetApi extends GetApi { _: ElasticsearchClientCompanion
     }
   }
 
-  override def getAsync[U <: Timestamped](
+  override def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -583,7 +583,7 @@ trait ElasticsearchConversion extends ElasticConversion { _: ElasticsearchClient
 }
 
 trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversion {
-  _: ElasticsearchClientCompanion =>
+  _: ElasticsearchClientCompanion with SerializationApi =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 

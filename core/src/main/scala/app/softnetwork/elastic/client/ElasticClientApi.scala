@@ -22,8 +22,6 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization._
 import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SQLMultiSearchRequest,
@@ -32,8 +30,9 @@ import app.softnetwork.elastic.sql.query.{
 }
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
-import org.json4s.{DefaultFormats, Formats, JNothing}
+import org.json4s.{jackson, DefaultFormats, Formats, JNothing}
 import org.json4s.jackson.JsonMethods._
+import org.json4s.jackson.Serialization
 import org.slf4j.Logger
 
 import java.io.Closeable
@@ -63,6 +62,7 @@ trait ElasticClientApi
     with DeleteApi
     with RefreshApi
     with FlushApi
+    with SerializationApi
     with Closeable { //self: { def logger: Logger } =>
 
   protected def logger: Logger
@@ -70,6 +70,10 @@ trait ElasticClientApi
   def config: Config = ConfigFactory.load()
 
   final lazy val elasticConfig: ElasticConfig = ElasticConfig(config)
+}
+
+trait SerializationApi {
+  implicit val serialization: Serialization.type = jackson.Serialization
 }
 
 trait IndicesApi {
@@ -482,11 +486,13 @@ trait FlushApi {
   def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean
 }
 
-trait IndexApi { _: RefreshApi =>
+trait IndexApi { _: RefreshApi with SerializationApi =>
 
   /** Index an entity in the given index.
     * @param entity
     *   - the entity to index
+    * @param id
+    *   - the id of the entity to index
     * @param index
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
@@ -494,15 +500,16 @@ trait IndexApi { _: RefreshApi =>
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
-  def index[U <: Timestamped](
+  def index[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
   )(implicit u: ClassTag[U], formats: Formats): Boolean = {
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
     this.index(
       index.getOrElse(indexType),
-      entity.uuid,
+      id,
       serialization.write[U](entity)
     )
   }
@@ -522,6 +529,8 @@ trait IndexApi { _: RefreshApi =>
   /** Index an entity in the given index asynchronously.
     * @param entity
     *   - the entity to index
+    * @param id
+    *   - the id of the entity to index
     * @param index
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
@@ -529,13 +538,14 @@ trait IndexApi { _: RefreshApi =>
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
-  def indexAsync[U <: Timestamped](
+  def indexAsync[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
   )(implicit u: ClassTag[U], ec: ExecutionContext, formats: Formats): Future[Boolean] = {
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
-    indexAsync(index.getOrElse(indexType), entity.uuid, serialization.write[U](entity))
+    indexAsync(index.getOrElse(indexType), id, serialization.write[U](entity))
   }
 
   /** Index an entity in the given index asynchronously.
@@ -557,11 +567,13 @@ trait IndexApi { _: RefreshApi =>
   }
 }
 
-trait UpdateApi { _: RefreshApi =>
+trait UpdateApi { _: RefreshApi with SerializationApi =>
 
   /** Update an entity in the given index.
     * @param entity
     *   - the entity to update
+    * @param id
+    *   - the id of the entity to update
     * @param index
     *   - the name of the index to update the entity in (default is the entity type name)
     * @param maybeType
@@ -571,8 +583,9 @@ trait UpdateApi { _: RefreshApi =>
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
-  def update[U <: Timestamped](
+  def update[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
     upsert: Boolean = true
@@ -580,7 +593,7 @@ trait UpdateApi { _: RefreshApi =>
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
     this.update(
       index.getOrElse(indexType),
-      entity.uuid,
+      id,
       serialization.write[U](entity),
       upsert
     )
@@ -603,6 +616,8 @@ trait UpdateApi { _: RefreshApi =>
   /** Update an entity in the given index asynchronously.
     * @param entity
     *   - the entity to update
+    * @param id
+    *   - the id of the entity to update
     * @param index
     *   - the name of the index to update the entity in (default is the entity type name)
     * @param maybeType
@@ -612,8 +627,9 @@ trait UpdateApi { _: RefreshApi =>
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
-  def updateAsync[U <: Timestamped](
+  def updateAsync[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
     upsert: Boolean = true
@@ -622,7 +638,7 @@ trait UpdateApi { _: RefreshApi =>
     this
       .updateAsync(
         index.getOrElse(indexType),
-        entity.uuid,
+        id,
         serialization.write[U](entity),
         upsert
       )
@@ -652,66 +668,28 @@ trait UpdateApi { _: RefreshApi =>
 trait DeleteApi { _: RefreshApi =>
 
   /** Delete an entity from the given index.
-    * @param entity
-    *   - the entity to delete
-    * @param index
-    *   - the name of the index to delete the entity from (default is the entity type name)
-    * @param maybeType
-    *   - the type of the entity (default is the entity class name in lowercase)
-    * @return
-    *   true if the entity was deleted successfully, false otherwise
-    */
-  def delete[U <: Timestamped](
-    entity: U,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit u: ClassTag[U]): Boolean = {
-    val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
-    delete(entity.uuid, index.getOrElse(indexType))
-  }
-
-  /** Delete an entity from the given index.
-    * @param uuid
+    * @param id
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
     * @return
     *   true if the entity was deleted successfully, false otherwise
     */
-  def delete(uuid: String, index: String): Boolean
+  def delete(id: String, index: String): Boolean
 
   /** Delete an entity from the given index asynchronously.
-    * @param entity
-    *   - the entity to delete
-    * @param index
-    *   - the name of the index to delete the entity from (default is the entity type name)
-    * @param maybeType
-    *   - the type of the entity (default is the entity class name in lowercase)
-    * @return
-    *   a Future that completes with true if the entity was deleted successfully, false otherwise
-    */
-  def deleteAsync[U <: Timestamped](
-    entity: U,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit u: ClassTag[U], ec: ExecutionContext): Future[Boolean] = {
-    val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
-    deleteAsync(entity.uuid, index.getOrElse(indexType))
-  }
-
-  /** Delete an entity from the given index asynchronously.
-    * @param uuid
+    * @param id
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
     * @return
     *   a Future that completes with true if the entity was deleted successfully, false otherwise
     */
-  def deleteAsync(uuid: String, index: String)(implicit
+  def deleteAsync(id: String, index: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
     Future {
-      this.delete(uuid, index)
+      this.delete(id, index)
     }
   }
 
@@ -1130,7 +1108,7 @@ trait GetApi {
     * @return
     *   an Option containing the entity if it was found, None otherwise
     */
-  def get[U <: Timestamped](
+  def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -1146,7 +1124,7 @@ trait GetApi {
     * @return
     *   a Future that completes with an Option containing the entity if it was found, None otherwise
     */
-  def getAsync[U <: Timestamped](
+  def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None

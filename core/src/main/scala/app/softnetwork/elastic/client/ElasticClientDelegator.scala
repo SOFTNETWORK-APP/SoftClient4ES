@@ -4,7 +4,6 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
-import app.softnetwork.persistence.model.Timestamped
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -124,19 +123,19 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   // ==================== DeleteApi ====================
 
-  override def delete(uuid: String, index: String): Boolean = {
-    delegate.delete(uuid, index)
+  override def delete(id: String, index: String): Boolean = {
+    delegate.delete(id, index)
   }
 
-  override def deleteAsync(uuid: String, index: String)(implicit
+  override def deleteAsync(id: String, index: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
-    delegate.deleteAsync(uuid, index)
+    delegate.deleteAsync(id, index)
   }
 
   // ==================== GetApi ====================
 
-  override def get[U <: Timestamped](
+  override def get[U <: AnyRef](
     id: String,
     index: Option[String],
     maybeType: Option[String]

@@ -24,8 +24,6 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.client
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization.serialization
 import co.elastic.clients.elasticsearch._types.{FieldSort, FieldValue, SortOptions, SortOrder, Time}
 import co.elastic.clients.elasticsearch.core.bulk.{
   BulkOperation,
@@ -54,7 +52,7 @@ import _root_.java.util.{Map => JMap}
 import scala.jdk.CollectionConverters._
 import org.json4s.Formats
 
-import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
 
@@ -76,6 +74,7 @@ trait ElasticsearchClientApi
     with ElasticsearchClientBulkApi
     with ElasticsearchClientScrollApi
     with ElasticsearchClientCompanion
+    with SerializationApi
 
 trait ElasticsearchClientIndicesApi extends IndicesApi { _: ElasticsearchClientCompanion =>
   override def createIndex(index: String, settings: String): Boolean = {
@@ -341,7 +340,7 @@ trait ElasticsearchClientSingleValueAggregateApi
 }
 
 trait ElasticsearchClientIndexApi extends IndexApi {
-  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion with SerializationApi =>
   override def index(index: String, id: String, source: String): Boolean = {
     tryOrElse(
       apply()
@@ -382,7 +381,7 @@ trait ElasticsearchClientIndexApi extends IndexApi {
 }
 
 trait ElasticsearchClientUpdateApi extends UpdateApi {
-  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion =>
+  _: ElasticsearchClientRefreshApi with ElasticsearchClientCompanion with SerializationApi =>
   override def update(
     index: String,
     id: String,
@@ -466,9 +465,10 @@ trait ElasticsearchClientDeleteApi extends DeleteApi {
 
 }
 
-trait ElasticsearchClientGetApi extends GetApi { _: ElasticsearchClientCompanion =>
+trait ElasticsearchClientGetApi extends GetApi {
+  _: ElasticsearchClientCompanion with SerializationApi =>
 
-  def get[U <: Timestamped](
+  def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -519,7 +519,7 @@ trait ElasticsearchClientGetApi extends GetApi { _: ElasticsearchClientCompanion
     }
   }
 
-  override def getAsync[U <: Timestamped](
+  override def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -589,7 +589,7 @@ trait ElasticsearchConversion extends ElasticConversion { _: ElasticsearchClient
 }
 
 trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchConversion {
-  _: ElasticsearchClientCompanion =>
+  _: ElasticsearchClientCompanion with SerializationApi =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 

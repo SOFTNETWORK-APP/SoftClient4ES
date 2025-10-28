@@ -22,8 +22,6 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization._
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
@@ -338,7 +336,7 @@ trait JestSingleValueAggregateApi extends SingleValueAggregateApi with JestCount
 }
 
 trait JestIndexApi extends IndexApi {
-  _: RefreshApi with JestClientCompanion =>
+  _: RefreshApi with JestClientCompanion with SerializationApi =>
   override def index(index: String, id: String, source: String): Boolean = {
     Try(
       apply().execute(
@@ -374,7 +372,7 @@ trait JestIndexApi extends IndexApi {
 }
 
 trait JestUpdateApi extends UpdateApi {
-  _: RefreshApi with JestClientCompanion =>
+  _: RefreshApi with JestClientCompanion with SerializationApi =>
   override def update(
     index: String,
     id: String,
@@ -432,11 +430,11 @@ trait JestUpdateApi extends UpdateApi {
 
 trait JestDeleteApi extends DeleteApi {
   _: RefreshApi with JestClientCompanion =>
-  override def delete(uuid: String, index: String): Boolean = {
+  override def delete(id: String, index: String): Boolean = {
     Try(
       apply()
         .execute(
-          new Delete.Builder(uuid).index(index).`type`("_doc").build()
+          new Delete.Builder(id).index(index).`type`("_doc").build()
         )
     ) match {
       case Success(result) =>
@@ -449,13 +447,13 @@ trait JestDeleteApi extends DeleteApi {
     }
   }
 
-  override def deleteAsync(uuid: String, index: String)(implicit
+  override def deleteAsync(id: String, index: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
     import JestClientResultHandler._
     val promise: Promise[Boolean] = Promise()
     apply().executeAsyncPromise(
-      new Delete.Builder(uuid).index(index).`type`("_doc").build()
+      new Delete.Builder(id).index(index).`type`("_doc").build()
     ) onComplete {
       case Success(s) =>
         if (!s.isSucceeded)
@@ -470,10 +468,10 @@ trait JestDeleteApi extends DeleteApi {
 
 }
 
-trait JestGetApi extends GetApi { _: JestClientCompanion =>
+trait JestGetApi extends GetApi { _: JestClientCompanion with SerializationApi =>
 
   // GetApi
-  override def get[U <: Timestamped](
+  override def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -496,7 +494,7 @@ trait JestGetApi extends GetApi { _: JestClientCompanion =>
     }
   }
 
-  override def getAsync[U <: Timestamped](
+  override def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -529,7 +527,8 @@ trait JestGetApi extends GetApi { _: JestClientCompanion =>
 
 }
 
-trait JestSearchApi extends SearchApi { _: ElasticConversion with JestClientCompanion =>
+trait JestSearchApi extends SearchApi {
+  _: ElasticConversion with JestClientCompanion with SerializationApi =>
 
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
@@ -997,7 +996,7 @@ trait JestScrollApi extends ScrollApi { _: JestClientCompanion =>
   }
 }
 
-object JestClientApi {
+object JestClientApi extends SerializationApi {
 
   implicit def requestToSearch(elasticSelect: ElasticSearchRequest): Search = {
     import elasticSelect._

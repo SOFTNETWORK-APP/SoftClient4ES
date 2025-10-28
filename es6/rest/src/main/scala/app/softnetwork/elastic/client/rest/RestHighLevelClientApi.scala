@@ -23,8 +23,6 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.client
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization.serialization
 import com.google.gson.JsonParser
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest.AliasActions
@@ -370,7 +368,7 @@ trait RestHighLevelClientSingleValueAggregateApi
 }
 
 trait RestHighLevelClientIndexApi extends IndexApi {
-  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion with SerializationApi =>
   override def index(index: String, id: String, source: String): Boolean = {
     tryOrElse(
       apply()
@@ -409,7 +407,7 @@ trait RestHighLevelClientIndexApi extends IndexApi {
 }
 
 trait RestHighLevelClientUpdateApi extends UpdateApi {
-  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion with SerializationApi =>
   override def update(
     index: String,
     id: String,
@@ -487,8 +485,9 @@ trait RestHighLevelClientDeleteApi extends DeleteApi {
   }
 }
 
-trait RestHighLevelClientGetApi extends GetApi { _: RestHighLevelClientCompanion =>
-  def get[U <: Timestamped](
+trait RestHighLevelClientGetApi extends GetApi {
+  _: RestHighLevelClientCompanion with SerializationApi =>
+  def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -538,7 +537,7 @@ trait RestHighLevelClientGetApi extends GetApi { _: RestHighLevelClientCompanion
     }
   }
 
-  override def getAsync[U <: Timestamped](
+  override def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -572,7 +571,7 @@ trait RestHighLevelClientGetApi extends GetApi { _: RestHighLevelClientCompanion
 }
 
 trait RestHighLevelClientSearchApi extends SearchApi {
-  _: ElasticConversion with RestHighLevelClientCompanion =>
+  _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 

@@ -27,7 +27,7 @@ import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 28/06/2018.
-  */
+ */
 trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
   lazy val log: Logger = LoggerFactory getLogger getClass.getName
@@ -578,10 +578,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.index(sample)
+    val result = sClient.index(sample, uuid)
     result shouldBe true
 
-    sClient.indexAsync(sample).complete() match {
+    sClient.indexAsync(sample, uuid).complete() match {
       case Success(r) => r shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -598,10 +598,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.update(sample)
+    val result = sClient.update(sample, uuid)
     result shouldBe true
 
-    sClient.updateAsync(sample).complete() match {
+    sClient.updateAsync(sample, uuid).complete() match {
       case Success(r) => r shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -620,7 +620,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index) shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.index(sample, Some(index))
+    val result = sClient.index(sample, uuid, Some(index))
     result shouldBe true
 
     sClient.delete(sample.uuid, index) shouldBe true
@@ -635,7 +635,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index) shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.index(sample, Some(index))
+    val result = sClient.index(sample, uuid, Some(index))
     result shouldBe true
 
     sClient.deleteAsync(sample.uuid, index).complete() match {
@@ -687,7 +687,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
             content = encoded,
             md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
           )
-          bClient.index(binary) shouldBe true
+          bClient.index(binary, uuid) shouldBe true
           bClient.get[Binary](uuid) match {
             case Some(result) =>
               val decoded = decodeBase64(result.content)

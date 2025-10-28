@@ -86,7 +86,7 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def createDocument(document: T)(implicit t: ClassTag[T]): Boolean = {
-    Try(index(document, Some(index), Some(_type))) match {
+    Try(index(document, document.uuid, Some(index), Some(_type))) match {
       case Success(_) => refresh(index)
       case Failure(f) =>
         logger.error(f.getMessage, f)
@@ -107,7 +107,7 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def updateDocument(document: T, upsert: Boolean)(implicit t: ClassTag[T]): Boolean = {
-    Try(update(document, Some(index), Some(_type), upsert)) match {
+    Try(update(document, document.uuid, Some(index), Some(_type), upsert)) match {
       case Success(_) => refresh(index)
       case Failure(f) =>
         logger.error(f.getMessage, f)

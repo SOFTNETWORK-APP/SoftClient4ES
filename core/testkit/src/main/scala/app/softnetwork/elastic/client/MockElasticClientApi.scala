@@ -22,7 +22,6 @@ import akka.stream.scaladsl.Flow
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.serialization._
 import org.json4s.Formats
-import app.softnetwork.persistence.model.Timestamped
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -45,15 +44,16 @@ trait MockElasticClientApi extends ElasticClientApi {
   implicit def formats: Formats = commonFormats
 
   def allDocumentsAsHits(index: String): String = {
-    val hits = elasticDocuments.getAll
+    val allDocuments = elasticDocuments.getAll
+    val hits = allDocuments
       .map { doc =>
         s"""
            |{
            |  "_index": "$index",
            |  "_type": "_doc",
-           |  "_id": "${doc.uuid}",
+           |  "_id": "${doc._1}",
            |  "_score": 1.0,
-           |  "_source": ${serialization.write(doc)(formats)}
+           |  "_source": ${serialization.write(doc._2)(formats)}
            |}
            |""".stripMargin
       }
@@ -70,7 +70,7 @@ trait MockElasticClientApi extends ElasticClientApi {
        |  },
        |  "hits": {
        |    "total": {
-       |      "value": ${elasticDocuments.getAll.size},
+       |      "value": ${allDocuments.keys.size},
        |      "relation": "eq"
        |    },
        |    "max_score": 1.0,
@@ -94,9 +94,9 @@ trait MockElasticClientApi extends ElasticClientApi {
     *   the SQL Result containing the results of the query
     */
   override def search(
-                       elasticQuery: ElasticQuery,
-                       fieldAliases: Map[String, String],
-                       aggregations: Map[String, SQLAggregation]
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
   ): ElasticResponse =
     ElasticResponse(
       """{
@@ -123,9 +123,9 @@ trait MockElasticClientApi extends ElasticClientApi {
     *   the SQL Result containing the results of the multi-search query
     */
   override def multisearch(
-                            jsonQueries: ElasticQueries,
-                            fieldAliases: Map[String, String],
-                            aggregations: Map[String, SQLAggregation]
+    jsonQueries: ElasticQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
   ): ElasticResponse =
     ElasticResponse(
       """{
@@ -197,7 +197,7 @@ trait MockElasticClientApi extends ElasticClientApi {
   override def count(elasticQuery: ElasticQuery): Option[Double] =
     throw new UnsupportedOperationException
 
-  override def get[U <: Timestamped](
+  override def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -207,13 +207,14 @@ trait MockElasticClientApi extends ElasticClientApi {
   override def index(index: String, id: String, source: String): Boolean =
     throw new UnsupportedOperationException
 
-  override def update[U <: Timestamped](
+  override def update[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
     upsert: Boolean = true
   )(implicit u: ClassTag[U], formats: Formats): Boolean = {
-    elasticDocuments.createOrUpdate(entity)
+    elasticDocuments.createOrUpdate(entity, id)
     true
   }
 
@@ -262,16 +263,17 @@ trait MockElasticClientApi extends ElasticClientApi {
   override implicit def toBulkElasticResult(r: R): BulkElasticResult =
     throw new UnsupportedOperationException
 
-  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(implicit
-                                                                                               m1: Manifest[U],
-                                                                                               m2: Manifest[I],
-                                                                                               formats: Formats
+  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(
+    implicit
+    m1: Manifest[U],
+    m2: Manifest[I],
+    formats: Formats
   ): List[List[(U, List[I])]] = List.empty
 
   override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
-                                                                                      m1: Manifest[U],
-                                                                                      m2: Manifest[I],
-                                                                                      formats: Formats
+    m1: Manifest[U],
+    m2: Manifest[I],
+    formats: Formats
   ): List[(U, List[I])] = List.empty
 
   override def getMapping(index: String): String =
@@ -288,18 +290,18 @@ trait MockElasticClientApi extends ElasticClientApi {
 
 trait ElasticDocuments {
 
-  private[this] var documents: Map[String, Timestamped] = Map()
+  private[this] var documents: Map[String, AnyRef] = Map()
 
-  def createOrUpdate(entity: Timestamped): Unit = {
-    documents = documents.updated(entity.uuid, entity)
+  def createOrUpdate(entity: AnyRef, uuid: String): Unit = {
+    documents = documents.updated(uuid, entity)
   }
 
   def delete(uuid: String): Unit = {
     documents = documents - uuid
   }
 
-  def getAll: Iterable[Timestamped] = documents.values
+  def getAll: Map[String, AnyRef] = documents
 
-  def get(uuid: String): Option[Timestamped] = documents.get(uuid)
+  def get(uuid: String): Option[AnyRef] = documents.get(uuid)
 
 }
