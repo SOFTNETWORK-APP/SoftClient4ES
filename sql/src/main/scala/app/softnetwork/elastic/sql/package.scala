@@ -33,6 +33,10 @@ import scala.util.matching.Regex
   */
 package object sql {
 
+  /** type alias for SQL query
+    */
+  type SQL = String
+
   import app.softnetwork.elastic.sql.function._
   import app.softnetwork.elastic.sql.`type`._
 

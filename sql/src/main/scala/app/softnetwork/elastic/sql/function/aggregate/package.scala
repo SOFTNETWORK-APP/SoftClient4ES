@@ -21,7 +21,9 @@ import app.softnetwork.elastic.sql.{asString, Expr, Identifier, TokenRegex, Upda
 
 package object aggregate {
 
-  sealed trait AggregateFunction extends Function
+  sealed trait AggregateFunction extends Function {
+    def multivalued: Boolean = false
+  }
 
   case object COUNT extends Expr("COUNT") with AggregateFunction
 
@@ -105,6 +107,13 @@ package object aggregate {
     override def withPartitionBy(partitionBy: Seq[Identifier]): TopHitsAggregation =
       this.copy(partitionBy = partitionBy)
     override def withFields(fields: Seq[Field]): TopHitsAggregation = this.copy(fields = fields)
+    override def update(request: SQLSearchRequest): TopHitsAggregation = super
+      .update(request)
+      .asInstanceOf[FirstValue]
+      .copy(
+        identifier = identifier.update(request),
+        orderBy = orderBy.update(request)
+      )
   }
 
   case class LastValue(
@@ -118,6 +127,13 @@ package object aggregate {
     override def withPartitionBy(partitionBy: Seq[Identifier]): TopHitsAggregation =
       this.copy(partitionBy = partitionBy)
     override def withFields(fields: Seq[Field]): TopHitsAggregation = this.copy(fields = fields)
+    override def update(request: SQLSearchRequest): TopHitsAggregation = super
+      .update(request)
+      .asInstanceOf[LastValue]
+      .copy(
+        identifier = identifier.update(request),
+        orderBy = orderBy.update(request)
+      )
   }
 
   case class ArrayAgg(
@@ -135,8 +151,11 @@ package object aggregate {
       .update(request)
       .asInstanceOf[ArrayAgg]
       .copy(
+        identifier = identifier.update(request),
+        orderBy = orderBy.update(request),
         limit = limit.orElse(request.limit)
       )
+    override def multivalued: Boolean = true
   }
 
 }

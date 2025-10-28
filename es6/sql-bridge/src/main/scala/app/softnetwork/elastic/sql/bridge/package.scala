@@ -825,8 +825,8 @@ package object bridge {
 
   implicit def filterToQuery(
     filter: ElasticFilter
-  ): ElasticQuery = {
-    ElasticQuery(filter)
+  ): ElasticBridge = {
+    ElasticBridge(filter)
   }
 
   @deprecated

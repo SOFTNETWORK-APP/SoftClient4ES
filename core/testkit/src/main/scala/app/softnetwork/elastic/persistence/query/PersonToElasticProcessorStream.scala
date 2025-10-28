@@ -11,4 +11,4 @@ trait PersonToElasticProcessorStream
     with PersonToExternalProcessorStream
     with InMemoryJournalProvider
     with InMemoryOffsetProvider
-    with ElasticProvider[Person] { _: ElasticClientApi => }
+    with ElasticProvider[Person]

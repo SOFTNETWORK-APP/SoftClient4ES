@@ -16,56 +16,94 @@
 
 package app.softnetwork.elastic.client.rest
 
-import app.softnetwork.elastic.client.ElasticConfig
-import com.sksamuel.exts.Logging
-import org.apache.http.HttpHost
+import app.softnetwork.elastic.client.ElasticClientCompanion
+import org.elasticsearch.client.{RequestOptions, RestClient, RestClientBuilder, RestHighLevelClient}
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
-import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
-import org.elasticsearch.client.{RestClient, RestClientBuilder, RestHighLevelClient}
+import org.elasticsearch.search.SearchModule
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.xcontent.NamedXContentRegistry
 import org.elasticsearch.plugins.SearchPlugin
-import org.elasticsearch.search.SearchModule
+import org.slf4j.{Logger, LoggerFactory}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
+import scala.util.{Failure, Success, Try}
 
-trait RestHighLevelClientCompanion extends Logging {
+/** Thread-safe companion for RestHighLevelClient with lazy initialization and proper resource
+  * management
+  */
+trait RestHighLevelClientCompanion extends ElasticClientCompanion[RestHighLevelClient] {
 
-  def elasticConfig: ElasticConfig
+  val logger: Logger = LoggerFactory getLogger getClass.getName
 
-  private var client: Option[RestHighLevelClient] = None
-
+  /** Lazy-initialized NamedXContentRegistry (thread-safe by Scala lazy val)
+    */
   lazy val namedXContentRegistry: NamedXContentRegistry = {
-    // import scala.jdk.CollectionConverters._
     val searchModule = new SearchModule(Settings.EMPTY, false, List.empty[SearchPlugin].asJava)
     new NamedXContentRegistry(searchModule.getNamedXContents)
   }
 
-  def apply(): RestHighLevelClient = {
-    client match {
-      case Some(c) => c
-      case _ =>
-        val credentialsProvider = new BasicCredentialsProvider()
-        if (elasticConfig.credentials.username.nonEmpty) {
-          credentialsProvider.setCredentials(
-            AuthScope.ANY,
-            new UsernamePasswordCredentials(
-              elasticConfig.credentials.username,
-              elasticConfig.credentials.password
-            )
-          )
-        }
-        val restClientBuilder: RestClientBuilder = RestClient
-          .builder(
-            HttpHost.create(elasticConfig.credentials.url)
-          )
-          .setHttpClientConfigCallback((httpAsyncClientBuilder: HttpAsyncClientBuilder) =>
-            httpAsyncClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
-          )
-        val c = new RestHighLevelClient(restClientBuilder)
-        client = Some(c)
-        c
+  /** Create and configure RestHighLevelClient Separated for better testability and error handling
+    */
+  override protected def createClient(): RestHighLevelClient = {
+    try {
+      val restClientBuilder = buildRestClient()
+      new RestHighLevelClient(restClientBuilder)
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to create RestHighLevelClient: ${ex.getMessage}", ex)
+        throw new IllegalStateException("Cannot create Elasticsearch client", ex)
     }
   }
+
+  /** Build RestClientBuilder with credentials and configuration
+    */
+  private def buildRestClient(): RestClientBuilder = {
+    val httpHost = parseHttpHost(elasticConfig.credentials.url)
+
+    val builder = RestClient
+      .builder(httpHost)
+      .setRequestConfigCallback { requestConfigBuilder =>
+        requestConfigBuilder
+          .setConnectTimeout(elasticConfig.connectionTimeout.toMillis.toInt)
+          .setSocketTimeout(elasticConfig.socketTimeout.toMillis.toInt)
+      }
+
+    // Add credentials if provided
+    if (elasticConfig.credentials.username.nonEmpty) {
+      builder.setHttpClientConfigCallback { httpClientBuilder =>
+        val credentialsProvider = new BasicCredentialsProvider()
+        credentialsProvider.setCredentials(
+          AuthScope.ANY,
+          new UsernamePasswordCredentials(
+            elasticConfig.credentials.username,
+            elasticConfig.credentials.password
+          )
+        )
+        httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
+      }
+    } else {
+      builder
+    }
+  }
+
+  /** Test connection to Elasticsearch cluster
+    * @return
+    *   true if connection is successful
+    */
+  override def testConnection(): Boolean = {
+    Try {
+      val c = apply()
+      val response = c.info(RequestOptions.DEFAULT)
+      logger.info(s"Connected to Elasticsearch ${response.getVersion}")
+      true
+    } match {
+      case Success(result) => result
+      case Failure(ex) =>
+        logger.error(s"Connection test failed: ${ex.getMessage}", ex)
+        incrementFailures()
+        false
+    }
+  }
+
 }

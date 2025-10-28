@@ -1,7 +1,10 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
+import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
+import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.query.SQLQuery
@@ -19,13 +22,14 @@ import _root_.java.nio.file.{Files, Paths}
 import _root_.java.time.format.DateTimeFormatter
 import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
+import java.time.temporal.Temporal
 import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, ExecutionContextExecutor}
+import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 28/06/2018.
-  */
+ */
 trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
   lazy val log: Logger = LoggerFactory getLogger getClass.getName
@@ -34,10 +38,20 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   implicit val executionContext: ExecutionContextExecutor = system.dispatcher
 
-  def pClient: ElasticProvider[Person] with ElasticClientApi
-  def sClient: ElasticProvider[Sample] with ElasticClientApi
-  def bClient: ElasticProvider[Binary] with ElasticClientApi
-  def parentClient: ElasticProvider[Parent] with ElasticClientApi
+  import ElasticProviders._
+
+  lazy val pClient: ElasticProvider[Person] = new PersonProvider(
+    elasticConfig
+  )
+  lazy val sClient: ElasticProvider[Sample] = new SampleProvider(
+    elasticConfig
+  )
+  lazy val bClient: ElasticProvider[Binary] = new BinaryProvider(
+    elasticConfig
+  )
+  lazy val parentClient: ElasticProvider[Parent] = new ParentProvider(
+    elasticConfig
+  )
 
   import scala.language.implicitConversions
 
@@ -179,25 +193,27 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_mapping" should haveCount(3)
 
-    pClient.search[Person]("select * from person_mapping") match {
+    pClient.searchAs[Person]("select * from person_mapping") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
       case other => fail(other.toString)
     }
 
-    pClient.search[Person]("select * from person_mapping where uuid = 'A16'") match {
+    pClient.searchAs[Person]("select * from person_mapping where uuid = 'A16'") match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
-    pClient.search[Person]("select * from person_mapping where match (name) against ('gum')") match {
+    pClient.searchAs[Person](
+      "select * from person_mapping where match (name) against ('gum')"
+    ) match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
-    pClient.search[Person](
+    pClient.searchAs[Person](
       "select * from person_mapping where uuid <> 'A16' and match (name) against ('gum')"
     ) match {
       case r if r.isEmpty =>
@@ -239,7 +255,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_migration" should haveCount(3)
 
-    pClient.search[Person]("select * from person_migration where match (name) against ('gum')") match {
+    pClient.searchAs[Person](
+      "select * from person_migration where match (name) against ('gum')"
+    ) match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
     }
@@ -288,7 +306,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.shouldUpdateMapping("person_migration", newMapping) shouldBe true
     pClient.updateMapping("person_migration", newMapping) shouldBe true
 
-    pClient.search[Person]("select * from person_migration where match (name) against ('gum')") match {
+    pClient.searchAs[Person](
+      "select * from person_migration where match (name) against ('gum')"
+    ) match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
@@ -306,7 +326,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person1" should haveCount(3)
 
-    pClient.search[Person]("select * from person1") match {
+    pClient.searchAs[Person]("select * from person1") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -327,7 +347,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person2" should haveCount(3)
 
-    pClient.search[Person]("select * from person2") match {
+    pClient.searchAs[Person]("select * from person2") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -358,7 +378,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person-1967-11-21" should haveCount(2)
     "person-1969-05-09" should haveCount(1)
 
-    pClient.search[Person]("select * from person-1967-11-21, person-1969-05-09") match {
+    pClient.searchAs[Person]("select * from person-1967-11-21, person-1969-05-09") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -396,7 +416,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person4" should haveCount(3)
 
-    pClient.search[Person]("select * from person4") match {
+    pClient.searchAs[Person]("select * from person4") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble2")
@@ -433,7 +453,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person5-1967-11-21" should haveCount(2)
     "person5-1969-05-09" should haveCount(1)
 
-    pClient.search[Person]("select * from person5-1967-11-21, person5-1969-05-09") match {
+    pClient.searchAs[Person]("select * from person5-1967-11-21, person5-1969-05-09") match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble2")
@@ -466,11 +486,11 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     import scala.collection.immutable._
 
     pClient
-      .count(JSONQuery("{}", Seq[String]("person6"), Seq[String]()))
+      .count(ElasticQuery("{}", Seq[String]("person6"), Seq[String]()))
       .getOrElse(0d)
       .toInt should ===(3)
 
-    pClient.countAsync(JSONQuery("{}", Seq[String]("person6"), Seq[String]())).complete() match {
+    pClient.countAsync(ElasticQuery("{}", Seq[String]("person6"), Seq[String]())).complete() match {
       case Success(s) => s.getOrElse(0d).toInt should ===(3)
       case Failure(f) => fail(f.getMessage)
     }
@@ -489,22 +509,22 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person7" should haveCount(3)
 
-    val r1 = pClient.search[Person]("select * from person7")
+    val r1 = pClient.searchAs[Person]("select * from person7")
     r1.size should ===(3)
     r1.map(_.uuid) should contain allOf ("A12", "A14", "A16")
 
-    pClient.searchAsync[Person]("select * from person7") onComplete {
+    pClient.searchAsyncAs[Person]("select * from person7") onComplete {
       case Success(r) =>
         r.size should ===(3)
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
       case Failure(f) => fail(f.getMessage)
     }
 
-    val r2 = pClient.search[Person]("select * from person7 where _id=\"A16\"")
+    val r2 = pClient.searchAs[Person]("select * from person7 where _id=\"A16\"")
     r2.size should ===(1)
     r2.map(_.uuid) should contain("A16")
 
-    pClient.searchAsync[Person]("select * from person7 where _id=\"A16\"") onComplete {
+    pClient.searchAsyncAs[Person]("select * from person7 where _id=\"A16\"") onComplete {
       case Success(r) =>
         r.size should ===(1)
         r.map(_.uuid) should contain("A16")
@@ -525,7 +545,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person8" should haveCount(3)
 
-    val response = pClient.search[Person]("select * from person8")
+    val response = pClient.searchAs[Person]("select * from person8")
 
     response.size should ===(3)
 
@@ -560,10 +580,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.index(sample)
+    val result = sClient.index(sample, uuid)
     result shouldBe true
 
-    sClient.indexAsync(sample).complete() match {
+    sClient.indexAsync(sample, uuid).complete() match {
       case Success(r) => r shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -580,10 +600,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.update(sample)
+    val result = sClient.update(sample, uuid)
     result shouldBe true
 
-    sClient.updateAsync(sample).complete() match {
+    sClient.updateAsync(sample, uuid).complete() match {
       case Success(r) => r shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -602,7 +622,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index) shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.index(sample, Some(index))
+    val result = sClient.index(sample, uuid, Some(index))
     result shouldBe true
 
     sClient.delete(sample.uuid, index) shouldBe true
@@ -617,7 +637,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index) shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.index(sample, Some(index))
+    val result = sClient.index(sample, uuid, Some(index))
     result shouldBe true
 
     sClient.deleteAsync(sample.uuid, index).complete() match {
@@ -669,7 +689,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
             content = encoded,
             md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
           )
-          bClient.index(binary) shouldBe true
+          bClient.index(binary, uuid) shouldBe true
           bClient.get[Binary](uuid) match {
             case Some(result) =>
               val decoded = decodeBase64(result.content)
@@ -747,13 +767,13 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         "select count(distinct p.uuid) as c from person10 p"
       )
       .complete() match {
-      case Success(s) => s.headOption.flatMap(_.asDoubleOption).getOrElse(0d) should ===(3d)
+      case Success(s) => s.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(3d)
       case Failure(f) => fail(f.getMessage)
     }
 
     // test count aggregation
     pClient.aggregate("select count(p.uuid) as c from person10 p").complete() match {
-      case Success(s) => s.headOption.flatMap(_.asDoubleOption).getOrElse(0d) should ===(3d)
+      case Success(s) => s.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(3d)
       case Failure(f) => fail(f.getMessage)
     }
 
@@ -762,12 +782,16 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       case Success(s) =>
         // The maximum date should be the latest birthDate in the dataset
         s.headOption match {
-          case Some(value) if value.isDouble =>
-            value.asDoubleOption.getOrElse(0d) should ===(
-              LocalDate.parse("1969-05-09").toEpochDay.toDouble * 3600 * 24 * 1000
-            )
-          case Some(value) if value.isString =>
-            value.asStringOption.getOrElse("") should ===("1969-05-09T00:00:00.000Z")
+          case Some(value) =>
+            value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
+              case Some(d: Double) =>
+                d should ===(
+                  LocalDate.parse("1969-05-09").toEpochDay.toDouble * 3600 * 24 * 1000
+                )
+              case Some(s: String) =>
+                s should ===("1969-05-09T00:00:00.000Z")
+              case _ => fail(s"Unexpected value type: ${value.prettyPrint}")
+            }
           case None => fail("No result found for max aggregation")
         }
       case Failure(f) => fail(f.getMessage)
@@ -778,12 +802,16 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       case Success(s) =>
         // The minimum date should be the earliest birthDate in the dataset
         s.headOption match {
-          case Some(value) if value.isDouble =>
-            value.asDoubleOption.getOrElse(0d) should ===(
-              LocalDate.parse("1967-11-21").toEpochDay.toDouble * 3600 * 24 * 1000
-            )
-          case Some(value) if value.isString =>
-            value.asStringOption.getOrElse("") should ===("1967-11-21T00:00:00.000Z")
+          case Some(value) =>
+            value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
+              case Some(d: Double) =>
+                d should ===(
+                  LocalDate.parse("1967-11-21").toEpochDay.toDouble * 3600 * 24 * 1000
+                )
+              case Some(s: String) =>
+                s should ===("1967-11-21T00:00:00.000Z")
+              case _ => fail(s"Unexpected value type: ${value.prettyPrint}")
+            }
           case None => fail("No result found for min aggregation")
         }
       case Failure(f) => fail(f.getMessage)
@@ -794,15 +822,20 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       case Success(s) =>
         // The average date should be the midpoint between the min and max dates
         s.headOption match {
-          case Some(value) if value.isDouble =>
-            value.asDoubleOption.getOrElse(0d) should ===(
-              LocalDateTime
-                .parse("1968-05-17T08:00:00.000Z", DateTimeFormatter.ISO_OFFSET_DATE_TIME)
-                .toInstant(ZoneOffset.UTC)
-                .toEpochMilli
-            )
-          case Some(value) if value.isString =>
-            value.asStringOption.getOrElse("") should ===("1968-05-17T08:00:00.000Z")
+          case Some(value) =>
+            value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
+              case Some(d: Double) =>
+                d should ===(
+                  LocalDateTime
+                    .parse("1968-05-17T08:00:00.000Z", DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                    .toInstant(ZoneOffset.UTC)
+                    .toEpochMilli
+                    .toDouble
+                )
+              case Some(s: String) =>
+                s should ===("1968-05-17T08:00:00.000Z")
+              case _ => fail(s"Unexpected value type: ${value.prettyPrint}")
+            }
           case None => fail("No result found for avg aggregation")
         }
       case Failure(f) => fail(f.getMessage)
@@ -815,10 +848,108 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       )
       .complete() match {
       case Success(s) =>
-        s.headOption.flatMap(_.asDoubleOption).getOrElse(0d) should ===(2d)
+        s.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(2d)
       case Failure(f) => fail(f.getMessage)
     }
 
+    // test first aggregation on date field
+    pClient.aggregate("select first(p.birthDate) as c from person10 p").complete() match {
+      case Success(s) =>
+        s.headOption match {
+          case Some(value) =>
+            value.asDoubleSafe.orElse(value.asStringSafe).orElse(value.asMapSafe).toOption match {
+              case Some(d: Double) =>
+                d should ===(
+                  LocalDate.parse("1967-11-21").toEpochDay.toDouble * 3600 * 24 * 1000
+                )
+              case Some(s: String) =>
+                s should ===("1967-11-21T00:00:00.000Z")
+              case Some(m: Map[_, _]) =>
+                // Elasticsearch 7.14+ returns an object for first/last aggregations on date fields
+                m.asInstanceOf[Map[String, Any]].get("birthDate") match {
+                  case Some(t: Temporal) =>
+                    t should ===(LocalDate.parse("1967-11-21"))
+                  case Some(d: Double) =>
+                    d should ===(
+                      LocalDate
+                        .parse("1967-11-21")
+                        .toEpochDay
+                        .toDouble * 3600 * 24 * 1000
+                    )
+                  case Some(s: String) =>
+                    s should ===("1967-11-21T00:00:00.000Z")
+                  case other => fail(s"Unexpected value type: $other")
+                }
+            }
+          case None => fail("No result found for first aggregation")
+        }
+      case Failure(f) => fail(f.getMessage)
+    }
+
+    // test last aggregation on date field
+    pClient.aggregate("select last(p.birthDate) as c from person10 p").complete() match {
+      case Success(s) =>
+        s.headOption match {
+          case Some(value) =>
+            value.asDoubleSafe.orElse(value.asStringSafe).orElse(value.asMapSafe).toOption match {
+              case Some(d: Double) =>
+                d should ===(
+                  LocalDate.parse("1969-05-09").toEpochDay.toDouble * 3600 * 24 * 1000
+                )
+              case Some(s: String) =>
+                s should ===("1969-05-09T00:00:00.000Z")
+              case Some(m: Map[_, _]) =>
+                // Elasticsearch 7.14+ returns an object for first/last aggregations on date fields
+                m.asInstanceOf[Map[String, Any]].get("birthDate") match {
+                  case Some(t: Temporal) =>
+                    t should ===(LocalDate.parse("1969-05-09"))
+                  case Some(d: Double) =>
+                    d should ===(
+                      LocalDate
+                        .parse("1969-05-09")
+                        .toEpochDay
+                        .toDouble * 3600 * 24 * 1000
+                    )
+                  case Some(s: String) =>
+                    s should ===("1969-05-09T00:00:00.000Z")
+                  case other => fail(s"Unexpected value type: $other")
+                }
+            }
+          case None => fail("No result found for last aggregation")
+        }
+      case Failure(f) => fail(f.getMessage)
+    }
+
+    // test array aggregation on String field
+    pClient
+      .aggregate(
+        "select array(child.name) as names from person10 p JOIN UNNEST(p.children) as child LIMIT 10"
+      )
+      .complete() match {
+      case Success(s) =>
+        val names = s.headOption.flatMap(_.asSeqSafe.toOption).getOrElse(Seq.empty).map {
+          case s: String => s
+          case other     => fail(s"Unexpected name type: $other")
+        }
+        names should contain allOf ("Josh Gumble", "Steve Gumble")
+      case Failure(f) => fail(f.getMessage)
+    }
+
+    // test array aggregation on date field
+    pClient
+      .aggregate(
+        "select array(DISTINCT child.birthDate) as birthDates from person10 p JOIN UNNEST(p.children) as child LIMIT 10"
+      )
+      .complete() match {
+      case Success(s) =>
+        val birthDates = s.headOption.flatMap(_.asSeqSafe.toOption).getOrElse(Seq.empty).map {
+          case t: Temporal => t
+          case other       => fail(s"Unexpected birthDate type: $other")
+        }.map(_.toString)
+        birthDates.nonEmpty shouldBe true
+        birthDates should contain allOf ("1999-05-09", "2002-05-09") // LocalDate instances sorted ASC
+      case Failure(f) => fail(f.getMessage)
+    }
   }
 
   "Nested queries" should "work" in {
@@ -878,7 +1009,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "parent" should haveCount(3)
 
-    val parents = parentClient.search[Parent]("select * from parent")
+    val parents = parentClient.searchAs[Parent]("select * from parent")
     assert(parents.size == 3)
 
     val results = parentClient.searchWithInnerHits[Parent, Child](
@@ -908,5 +1039,47 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
     ) should contain allOf ("1999-05-09", "2002-05-09")
     result._2.map(_.parentId) should contain only "A16"
+
+    val query =
+      """SELECT
+        | p.uuid,
+        | p.name,
+        | p.birthDate,
+        | children.name,
+        | children.birthDate,
+        | children.parentId
+        | FROM
+        | parent as p
+        | JOIN UNNEST(p.children) as children
+        |WHERE
+        | children.name is not null AND p.uuid = 'A16'
+        |""".stripMargin
+
+    val searchResults = parentClient.searchAs[Parent](query)
+    searchResults.size shouldBe 1
+    val searchResult = searchResults.head
+    searchResult.uuid shouldBe "A16"
+    searchResult.children.size shouldBe 2
+    searchResult.children.map(_.name) should contain allOf ("Steve Gumble", "Josh Gumble")
+    searchResult.children.map(
+      _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+    ) should contain allOf ("1999-05-09", "2002-05-09")
+    searchResult.children.map(_.parentId) should contain only "A16"
+
+    val scrollResults: Future[Seq[(Parent, ScrollMetrics)]] = parentClient
+      .scrollAs[Parent](query, config = ScrollConfig(logEvery = 1))
+      .runWith(Sink.seq)
+    scrollResults await { rows =>
+      val parents = rows.map(_._1)
+      parents.size shouldBe 1
+      val scrollResult = parents.head
+      scrollResult.uuid shouldBe "A16"
+      scrollResult.children.size shouldBe 2
+      scrollResult.children.map(_.name) should contain allOf ("Steve Gumble", "Josh Gumble")
+      scrollResult.children.map(
+        _.birthDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+      ) should contain allOf ("1999-05-09", "2002-05-09")
+      scrollResult.children.map(_.parentId) should contain only "A16"
+    }
   }
 }

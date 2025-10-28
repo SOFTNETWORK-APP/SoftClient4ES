@@ -16,7 +16,15 @@
 
 package app.softnetwork.elastic.sql.query
 
-case class SQLQuery(query: String, score: Option[Double] = None) {
+import app.softnetwork.elastic.sql.SQL
+
+/** SQL Query wrapper
+  * @param query
+  *   - the SQL query
+  * @param score
+  *   - optional minimum score for the elasticsearch query
+  */
+case class SQLQuery(query: SQL, score: Option[Double] = None) {
   import app.softnetwork.elastic.sql.SQLImplicits._
   lazy val request: Option[Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
     query

@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
-import app.softnetwork.elastic.sql.{Expr, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
 case object OrderBy extends Expr("ORDER BY") with TokenRegex
 
@@ -36,7 +36,9 @@ case class FieldSort(
   lazy val direction: SortOrder = order.getOrElse(Asc)
   lazy val name: String = toSQL(field)
   override def sql: String = s"$name $direction"
-  override def update(request: SQLSearchRequest): FieldSort = this // No update logic for now TODO
+  override def update(request: SQLSearchRequest): FieldSort = this.copy(
+    field = Identifier(field).update(request).name
+  )
 }
 
 case class OrderBy(sorts: Seq[FieldSort]) extends Updateable {

@@ -6,8 +6,7 @@ import app.softnetwork.elastic.sql.query.SQLQuery
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 /** Created by smanciot on 13/04/17.
   */

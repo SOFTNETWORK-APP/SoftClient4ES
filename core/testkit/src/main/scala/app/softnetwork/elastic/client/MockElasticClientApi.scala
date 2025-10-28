@@ -1,11 +1,29 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.client
 
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.serialization._
 import org.json4s.Formats
-import app.softnetwork.persistence.model.Timestamped
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -20,10 +38,109 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     """{
-      |    "query": {
-      |        "match_all": {}
-      |    },
+      |  "query": {
+      |    "match_all": {}
+      |  }
       |}""".stripMargin
+
+  implicit def formats: Formats = commonFormats
+
+  def allDocumentsAsHits(index: String): String = {
+    val allDocuments = elasticDocuments.getAll
+    val hits = allDocuments
+      .map { doc =>
+        s"""
+           |{
+           |  "_index": "$index",
+           |  "_type": "_doc",
+           |  "_id": "${doc._1}",
+           |  "_score": 1.0,
+           |  "_source": ${serialization.write(doc._2)(formats)}
+           |}
+           |""".stripMargin
+      }
+      .mkString(",")
+    s"""
+       |{
+       |  "took": 1,
+       |  "timed_out": false,
+       |  "_shards": {
+       |    "total": 1,
+       |    "successful": 1,
+       |    "skipped": 0,
+       |    "failed": 0
+       |  },
+       |  "hits": {
+       |    "total": {
+       |      "value": ${allDocuments.keys.size},
+       |      "relation": "eq"
+       |    },
+       |    "max_score": 1.0,
+       |    "hits": [
+       |      $hits
+       |    ]
+       |  }
+       |}
+       |""".stripMargin
+  }
+
+  /** Search for entities matching the given JSON query.
+    *
+    * @param elasticQuery
+    *   - the JSON query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL Result containing the results of the query
+    */
+  override def search(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): ElasticResponse =
+    ElasticResponse(
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  }
+        |}""".stripMargin,
+      allDocumentsAsHits(
+        elasticQuery.indices.headOption.getOrElse("default_index")
+      ),
+      fieldAliases,
+      aggregations
+    )
+
+  /** Perform a multi-search operation with the given JSON multi-search query.
+    *
+    * @param jsonQueries
+    *   - the JSON multi-search query to perform
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL Result containing the results of the multi-search query
+    */
+  override def multisearch(
+    jsonQueries: ElasticQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): ElasticResponse =
+    ElasticResponse(
+      """{
+        |  "query": {
+        |    "match_all": {}
+        |  }
+        |}""".stripMargin,
+      allDocumentsAsHits(
+        jsonQueries.queries.headOption.flatMap(_.indices.headOption).getOrElse("default_index")
+      ),
+      fieldAliases,
+      aggregations
+    )
 
   protected val elasticDocuments: ElasticDocuments = new ElasticDocuments() {}
 
@@ -79,34 +196,27 @@ trait MockElasticClientApi extends ElasticClientApi {
     */
   override def indexExists(index: String): Boolean = false
 
-  override def count(jsonQuery: JSONQuery): Option[Double] =
+  override def count(elasticQuery: ElasticQuery): Option[Double] =
     throw new UnsupportedOperationException
 
-  override def get[U <: Timestamped](
+  override def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
   )(implicit m: Manifest[U], formats: Formats): Option[U] =
     elasticDocuments.get(id).asInstanceOf[Option[U]]
 
-  override def search[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] =
-    elasticDocuments.getAll.toList.asInstanceOf[List[U]]
-
-  override def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] =
-    throw new UnsupportedOperationException
-
   override def index(index: String, id: String, source: String): Boolean =
     throw new UnsupportedOperationException
 
-  override def update[U <: Timestamped](
+  override def update[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
     upsert: Boolean = true
   )(implicit u: ClassTag[U], formats: Formats): Boolean = {
-    elasticDocuments.createOrUpdate(entity)
+    elasticDocuments.createOrUpdate(entity, id)
     true
   }
 
@@ -133,7 +243,7 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   override def flush(index: String, force: Boolean, wait: Boolean): Boolean = true
 
-  override type A = this.type
+  override type BulkActionType = this.type
 
   override def bulk(implicit
     bulkOptions: BulkOptions,
@@ -144,7 +254,7 @@ trait MockElasticClientApi extends ElasticClientApi {
   override def bulkResult: Flow[R, Set[String], NotUsed] =
     throw new UnsupportedOperationException
 
-  override type R = this.type
+  override type BulkResultType = this.type
 
   override def toBulkAction(bulkItem: BulkItem): A =
     throw new UnsupportedOperationException
@@ -155,16 +265,14 @@ trait MockElasticClientApi extends ElasticClientApi {
   override implicit def toBulkElasticResult(r: R): BulkElasticResult =
     throw new UnsupportedOperationException
 
-  override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(
+    implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = List.empty
 
-  override def search[U](jsonQuery: JSONQuery)(implicit m: Manifest[U], formats: Formats): List[U] =
-    List.empty
-
-  override def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -184,18 +292,18 @@ trait MockElasticClientApi extends ElasticClientApi {
 
 trait ElasticDocuments {
 
-  private[this] var documents: Map[String, Timestamped] = Map()
+  private[this] var documents: Map[String, AnyRef] = Map()
 
-  def createOrUpdate(entity: Timestamped): Unit = {
-    documents = documents.updated(entity.uuid, entity)
+  def createOrUpdate(entity: AnyRef, uuid: String): Unit = {
+    documents = documents.updated(uuid, entity)
   }
 
   def delete(uuid: String): Unit = {
     documents = documents - uuid
   }
 
-  def getAll: Iterable[Timestamped] = documents.values
+  def getAll: Map[String, AnyRef] = documents
 
-  def get(uuid: String): Option[Timestamped] = documents.get(uuid)
+  def get(uuid: String): Option[AnyRef] = documents.get(uuid)
 
 }

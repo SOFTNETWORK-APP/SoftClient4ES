@@ -18,13 +18,13 @@ package app.softnetwork.elastic.client.rest
 
 import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Flow
+import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.{client, sql}
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization.serialization
+import app.softnetwork.elastic.client
 import com.google.gson.JsonParser
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest.AliasActions
@@ -39,7 +39,13 @@ import org.elasticsearch.action.bulk.{BulkItemResponse, BulkRequest, BulkRespons
 import org.elasticsearch.action.delete.{DeleteRequest, DeleteResponse}
 import org.elasticsearch.action.get.{GetRequest, GetResponse}
 import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
-import org.elasticsearch.action.search.{MultiSearchRequest, SearchRequest, SearchResponse}
+import org.elasticsearch.action.search.{
+  ClearScrollRequest,
+  MultiSearchRequest,
+  SearchRequest,
+  SearchResponse,
+  SearchScrollRequest
+}
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest}
 import org.elasticsearch.client.{Request, RequestOptions}
@@ -50,23 +56,17 @@ import org.elasticsearch.client.indices.{
   GetMappingsRequest,
   PutMappingRequest
 }
+import org.elasticsearch.common.Strings
 import org.elasticsearch.common.io.stream.InputStreamStreamInput
+import org.elasticsearch.common.unit.TimeValue
 import org.elasticsearch.common.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
-import org.elasticsearch.search.aggregations.bucket.filter.Filter
-import org.elasticsearch.search.aggregations.bucket.nested.Nested
-import org.elasticsearch.search.aggregations.metrics.avg.Avg
-import org.elasticsearch.search.aggregations.metrics.cardinality.Cardinality
-import org.elasticsearch.search.aggregations.metrics.max.Max
-import org.elasticsearch.search.aggregations.metrics.min.Min
-import org.elasticsearch.search.aggregations.metrics.sum.Sum
-import org.elasticsearch.search.aggregations.metrics.valuecount.ValueCount
 import org.elasticsearch.search.builder.SearchSourceBuilder
+import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.Formats
 
-import java.io.ByteArrayInputStream
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import java.io.{ByteArrayInputStream, IOException}
+import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -87,8 +87,10 @@ trait RestHighLevelClientApi
     with RestHighLevelClientGetApi
     with RestHighLevelClientSearchApi
     with RestHighLevelClientBulkApi
+    with RestHighLevelClientScrollApi
+    with RestHighLevelClientCompanion
 
-trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientIndicesApi extends IndicesApi { _: RestHighLevelClientCompanion =>
   override def createIndex(index: String, settings: String): Boolean = {
     tryOrElse(
       apply()
@@ -174,7 +176,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientC
 
 }
 
-trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientAliasApi extends AliasApi { _: RestHighLevelClientCompanion =>
   override def addAlias(index: String, alias: String): Boolean = {
     tryOrElse(
       apply()
@@ -212,8 +214,8 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientCompa
   }
 }
 
-trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientIndicesApi =>
+trait RestHighLevelClientSettingsApi extends SettingsApi {
+  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override def updateSettings(index: String, settings: String): Boolean = {
     tryOrElse(
@@ -256,7 +258,7 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
   }
 }
 
-trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientMappingApi extends MappingApi { _: RestHighLevelClientCompanion =>
   override def setMapping(index: String, mapping: String): Boolean = {
     tryOrElse(
       apply()
@@ -296,7 +298,7 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientC
 
 }
 
-trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientRefreshApi extends RefreshApi { _: RestHighLevelClientCompanion =>
   override def refresh(index: String): Boolean = {
     tryOrElse(
       apply()
@@ -312,7 +314,7 @@ trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientC
   }
 }
 
-trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientFlushApi extends FlushApi { _: RestHighLevelClientCompanion =>
   override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean = {
     tryOrElse(
       apply()
@@ -327,9 +329,9 @@ trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientCompa
   }
 }
 
-trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientCountApi extends CountApi { _: RestHighLevelClientCompanion =>
   override def countAsync(
-    query: client.JSONQuery
+    query: client.ElasticQuery
   )(implicit ec: ExecutionContext): Future[Option[Double]] = {
     val promise = Promise[Option[Double]]()
     apply().countAsync(
@@ -345,7 +347,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompa
     promise.future
   }
 
-  override def count(query: client.JSONQuery): Option[Double] = {
+  override def count(query: client.ElasticQuery): Option[Double] = {
     tryOrElse(
       Option(
         apply()
@@ -364,120 +366,11 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientCompa
 trait RestHighLevelClientSingleValueAggregateApi
     extends SingleValueAggregateApi
     with RestHighLevelClientCountApi {
-  override def aggregate(
-    sqlQuery: SQLQuery
-  )(implicit ec: ExecutionContext): Future[Seq[SingleValueAggregateResult]] = {
-    val aggregations: Seq[ElasticAggregation] = sqlQuery
-    val futures = for (aggregation <- aggregations) yield {
-      val promise: Promise[SingleValueAggregateResult] = Promise()
-      val field = aggregation.field
-      val sourceField = aggregation.sourceField
-      val aggType = aggregation.aggType
-      val aggName = aggregation.aggName
-      val query = aggregation.query.getOrElse("")
-      val sources = aggregation.sources
-      sourceField match {
-        case "_id" if aggType.sql == "count" =>
-          countAsync(
-            JSONQuery(
-              query,
-              collection.immutable.Seq(sources: _*),
-              collection.immutable.Seq.empty[String]
-            )
-          ).onComplete {
-            case Success(result) =>
-              promise.success(
-                SingleValueAggregateResult(
-                  field,
-                  aggType,
-                  result.map(r => NumericValue(r.doubleValue())).getOrElse(EmptyValue),
-                  None
-                )
-              )
-            case Failure(f) =>
-              logger.error(f.getMessage, f.fillInStackTrace())
-              promise.success(
-                SingleValueAggregateResult(field, aggType, EmptyValue, Some(f.getMessage))
-              )
-          }
-          promise.future
-        case _ =>
-          val jsonQuery = JSONQuery(
-            query,
-            collection.immutable.Seq(sources: _*),
-            collection.immutable.Seq.empty[String]
-          )
-          import jsonQuery._
-          // Create a parser for the query
-          val xContentParser = XContentType.JSON
-            .xContent()
-            .createParser(
-              namedXContentRegistry,
-              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-              jsonQuery.query
-            )
-          apply().searchAsync(
-            new SearchRequest(indices: _*)
-              .types(types: _*)
-              .source(
-                SearchSourceBuilder.fromXContent(xContentParser)
-              ),
-            RequestOptions.DEFAULT,
-            new ActionListener[SearchResponse] {
-              override def onResponse(response: SearchResponse): Unit = {
-                val agg = aggName.split("\\.").last
-
-                val itAgg = aggName.split("\\.").iterator
-
-                var root =
-                  if (aggregation.nested) {
-                    response.getAggregations.get(itAgg.next()).asInstanceOf[Nested].getAggregations
-                  } else {
-                    response.getAggregations
-                  }
-
-                if (aggregation.filtered) {
-                  root = root.get(itAgg.next()).asInstanceOf[Filter].getAggregations
-                }
-
-                promise.success(
-                  SingleValueAggregateResult(
-                    field,
-                    aggType,
-                    aggType match {
-                      case sql.function.aggregate.COUNT =>
-                        if (aggregation.distinct) {
-                          NumericValue(root.get(agg).asInstanceOf[Cardinality].value())
-                        } else {
-                          NumericValue(root.get(agg).asInstanceOf[ValueCount].value())
-                        }
-                      case sql.function.aggregate.SUM =>
-                        NumericValue(root.get(agg).asInstanceOf[Sum].value())
-                      case sql.function.aggregate.AVG =>
-                        NumericValue(root.get(agg).asInstanceOf[Avg].value())
-                      case sql.function.aggregate.MIN =>
-                        NumericValue(root.get(agg).asInstanceOf[Min].value())
-                      case sql.function.aggregate.MAX =>
-                        NumericValue(root.get(agg).asInstanceOf[Max].value())
-                      case _ => EmptyValue
-                    },
-                    None
-                  )
-                )
-              }
-
-              override def onFailure(e: Exception): Unit = promise.failure(e)
-            }
-          )
-          promise.future
-      }
-    }
-    Future.sequence(futures)
-  }
+  _: SearchApi with ElasticConversion with RestHighLevelClientCompanion =>
 }
 
-trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientRefreshApi =>
+trait RestHighLevelClientIndexApi extends IndexApi {
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion with SerializationApi =>
   override def index(index: String, id: String, source: String): Boolean = {
     tryOrElse(
       apply()
@@ -515,8 +408,8 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientCompa
   }
 }
 
-trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientRefreshApi =>
+trait RestHighLevelClientUpdateApi extends UpdateApi {
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion with SerializationApi =>
   override def update(
     index: String,
     id: String,
@@ -560,8 +453,8 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientCom
   }
 }
 
-trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientCompanion {
-  _: RestHighLevelClientRefreshApi =>
+trait RestHighLevelClientDeleteApi extends DeleteApi {
+  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
 
   override def delete(uuid: String, index: String): Boolean = {
     tryOrElse(
@@ -594,8 +487,9 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientCom
   }
 }
 
-trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion {
-  def get[U <: Timestamped](
+trait RestHighLevelClientGetApi extends GetApi {
+  _: RestHighLevelClientCompanion with SerializationApi =>
+  def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -645,7 +539,7 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
     }
   }
 
-  override def getAsync[U <: Timestamped](
+  override def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -678,15 +572,28 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientCompanion
   }
 }
 
-trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCompanion {
+trait RestHighLevelClientSearchApi extends SearchApi {
+  _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
-  override def search[U](
-    jsonQuery: JSONQuery
-  )(implicit m: Manifest[U], formats: Formats): List[U] = {
-    import jsonQuery._
-    logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
+  /** Search for entities matching the given JSON query.
+    *
+    * @param elasticQuery
+    *   - the JSON query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  override def search(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): ElasticResponse = {
+    val query = elasticQuery.query
     // Create a parser for the query
     val xContentParser = XContentType.JSON
       .xContent()
@@ -695,29 +602,83 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
         DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
         query
       )
+    // Execute the search
     val response = apply().search(
-      new SearchRequest(indices: _*)
-        .types(types: _*)
+      new SearchRequest(elasticQuery.indices: _*)
+        .types(elasticQuery.types: _*)
         .source(
           SearchSourceBuilder.fromXContent(xContentParser)
         ),
       RequestOptions.DEFAULT
     )
-    if (response.getHits.getTotalHits > 0) {
-      response.getHits.getHits.toList.map { hit =>
-        logger.info(s"Deserializing hit: ${hit.getSourceAsString}")
-        serialization.read[U](hit.getSourceAsString)
-      }
-    } else {
-      List.empty[U]
-    }
+    // Return the SQL search response
+    val sqlResponse =
+      ElasticResponse(query, Strings.toString(response), fieldAliases, aggregations)
+    logger.info(s"Search response: $sqlResponse")
+    sqlResponse
   }
 
-  override def searchAsync[U](
+  /** Perform a multi-search operation with the given JSON multi-search query.
+    *
+    * @param jsonQueries
+    *   - the JSON multi-search query to perform
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  override def multisearch(
+    jsonQueries: ElasticQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): ElasticResponse = {
+    val request = new MultiSearchRequest()
+    val queries = jsonQueries.queries.map(_.query)
+    val query = queries.mkString("\n")
+    jsonQueries.queries.zipWithIndex.map { case (q, i) =>
+      val query = queries(i)
+      logger.info(s"Searching with query ${i + 1}: $query on indices: ${q.indices
+        .mkString(", ")}")
+      request.add(
+        new SearchRequest(q.indices: _*)
+          .types(q.types: _*)
+          .source(
+            new SearchSourceBuilder(
+              new InputStreamStreamInput(
+                new ByteArrayInputStream(
+                  query.getBytes()
+                )
+              )
+            )
+          )
+      )
+    }
+    /*for (query <- jsonQueries.queries) {
+      request.add(
+        new SearchRequest(query.indices: _*)
+          .types(query.types: _*)
+          .source(
+            new SearchSourceBuilder(
+              new InputStreamStreamInput(
+                new ByteArrayInputStream(
+                  query.query.getBytes()
+                )
+              )
+            )
+          )
+      )
+    }*/
+    val responses = apply().msearch(request, RequestOptions.DEFAULT)
+    ElasticResponse(query, Strings.toString(responses), fieldAliases, aggregations)
+  }
+
+  override def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
-    val jsonQuery: JSONQuery = sqlQuery
-    import jsonQuery._
+    val elasticQuery: ElasticQuery = sqlQuery
+    import elasticQuery._
     val promise = Promise[List[U]]()
     logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
     // Create a parser for the query
@@ -753,19 +714,19 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
     promise.future
   }
 
-  override def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    import jsonQuery._
+    import elasticQuery._
     // Create a parser for the query
     val xContentParser = XContentType.JSON
       .xContent()
       .createParser(
         namedXContentRegistry,
         DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        jsonQuery.query
+        elasticQuery.query
       )
     val response = apply().search(
       new SearchRequest(indices: _*)
@@ -783,40 +744,8 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientCom
     }
   }
 
-  override def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    import jsonQueries._
-    val request = new MultiSearchRequest()
-    for (query <- queries) {
-      request.add(
-        new SearchRequest(query.indices: _*)
-          .types(query.types: _*)
-          .source(
-            new SearchSourceBuilder(
-              new InputStreamStreamInput(
-                new ByteArrayInputStream(
-                  query.query.getBytes()
-                )
-              )
-            )
-          )
-      )
-    }
-    val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    responses.getResponses.toList.map { response =>
-      if (response.isFailure) {
-        logger.error(s"Error in multi search: ${response.getFailureMessage}")
-        List.empty[U]
-      } else {
-        response.getResponse.getHits.getHits.toList.map { hit =>
-          serialization.read[U](hit.getSourceAsString)
-        }
-      }
-    }
-  }
-
-  override def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(
+    implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -862,9 +791,9 @@ trait RestHighLevelClientBulkApi
     extends RestHighLevelClientRefreshApi
     with RestHighLevelClientSettingsApi
     with RestHighLevelClientIndicesApi
-    with BulkApi {
-  override type A = DocWriteRequest[_]
-  override type R = BulkResponse
+    with BulkApi { _: RestHighLevelClientCompanion =>
+  override type BulkActionType = DocWriteRequest[_]
+  override type BulkResultType = BulkResponse
 
   override def toBulkAction(bulkItem: BulkItem): A = {
     import bulkItem._
@@ -951,6 +880,272 @@ trait RestHighLevelClientBulkApi
     new BulkElasticResult {
       override def items: List[BulkElasticResultItem] =
         r.getItems.toList.map(toBulkElasticResultItem)
+    }
+  }
+}
+
+trait RestHighLevelClientScrollApi extends ScrollApi { _: RestHighLevelClientCompanion =>
+
+  /** Classic scroll (works for both hits and aggregations)
+    */
+  override def scrollClassic(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    Source
+      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            scrollIdOpt match {
+              case None =>
+                // Initial search with scroll
+                logger.info(
+                  s"Starting classic scroll on indices: ${elasticQuery.indices.mkString(", ")}"
+                )
+
+                val query = elasticQuery.query
+                // Create a parser for the query
+                val xContentParser = XContentType.JSON
+                  .xContent()
+                  .createParser(
+                    namedXContentRegistry,
+                    DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                    query
+                  )
+                // Execute the search
+                val searchRequest =
+                  new SearchRequest(elasticQuery.indices: _*)
+                    .types(elasticQuery.types: _*)
+                    .source(
+                      SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+                    )
+
+                searchRequest.scroll(
+                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                )
+
+                val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+                if (response.status() != RestStatus.OK) {
+                  throw new IOException(s"Initial scroll failed with status: ${response.status()}")
+                }
+
+                val scrollId = response.getScrollId
+
+                if (scrollId == null) {
+                  throw new IllegalStateException("Scroll ID is null in response")
+                }
+
+                // Extract both hits AND aggregations
+                val results = extractAllResults(response, fieldAliases, aggregations)
+
+                logger.info(s"Initial scroll returned ${results.size} results, scrollId: $scrollId")
+
+                if (results.isEmpty) {
+                  None
+                } else {
+                  Some((Some(scrollId), results))
+                }
+
+              case Some(scrollId) =>
+                // Subsequent scroll requests
+                logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
+
+                val scrollRequest = new SearchScrollRequest(scrollId)
+                scrollRequest.scroll(
+                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                )
+
+                val result = apply().scroll(scrollRequest, RequestOptions.DEFAULT)
+
+                if (result.status() != RestStatus.OK) {
+                  clearScroll(scrollId)
+                  throw new IOException(
+                    s"Scroll continuation failed with status: ${result.status()}"
+                  )
+                }
+
+                val newScrollId = result.getScrollId
+                val results = extractAllResults(result, fieldAliases, aggregations)
+
+                logger.debug(s"Scroll returned ${results.size} results")
+
+                if (results.isEmpty) {
+                  clearScroll(scrollId)
+                  None
+                } else {
+                  Some((Some(newScrollId), results))
+                }
+            }
+          }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
+          scrollIdOpt.foreach(clearScroll)
+          None
+        }
+      }
+      .mapConcat(identity)
+  }
+
+  /** Search After (only for hits, more efficient)
+    * @note
+    *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
+    */
+  override def searchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    Source
+      .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+        retryWithBackoff(config.retryConfig) {
+          Future {
+            searchAfterOpt match {
+              case None =>
+                logger.info(
+                  s"Starting search_after on indices: ${elasticQuery.indices.mkString(", ")}"
+                )
+              case Some(values) =>
+                logger.debug(s"Fetching next search_after batch (after: ${if (values.length > 3)
+                  s"[${values.take(3).mkString(", ")}...]"
+                else values.mkString(", ")})")
+            }
+
+            val query = elasticQuery.query
+            // Create a parser for the query
+            val xContentParser = XContentType.JSON
+              .xContent()
+              .createParser(
+                namedXContentRegistry,
+                DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                query
+              )
+            val sourceBuilder =
+              SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+
+            // Check if sorts already exist in the query
+            if (!hasSorts && sourceBuilder.sorts() == null) {
+              logger.warn(
+                "No sort fields in query for search_after, adding default _id sort. " +
+                "This may lead to inconsistent results if documents are updated during scroll."
+              )
+              sourceBuilder.sort("_id", SortOrder.ASC)
+            } else if (hasSorts && sourceBuilder.sorts() != null) {
+              // Sorts already present, check that a tie-breaker exists
+              val hasIdSort = sourceBuilder.sorts().asScala.exists { sortBuilder =>
+                sortBuilder match {
+                  case fieldSort: FieldSortBuilder =>
+                    fieldSort.getFieldName == "_id"
+                  case _ =>
+                    false
+                }
+              }
+              if (!hasIdSort) {
+                // Add _id as tie-breaker
+                logger.debug("Adding _id as tie-breaker to existing sorts")
+                sourceBuilder.sort("_id", SortOrder.ASC)
+              }
+            }
+
+            // Add search_after if available
+            searchAfterOpt.foreach { searchAfter =>
+              sourceBuilder.searchAfter(searchAfter)
+            }
+
+            // Execute the search
+            val searchRequest =
+              new SearchRequest(elasticQuery.indices: _*)
+                .types(elasticQuery.types: _*)
+                .source(
+                  sourceBuilder
+                )
+
+            val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+
+            if (response.status() != RestStatus.OK) {
+              throw new IOException(s"Search after failed with status: ${response.status()}")
+            }
+
+            // Extract ONLY hits (no aggregations for search_after)
+            val hits = extractHitsOnly(response, fieldAliases)
+
+            if (hits.isEmpty) {
+              None
+            } else {
+              val searchHits = response.getHits.getHits
+              val lastHit = searchHits.last
+              val nextSearchAfter = Option(lastHit.getSortValues)
+
+              logger.debug(
+                s"Retrieved ${hits.size} hits, next search_after: ${nextSearchAfter
+                  .map(arr =>
+                    if (arr.length > 3) s"[${arr.take(3).mkString(", ")}...]"
+                    else arr.mkString(", ")
+                  )
+                  .getOrElse("None")}"
+              )
+
+              Some((nextSearchAfter, hits))
+            }
+          }
+        }(system, logger).recover { case ex: Exception =>
+          logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
+          None
+        }
+      }
+      .mapConcat(identity)
+  }
+
+  /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
+    */
+  private def extractAllResults(
+    response: SearchResponse,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): Seq[Map[String, Any]] = {
+    val jsonString = response.toString
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
+
+    parseResponse(sqlResponse) match {
+      case Success(rows) =>
+        logger.debug(s"Parsed ${rows.size} rows from response")
+        rows
+      case Failure(ex) =>
+        logger.error(s"Failed to parse scroll response: ${ex.getMessage}", ex)
+        Seq.empty
+    }
+  }
+
+  /** Extract ONLY hits (for search_after optimization)
+    */
+  private def extractHitsOnly(
+    response: SearchResponse,
+    fieldAliases: Map[String, String]
+  ): Seq[Map[String, Any]] = {
+    val jsonString = response.toString
+    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
+
+    parseResponse(sqlResponse) match {
+      case Success(rows) => rows
+      case Failure(ex) =>
+        logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)
+        Seq.empty
+    }
+  }
+
+  private def clearScroll(scrollId: String): Unit = {
+    Try {
+      logger.debug(s"Clearing scroll: $scrollId")
+      val clearScrollRequest = new ClearScrollRequest()
+      clearScrollRequest.addScrollId(scrollId)
+      apply().clearScroll(clearScrollRequest, RequestOptions.DEFAULT)
+    }.recover { case ex: Exception =>
+      logger.warn(s"Failed to clear scroll $scrollId: ${ex.getMessage}")
     }
   }
 }

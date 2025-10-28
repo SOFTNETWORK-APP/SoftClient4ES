@@ -22,19 +22,28 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import _root_.akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl._
-import app.softnetwork.persistence.model.Timestamped
-import app.softnetwork.serialization._
-import app.softnetwork.elastic.sql.query.{SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.query.{
+  SQLAggregation,
+  SQLMultiSearchRequest,
+  SQLQuery,
+  SQLSearchRequest
+}
 import com.google.gson.JsonParser
 import com.typesafe.config.{Config, ConfigFactory}
-import org.json4s.{DefaultFormats, Formats}
+import org.json4s.{jackson, DefaultFormats, Formats, JNothing}
 import org.json4s.jackson.JsonMethods._
+import org.json4s.jackson.Serialization
 import org.slf4j.Logger
 
+import java.io.Closeable
+import java.time.temporal.Temporal
 import java.util.UUID
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.annotation.tailrec
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.Duration
-import scala.language.{implicitConversions, postfixOps}
+import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
@@ -47,18 +56,26 @@ trait ElasticClientApi
     with MappingApi
     with CountApi
     with SingleValueAggregateApi
-    with SearchApi
+    with ScrollApi
     with IndexApi
     with UpdateApi
     with GetApi
     with BulkApi
     with DeleteApi
     with RefreshApi
-    with FlushApi {
+    with FlushApi
+    with SerializationApi
+    with Closeable { //self: { def logger: Logger } =>
+
+  protected def logger: Logger
 
   def config: Config = ConfigFactory.load()
 
   final lazy val elasticConfig: ElasticConfig = ElasticConfig(config)
+}
+
+trait SerializationApi {
+  implicit val serialization: Serialization.type = jackson.Serialization
 }
 
 trait IndicesApi {
@@ -237,9 +254,7 @@ trait SettingsApi { _: IndicesApi =>
   def loadSettings(index: String): String
 }
 
-trait MappingApi extends IndicesApi with RefreshApi {
-
-  protected def logger: Logger
+trait MappingApi extends IndicesApi with RefreshApi { _: { def logger: Logger } =>
 
   /** Set the mapping of an index.
     * @param index
@@ -328,20 +343,19 @@ trait MappingApi extends IndicesApi with RefreshApi {
     // Check if the mapping needs to be updated
     else if (shouldUpdateMapping(index, mapping)) {
       val tempIndex = index + "_tmp_" + UUID.randomUUID()
-      var tempCreated = false
-      var originalDeleted = false
+      case class MigrationState(tempCreated: Boolean, originalDeleted: Boolean, success: Boolean)
       logger.info("--- Starting dynamic mapping migration ---")
       logger.info("Target index: " + index)
       logger.info("Temporary index: " + tempIndex)
-      def migrate(): Boolean = {
+      def migrate(): MigrationState = {
         // Create a temporary index with the new mapping
-        tempCreated = tryOrElse(this.createIndex(tempIndex, settings), false)(logger)
+        val tempCreated = tryOrElse(this.createIndex(tempIndex, settings), false)(logger)
         if (tempCreated) {
           logger.info(s"Temporary index $tempIndex created successfully.")
           // Set the new mapping on the temporary index
           if (!tryOrElse(this.setMapping(tempIndex, mapping), false)(logger)) {
             logger.error(s"Failed to set mapping for temporary index: $tempIndex")
-            return false
+            return MigrationState(tempCreated = true, originalDeleted = false, success = false)
           }
           logger.info(s"Mapping for temporary index $tempIndex set successfully.")
           // Reindex from the original index to the temporary index
@@ -349,60 +363,60 @@ trait MappingApi extends IndicesApi with RefreshApi {
             logger.error(
               s"Failed to reindex from original index: $index to temporary index: $tempIndex"
             )
-            return false
+            return MigrationState(tempCreated = true, originalDeleted = false, success = false)
           }
           logger.info(
             s"Reindexing from original index $index to temporary index $tempIndex completed successfully."
           )
           // Delete the original index
-          originalDeleted = this.deleteIndex(index)
+          val originalDeleted = this.deleteIndex(index)
           if (originalDeleted) {
             logger.info(s"Original index $index deleted successfully.")
             // Rename the temporary index to the original index name
             if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
               logger.error(s"Failed to recreate original index: $index")
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(s"Original index $index recreated successfully.")
             if (!tryOrElse(this.setMapping(index, mapping), false)(logger)) {
               logger.error(s"Failed to set mapping for original index: $index")
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(s"Mapping for original index $index set successfully.")
             if (!tryOrElse(this.reindex(tempIndex, index), false)(logger)) {
               logger.error(
                 s"Failed to reindex from temporary index: $tempIndex to original index: $index"
               )
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(
               s"Reindexing from temporary index $tempIndex to original index $index completed successfully."
             )
             if (!tryOrElse(this.openIndex(index), false)(logger)) {
               logger.error(s"Failed to open original index: $index")
-              return false
+              return MigrationState(tempCreated = true, originalDeleted = true, success = false)
             }
             logger.info(s"Original index $index opened successfully.")
             logger.info("Dynamic mapping migration completed successfully.")
-            true
+            MigrationState(tempCreated = true, originalDeleted = true, success = true)
           } else {
             logger.error(s"Failed to delete original index: $index")
-            false
+            MigrationState(tempCreated = true, originalDeleted = false, success = false)
           }
         } else {
           logger.error(s"Failed to create temporary index: $tempIndex")
-          false
+          MigrationState(tempCreated = false, originalDeleted = false, success = false)
         }
       }
       val migration = Try(migrate()) match {
         case Success(result) => result
         case Failure(exception) =>
           logger.error("Exception during dynamic mapping migration", exception)
-          false
+          MigrationState(tempCreated = false, originalDeleted = false, success = false)
       }
-      if (!migration) {
+      if (!migration.success) {
         logger.error("Error during dynamic mapping migration")
-        if (originalDeleted) {
+        if (migration.originalDeleted) {
           // If the original index was deleted, we need to recreate it
           if (!tryOrElse(this.createIndex(index, settings), false)(logger)) {
             logger.error(s"Failed to recreate original index: $index")
@@ -431,7 +445,7 @@ trait MappingApi extends IndicesApi with RefreshApi {
           }
         }
       }
-      if (tempCreated) {
+      if (migration.tempCreated) {
         // Clean up the temporary index if it was created
         if (!tryOrElse(this.deleteIndex(tempIndex), false)(logger)) {
           logger.error(s"Failed to delete temporary index: $tempIndex")
@@ -441,7 +455,7 @@ trait MappingApi extends IndicesApi with RefreshApi {
       } else {
         logger.error(s"Temporary index $tempIndex was not created, skipping deletion.")
       }
-      migration
+      migration.success
     } else {
       false
     }
@@ -474,11 +488,13 @@ trait FlushApi {
   def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean
 }
 
-trait IndexApi { _: RefreshApi =>
+trait IndexApi { _: RefreshApi with SerializationApi =>
 
   /** Index an entity in the given index.
     * @param entity
     *   - the entity to index
+    * @param id
+    *   - the id of the entity to index
     * @param index
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
@@ -486,15 +502,16 @@ trait IndexApi { _: RefreshApi =>
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
-  def index[U <: Timestamped](
+  def index[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
   )(implicit u: ClassTag[U], formats: Formats): Boolean = {
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
     this.index(
       index.getOrElse(indexType),
-      entity.uuid,
+      id,
       serialization.write[U](entity)
     )
   }
@@ -514,6 +531,8 @@ trait IndexApi { _: RefreshApi =>
   /** Index an entity in the given index asynchronously.
     * @param entity
     *   - the entity to index
+    * @param id
+    *   - the id of the entity to index
     * @param index
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
@@ -521,13 +540,14 @@ trait IndexApi { _: RefreshApi =>
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
-  def indexAsync[U <: Timestamped](
+  def indexAsync[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
   )(implicit u: ClassTag[U], ec: ExecutionContext, formats: Formats): Future[Boolean] = {
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
-    indexAsync(index.getOrElse(indexType), entity.uuid, serialization.write[U](entity))
+    indexAsync(index.getOrElse(indexType), id, serialization.write[U](entity))
   }
 
   /** Index an entity in the given index asynchronously.
@@ -549,11 +569,13 @@ trait IndexApi { _: RefreshApi =>
   }
 }
 
-trait UpdateApi { _: RefreshApi =>
+trait UpdateApi { _: RefreshApi with SerializationApi =>
 
   /** Update an entity in the given index.
     * @param entity
     *   - the entity to update
+    * @param id
+    *   - the id of the entity to update
     * @param index
     *   - the name of the index to update the entity in (default is the entity type name)
     * @param maybeType
@@ -563,8 +585,9 @@ trait UpdateApi { _: RefreshApi =>
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
-  def update[U <: Timestamped](
+  def update[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
     upsert: Boolean = true
@@ -572,7 +595,7 @@ trait UpdateApi { _: RefreshApi =>
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
     this.update(
       index.getOrElse(indexType),
-      entity.uuid,
+      id,
       serialization.write[U](entity),
       upsert
     )
@@ -595,6 +618,8 @@ trait UpdateApi { _: RefreshApi =>
   /** Update an entity in the given index asynchronously.
     * @param entity
     *   - the entity to update
+    * @param id
+    *   - the id of the entity to update
     * @param index
     *   - the name of the index to update the entity in (default is the entity type name)
     * @param maybeType
@@ -604,8 +629,9 @@ trait UpdateApi { _: RefreshApi =>
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
-  def updateAsync[U <: Timestamped](
+  def updateAsync[U <: AnyRef](
     entity: U,
+    id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
     upsert: Boolean = true
@@ -614,7 +640,7 @@ trait UpdateApi { _: RefreshApi =>
     this
       .updateAsync(
         index.getOrElse(indexType),
-        entity.uuid,
+        id,
         serialization.write[U](entity),
         upsert
       )
@@ -644,84 +670,55 @@ trait UpdateApi { _: RefreshApi =>
 trait DeleteApi { _: RefreshApi =>
 
   /** Delete an entity from the given index.
-    * @param entity
-    *   - the entity to delete
-    * @param index
-    *   - the name of the index to delete the entity from (default is the entity type name)
-    * @param maybeType
-    *   - the type of the entity (default is the entity class name in lowercase)
-    * @return
-    *   true if the entity was deleted successfully, false otherwise
-    */
-  def delete[U <: Timestamped](
-    entity: U,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit u: ClassTag[U]): Boolean = {
-    val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
-    delete(entity.uuid, index.getOrElse(indexType))
-  }
-
-  /** Delete an entity from the given index.
-    * @param uuid
+    * @param id
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
     * @return
     *   true if the entity was deleted successfully, false otherwise
     */
-  def delete(uuid: String, index: String): Boolean
+  def delete(id: String, index: String): Boolean
 
   /** Delete an entity from the given index asynchronously.
-    * @param entity
-    *   - the entity to delete
-    * @param index
-    *   - the name of the index to delete the entity from (default is the entity type name)
-    * @param maybeType
-    *   - the type of the entity (default is the entity class name in lowercase)
-    * @return
-    *   a Future that completes with true if the entity was deleted successfully, false otherwise
-    */
-  def deleteAsync[U <: Timestamped](
-    entity: U,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit u: ClassTag[U], ec: ExecutionContext): Future[Boolean] = {
-    val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
-    deleteAsync(entity.uuid, index.getOrElse(indexType))
-  }
-
-  /** Delete an entity from the given index asynchronously.
-    * @param uuid
+    * @param id
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
     * @return
     *   a Future that completes with true if the entity was deleted successfully, false otherwise
     */
-  def deleteAsync(uuid: String, index: String)(implicit
+  def deleteAsync(id: String, index: String)(implicit
     ec: ExecutionContext
   ): Future[Boolean] = {
     Future {
-      this.delete(uuid, index)
+      this.delete(id, index)
     }
   }
 
 }
 
-trait BulkApi { _: RefreshApi with SettingsApi =>
-  type A
-  type R
+trait BulkTypes {
+  type BulkActionType
+  type BulkResultType
+}
 
-  def toBulkAction(bulkItem: BulkItem): A
+trait BulkApi extends BulkTypes { _: RefreshApi with SettingsApi =>
 
-  implicit def toBulkElasticAction(a: A): BulkElasticAction
+  type A = BulkActionType
+  type R = BulkResultType
 
-  implicit def toBulkElasticResult(r: R): BulkElasticResult
+  def toBulkAction(bulkItem: BulkItem): BulkActionType
 
-  def bulk(implicit bulkOptions: BulkOptions, system: ActorSystem): Flow[Seq[A], R, NotUsed]
+  implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction
 
-  def bulkResult: Flow[R, Set[String], NotUsed]
+  implicit def toBulkElasticResult(r: BulkResultType): BulkElasticResult
+
+  def bulk(implicit
+    bulkOptions: BulkOptions,
+    system: ActorSystem
+  ): Flow[Seq[BulkActionType], BulkResultType, NotUsed]
+
+  def bulkResult: Flow[BulkResultType, Set[String], NotUsed]
 
   /** +----------+
     * |          |
@@ -935,7 +932,7 @@ trait CountApi {
     * @return
     *   the number of documents matching the query, or None if the count could not be determined
     */
-  def countAsync(query: JSONQuery)(implicit ec: ExecutionContext): Future[Option[Double]] = {
+  def countAsync(query: ElasticQuery)(implicit ec: ExecutionContext): Future[Option[Double]] = {
     Future {
       this.count(query)
     }
@@ -947,7 +944,7 @@ trait CountApi {
     * @return
     *   the number of documents matching the query, or None if the count could not be determined
     */
-  def count(query: JSONQuery): Option[Double]
+  def count(query: ElasticQuery): Option[Double]
 
 }
 
@@ -964,7 +961,142 @@ trait AggregateApi[T <: AggregateResult] {
   ): Future[_root_.scala.collection.Seq[T]]
 }
 
-trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult]
+trait SingleValueAggregateApi extends AggregateApi[SingleValueAggregateResult] {
+  _: SearchApi with ElasticConversion =>
+
+  /** Aggregate the results of the given SQL query.
+    *
+    * @param sqlQuery
+    *   - the query to aggregate the results for
+    * @return
+    *   a sequence of aggregated results
+    */
+  override def aggregate(
+    sqlQuery: SQLQuery
+  )(implicit ec: ExecutionContext): Future[collection.Seq[SingleValueAggregateResult]] = {
+    Future {
+      @tailrec
+      def findAggregation(
+        name: String,
+        aggregation: SQLAggregation,
+        results: Map[String, Any]
+      ): Option[Any] = {
+        name.split("\\.") match {
+          case Array(_, tail @ _*) if tail.nonEmpty =>
+            findAggregation(
+              tail.mkString("."),
+              aggregation,
+              results
+            )
+          case _ => results.get(name)
+        }
+      }
+      @tailrec
+      def getAggregateValue(s: Seq[_], distinct: Boolean): AggregateValue = {
+        if (s.isEmpty) return EmptyValue
+
+        s.headOption match {
+          case Some(_: Boolean) =>
+            val values = s.asInstanceOf[Seq[Boolean]]
+            ArrayOfBooleanValue(if (distinct) values.distinct else values)
+
+          case Some(_: Number) =>
+            val values = s.asInstanceOf[Seq[Number]]
+            ArrayOfNumericValue(if (distinct) values.distinct else values)
+
+          case Some(_: Temporal) =>
+            val values = s.asInstanceOf[Seq[Temporal]]
+            ArrayOfTemporalValue(if (distinct) values.distinct else values)
+
+          case Some(_: String) =>
+            val values = s.map(_.toString)
+            ArrayOfStringValue(if (distinct) values.distinct else values)
+
+          case Some(_: Map[_, _]) =>
+            val typedMaps = s.asInstanceOf[Seq[Map[String, Any]]]
+            val metadataKeys = Set("_id", "_index", "_score", "_sort")
+
+            // Check if all maps have the same single non-metadata key
+            val nonMetadataKeys = typedMaps.flatMap(_.keys.filterNot(metadataKeys.contains))
+            val uniqueKeys = nonMetadataKeys.distinct
+
+            if (uniqueKeys.size == 1) {
+              // Extract values from the single key
+              val key = uniqueKeys.head
+              val extractedValues = typedMaps.flatMap(_.get(key))
+              getAggregateValue(extractedValues, distinct)
+            } else {
+              // Multiple keys: return as object array
+              val cleanMaps = typedMaps.map(m =>
+                m.filterNot(k => metadataKeys.contains(k.toString))
+                  .map(kv => kv._1 -> kv._2)
+              )
+              ArrayOfObjectValue(if (distinct) cleanMaps.distinct else cleanMaps)
+            }
+
+          case Some(_: Seq[_]) =>
+            // Handle nested sequences (flatten them)
+            getAggregateValue(s.asInstanceOf[Seq[Seq[_]]].flatten, distinct)
+
+          case _ => EmptyValue
+        }
+      }
+      Try(search(sqlQuery)) match {
+        case Success(response) =>
+          parseResponse(response) match {
+            case Success(results) =>
+              results.flatMap(result =>
+                response.aggregations.map { case (name, aggregation) =>
+                  Try {
+                    val value =
+                      findAggregation(name, aggregation, result).orNull match {
+                        case b: Boolean     => BooleanValue(b)
+                        case n: Number      => NumericValue(n)
+                        case s: String      => StringValue(s)
+                        case t: Temporal    => TemporalValue(t)
+                        case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
+                        case s: Seq[_]
+                            if aggregation.multivalued => // Multi-value aggregation like array_agg
+                          getAggregateValue(s, aggregation.distinct)
+                        case _ => EmptyValue
+                      }
+                    SingleValueAggregateResult(
+                      name,
+                      aggregation.aggType,
+                      value
+                    )
+                  } match {
+                    case Success(result) => result
+                    case Failure(ex) =>
+                      SingleValueAggregateResult(
+                        name,
+                        aggregation.aggType,
+                        EmptyValue,
+                        error = Some(s"Failed to process aggregation: ${ex.getMessage}")
+                      )
+                  }
+                }.toSeq
+              )
+            case Failure(exception) =>
+              response.aggregations.map { case (name, aggregation) =>
+                SingleValueAggregateResult(
+                  name,
+                  aggregation.aggType,
+                  EmptyValue,
+                  error = Some(s"Parse error: ${exception.getMessage}")
+                )
+              }.toSeq
+          }
+        case Failure(exception) =>
+          throw new IllegalArgumentException(
+            s"Failed to execute search for SQL query: ${sqlQuery.query}",
+            exception
+          )
+      }
+
+    }
+  }
+}
 
 trait GetApi {
 
@@ -978,7 +1110,7 @@ trait GetApi {
     * @return
     *   an Option containing the entity if it was found, None otherwise
     */
-  def get[U <: Timestamped](
+  def get[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -994,7 +1126,7 @@ trait GetApi {
     * @return
     *   a Future that completes with an Option containing the entity if it was found, None otherwise
     */
-  def getAsync[U <: Timestamped](
+  def getAsync[U <: AnyRef](
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None
@@ -1005,13 +1137,16 @@ trait GetApi {
   }
 }
 
-trait SearchApi {
+trait SearchApi extends ElasticConversion {
   implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String
 
-  implicit def sqlQueryToJSONQuery(sqlQuery: SQLQuery): JSONQuery = {
+  implicit def sqlQueryToElasticQuery(sqlQuery: SQLQuery): ElasticQuery = {
     sqlQuery.request match {
       case Some(Left(value)) =>
-        JSONQuery(value.copy(score = sqlQuery.score), collection.immutable.Seq(value.sources: _*))
+        ElasticQuery(
+          value.copy(score = sqlQuery.score),
+          collection.immutable.Seq(value.sources: _*)
+        )
       case _ =>
         throw new IllegalArgumentException(
           s"SQL query ${sqlQuery.query} does not contain a valid search request"
@@ -1019,13 +1154,13 @@ trait SearchApi {
     }
   }
 
-  implicit def sqlQueryToJSONQueries(sqlQuery: SQLQuery): JSONQueries = {
+  implicit def sqlQueryToElasticQueries(sqlQuery: SQLQuery): ElasticQueries = {
     sqlQuery.request match {
       case Some(Right(value)) =>
-        JSONQueries(
+        ElasticQueries(
           value.requests
             .map(request =>
-              JSONQuery(
+              ElasticQuery(
                 request.copy(score = sqlQuery.score),
                 collection.immutable.Seq(request.sources: _*)
               )
@@ -1039,9 +1174,97 @@ trait SearchApi {
     }
   }
 
+  /** Search for entities matching the given SQL query.
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  final def search(sql: SQLQuery): ElasticResponse = {
+    sql.request match {
+      case Some(Left(single)) => search(single.copy(score = sql.score))
+      case Some(Right(multiple)) =>
+        multisearch(multiple.copy(requests = multiple.requests.map(r => r.copy(score = sql.score))))
+      case None =>
+        throw new IllegalArgumentException("SQL query does not contain a valid search request")
+    }
+  }
+
+  /** Search for entities matching the given SQL query.
+    * @param sql
+    *   - the SQL query to search for
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  private[this] def search(sql: SQLSearchRequest): ElasticResponse = {
+    // Build the elasticsearch query from the SQL query
+    val elasticQuery =
+      ElasticQuery(
+        sql,
+        collection.immutable.Seq(sql.sources: _*)
+      )
+    search(elasticQuery, sql.fieldAliases, sql.sqlAggregations)
+  }
+
   /** Search for entities matching the given JSON query.
-    * @param jsonQuery
+    * @param elasticQuery
     *   - the query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the query
+    */
+  def search(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): ElasticResponse
+
+  /** Perform a multi-search operation with the given SQL query.
+    * @param sql
+    *   - the SQL multi-search query to perform
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  private[this] def multisearch(sql: SQLMultiSearchRequest): ElasticResponse = {
+    // Build the JSON queries from the SQL multi-search query
+    val elasticQueries: ElasticQueries =
+      ElasticQueries(
+        sql.requests.map { query =>
+          ElasticQuery(
+            query,
+            collection.immutable.Seq(query.sources: _*)
+          )
+        }.toList
+      )
+    multisearch(elasticQueries, sql.fieldAliases, sql.sqlAggregations)
+  }
+
+  /** Perform a multi-search operation with the given JSON queries.
+    * @param elasticQueries
+    *   - the JSON queries to perform the multi-search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
+    * @return
+    *   the SQL search response containing the results of the multi-search query
+    */
+  def multisearch(
+    elasticQueries: ElasticQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  ): ElasticResponse
+
+  /** Search for entities matching the given JSON query.
+    * @param elasticQuery
+    *   - the query to search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @param m
     *   - the manifest of the type to search for
     * @param formats
@@ -1049,7 +1272,16 @@ trait SearchApi {
     * @return
     *   a list of entities matching the query
     */
-  def search[U](jsonQuery: JSONQuery)(implicit m: Manifest[U], formats: Formats): List[U]
+  def searchAs[U](
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )(implicit
+    m: Manifest[U],
+    formats: Formats
+  ): List[U] = {
+    convertTo[U](search(elasticQuery, fieldAliases, aggregations)).getOrElse(Seq.empty).toList
+  }
 
   /** Search for entities matching the given SQL query.
     * @param sqlQuery
@@ -1061,8 +1293,8 @@ trait SearchApi {
     * @return
     *   a list of entities matching the query
     */
-  def search[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
-    search[U](implicitly[JSONQuery](sqlQuery))(m, formats)
+  final def searchAs[U](sqlQuery: SQLQuery)(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](search(sqlQuery)).getOrElse(Seq.empty).toList
   }
 
   /** Search for entities matching the given SQL query asynchronously.
@@ -1075,10 +1307,10 @@ trait SearchApi {
     * @return
     *   a Future that completes with a list of entities matching the query
     */
-  def searchAsync[U](
+  def searchAsyncAs[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = Future(
-    this.search[U](sqlQuery)
+    this.searchAs[U](sqlQuery)
   )
 
   /** Search for entities matching the given JSON query with inner hits.
@@ -1100,12 +1332,12 @@ trait SearchApi {
     m2: Manifest[I],
     formats: Formats
   ): List[(U, List[I])] = {
-    searchWithInnerHits[U, I](implicitly[JSONQuery](sqlQuery), innerField)(m1, m2, formats)
+    searchWithInnerHits[U, I](implicitly[ElasticQuery](sqlQuery), innerField)(m1, m2, formats)
   }
 
   /** Search for entities matching the given JSON query with inner hits.
-    * @param sqlQuery
-    *   - the SQL query to search for
+    * @param elasticQuery
+    *   - the JSON query to search for
     * @param innerField
     *   - the field to use for inner hits
     * @param m1
@@ -1117,7 +1349,7 @@ trait SearchApi {
     * @return
     *   a list of tuples containing the main entity and a list of inner hits
     */
-  def searchWithInnerHits[U, I](jsonQuery: JSONQuery, innerField: String)(implicit
+  def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
@@ -1133,15 +1365,19 @@ trait SearchApi {
     * @return
     *   a list of lists of entities matching the queries in the multi-search request
     */
-  def multiSearch[U](
+  final def multisearchAs[U](
     sqlQuery: SQLQuery
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]] = {
-    multiSearch[U](implicitly[JSONQueries](sqlQuery))(m, formats)
+  )(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](search(sqlQuery)).getOrElse(Seq.empty).toList
   }
 
   /** Perform a multi-search operation with the given JSON queries.
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON queries to perform the multi-search for
+    * @param fieldAliases
+    *   - the field aliases to use for the search
+    * @param aggregations
+    *   - the aggregations to use for the search
     * @param m
     *   - the manifest of the type to search for
     * @param formats
@@ -1149,9 +1385,17 @@ trait SearchApi {
     * @return
     *   a list of lists of entities matching the queries in the multi-search request
     */
-  def multiSearch[U](
-    jsonQueries: JSONQueries
-  )(implicit m: Manifest[U], formats: Formats): List[List[U]]
+  def multisearchAs[U](
+    elasticQueries: ElasticQueries,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation]
+  )(implicit m: Manifest[U], formats: Formats): List[U] = {
+    convertTo[U](
+      multisearch(elasticQueries, fieldAliases, aggregations)
+    )
+      .getOrElse(Seq.empty)
+      .toList
+  }
 
   /** Perform a multi-search operation with the given SQL query and inner hits.
     * @param sqlQuery
@@ -1167,16 +1411,20 @@ trait SearchApi {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multiSearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](sqlQuery: SQLQuery, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]] = {
-    multiSearchWithInnerHits[U, I](implicitly[JSONQueries](sqlQuery), innerField)(m1, m2, formats)
+    multisearchWithInnerHits[U, I](implicitly[ElasticQueries](sqlQuery), innerField)(
+      m1,
+      m2,
+      formats
+    )
   }
 
   /** Perform a multi-search operation with the given JSON queries and inner hits.
-    * @param jsonQueries
+    * @param elasticQueries
     *   - the JSON queries to perform the multi-search for
     * @param innerField
     *   - the field to use for inner hits
@@ -1189,9 +1437,191 @@ trait SearchApi {
     * @return
     *   a list of lists of tuples containing the main entity and a list of inner hits
     */
-  def multiSearchWithInnerHits[U, I](jsonQueries: JSONQueries, innerField: String)(implicit
+  def multisearchWithInnerHits[U, I](elasticQueries: ElasticQueries, innerField: String)(implicit
     m1: Manifest[U],
     m2: Manifest[I],
     formats: Formats
   ): List[List[(U, List[I])]]
+}
+
+/** API for scrolling through search results using Akka Streams
+  */
+trait ScrollApi extends SearchApi { _: { def logger: Logger } =>
+
+  /** Determine the best scroll strategy based on the query
+    */
+  private[this] def determineScrollStrategy(
+    elasticQuery: ElasticQuery,
+    aggregations: Map[String, SQLAggregation]
+  ): ScrollStrategy = {
+    // If aggregations are present, use classic scrolling
+    if (aggregations.nonEmpty) {
+      UseScroll
+    } else {
+      // Check if the query contains aggregations in the JSON
+      if (hasAggregations(elasticQuery.query)) {
+        UseScroll
+      } else {
+        UseSearchAfter
+      }
+    }
+  }
+
+  /** Create a scrolling source with automatic strategy selection
+    */
+  final def scroll(
+    sql: SQLQuery,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+    sql.request match {
+      case Some(Left(single)) =>
+        val sqlRequest = single.copy(score = sql.score)
+        val elasticQuery =
+          ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+        scrollWithMetrics(
+          elasticQuery,
+          sqlRequest.fieldAliases,
+          sqlRequest.sqlAggregations,
+          config,
+          single.sorts.nonEmpty
+        )
+
+      case Some(Right(_)) =>
+        Source.failed(
+          new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
+        )
+
+      case None =>
+        Source.failed(
+          new IllegalArgumentException("SQL query does not contain a valid search request")
+        )
+    }
+  }
+
+  /** Scroll with metrics tracking
+    */
+  private[this] def scrollWithMetrics(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    val metricsPromise = Promise[ScrollMetrics]()
+
+    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts)
+      .take(config.maxDocuments.getOrElse(Long.MaxValue))
+      .grouped(config.scrollSize)
+      .statefulMapConcat { () =>
+        var metrics = config.metrics // Thread-safe as statefulMapConcat is single-threaded
+        batch => {
+          metrics = metrics.copy(
+            totalDocuments = metrics.totalDocuments + batch.size,
+            totalBatches = metrics.totalBatches + 1
+          )
+
+          if (metrics.totalBatches % config.logEvery == 0) {
+            logger.info(
+              s"Scroll progress: ${metrics.totalDocuments} docs, " +
+              s"${metrics.totalBatches} batches, " +
+              s"${metrics.documentsPerSecond} docs/sec"
+            )
+          }
+          batch.map(doc => (doc, metrics))
+        }
+
+      }
+      .alsoTo(Sink.last.mapMaterializedValue { lastFuture =>
+        lastFuture
+          .map(_._2)
+          .onComplete {
+            case Success(finalMetrics) =>
+              val completed = finalMetrics.complete
+              logger.info(
+                s"Scroll completed: ${completed.totalDocuments} docs in ${completed.duration}ms " +
+                s"(${completed.documentsPerSecond} docs/sec)"
+              )
+              metricsPromise.success(completed)
+            case Failure(ex) =>
+              logger.error("Failed to get final metrics", ex)
+              metricsPromise.failure(ex)
+          }(system.dispatcher)
+      })
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  private[this] def hasAggregations(query: String): Boolean = {
+    try {
+      val json = parse(query)
+      (json \ "aggregations") != JNothing || (json \ "aggs") != JNothing
+    } catch {
+      case _: Exception => false
+    }
+  }
+
+  /** Create a scrolling source for JSON query with automatic strategy
+    */
+  private[this] def scroll(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig,
+    hasSorts: Boolean
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+    val strategy = determineScrollStrategy(elasticQuery, aggregations)
+
+    logger.info(
+      s"Using scroll strategy: $strategy for query on ${elasticQuery.indices.mkString(", ")}"
+    )
+
+    strategy match {
+      case UseScroll =>
+        logger.info("Using classic scroll (supports aggregations)")
+        scrollClassic(elasticQuery, fieldAliases, aggregations, config)
+
+      case UseSearchAfter if config.preferSearchAfter =>
+        logger.info("Using search_after (optimized for hits only)")
+        searchAfter(elasticQuery, fieldAliases, config, hasSorts)
+
+      case _ =>
+        logger.info("Falling back to classic scroll")
+        scrollClassic(elasticQuery, fieldAliases, aggregations, config)
+    }
+  }
+
+  /** Classic scroll (works for both hits and aggregations)
+    */
+  def scrollClassic(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+
+  /** Search After (only for hits, more efficient)
+    */
+  def searchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+
+  /** Typed scroll source
+    */
+  final def scrollAs[T](
+    sql: SQLQuery,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit
+    system: ActorSystem,
+    m: Manifest[T],
+    formats: Formats
+  ): Source[(T, ScrollMetrics), NotUsed] = {
+    scroll(sql, config).map { row =>
+      (convertTo[T](row._1)(m, formats), row._2)
+    }
+  }
 }

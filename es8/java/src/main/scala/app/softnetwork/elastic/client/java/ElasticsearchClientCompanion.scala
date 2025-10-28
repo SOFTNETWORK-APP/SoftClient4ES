@@ -16,13 +16,12 @@
 
 package app.softnetwork.elastic.client.java
 
-import app.softnetwork.elastic.client.ElasticConfig
+import app.softnetwork.elastic.client.ElasticClientCompanion
 import co.elastic.clients.elasticsearch.{ElasticsearchAsyncClient, ElasticsearchClient}
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import co.elastic.clients.transport.rest_client.RestClientTransport
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.ClassTagExtensions
-import org.apache.http.HttpHost
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
@@ -32,19 +31,51 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.util.concurrent.CompletableFuture
 import scala.concurrent.{Future, Promise}
 
-trait ElasticsearchClientCompanion {
+trait ElasticsearchClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
 
   val logger: Logger = LoggerFactory getLogger getClass.getName
 
-  def elasticConfig: ElasticConfig
+  @volatile private var asyncClient: Option[ElasticsearchAsyncClient] = None
 
-  private var client: Option[ElasticsearchClient] = None
-
-  private var asyncClient: Option[ElasticsearchAsyncClient] = None
+  /** Lock object for synchronized initialization
+    */
+  private val lock = new Object()
 
   lazy val mapper: ObjectMapper with ClassTagExtensions = new ObjectMapper() with ClassTagExtensions
 
-  def transport: RestClientTransport = {
+  def async(): ElasticsearchAsyncClient = {
+    // First check (no locking) - fast path for already initialized client
+    asyncClient match {
+      case Some(c) => c
+      case None    =>
+        // Second check with lock - slow path for initialization
+        lock.synchronized {
+          asyncClient match {
+            case Some(c) =>
+              c // Another thread initialized while we were waiting
+            case None =>
+              val c = createAsyncClient()
+              asyncClient = Some(c)
+              logger.info(
+                s"Elasticsearch async Client initialized for ${elasticConfig.credentials.url}"
+              )
+              c
+          }
+        }
+    }
+  }
+
+  private def createAsyncClient(): ElasticsearchAsyncClient = {
+    try {
+      new ElasticsearchAsyncClient(buildTransport())
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to create ElasticsearchAsyncClient: ${ex.getMessage}", ex)
+        throw new IllegalStateException("Cannot create Elasticsearch async client", ex)
+    }
+  }
+
+  private def buildTransport(): RestClientTransport = {
     val credentialsProvider = new BasicCredentialsProvider()
     if (elasticConfig.credentials.username.nonEmpty) {
       credentialsProvider.setCredentials(
@@ -57,7 +88,7 @@ trait ElasticsearchClientCompanion {
     }
     val restClientBuilder: RestClientBuilder = RestClient
       .builder(
-        HttpHost.create(elasticConfig.credentials.url)
+        parseHttpHost(elasticConfig.credentials.url)
       )
       .setHttpClientConfigCallback((httpAsyncClientBuilder: HttpAsyncClientBuilder) =>
         httpAsyncClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
@@ -65,23 +96,34 @@ trait ElasticsearchClientCompanion {
     new RestClientTransport(restClientBuilder.build(), new JacksonJsonpMapper())
   }
 
-  def apply(): ElasticsearchClient = {
-    client match {
-      case Some(c) => c
-      case _ =>
-        val c = new ElasticsearchClient(transport)
-        client = Some(c)
-        c
+  /** Create and configure Elasticsearch Client
+    */
+  override protected def createClient(): ElasticsearchClient = {
+    try {
+      new ElasticsearchClient(buildTransport())
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to create ElasticsearchClient: ${ex.getMessage}", ex)
+        throw new IllegalStateException("Cannot create Elasticsearch client", ex)
     }
   }
 
-  def async(): ElasticsearchAsyncClient = {
-    asyncClient match {
-      case Some(c) => c
-      case _ =>
-        val c = new ElasticsearchAsyncClient(transport)
-        asyncClient = Some(c)
-        c
+  /** Test connection to Elasticsearch cluster
+    *
+    * @return
+    *   true if connection is successful
+    */
+  override def testConnection(): Boolean = {
+    try {
+      val c = apply()
+      val response = c.info()
+      logger.info(s"Connected to Elasticsearch ${response.version().number()}")
+      true
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to connect to Elasticsearch: ${ex.getMessage}", ex)
+        incrementFailures()
+        false
     }
   }
 
