@@ -18,14 +18,17 @@ package app.softnetwork.elastic.client
 
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
 import akka.stream.stage.{GraphStage, GraphStageLogic}
-import com.google.gson.{Gson, JsonElement, JsonObject}
-import org.json4s.Formats
 
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Success, Try}
+import scala.concurrent.duration._
 
 package object bulk {
+
+  trait BulkTypes {
+    type BulkActionType
+    type BulkResultType
+  }
+
   object BulkAction extends Enumeration {
     type BulkAction = Value
     val INDEX: BulkAction.Value = Value(0, "INDEX")
@@ -36,18 +39,128 @@ package object bulk {
   case class BulkItem(
     index: String,
     action: BulkAction.BulkAction,
-    body: String,
+    document: String,
     id: Option[String],
     parent: Option[String]
   )
 
+  /** Detailed result of a bulk operation */
+  case class BulkResult(
+    successCount: Int,
+    successIds: Set[String],
+    failedCount: Int,
+    failedDocuments: Seq[FailedDocument],
+    indices: Set[String],
+    metrics: BulkMetrics
+  ) {
+    def successRate: Double =
+      if (successCount + failedCount > 0)
+        successCount.toDouble / (successCount + failedCount) * 100
+      else 0.0
+
+    def hasFailures: Boolean = failedCount > 0
+  }
+
+  sealed trait DocumentResult {
+    def id: String
+    def index: String
+  }
+
+  /** Document failed during bulk processing */
+  case class FailedDocument(
+    id: String,
+    index: String,
+    document: String,
+    error: BulkError,
+    retryable: Boolean
+  ) extends DocumentResult
+
+  case class SuccessfulDocument(
+    id: String,
+    index: String
+  ) extends DocumentResult
+
+  /** Detailed error */
+  case class BulkError(
+    message: String,
+    `type`: String,
+    status: Int,
+    causedBy: Option[BulkError] = None
+  ) {
+    def isRetryable: Boolean = status match {
+      case 429 | 503 | 504 => true // Too Many Requests, Service Unavailable, Gateway Timeout
+      case _               => false
+    }
+  }
+
+  /** Bulk metrics */
+  case class BulkMetrics(
+    startTime: Long = System.currentTimeMillis(),
+    endTime: Option[Long] = None,
+    totalBatches: Int = 0,
+    totalDocuments: Int = 0,
+    failuresByStatus: Map[Int, Int] = Map.empty,
+    failuresByType: Map[String, Int] = Map.empty
+  ) {
+    def durationMs: Long = endTime.getOrElse(System.currentTimeMillis()) - startTime
+
+    def throughput: Double =
+      if (durationMs > 0) totalDocuments * 1000.0 / durationMs
+      else 0.0
+
+    def complete: BulkMetrics = copy(endTime = Some(System.currentTimeMillis()))
+
+    def addFailure(error: BulkError): BulkMetrics = copy(
+      failuresByStatus =
+        failuresByStatus + (error.status -> (failuresByStatus.getOrElse(error.status, 0) + 1)),
+      failuresByType =
+        failuresByType + (error.`type` -> (failuresByType.getOrElse(error.`type`, 0) + 1))
+    )
+  }
+
+  /** Bulk Configuration */
   case class BulkOptions(
     index: String,
-    documentType: String = "_doc",
-    maxBulkSize: Int = 100,
+    defaultType: String = "_doc",
+    maxBulkSize: Int = 1000,
     balance: Int = 1,
-    disableRefresh: Boolean = false
+    disableRefresh: Boolean = false,
+    retryOnFailure: Boolean = true,
+    maxRetries: Int = 3,
+    retryDelay: FiniteDuration = 1.second,
+    retryBackoffMultiplier: Double = 2.0,
+    enableMetrics: Boolean = true,
+    logEvery: Int = 10
   )
+
+  /** Callbacks for bulk events */
+  trait BulkCallbacks {
+    def onSuccess(id: String, index: String): Unit = {}
+    def onFailure(failed: FailedDocument): Unit = {}
+    def onBatchComplete(batchSize: Int, metrics: BulkMetrics): Unit = {}
+    def onComplete(result: BulkResult): Unit = {}
+  }
+
+  object BulkCallbacks {
+    val default: BulkCallbacks = new BulkCallbacks {}
+
+    def logging(logger: org.slf4j.Logger): BulkCallbacks = new BulkCallbacks {
+      override def onSuccess(id: String, index: String): Unit =
+        logger.debug(s"✅ Document $id indexed in $index")
+
+      override def onFailure(failed: FailedDocument): Unit =
+        logger.error(s"❌ Document ${failed.id} failed: ${failed.error.message}")
+
+      override def onBatchComplete(batchSize: Int, metrics: BulkMetrics): Unit =
+        logger.info(s"Batch completed: $batchSize docs (${metrics.throughput} docs/sec)")
+
+      override def onComplete(result: BulkResult): Unit =
+        logger.info(
+          s"Bulk completed: ${result.successCount} successes, ${result.failedCount} failures " +
+          s"in ${result.metrics.durationMs}ms (${result.metrics.throughput} docs/sec)"
+        )
+    }
+  }
 
   trait BulkElasticAction { def index: String }
 
@@ -97,51 +210,5 @@ package object bulk {
   }
 
   def docAsUpsert(doc: String): String = s"""{"doc":$doc,"doc_as_upsert":true}"""
-
-  implicit class InnerHits(searchResult: JsonObject) {
-    def ~>[M, I](
-      innerField: String
-    )(implicit formats: Formats, m: Manifest[M], i: Manifest[I]): List[(M, List[I])] = {
-      def innerHits(result: JsonElement) = {
-        result.getAsJsonObject
-          .get("inner_hits")
-          .getAsJsonObject
-          .get(innerField)
-          .getAsJsonObject
-          .get("hits")
-          .getAsJsonObject
-          .get("hits")
-          .getAsJsonArray
-          .iterator()
-      }
-      val gson = new Gson()
-      val results = searchResult.get("hits").getAsJsonObject.get("hits").getAsJsonArray.iterator()
-      (for (result <- results.asScala)
-        yield (
-          result match {
-            case obj: JsonObject =>
-              Try {
-                serialization.read[M](gson.toJson(obj.get("_source")))
-              } match {
-                case Success(s) => s
-                case Failure(f) =>
-                  throw f
-              }
-            case _ => serialization.read[M](result.getAsString)
-          },
-          (for (innerHit <- innerHits(result).asScala) yield innerHit match {
-            case obj: JsonObject =>
-              Try {
-                serialization.read[I](gson.toJson(obj.get("_source")))
-              } match {
-                case Success(s) => s
-                case Failure(f) =>
-                  throw f
-              }
-            case _ => serialization.read[I](innerHit.getAsString)
-          }).toList
-        )).toList
-    }
-  }
 
 }

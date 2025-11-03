@@ -37,22 +37,6 @@ package object client extends SerializationApi {
     */
   type JSONResults = String
 
-  sealed trait ElasticResult[+T] {
-    def success: Boolean
-  }
-  case class Succeeded[T](value: T) extends ElasticResult[T] {
-    override def success: Boolean = true
-  }
-  case class Failed(error: ElasticError) extends ElasticResult[Nothing] {
-    override def success: Boolean = false
-  }
-
-  case class ElasticError(
-    message: String,
-    cause: Option[Throwable] = None,
-    statusCode: Option[Int] = None
-  )
-
   /** Elastic response case class
     * @param query
     *   - the JSON query
@@ -87,16 +71,6 @@ package object client extends SerializationApi {
   case class ElasticQuery(query: JSONQuery, indices: Seq[String], types: Seq[String] = Seq.empty)
 
   case class ElasticQueries(queries: List[ElasticQuery])
-
-  def tryOrElse[T](block: => T, default: => T)(implicit logger: Logger): T = {
-    try {
-      block
-    } catch {
-      case e: Exception =>
-        logger.error("An error occurred while executing the block", e)
-        default
-    }
-  }
 
   /** Retry configuration
     */

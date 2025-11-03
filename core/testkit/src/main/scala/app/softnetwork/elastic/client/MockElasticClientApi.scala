@@ -18,8 +18,9 @@ package app.softnetwork.elastic.client
 
 import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Flow
+import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import app.softnetwork.serialization._
@@ -34,18 +35,15 @@ import scala.reflect.ClassTag
   */
 trait MockElasticClientApi extends ElasticClientApi {
 
-  protected lazy val logger: Logger = LoggerFactory getLogger getClass.getName
+  def elasticVersion: String
 
-  implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
-    """{
-      |  "query": {
-      |    "match_all": {}
-      |  }
-      |}""".stripMargin
+  protected lazy val logger: Logger = LoggerFactory getLogger getClass.getName
 
   implicit def formats: Formats = commonFormats
 
-  def allDocumentsAsHits(index: String): String = {
+  protected val elasticDocuments: ElasticDocuments = new ElasticDocuments() {}
+
+  private def allDocumentsAsHits(index: String): String = {
     val allDocuments = elasticDocuments.getAll
     val hits = allDocuments
       .map { doc =>
@@ -84,217 +82,325 @@ trait MockElasticClientApi extends ElasticClientApi {
        |""".stripMargin
   }
 
-  /** Search for entities matching the given JSON query.
-    *
-    * @param elasticQuery
-    *   - the JSON query to search for
-    * @param fieldAliases
-    *   - the field aliases to use for the search
-    * @param aggregations
-    *   - the aggregations to use for the search
-    * @return
-    *   the SQL Result containing the results of the query
-    */
-  override def search(
-    elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): ElasticResponse =
-    ElasticResponse(
-      """{
-        |  "query": {
-        |    "match_all": {}
-        |  }
-        |}""".stripMargin,
-      allDocumentsAsHits(
-        elasticQuery.indices.headOption.getOrElse("default_index")
-      ),
-      fieldAliases,
-      aggregations
+  // ==================== Closeable ====================
+
+  override def close(): Unit = ()
+
+  // ==================== VersionApi ====================
+
+  override private[client] def executeVersion(): ElasticResult[String] =
+    ElasticResult.success(elasticVersion)
+
+  // ==================== IndicesApi ====================
+
+  override private[client] def executeCreateIndex(
+    index: String,
+    settings: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeReindex(
+    sourceIndex: String,
+    targetIndex: String,
+    refresh: Boolean
+  ): ElasticResult[(Boolean, Option[Long])] =
+    ElasticResult.success((true, Some(elasticDocuments.getAll.keys.size)))
+
+  override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  // ==================== AliasApi ====================
+
+  override private[client] def executeAddAlias(
+    index: String,
+    alias: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeRemoveAlias(
+    index: String,
+    alias: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeGetAliases(index: String): ElasticResult[String] =
+    ElasticResult.success("{}")
+
+  override private[client] def executeSwapAlias(
+    oldIndex: String,
+    newIndex: String,
+    alias: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  // ==================== SettingsApi ====================
+
+  override private[client] def executeUpdateSettings(
+    index: String,
+    settings: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
+    ElasticResult.success(
+      s"""{"$index":{"settings":{"index":{"number_of_shards":"1","number_of_replicas":"1"}}}}"""
     )
-
-  /** Perform a multi-search operation with the given JSON multi-search query.
-    *
-    * @param jsonQueries
-    *   - the JSON multi-search query to perform
-    * @param fieldAliases
-    *   - the field aliases to use for the search
-    * @param aggregations
-    *   - the aggregations to use for the search
-    * @return
-    *   the SQL Result containing the results of the multi-search query
-    */
-  override def multisearch(
-    jsonQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): ElasticResponse =
-    ElasticResponse(
-      """{
-        |  "query": {
-        |    "match_all": {}
-        |  }
-        |}""".stripMargin,
-      allDocumentsAsHits(
-        jsonQueries.queries.headOption.flatMap(_.indices.headOption).getOrElse("default_index")
-      ),
-      fieldAliases,
-      aggregations
-    )
-
-  protected val elasticDocuments: ElasticDocuments = new ElasticDocuments() {}
-
-  override def toggleRefresh(index: String, enable: Boolean): Boolean = true
-
-  override def setReplicas(index: String, replicas: Int): Boolean = true
-
-  override def updateSettings(index: String, settings: String) = true
-
-  override def addAlias(index: String, alias: String): Boolean = true
-
-  /** Remove an alias from the given index.
-    *
-    * @param index
-    *   - the name of the index
-    * @param alias
-    *   - the name of the alias
-    * @return
-    *   true if the alias was removed successfully, false otherwise
-    */
-  override def removeAlias(index: String, alias: String): Boolean = true
-
-  override def createIndex(index: String, settings: String): Boolean = true
-
-  override def setMapping(index: String, mapping: String): Boolean = true
-
-  override def deleteIndex(index: String): Boolean = true
-
-  override def closeIndex(index: String): Boolean = true
-
-  override def openIndex(index: String): Boolean = true
-
-  /** Reindex from source index to target index.
-    *
-    * @param sourceIndex
-    *   - the name of the source index
-    * @param targetIndex
-    *   - the name of the target index
-    * @param refresh
-    *   - true to refresh the target index after reindexing, false otherwise
-    * @return
-    *   true if the reindexing was successful, false otherwise
-    */
-  override def reindex(sourceIndex: String, targetIndex: String, refresh: Boolean = true): Boolean =
-    true
-
-  /** Check if an index exists.
-    *
-    * @param index
-    *   - the name of the index to check
-    * @return
-    *   true if the index exists, false otherwise
-    */
-  override def indexExists(index: String): Boolean = false
-
-  override def count(elasticQuery: ElasticQuery): Option[Double] =
-    throw new UnsupportedOperationException
-
-  override def get[U <: AnyRef](
-    id: String,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit m: Manifest[U], formats: Formats): Option[U] =
-    elasticDocuments.get(id).asInstanceOf[Option[U]]
-
-  override def index(index: String, id: String, source: String): Boolean =
-    throw new UnsupportedOperationException
-
-  override def update[U <: AnyRef](
-    entity: U,
-    id: String,
-    index: Option[String] = None,
-    maybeType: Option[String] = None,
-    upsert: Boolean = true
-  )(implicit u: ClassTag[U], formats: Formats): Boolean = {
-    elasticDocuments.createOrUpdate(entity, id)
-    true
   }
 
-  override def update(
+  // ==================== MappingApi ====================
+
+  override private[client] def executeSetMapping(
+    index: String,
+    mapping: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  override private[client] def executeGetMapping(index: String): ElasticResult[String] = {
+    ElasticResult.success(s"""{"$index":{"mappings":{}}}""")
+  }
+
+  // ==================== RefreshApi ====================
+
+  override private[client] def executeRefresh(index: String): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  // ==================== FlushApi ====================
+
+  override private[client] def executeFlush(
+    index: String,
+    force: Boolean,
+    wait: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(true)
+
+  // ==================== IndexApi ====================
+
+  override private[client] def executeIndex(
+    index: String,
+    id: String,
+    source: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success {
+      elasticDocuments.createOrUpdate(serialization.read(source), id)
+      true
+    }
+
+  override private[client] def executeIndexAsync(
+    index: String,
+    id: String,
+    source: String
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
+    Future {
+      executeIndex(index, id, source)
+    }
+
+  // ==================== UpdateApi ====================
+
+  override private[client] def executeUpdate(
     index: String,
     id: String,
     source: String,
     upsert: Boolean
-  ): Boolean = {
-    logger.warn(s"MockElasticClient - $id not updated for $source")
-    false
-  }
+  ): ElasticResult[Boolean] =
+    ElasticResult.success {
+      elasticDocuments.createOrUpdate(serialization.read(source), id)
+      true
+    }
 
-  override def delete(uuid: String, index: String): Boolean = {
-    if (elasticDocuments.get(uuid).isDefined) {
-      elasticDocuments.delete(uuid)
+  override private[client] def executeUpdateAsync(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
+    Future {
+      executeUpdate(index, id, source, upsert)
+    }
+
+  // ==================== DeleteApi ====================
+
+  override private[client] def executeDelete(
+    index: String,
+    id: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(if (elasticDocuments.get(id).isDefined) {
+      elasticDocuments.delete(id)
       true
     } else {
       false
+    })
+
+  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+    ec: ExecutionContext
+  ): Future[ElasticResult[Boolean]] =
+    Future {
+      executeDelete(index, id)
     }
-  }
 
-  override def refresh(index: String): Boolean = true
+  // ==================== GetApi ====================
 
-  override def flush(index: String, force: Boolean, wait: Boolean): Boolean = true
+  override private[client] def executeGet(
+    index: String,
+    id: String
+  ): ElasticResult[Option[String]] =
+    elasticDocuments.get(id) match {
+      case Some(doc) => ElasticResult.success(Some(serialization.write(doc)(formats)))
+      case None      => ElasticResult.success(None)
+    }
+
+  override private[client] def executeGetAsync(index: String, id: String)(implicit
+    ec: ExecutionContext
+  ): Future[ElasticResult[Option[String]]] =
+    Future {
+      executeGet(index, id)
+    }
+
+  // ==================== CountApi ====================
+
+  override private[client] def executeCount(query: ElasticQuery): ElasticResult[Option[Double]] =
+    ElasticResult.success(
+      Some(elasticDocuments.getAll.keys.size.toDouble)
+    )
+
+  override private[client] def executeCountAsync(query: ElasticQuery)(implicit
+    ec: ExecutionContext
+  ): Future[ElasticResult[Option[Double]]] =
+    Future {
+      executeCount(query)
+    }
+
+  // ==================== SearchApi ====================
+
+  override private[client] implicit def sqlSearchRequestToJsonQuery(
+    sqlSearch: SQLSearchRequest
+  ): String =
+    """{
+      |  "query": {
+      |    "match_all": {}
+      |  }
+      |}""".stripMargin
+
+  override private[client] def executeSingleSearch(
+    elasticQuery: ElasticQuery
+  ): ElasticResult[Option[String]] =
+    ElasticResult.success(
+      Some(
+        allDocumentsAsHits(
+          elasticQuery.indices.headOption.getOrElse("default_index")
+        )
+      )
+    )
+
+  override private[client] def executeMultiSearch(
+    elasticQueries: ElasticQueries
+  ): ElasticResult[Option[String]] =
+    ElasticResult.success(
+      Some(
+        allDocumentsAsHits(
+          elasticQueries.queries.head.indices.headOption.getOrElse("default_index")
+        )
+      )
+    )
+
+  override private[client] def executeSingleSearchAsync(elasticQuery: ElasticQuery)(implicit
+    ec: ExecutionContext
+  ): Future[ElasticResult[Option[String]]] =
+    Future {
+      executeSingleSearch(elasticQuery)
+    }
+
+  override private[client] def executeMultiSearchAsync(elasticQueries: ElasticQueries)(implicit
+    ec: ExecutionContext
+  ): Future[ElasticResult[Option[String]]] =
+    Future {
+      executeMultiSearch(elasticQueries)
+    }
+
+  // ==================== ScrollApi ====================
+
+  override private[client] def scrollClassic(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, SQLAggregation],
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+    Source.single(elasticDocuments.getAll).mapConcat(_.values.toList)
+
+  override private[client] def searchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+    scrollClassic(
+      elasticQuery,
+      fieldAliases,
+      Map.empty,
+      config
+    )
+
+  // ==================== BulkApi ====================
 
   override type BulkActionType = this.type
 
-  override def bulk(implicit
-    bulkOptions: BulkOptions,
-    system: ActorSystem
-  ): Flow[Seq[A], R, NotUsed] =
-    throw new UnsupportedOperationException
-
-  override def bulkResult: Flow[R, Set[String], NotUsed] =
-    throw new UnsupportedOperationException
-
   override type BulkResultType = this.type
 
-  override def toBulkAction(bulkItem: BulkItem): A =
+  override private[client] def toBulkAction(bulkItem: BulkItem): BulkActionType =
     throw new UnsupportedOperationException
 
-  override implicit def toBulkElasticAction(a: A): BulkElasticAction =
+  override private[client] implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction =
     throw new UnsupportedOperationException
 
-  override implicit def toBulkElasticResult(r: R): BulkElasticResult =
+  /** Basic flow for executing a bulk action. This method must be implemented by concrete classes
+    * depending on the Elasticsearch version and client used.
+    *
+    * @param bulkOptions
+    *   configuration options
+    * @return
+    *   Flow transforming bulk actions into results
+    */
+  override private[client] def bulkFlow(implicit
+    bulkOptions: BulkOptions,
+    system: ActorSystem
+  ): Flow[Seq[BulkActionType], BulkResultType, NotUsed] =
     throw new UnsupportedOperationException
 
-  override def multisearchWithInnerHits[U, I](jsonQueries: ElasticQueries, innerField: String)(
-    implicit
-    m1: Manifest[U],
-    m2: Manifest[I],
-    formats: Formats
-  ): List[List[(U, List[I])]] = List.empty
-
-  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
-    m1: Manifest[U],
-    m2: Manifest[I],
-    formats: Formats
-  ): List[(U, List[I])] = List.empty
-
-  override def getMapping(index: String): String =
+  /** Convert a BulkResultType into individual results. This method must extract the successes and
+    * failures from the ES response.
+    *
+    * @param result
+    *   raw result from the bulk
+    * @return
+    *   sequence of Right(id) for success or Left(failed) for failure
+    */
+  override private[client] def extractBulkResults(
+    result: BulkResultType,
+    originalBatch: Seq[BulkItem]
+  ): Seq[Either[FailedDocument, SuccessfulDocument]] =
     throw new UnsupportedOperationException
 
-  override def aggregate(sqlQuery: SQLQuery)(implicit
-    ec: ExecutionContext
-  ): Future[Seq[SingleValueAggregateResult]] =
-    throw new UnsupportedOperationException
-
-  override def loadSettings(index: String): String =
+  /** Conversion BulkActionType -> BulkItem */
+  override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     throw new UnsupportedOperationException
 }
 
 trait ElasticDocuments {
 
-  private[this] var documents: Map[String, AnyRef] = Map()
+  private[this] var documents: Map[String, Map[String, AnyRef]] = Map()
 
-  def createOrUpdate(entity: AnyRef, uuid: String): Unit = {
+  def createOrUpdate(entity: Map[String, AnyRef], uuid: String): Unit = {
     documents = documents.updated(uuid, entity)
   }
 
@@ -302,8 +408,8 @@ trait ElasticDocuments {
     documents = documents - uuid
   }
 
-  def getAll: Map[String, AnyRef] = documents
+  def getAll: Map[String, Map[String, AnyRef]] = documents
 
-  def get(uuid: String): Option[AnyRef] = documents.get(uuid)
+  def get(uuid: String): Option[Map[String, AnyRef]] = documents.get(uuid)
 
 }

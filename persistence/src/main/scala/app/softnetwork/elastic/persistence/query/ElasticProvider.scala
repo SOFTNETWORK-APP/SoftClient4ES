@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.persistence.query
 
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.client.{ElasticClientApi, ElasticClientDelegator}
 import app.softnetwork.elastic.sql.query.SQLQuery
@@ -64,13 +65,18 @@ trait ElasticProvider[T <: Timestamped]
   }
 
   protected def initIndex(): Unit = {
-    Try {
-      updateMapping(index, loadMapping(mappingPath))
-      addAlias(index, alias)
-    } match {
-      case Success(_) => logger.info(s"index:$index type:${_type} alias:$alias created")
-      case Failure(f) =>
-        logger.error(s"!!!!! index:$index type:${_type} alias:$alias -> ${f.getMessage}", f)
+    updateMapping(index, loadMapping(mappingPath)) match {
+      case ElasticSuccess(_) =>
+        logger.info(s"index:$index type:${_type} mapping updated")
+        addAlias(index, alias) match {
+          case ElasticSuccess(_) => logger.info(s"index:$index type:${_type} alias:$alias created")
+          case ElasticFailure(elasticError) =>
+            logger.error(
+              s"!!!!! index:$index type:${_type} alias:$alias -> ${elasticError.message}"
+            )
+        }
+      case ElasticFailure(elasticError) =>
+        logger.error(s"!!!!! index:$index type:${_type} mapping update -> ${elasticError.message}")
     }
   }
 
@@ -86,10 +92,10 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def createDocument(document: T)(implicit t: ClassTag[T]): Boolean = {
-    Try(index(document, document.uuid, Some(index), Some(_type))) match {
-      case Success(_) => refresh(index)
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
+    indexAs(document, document.uuid, Some(index), Some(_type)) match {
+      case ElasticSuccess(_) => true
+      case ElasticFailure(elasticError) =>
+        logger.error(s"${elasticError.message}")
         false
     }
   }
@@ -107,10 +113,10 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def updateDocument(document: T, upsert: Boolean)(implicit t: ClassTag[T]): Boolean = {
-    Try(update(document, document.uuid, Some(index), Some(_type), upsert)) match {
-      case Success(_) => refresh(index)
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
+    updateAs(document, document.uuid, Some(index), Some(_type), upsert) match {
+      case ElasticSuccess(_) => true
+      case ElasticFailure(elasticError) =>
+        logger.error(s"${elasticError.message}")
         false
     }
   }
@@ -123,12 +129,10 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def deleteDocument(uuid: String): Boolean = {
-    Try(
-      delete(uuid, index)
-    ) match {
-      case Success(value) => value && refresh(index)
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
+    delete(uuid, index) match {
+      case ElasticSuccess(value) => value
+      case ElasticFailure(elasticError) =>
+        logger.error(s"${elasticError.message}")
         false
     }
   }
@@ -144,17 +148,15 @@ trait ElasticProvider[T <: Timestamped]
     */
   override def upsertDocument(uuid: String, data: String): Boolean = {
     logger.debug(s"Upserting document $uuid for index $index with $data")
-    Try(
-      update(
-        index,
-        uuid,
-        data,
-        upsert = true
-      )
+    update(
+      index,
+      uuid,
+      data,
+      upsert = true
     ) match {
-      case Success(_) => refresh(index)
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
+      case ElasticSuccess(_) => true
+      case ElasticFailure(elasticError) =>
+        logger.error(s"upsertDocument failed -> ${elasticError.message}")
         false
     }
   }
@@ -167,10 +169,10 @@ trait ElasticProvider[T <: Timestamped]
     *   the document retrieved, None otherwise
     */
   override def loadDocument(uuid: String)(implicit m: Manifest[T], formats: Formats): Option[T] = {
-    Try(get(uuid, Some(index), Some(_type))) match {
-      case Success(s) => s
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
+    getAs(uuid, Some(index), Some(_type)) match {
+      case ElasticSuccess(result) => result
+      case ElasticFailure(elasticError) =>
+        logger.error(s"loadDocument failed -> ${elasticError.message}")
         None
     }
   }
@@ -185,11 +187,11 @@ trait ElasticProvider[T <: Timestamped]
   override def searchDocuments(
     query: String
   )(implicit m: Manifest[T], formats: Formats): List[T] = {
-    Try(searchAs(SQLQuery(query))) match {
-      case Success(s) => s
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
-        List.empty
+    searchAs[T](SQLQuery(query)) match {
+      case ElasticSuccess(results) => results.toList
+      case ElasticFailure(elasticError) =>
+        logger.error(s"searchDocuments failed -> ${elasticError.message}")
+        List.empty[T]
     }
   }
 

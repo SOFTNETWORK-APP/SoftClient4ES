@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client.monitoring
 
 import scala.concurrent.duration._
 
+//format:off
 /** Automatic monitoring configuration.
   *
   * @param enabled
@@ -39,6 +40,7 @@ import scala.concurrent.duration._
   * )
   * }}}
   */
+//format:on
 case class MonitoringConfig(
   enabled: Boolean = true,
   interval: Duration = 30.seconds,

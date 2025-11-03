@@ -1,9 +1,26 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
@@ -29,7 +46,7 @@ import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
 
 /** Created by smanciot on 28/06/2018.
- */
+  */
 trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
   lazy val log: Logger = LoggerFactory getLogger getClass.getName
@@ -102,16 +119,18 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Toggle refresh" should "work" in {
-    pClient.toggleRefresh("person", enable = false)
+    pClient.toggleRefresh("person", enable = false).get shouldBe true
+    var settings = pClient.loadSettings("person").get
     new JsonParser()
-      .parse(pClient.loadSettings("person"))
+      .parse(settings)
       .getAsJsonObject
       .get("refresh_interval")
       .getAsString shouldBe "-1"
 
-    pClient.toggleRefresh("person", enable = true)
+    pClient.toggleRefresh("person", enable = true).get shouldBe true
+    settings = pClient.loadSettings("person").get
     new JsonParser()
-      .parse(pClient.loadSettings("person"))
+      .parse(settings)
       .getAsJsonObject
       .get("refresh_interval")
       .getAsString shouldBe "1s"
@@ -130,14 +149,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.setReplicas("person", 3)
 
     new JsonParser()
-      .parse(pClient.loadSettings("person"))
+      .parse(pClient.loadSettings("person").get)
       .getAsJsonObject
       .get("number_of_replicas")
       .getAsString shouldBe "3"
 
     pClient.setReplicas("person", 0)
     new JsonParser()
-      .parse(pClient.loadSettings("person"))
+      .parse(pClient.loadSettings("person").get)
       .getAsJsonObject
       .get("number_of_replicas")
       .getAsString shouldBe "0"
@@ -173,17 +192,20 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |        }
         |    }
         |}""".stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
-    pClient.setMapping("person_mapping", mapping) shouldBe true
+    pClient.setMapping("person_mapping", mapping).get shouldBe true
 
-    val properties = pClient.getMappingProperties("person_mapping")
+    val properties = pClient.getMappingProperties("person_mapping").get
     log.info(s"properties: $properties")
     MappingComparator.isMappingDifferent(
       properties,
       mapping
     ) shouldBe false
 
-    implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping", "_doc", 1000)
-    val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping")
+    val result = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None).get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     pClient.flush("person_mapping")
 
@@ -194,34 +216,44 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person_mapping" should haveCount(3)
 
     pClient.searchAs[Person]("select * from person_mapping") match {
-      case r if r.size == 3 =>
-        r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
-      case other => fail(other.toString)
+      case ElasticSuccess(value) =>
+        value match {
+          case r if r.size == 3 =>
+            r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
+          case other => fail(other.toString)
+        }
+      case ElasticFailure(elasticError) =>
+        fail(elasticError.fullMessage)
     }
 
-    pClient.searchAs[Person]("select * from person_mapping where uuid = 'A16'") match {
+    pClient.searchAs[Person]("select * from person_mapping where uuid = 'A16'").get match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
-    pClient.searchAs[Person](
-      "select * from person_mapping where match (name) against ('gum')"
-    ) match {
+    pClient
+      .searchAs[Person](
+        "select * from person_mapping where match (name) against ('gum')"
+      )
+      .get match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
     }
 
-    pClient.searchAs[Person](
-      "select * from person_mapping where uuid <> 'A16' and match (name) against ('gum')"
-    ) match {
+    pClient
+      .searchAs[Person](
+        "select * from person_mapping where uuid <> 'A16' and match (name) against ('gum')"
+      )
+      .get match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
     }
   }
 
   "Updating a mapping" should "work" in {
+    pClient.createIndex("person_migration").get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -240,12 +272,15 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |  }
         |}
       """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
-    pClient.updateMapping("person_migration", mapping) shouldBe true
+    pClient.setMapping("person_migration", mapping).get shouldBe true
     blockUntilIndexExists("person_migration")
     "person_migration" should beCreated()
 
-    implicit val bulkOptions: BulkOptions = BulkOptions("person_migration", "_doc", 1000)
-    val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_migration")
+    val result = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None).get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
     pClient.flush("person_migration")
 
@@ -255,9 +290,11 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person_migration" should haveCount(3)
 
-    pClient.searchAs[Person](
-      "select * from person_migration where match (name) against ('gum')"
-    ) match {
+    pClient
+      .searchAs[Person](
+        "select * from person_migration where match (name) against ('gum')"
+      )
+      .get match {
       case r if r.isEmpty =>
       case other          => fail(other.toString)
     }
@@ -303,12 +340,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |  }
         |}
       """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
-    pClient.shouldUpdateMapping("person_migration", newMapping) shouldBe true
-    pClient.updateMapping("person_migration", newMapping) shouldBe true
+    pClient.shouldUpdateMapping("person_migration", newMapping).get shouldBe true
+    pClient.updateMapping("person_migration", newMapping).get shouldBe true
 
-    pClient.searchAs[Person](
-      "select * from person_migration where match (name) against ('gum')"
-    ) match {
+    pClient
+      .searchAs[Person](
+        "select * from person_migration where match (name) against ('gum')"
+      )
+      .get match {
       case r if r.size == 1 =>
         r.map(_.uuid) should contain only "A16"
       case other => fail(other.toString)
@@ -317,8 +356,12 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk index valid json without id key and suffix key" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person1", "person", 2)
-    val indices = pClient.bulk[String](persons.iterator, identity, None, None, None)
+    implicit val bulkOptions: BulkOptions =
+      BulkOptions("person1", "person", 2) // small chunk size to test multiple bulk requests
+    val result = pClient.bulk[String](persons.iterator, identity, None, None, None).get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
 
     indices should contain only "person1"
 
@@ -326,7 +369,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person1" should haveCount(3)
 
-    pClient.searchAs[Person]("select * from person1") match {
+    pClient.searchAs[Person]("select * from person1").get match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -336,10 +379,13 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk index valid json with an id key but no suffix key" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person2", "person", 1000)
-    val indices = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None)
+    implicit val bulkOptions: BulkOptions = BulkOptions("person2")
+    val result = pClient.bulk[String](persons.iterator, identity, Some("uuid"), None, None).get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
-    pClient.flush("person2")
+    pClient.flush("person2").get shouldBe true
 
     indices should contain only "person2"
 
@@ -347,7 +393,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person2" should haveCount(3)
 
-    pClient.searchAs[Person]("select * from person2") match {
+    pClient.searchAs[Person]("select * from person2").get match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -365,9 +411,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk index valid json with an id key and a suffix key" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person", "person", 1000)
-    val indices =
-      pClient.bulk[String](persons.iterator, identity, Some("uuid"), Some("birthDate"), None, None)
+    implicit val bulkOptions: BulkOptions = BulkOptions("person", "person")
+    val result =
+      pClient
+        .bulk[String](persons.iterator, identity, Some("uuid"), Some("birthDate"), None, None)
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain allOf ("person-1967-11-21", "person-1969-05-09")
@@ -378,7 +429,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person-1967-11-21" should haveCount(2)
     "person-1969-05-09" should haveCount(1)
 
-    pClient.searchAs[Person]("select * from person-1967-11-21, person-1969-05-09") match {
+    pClient.searchAs[Person]("select * from person-1967-11-21, person-1969-05-09").get match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble")
@@ -396,18 +447,22 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk index invalid json with an id key and a suffix key" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person_error", "person", 1000)
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_error")
     intercept[JsonParseException] {
       val invalidJson = persons :+ "fail"
-      pClient.bulk[String](invalidJson.iterator, identity, None, None, None)
+      pClient.bulk[String](invalidJson.iterator, identity, None, None, None).get
     }
   }
 
   "Bulk upsert valid json with an id key but no suffix key" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person4", "person", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("person4")
+    val result =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person4"
@@ -416,7 +471,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person4" should haveCount(3)
 
-    pClient.searchAs[Person]("select * from person4") match {
+    pClient.searchAs[Person]("select * from person4").get match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble2")
@@ -434,15 +489,21 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk upsert valid json with an id key and a suffix key" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person5", "person", 1000)
-    val indices = pClient.bulk[String](
-      personsWithUpsert.iterator,
-      identity,
-      Some("uuid"),
-      Some("birthDate"),
-      None,
-      Some(true)
-    )
+    pClient.createIndex("person5").get shouldBe true
+    implicit val bulkOptions: BulkOptions = BulkOptions("person5")
+    val result = pClient
+      .bulk[String](
+        personsWithUpsert.iterator,
+        identity,
+        Some("uuid"),
+        Some("birthDate"),
+        None,
+        Some(true)
+      )
+      .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true // personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain allOf ("person5-1967-11-21", "person5-1969-05-09")
@@ -453,7 +514,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person5-1967-11-21" should haveCount(2)
     "person5-1969-05-09" should haveCount(1)
 
-    pClient.searchAs[Person]("select * from person5-1967-11-21, person5-1969-05-09") match {
+    pClient.searchAs[Person]("select * from person5-1967-11-21, person5-1969-05-09").get match {
       case r if r.size == 3 =>
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
         r.map(_.name) should contain allOf ("Homer Simpson", "Moe Szyslak", "Barney Gumble2")
@@ -471,10 +532,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Count" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person6", "person", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("person6")
+    val result =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person6"
@@ -487,20 +552,25 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     pClient
       .count(ElasticQuery("{}", Seq[String]("person6"), Seq[String]()))
+      .get
       .getOrElse(0d)
       .toInt should ===(3)
 
     pClient.countAsync(ElasticQuery("{}", Seq[String]("person6"), Seq[String]())).complete() match {
-      case Success(s) => s.getOrElse(0d).toInt should ===(3)
+      case Success(s) => s.get.getOrElse(0d).toInt should ===(3)
       case Failure(f) => fail(f.getMessage)
     }
   }
 
   "Search" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person7", "person", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("person7")
+    val result =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person7"
@@ -509,23 +579,25 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person7" should haveCount(3)
 
-    val r1 = pClient.searchAs[Person]("select * from person7")
+    val r1 = pClient.searchAs[Person]("select * from person7").get
     r1.size should ===(3)
     r1.map(_.uuid) should contain allOf ("A12", "A14", "A16")
 
     pClient.searchAsyncAs[Person]("select * from person7") onComplete {
-      case Success(r) =>
+      case Success(s) =>
+        val r = s.get
         r.size should ===(3)
         r.map(_.uuid) should contain allOf ("A12", "A14", "A16")
       case Failure(f) => fail(f.getMessage)
     }
 
-    val r2 = pClient.searchAs[Person]("select * from person7 where _id=\"A16\"")
+    val r2 = pClient.searchAs[Person]("select * from person7 where _id=\"A16\"").get
     r2.size should ===(1)
     r2.map(_.uuid) should contain("A16")
 
     pClient.searchAsyncAs[Person]("select * from person7 where _id=\"A16\"") onComplete {
-      case Success(r) =>
+      case Success(s) =>
+        val r = s.get
         r.size should ===(1)
         r.map(_.uuid) should contain("A16")
       case Failure(f) => fail(f.getMessage)
@@ -533,10 +605,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Get all" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person8", "person", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("person8")
+    val result =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person8"
@@ -545,17 +621,21 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person8" should haveCount(3)
 
-    val response = pClient.searchAs[Person]("select * from person8")
+    val response = pClient.searchAs[Person]("select * from person8").get
 
     response.size should ===(3)
 
   }
 
   "Get" should "work" in {
-    implicit val bulkOptions: BulkOptions = BulkOptions("person9", "person", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("person9")
+    val result =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
 
     indices should contain only "person9"
@@ -564,13 +644,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person9" should haveCount(3)
 
-    val response = pClient.get[Person]("A16", Some("person9"))
+    val response = pClient.getAs[Person]("A16", Some("person9")).get
 
     response.isDefined shouldBe true
     response.get.uuid shouldBe "A16"
 
-    pClient.getAsync[Person]("A16", Some("person9")).complete() match {
-      case Success(r) =>
+    pClient.getAsyncAs[Person]("A16", Some("person9")).complete() match {
+      case Success(s) =>
+        val r = s.get
         r.isDefined shouldBe true
         r.get.uuid shouldBe "A16"
       case Failure(f) => fail(f.getMessage)
@@ -580,15 +661,15 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.index(sample, uuid)
+    val result = sClient.indexAs(sample, uuid).get
     result shouldBe true
 
-    sClient.indexAsync(sample, uuid).complete() match {
-      case Success(r) => r shouldBe true
+    sClient.indexAsyncAs(sample, uuid).complete() match {
+      case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
 
-    val result2 = sClient.get[Sample](uuid)
+    val result2 = sClient.getAs[Sample](uuid).get
     result2 match {
       case Some(r) =>
         r.uuid shouldBe uuid
@@ -600,15 +681,15 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.update(sample, uuid)
+    val result = sClient.updateAs(sample, uuid).get
     result shouldBe true
 
-    sClient.updateAsync(sample, uuid).complete() match {
-      case Success(r) => r shouldBe true
+    sClient.updateAsyncAs(sample, uuid).complete() match {
+      case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
 
-    val result2 = sClient.get[Sample](uuid)
+    val result2 = sClient.getAs[Sample](uuid).get
     result2 match {
       case Some(r) =>
         r.uuid shouldBe uuid
@@ -620,38 +701,38 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Delete" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index) shouldBe true
+    sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.index(sample, uuid, Some(index))
+    val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
 
-    sClient.delete(sample.uuid, index) shouldBe true
+    sClient.delete(sample.uuid, index).get shouldBe true
 
     //blockUntilEmpty(index)
 
-    sClient.get[Sample](uuid).isEmpty shouldBe true
+    sClient.getAs[Sample](uuid).isFailure shouldBe true // 404
   }
 
   "Delete asynchronously" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index) shouldBe true
+    sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.index(sample, uuid, Some(index))
+    val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
 
     sClient.deleteAsync(sample.uuid, index).complete() match {
-      case Success(r) => r shouldBe true
+      case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
 
     // blockUntilEmpty(index)
 
-    sClient.get[Sample](uuid).isEmpty shouldBe true
+    sClient.getAs[Sample](uuid).isFailure shouldBe true // 404
   }
 
   "Index binary data" should "work" in {
-    bClient.createIndex("binaries") shouldBe true
+    bClient.createIndex("binaries").get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -673,8 +754,8 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |  }
         |}
       """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
-    bClient.setMapping("binaries", mapping) shouldBe true
-    bClient.shouldUpdateMapping("binaries", mapping) shouldBe false
+    bClient.setMapping("binaries", mapping).get shouldBe true
+    bClient.shouldUpdateMapping("binaries", mapping).get shouldBe false
     for (uuid <- Seq("png", "jpg", "pdf")) {
       Try(
         Paths.get(Thread.currentThread().getContextClassLoader.getResource(s"avatar.$uuid").getPath)
@@ -689,8 +770,8 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
             content = encoded,
             md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
           )
-          bClient.index(binary, uuid) shouldBe true
-          bClient.get[Binary](uuid) match {
+          bClient.indexAs(binary, uuid).get shouldBe true
+          bClient.getAs[Binary](uuid).get match {
             case Some(result) =>
               val decoded = decodeBase64(result.content)
               val out = Paths.get(s"/tmp/${path.getFileName}")
@@ -707,7 +788,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Aggregations" should "work" in {
-    pClient.createIndex("person10") shouldBe true
+    pClient.createIndex("person10").get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -739,14 +820,18 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |}
       """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
     log.info(s"mapping: $mapping")
-    pClient.setMapping("person10", mapping) shouldBe true
+    pClient.setMapping("person10", mapping).get shouldBe true
 
-    implicit val bulkOptions: BulkOptions = BulkOptions("person10", "_doc", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("person10")
+    val result =
       pClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    result.failedCount shouldBe 0
+    result.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = result.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
-    pClient.flush("person10")
+    pClient.flush("person10").get shouldBe true
 
     indices should contain only "person10"
 
@@ -754,7 +839,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     "person10" should haveCount(3)
 
-    pClient.get[Person]("A16", Some("person10")) match {
+    pClient.getAs[Person]("A16", Some("person10")).get match {
       case Some(p) =>
         p.uuid shouldBe "A16"
         p.birthDate shouldBe "1969-05-09"
@@ -767,13 +852,15 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         "select count(distinct p.uuid) as c from person10 p"
       )
       .complete() match {
-      case Success(s) => s.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(3d)
+      case Success(s) =>
+        s.get.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(3d)
       case Failure(f) => fail(f.getMessage)
     }
 
     // test count aggregation
     pClient.aggregate("select count(p.uuid) as c from person10 p").complete() match {
-      case Success(s) => s.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(3d)
+      case Success(s) =>
+        s.get.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(3d)
       case Failure(f) => fail(f.getMessage)
     }
 
@@ -781,7 +868,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.aggregate("select max(p.birthDate) as c from person10 p").complete() match {
       case Success(s) =>
         // The maximum date should be the latest birthDate in the dataset
-        s.headOption match {
+        s.get.headOption match {
           case Some(value) =>
             value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
               case Some(d: Double) =>
@@ -801,7 +888,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.aggregate("select min(p.birthDate) as c from person10 p").complete() match {
       case Success(s) =>
         // The minimum date should be the earliest birthDate in the dataset
-        s.headOption match {
+        s.get.headOption match {
           case Some(value) =>
             value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
               case Some(d: Double) =>
@@ -821,7 +908,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.aggregate("select avg(p.birthDate) as c from person10 p").complete() match {
       case Success(s) =>
         // The average date should be the midpoint between the min and max dates
-        s.headOption match {
+        s.get.headOption match {
           case Some(value) =>
             value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
               case Some(d: Double) =>
@@ -848,14 +935,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       )
       .complete() match {
       case Success(s) =>
-        s.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(2d)
+        s.get.headOption.flatMap(_.asDoubleSafe.toOption).getOrElse(0d) should ===(2d)
       case Failure(f) => fail(f.getMessage)
     }
 
     // test first aggregation on date field
     pClient.aggregate("select first(p.birthDate) as c from person10 p").complete() match {
       case Success(s) =>
-        s.headOption match {
+        s.get.headOption match {
           case Some(value) =>
             value.asDoubleSafe.orElse(value.asStringSafe).orElse(value.asMapSafe).toOption match {
               case Some(d: Double) =>
@@ -889,7 +976,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     // test last aggregation on date field
     pClient.aggregate("select last(p.birthDate) as c from person10 p").complete() match {
       case Success(s) =>
-        s.headOption match {
+        s.get.headOption match {
           case Some(value) =>
             value.asDoubleSafe.orElse(value.asStringSafe).orElse(value.asMapSafe).toOption match {
               case Some(d: Double) =>
@@ -927,7 +1014,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       )
       .complete() match {
       case Success(s) =>
-        val names = s.headOption.flatMap(_.asSeqSafe.toOption).getOrElse(Seq.empty).map {
+        val names = s.get.headOption.flatMap(_.asSeqSafe.toOption).getOrElse(Seq.empty).map {
           case s: String => s
           case other     => fail(s"Unexpected name type: $other")
         }
@@ -942,10 +1029,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       )
       .complete() match {
       case Success(s) =>
-        val birthDates = s.headOption.flatMap(_.asSeqSafe.toOption).getOrElse(Seq.empty).map {
-          case t: Temporal => t
-          case other       => fail(s"Unexpected birthDate type: $other")
-        }.map(_.toString)
+        val birthDates = s.get.headOption
+          .flatMap(_.asSeqSafe.toOption)
+          .getOrElse(Seq.empty)
+          .map {
+            case t: Temporal => t
+            case other       => fail(s"Unexpected birthDate type: $other")
+          }
+          .map(_.toString)
         birthDates.nonEmpty shouldBe true
         birthDates should contain allOf ("1999-05-09", "2002-05-09") // LocalDate instances sorted ASC
       case Failure(f) => fail(f.getMessage)
@@ -953,7 +1044,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Nested queries" should "work" in {
-    parentClient.createIndex("parent") shouldBe true
+    parentClient.createIndex("parent").get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -993,15 +1084,19 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |}
     """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
     log.info(s"mapping: $mapping")
-    parentClient.setMapping("parent", mapping) shouldBe true
+    parentClient.setMapping("parent", mapping).get shouldBe true
 
-    implicit val bulkOptions: BulkOptions = BulkOptions("parent", "_doc", 1000)
-    val indices =
+    implicit val bulkOptions: BulkOptions = BulkOptions("parent")
+    val bulkResult =
       parentClient
         .bulk[String](personsWithUpsert.iterator, identity, Some("uuid"), None, None, Some(true))
+        .get
+    bulkResult.failedCount shouldBe 0
+    bulkResult.successCount > 0 shouldBe true //personsWithUpsert.size
+    val indices = bulkResult.indices
     indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
-    parentClient.flush("parent")
-    parentClient.refresh("parent")
+    parentClient.flush("parent").get shouldBe true
+    parentClient.refresh("parent").get shouldBe true
 
     indices should contain only "parent"
 
@@ -1010,25 +1105,27 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "parent" should haveCount(3)
 
     val parents = parentClient.searchAs[Parent]("select * from parent")
-    assert(parents.size == 3)
+    parents.get.size shouldBe 3
 
-    val results = parentClient.searchWithInnerHits[Parent, Child](
-      """SELECT
-        | p.uuid,
-        | p.name,
-        | p.birthDate,
-        | p.children,
-        | inner_children.name,
-        | inner_children.birthDate,
-        | inner_children.parentId
-        | FROM
-        | parent as p
-        | JOIN UNNEST(p.children) as inner_children
-        |WHERE
-        | inner_children.name is not null AND p.uuid = 'A16'
-        |""".stripMargin,
-      "inner_children"
-    )
+    val results = parentClient
+      .searchWithInnerHits[Parent, Child](
+        """SELECT
+          | p.uuid,
+          | p.name,
+          | p.birthDate,
+          | p.children,
+          | inner_children.name,
+          | inner_children.birthDate,
+          | inner_children.parentId
+          | FROM
+          | parent as p
+          | JOIN UNNEST(p.children) as inner_children
+          |WHERE
+          | inner_children.name is not null AND p.uuid = 'A16'
+          |""".stripMargin,
+        "inner_children"
+      )
+      .get
     results.size shouldBe 1
     val result = results.head
     result._1.uuid shouldBe "A16"
@@ -1055,7 +1152,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         | children.name is not null AND p.uuid = 'A16'
         |""".stripMargin
 
-    val searchResults = parentClient.searchAs[Parent](query)
+    val searchResults = parentClient.searchAs[Parent](query).get
     searchResults.size shouldBe 1
     val searchResult = searchResults.head
     searchResult.uuid shouldBe "A16"

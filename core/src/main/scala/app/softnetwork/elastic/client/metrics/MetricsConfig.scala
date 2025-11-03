@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client.metrics
 
 import app.softnetwork.elastic.client.monitoring.MonitoringConfig
 
+//format:off
 /** Performance metrics configuration.
   *
   * @param enabled
@@ -37,6 +38,7 @@ import app.softnetwork.elastic.client.monitoring.MonitoringConfig
   * )
   * }}}
   */
+//format:on
 case class MetricsConfig(
   enabled: Boolean = true,
   monitoring: MonitoringConfig = MonitoringConfig()

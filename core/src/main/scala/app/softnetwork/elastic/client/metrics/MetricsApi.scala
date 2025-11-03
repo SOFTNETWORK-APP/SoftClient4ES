@@ -20,6 +20,7 @@ import scala.language.implicitConversions
 
 trait MetricsApi {
 
+  //format:off
   /** Records an operation with its metrics.
     *
     * This method is called automatically by the decorator, but can also be used manually for custom
@@ -52,6 +53,7 @@ trait MetricsApi {
     * }
     * }}}
     */
+  //format:on
   def recordOperation(
     operation: String,
     duration: Long,
@@ -59,6 +61,7 @@ trait MetricsApi {
     index: Option[String] = None
   ): Unit
 
+  //format:off
   /** Retrieves aggregated global metrics.
     *
     * @return
@@ -88,8 +91,10 @@ trait MetricsApi {
     * """.stripMargin)
     * }}}
     */
+  //format:on
   def getMetrics: OperationMetrics
 
+  //format:off
   /** Retrieves metrics for a specific operation.
     *
     * @param operation
@@ -127,8 +132,10 @@ trait MetricsApi {
     * }
     * }}}
     */
+  //format:on
   def getMetricsByOperation(operation: String): Option[OperationMetrics]
 
+  //format:off
   /** Retrieves metrics for a specific index.
     *
     * @param index
@@ -171,8 +178,10 @@ trait MetricsApi {
     * }
     * }}}
     */
+  //format:on
   def getMetricsByIndex(index: String): Option[OperationMetrics]
 
+  //format:off
   /** Retrieves all aggregated metrics with details by operation and by index.
     *
     * @return
@@ -210,8 +219,10 @@ trait MetricsApi {
     * """.stripMargin)
     * }}}
     */
+  //format:on
   def getAggregatedMetrics: AggregatedMetrics
 
+  //format:off
   /** Resets all collected metrics.
     *
     * Useful for starting a new measurement period or after a test.
@@ -240,5 +251,6 @@ trait MetricsApi {
     * println(s"Pure indexing performance: ${metrics.averageDuration}ms per doc")
     * }}}
     */
+  //format:on
   def resetMetrics(): Unit
 }

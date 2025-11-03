@@ -22,6 +22,7 @@ import com.typesafe.config.Config
 
 class JestClientSpi extends ElasticClientSpi {
 
+  //format:off
   /** Creates an Elasticsearch client instance.
     *
     * @param config
@@ -38,6 +39,7 @@ class JestClientSpi extends ElasticClientSpi {
     * }
     * }}}
     */
+  //format:on
   override def client(conf: Config): ElasticClientApi = {
     new JestClientApi {
       override lazy val config: Config = conf

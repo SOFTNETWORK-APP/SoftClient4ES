@@ -23,6 +23,7 @@ import com.typesafe.config.Config
   */
 trait ElasticClientSpi {
 
+  //format:off
   /** Creates an Elasticsearch client instance.
     *
     * @param conf
@@ -39,5 +40,6 @@ trait ElasticClientSpi {
     * }
     * }}}
     */
+  //format:on
   def client(conf: Config): ElasticClientApi
 }

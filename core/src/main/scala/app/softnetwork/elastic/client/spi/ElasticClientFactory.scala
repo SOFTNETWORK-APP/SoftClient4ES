@@ -79,6 +79,7 @@ object ElasticClientFactory {
     )
   }
 
+  //format:off
   /** Creates an Elasticsearch client with optional metrics and monitoring.
     *
     * The returned client type depends on configuration:
@@ -112,6 +113,7 @@ object ElasticClientFactory {
     * }
     * }}}
     */
+  //format:on
   def create(config: Config = ConfigFactory.load()): ElasticClientApi = {
     val elasticConfig = ElasticConfig(config)
 
@@ -127,6 +129,7 @@ object ElasticClientFactory {
     }
   }
 
+  //format:off
   /** Creates a client with explicitly enabled metrics, regardless of configuration.
     *
     * Uses caching: multiple calls with the same URL return the same instance.
@@ -156,6 +159,7 @@ object ElasticClientFactory {
     * }
     * }}}
     */
+  //format:on
   def createWithMetrics(config: Config = ConfigFactory.load()): MetricsElasticClient = {
     val elasticConfig = ElasticConfig(config)
     val url = elasticConfig.credentials.url
@@ -171,6 +175,7 @@ object ElasticClientFactory {
     )
   }
 
+  //format:off
   /** Creates a client with a custom metrics collector.
     *
     * Useful for sharing a collector between multiple clients or for testing. Does NOT use caching -
@@ -201,6 +206,7 @@ object ElasticClientFactory {
     * println(s"Total ops across all clients: ${metrics.totalOperations}")
     * }}}
     */
+  //format:on
   def createWithCustomMetrics(
     config: Config = ConfigFactory.load(),
     metricsCollector: MetricsCollector
@@ -210,6 +216,7 @@ object ElasticClientFactory {
     new MetricsElasticClient(baseClient, metricsCollector)
   }
 
+  //format:off
   /** Creates a client with automatic monitoring and alerting.
     *
     * Monitoring generates periodic reports and triggers alerts when configured thresholds are
@@ -244,6 +251,7 @@ object ElasticClientFactory {
     * client.shutdown()
     * }}}
     */
+  //format:on
   def createWithMonitoring(config: Config = ConfigFactory.load()): MonitoredElasticClient = {
     val elasticConfig = ElasticConfig(config)
     val url = elasticConfig.credentials.url
