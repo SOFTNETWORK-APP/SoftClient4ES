@@ -17,7 +17,13 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.{IndicesApi, MappingApi, RefreshApi, SettingsApi}
-import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.client.result.{
+  ElasticError,
+  ElasticFailure,
+  ElasticResult,
+  ElasticSuccess
+}
+import com.google.gson.JsonParser
 import io.searchbox.indices.mapping.{GetMapping, PutMapping}
 
 import scala.util.Try
@@ -49,7 +55,7 @@ trait JestMappingApi extends MappingApi with JestClientHelpers {
       index = Some(index),
       retryable = true
     )(
-      new GetMapping.Builder().addIndex(index).addType("_doc").build()
+      new GetMapping.Builder().addIndex(index).build()
     ) { result =>
       result.getJsonString
     }
@@ -62,6 +68,33 @@ trait JestMappingApi extends MappingApi with JestClientHelpers {
     *   the mapping properties of the index as a JSON string
     */
   override def getMappingProperties(index: String): ElasticResult[String] = {
-    getMapping(index)
+    getMapping(index).flatMap { jsonString =>
+      // ✅ Extracting mapping from JSON
+      ElasticResult.attempt(
+        new JsonParser().parse(jsonString).getAsJsonObject
+      ) match {
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to parse JSON mapping for index '$index': ${error.message}")
+          return ElasticFailure(error.copy(operation = Some("getMapping"), index = Some(index)))
+        case ElasticSuccess(indexObj) =>
+          if (Option(indexObj).isDefined && indexObj.has(index)) {
+            val settingsObj = indexObj
+              .getAsJsonObject(index)
+              .getAsJsonObject("mappings")
+              .getAsJsonObject("_doc")
+            ElasticSuccess(settingsObj.toString)
+          } else {
+            val message = s"Index '$index' not found in the loaded mapping."
+            logger.error(s"❌ $message")
+            ElasticFailure(
+              ElasticError(
+                message = message,
+                operation = Some("getMapping"),
+                index = Some(index)
+              )
+            )
+          }
+      }
+    }
   }
 }

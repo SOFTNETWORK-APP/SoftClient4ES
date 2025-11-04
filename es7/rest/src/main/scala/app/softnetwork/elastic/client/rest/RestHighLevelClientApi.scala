@@ -23,18 +23,19 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
-import app.softnetwork.elastic.client
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
 import com.google.gson.JsonParser
+import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest.AliasActions
+import org.elasticsearch.action.admin.indices.alias.get.GetAliasesRequest
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest
-import org.elasticsearch.action.admin.indices.flush.FlushRequest
+import org.elasticsearch.action.admin.indices.flush.{FlushRequest, FlushResponse}
 import org.elasticsearch.action.admin.indices.open.OpenIndexRequest
-import org.elasticsearch.action.admin.indices.refresh.RefreshRequest
-import org.elasticsearch.action.admin.indices.settings.get.GetSettingsRequest
+import org.elasticsearch.action.admin.indices.refresh.{RefreshRequest, RefreshResponse}
+import org.elasticsearch.action.admin.indices.settings.get.{GetSettingsRequest, GetSettingsResponse}
 import org.elasticsearch.action.admin.indices.settings.put.UpdateSettingsRequest
-import org.elasticsearch.action.bulk.{BulkItemResponse, BulkRequest, BulkResponse}
+import org.elasticsearch.action.bulk.{BulkRequest, BulkResponse}
 import org.elasticsearch.action.delete.{DeleteRequest, DeleteResponse}
 import org.elasticsearch.action.get.{GetRequest, GetResponse}
 import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
@@ -42,14 +43,16 @@ import org.elasticsearch.action.search.{
   ClearScrollRequest,
   ClosePointInTimeRequest,
   MultiSearchRequest,
+  MultiSearchResponse,
   OpenPointInTimeRequest,
   SearchRequest,
   SearchResponse,
   SearchScrollRequest
 }
+import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest}
-import org.elasticsearch.client.{Request, RequestOptions}
+import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
 import org.elasticsearch.client.indices.{
   CloseIndexRequest,
@@ -59,15 +62,15 @@ import org.elasticsearch.client.indices.{
   PutMappingRequest
 }
 import org.elasticsearch.common.Strings
-import org.elasticsearch.common.io.stream.InputStreamStreamInput
 import org.elasticsearch.core.TimeValue
 import org.elasticsearch.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
 import org.elasticsearch.search.builder.{PointInTimeBuilder, SearchSourceBuilder}
 import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
-import org.json4s.Formats
+import org.json4s.jackson.JsonMethods
+import org.json4s.DefaultFormats
 
-import java.io.{ByteArrayInputStream, IOException}
+import java.io.IOException
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
@@ -82,7 +85,6 @@ trait RestHighLevelClientApi
     with RestHighLevelClientRefreshApi
     with RestHighLevelClientFlushApi
     with RestHighLevelClientCountApi
-    with RestHighLevelClientSingleValueAggregateApi
     with RestHighLevelClientIndexApi
     with RestHighLevelClientUpdateApi
     with RestHighLevelClientDeleteApi
@@ -91,744 +93,753 @@ trait RestHighLevelClientApi
     with RestHighLevelClientBulkApi
     with RestHighLevelClientScrollApi
     with RestHighLevelClientCompanion
-    with SerializationApi
+    with RestHighLevelClientVersion
 
-trait RestHighLevelClientIndicesApi extends IndicesApi { _: RestHighLevelClientCompanion =>
-  override def createIndex(index: String, settings: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .create(
-          new CreateIndexRequest(index)
-            .settings(settings, XContentType.JSON),
-          RequestOptions.DEFAULT
-        )
-        .isAcknowledged,
-      false
-    )(logger)
-  }
-
-  override def deleteIndex(index: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .delete(new DeleteIndexRequest(index), RequestOptions.DEFAULT)
-        .isAcknowledged,
-      false
-    )(logger)
-  }
-
-  override def openIndex(index: String): Boolean = {
-    tryOrElse(
-      apply().indices().open(new OpenIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged,
-      false
-    )(logger)
-  }
-
-  override def closeIndex(index: String): Boolean = {
-    tryOrElse(
-      apply().indices().close(new CloseIndexRequest(index), RequestOptions.DEFAULT).isAcknowledged,
-      false
-    )(logger)
-  }
-
-  /** Reindex from source index to target index.
-    *
-    * @param sourceIndex
-    *   - the name of the source index
-    * @param targetIndex
-    *   - the name of the target index
-    * @param refresh
-    *   - true to refresh the target index after reindexing, false otherwise
-    * @return
-    *   true if the reindexing was successful, false otherwise
-    */
-  override def reindex(sourceIndex: String, targetIndex: String, refresh: Boolean): Boolean = {
-    val request = new Request("POST", "/_reindex?refresh=true")
-    request.setJsonEntity(
-      s"""
-         |{
-         |  "source": {
-         |    "index": "$sourceIndex"
-         |  },
-         |  "dest": {
-         |    "index": "$targetIndex"
-         |  }
-         |}
-       """.stripMargin
-    )
-    tryOrElse(
-      apply().getLowLevelClient.performRequest(request).getStatusLine.getStatusCode < 400,
-      false
-    )(logger)
-  }
-
-  /** Check if an index exists.
-    *
-    * @param index
-    *   - the name of the index to check
-    * @return
-    *   true if the index exists, false otherwise
-    */
-  override def indexExists(index: String): Boolean = {
-    tryOrElse(
-      apply().indices().exists(new GetIndexRequest(index), RequestOptions.DEFAULT),
-      false
-    )(logger)
-  }
-
-}
-
-trait RestHighLevelClientAliasApi extends AliasApi { _: RestHighLevelClientCompanion =>
-  override def addAlias(index: String, alias: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .updateAliases(
-          new IndicesAliasesRequest()
-            .addAliasAction(
-              new AliasActions(AliasActions.Type.ADD)
-                .index(index)
-                .alias(alias)
-            ),
-          RequestOptions.DEFAULT
-        )
-        .isAcknowledged,
-      false
-    )(logger)
-  }
-
-  override def removeAlias(index: String, alias: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .updateAliases(
-          new IndicesAliasesRequest()
-            .addAliasAction(
-              new AliasActions(AliasActions.Type.REMOVE)
-                .index(index)
-                .alias(alias)
-            ),
-          RequestOptions.DEFAULT
-        )
-        .isAcknowledged,
-      false
-    )(logger)
-  }
-}
-
-trait RestHighLevelClientSettingsApi extends SettingsApi {
-  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
-
-  override def updateSettings(index: String, settings: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .putSettings(
-          new UpdateSettingsRequest(index)
-            .settings(settings, XContentType.JSON),
-          RequestOptions.DEFAULT
-        )
-        .isAcknowledged,
-      false
-    )(logger)
-  }
-
-  override def loadSettings(index: String): String = {
-    tryOrElse(
-      {
-        new JsonParser()
-          .parse(
-            apply()
-              .indices()
-              .getSettings(
-                new GetSettingsRequest().indices(index),
-                RequestOptions.DEFAULT
-              )
-              .toString
-          )
-          .getAsJsonObject
-          .get(index)
-          .getAsJsonObject
-          .get("settings")
-          .getAsJsonObject
-          .get("index")
-          .getAsJsonObject
-          .toString
-      },
-      "{}"
-    )(logger)
-  }
-}
-
-trait RestHighLevelClientMappingApi extends MappingApi { _: RestHighLevelClientCompanion =>
-  override def setMapping(index: String, mapping: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .putMapping(
-          new PutMappingRequest(index)
-            .source(mapping, XContentType.JSON),
-          RequestOptions.DEFAULT
-        )
-        .isAcknowledged,
-      false
-    )(logger)
-  }
-
-  override def getMapping(index: String): String = {
-    tryOrElse(
-      apply()
-        .indices()
-        .getMapping(
-          new GetMappingsRequest().indices(index),
-          RequestOptions.DEFAULT
-        )
-        .mappings()
-        .asScala
-        .get(index)
-        .map(metadata => metadata.source().string()),
-      None
-    )(logger).getOrElse(s""""{$index: {"mappings": {}}}""")
-  }
-
-  override def getMappingProperties(index: String): String = {
-    tryOrElse(
-      getMapping(index),
-      "{\"properties\": {}}"
-    )(logger)
-  }
-
-}
-
-trait RestHighLevelClientRefreshApi extends RefreshApi { _: RestHighLevelClientCompanion =>
-  override def refresh(index: String): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .refresh(
-          new RefreshRequest(index),
-          RequestOptions.DEFAULT
-        )
-        .getStatus
-        .getStatus < 400,
-      false
-    )(logger)
-  }
-}
-
-trait RestHighLevelClientFlushApi extends FlushApi { _: RestHighLevelClientCompanion =>
-  override def flush(index: String, force: Boolean = true, wait: Boolean = true): Boolean = {
-    tryOrElse(
-      apply()
-        .indices()
-        .flush(
-          new FlushRequest(index).force(force).waitIfOngoing(wait),
-          RequestOptions.DEFAULT
-        )
-        .getStatus == RestStatus.OK,
-      false
-    )(logger)
-  }
-}
-
-trait RestHighLevelClientCountApi extends CountApi { _: RestHighLevelClientCompanion =>
-  override def countAsync(
-    query: client.ElasticQuery
-  )(implicit ec: ExecutionContext): Future[Option[Double]] = {
-    val promise = Promise[Option[Double]]()
-    apply().countAsync(
-      new CountRequest().indices(query.indices: _*).types(query.types: _*),
-      RequestOptions.DEFAULT,
-      new ActionListener[CountResponse] {
-        override def onResponse(response: CountResponse): Unit =
-          promise.success(Option(response.getCount.toDouble))
-
-        override def onFailure(e: Exception): Unit = promise.failure(e)
-      }
-    )
-    promise.future
-  }
-
-  override def count(query: client.ElasticQuery): Option[Double] = {
-    tryOrElse(
-      Option(
-        apply()
-          .count(
-            new CountRequest().indices(query.indices: _*).types(query.types: _*),
-            RequestOptions.DEFAULT
-          )
-          .getCount
-          .toDouble
-      ),
-      None
-    )(logger)
-  }
-}
-
-trait RestHighLevelClientSingleValueAggregateApi
-    extends SingleValueAggregateApi
-    with RestHighLevelClientCountApi {
-  _: SearchApi with ElasticConversion with RestHighLevelClientCompanion =>
-}
-
-trait RestHighLevelClientIndexApi extends IndexApi {
-  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion with SerializationApi =>
-  override def index(index: String, id: String, source: String): Boolean = {
-    tryOrElse(
-      apply()
-        .index(
-          new IndexRequest(index)
-            .id(id)
-            .source(source, XContentType.JSON),
-          RequestOptions.DEFAULT
-        )
-        .status()
-        .getStatus < 400,
-      false
-    )(logger)
-  }
-
-  override def indexAsync(index: String, id: String, source: String)(implicit
-    ec: ExecutionContext
-  ): Future[Boolean] = {
-    val promise: Promise[Boolean] = Promise()
-    apply().indexAsync(
-      new IndexRequest(index)
-        .id(id)
-        .source(source, XContentType.JSON),
-      RequestOptions.DEFAULT,
-      new ActionListener[IndexResponse] {
-        override def onResponse(response: IndexResponse): Unit =
-          promise.success(response.status().getStatus < 400)
-
-        override def onFailure(e: Exception): Unit = promise.failure(e)
-      }
-    )
-    promise.future
-  }
-}
-
-trait RestHighLevelClientUpdateApi extends UpdateApi {
-  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion with SerializationApi =>
-  override def update(
-    index: String,
-    id: String,
-    source: String,
-    upsert: Boolean
-  ): Boolean = {
-    tryOrElse(
-      apply()
-        .update(
-          new UpdateRequest(index, id)
-            .doc(source, XContentType.JSON)
-            .docAsUpsert(upsert),
-          RequestOptions.DEFAULT
-        )
-        .status()
-        .getStatus < 400,
-      false
-    )(logger)
-  }
-
-  override def updateAsync(
-    index: String,
-    id: String,
-    source: String,
-    upsert: Boolean
-  )(implicit ec: ExecutionContext): Future[Boolean] = {
-    val promise: Promise[Boolean] = Promise()
-    apply().updateAsync(
-      new UpdateRequest(index, id)
-        .doc(source, XContentType.JSON)
-        .docAsUpsert(upsert),
-      RequestOptions.DEFAULT,
-      new ActionListener[UpdateResponse] {
-        override def onResponse(response: UpdateResponse): Unit =
-          promise.success(response.status().getStatus < 400)
-
-        override def onFailure(e: Exception): Unit = promise.failure(e)
-      }
-    )
-    promise.future
-  }
-}
-
-trait RestHighLevelClientDeleteApi extends DeleteApi {
-  _: RestHighLevelClientRefreshApi with RestHighLevelClientCompanion =>
-
-  override def delete(id: String, index: String): Boolean = {
-    tryOrElse(
-      apply()
-        .delete(
-          new DeleteRequest(index, id),
-          RequestOptions.DEFAULT
-        )
-        .status()
-        .getStatus < 400,
-      false
-    )(logger)
-  }
-
-  override def deleteAsync(id: String, index: String)(implicit
-    ec: ExecutionContext
-  ): Future[Boolean] = {
-    val promise: Promise[Boolean] = Promise()
-    apply().deleteAsync(
-      new DeleteRequest(index, id),
-      RequestOptions.DEFAULT,
-      new ActionListener[DeleteResponse] {
-        override def onResponse(response: DeleteResponse): Unit =
-          promise.success(response.status().getStatus < 400)
-
-        override def onFailure(e: Exception): Unit = promise.failure(e)
-      }
-    )
-    promise.future
-  }
-}
-
-trait RestHighLevelClientGetApi extends GetApi {
+/** Version API implementation for RestHighLevelClient
+  * @see
+  *   [[VersionApi]] for generic API documentation
+  */
+trait RestHighLevelClientVersion extends VersionApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientCompanion with SerializationApi =>
-  def get[U <: AnyRef](
-    id: String,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit m: Manifest[U], formats: Formats): Option[U] = {
-    Try(
-      apply().get(
-        new GetRequest(
-          index.getOrElse(
-            maybeType.getOrElse(
-              m.runtimeClass.getSimpleName.toLowerCase
-            )
-          ),
-          id
-        ),
-        RequestOptions.DEFAULT
-      )
-    ) match {
-      case Success(response) =>
-        if (response.isExists) {
-          val source = response.getSourceAsString
-          logger.info(s"Deserializing response $source for id: $id, index: ${index
-            .getOrElse("default")}, type: ${maybeType.getOrElse("_all")}")
-          // Deserialize the source string to the expected type
-          // Note: This assumes that the source is a valid JSON representation of U
-          // and that the serialization library is capable of handling it.
-          Try(serialization.read[U](source)) match {
-            case Success(value) => Some(value)
-            case Failure(f) =>
-              logger.error(
-                s"Failed to deserialize response $source for id: $id, index: ${index
-                  .getOrElse("default")}, type: ${maybeType.getOrElse("_all")}",
-                f
-              )
-              None
-          }
-        } else {
-          None
-        }
-      case Failure(f) =>
-        logger.error(
-          s"Failed to get document with id: $id, index: ${index
-            .getOrElse("default")}, type: ${maybeType.getOrElse("_all")}",
-          f
-        )
-        None
-    }
-  }
 
-  override def getAsync[U <: AnyRef](
-    id: String,
-    index: Option[String] = None,
-    maybeType: Option[String] = None
-  )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[Option[U]] = {
-    val promise = Promise[Option[U]]()
-    apply().getAsync(
-      new GetRequest(
-        index.getOrElse(
-          maybeType.getOrElse(
-            m.runtimeClass.getSimpleName.toLowerCase
-          )
-        ),
-        id
-      ),
-      RequestOptions.DEFAULT,
-      new ActionListener[GetResponse] {
-        override def onResponse(response: GetResponse): Unit = {
-          if (response.isExists) {
-            promise.success(Some(serialization.read[U](response.getSourceAsString)))
-          } else {
-            promise.success(None)
-          }
-        }
-
-        override def onFailure(e: Exception): Unit = promise.failure(e)
+  override private[client] def executeVersion(): result.ElasticResult[String] =
+    executeRestLowLevelAction[String](
+      operation = "version",
+      index = None,
+      retryable = true
+    )(
+      request = new Request("GET", "/")
+    )(
+      transformer = resp => {
+        val jsonString = EntityUtils.toString(resp.getEntity)
+        implicit val formats: DefaultFormats.type = DefaultFormats
+        val json = JsonMethods.parse(jsonString)
+        (json \ "version" \ "number").extract[String]
       }
     )
-    promise.future
-  }
+
 }
 
-trait RestHighLevelClientSearchApi extends SearchApi {
+/** Indices management API for RestHighLevelClient
+  * @see
+  *   [[IndicesApi]] for generic API documentation
+  */
+trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientHelpers {
+  _: RefreshApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateIndex(
+    index: String,
+    settings: String
+  ): result.ElasticResult[Boolean] = {
+    executeRestBooleanAction[CreateIndexRequest, AcknowledgedResponse](
+      operation = "createIndex",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new CreateIndexRequest(index).settings(settings, XContentType.JSON)
+    )(
+      executor = req => apply().indices().create(req, RequestOptions.DEFAULT)
+    )
+  }
+
+  override private[client] def executeDeleteIndex(index: String): result.ElasticResult[Boolean] =
+    executeRestBooleanAction[DeleteIndexRequest, AcknowledgedResponse](
+      operation = "deleteIndex",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new DeleteIndexRequest(index)
+    )(
+      executor = req => apply().indices().delete(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeCloseIndex(index: String): result.ElasticResult[Boolean] =
+    executeRestBooleanAction[CloseIndexRequest, AcknowledgedResponse](
+      operation = "closeIndex",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new CloseIndexRequest(index)
+    )(
+      executor = req => apply().indices().close(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeOpenIndex(index: String): result.ElasticResult[Boolean] =
+    executeRestBooleanAction[OpenIndexRequest, AcknowledgedResponse](
+      operation = "openIndex",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new OpenIndexRequest(index)
+    )(
+      executor = req => apply().indices().open(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeReindex(
+    sourceIndex: String,
+    targetIndex: String,
+    refresh: Boolean
+  ): result.ElasticResult[(Boolean, Option[Long])] =
+    executeRestAction[Request, org.elasticsearch.client.Response, (Boolean, Option[Long])](
+      operation = "reindex",
+      index = Some(s"$sourceIndex->$targetIndex"),
+      retryable = false
+    )(
+      request = {
+        val req = new Request("POST", s"/_reindex?refresh=$refresh")
+        req.setJsonEntity(
+          s"""
+             |{
+             |  "source": {
+             |    "index": "$sourceIndex"
+             |  },
+             |  "dest": {
+             |    "index": "$targetIndex"
+             |  }
+             |}
+           """.stripMargin
+        )
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(resp => {
+      resp.getStatusLine match {
+        case statusLine if statusLine.getStatusCode >= 400 =>
+          (false, None)
+        case _ =>
+          val json = new JsonParser()
+            .parse(
+              scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString
+            )
+            .getAsJsonObject
+          if (json.has("failures") && json.get("failures").getAsJsonArray.size() > 0) {
+            (false, None)
+          } else {
+            (true, Some(json.get("created").getAsLong))
+          }
+      }
+    })
+
+  override private[client] def executeIndexExists(index: String): result.ElasticResult[Boolean] =
+    executeRestAction[GetIndexRequest, Boolean, Boolean](
+      operation = "indexExists",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new GetIndexRequest(index)
+    )(
+      executor = req => apply().indices().exists(req, RequestOptions.DEFAULT)
+    )(
+      identity
+    )
+
+}
+
+/** Alias management API for RestHighLevelClient
+  * @see
+  *   [[AliasApi]] for generic API documentation
+  */
+trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpers {
+  _: IndicesApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeAddAlias(
+    index: String,
+    alias: String
+  ): result.ElasticResult[Boolean] =
+    executeRestBooleanAction(
+      operation = "addAlias",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new IndicesAliasesRequest()
+        .addAliasAction(
+          new AliasActions(AliasActions.Type.ADD)
+            .index(index)
+            .alias(alias)
+        )
+    )(
+      executor = req => apply().indices().updateAliases(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeRemoveAlias(
+    index: String,
+    alias: String
+  ): result.ElasticResult[Boolean] =
+    executeRestBooleanAction(
+      operation = "removeAlias",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new IndicesAliasesRequest()
+        .addAliasAction(
+          new AliasActions(AliasActions.Type.REMOVE)
+            .index(index)
+            .alias(alias)
+        )
+    )(
+      executor = req => apply().indices().updateAliases(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeAliasExists(alias: String): result.ElasticResult[Boolean] =
+    executeRestAction[GetAliasesRequest, GetAliasesResponse, Boolean](
+      operation = "aliasExists",
+      index = Some(alias),
+      retryable = true
+    )(
+      request = new GetAliasesRequest().aliases(alias)
+    )(
+      executor = req => apply().indices().getAlias(req, RequestOptions.DEFAULT)
+    )(response => !response.getAliases.isEmpty)
+
+  override private[client] def executeGetAliases(index: String): result.ElasticResult[String] =
+    executeRestAction[GetAliasesRequest, GetAliasesResponse, String](
+      operation = "getAliases",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new GetAliasesRequest().indices(index)
+    )(
+      executor = req => apply().indices().getAlias(req, RequestOptions.DEFAULT)
+    )(response => {
+      val aliases = response.getAliases.asScala.get(index)
+      aliases match {
+        case Some(aliasMetaDataSeq) =>
+          val aliasNames = aliasMetaDataSeq.asScala.map(_.alias()).toSeq
+          val jsonAliases = aliasNames.map(name => s""""$name": {}""").mkString(", ")
+          s"""{ "aliases": { $jsonAliases } }"""
+        case None =>
+          s"""{ "aliases": {} }"""
+      }
+    })
+
+  override private[client] def executeSwapAlias(
+    oldIndex: String,
+    newIndex: String,
+    alias: String
+  ): result.ElasticResult[Boolean] =
+    executeRestBooleanAction(
+      operation = "swapAlias",
+      index = Some(s"$oldIndex -> $newIndex"),
+      retryable = false
+    )(
+      request = new IndicesAliasesRequest()
+        .addAliasAction(
+          new AliasActions(AliasActions.Type.REMOVE)
+            .index(oldIndex)
+            .alias(alias)
+        )
+        .addAliasAction(
+          new AliasActions(AliasActions.Type.ADD)
+            .index(newIndex)
+            .alias(alias)
+        )
+    )(
+      executor = req => apply().indices().updateAliases(req, RequestOptions.DEFAULT)
+    )
+}
+
+/** Settings management API for RestHighLevelClient
+  * @see
+  *   [[SettingsApi]] for generic API documentation
+  */
+trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClientHelpers {
+  _: IndicesApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeUpdateSettings(
+    index: String,
+    settings: String
+  ): result.ElasticResult[Boolean] =
+    executeRestBooleanAction(
+      operation = "updateSettings",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new UpdateSettingsRequest(index)
+        .settings(settings, XContentType.JSON)
+    )(
+      executor = req => apply().indices().putSettings(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeLoadSettings(index: String): result.ElasticResult[String] =
+    executeRestAction[GetSettingsRequest, GetSettingsResponse, String](
+      operation = "loadSettings",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new GetSettingsRequest().indices(index)
+    )(
+      executor = req => apply().indices().getSettings(req, RequestOptions.DEFAULT)
+    )(response => response.toString)
+
+}
+
+/** Mapping API implementation for RestHighLevelClient
+  * @see
+  *   [[MappingApi]] for generic API documentation
+  */
+trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientHelpers {
+  _: SettingsApi with IndicesApi with RefreshApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeSetMapping(
+    index: String,
+    mapping: String
+  ): result.ElasticResult[Boolean] =
+    executeRestBooleanAction(
+      operation = "setMapping",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new PutMappingRequest(index)
+        .source(mapping, XContentType.JSON)
+    )(
+      executor = req => apply().indices().putMapping(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeGetMapping(index: String): result.ElasticResult[String] =
+    executeRestAction[
+      GetMappingsRequest,
+      org.elasticsearch.client.indices.GetMappingsResponse,
+      String
+    ](
+      operation = "getMapping",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new GetMappingsRequest().indices(index)
+    )(
+      executor = req => apply().indices().getMapping(req, RequestOptions.DEFAULT)
+    )(response => {
+      val mappings = response.mappings().asScala.get(index)
+      mappings match {
+        case Some(metadata) => metadata.source().toString
+        case None           => s"""{"properties": {}}"""
+      }
+    })
+
+}
+
+/** Refresh API implementation for RestHighLevelClient
+  * @see
+  *   [[RefreshApi]] for generic API documentation
+  */
+trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+
+  override private[client] def executeRefresh(index: String): result.ElasticResult[Boolean] =
+    executeRestAction[RefreshRequest, RefreshResponse, Boolean](
+      operation = "refresh",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new RefreshRequest(index)
+    )(
+      executor = req => apply().indices().refresh(req, RequestOptions.DEFAULT)
+    )(response => response.getStatus.getStatus < 400)
+
+}
+
+/** Flush API implementation for RestHighLevelClient
+  * @see
+  *   [[FlushApi]] for generic API documentation
+  */
+trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+  override private[client] def executeFlush(
+    index: String,
+    force: Boolean,
+    wait: Boolean
+  ): result.ElasticResult[Boolean] =
+    executeRestAction[FlushRequest, FlushResponse, Boolean](
+      operation = "flush",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new FlushRequest(index).force(force).waitIfOngoing(wait)
+    )(
+      executor = req => apply().indices().flush(req, RequestOptions.DEFAULT)
+    )(response => response.getStatus == RestStatus.OK)
+
+}
+
+/** Count API implementation for RestHighLevelClient
+  * @see
+  *   [[CountApi]] for generic API documentation
+  */
+trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+  override private[client] def executeCount(
+    query: ElasticQuery
+  ): result.ElasticResult[Option[Double]] =
+    executeRestAction[CountRequest, CountResponse, Option[Double]](
+      operation = "count",
+      index = Some(query.indices.mkString(",")),
+      retryable = true
+    )(
+      request = new CountRequest().indices(query.indices: _*).types(query.types: _*)
+    )(
+      executor = req => apply().count(req, RequestOptions.DEFAULT)
+    )(response => Option(response.getCount.toDouble))
+
+  override private[client] def executeCountAsync(
+    query: ElasticQuery
+  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[Double]]] = {
+    executeAsyncRestAction[CountRequest, CountResponse, Option[Double]](
+      operation = "countAsync",
+      index = Some(query.indices.mkString(",")),
+      retryable = true
+    )(
+      request = new CountRequest().indices(query.indices: _*).types(query.types: _*)
+    )(
+      executor = (req, listener) => apply().countAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => Option(response.getCount.toDouble))
+  }
+
+}
+
+/** Index API implementation for RestHighLevelClient
+  * @see
+  *   [[IndexApi]] for generic API documentation
+  */
+trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpers {
+  _: RefreshApi with RestHighLevelClientCompanion with SerializationApi =>
+  override private[client] def executeIndex(
+    index: String,
+    id: String,
+    source: String
+  ): result.ElasticResult[Boolean] =
+    executeRestAction[IndexRequest, IndexResponse, Boolean](
+      operation = "index",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new IndexRequest(index)
+        .`type`("_doc")
+        .id(id)
+        .source(source, XContentType.JSON)
+    )(
+      executor = req => apply().index(req, RequestOptions.DEFAULT)
+    )(response => response.status().getStatus < 400)
+
+  override private[client] def executeIndexAsync(index: String, id: String, source: String)(implicit
+    ec: ExecutionContext
+  ): Future[result.ElasticResult[Boolean]] =
+    executeAsyncRestAction[IndexRequest, IndexResponse, Boolean](
+      operation = "indexAsync",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new IndexRequest(index)
+        .`type`("_doc")
+        .id(id)
+        .source(source, XContentType.JSON)
+    )(
+      executor = (req, listener) => apply().indexAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => response.status().getStatus < 400)
+
+}
+
+/** Update API implementation for RestHighLevelClient
+  * @see
+  *   [[UpdateApi]] for generic API documentation
+  */
+trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHelpers {
+  _: RefreshApi with RestHighLevelClientCompanion with SerializationApi =>
+  override private[client] def executeUpdate(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean
+  ): result.ElasticResult[Boolean] =
+    executeRestAction[UpdateRequest, UpdateResponse, Boolean](
+      operation = "update",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new UpdateRequest(index, id)
+        .doc(source, XContentType.JSON)
+        .docAsUpsert(upsert)
+    )(
+      executor = req => apply().update(req, RequestOptions.DEFAULT)
+    )(response => response.status().getStatus < 400)
+
+  override private[client] def executeUpdateAsync(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean
+  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Boolean]] =
+    executeAsyncRestAction[UpdateRequest, UpdateResponse, Boolean](
+      operation = "updateAsync",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new UpdateRequest(index, id)
+        .doc(source, XContentType.JSON)
+        .docAsUpsert(upsert)
+    )(
+      executor = (req, listener) => apply().updateAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => response.status().getStatus < 400)
+
+}
+
+/** Delete API implementation for RestHighLevelClient
+  * @see
+  *   [[DeleteApi]] for generic API documentation
+  */
+trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHelpers {
+  _: RefreshApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeDelete(
+    index: String,
+    id: String
+  ): result.ElasticResult[Boolean] =
+    executeRestAction[DeleteRequest, DeleteResponse, Boolean](
+      operation = "delete",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new DeleteRequest(index, id)
+    )(
+      executor = req => apply().delete(req, RequestOptions.DEFAULT)
+    )(response => response.status().getStatus < 400)
+
+  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+    ec: ExecutionContext
+  ): Future[result.ElasticResult[Boolean]] =
+    executeAsyncRestAction[DeleteRequest, DeleteResponse, Boolean](
+      operation = "deleteAsync",
+      index = Some(index),
+      retryable = false
+    )(
+      request = new DeleteRequest(index, id)
+    )(
+      executor = (req, listener) => apply().deleteAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => response.status().getStatus < 400)
+
+}
+
+/** Get API implementation for RestHighLevelClient
+  * @see
+  *   [[GetApi]] for generic API documentation
+  */
+trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion with SerializationApi =>
+  override private[client] def executeGet(
+    index: String,
+    id: String
+  ): result.ElasticResult[Option[String]] =
+    executeRestAction[GetRequest, GetResponse, Option[String]](
+      operation = "get",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new GetRequest(index, id)
+    )(
+      executor = req => apply().get(req, RequestOptions.DEFAULT)
+    )(response => {
+      if (response.isExists) {
+        Some(response.getSourceAsString)
+      } else {
+        None
+      }
+    })
+
+  override private[client] def executeGetAsync(index: String, id: String)(implicit
+    ec: ExecutionContext
+  ): Future[result.ElasticResult[Option[String]]] =
+    executeAsyncRestAction[GetRequest, GetResponse, Option[String]](
+      operation = "getAsync",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new GetRequest(index, id)
+    )(
+      executor = (req, listener) => apply().getAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => {
+      if (response.isExists) {
+        Some(response.getSourceAsString)
+      } else {
+        None
+      }
+    })
+
+}
+
+/** Search API implementation for RestHighLevelClient
+  * @see
+  *   [[SearchApi]] for generic API documentation
+  */
+trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
   _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
+
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
-  /** Search for entities matching the given JSON query.
-    *
-    * @param elasticQuery
-    *   - the JSON query to search for
-    * @param fieldAliases
-    *   - the field aliases to use for the search
-    * @param aggregations
-    *   - the aggregations to use for the search
-    * @return
-    *   the SQL search response containing the results of the query
-    */
-  override def search(
-    elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): ElasticResponse = {
-    val query = elasticQuery.query
-    // Create a parser for the query
-    val xContentParser = XContentType.JSON
-      .xContent()
-      .createParser(
-        namedXContentRegistry,
-        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        query
-      )
-    // Execute the search
-    val response = apply().search(
-      new SearchRequest(elasticQuery.indices: _*)
-        .types(elasticQuery.types: _*)
-        .source(
-          SearchSourceBuilder.fromXContent(xContentParser)
-        ),
-      RequestOptions.DEFAULT
-    )
-    // Return the SQL search response
-    val sqlResponse =
-      ElasticResponse(query, Strings.toString(response), fieldAliases, aggregations)
-    logger.info(s"Search response: $sqlResponse")
-    sqlResponse
-  }
-
-  /** Perform a multi-search operation with the given JSON multi-search query.
-    *
-    * @param elasticQueries
-    *   - the JSON multi-search query to perform
-    * @param fieldAliases
-    *   - the field aliases to use for the search
-    * @param aggregations
-    *   - the aggregations to use for the search
-    * @return
-    *   the SQL search response containing the results of the multi-search query
-    */
-  override def multisearch(
-    elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): ElasticResponse = {
-    val request = new MultiSearchRequest()
-    val queries = elasticQueries.queries.map(_.query)
-    val query = queries.mkString("\n")
-    elasticQueries.queries.zipWithIndex.map { case (q, i) =>
-      val query = queries(i)
-      logger.info(s"Searching with query ${i + 1}: $query on indices: ${q.indices
-        .mkString(", ")}")
-      request.add(
-        new SearchRequest(q.indices: _*)
-          .types(q.types: _*)
-          .source(
-            new SearchSourceBuilder(
-              new InputStreamStreamInput(
-                new ByteArrayInputStream(
-                  query.getBytes()
-                )
-              )
-            )
+  override private[client] def executeSingleSearch(
+    elasticQuery: ElasticQuery
+  ): result.ElasticResult[Option[String]] =
+    executeRestAction[SearchRequest, SearchResponse, Option[String]](
+      operation = "singleSearch",
+      index = Some(elasticQuery.indices.mkString(",")),
+      retryable = true
+    )(
+      request = {
+        val req = new SearchRequest(elasticQuery.indices: _*).types(elasticQuery.types: _*)
+        val xContentParser = XContentType.JSON
+          .xContent()
+          .createParser(
+            namedXContentRegistry,
+            DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+            elasticQuery.query
           )
-      )
-    }
-    /*for (query <- jsonQueries.queries) {
-      request.add(
-        new SearchRequest(query.indices: _*)
-          .types(query.types: _*)
-          .source(
-            new SearchSourceBuilder(
-              new InputStreamStreamInput(
-                new ByteArrayInputStream(
-                  query.query.getBytes()
-                )
-              )
-            )
-          )
-      )
-    }*/
-    val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    ElasticResponse(query, Strings.toString(responses), fieldAliases, aggregations)
-  }
-
-  override def searchAsyncAs[U](
-    sqlQuery: SQLQuery
-  )(implicit m: Manifest[U], ec: ExecutionContext, formats: Formats): Future[List[U]] = {
-    val elasticQuery: ElasticQuery = sqlQuery
-    import elasticQuery._
-    val promise = Promise[List[U]]()
-    logger.info(s"Searching with query: $query on indices: ${indices.mkString(", ")}")
-    // Create a parser for the query
-    val xContentParser = XContentType.JSON
-      .xContent()
-      .createParser(
-        namedXContentRegistry,
-        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        query
-      )
-    // Execute the search asynchronously
-    apply().searchAsync(
-      new SearchRequest(indices: _*)
-        .types(types: _*)
-        .source(
-          SearchSourceBuilder.fromXContent(xContentParser)
-        ),
-      RequestOptions.DEFAULT,
-      new ActionListener[SearchResponse] {
-        override def onResponse(response: SearchResponse): Unit = {
-          if (response.getHits.getTotalHits.value > 0) {
-            promise.success(response.getHits.getHits.toList.map { hit =>
-              serialization.read[U](hit.getSourceAsString)
-            })
-          } else {
-            promise.success(List.empty[U])
-          }
-        }
-
-        override def onFailure(e: Exception): Unit = promise.failure(e)
+        req.source(SearchSourceBuilder.fromXContent(xContentParser))
+        req
       }
-    )
-    promise.future
-  }
-
-  override def searchWithInnerHits[U, I](elasticQuery: ElasticQuery, innerField: String)(implicit
-    m1: Manifest[U],
-    m2: Manifest[I],
-    formats: Formats
-  ): List[(U, List[I])] = {
-    import elasticQuery._
-    // Create a parser for the query
-    val xContentParser = XContentType.JSON
-      .xContent()
-      .createParser(
-        namedXContentRegistry,
-        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-        elasticQuery.query
-      )
-    val response = apply().search(
-      new SearchRequest(indices: _*)
-        .types(types: _*)
-        .source(
-          SearchSourceBuilder.fromXContent(xContentParser)
-        ),
-      RequestOptions.DEFAULT
-    )
-    Try(new JsonParser().parse(response.toString).getAsJsonObject ~> [U, I] innerField) match {
-      case Success(s) => s
-      case Failure(f) =>
-        logger.error(f.getMessage, f)
-        List.empty
-    }
-  }
-
-  override def multisearchWithInnerHits[U, I](elasticQueries: ElasticQueries, innerField: String)(
-    implicit
-    m1: Manifest[U],
-    m2: Manifest[I],
-    formats: Formats
-  ): List[List[(U, List[I])]] = {
-    import elasticQueries._
-    val request = new MultiSearchRequest()
-    for (query <- queries) {
-      request.add(
-        new SearchRequest(query.indices: _*)
-          .types(query.types: _*)
-          .source(
-            new SearchSourceBuilder(
-              new InputStreamStreamInput(
-                new ByteArrayInputStream(
-                  query.query.getBytes()
-                )
-              )
-            )
-          )
-      )
-    }
-    val responses = apply().msearch(request, RequestOptions.DEFAULT)
-    responses.getResponses.toList.map { response =>
-      if (response.isFailure) {
-        logger.error(s"Error in multi search: ${response.getFailureMessage}")
-        List.empty[(U, List[I])]
+    )(
+      executor = req => apply().search(req, RequestOptions.DEFAULT)
+    )(response => {
+      if (response.status() == RestStatus.OK) {
+        Some(Strings.toString(response))
       } else {
-        Try(
-          new JsonParser().parse(response.getResponse.toString).getAsJsonObject ~> [U, I] innerField
-        ) match {
-          case Success(s) => s
-          case Failure(f) =>
-            logger.error(f.getMessage, f)
-            List.empty
-        }
+        None
       }
-    }
-  }
+    })
+
+  override private[client] def executeMultiSearch(
+    elasticQueries: ElasticQueries
+  ): result.ElasticResult[Option[String]] =
+    executeRestAction[MultiSearchRequest, MultiSearchResponse, Option[String]](
+      operation = "multiSearch",
+      index = Some(
+        elasticQueries.queries
+          .flatMap(_.indices)
+          .distinct
+          .mkString(",")
+      ),
+      retryable = true
+    )(
+      request = {
+        val req = new MultiSearchRequest()
+        for (query <- elasticQueries.queries) {
+          val xContentParser = XContentType.JSON
+            .xContent()
+            .createParser(
+              namedXContentRegistry,
+              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+              query.query
+            )
+          val searchSourceBuilder = SearchSourceBuilder.fromXContent(xContentParser)
+          req.add(
+            new SearchRequest(query.indices: _*)
+              .types(query.types: _*)
+              .source(searchSourceBuilder)
+          )
+        }
+        req
+      }
+    )(
+      executor = req => apply().msearch(req, RequestOptions.DEFAULT)
+    )(response => Some(Strings.toString(response)))
+
+  override private[client] def executeSingleSearchAsync(
+    elasticQuery: ElasticQuery
+  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[String]]] =
+    executeAsyncRestAction[SearchRequest, SearchResponse, Option[String]](
+      operation = "executeSingleSearchAsync",
+      index = Some(elasticQuery.indices.mkString(",")),
+      retryable = true
+    )(
+      request = {
+        val req = new SearchRequest(elasticQuery.indices: _*).types(elasticQuery.types: _*)
+        val xContentParser = XContentType.JSON
+          .xContent()
+          .createParser(
+            namedXContentRegistry,
+            DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+            elasticQuery.query
+          )
+        req.source(SearchSourceBuilder.fromXContent(xContentParser))
+        req
+      }
+    )(
+      executor = (req, listener) => apply().searchAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => {
+      if (response.status() == RestStatus.OK) {
+        Some(Strings.toString(response))
+      } else {
+        None
+      }
+    })
+
+  override private[client] def executeMultiSearchAsync(
+    elasticQueries: ElasticQueries
+  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[String]]] =
+    executeAsyncRestAction[MultiSearchRequest, MultiSearchResponse, Option[String]](
+      operation = "executeMultiSearchAsync",
+      index = Some(
+        elasticQueries.queries
+          .flatMap(_.indices)
+          .distinct
+          .mkString(",")
+      ),
+      retryable = true
+    )(
+      request = {
+        val req = new MultiSearchRequest()
+        for (query <- elasticQueries.queries) {
+          val xContentParser = XContentType.JSON
+            .xContent()
+            .createParser(
+              namedXContentRegistry,
+              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+              query.query
+            )
+          val searchSourceBuilder = SearchSourceBuilder.fromXContent(xContentParser)
+          req.add(
+            new SearchRequest(query.indices: _*)
+              .types(query.types: _*)
+              .source(searchSourceBuilder)
+          )
+        }
+        req
+      }
+    )(
+      executor = (req, listener) => apply().msearchAsync(req, RequestOptions.DEFAULT, listener)
+    )(response => Some(Strings.toString(response)))
 
 }
 
-trait RestHighLevelClientBulkApi
-    extends RestHighLevelClientRefreshApi
-    with RestHighLevelClientSettingsApi
-    with RestHighLevelClientIndicesApi
-    with BulkApi { _: RestHighLevelClientCompanion =>
+/** Bulk API implementation for RestHighLevelClient
+  * @see
+  *   [[BulkApi]] for generic API documentation
+  */
+trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers {
+  _: RefreshApi with SettingsApi with IndexApi with RestHighLevelClientCompanion =>
+
   override type BulkActionType = DocWriteRequest[_]
   override type BulkResultType = BulkResponse
 
-  override def toBulkAction(bulkItem: BulkItem): A = {
-    import bulkItem._
-    val request = action match {
-      case BulkAction.UPDATE =>
-        new UpdateRequest(index, id.orNull)
-          .doc(body, XContentType.JSON)
-          .docAsUpsert(true)
-      case BulkAction.DELETE =>
-        new DeleteRequest(index).id(id.getOrElse("_all"))
-      case _ =>
-        new IndexRequest(index).source(body, XContentType.JSON).id(id.orNull)
+  override implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction = {
+    new BulkElasticAction {
+      override def index: String = a.index
     }
-    request
   }
 
-  override def bulkResult: Flow[R, Set[String], NotUsed] =
-    Flow[BulkResponse]
-      .named("result")
-      .map(result => {
-        val items = result.getItems
-        val grouped = items.groupBy(_.getIndex)
-        val indices = grouped.keys.toSet
-        for (index <- indices) {
-          logger
-            .info(s"Bulk operation succeeded for index $index with ${grouped(index).length} items.")
-        }
-        indices
-      })
-
-  override def bulk(implicit
+  /** Basic flow for executing a bulk action. This method must be implemented by concrete classes
+    * depending on the Elasticsearch version and client used.
+    *
+    * @param bulkOptions
+    *   configuration options
+    * @return
+    *   Flow transforming bulk actions into results
+    */
+  override private[client] def bulkFlow(implicit
     bulkOptions: BulkOptions,
     system: ActorSystem
-  ): Flow[Seq[A], R, NotUsed] = {
+  ): Flow[Seq[BulkActionType], BulkResultType, NotUsed] = {
     val parallelism = Math.max(1, bulkOptions.balance)
-    Flow[Seq[A]]
+    Flow[Seq[BulkActionType]]
       .named("bulk")
       .mapAsyncUnordered[R](parallelism) { items =>
         val request = new BulkRequest(bulkOptions.index)
@@ -857,51 +868,188 @@ trait RestHighLevelClientBulkApi
       }
   }
 
-  private[this] def toBulkElasticResultItem(i: BulkItemResponse): BulkElasticResultItem =
-    new BulkElasticResultItem {
-      override def index: String = i.getIndex
+  /** Convert a BulkResultType into individual results. This method must extract the successes and
+    * failures from the ES response.
+    *
+    * @param result
+    *   raw result from the bulk
+    * @return
+    *   sequence of Right(id) for success or Left(failed) for failure
+    */
+  override private[client] def extractBulkResults(
+    result: BulkResultType,
+    originalBatch: Seq[BulkItem]
+  ): Seq[Either[FailedDocument, SuccessfulDocument]] = {
+    // no results at all
+    if (
+      originalBatch.nonEmpty &&
+      (result == null || (result.getItems == null || result.getItems.isEmpty))
+    ) {
+      logger.error("Bulk result is null or has no items")
+      return originalBatch.map { item =>
+        Left(
+          FailedDocument(
+            id = item.id.getOrElse("unknown"),
+            index = item.index,
+            document = item.document,
+            error = BulkError(
+              message = "Null bulk result",
+              `type` = "internal_error",
+              status = 500
+            ),
+            retryable = false
+          )
+        )
+      }
     }
 
-  override implicit def toBulkElasticAction(a: DocWriteRequest[_]): BulkElasticAction = {
-    new BulkElasticAction {
-      override def index: String = a.index
+    // process failed items
+    val failedItems = result.getItems.filter(_.isFailed).map { item =>
+      val failure = item.getFailure
+      val statusCode = item.status().getStatus
+      val errorType = Option(failure.getType).getOrElse("unknown")
+      val errorReason = Option(failure.getMessage).getOrElse("Unknown error")
+
+      val itemId = item.getId
+      val itemIndex = item.getIndex
+
+      val originalItemOpt = originalBatch
+        .find(o => o.id.contains(itemId) && o.index == itemIndex)
+
+      // Determine if the error is retryable
+      val isRetryable = originalItemOpt.isDefined && (BulkErrorAnalyzer.isRetryable(statusCode) ||
+      BulkErrorAnalyzer.isRetryableByType(errorType))
+
+      val originalItem = originalItemOpt.getOrElse(
+        BulkItem(
+          index = itemIndex,
+          id = Some(itemId),
+          document = "",
+          parent = None,
+          action = item.getOpType match {
+            case DocWriteRequest.OpType.INDEX  => BulkAction.INDEX
+            case DocWriteRequest.OpType.CREATE => BulkAction.INDEX
+            case DocWriteRequest.OpType.UPDATE => BulkAction.UPDATE
+            case DocWriteRequest.OpType.DELETE => BulkAction.DELETE
+          }
+        )
+      )
+
+      Left(
+        FailedDocument(
+          id = originalItem.id.getOrElse("unknown"),
+          index = originalItem.index,
+          document = originalItem.document,
+          error = BulkError(
+            message = errorReason,
+            `type` = errorType,
+            status = statusCode
+          ),
+          retryable = isRetryable
+        )
+      )
+    }
+
+    // process successful items
+    val items =
+      result.getItems.filterNot(_.isFailed).map { item =>
+        Right(SuccessfulDocument(id = item.getId, index = item.getIndex))
+      }
+
+    val results = failedItems ++ items
+
+    // if no individual results but overall failure, mark all as failed
+    if (results.isEmpty && originalBatch.nonEmpty) {
+      val statusCode = result.status().getStatus
+      val errorString = result.buildFailureMessage()
+      logger.error(s"Bulk operation completed with errors: $errorString")
+      val bulkError =
+        BulkError(
+          message = errorString,
+          `type` = "unknown",
+          status = statusCode
+        )
+      return originalBatch.map { item =>
+        Left(
+          FailedDocument(
+            id = item.id.getOrElse("unknown"),
+            index = item.index,
+            document = item.document,
+            error = bulkError,
+            retryable = BulkErrorAnalyzer.isRetryable(statusCode)
+          )
+        )
+      }
+    }
+
+    results
+  }
+
+  override def toBulkAction(bulkItem: BulkItem): A = {
+    import bulkItem._
+    val request = action match {
+      case BulkAction.UPDATE =>
+        new UpdateRequest(bulkItem.index, id.orNull)
+          .doc(document, XContentType.JSON)
+          .docAsUpsert(true)
+      case BulkAction.DELETE =>
+        new DeleteRequest(bulkItem.index).id(id.getOrElse("_all"))
+      case _ =>
+        new IndexRequest(bulkItem.index).source(document, XContentType.JSON).id(id.orNull)
+    }
+    request
+  }
+
+  /** Conversion BulkActionType -> BulkItem */
+  override private[client] def actionToBulkItem(action: BulkActionType): BulkItem = {
+    action match {
+      case req: IndexRequest =>
+        BulkItem(
+          index = req.index(),
+          id = Option(req.id()),
+          document = req.source().utf8ToString(),
+          parent = None,
+          action = BulkAction.INDEX
+        )
+      case req: UpdateRequest =>
+        BulkItem(
+          index = req.index(),
+          id = Option(req.id()),
+          document = req.doc().source().utf8ToString(),
+          parent = None,
+          action = BulkAction.UPDATE
+        )
+      case req: DeleteRequest =>
+        BulkItem(
+          index = req.index(),
+          id = Option(req.id()),
+          document = "",
+          parent = None,
+          action = BulkAction.DELETE
+        )
+      case _ =>
+        throw new IllegalArgumentException(
+          s"Unsupported BulkActionType: ${action.getClass.getName}"
+        )
     }
   }
 
-  override implicit def toBulkElasticResult(r: BulkResponse): BulkElasticResult = {
-    new BulkElasticResult {
-      override def items: List[BulkElasticResultItem] =
-        r.getItems.toList.map(toBulkElasticResultItem)
-    }
-  }
 }
 
-trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientCompanion {
+/** Scroll API implementation for RestHighLevelClient
+  * @see
+  *   [[ScrollApi]] for generic API documentation
+  */
+trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
+  _: SearchApi with VersionApi with RestHighLevelClientCompanion =>
 
-  // Cache ES version (avoids calling it every time)
-  @volatile private var cachedVersion: Option[String] = None
-
-  /** Get Elasticsearch version (cached)
-    */
   protected def getElasticsearchVersion()(implicit ec: ExecutionContext): Future[String] = {
-    cachedVersion match {
-      case Some(version) =>
-        Future.successful(version)
-      case None =>
-        Future {
-          val info = apply().info(RequestOptions.DEFAULT)
-          val version = info.getVersion.getNumber
-          cachedVersion = Some(version)
-          logger.info(s"Detected Elasticsearch version: $version")
-          version
-        }.recoverWith { case ex: Exception =>
-          logger.error(s"Failed to get ES version: ${ex.getMessage}", ex)
-          // Fallback to a safe version (no PIT)
-          val fallbackVersion = "7.0.0"
-          logger.warn(s"Using fallback version: $fallbackVersion")
-          cachedVersion = Some(fallbackVersion)
-          Future.successful(fallbackVersion)
-        }
+    Future {
+      version match {
+        case result.ElasticSuccess(v) => v
+        case result.ElasticFailure(err) =>
+          throw new RuntimeException(s"Failed to get ES version: $err")
+      }
     }
   }
 

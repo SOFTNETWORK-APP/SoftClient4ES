@@ -106,34 +106,7 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
 
     logger.debug(s"Getting mapping for index '$index'")
 
-    executeGetMapping(index).flatMap { jsonString =>
-      // ✅ Extracting mapping from JSON
-      ElasticResult.attempt(
-        new JsonParser().parse(jsonString).getAsJsonObject
-      ) match {
-        case ElasticFailure(error) =>
-          logger.error(s"❌ Failed to parse JSON mapping for index '$index': ${error.message}")
-          return ElasticFailure(error.copy(operation = Some("getMapping"), index = Some(index)))
-        case ElasticSuccess(indexObj) =>
-          if (Option(indexObj).isDefined && indexObj.has(index)) {
-            val settingsObj = indexObj
-              .getAsJsonObject(index)
-              .getAsJsonObject("mappings")
-              .getAsJsonObject("_doc")
-            ElasticSuccess(settingsObj.toString)
-          } else {
-            val message = s"Index '$index' not found in the loaded mapping."
-            logger.error(s"❌ $message")
-            ElasticFailure(
-              ElasticError(
-                message = message,
-                operation = Some("getMapping"),
-                index = Some(index)
-              )
-            )
-          }
-      }
-    }
+    executeGetMapping(index)
   }
 
   /** Get the mapping properties of an index.
@@ -143,15 +116,7 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     *   the mapping properties of the index as a JSON string
     */
   def getMappingProperties(index: String): ElasticResult[String] =
-    getMapping(index).flatMap { mappingJson =>
-      ElasticResult.attempt {
-        new JsonParser()
-          .parse(mappingJson)
-          .getAsJsonObject
-          .get("mappings")
-          .toString
-      }
-    }
+    getMapping(index)
 
   /** Check if the mapping of an index is different from the provided mapping.
     * @param index

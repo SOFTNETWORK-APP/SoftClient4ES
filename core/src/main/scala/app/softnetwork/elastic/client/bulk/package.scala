@@ -162,11 +162,11 @@ package object bulk {
     }
   }
 
-  trait BulkElasticAction { def index: String }
+  trait BulkElasticAction { def index: String } // TODO rename to BulkItemIndex
 
-  trait BulkElasticResult { def items: List[BulkElasticResultItem] }
+  trait BulkElasticResult { def items: List[BulkElasticResultItem] } // TODO remove
 
-  trait BulkElasticResultItem { def index: String }
+  trait BulkElasticResultItem { def index: String } // TODO remove
 
   case class BulkSettings[A](disableRefresh: Boolean = false)(implicit
     settingsApi: SettingsApi,
@@ -211,4 +211,65 @@ package object bulk {
 
   def docAsUpsert(doc: String): String = s"""{"doc":$doc,"doc_as_upsert":true}"""
 
+  object BulkErrorAnalyzer {
+
+    /** Determines whether a bulk error is retryable based on the status.
+      *
+      * @param statusCode
+      *   HTTP error status code
+      * @return
+      *   true if the error is retryable, false otherwise
+      */
+    def isRetryable(statusCode: Int): Boolean = statusCode match {
+      // Temporary errors - retryable
+      case 429 => true // Too Many Requests
+      case 503 => true // Service Unavailable
+      case 504 => true // Gateway Timeout
+      case 408 => true // Request Timeout
+      case 502 => true // Bad Gateway
+
+      // Permanent errors - not retryable
+      case 400 => false // Bad Request
+      case 401 => false // Unauthorized
+      case 403 => false // Forbidden
+      case 404 => false // Not Found
+      case 409 => false // Conflict (version)
+      case 413 => false // Payload Too Large
+
+      // By default, 5xx errors (except those listed) are retryable.
+      case code if code >= 500 && code < 600 => true
+
+      // Other 4xx errors are non-retryable
+      case code if code >= 400 && code < 500 => false
+
+      // Status 2xx and 3xx should not be errors
+      case _ => false
+    }
+
+    /** Determines whether a bulk error is retryable based on the ES error type.
+      *
+      * @param errorType
+      *   Elasticsearch error type
+      * @return
+      *   true if the error is retryable, false otherwise
+      */
+    def isRetryableByType(errorType: String): Boolean = errorType match {
+      // Retryable errors
+      case "es_rejected_execution_exception" => true
+      case "circuit_breaking_exception"      => true
+      case "timeout_exception"               => true
+      case "unavailable_shards_exception"    => true
+
+      // non-retryable errors
+      case "mapper_parsing_exception"          => false
+      case "illegal_argument_exception"        => false
+      case "version_conflict_engine_exception" => false
+      case "document_missing_exception"        => false
+      case "index_not_found_exception"         => false
+      case "strict_dynamic_mapping_exception"  => false
+
+      // By default, it is considered non-retryable
+      case _ => false
+    }
+  }
 }
