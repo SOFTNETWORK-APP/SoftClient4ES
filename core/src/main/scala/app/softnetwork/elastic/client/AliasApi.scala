@@ -303,7 +303,10 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
             logger.warn(s"Index '$index' not found in response")
             ElasticResult.success(Set.empty[String])
           } else {
-            val aliasesObj = indexObj.getAsJsonObject("aliases")
+            val aliasesObj =
+              indexObj
+                .getAsJsonObject(index)
+                .getAsJsonObject("aliases")
             if (aliasesObj == null || aliasesObj.size() == 0) {
               logger.debug(s"No aliases found for index '$index'")
               ElasticResult.success(Set.empty[String])

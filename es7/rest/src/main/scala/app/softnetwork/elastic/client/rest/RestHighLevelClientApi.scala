@@ -301,17 +301,7 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
       request = new GetAliasesRequest().indices(index)
     )(
       executor = req => apply().indices().getAlias(req, RequestOptions.DEFAULT)
-    )(response => {
-      val aliases = response.getAliases.asScala.get(index)
-      aliases match {
-        case Some(aliasMetaDataSeq) =>
-          val aliasNames = aliasMetaDataSeq.asScala.map(_.alias()).toSeq
-          val jsonAliases = aliasNames.map(name => s""""$name": {}""").mkString(", ")
-          s"""{ "aliases": { $jsonAliases } }"""
-        case None =>
-          s"""{ "aliases": {} }"""
-      }
-    })
+    )(response => Strings.toString(response))
 
   override private[client] def executeSwapAlias(
     oldIndex: String,
@@ -951,12 +941,12 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
     }
 
     // process successful items
-    val items =
+    val successfulItems =
       result.getItems.filterNot(_.isFailed).map { item =>
         Right(SuccessfulDocument(id = item.getId, index = item.getIndex))
       }
 
-    val results = failedItems ++ items
+    val results = failedItems ++ successfulItems
 
     // if no individual results but overall failure, mark all as failed
     if (results.isEmpty && originalBatch.nonEmpty) {

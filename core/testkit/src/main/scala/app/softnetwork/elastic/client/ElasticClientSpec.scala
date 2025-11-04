@@ -111,7 +111,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Adding an alias and then removing it" should "work" in {
     pClient.addAlias("person", "person_alias")
 
-    doesAliasExists("person_alias") shouldBe true
+    pClient.aliasExists("person_alias").get shouldBe true
+
+    pClient.getAliases("person") match {
+      case ElasticSuccess(aliases) =>
+        aliases should contain("person_alias")
+      case ElasticFailure(elasticError) =>
+        fail(elasticError.fullMessage)
+    }
 
     pClient.removeAlias("person", "person_alias")
 

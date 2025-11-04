@@ -22,6 +22,7 @@ import com.typesafe.config.Config
 
 class ElasticsearchClientSpi extends ElasticClientSpi {
 
+  //format:off
   /** Creates an Elasticsearch client instance.
     *
     * @param conf
@@ -37,6 +38,7 @@ class ElasticsearchClientSpi extends ElasticClientSpi {
     * }
     * }}}
     */
+  //format:on
   override def client(conf: Config): ElasticClientApi =
     new ElasticsearchClientApi {
       override def config: Config = conf

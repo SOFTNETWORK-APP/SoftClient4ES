@@ -65,7 +65,7 @@ trait JestAliasApi extends AliasApi with JestClientHelpers {
     *   [[AliasApi.aliasExists]]
     */
   override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
-    executeJestBooleanAction(
+    executeJestAction(
       operation = "aliasExists",
       index = Some(alias),
       retryable = true
@@ -73,7 +73,7 @@ trait JestAliasApi extends AliasApi with JestClientHelpers {
       new GetAliases.Builder()
         .addAlias(alias)
         .build()
-    }
+    }(result => !result.getJsonObject.getAsJsonObject.entrySet().isEmpty)
 
   /** Get aliases for a given index.
     * @see
