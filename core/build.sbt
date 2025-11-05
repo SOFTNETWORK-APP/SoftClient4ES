@@ -26,6 +26,10 @@ val json4s = Seq(
   "org.json4s" %% "json4s-ext" % Versions.json4s
 ).map(_.excludeAll(jacksonExclusions *))
 
+val mockito = Seq(
+  "org.mockito" %% "mockito-scala" % "1.17.12" % Test
+)
+
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
-json4s :+ "com.google.code.gson" % "gson" % Versions.gson :+
+json4s ++ mockito :+ "com.google.code.gson" % "gson" % Versions.gson :+
   "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging
