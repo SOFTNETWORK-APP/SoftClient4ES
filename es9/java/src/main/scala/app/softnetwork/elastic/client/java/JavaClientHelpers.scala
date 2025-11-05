@@ -21,8 +21,8 @@ import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
 
 import scala.util.{Failure, Success, Try}
 
-trait ElasticsearchClientHelpers extends ElasticClientHelpers with ElasticsearchConversion {
-  _: ElasticsearchClientCompanion =>
+trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
+  _: JavaClientCompanion =>
 
   // ========================================================================
   // GENERIC METHODS FOR EXECUTING JAVA CLIENT ACTIONS

@@ -1,3 +1,0 @@
-package app.softnetwork.elastic.persistence.person
-
-class ElasticsearchClientPersonHandlerSpec extends ElasticClientPersonHandlerSpec

@@ -22,7 +22,7 @@ import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import java.io.{IOException, StringWriter}
 import scala.util.Try
 
-trait ElasticsearchConversion { _: ElasticsearchClientCompanion =>
+trait JavaClientConversion { _: JavaClientCompanion =>
   private[this] val jsonpMapper = new JacksonJsonpMapper(mapper)
 
   /** Convert any Elasticsearch response to JSON string */

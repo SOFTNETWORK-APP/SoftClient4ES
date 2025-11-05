@@ -17,10 +17,10 @@
 package app.softnetwork.elastic.client.spi
 
 import app.softnetwork.elastic.client.ElasticClientApi
-import app.softnetwork.elastic.client.java.ElasticsearchClientApi
+import app.softnetwork.elastic.client.java.JavaClientApi
 import com.typesafe.config.Config
 
-class ElasticsearchClientSpi extends ElasticClientSpi {
+class JavaClientSpi extends ElasticClientSpi {
 
   //format:off
   /** Creates an Elasticsearch client instance.
@@ -40,7 +40,7 @@ class ElasticsearchClientSpi extends ElasticClientSpi {
     */
   //format:on
   override def client(conf: Config): ElasticClientApi =
-    new ElasticsearchClientApi {
+    new JavaClientApi {
       override def config: Config = conf
     }
 }

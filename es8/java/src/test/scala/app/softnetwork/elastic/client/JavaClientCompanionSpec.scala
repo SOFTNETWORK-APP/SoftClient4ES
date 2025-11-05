@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
-import app.softnetwork.elastic.client.java.ElasticsearchClientCompanion
+import app.softnetwork.elastic.client.java.JavaClientCompanion
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.persistence.generateUUID
 import com.typesafe.config.ConfigFactory
@@ -16,7 +16,7 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.Try
 
-class ElasticsearchClientCompanionSpec
+class JavaClientCompanionSpec
     extends AnyWordSpec
     with ElasticDockerTestKit
     with Matchers
@@ -89,7 +89,7 @@ class ElasticsearchClientCompanionSpec
     }
   }
 
-  case class TestCompanion(config: ElasticConfig) extends ElasticsearchClientCompanion {
+  case class TestCompanion(config: ElasticConfig) extends JavaClientCompanion {
     override def elasticConfig: ElasticConfig = config
   }
 

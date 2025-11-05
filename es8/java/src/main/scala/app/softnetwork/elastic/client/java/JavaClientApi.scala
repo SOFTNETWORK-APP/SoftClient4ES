@@ -54,31 +54,31 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
 
-trait ElasticsearchClientApi
+trait JavaClientApi
     extends ElasticClientApi
-    with ElasticsearchClientIndicesApi
-    with ElasticsearchClientAliasApi
-    with ElasticsearchClientSettingsApi
-    with ElasticsearchClientMappingApi
-    with ElasticsearchClientRefreshApi
-    with ElasticsearchClientFlushApi
-    with ElasticsearchClientCountApi
-    with ElasticsearchClientIndexApi
-    with ElasticsearchClientUpdateApi
-    with ElasticsearchClientDeleteApi
-    with ElasticsearchClientGetApi
-    with ElasticsearchClientSearchApi
-    with ElasticsearchClientBulkApi
-    with ElasticsearchClientScrollApi
-    with ElasticsearchClientCompanion
-    with ElasticsearchClientVersionApi
+    with JavaClientIndicesApi
+    with JavaClientAliasApi
+    with JavaClientSettingsApi
+    with JavaClientMappingApi
+    with JavaClientRefreshApi
+    with JavaClientFlushApi
+    with JavaClientCountApi
+    with JavaClientIndexApi
+    with JavaClientUpdateApi
+    with JavaClientDeleteApi
+    with JavaClientGetApi
+    with JavaClientSearchApi
+    with JavaClientBulkApi
+    with JavaClientScrollApi
+    with JavaClientCompanion
+    with JavaClientVersionApi
 
 /** Elasticsearch client implementation using the Java Client
   * @see
   *   [[VersionApi]] for version information
   */
-trait ElasticsearchClientVersionApi extends VersionApi with ElasticsearchClientHelpers {
-  _: SerializationApi with ElasticsearchClientCompanion =>
+trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
+  _: SerializationApi with JavaClientCompanion =>
   override private[client] def executeVersion(): result.ElasticResult[String] =
     executeJavaAction(
       operation = "version",
@@ -95,10 +95,8 @@ trait ElasticsearchClientVersionApi extends VersionApi with ElasticsearchClientH
   * @see
   *   [[IndicesApi]] for index management operations
   */
-trait ElasticsearchClientIndicesApi
-    extends IndicesApi
-    with RefreshApi
-    with ElasticsearchClientHelpers { _: ElasticsearchClientCompanion =>
+trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
     settings: String
@@ -198,8 +196,8 @@ trait ElasticsearchClientIndicesApi
   * @see
   *   [[AliasApi]] for alias management operations
   */
-trait ElasticsearchClientAliasApi extends AliasApi with ElasticsearchClientHelpers {
-  _: IndicesApi with ElasticsearchClientCompanion =>
+trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
+  _: IndicesApi with JavaClientCompanion =>
 
   override private[client] def executeAddAlias(
     index: String,
@@ -305,8 +303,8 @@ trait ElasticsearchClientAliasApi extends AliasApi with ElasticsearchClientHelpe
   * @see
   *   [[SettingsApi]] for settings management operations
   */
-trait ElasticsearchClientSettingsApi extends SettingsApi with ElasticsearchClientHelpers {
-  _: IndicesApi with ElasticsearchClientCompanion =>
+trait JavaClientSettingsApi extends SettingsApi with JavaClientHelpers {
+  _: IndicesApi with JavaClientCompanion =>
 
   override private[client] def executeUpdateSettings(
     index: String,
@@ -346,8 +344,8 @@ trait ElasticsearchClientSettingsApi extends SettingsApi with ElasticsearchClien
   * @see
   *   [[MappingApi]] for mapping management operations
   */
-trait ElasticsearchClientMappingApi extends MappingApi with ElasticsearchClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with ElasticsearchClientCompanion =>
+trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
+  _: SettingsApi with IndicesApi with RefreshApi with JavaClientCompanion =>
 
   override private[client] def executeSetMapping(
     index: String,
@@ -413,8 +411,8 @@ trait ElasticsearchClientMappingApi extends MappingApi with ElasticsearchClientH
   * @see
   *   [[RefreshApi]] for index refresh operations
   */
-trait ElasticsearchClientRefreshApi extends RefreshApi with ElasticsearchClientHelpers {
-  _: ElasticsearchClientCompanion =>
+trait JavaClientRefreshApi extends RefreshApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
 
   override private[client] def executeRefresh(index: String): result.ElasticResult[Boolean] =
     executeJavaBooleanAction(
@@ -439,8 +437,8 @@ trait ElasticsearchClientRefreshApi extends RefreshApi with ElasticsearchClientH
   * @see
   *   [[FlushApi]] for index flush operations
   */
-trait ElasticsearchClientFlushApi extends FlushApi with ElasticsearchClientHelpers {
-  _: ElasticsearchClientCompanion =>
+trait JavaClientFlushApi extends FlushApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
 
   override private[client] def executeFlush(
     index: String,
@@ -469,8 +467,8 @@ trait ElasticsearchClientFlushApi extends FlushApi with ElasticsearchClientHelpe
   * @see
   *   [[CountApi]] for count operations
   */
-trait ElasticsearchClientCountApi extends CountApi with ElasticsearchClientHelpers {
-  _: ElasticsearchClientCompanion =>
+trait JavaClientCountApi extends CountApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
 
   override private[client] def executeCount(
     query: ElasticQuery
@@ -506,8 +504,8 @@ trait ElasticsearchClientCountApi extends CountApi with ElasticsearchClientHelpe
   * @see
   *   [[IndexApi]] for index operations
   */
-trait ElasticsearchClientIndexApi extends IndexApi with ElasticsearchClientHelpers {
-  _: RefreshApi with ElasticsearchClientCompanion with SerializationApi =>
+trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
+  _: RefreshApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeIndex(
     index: String,
@@ -561,8 +559,8 @@ trait ElasticsearchClientIndexApi extends IndexApi with ElasticsearchClientHelpe
   * @see
   *   [[UpdateApi]] for update operations
   */
-trait ElasticsearchClientUpdateApi extends UpdateApi with ElasticsearchClientHelpers {
-  _: RefreshApi with ElasticsearchClientCompanion with SerializationApi =>
+trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
+  _: RefreshApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeUpdate(
     index: String,
@@ -624,8 +622,8 @@ trait ElasticsearchClientUpdateApi extends UpdateApi with ElasticsearchClientHel
   * @see
   *   [[DeleteApi]] for delete operations
   */
-trait ElasticsearchClientDeleteApi extends DeleteApi with ElasticsearchClientHelpers {
-  _: RefreshApi with ElasticsearchClientCompanion =>
+trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
+  _: RefreshApi with JavaClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
@@ -670,8 +668,8 @@ trait ElasticsearchClientDeleteApi extends DeleteApi with ElasticsearchClientHel
   * @see
   *   [[GetApi]] for get operations
   */
-trait ElasticsearchClientGetApi extends GetApi with ElasticsearchClientHelpers {
-  _: ElasticsearchClientCompanion with SerializationApi =>
+trait JavaClientGetApi extends GetApi with JavaClientHelpers {
+  _: JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeGet(
     index: String,
@@ -724,8 +722,8 @@ trait ElasticsearchClientGetApi extends GetApi with ElasticsearchClientHelpers {
   * @see
   *   [[SearchApi]] for search operations
   */
-trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientHelpers {
-  _: ElasticsearchClientCompanion with SerializationApi =>
+trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
+  _: JavaClientCompanion with SerializationApi =>
 
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
@@ -809,8 +807,8 @@ trait ElasticsearchClientSearchApi extends SearchApi with ElasticsearchClientHel
   * @see
   *   [[BulkApi]] for bulk operations
   */
-trait ElasticsearchClientBulkApi extends BulkApi with ElasticsearchClientHelpers {
-  _: RefreshApi with SettingsApi with IndexApi with ElasticsearchClientCompanion =>
+trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
+  _: RefreshApi with SettingsApi with IndexApi with JavaClientCompanion =>
   override type BulkActionType = BulkOperation
   override type BulkResultType = BulkResponse
 
@@ -1058,8 +1056,8 @@ trait ElasticsearchClientBulkApi extends BulkApi with ElasticsearchClientHelpers
   * @see
   *   [[ScrollApi]] for scroll operations
   */
-trait ElasticsearchClientScrollApi extends ScrollApi with ElasticsearchClientHelpers {
-  _: SearchApi with ElasticsearchClientCompanion =>
+trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
+  _: SearchApi with JavaClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */

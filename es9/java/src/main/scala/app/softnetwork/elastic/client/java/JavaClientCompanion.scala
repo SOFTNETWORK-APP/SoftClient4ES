@@ -31,7 +31,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.util.concurrent.CompletableFuture
 import scala.concurrent.{Future, Promise}
 
-trait ElasticsearchClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
+trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
 
   val logger: Logger = LoggerFactory getLogger getClass.getName
 

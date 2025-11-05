@@ -1,1 +1,1 @@
-app.softnetwork.elastic.client.spi.ElasticsearchClientSpi
+app.softnetwork.elastic.client.spi.JavaClientSpi
