@@ -136,6 +136,18 @@ trait ElasticClientHelpers {
       )
     }
 
+    val trimmed = jsonString.trim
+    if (trimmed.contains("//") || trimmed.contains("/*")) {
+      return Some(
+        ElasticError(
+          message = "Invalid JSON: Comments are not allowed in JSON",
+          cause = None,
+          statusCode = Some(400),
+          operation = Some(operation)
+        )
+      )
+    }
+
     // ✅ Basic JSON validation
     Try {
       import org.json4s.jackson.JsonMethods._
