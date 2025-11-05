@@ -1,7 +1,7 @@
 # Elasticsearch Scroll & Search After Implementation
 
 ## Supported Clients
-- Jest (ES 5-7) - Legacy
+- Jest (ES 5-6) - Legacy
 - RestHighLevelClient (ES 6-7) - Deprecated
 - Java Client (ES 8-9) - Current
 

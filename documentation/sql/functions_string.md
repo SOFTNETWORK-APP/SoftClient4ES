@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 ## String Functions
 
@@ -1264,4 +1264,4 @@ ORDER BY MATCH(field1, field2) AGAINST ('query') DESC;
 
 ---
 
-[Back to index](./README.md)
+[Back to index](README.md)

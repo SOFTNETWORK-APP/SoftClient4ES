@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Keywords
 
@@ -149,4 +149,4 @@ AND
 OR  
 NOT  
 
-[Back to index](./README.md)
+[Back to index](README.md)

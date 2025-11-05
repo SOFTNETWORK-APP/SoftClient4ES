@@ -1,8 +1,8 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Query Structure
 
-**Navigation:** [Operators](./operators.md) · [Functions — Aggregate](./functions_aggregate.md) · [Keywords](./keywords.md)
+**Navigation:** [Operators](operators.md) · [Functions — Aggregate](functions_aggregate.md) · [Keywords](keywords.md)
 
 This page documents the SQL clauses supported by the engine and how they map to Elasticsearch.
 
@@ -109,4 +109,4 @@ Limit and paging. For pure aggregations, `size` is typically set to 0 and `limit
 SELECT * FROM emp ORDER BY hire_date DESC LIMIT 10 OFFSET 20;
 ```
 
-[Back to index](./README.md)
+[Back to index](README.md)

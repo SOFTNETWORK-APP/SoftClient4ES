@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Type Conversion Functions and Operators
 
@@ -69,4 +69,4 @@ SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b;
 - `::` is syntactic sugar, easier to read in queries.  
 - Type inference relies on `baseType`, and explicit `CAST`/`TRY_CAST`/`::` updates the type context for following functions.  
 
-[Back to index](./README.md)
+[Back to index](README.md)

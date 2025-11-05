@@ -1,8 +1,8 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 ## Mathematical Functions
 
-**Navigation:** [Aggregate Functions](./functions_aggregate.md) · [String Functions](./functions_string.md)
+**Navigation:** [Aggregate Functions](functions_aggregate.md) · [String Functions](functions_string.md)
 
 ---
 
@@ -1070,4 +1070,4 @@ FROM circles;
 
 ---
 
-[Back to index](./README.md)
+[Back to index](README.md)

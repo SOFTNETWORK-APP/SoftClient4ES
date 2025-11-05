@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 ## Operator Precedence
 
@@ -801,4 +801,4 @@ WHERE price BETWEEN 10 AND 100;
 - **Right**: Operators evaluate right-to-left: `-a` applies to `a` first
 - **N/A**: Not applicable for grouping or special operators
 
-[Back to index](./README.md)
+[Back to index](README.md)

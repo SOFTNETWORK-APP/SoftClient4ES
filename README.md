@@ -11,7 +11,7 @@
 ## Key Features
 
 **Unified Elasticsearch API**  
-This project provides a trait-based interface (`ElasticClientApi`) that aggregates the core functionalities of Elasticsearch: indexing, searching, updating, deleting, mapping, aliases, refreshing, and more. This design abstracts the underlying client implementation and ensures compatibility across different Elasticsearch versions.
+This project provides a trait-based interface (`ElasticClientApi`) that aggregates the core functionalities of Elasticsearch: indexing, searching, scrolling, updating, deleting, mapping, aliases, refreshing, and [more](documentation/client/README.md). This design abstracts the underlying client implementation and ensures compatibility across different Elasticsearch versions.
 
 - `JestClientApi`: For Elasticsearch 6 using the open-source [Jest client](https://github.com/searchbox-io/Jest).
 - `RestHighLevelClientApi`: For Elasticsearch 6 and 7 using the official high-level REST client.
@@ -20,7 +20,7 @@ This project provides a trait-based interface (`ElasticClientApi`) that aggregat
 By relying on these concrete implementations, developers can switch between versions with minimal changes to their business logic.
 
 **SQL to Elasticsearch Query Translation**  
-Elastic Client includes a parser capable of translating SQL `SELECT` queries into Elasticsearch queries. The parser produces an intermediate representation, which is then converted into [Elastic4s](https://github.com/sksamuel/elastic4s) DSL queries and ultimately into native Elasticsearch queries. This allows data engineers and analysts to express queries in familiar [SQL](documentation/README.md) syntax.
+Elastic Client includes a parser capable of translating SQL `SELECT` queries into Elasticsearch queries. The parser produces an intermediate representation, which is then converted into [Elastic4s](https://github.com/sksamuel/elastic4s) DSL queries and ultimately into native Elasticsearch queries. This allows data engineers and analysts to express queries in familiar [SQL](documentation/sql/README.md) syntax.
 
 **Dynamic Mapping Migration**  
 Elastic Client provides tools to analyze and compare existing mappings with new ones. If differences are detected, it can automatically perform safe migrations. This includes creating temporary indices, reindexing, and renaming — all while preserving data integrity. This eliminates the need for manual mapping migrations and reduces downtime.

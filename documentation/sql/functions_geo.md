@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 ## Geo Functions
 
@@ -649,4 +649,4 @@ WHERE ST_DISTANCE(POINT(48.8566, 2.3522), current_location) < 100 m
 
 **Syntax**: Specify the unit directly after the numeric value in comparisons.
 
-[Back to index](./README.md)
+[Back to index](README.md)

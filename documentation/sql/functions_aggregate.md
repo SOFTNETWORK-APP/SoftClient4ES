@@ -1,8 +1,8 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Aggregate Functions
 
-**Navigation:** [Functions — Date / Time](./functions_date_time.md) · [Functions — Conditional](./functions_conditional.md)
+**Navigation:** [Functions — Date / Time](functions_date_time.md) · [Functions — Conditional](functions_conditional.md)
 
 This page documents aggregate functions for summarizing and analyzing data.
 
@@ -1232,4 +1232,4 @@ GROUP BY department;
 | `LAST_VALUE(expr)` | Last value (ordered) | Any | Same as input | Depends on ORDER |
 | `ARRAY_AGG(expr)` | Collect into array | Any | `ARRAY<type>` | Includes NULLs |
 
-[Back to index](./README.md)
+[Back to index](README.md)

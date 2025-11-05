@@ -1,8 +1,8 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Operators (detailed)
 
-**Navigation:** [Query Structure](./request_structure.md) · [Operator Precedence](./operator_precedence.md) · [Keywords](./keywords.md)
+**Navigation:** [Query Structure](request_structure.md) · [Operator Precedence](operator_precedence.md) · [Keywords](keywords.md)
 
 This file provides a per-operator description and concrete SQL examples for each operator supported by the engine.
 
@@ -1700,7 +1700,7 @@ WHERE category NOT IN ('A', 'B');
 ### Operator: `::`
 
 **Description:**  
-Provides an alternative syntax to the [CAST](./functions_type_conversion.md#function-cast-aliases-convert) function. PostgreSQL-style type casting.
+Provides an alternative syntax to the [CAST](functions_type_conversion.md#type-conversion-functions) function. PostgreSQL-style type casting.
 
 **Syntax:**
 ```sql
@@ -1927,4 +1927,4 @@ SELECT * FROM orders WHERE order_date = '2025-01-10';
 - ETL/data import operations
 - When you want NULL instead of errors
 
-[Back to index](./README.md)
+[Back to index](README.md)

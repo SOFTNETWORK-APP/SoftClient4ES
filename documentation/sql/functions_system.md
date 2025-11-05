@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # System Functions
 
@@ -20,4 +20,4 @@ SELECT VERSION() AS v;
 -- Result: 'sql-elasticsearch-engine 1.0.0'
 ```
 
-[Back to index](./README.md)
+[Back to index](README.md)

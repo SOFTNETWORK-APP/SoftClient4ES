@@ -1,8 +1,8 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Date / Time / Datetime / Timestamp / Interval Functions
 
-**Navigation:** [Aggregate functions](./functions_aggregate.md) · [Operator Precedence](./operator_precedence.md)
+**Navigation:** [Aggregate functions](functions_aggregate.md) · [Operator Precedence](operator_precedence.md)
 
 ## Date/Time Functions
 
@@ -927,4 +927,4 @@ The following patterns are supported in `DATE_FORMAT`, `DATE_PARSE`, `DATETIME_F
 '%b %d'                       -- Jan 10
 ```
 
-[Back to index](./README.md)
+[Back to index](README.md)

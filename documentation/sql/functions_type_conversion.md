@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 ## Type Conversion Functions
 
 ---
@@ -610,4 +610,4 @@ SELECT
 FROM orders;
 ```
 
-[Back to index](./README.md)
+[Back to index](README.md)

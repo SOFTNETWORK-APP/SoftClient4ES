@@ -1,4 +1,4 @@
-[Back to index](./README.md)
+[Back to index](README.md)
 
 # Conditional Functions
 
@@ -394,4 +394,4 @@ SELECT
 FROM products
 ```
 
-[Back to index](./README.md)
+[Back to index](README.md)
