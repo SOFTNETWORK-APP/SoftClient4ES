@@ -3,11 +3,9 @@ package app.softnetwork.elastic.client
 import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterEach
-import org.mockito.{ArgumentCaptor, ArgumentMatchersSugar, MockitoSugar}
+import org.mockito.{ArgumentMatchersSugar, MockitoSugar}
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
-
-import scala.jdk.CollectionConverters._
 
 /** Unit tests for MappingApi
   */
