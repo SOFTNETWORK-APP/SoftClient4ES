@@ -298,25 +298,28 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse aliases JSON for index '$index': ${error.message}")
           return ElasticFailure(error)
-        case ElasticSuccess(indexObj) =>
-          if (indexObj == null) {
+        case ElasticSuccess(rootObj) =>
+          if (!rootObj.has(index)) {
             logger.warn(s"Index '$index' not found in response")
+            return ElasticResult.success(Set.empty[String])
+          }
+
+          val indexObj = rootObj.getAsJsonObject(index)
+          if (indexObj == null) {
+            logger.warn(s"Index '$index' is null in response")
+            return ElasticResult.success(Set.empty[String])
+          }
+
+          val aliasesObj = indexObj.getAsJsonObject("aliases")
+          if (aliasesObj == null || aliasesObj.size() == 0) {
+            logger.debug(s"No aliases found for index '$index'")
             ElasticResult.success(Set.empty[String])
           } else {
-            val aliasesObj =
-              indexObj
-                .getAsJsonObject(index)
-                .getAsJsonObject("aliases")
-            if (aliasesObj == null || aliasesObj.size() == 0) {
-              logger.debug(s"No aliases found for index '$index'")
-              ElasticResult.success(Set.empty[String])
-            } else {
-              val aliases = aliasesObj.entrySet().asScala.map(a => a.getKey).toSet
-              logger.debug(
-                s"Found ${aliases.size} alias(es) for index '$index': ${aliases.mkString(", ")}"
-              )
-              ElasticResult.success(aliases)
-            }
+            val aliases = aliasesObj.entrySet().asScala.map(_.getKey).toSet
+            logger.debug(
+              s"Found ${aliases.size} alias(es) for index '$index': ${aliases.mkString(", ")}"
+            )
+            ElasticResult.success(aliases)
           }
       }
     } match {
