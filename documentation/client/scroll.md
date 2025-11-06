@@ -4,7 +4,7 @@
 
 ## Overview
 
-The **Scroll API** provides efficient streaming access to large result sets from Elasticsearch using **Akka Streams**. It automatically selects the optimal scrolling strategy based on your query type, Elasticsearch version, and whether aggregations are present.
+The **Scroll API** provides efficient streaming access to large result sets from Elasticsearch using **Akka Streams**. It automatically selects the optimal scrolling strategy based on your Elasticsearch version, and whether aggregations are present.
 
 **Key Features:**
 - **Automatic strategy selection** (PIT + search_after, search_after, or classic scroll)

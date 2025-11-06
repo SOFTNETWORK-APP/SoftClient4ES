@@ -1563,4 +1563,4 @@ client.bulkWithResult(
 
 ---
 
-[Back to index](README.md) | [Next: Search Documents](search.md)
+[Back to index](README.md) | [Next: Get Documents](get.md)

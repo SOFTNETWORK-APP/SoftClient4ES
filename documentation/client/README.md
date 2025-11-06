@@ -14,6 +14,7 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [Update Documents](update.md)
 - [Delete Documents](delete.md)
 - [Bulk Operations](bulk.md)
+- [Get Documents](get.md)
 - [Search Documents](search.md)
 - [Scroll Search](scroll.md)
 - [Aggregations](aggregations.md)
