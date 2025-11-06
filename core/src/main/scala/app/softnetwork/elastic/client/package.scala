@@ -16,25 +16,44 @@
 
 package app.softnetwork.elastic
 
-import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
-import akka.stream.stage.{GraphStage, GraphStageLogic}
-import app.softnetwork.elastic.client.BulkAction.BulkAction
-import app.softnetwork.serialization._
-import com.google.gson.{Gson, JsonElement, JsonObject}
-import org.json4s.Formats
+import akka.actor.ActorSystem
+import app.softnetwork.elastic.sql.function.aggregate._
+import app.softnetwork.elastic.sql.query.SQLAggregation
 import org.slf4j.Logger
 
-import scala.collection.immutable.Seq
-import scala.collection.mutable
-import scala.language.reflectiveCalls
-import scala.util.{Failure, Success, Try}
-
-//import scala.jdk.CollectionConverters._
-import scala.collection.JavaConverters._
+import java.util.concurrent.TimeUnit
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration._
+import scala.language.{implicitConversions, reflectiveCalls}
 
 /** Created by smanciot on 30/06/2018.
   */
-package object client {
+package object client extends SerializationApi {
+
+  /** Type alias for JSON query
+    */
+  type JSONQuery = String
+
+  /** Type alias for JSON results
+    */
+  type JSONResults = String
+
+  /** Elastic response case class
+    * @param query
+    *   - the JSON query
+    * @param results
+    *   - the JSON results
+    * @param fieldAliases
+    *   - the field aliases used
+    * @param aggregations
+    *   - the aggregations expected
+    */
+  case class ElasticResponse(
+    query: JSONQuery,
+    results: JSONResults,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, ClientAggregation]
+  )
 
   case class ElasticCredentials(
     url: String = "http://localhost:9200",
@@ -42,135 +61,100 @@ package object client {
     password: String = ""
   )
 
-  object BulkAction extends Enumeration {
-    type BulkAction = Value
-    val INDEX: client.BulkAction.Value = Value(0, "INDEX")
-    val UPDATE: client.BulkAction.Value = Value(1, "UPDATE")
-    val DELETE: client.BulkAction.Value = Value(2, "DELETE")
-  }
+  /** Elastic query wrapper
+    * @param query
+    *   - the elasticsearch JSON query
+    * @param indices
+    *   - the target indices
+    * @param types
+    *   - the target types @deprecated types are deprecated in ES 7+
+    */
+  case class ElasticQuery(query: JSONQuery, indices: Seq[String], types: Seq[String] = Seq.empty)
 
-  case class BulkItem(
-    index: String,
-    action: BulkAction,
-    body: String,
-    id: Option[String],
-    parent: Option[String]
+  case class ElasticQueries(queries: List[ElasticQuery])
+
+  /** Retry configuration
+    */
+  case class RetryConfig(
+    maxRetries: Int = 3,
+    initialDelay: FiniteDuration = 1.second,
+    maxDelay: FiniteDuration = 10.seconds,
+    backoffFactor: Double = 2.0
   )
 
-  case class BulkOptions(
-    index: String,
-    documentType: String = "_doc",
-    maxBulkSize: Int = 100,
-    balance: Int = 1,
-    disableRefresh: Boolean = false
-  )
-
-  trait BulkElasticAction { def index: String }
-
-  trait BulkElasticResult { def items: List[BulkElasticResultItem] }
-
-  trait BulkElasticResultItem { def index: String }
-
-  case class BulkSettings[A](disableRefresh: Boolean = false)(implicit
-    settingsApi: SettingsApi,
-    toBulkElasticAction: A => BulkElasticAction
-  ) extends GraphStage[FlowShape[A, A]] {
-
-    val in: Inlet[A] = Inlet[A]("Filter.in")
-    val out: Outlet[A] = Outlet[A]("Filter.out")
-
-    val shape: FlowShape[A, A] = FlowShape.of(in, out)
-
-    val indices = mutable.Set.empty[String]
-
-    override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = {
-      new GraphStageLogic(shape) {
-        setHandler(
-          in,
-          () => {
-            val elem = grab(in)
-            val index = elem.index
-            if (!indices.contains(index)) {
-              if (disableRefresh) {
-                settingsApi.updateSettings(
-                  index,
-                  """{"index" : {"refresh_interval" : "-1", "number_of_replicas" : 0} }"""
-                )
-              }
-              indices.add(index)
-            }
-            push(out, elem)
+  /** Retry logic with exponential backoff
+    */
+  // Passer le scheduler en paramètre implicite
+  private[client] def retryWithBackoff[T](config: RetryConfig)(
+    operation: => Future[T]
+  )(implicit
+    system: ActorSystem,
+    logger: Logger
+  ): Future[T] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    val scheduler = system.scheduler
+    def attempt(retriesLeft: Int, delay: FiniteDuration): Future[T] = {
+      operation.recoverWith {
+        case ex if retriesLeft > 0 && isRetriableError(ex) =>
+          logger.warn(s"Retrying after failure ($retriesLeft retries left): ${ex.getMessage}")
+          akka.pattern.after(delay, scheduler) {
+            val nextDelay = FiniteDuration(
+              (delay * config.backoffFactor).min(config.maxDelay).toMillis,
+              TimeUnit.MILLISECONDS
+            )
+            attempt(retriesLeft - 1, nextDelay)
           }
-        )
-        setHandler(
-          out,
-          () => {
-            pull(in)
-          }
-        )
       }
     }
+    attempt(config.maxRetries, config.initialDelay)
   }
 
-  def docAsUpsert(doc: String): String = s"""{"doc":$doc,"doc_as_upsert":true}"""
-
-  implicit class InnerHits(searchResult: JsonObject) {
-    def ~>[M, I](
-      innerField: String
-    )(implicit formats: Formats, m: Manifest[M], i: Manifest[I]): List[(M, List[I])] = {
-      def innerHits(result: JsonElement) = {
-        result.getAsJsonObject
-          .get("inner_hits")
-          .getAsJsonObject
-          .get(innerField)
-          .getAsJsonObject
-          .get("hits")
-          .getAsJsonObject
-          .get("hits")
-          .getAsJsonArray
-          .iterator()
-      }
-      val gson = new Gson()
-      val results = searchResult.get("hits").getAsJsonObject.get("hits").getAsJsonArray.iterator()
-      (for (result <- results.asScala)
-        yield (
-          result match {
-            case obj: JsonObject =>
-              Try {
-                serialization.read[M](gson.toJson(obj.get("_source")))
-              } match {
-                case Success(s) => s
-                case Failure(f) =>
-                  throw f
-              }
-            case _ => serialization.read[M](result.getAsString)
-          },
-          (for (innerHit <- innerHits(result).asScala) yield innerHit match {
-            case obj: JsonObject =>
-              Try {
-                serialization.read[I](gson.toJson(obj.get("_source")))
-              } match {
-                case Success(s) => s
-                case Failure(f) =>
-                  throw f
-              }
-            case _ => serialization.read[I](innerHit.getAsString)
-          }).toList
-        )).toList
-    }
+  /** Determine if an error is retriable
+    */
+  private[client] def isRetriableError(ex: Throwable): Boolean = ex match {
+    case _: java.net.SocketTimeoutException => true
+    case _: java.io.IOException             => true
+    // case _: TransportException => true
+    case _ => false
   }
 
-  case class JSONQuery(query: String, indices: Seq[String], types: Seq[String] = Seq.empty)
+  /** Aggregation types
+    */
+  object AggregationType extends Enumeration {
+    type AggregationType = Value
+    val Count, Min, Max, Avg, Sum, FirstValue, LastValue, ArrayAgg = Value
+  }
 
-  case class JSONQueries(queries: List[JSONQuery])
+  /** Client Aggregation
+    * @param aggName
+    *   - the name of the aggregation
+    * @param aggType
+    *   - the type of the aggregation
+    * @param distinct
+    *   - when the aggregation is multivalued define if its values should be returned distinct or
+    *     not
+    */
+  case class ClientAggregation(
+    aggName: String,
+    aggType: AggregationType.AggregationType,
+    distinct: Boolean
+  ) {
+    def multivalued: Boolean = aggType == AggregationType.ArrayAgg
+    def singleValued: Boolean = !multivalued
+  }
 
-  def tryOrElse[T](block: => T, default: => T)(implicit logger: Logger): T = {
-    try {
-      block
-    } catch {
-      case e: Exception =>
-        logger.error("An error occurred while executing the block", e)
-        default
+  implicit def sqlAggregationToClientAggregation(agg: SQLAggregation): ClientAggregation = {
+    val aggType = agg.aggType match {
+      case COUNT         => AggregationType.Count
+      case MIN           => AggregationType.Min
+      case MAX           => AggregationType.Max
+      case AVG           => AggregationType.Avg
+      case SUM           => AggregationType.Sum
+      case _: FirstValue => AggregationType.FirstValue
+      case _: LastValue  => AggregationType.LastValue
+      case _: ArrayAgg   => AggregationType.ArrayAgg
+      case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
+    ClientAggregation(agg.aggName, aggType, agg.distinct)
   }
 }

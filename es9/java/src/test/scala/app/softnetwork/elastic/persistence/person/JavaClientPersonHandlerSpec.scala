@@ -1,0 +1,3 @@
+package app.softnetwork.elastic.persistence.person
+
+class JavaClientPersonHandlerSpec extends ElasticClientPersonHandlerSpec

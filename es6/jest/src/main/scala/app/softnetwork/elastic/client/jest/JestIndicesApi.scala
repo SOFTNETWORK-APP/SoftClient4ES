@@ -1,0 +1,134 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package app.softnetwork.elastic.client.jest
+
+import app.softnetwork.elastic.client.IndicesApi
+import app.softnetwork.elastic.client.result.ElasticResult
+import io.searchbox.client.JestResult
+import io.searchbox.indices.{CloseIndex, CreateIndex, DeleteIndex, IndicesExists, OpenIndex}
+import io.searchbox.indices.reindex.Reindex
+
+import scala.util.Try
+
+/** Index management API for Jest (Elasticsearch HTTP Client).
+  * @see
+  *   [[IndicesApi]] for generic API documentation
+  */
+trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpers {
+  _: JestClientCompanion =>
+
+  /** Create an index with the given settings.
+    * @see
+    *   [[IndicesApi.createIndex]]
+    */
+  private[client] def executeCreateIndex(
+    index: String,
+    settings: String = defaultSettings
+  ): ElasticResult[Boolean] = {
+    executeJestBooleanAction(
+      operation = "createIndex",
+      index = Some(index),
+      retryable = false // Creation can not be retried
+    ) {
+      new CreateIndex.Builder(index)
+        .settings(settings)
+        .build()
+    }
+  }
+
+  /** Delete an index.
+    * @see
+    *   [[IndicesApi.deleteIndex]]
+    */
+  private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = {
+    executeJestBooleanAction(
+      operation = "deleteIndex",
+      index = Some(index),
+      retryable = false // Deletion can not be retried
+    ) {
+      new DeleteIndex.Builder(index).build()
+    }
+  }
+
+  /** Close an index.
+    * @see
+    *   [[IndicesApi.closeIndex]]
+    */
+  private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
+    executeJestBooleanAction(
+      operation = "closeIndex",
+      index = Some(index),
+      retryable = true
+    ) {
+      new CloseIndex.Builder(index).build()
+    }
+  }
+
+  /** Open an index.
+    * @see
+    *   [[IndicesApi.openIndex]]
+    */
+  override def executeOpenIndex(index: String): ElasticResult[Boolean] = {
+    executeJestBooleanAction(
+      operation = "openIndex",
+      index = Some(index),
+      retryable = true
+    ) {
+      new OpenIndex.Builder(index).build()
+    }
+  }
+
+  /** Reindex documents from a source index to a target index.
+    * @see
+    *   [[IndicesApi.reindex]]
+    */
+  private[client] def executeReindex(
+    sourceIndex: String,
+    targetIndex: String,
+    refresh: Boolean
+  ): ElasticResult[(Boolean, Option[Long])] =
+    executeJestAction[JestResult, (Boolean, Option[Long])](
+      operation = "reindex",
+      index = Some(s"$sourceIndex -> $targetIndex"),
+      retryable = true
+    ) {
+      new Reindex.Builder(
+        s"""{"index": "$sourceIndex"}""",
+        s"""{"index": "$targetIndex"}"""
+      ).build()
+    } { result =>
+      val success = result.isSucceeded
+      val docsReindexed = Try {
+        result.getJsonObject.get("total").getAsLong
+      }.toOption
+      (success, docsReindexed)
+    }
+
+  /** Check if an index exists.
+    * @see
+    *   [[IndicesApi.indexExists]]
+    */
+  private[client] def executeIndexExists(index: String): ElasticResult[Boolean] = {
+    executeJestBooleanAction(
+      operation = "indexExists",
+      index = Some(index),
+      retryable = true
+    ) {
+      new IndicesExists.Builder(index).build()
+    }
+  }
+}

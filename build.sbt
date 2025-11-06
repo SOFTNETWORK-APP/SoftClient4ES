@@ -19,7 +19,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.9.3"
+ThisBuild / version := "0.10.0"
 
 ThisBuild / scalaVersion := scala213
 
@@ -54,6 +54,22 @@ lazy val moduleSettings = Seq(
 
 ThisBuild / javacOptions ++= Seq("-source", "1.8", "-target", "1.8")
 
+ThisBuild / javaOptions ++= Seq(
+  "--add-opens=java.base/java.util=ALL-UNNAMED",
+  "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+  "--add-opens=java.base/java.lang=ALL-UNNAMED",
+  "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+  "--add-opens=java.base/java.math=ALL-UNNAMED",
+  "--add-opens=java.base/java.io=ALL-UNNAMED",
+  "--add-opens=java.base/java.net=ALL-UNNAMED",
+  "--add-opens=java.base/java.nio=ALL-UNNAMED",
+  "--add-opens=java.base/java.text=ALL-UNNAMED",
+  "--add-opens=java.base/java.time=ALL-UNNAMED",
+  "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+)
+
+Test / javaOptions ++= (javaOptions.value)
+
 ThisBuild / resolvers ++= Seq(
   "Softnetwork Server" at "https://softnetwork.jfrog.io/artifactory/releases/",
   "Softnetwork Snapshots" at "https://softnetwork.jfrog.io/artifactory/snapshots/",
@@ -75,6 +91,7 @@ val json4s = Seq(
 ).map(_.excludeAll(jacksonExclusions: _*))
 
 ThisBuild / libraryDependencies ++= Seq(
+  "org.scala-lang.modules" %% "scala-collection-compat" % "2.11.0",
   "org.scala-lang.modules" %% "scala-parser-combinators" % "1.1.2"
 ) // ++ configDependencies ++ json4s ++ logging
 
@@ -99,6 +116,17 @@ lazy val core = project
   )
   .dependsOn(
     sql % "compile->compile;test->test;it->it"
+  )
+
+lazy val persistence = project
+  .in(file("persistence"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings
+  )
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
   )
 
 def copyTestkit(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
@@ -136,7 +164,7 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     .settings(ss: _*)
     .enablePlugins(BuildInfoPlugin)
     .dependsOn(
-      core % "compile->compile;test->test;it->it"
+      persistence % "compile->compile;test->test;it->it"
     )
 }
 
@@ -383,6 +411,7 @@ lazy val root = project
   .aggregate(
     sql,
     core,
+    persistence,
     es6,
     es7,
     es8,
