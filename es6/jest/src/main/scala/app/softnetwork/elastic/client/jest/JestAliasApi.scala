@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.AliasApi
+import app.softnetwork.elastic.client.{AliasApi, IndicesApi}
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.client.JestResult
 import io.searchbox.indices.aliases.{AddAliasMapping, GetAliases, ModifyAliases, RemoveAliasMapping}
@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
   *   [[AliasApi]] for generic API documentation
   */
 trait JestAliasApi extends AliasApi with JestClientHelpers {
-  _: JestIndicesApi with JestClientCompanion =>
+  _: IndicesApi with JestClientCompanion =>
 
   /** Add an alias to an index.
     * @see

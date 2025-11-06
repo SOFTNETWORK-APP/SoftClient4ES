@@ -23,7 +23,6 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
-import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
 import org.json4s.Formats
 
@@ -131,7 +130,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed search in indices '${elasticQuery.indices.mkString(",")}'"
         )
         ElasticResult.success(
-          ElasticResponse(elasticQuery.query, response, fieldAliases, aggregations)
+          ElasticResponse(
+            elasticQuery.query,
+            response,
+            fieldAliases,
+            aggregations.map(kv => kv._1 -> kv._2)
+          )
         )
       case ElasticSuccess(_) =>
         val error =
@@ -204,7 +208,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             elasticQueries.queries.map(_.query).mkString("\n"),
             response,
             fieldAliases,
-            aggregations
+            aggregations.map(kv => kv._1 -> kv._2)
           )
         )
       case ElasticSuccess(_) =>
@@ -302,7 +306,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
         Future.successful(
           ElasticResult.success(
-            ElasticResponse(elasticQuery.query, response, fieldAliases, aggregations)
+            ElasticResponse(
+              elasticQuery.query,
+              response,
+              fieldAliases,
+              aggregations.map(kv => kv._1 -> kv._2)
+            )
           )
         )
       case ElasticSuccess(_) =>
@@ -358,7 +367,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               elasticQueries.queries.map(_.query).mkString("\n"),
               response,
               fieldAliases,
-              aggregations
+              aggregations.map(kv => kv._1 -> kv._2)
             )
           )
         )

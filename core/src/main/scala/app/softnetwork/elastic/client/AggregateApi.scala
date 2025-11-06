@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery}
+import app.softnetwork.elastic.sql.query.SQLQuery
 
 import java.time.temporal.Temporal
 import scala.annotation.tailrec
@@ -65,14 +65,12 @@ trait SingleValueAggregateApi
       @tailrec
       def findAggregation(
         name: String,
-        aggregation: SQLAggregation,
         results: Map[String, Any]
       ): Option[Any] = {
         name.split("\\.") match {
           case Array(_, tail @ _*) if tail.nonEmpty =>
             findAggregation(
               tail.mkString("."),
-              aggregation,
               results
             )
           case _ => results.get(name)
@@ -142,7 +140,7 @@ trait SingleValueAggregateApi
                 response.aggregations.map { case (name, aggregation) =>
                   // Attempt to process each aggregation
                   val aggregationResult = ElasticResult.attempt {
-                    val value = findAggregation(name, aggregation, result).orNull match {
+                    val value = findAggregation(name, result).orNull match {
                       case b: Boolean     => BooleanValue(b)
                       case n: Number      => NumericValue(n)
                       case s: String      => StringValue(s)

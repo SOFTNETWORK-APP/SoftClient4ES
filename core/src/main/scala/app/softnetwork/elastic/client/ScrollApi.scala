@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.scroll.{
   ScrollConfig,
   ScrollMetrics,
   ScrollStrategy,
+  UsePIT,
   UseScroll,
   UseSearchAfter
 }
@@ -104,7 +105,7 @@ import scala.util.{Failure, Success}
   *   [[https://www.elastic.co/guide/en/elasticsearch/reference/7.10/point-in-time-api.html PIT API Documentation]]
   */
 trait ScrollApi extends ElasticClientHelpers {
-  _: SearchApi =>
+  _: VersionApi with SearchApi =>
 
   // ========================================================================
   // MAIN SCROLL METHODS
@@ -159,6 +160,13 @@ trait ScrollApi extends ElasticClientHelpers {
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
 
+  private[client] def pitSearchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean = false
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+
   /** Typed scroll source
     */
   def scrollAs[T](
@@ -192,7 +200,19 @@ trait ScrollApi extends ElasticClientHelpers {
       if (hasAggregations(elasticQuery.query)) {
         UseScroll
       } else {
-        UseSearchAfter
+        // Detect version and choose implementation
+        version match {
+          case result.ElasticSuccess(v) =>
+            if (ElasticsearchVersion.supportsPit(v)) {
+              logger.info(s"ES version $v supports PIT, using pitSearchAfterSource")
+              UsePIT
+            } else {
+              logger.info(s"ES version $v does not support PIT, using classic search_after")
+              UseSearchAfter
+            }
+          case result.ElasticFailure(err) =>
+            throw new RuntimeException(s"Failed to get ES version: $err")
+        }
       }
     }
   }
@@ -284,6 +304,10 @@ trait ScrollApi extends ElasticClientHelpers {
       case UseSearchAfter if config.preferSearchAfter =>
         logger.info("Using search_after (optimized for hits only)")
         searchAfter(elasticQuery, fieldAliases, config, hasSorts)
+
+      case UsePIT =>
+        logger.info("Using PIT + search_after (optimized for hits only)")
+        pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
 
       case _ =>
         logger.info("Falling back to classic scroll")

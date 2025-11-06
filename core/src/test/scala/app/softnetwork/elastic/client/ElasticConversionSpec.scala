@@ -144,11 +144,10 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         results,
         Map.empty,
         Map(
-          "top_products" -> SQLAggregation(
+          "top_products" -> ClientAggregation(
             "top_products",
-            "products",
-            "products",
-            aggType = ArrayAgg(Identifier(), orderBy = OrderBy(Seq.empty))
+            aggType = AggregationType.ArrayAgg,
+            distinct = false
           )
         )
       )
@@ -599,11 +598,10 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         results,
         Map.empty,
         Map(
-          "employees" -> SQLAggregation(
-            "employees",
-            "employee",
-            "employee",
-            aggType = ArrayAgg(Identifier(), orderBy = OrderBy(Seq.empty))
+          "employees" -> ClientAggregation(
+            aggName = "employees",
+            aggType = AggregationType.ArrayAgg,
+            distinct = false
           )
         )
       )

@@ -54,6 +54,8 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     *   : documents to index
     * @param toDocument
     *   : JSON transformation function
+    * @param indexKey
+    *   : key for the index field
     * @param idKey
     *   : key for the id field
     * @param suffixDateKey
@@ -76,6 +78,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   def bulkWithResult[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String] = None,
     idKey: Option[String] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
@@ -94,6 +97,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     bulkSource(
       items,
       toDocument,
+      indexKey,
       idKey,
       suffixDateKey,
       suffixDatePattern,
@@ -156,6 +160,8 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     *   the documents to index
     * @param toDocument
     *   JSON transformation function
+    * @param indexKey
+    *   key for the index field
     * @param idKey
     *   key for the id field
     * @param suffixDateKey
@@ -177,6 +183,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   def bulkSource[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String] = None,
     idKey: Option[String] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
@@ -199,6 +206,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
       .map { item =>
         toBulkItem(
           toDocument,
+          indexKey,
           idKey,
           suffixDateKey,
           suffixDatePattern,
@@ -260,6 +268,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   def bulk[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String] = None,
     idKey: Option[String] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
@@ -274,6 +283,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
       bulkWithResult(
         items,
         toDocument,
+        indexKey,
         idKey,
         suffixDateKey,
         suffixDatePattern,
@@ -453,6 +463,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
 
   private def toBulkItem[D](
     toDocument: D => String,
+    indexKey: Option[String],
     idKey: Option[String],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
@@ -471,6 +482,11 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     }
 
     // extract final index name
+    val indexFromKeyOrOptions = indexKey
+      .flatMap { i =>
+        jsonMap.get(i).map(_.toString)
+      }
+      .getOrElse(bulkOptions.defaultIndex)
     val index = suffixDateKey
       .flatMap { s =>
         jsonMap.get(s).map { d =>
@@ -483,8 +499,8 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
           )
         }
       }
-      .map(s => s"${bulkOptions.index}-$s")
-      .getOrElse(bulkOptions.index)
+      .map(s => s"$indexFromKeyOrOptions-$s")
+      .getOrElse(indexFromKeyOrOptions)
 
     // extract parent key
     val parent = parentIdKey.flatMap { i =>

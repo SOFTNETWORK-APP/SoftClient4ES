@@ -120,7 +120,7 @@ package object bulk {
 
   /** Bulk Configuration */
   case class BulkOptions(
-    index: String,
+    defaultIndex: String,
     defaultType: String = "_doc",
     maxBulkSize: Int = 1000,
     balance: Int = 1,
@@ -134,32 +134,28 @@ package object bulk {
   )
 
   /** Callbacks for bulk events */
-  trait BulkCallbacks {
-    def onSuccess(id: String, index: String): Unit = {}
-    def onFailure(failed: FailedDocument): Unit = {}
-    def onBatchComplete(batchSize: Int, metrics: BulkMetrics): Unit = {}
-    def onComplete(result: BulkResult): Unit = {}
-  }
+  case class BulkCallbacks(
+    onSuccess: (String, String) => Unit = (_, _) => (),
+    onFailure: FailedDocument => Unit = _ => (),
+    onComplete: BulkResult => Unit = _ => (),
+    onBatchComplete: (Int, BulkMetrics) => Unit = (_, _) => {}
+  )
 
   object BulkCallbacks {
-    val default: BulkCallbacks = new BulkCallbacks {}
+    val default: BulkCallbacks = BulkCallbacks()
 
-    def logging(logger: org.slf4j.Logger): BulkCallbacks = new BulkCallbacks {
-      override def onSuccess(id: String, index: String): Unit =
-        logger.debug(s"✅ Document $id indexed in $index")
-
-      override def onFailure(failed: FailedDocument): Unit =
-        logger.error(s"❌ Document ${failed.id} failed: ${failed.error.message}")
-
-      override def onBatchComplete(batchSize: Int, metrics: BulkMetrics): Unit =
-        logger.info(s"Batch completed: $batchSize docs (${metrics.throughput} docs/sec)")
-
-      override def onComplete(result: BulkResult): Unit =
+    def logging(logger: org.slf4j.Logger): BulkCallbacks = BulkCallbacks(
+      onSuccess = (id, index) => logger.debug(s"✅ Document $id indexed in $index"),
+      onFailure =
+        failed => logger.error(s"❌ Document ${failed.id} failed: ${failed.error.message}"),
+      onComplete = result =>
         logger.info(
-          s"Bulk completed: ${result.successCount} successes, ${result.failedCount} failures " +
+          s"📊 Bulk completed: ${result.successCount} successes, ${result.failedCount} failures " +
           s"in ${result.metrics.durationMs}ms (${result.metrics.throughput} docs/sec)"
-        )
-    }
+        ),
+      onBatchComplete = (batchSize, metrics) =>
+        logger.info(s"📊 Batch completed: $batchSize docs (${metrics.throughput} docs/sec)")
+    )
   }
 
   trait BulkElasticAction { def index: String } // TODO rename to BulkItemIndex

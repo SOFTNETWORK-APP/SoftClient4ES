@@ -123,7 +123,6 @@ trait ElasticRestClientTestKit extends CompletionTestKit { _: { def log: Logger 
     request.setEntity(new NStringEntity(write(payload), ContentType.APPLICATION_JSON))
     val response = restClient.performRequest(request)
     val json = EntityUtils.toString(response.getEntity)
-    Console.err.println(s"Search response: $json")
     parse(json)
   }
 

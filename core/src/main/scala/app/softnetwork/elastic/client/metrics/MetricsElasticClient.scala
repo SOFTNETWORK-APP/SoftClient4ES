@@ -35,7 +35,7 @@ import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
-import scala.reflect.{classTag, ClassTag}
+import scala.reflect.ClassTag
 import scala.util.{Failure, Success}
 
 /** Decorator that adds metrics to an existing Elasticsearch client.
@@ -906,6 +906,7 @@ class MetricsElasticClient(
   override def bulkWithResult[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String] = None,
     idKey: Option[String] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
@@ -915,10 +916,11 @@ class MetricsElasticClient(
     callbacks: BulkCallbacks = BulkCallbacks.default
   )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
     implicit val ec: ExecutionContext = system.dispatcher
-    measureAsync("bulkWithResult", Some(bulkOptions.index)) {
+    measureAsync("bulkWithResult", Some(bulkOptions.defaultIndex)) {
       delegate.bulkWithResult(
         items,
         toDocument,
+        indexKey,
         idKey,
         suffixDateKey,
         suffixDatePattern,
@@ -933,6 +935,7 @@ class MetricsElasticClient(
   override def bulkSource[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String] = None,
     idKey: Option[String] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
@@ -947,6 +950,7 @@ class MetricsElasticClient(
     val source = delegate.bulkSource(
       items,
       toDocument,
+      indexKey,
       idKey,
       suffixDateKey,
       suffixDatePattern,
@@ -962,7 +966,7 @@ class MetricsElasticClient(
           "bulkSource",
           duration,
           success,
-          Some(bulkOptions.index)
+          Some(bulkOptions.defaultIndex)
         )
       }(system.dispatcher)
       NotUsed
@@ -972,6 +976,7 @@ class MetricsElasticClient(
   override def bulk[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String] = None,
     idKey: Option[String] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
@@ -979,10 +984,11 @@ class MetricsElasticClient(
     delete: Option[Boolean] = None,
     parentIdKey: Option[String] = None
   )(implicit bulkOptions: BulkOptions, system: ActorSystem): ElasticResult[BulkResult] = {
-    measureResult("bulk", Some(bulkOptions.index)) {
+    measureResult("bulk", Some(bulkOptions.defaultIndex)) {
       delegate.bulk(
         items,
         toDocument,
+        indexKey,
         idKey,
         suffixDateKey,
         suffixDatePattern,

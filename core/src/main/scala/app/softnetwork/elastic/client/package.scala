@@ -17,13 +17,14 @@
 package app.softnetwork.elastic
 
 import akka.actor.ActorSystem
+import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import org.slf4j.Logger
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
-import scala.language.reflectiveCalls
+import scala.language.{implicitConversions, reflectiveCalls}
 
 /** Created by smanciot on 30/06/2018.
   */
@@ -43,15 +44,15 @@ package object client extends SerializationApi {
     * @param results
     *   - the JSON results
     * @param fieldAliases
-    *   - the field aliases defined in the SQL query
+    *   - the field aliases used
     * @param aggregations
-    *   - the SQL aggregations defined in the SQL query
+    *   - the aggregations expected
     */
   case class ElasticResponse(
     query: JSONQuery,
     results: JSONResults,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    aggregations: Map[String, ClientAggregation]
   )
 
   case class ElasticCredentials(
@@ -115,5 +116,45 @@ package object client extends SerializationApi {
     case _: java.io.IOException             => true
     // case _: TransportException => true
     case _ => false
+  }
+
+  /** Aggregation types
+    */
+  object AggregationType extends Enumeration {
+    type AggregationType = Value
+    val Count, Min, Max, Avg, Sum, FirstValue, LastValue, ArrayAgg = Value
+  }
+
+  /** Client Aggregation
+    * @param aggName
+    *   - the name of the aggregation
+    * @param aggType
+    *   - the type of the aggregation
+    * @param distinct
+    *   - when the aggregation is multivalued define if its values should be returned distinct or
+    *     not
+    */
+  case class ClientAggregation(
+    aggName: String,
+    aggType: AggregationType.AggregationType,
+    distinct: Boolean
+  ) {
+    def multivalued: Boolean = aggType == AggregationType.ArrayAgg
+    def singleValued: Boolean = !multivalued
+  }
+
+  implicit def sqlAggregationToClientAggregation(agg: SQLAggregation): ClientAggregation = {
+    val aggType = agg.aggType match {
+      case COUNT         => AggregationType.Count
+      case MIN           => AggregationType.Min
+      case MAX           => AggregationType.Max
+      case AVG           => AggregationType.Avg
+      case SUM           => AggregationType.Sum
+      case _: FirstValue => AggregationType.FirstValue
+      case _: LastValue  => AggregationType.LastValue
+      case _: ArrayAgg   => AggregationType.ArrayAgg
+      case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
+    }
+    ClientAggregation(agg.aggName, aggType, agg.distinct)
   }
 }

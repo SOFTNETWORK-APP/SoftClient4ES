@@ -832,7 +832,7 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
     Flow[Seq[BulkActionType]]
       .named("bulk")
       .mapAsyncUnordered[R](parallelism) { items =>
-        val request = new BulkRequest(bulkOptions.index)
+        val request = new BulkRequest(bulkOptions.defaultIndex)
         items.foreach(request.add)
         val promise: Promise[R] = Promise[R]()
         apply().bulkAsync(
@@ -1033,19 +1033,9 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
   _: SearchApi with VersionApi with RestHighLevelClientCompanion =>
 
-  protected def getElasticsearchVersion()(implicit ec: ExecutionContext): Future[String] = {
-    Future {
-      version match {
-        case result.ElasticSuccess(v) => v
-        case result.ElasticFailure(err) =>
-          throw new RuntimeException(s"Failed to get ES version: $err")
-      }
-    }
-  }
-
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollClassic(
+  override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
@@ -1081,7 +1071,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                     )
 
                 searchRequest.scroll(
-                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                  TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
                 )
 
                 val response = apply().search(searchRequest, RequestOptions.DEFAULT)
@@ -1113,7 +1103,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
                 val scrollRequest = new SearchScrollRequest(scrollId)
                 scrollRequest.scroll(
-                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                  TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
                 )
 
                 val result = apply().scroll(scrollRequest, RequestOptions.DEFAULT)
@@ -1149,35 +1139,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
   /** Search After (only for hits, more efficient)
     */
-  override def searchAfter(
-    elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    config: ScrollConfig,
-    hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
-    implicit val ec: ExecutionContext = system.dispatcher
-    // Detect version and choose implementation
-    Source
-      .futureSource {
-        getElasticsearchVersion().map { version =>
-          if (ElasticsearchVersion.supportsPit(version)) {
-            logger.info(s"ES version $version supports PIT, using pitSearchAfterSource")
-            pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
-          } else {
-            logger.info(s"ES version $version does not support PIT, using classic search_after")
-            classicSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
-          }
-        }
-      }
-      .mapMaterializedValue(_ => NotUsed)
-  }
-
-  /** Classic Search After (only for hits, more efficient)
-    *
-    * @note
-    *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
-    */
-  private def classicSearchAfter(
+  override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -1289,7 +1251,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     * @note
     *   Requires ES 7.10+. For ES 6.x, use searchAfterSource instead.
     */
-  private def pitSearchAfter(
+  private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -1298,7 +1260,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     implicit val ec: ExecutionContext = system.dispatcher
 
     // Open PIT
-    val pitIdFuture: Future[String] = openPit(elasticQuery.indices, config.scrollTimeout)
+    val pitIdFuture: Future[String] = openPit(elasticQuery.indices, config.keepAlive)
 
     Source
       .futureSource {
@@ -1365,7 +1327,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                   // Set PIT
                   val pitBuilder = new PointInTimeBuilder(pitId)
                   pitBuilder.setKeepAlive(
-                    TimeValue.parseTimeValue(config.scrollTimeout, "pit_keep_alive")
+                    TimeValue.parseTimeValue(config.keepAlive, "pit_keep_alive")
                   )
                   sourceBuilder.pointInTimeBuilder(pitBuilder)
 
@@ -1476,7 +1438,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse =
+      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>

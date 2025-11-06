@@ -32,6 +32,21 @@ trait GetApi extends ElasticClientHelpers { _: SerializationApi =>
   // PUBLIC METHODS
   // ========================================================================
 
+  /** Check if a document exists by its id in the given index.
+    * @param id
+    *   - the id of the document to check
+    * @param index
+    *   - the name of the index to check the document in
+    * @return
+    *   true if the document exists, false otherwise
+    */
+  def exists(id: String, index: String): ElasticResult[Boolean] = {
+    get(id, index).map {
+      case Some(_) => true
+      case None    => false
+    }
+  }
+
   /** Get a document by its id from the given index.
     * @param id
     *   - the id of the document to get

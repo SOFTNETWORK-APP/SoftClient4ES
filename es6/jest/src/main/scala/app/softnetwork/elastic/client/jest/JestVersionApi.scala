@@ -18,6 +18,8 @@ package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.{result, SerializationApi, VersionApi}
 import io.searchbox.core.Cat
+import org.json4s.DefaultFormats
+import org.json4s.jackson.JsonMethods
 
 trait JestVersionApi extends VersionApi with JestClientHelpers {
   _: SerializationApi with JestClientCompanion =>
@@ -30,6 +32,9 @@ trait JestVersionApi extends VersionApi with JestClientHelpers {
         .setParameter("h", "version")
         .build()
     ) { result =>
-      result.getJsonString
+      val jsonString = result.getJsonString
+      implicit val formats: DefaultFormats.type = DefaultFormats
+      val json = JsonMethods.parse(jsonString)
+      (json \\ "version").extract[String]
     }
 }

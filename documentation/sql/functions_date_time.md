@@ -873,25 +873,25 @@ SELECT OFFSET_SECONDS('2025-01-01T12:00:00-05:00'::TIMESTAMP) AS off;
 
 The following patterns are supported in `DATE_FORMAT`, `DATE_PARSE`, `DATETIME_FORMAT`, and `DATETIME_PARSE` functions:
 
-| Pattern | Description | Example Output |
-|---------|-------------|----------------|
-| `%Y` | Year (4 digits) | `2025` |
-| `%y` | Year (2 digits) | `25` |
-| `%m` | Month (2 digits, 01-12) | `01` |
-| `%c` | Month (1-12, no leading zero) | `1` |
-| `%M` | Month name (full) | `January` |
-| `%b` | Month name (abbreviated) | `Jan` |
-| `%d` | Day of month (2 digits, 01-31) | `10` |
-| `%e` | Day of month (1-31, no leading zero) | `9` |
-| `%W` | Weekday name (full) | `Friday` |
-| `%a` | Weekday name (abbreviated) | `Fri` |
-| `%H` | Hour (00-23, 24-hour format) | `13` |
-| `%h` | Hour (01-12, 12-hour format) | `01` |
-| `%I` | Hour (01-12, synonym for %h) | `01` |
-| `%i` | Minutes (00-59) | `45` |
-| `%s` | Seconds (00-59) | `30` |
-| `%f` | Microseconds (000000-999999) | `123456` |
-| `%p` | AM/PM marker | `AM` / `PM` |
+| Patternc | Descriptionc                         | Example Outputc |
+|----------|--------------------------------------|-----------------|
+| `%Y`     | Year (4 digits)                      | `2025`          |
+| `%y`     | Year (2 digits)                      | `25`            |
+| `%m`     | Month (2 digits, 01-12)              | `01`            |
+| `%c`     | Month (1-12, no leading zero)        | `1`             |
+| `%M`     | Month name (full)                    | `January`       |
+| `%b`     | Month name (abbreviated)             | `Jan`           |
+| `%d`     | Day of month (2 digits, 01-31)       | `10`            |
+| `%e`     | Day of month (1-31, no leading zero) | `9`             |
+| `%W`     | Weekday name (full)                  | `Friday`        |
+| `%a`     | Weekday name (abbreviated)           | `Fri`           |
+| `%H`     | Hour (00-23, 24-hour format)         | `13`            |
+| `%h`     | Hour (01-12, 12-hour format)         | `01`            |
+| `%I`     | Hour (01-12, synonym for %h)         | `01`            |
+| `%i`     | Minutes (00-59)                      | `45`            |
+| `%s`     | Seconds (00-59)                      | `30`            |
+| `%f`     | Microseconds (000000-999999)         | `123456`        |
+| `%p`     | AM/PM marker                         | `AM` / `PM`     |
 
 **Pattern Combination Examples:**
 

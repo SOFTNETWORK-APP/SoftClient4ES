@@ -1046,4 +1046,6 @@ logger.error(s"❌ Operation '$operation'$indexStr failed: ${error.message}")
 - ❌ Failure
 - ⚠️ Warning/Alert
 
+---
+
 [Back to index](README.md)

@@ -469,14 +469,14 @@ WHERE TRY_CAST(price_str AS DECIMAL(10, 2)) IS NOT NULL
 
 ### CAST vs TRY_CAST Comparison
 
-| Feature | CAST | TRY_CAST |
-|---------|------|----------|
-| On conversion failure | Throws error | Returns NULL |
-| Use case | Clean, validated data | Dirty, uncertain data |
-| Performance | Slightly faster | Slightly slower |
-| Data validation | Manual required | Built-in |
-| Error handling | Must use try-catch | Automatic |
-| NULL handling | Propagates NULL | Propagates NULL |
+| Feature               | CAST                  | TRY_CAST              |
+|-----------------------|-----------------------|-----------------------|
+| On conversion failure | Throws error          | Returns NULL          |
+| Use case              | Clean, validated data | Dirty, uncertain data |
+| Performance           | Slightly faster       | Slightly slower       |
+| Data validation       | Manual required       | Built-in              |
+| Error handling        | Must use try-catch    | Automatic             |
+| NULL handling         | Propagates NULL       | Propagates NULL       |
 
 **When to use CAST:**
 - Data is already validated
@@ -543,23 +543,23 @@ WHERE denominator != 0;
 
 ### Type Conversion Summary Table
 
-| From Type | To Type | CAST Example | Notes |
-|-----------|---------|--------------|-------|
-| VARCHAR | INT | `CAST('123' AS INT)` | Must be valid integer string |
-| VARCHAR | DOUBLE | `CAST('123.45' AS DOUBLE)` | Must be valid number string |
-| VARCHAR | DATE | `CAST('2025-01-10' AS DATE)` | Must be valid date format |
-| VARCHAR | BOOLEAN | `CAST('true' AS BOOLEAN)` | Accepts 'true'/'false', '1'/'0' |
-| INT | VARCHAR | `CAST(123 AS VARCHAR)` | Always succeeds |
-| INT | DOUBLE | `CAST(123 AS DOUBLE)` | Always succeeds |
-| INT | BOOLEAN | `CAST(1 AS BOOLEAN)` | 0=false, non-zero=true |
-| DOUBLE | INT | `CAST(123.99 AS INT)` | Truncates decimal |
-| DOUBLE | VARCHAR | `CAST(123.45 AS VARCHAR)` | Always succeeds |
-| DATE | VARCHAR | `CAST(date_col AS VARCHAR)` | Format: 'YYYY-MM-DD' |
-| DATE | TIMESTAMP | `CAST(date_col AS TIMESTAMP)` | Time set to 00:00:00 |
-| TIMESTAMP | DATE | `CAST(ts_col AS DATE)` | Drops time component |
-| TIMESTAMP | VARCHAR | `CAST(ts_col AS VARCHAR)` | Format: 'YYYY-MM-DD HH:MI:SS' |
-| BOOLEAN | INT | `CAST(true AS INT)` | true=1, false=0 |
-| BOOLEAN | VARCHAR | `CAST(true AS VARCHAR)` | 'true' or 'false' |
+| From Type  | To Type   | CAST Example                  | Notes                           |
+|------------|-----------|-------------------------------|---------------------------------|
+| VARCHAR    | INT       | `CAST('123' AS INT)`          | Must be valid integer string    |
+| VARCHAR    | DOUBLE    | `CAST('123.45' AS DOUBLE)`    | Must be valid number string     |
+| VARCHAR    | DATE      | `CAST('2025-01-10' AS DATE)`  | Must be valid date format       |
+| VARCHAR    | BOOLEAN   | `CAST('true' AS BOOLEAN)`     | Accepts 'true'/'false', '1'/'0' |
+| INT        | VARCHAR   | `CAST(123 AS VARCHAR)`        | Always succeeds                 |
+| INT        | DOUBLE    | `CAST(123 AS DOUBLE)`         | Always succeeds                 |
+| INT        | BOOLEAN   | `CAST(1 AS BOOLEAN)`          | 0=false, non-zero=true          |
+| DOUBLE     | INT       | `CAST(123.99 AS INT)`         | Truncates decimal               |
+| DOUBLE     | VARCHAR   | `CAST(123.45 AS VARCHAR)`     | Always succeeds                 |
+| DATE       | VARCHAR   | `CAST(date_col AS VARCHAR)`   | Format: 'YYYY-MM-DD'            |
+| DATE       | TIMESTAMP | `CAST(date_col AS TIMESTAMP)` | Time set to 00:00:00            |
+| TIMESTAMP  | DATE      | `CAST(ts_col AS DATE)`        | Drops time component            |
+| TIMESTAMP  | VARCHAR   | `CAST(ts_col AS VARCHAR)`     | Format: 'YYYY-MM-DD HH:MI:SS'   |
+| BOOLEAN    | INT       | `CAST(true AS INT)`           | true=1, false=0                 |
+| BOOLEAN    | VARCHAR   | `CAST(true AS VARCHAR)`       | 'true' or 'false'               |
 
 ---
 

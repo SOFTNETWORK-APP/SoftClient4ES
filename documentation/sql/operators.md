@@ -1904,12 +1904,12 @@ SELECT * FROM orders WHERE order_date = '2025-01-10';
 
 ### Summary: Cast Operators
 
-| Syntax | Example | Notes |
-|--------|---------|-------|
-| `::TYPE` | `'123'::INT` | PostgreSQL style, shorter |
-| `CAST(expr AS TYPE)` | `CAST('123' AS INT)` | Standard SQL, more portable |
-| `CONVERT(expr, TYPE)` | `CONVERT('123', INT)` | MySQL style (if supported) |
-| `TRY_CAST(expr AS TYPE)` | `TRY_CAST('abc' AS INT)` | Returns NULL on error |
+| Syntax                   | Example                  | Notes                       |
+|--------------------------|--------------------------|-----------------------------|
+| `::TYPE`                 | `'123'::INT`             | PostgreSQL style, shorter   |
+| `CAST(expr AS TYPE)`     | `CAST('123' AS INT)`     | Standard SQL, more portable |
+| `CONVERT(expr, TYPE)`    | `CONVERT('123', INT)`    | MySQL style (if supported)  |
+| `TRY_CAST(expr AS TYPE)` | `TRY_CAST('abc' AS INT)` | Returns NULL on error       |
 
 **When to use `::`:**
 - PostgreSQL-compatible systems

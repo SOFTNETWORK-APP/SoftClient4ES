@@ -842,7 +842,7 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
       .named("bulk")
       .mapAsyncUnordered[R](parallelism) { items =>
         val request =
-          new BulkRequest.Builder().index(bulkOptions.index).operations(items.asJava).build()
+          new BulkRequest.Builder().index(bulkOptions.defaultIndex).operations(items.asJava).build()
         Try(apply().bulk(request)) match {
           case Success(response) =>
             if (response.errors()) {
@@ -1057,11 +1057,11 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
   *   [[ScrollApi]] for scroll operations
   */
 trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
-  _: SearchApi with JavaClientCompanion =>
+  _: VersionApi with SearchApi with JavaClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollClassic(
+  override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
@@ -1082,7 +1082,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                 val searchRequest = new SearchRequest.Builder()
                   .index(elasticQuery.indices.asJava)
                   .withJson(new StringReader(elasticQuery.query))
-                  .scroll(Time.of(t => t.time(config.scrollTimeout)))
+                  .scroll(Time.of(t => t.time(config.keepAlive)))
                   .size(config.scrollSize)
                   .build()
 
@@ -1119,7 +1119,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 
                 val scrollRequest = new ScrollRequest.Builder()
                   .scrollId(scrollId)
-                  .scroll(Time.of(t => t.time(config.scrollTimeout)))
+                  .scroll(Time.of(t => t.time(config.keepAlive)))
                   .build()
 
                 val response = apply().scroll(scrollRequest, classOf[JMap[String, Object]])
@@ -1161,7 +1161,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 
   /** Search After (only for hits, more efficient)
     */
-  override def searchAfter(
+  override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -1181,7 +1181,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     * @note
     *   Only works for hits, not for aggregations (use scrollSourceClassic for aggregations)
     */
-  private def pitSearchAfter(
+  private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -1190,7 +1190,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     implicit val ec: ExecutionContext = system.dispatcher
 
     // Step 1: Open PIT
-    val pitIdFuture: Future[String] = openPit(elasticQuery.indices, config.scrollTimeout)
+    val pitIdFuture: Future[String] = openPit(elasticQuery.indices, config.keepAlive)
 
     Source
       .futureSource {
@@ -1217,7 +1217,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                     .size(config.scrollSize)
                     .pit(
                       PointInTimeReference
-                        .of(p => p.id(pitId).keepAlive(Time.of(t => t.time(config.scrollTimeout))))
+                        .of(p => p.id(pitId).keepAlive(Time.of(t => t.time(config.keepAlive))))
                     )
 
                   // Parse query to add query clause (not indices, they're in PIT)
@@ -1421,7 +1421,8 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
         case Left(l)  => convertToJson(l)
         case Right(r) => convertToJson(r)
       }
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse =
+      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>

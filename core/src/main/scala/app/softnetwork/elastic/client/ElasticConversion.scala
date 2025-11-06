@@ -16,7 +16,6 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.fasterxml.jackson.databind.{DeserializationFeature, JsonNode, ObjectMapper}
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.scala.{ClassTagExtensions, DefaultScalaModule}
@@ -78,7 +77,7 @@ trait ElasticConversion {
   def parseMultiSearchResponse(
     jsonArray: JsonNode,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    aggregations: Map[String, ClientAggregation]
   ): Try[Seq[Map[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
@@ -112,7 +111,7 @@ trait ElasticConversion {
   def parseSingleSearchResponse(
     json: JsonNode,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    aggregations: Map[String, ClientAggregation]
   ): Try[Seq[Map[String, Any]]] =
     Try {
       // check if it is an error response
@@ -131,7 +130,7 @@ trait ElasticConversion {
   def jsonToRows(
     json: JsonNode,
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    aggregations: Map[String, ClientAggregation]
   ): Seq[Map[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
@@ -255,7 +254,7 @@ trait ElasticConversion {
     aggsNode: JsonNode,
     parentContext: Map[String, Any],
     fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    aggregations: Map[String, ClientAggregation]
   ): Seq[Map[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {

@@ -19,7 +19,7 @@ package app.softnetwork.elastic.client.jest
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Flow
-import app.softnetwork.elastic.client.BulkApi
+import app.softnetwork.elastic.client.{BulkApi, IndexApi, RefreshApi, SettingsApi}
 import app.softnetwork.elastic.client.bulk.{
   BulkAction,
   BulkElasticAction,
@@ -40,7 +40,7 @@ import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
 
 trait JestBulkApi extends BulkApi {
-  _: JestRefreshApi with JestSettingsApi with JestIndexApi with JestClientCompanion =>
+  _: RefreshApi with SettingsApi with IndexApi with JestClientCompanion =>
 
   // ========================================================================
   // TYPE ALIASES FOR JEST
@@ -80,7 +80,7 @@ trait JestBulkApi extends BulkApi {
       .mapAsync(1) { actions =>
         Future {
           val bulkBuilder = new Bulk.Builder()
-            .defaultIndex(bulkOptions.index)
+            .defaultIndex(bulkOptions.defaultIndex)
             .defaultType(bulkOptions.defaultType)
 
           actions.foreach {

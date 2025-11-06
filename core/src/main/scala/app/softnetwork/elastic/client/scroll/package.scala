@@ -21,20 +21,23 @@ package object scroll {
   /** Scroll configuration
     */
   case class ScrollConfig(
-    scrollTimeout: String = "1m",
-    scrollSize: Int = 1000,
-    logEvery: Int = 10,
-    maxDocuments: Option[Long] = None,
-    preferSearchAfter: Boolean = true, // Préférence pour search_after si possible
-    metrics: ScrollMetrics = ScrollMetrics(),
-    retryConfig: RetryConfig = RetryConfig()
+    keepAlive: String = "1m", // Keep-alive time for scroll context
+    scrollSize: Int = 1000, // Number of documents per batch
+    logEvery: Int = 10, // Log progress every n batches
+    maxDocuments: Option[Long] = None, // Optional maximum number of documents to retrieve
+    preferSearchAfter: Boolean = true, // Prefer search_after over scroll when possible
+    metrics: ScrollMetrics = ScrollMetrics(), // Initial scroll metrics
+    retryConfig: RetryConfig = RetryConfig() // Retry configuration
   )
 
   /** Scroll strategy based on query type
     */
   sealed trait ScrollStrategy
-  case object UseScroll extends ScrollStrategy // Pour agrégations ou requêtes complexes
-  case object UseSearchAfter extends ScrollStrategy // Pour hits simples (plus performant)
+  case object UsePIT
+      extends ScrollStrategy // Point In Time + search_after (ES 7.10+, best performance)
+  case object UseScroll extends ScrollStrategy // Classic scroll (supports aggregations)
+  case object UseSearchAfter
+      extends ScrollStrategy // search_after only (efficient, no server state)
 
   /** Scroll metrics
     */

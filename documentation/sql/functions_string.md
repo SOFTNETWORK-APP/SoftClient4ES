@@ -1205,16 +1205,16 @@ ORDER BY score DESC;
 
 ### MATCH AGAINST vs Other String Functions
 
-| Feature | MATCH AGAINST | LIKE | REGEXP_LIKE |
-|---------|--------------|------|-------------|
-| Full-text search | ✅ Yes | ❌ No | ❌ No |
-| Relevance scoring | ✅ Yes | ❌ No | ❌ No |
-| Multiple fields | ✅ Yes | ❌ No | ❌ No |
-| Stemming/Lemmatization | ✅ Yes | ❌ No | ❌ No |
-| Performance on large text | ✅ Fast | ❌ Slow | ❌ Slow |
-| Exact substring | ⚠️ Use for words | ✅ Yes | ✅ Yes |
-| Case sensitivity | ❌ Insensitive | ⚠️ Depends | ⚠️ Optional |
-| Natural language | ✅ Yes | ❌ No | ❌ No |
+| Feature                   | MATCH AGAINST    | LIKE       | REGEXP_LIKE  |
+|---------------------------|------------------|------------|--------------|
+| Full-text search          | ✅ Yes            | ❌ No       | ❌ No         |
+| Relevance scoring         | ✅ Yes            | ❌ No       | ❌ No         |
+| Multiple fields           | ✅ Yes            | ❌ No       | ❌ No         |
+| Stemming/Lemmatization    | ✅ Yes            | ❌ No       | ❌ No         |
+| Performance on large text | ✅ Fast           | ❌ Slow     | ❌ Slow       |
+| Exact substring           | ⚠️ Use for words | ✅ Yes      | ✅ Yes        |
+| Case sensitivity          | ❌ Insensitive    | ⚠️ Depends | ⚠️ Optional  |
+| Natural language          | ✅ Yes            | ❌ No       | ❌ No         |
 
 **When to use MATCH AGAINST:**
 - Full-text search across documents

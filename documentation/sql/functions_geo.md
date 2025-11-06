@@ -47,17 +47,17 @@ If both arguments are fixed points, the distance is **precomputed at query compi
 
 ### Supported Distance Units
 
-| Category | Unit | Syntax | Example |
-|----------|------|--------|---------|
-| **Metric** | Kilometers | `km` | `5000 km`, `10.5 km` |
-| | Meters | `m` | `500 m`, `1000 m` |
-| | Centimeters | `cm` | `100 cm`, `50 cm` |
-| | Millimeters | `mm` | `1000 mm`, `500 mm` |
-| **Imperial** | Miles | `mi` | `10 mi`, `5.5 mi` |
-| | Yards | `yd` | `100 yd`, `50 yd` |
-| | Feet | `ft` | `500 ft`, `100 ft` |
-| | Inches | `in` | `100 in`, `50 in` |
-| **Nautical** | Nautical Miles | `nmi` | `50 nmi`, `10 nmi` |
+| Categoryc    | Unitc          | Syntaxc | Examplec             |
+|--------------|----------------|---------|----------------------|
+| **Metric**   | Kilometers     | `km`    | `5000 km`, `10.5 km` |
+|              | Meters         | `m`     | `500 m`, `1000 m`    |
+|              | Centimeters    | `cm`    | `100 cm`, `50 cm`    |
+|              | Millimeters    | `mm`    | `1000 mm`, `500 mm`  |
+| **Imperial** | Miles          | `mi`    | `10 mi`, `5.5 mi`    |
+|              | Yards          | `yd`    | `100 yd`, `50 yd`    |
+|              | Feet           | `ft`    | `500 ft`, `100 ft`   |
+|              | Inches         | `in`    | `100 in`, `50 in`    |
+| **Nautical** | Nautical Miles | `nmi`   | `50 nmi`, `10 nmi`   |
 
 ---
 
@@ -573,15 +573,15 @@ WHERE ST_DISTANCE(point1, point2) <= 500 in    -- 500 inches
 
 **Choose the appropriate unit based on your use case:**
 
-| Use Case | Recommended Unit | Example Query |
-|----------|-----------------|---------------|
-| City/Urban search | `km` or `m` | `WHERE ST_DISTANCE(...) < 5 km` |
-| Country/Regional | `km` or `mi` | `WHERE ST_DISTANCE(...) < 100 km` |
-| Maritime/Aviation | `nmi` | `WHERE ST_DISTANCE(...) < 50 nmi` |
-| Building/Indoor | `m` or `ft` | `WHERE ST_DISTANCE(...) < 100 m` |
-| Precision tracking | `m` or `cm` | `WHERE ST_DISTANCE(...) < 50 m` |
-| US-based apps | `mi` or `ft` | `WHERE ST_DISTANCE(...) < 10 mi` |
-| International apps | `km` or `m` | `WHERE ST_DISTANCE(...) < 10 km` |
+| Use Case           | Recommended Unit  | Example Query                     |
+|--------------------|-------------------|-----------------------------------|
+| City/Urban search  | `km` or `m`       | `WHERE ST_DISTANCE(...) < 5 km`   |
+| Country/Regional   | `km` or `mi`      | `WHERE ST_DISTANCE(...) < 100 km` |
+| Maritime/Aviation  | `nmi`             | `WHERE ST_DISTANCE(...) < 50 nmi` |
+| Building/Indoor    | `m` or `ft`       | `WHERE ST_DISTANCE(...) < 100 m`  |
+| Precision tracking | `m` or `cm`       | `WHERE ST_DISTANCE(...) < 50 m`   |
+| US-based apps      | `mi` or `ft`      | `WHERE ST_DISTANCE(...) < 10 mi`  |
+| International apps | `km` or `m`       | `WHERE ST_DISTANCE(...) < 10 km`  |
 
 ---
 ```

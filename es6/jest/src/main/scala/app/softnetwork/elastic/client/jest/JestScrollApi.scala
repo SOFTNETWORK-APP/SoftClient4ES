@@ -19,7 +19,14 @@ package app.softnetwork.elastic.client.jest
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
-import app.softnetwork.elastic.client.{retryWithBackoff, ElasticQuery, ElasticResponse, ScrollApi}
+import app.softnetwork.elastic.client.{
+  retryWithBackoff,
+  ElasticQuery,
+  ElasticResponse,
+  ScrollApi,
+  SearchApi,
+  VersionApi
+}
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
@@ -32,11 +39,11 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
 trait JestScrollApi extends ScrollApi with JestClientHelpers {
-  _: JestSearchApi with JestClientCompanion =>
+  _: VersionApi with SearchApi with JestClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollClassic(
+  override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
@@ -56,7 +63,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 val searchBuilder =
                   new Search.Builder(elasticQuery.query)
                     .setParameter(Parameters.SIZE, config.scrollSize)
-                    .setParameter(Parameters.SCROLL, config.scrollTimeout)
+                    .setParameter(Parameters.SCROLL, config.keepAlive)
 
                 for (indice <- elasticQuery.indices) searchBuilder.addIndex(indice)
                 for (t      <- elasticQuery.types) searchBuilder.addType(t)
@@ -85,7 +92,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               case Some(scrollId) =>
                 logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
 
-                val scrollBuilder = new SearchScroll.Builder(scrollId, config.scrollTimeout)
+                val scrollBuilder = new SearchScroll.Builder(scrollId, config.keepAlive)
 
                 val result = apply().execute(scrollBuilder.build())
                 if (!result.isSucceeded) {
@@ -117,7 +124,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
   /** Search After (only for hits, more efficient)
     */
-  override def searchAfter(
+  override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -239,6 +246,14 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
       .mapConcat(identity)
   }
 
+  override private[client] def pitSearchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+    throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
+
   /** Extract ALL results: hits + aggregations
     */
   private def extractAllResultsFromJest(
@@ -247,7 +262,8 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = jsonObject.toString
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse =
+      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
 
     parseResponse(sqlResponse) match {
       case Success(rows) => rows

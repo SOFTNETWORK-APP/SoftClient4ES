@@ -1219,17 +1219,17 @@ GROUP BY department;
 
 ## Aggregate Functions Summary
 
-| Function | Purpose | Input | Output | NULL Handling |
-|----------|---------|-------|--------|---------------|
-| `COUNT(*)` | Count all rows | Any | `BIGINT` | Includes NULLs |
-| `COUNT(expr)` | Count non-NULL values | Any | `BIGINT` | Excludes NULLs |
-| `COUNT(DISTINCT expr)` | Count distinct values | Any | `BIGINT` | Excludes NULLs |
-| `SUM(expr)` | Sum values | Numeric | Numeric | Ignores NULLs |
-| `AVG(expr)` | Average values | Numeric | `DOUBLE` | Ignores NULLs |
-| `MIN(expr)` | Minimum value | Comparable | Same as input | Ignores NULLs |
-| `MAX(expr)` | Maximum value | Comparable | Same as input | Ignores NULLs |
-| `FIRST_VALUE(expr)` | First value (ordered) | Any | Same as input | Depends on ORDER |
-| `LAST_VALUE(expr)` | Last value (ordered) | Any | Same as input | Depends on ORDER |
-| `ARRAY_AGG(expr)` | Collect into array | Any | `ARRAY<type>` | Includes NULLs |
+| Function               | Purpose               | Input      | Output        | NULL Handling    |
+|------------------------|-----------------------|------------|---------------|------------------|
+| `COUNT(*)`             | Count all rows        | Any        | `BIGINT`      | Includes NULLs   |
+| `COUNT(expr)`          | Count non-NULL values | Any        | `BIGINT`      | Excludes NULLs   |
+| `COUNT(DISTINCT expr)` | Count distinct values | Any        | `BIGINT`      | Excludes NULLs   |
+| `SUM(expr)`            | Sum values            | Numeric    | Numeric       | Ignores NULLs    |
+| `AVG(expr)`            | Average values        | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `MIN(expr)`            | Minimum value         | Comparable | Same as input | Ignores NULLs    |
+| `MAX(expr)`            | Maximum value         | Comparable | Same as input | Ignores NULLs    |
+| `FIRST_VALUE(expr)`    | First value (ordered) | Any        | Same as input | Depends on ORDER |
+| `LAST_VALUE(expr)`     | Last value (ordered)  | Any        | Same as input | Depends on ORDER |
+| `ARRAY_AGG(expr)`      | Collect into array    | Any        | `ARRAY<type>` | Includes NULLs   |
 
 [Back to index](README.md)

@@ -1125,6 +1125,15 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.searchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 
+  override private[client] def pitSearchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[JSONResults, JSONResults],
+    config: ScrollConfig,
+    hasSorts: Boolean
+  )(implicit system: ActorSystem) = {
+    delegate.pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
+  }
+
   // ==================== BulkApi ====================
 
   /** Bulk with detailed results (successes + failures).
@@ -1140,6 +1149,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   : documents to index
     * @param toDocument
     *   : JSON transformation function
+    * @param indexKey
+    *   : key for the index field
     * @param idKey
     *   : key for the id field
     * @param suffixDateKey
@@ -1162,6 +1173,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def bulkWithResult[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String],
     idKey: Option[String],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
@@ -1173,6 +1185,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.bulkWithResult(
       items,
       toDocument,
+      indexKey,
       idKey,
       suffixDateKey,
       suffixDatePattern,
@@ -1200,6 +1213,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   the documents to index
     * @param toDocument
     *   JSON transformation function
+    * @param indexKey
+    *   key for the index field
     * @param idKey
     *   key for the id field
     * @param suffixDateKey
@@ -1220,6 +1235,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def bulkSource[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String],
     idKey: Option[String],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
@@ -1232,6 +1248,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): Source[Either[FailedDocument, SuccessfulDocument], NotUsed] = delegate.bulkSource(
     items,
     toDocument,
+    indexKey,
     idKey,
     suffixDateKey,
     suffixDatePattern,
@@ -1248,6 +1265,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def bulk[D](
     items: Iterator[D],
     toDocument: D => String,
+    indexKey: Option[String],
     idKey: Option[String],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
@@ -1255,7 +1273,17 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delete: Option[Boolean],
     parentIdKey: Option[String]
   )(implicit bulkOptions: BulkOptions, system: ActorSystem): ElasticResult[BulkResult] = delegate
-    .bulk(items, toDocument, idKey, suffixDateKey, suffixDatePattern, update, delete, parentIdKey)
+    .bulk(
+      items,
+      toDocument,
+      indexKey,
+      idKey,
+      suffixDateKey,
+      suffixDatePattern,
+      update,
+      delete,
+      parentIdKey
+    )
 
   override private[client] def toBulkAction(bulkItem: BulkItem): BulkActionType =
     delegate.toBulkAction(bulkItem).asInstanceOf[BulkActionType]

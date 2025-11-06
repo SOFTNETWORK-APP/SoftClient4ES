@@ -16,8 +16,6 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
-
 import java.time.temporal.Temporal
 import scala.util.{Failure, Success, Try}
 
@@ -27,7 +25,7 @@ sealed trait AggregateResult {
 }
 
 sealed trait MetricAgregateResult extends AggregateResult {
-  def function: AggregateFunction
+  def aggType: AggregationType.AggregationType
 }
 
 sealed trait AggregateValue
@@ -51,7 +49,7 @@ case object EmptyValue extends AggregateValue
 
 case class SingleValueAggregateResult(
   field: String,
-  function: AggregateFunction,
+  aggType: AggregationType.AggregationType,
   value: AggregateValue,
   error: Option[String] = None
 ) extends MetricAgregateResult {
@@ -128,7 +126,7 @@ case class SingleValueAggregateResult(
   // Pretty print for debugging
   def prettyPrint: String = {
     val errorMsg = error.map(e => s" [ERROR: $e]").getOrElse("")
-    s"$function($field) = ${formatValue(value)}$errorMsg"
+    s"$aggType($field) = ${formatValue(value)}$errorMsg"
   }
 
   private def formatValue(v: AggregateValue): String = v match {

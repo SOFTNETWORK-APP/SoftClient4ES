@@ -1045,28 +1045,28 @@ FROM circles;
 
 ### Mathematical Function Summary
 
-| Function | Description | Example |
-|----------|-------------|---------|
-| `ABS(x)` | Absolute value | `ABS(-5)` → 5 |
-| `SIGN(x)` | Sign (-1, 0, 1) | `SIGN(-10)` → -1 |
+| Function      | Description         | Example                      |
+|---------------|---------------------|------------------------------|
+| `ABS(x)`      | Absolute value      | `ABS(-5)` → 5                |
+| `SIGN(x)`     | Sign (-1, 0, 1)     | `SIGN(-10)` → -1             |
 | `ROUND(x, n)` | Round to n decimals | `ROUND(123.456, 2)` → 123.46 |
-| `FLOOR(x)` | Round down | `FLOOR(3.9)` → 3 |
-| `CEIL(x)` | Round up | `CEIL(3.1)` → 4 |
-| `POWER(x, y)` | x^y | `POWER(2, 10)` → 1024 |
-| `SQRT(x)` | Square root | `SQRT(16)` → 4 |
-| `LOG(x)` | Natural log | `LOG(EXP(1))` → 1 |
-| `LOG10(x)` | Base-10 log | `LOG10(1000)` → 3 |
-| `EXP(x)` | e^x | `EXP(1)` → 2.718... |
-| `COS(x)` | Cosine | `COS(PI()/3)` → 0.5 |
-| `ACOS(x)` | Arc cosine | `ACOS(0.5)` → π/3 |
-| `SIN(x)` | Sine | `SIN(PI()/6)` → 0.5 |
-| `ASIN(x)` | Arc sine | `ASIN(0.5)` → π/6 |
-| `TAN(x)` | Tangent | `TAN(PI()/4)` → 1 |
-| `ATAN(x)` | Arc tangent | `ATAN(1)` → π/4 |
-| `ATAN2(y, x)` | Two-arg arc tangent | `ATAN2(1, 1)` → π/4 |
-| `PI()` | Value of π | `PI()` → 3.14159... |
-| `RADIANS(x)` | Degrees to radians | `RADIANS(180)` → π |
-| `DEGREES(x)` | Radians to degrees | `DEGREES(PI())` → 180 |
+| `FLOOR(x)`    | Round down          | `FLOOR(3.9)` → 3             |
+| `CEIL(x)`     | Round up            | `CEIL(3.1)` → 4              |
+| `POWER(x, y)` | x^y                 | `POWER(2, 10)` → 1024        |
+| `SQRT(x)`     | Square root         | `SQRT(16)` → 4               |
+| `LOG(x)`      | Natural log         | `LOG(EXP(1))` → 1            |
+| `LOG10(x)`    | Base-10 log         | `LOG10(1000)` → 3            |
+| `EXP(x)`      | e^x                 | `EXP(1)` → 2.718...          |
+| `COS(x)`      | Cosine              | `COS(PI()/3)` → 0.5          |
+| `ACOS(x)`     | Arc cosine          | `ACOS(0.5)` → π/3            |
+| `SIN(x)`      | Sine                | `SIN(PI()/6)` → 0.5          |
+| `ASIN(x)`     | Arc sine            | `ASIN(0.5)` → π/6            |
+| `TAN(x)`      | Tangent             | `TAN(PI()/4)` → 1            |
+| `ATAN(x)`     | Arc tangent         | `ATAN(1)` → π/4              |
+| `ATAN2(y, x)` | Two-arg arc tangent | `ATAN2(1, 1)` → π/4          |
+| `PI()`        | Value of π          | `PI()` → 3.14159...          |
+| `RADIANS(x)`  | Degrees to radians  | `RADIANS(180)` → π           |
+| `DEGREES(x)`  | Radians to degrees  | `DEGREES(PI())` → 180        |
 
 ---
 

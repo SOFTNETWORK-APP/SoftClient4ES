@@ -826,7 +826,7 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
     Flow[Seq[BulkActionType]]
       .named("bulk")
       .mapAsyncUnordered[R](parallelism) { items =>
-        val request = new BulkRequest(bulkOptions.index, bulkOptions.defaultType)
+        val request = new BulkRequest(bulkOptions.defaultIndex, bulkOptions.defaultType)
         items.foreach(request.add)
         val promise: Promise[R] = Promise[R]()
         apply().bulkAsync(
@@ -1032,11 +1032,11 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
   *   [[ScrollApi]] for generic API documentation
   */
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
-  _: SearchApi with RestHighLevelClientCompanion =>
+  _: VersionApi with SearchApi with RestHighLevelClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
-  override def scrollClassic(
+  override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     aggregations: Map[String, SQLAggregation],
@@ -1072,7 +1072,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                     )
 
                 searchRequest.scroll(
-                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                  TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
                 )
 
                 val response = apply().search(searchRequest, RequestOptions.DEFAULT)
@@ -1104,7 +1104,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
                 val scrollRequest = new SearchScrollRequest(scrollId)
                 scrollRequest.scroll(
-                  TimeValue.parseTimeValue(config.scrollTimeout, "scroll_timeout")
+                  TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
                 )
 
                 val result = apply().scroll(scrollRequest, RequestOptions.DEFAULT)
@@ -1142,7 +1142,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     * @note
     *   Uses Array[Object] for searchAfter values to match RestHighLevelClient API
     */
-  override def searchAfter(
+  override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: Map[String, String],
     config: ScrollConfig,
@@ -1249,6 +1249,14 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       .mapConcat(identity)
   }
 
+  override private[client] def pitSearchAfter(
+    elasticQuery: ElasticQuery,
+    fieldAliases: Map[String, String],
+    config: ScrollConfig,
+    hasSorts: Boolean
+  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+    throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
+
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
     */
   private def extractAllResults(
@@ -1257,7 +1265,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, aggregations)
+    val sqlResponse =
+      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>

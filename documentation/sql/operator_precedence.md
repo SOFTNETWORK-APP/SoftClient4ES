@@ -8,17 +8,17 @@ This page lists operator precedence used by the parser and evaluator. Operators 
 
 ### Precedence Order
 
-| Precedence | Operator(s) | Category | Description |
-|------------|-------------|----------|-------------|
-| **1** (Highest) | `(...)` | Parentheses | Grouping and explicit precedence |
-| **2** | `-`, `+`, `NOT` | Unary | Negation, unary plus, logical NOT |
-| **3** | `*`, `/`, `%` | Multiplicative | Multiplication, division, modulo |
-| **4** | `+`, `-` | Additive | Addition, subtraction |
-| **5** | `<`, `<=`, `>`, `>=` | Comparison | Less than, less or equal, greater than, greater or equal |
-| **6** | `=`, `!=`, `<>` | Equality | Equal, not equal |
-| **7** | `BETWEEN`, `IN`, `LIKE`, `RLIKE` | Membership & Pattern | Range, set membership, pattern matching |
-| **8** | `AND` | Logical AND | Logical conjunction |
-| **9** (Lowest) | `OR` | Logical OR | Logical disjunction |
+| Precedence      | Operator(s)                      | Category             | Description                                              |
+|-----------------|----------------------------------|----------------------|----------------------------------------------------------|
+| **1** (Highest) | `(...)`                          | Parentheses          | Grouping and explicit precedence                         |
+| **2**           | `-`, `+`, `NOT`                  | Unary                | Negation, unary plus, logical NOT                        |
+| **3**           | `*`, `/`, `%`                    | Multiplicative       | Multiplication, division, modulo                         |
+| **4**           | `+`, `-`                         | Additive             | Addition, subtraction                                    |
+| **5**           | `<`, `<=`, `>`, `>=`             | Comparison           | Less than, less or equal, greater than, greater or equal |
+| **6**           | `=`, `!=`, `<>`                  | Equality             | Equal, not equal                                         |
+| **7**           | `BETWEEN`, `IN`, `LIKE`, `RLIKE` | Membership & Pattern | Range, set membership, pattern matching                  |
+| **8**           | `AND`                            | Logical AND          | Logical conjunction                                      |
+| **9** (Lowest)  | `OR`                             | Logical OR           | Logical disjunction                                      |
 
 ---
 
@@ -784,17 +784,17 @@ WHERE price BETWEEN 10 AND 100;
 
 ### Precedence Summary Table
 
-| Level | Operators | Associativity | Example |
-|-------|-----------|---------------|---------|
-| 1 | `(...)` | N/A | `(a + b) * c` |
-| 2 | `-`, `+`, `NOT` | Right | `-a`, `NOT b` |
-| 3 | `*`, `/`, `%` | Left | `a * b / c` |
-| 4 | `+`, `-` | Left | `a + b - c` |
-| 5 | `<`, `<=`, `>`, `>=` | Left | `a < b` |
-| 6 | `=`, `!=`, `<>` | Left | `a = b` |
-| 7 | `BETWEEN`, `IN`, `LIKE`, `RLIKE` | N/A | `a BETWEEN 1 AND 10` |
-| 8 | `AND` | Left | `a AND b AND c` |
-| 9 | `OR` | Left | `a OR b OR c` |
+| Level  | Operators                        | Associativity  | Example              |
+|--------|----------------------------------|----------------|----------------------|
+| 1      | `(...)`                          | N/A            | `(a + b) * c`        |
+| 2      | `-`, `+`, `NOT`                  | Right          | `-a`, `NOT b`        |
+| 3      | `*`, `/`, `%`                    | Left           | `a * b / c`          |
+| 4      | `+`, `-`                         | Left           | `a + b - c`          |
+| 5      | `<`, `<=`, `>`, `>=`             | Left           | `a < b`              |
+| 6      | `=`, `!=`, `<>`                  | Left           | `a = b`              |
+| 7      | `BETWEEN`, `IN`, `LIKE`, `RLIKE` | N/A            | `a BETWEEN 1 AND 10` |
+| 8      | `AND`                            | Left           | `a AND b AND c`      |
+| 9      | `OR`                             | Left           | `a OR b OR c`        |
 
 **Associativity:**
 - **Left**: Operators of same precedence evaluate left-to-right: `a - b - c` = `(a - b) - c`
