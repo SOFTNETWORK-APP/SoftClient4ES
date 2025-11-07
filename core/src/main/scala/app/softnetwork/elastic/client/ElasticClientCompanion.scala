@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.client
 
+import app.softnetwork.common.ClientCompanion
 import org.apache.http.HttpHost
 import org.slf4j.Logger
 
@@ -25,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
 
-trait ElasticClientCompanion[T <: Closeable] extends Closeable { _: { def logger: Logger } =>
+trait ElasticClientCompanion[T <: Closeable] extends ClientCompanion { _: { def logger: Logger } =>
 
   def elasticConfig: ElasticConfig
 
@@ -140,13 +141,7 @@ trait ElasticClientCompanion[T <: Closeable] extends Closeable { _: { def logger
 
   /** Check if client is initialized and connected
     */
-  def isInitialized: Boolean = client.isDefined
-
-  /** Test connection to Elasticsearch cluster
-    * @return
-    *   true if connection is successful
-    */
-  def testConnection(): Boolean
+  override def isInitialized: Boolean = client.isDefined
 
   /** Close the client and release resources Idempotent - safe to call multiple times
     */

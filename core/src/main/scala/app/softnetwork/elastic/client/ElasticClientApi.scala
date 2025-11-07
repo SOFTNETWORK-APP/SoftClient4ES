@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.client
 
+import app.softnetwork.common.ClientCompanion
 import com.typesafe.config.{Config, ConfigFactory}
 import org.json4s.jackson
 import org.json4s.jackson.Serialization
@@ -44,7 +45,7 @@ trait ElasticClientApi
     with FlushApi
     with VersionApi
     with SerializationApi
-    with Closeable {
+    with ClientCompanion {
 
   protected def logger: Logger
 

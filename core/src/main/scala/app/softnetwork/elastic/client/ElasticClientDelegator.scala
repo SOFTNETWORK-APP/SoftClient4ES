@@ -41,9 +41,20 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   // Delegate config to the underlying client
   override lazy val config: Config = delegate.config
 
-  // ==================== Closeable ====================
+  // ==================== ClientCompanion ====================
 
   override def close(): Unit = delegate.close()
+
+  /** Check if client is initialized and connected
+    */
+  override def isInitialized: Boolean = delegate.isInitialized
+
+  /** Test connection
+    *
+    * @return
+    *   true if connection is successful
+    */
+  override def testConnection(): Boolean = delegate.testConnection()
 
   // ==================== VersionApi ====================
 
