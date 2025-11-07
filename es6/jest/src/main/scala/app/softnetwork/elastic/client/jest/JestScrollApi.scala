@@ -263,7 +263,12 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
   ): Seq[Map[String, Any]] = {
     val jsonString = jsonObject.toString
     val sqlResponse =
-      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
+      ElasticResponse(
+        "",
+        jsonString,
+        fieldAliases,
+        aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+      )
 
     parseResponse(sqlResponse) match {
       case Success(rows) => rows

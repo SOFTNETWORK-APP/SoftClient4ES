@@ -1422,7 +1422,12 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
         case Right(r) => convertToJson(r)
       }
     val sqlResponse =
-      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
+      ElasticResponse(
+        "",
+        jsonString,
+        fieldAliases,
+        aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+      )
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>

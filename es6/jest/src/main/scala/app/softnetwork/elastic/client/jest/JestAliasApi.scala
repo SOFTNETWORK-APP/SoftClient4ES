@@ -73,7 +73,7 @@ trait JestAliasApi extends AliasApi with JestClientHelpers {
       new GetAliases.Builder()
         .addAlias(alias)
         .build()
-    }(result => !result.getJsonObject.getAsJsonObject.entrySet().isEmpty)
+    }(result => !result.getJsonObject.getAsJsonObject().entrySet().isEmpty)
 
   /** Get aliases for a given index.
     * @see

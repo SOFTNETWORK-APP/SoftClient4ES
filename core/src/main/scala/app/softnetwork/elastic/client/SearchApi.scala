@@ -134,7 +134,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             elasticQuery.query,
             response,
             fieldAliases,
-            aggregations.map(kv => kv._1 -> kv._2)
+            aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
           )
         )
       case ElasticSuccess(_) =>
@@ -208,7 +208,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             elasticQueries.queries.map(_.query).mkString("\n"),
             response,
             fieldAliases,
-            aggregations.map(kv => kv._1 -> kv._2)
+            aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
           )
         )
       case ElasticSuccess(_) =>
@@ -310,7 +310,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               elasticQuery.query,
               response,
               fieldAliases,
-              aggregations.map(kv => kv._1 -> kv._2)
+              aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
             )
           )
         )
@@ -367,7 +367,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               elasticQueries.queries.map(_.query).mkString("\n"),
               response,
               fieldAliases,
-              aggregations.map(kv => kv._1 -> kv._2)
+              aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
             )
           )
         )
@@ -582,7 +582,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *
     * @deprecated
     *   Use `search` instead.
-    * @param sqlQuery
+    * @param sql
     *   the SQL query
     * @param innerField
     *   the field for inner hits

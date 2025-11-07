@@ -91,7 +91,7 @@ trait ElasticClientHelpers {
       return Some(
         ElasticError(
           message =
-            s"Index name contains invalid characters: \\, /, *, ?, \", <, >, |, space, comma, #",
+            "Index name contains invalid characters: \\, /, *, ?, \", <, >, |, space, comma, #",
           cause = None,
           statusCode = Some(400),
           operation = Some("validateIndexName")

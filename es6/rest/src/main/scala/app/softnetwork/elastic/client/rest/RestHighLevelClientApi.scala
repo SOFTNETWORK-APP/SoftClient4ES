@@ -1266,7 +1266,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
     val sqlResponse =
-      ElasticResponse("", jsonString, fieldAliases, aggregations.map(kv => kv._1 -> kv._2))
+      ElasticResponse(
+        "",
+        jsonString,
+        fieldAliases,
+        aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+      )
 
     parseResponse(sqlResponse) match {
       case Success(rows) =>

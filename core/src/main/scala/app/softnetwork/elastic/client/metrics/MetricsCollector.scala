@@ -122,8 +122,11 @@ class MetricsCollector extends MetricsApi {
         successCount = allMetrics.map(_.successOps.get()).sum,
         failureCount = allMetrics.map(_.failureOps.get()).sum,
         totalDuration = allMetrics.map(_.totalDuration.get()).sum,
-        minDuration =
-          allMetrics.map(_.minDuration.get()).filter(_ != Long.MaxValue).minOption.getOrElse(0),
+        minDuration = allMetrics
+          .map(_.minDuration.get())
+          .filter(_ != Long.MaxValue)
+          .reduceOption(_ min _)
+          .getOrElse(0),
         maxDuration = allMetrics.map(_.maxDuration.get()).max,
         lastExecutionTime = allMetrics.map(_.lastExecution.get()).max
       )

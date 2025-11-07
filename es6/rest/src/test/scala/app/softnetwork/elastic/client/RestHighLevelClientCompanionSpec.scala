@@ -4,8 +4,6 @@ import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.rest.RestHighLevelClientCompanion
 import app.softnetwork.elastic.scalatest.EmbeddedElasticTestKit
 import app.softnetwork.persistence.generateUUID
-import com.typesafe.config.ConfigFactory
-import configs.ConfigReader
 import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.concurrent.ScalaFutures
@@ -93,27 +91,13 @@ class RestHighLevelClientCompanionSpec
 
   object TestCompanion {
     def apply(): TestCompanion = TestCompanion(
-      ConfigReader[ElasticConfig]
-        .read(elasticConfig.withFallback(ConfigFactory.load("softnetwork-elastic.conf")), "elastic")
-        .toEither match {
-        case Left(configError) =>
-          throw configError.configException
-        case Right(r) => r
-      }
+      ElasticConfig(elasticConfig)
     )
+
     def apply(url: String): TestCompanion = TestCompanion(
-      ConfigReader[ElasticConfig]
-        .read(
-          ConfigFactory
-            .parseString(elasticConfigAsString)
-            .withFallback(ConfigFactory.load("softnetwork-elastic.conf")),
-          "elastic"
-        )
-        .toEither match {
-        case Left(configError) =>
-          throw configError.configException
-        case Right(r) => r.copy(credentials = ElasticCredentials(url))
-      }
+      ElasticConfig(elasticConfig).copy(
+        credentials = ElasticCredentials(url)
+      )
     )
   }
 }
