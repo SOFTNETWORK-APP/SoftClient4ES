@@ -36,15 +36,22 @@ trait JestIndexApi extends IndexApi with JestClientHelpers {
   override private[client] def executeIndex(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   ): ElasticResult[Boolean] =
     executeJestBooleanAction(
       operation = "index",
       index = Some(index),
       retryable = true
-    )(
-      new Index.Builder(source).index(index).`type`("_doc").id(id).build()
-    )
+    ) {
+      val refresh = if (wait) "wait_for" else "false"
+      new Index.Builder(source)
+        .index(index)
+        .`type`("_doc")
+        .id(id)
+        .setParameter("refresh", refresh)
+        .build()
+    }
 
   /** Index a document in the given index asynchronously.
     * @see

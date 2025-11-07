@@ -91,11 +91,9 @@ trait IndexApi extends ElasticClientHelpers { _: RefreshApi with SerializationAp
 
     logger.debug(s"Indexing document with id '$id' in index '$index'")
 
-    executeIndex(index, id, source) match {
+    executeIndex(index, id, source, wait=false) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Document with id '$id' indexed successfully in index '$index'")
-        // Refresh the index to make sure the document is available for search
-        this.refresh(index)
         success
       case success @ ElasticSuccess(_) =>
         logger.info(s"✅ Document with id '$id' not indexed in index '$index'")
@@ -206,7 +204,8 @@ trait IndexApi extends ElasticClientHelpers { _: RefreshApi with SerializationAp
   private[client] def executeIndex(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   ): ElasticResult[Boolean]
 
   private[client] def executeIndexAsync(

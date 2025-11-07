@@ -562,9 +562,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def executeIndex(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   ): ElasticResult[Boolean] =
-    delegate.executeIndex(index, id, source)
+    delegate.executeIndex(index, id, source, wait)
 
   override private[client] def executeIndexAsync(
     index: String,
@@ -1138,7 +1139,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[JSONResults, JSONResults],
+    fieldAliases: Map[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem) = {
