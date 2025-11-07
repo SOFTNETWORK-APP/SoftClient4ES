@@ -48,6 +48,7 @@ import org.elasticsearch.action.search.{
   SearchResponse,
   SearchScrollRequest
 }
+import org.elasticsearch.action.support.WriteRequest
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest}
@@ -490,18 +491,22 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
   override private[client] def executeIndex(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   ): result.ElasticResult[Boolean] =
     executeRestAction[IndexRequest, IndexResponse, Boolean](
       operation = "index",
       index = Some(index),
       retryable = false
-    )(
-      request = new IndexRequest(index)
+    )(request = {
+      val refresh =
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      new IndexRequest(index)
         .`type`("_doc")
         .id(id)
         .source(source, XContentType.JSON)
-    )(
+        .setRefreshPolicy(refresh)
+    })(
       executor = req => apply().index(req, RequestOptions.DEFAULT)
     )(response => response.status().getStatus < 400)
 

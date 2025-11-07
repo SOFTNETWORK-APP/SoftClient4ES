@@ -27,7 +27,14 @@ import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
 import app.softnetwork.elastic.client
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
-import co.elastic.clients.elasticsearch._types.{FieldSort, FieldValue, SortOptions, SortOrder, Time}
+import co.elastic.clients.elasticsearch._types.{
+  FieldSort,
+  FieldValue,
+  Refresh,
+  SortOptions,
+  SortOrder,
+  Time
+}
 import co.elastic.clients.elasticsearch.core.bulk.{
   BulkOperation,
   DeleteOperation,
@@ -46,7 +53,6 @@ import com.google.gson.JsonParser
 import _root_.java.io.{IOException, StringReader}
 import _root_.java.util.{Map => JMap}
 import scala.jdk.CollectionConverters._
-
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 import scala.util.{Failure, Success, Try}
@@ -508,22 +514,25 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
   override private[client] def executeIndex(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   ): result.ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "index",
       index = Some(index),
       retryable = false
-    )(
+    ) {
+      val refresh = if (wait) Refresh.WaitFor else Refresh.False
       apply()
         .index(
           new IndexRequest.Builder()
             .index(index)
             .id(id)
             .withJson(new StringReader(source))
+            .refresh(refresh)
             .build()
         )
-    )(
+    }(
       _.shards()
         .failed()
         .intValue() == 0
