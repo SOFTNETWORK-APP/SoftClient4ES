@@ -134,7 +134,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             elasticQuery.query,
             response,
             fieldAliases,
-            aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+            aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
           )
         )
       case ElasticSuccess(_) =>
@@ -208,7 +208,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             elasticQueries.queries.map(_.query).mkString("\n"),
             response,
             fieldAliases,
-            aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+            aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
           )
         )
       case ElasticSuccess(_) =>
@@ -310,7 +310,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               elasticQuery.query,
               response,
               fieldAliases,
-              aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+              aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
             )
           )
         )
@@ -367,7 +367,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               elasticQueries.queries.map(_.query).mkString("\n"),
               response,
               fieldAliases,
-              aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+              aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
             )
           )
         )

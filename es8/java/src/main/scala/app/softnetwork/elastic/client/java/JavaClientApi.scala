@@ -1426,7 +1426,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
         "",
         jsonString,
         fieldAliases,
-        aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+        aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
       )
 
     parseResponse(sqlResponse) match {

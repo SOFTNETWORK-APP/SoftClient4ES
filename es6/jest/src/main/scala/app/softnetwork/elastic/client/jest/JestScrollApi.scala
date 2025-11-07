@@ -21,6 +21,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.{
   retryWithBackoff,
+  ClientAggregation,
   ElasticQuery,
   ElasticResponse,
   ScrollApi,
@@ -267,7 +268,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
         "",
         jsonString,
         fieldAliases,
-        aggregations.map(kv => kv._1 -> kv._2.asInstanceOf)
+        aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
       )
 
     parseResponse(sqlResponse) match {
