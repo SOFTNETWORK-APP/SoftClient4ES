@@ -509,7 +509,7 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
   *   [[IndexApi]] for index operations
   */
 trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
-  _: RefreshApi with JavaClientCompanion with SerializationApi =>
+  _: SettingsApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeIndex(
     index: String,
@@ -521,24 +521,28 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
       operation = "index",
       index = Some(index),
       retryable = false
-    ) {
-      val refresh = if (wait) Refresh.WaitFor else Refresh.False
+    )(
       apply()
         .index(
           new IndexRequest.Builder()
             .index(index)
             .id(id)
             .withJson(new StringReader(source))
-            .refresh(refresh)
+            .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build()
         )
-    }(
+    )(
       _.shards()
         .failed()
         .intValue() == 0
     )
 
-  override private[client] def executeIndexAsync(index: String, id: String, source: String)(implicit
+  override private[client] def executeIndexAsync(
+    index: String,
+    id: String,
+    source: String,
+    wait: Boolean
+  )(implicit
     ec: ExecutionContext
   ): Future[result.ElasticResult[Boolean]] =
     fromCompletableFuture(
@@ -548,6 +552,7 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
             .index(index)
             .id(id)
             .withJson(new StringReader(source))
+            .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build()
         )
     ).map { response =>

@@ -92,7 +92,7 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def createDocument(document: T)(implicit t: ClassTag[T]): Boolean = {
-    indexAs(document, document.uuid, Some(index), Some(_type)) match {
+    indexAs(document, document.uuid, Some(index), Some(_type), wait = true) match {
       case ElasticSuccess(_) => true
       case ElasticFailure(elasticError) =>
         logger.error(s"${elasticError.message}")

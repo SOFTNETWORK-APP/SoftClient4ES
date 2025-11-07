@@ -697,10 +697,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.indexAs(sample, uuid).get
+    val result = sClient.indexAs(sample, uuid, wait = false).get
     result shouldBe true
 
-    sClient.indexAsyncAs(sample, uuid).complete() match {
+    sClient.indexAsyncAs(sample, uuid, wait = false).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -739,7 +739,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.indexAs(sample, uuid, Some(index)).get
+    val result = sClient.indexAs(sample, uuid, Some(index), wait = false).get
     result shouldBe true
 
     sClient.delete(sample.uuid, index).get shouldBe true
@@ -754,7 +754,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.indexAs(sample, uuid, Some(index)).get
+    val result = sClient.indexAs(sample, uuid, Some(index), wait = false).get
     result shouldBe true
 
     sClient.deleteAsync(sample.uuid, index).complete() match {
@@ -806,7 +806,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
             content = encoded,
             md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
           )
-          bClient.indexAs(binary, uuid).get shouldBe true
+          bClient.indexAs(binary, uuid, wait = false).get shouldBe true
           bClient.getAs[Binary](uuid).get match {
             case Some(result) =>
               val decoded = decodeBase64(result.content)

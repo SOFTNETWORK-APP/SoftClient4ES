@@ -340,17 +340,22 @@ class MetricsElasticClient(
 
   // ==================== IndexApi ====================
 
-  override def index(index: String, id: String, source: String): ElasticResult[Boolean] = {
+  override def index(
+    index: String,
+    id: String,
+    source: String,
+    wait: Boolean
+  ): ElasticResult[Boolean] = {
     measureResult("index", Some(index)) {
-      delegate.index(index, id, source)
+      delegate.index(index, id, source, wait)
     }
   }
 
-  override def indexAsync(index: String, id: String, source: String)(implicit
+  override def indexAsync(index: String, id: String, source: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = {
     measureAsync("indexAsync", Some(index)) {
-      delegate.indexAsync(index, id, source)
+      delegate.indexAsync(index, id, source, wait)
     }
   }
 
@@ -364,6 +369,8 @@ class MetricsElasticClient(
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
     *   - the type of the entity (default is the entity class name in lowercase)
+    * @param wait
+    *   - whether to wait for a refresh to happen after indexing
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
@@ -371,10 +378,11 @@ class MetricsElasticClient(
     entity: U,
     id: String,
     index: Option[String],
-    maybeType: Option[String]
+    maybeType: Option[String],
+    wait: Boolean
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] =
     measureResult("indexAs", index) {
-      delegate.indexAs(entity, id, index, maybeType)
+      delegate.indexAs(entity, id, index, maybeType, wait)
     }
 
   /** Index an entity in the given index asynchronously.
@@ -387,6 +395,8 @@ class MetricsElasticClient(
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
     *   - the type of the entity (default is the entity class name in lowercase)
+    * @param wait
+    *   - whether to wait for a refresh to happen after indexing
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
@@ -394,14 +404,15 @@ class MetricsElasticClient(
     entity: U,
     id: String,
     index: Option[String],
-    maybeType: Option[String]
+    maybeType: Option[String],
+    wait: Boolean
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
     formats: Formats
   ): Future[ElasticResult[Boolean]] =
     measureAsync("indexAsyncAs", index) {
-      delegate.indexAsyncAs(entity, id, index, maybeType)
+      delegate.indexAsyncAs(entity, id, index, maybeType, wait)
     }
 
   // ==================== UpdateApi ====================

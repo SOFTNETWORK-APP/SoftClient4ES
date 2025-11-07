@@ -29,7 +29,6 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
-import scala.reflect.ClassTag
 
 /** Created by smanciot on 12/04/2020.
   */
@@ -190,7 +189,8 @@ trait MockElasticClientApi extends ElasticClientApi {
   override private[client] def executeIndex(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   ): ElasticResult[Boolean] =
     ElasticResult.success {
       elasticDocuments.createOrUpdate(serialization.read(source), id)
@@ -200,10 +200,11 @@ trait MockElasticClientApi extends ElasticClientApi {
   override private[client] def executeIndexAsync(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
     Future {
-      executeIndex(index, id, source)
+      executeIndex(index, id, source, wait)
     }
 
   // ==================== UpdateApi ====================

@@ -493,7 +493,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
   *   [[IndexApi]] for generic API documentation
   */
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpers {
-  _: RefreshApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: SettingsApi with RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeIndex(
     index: String,
     id: String,
@@ -505,20 +505,23 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
       index = Some(index),
       retryable = false
     )(
-      request = {
-        val refresh =
+      request = new IndexRequest(index)
+        .`type`("_doc")
+        .id(id)
+        .source(source, XContentType.JSON)
+        .setRefreshPolicy(
           if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
-        new IndexRequest(index)
-          .`type`("_doc")
-          .id(id)
-          .source(source, XContentType.JSON)
-          .setRefreshPolicy(refresh)
-      }
+        )
     )(
       executor = req => apply().index(req, RequestOptions.DEFAULT)
     )(response => response.status().getStatus < 400)
 
-  override private[client] def executeIndexAsync(index: String, id: String, source: String)(implicit
+  override private[client] def executeIndexAsync(
+    index: String,
+    id: String,
+    source: String,
+    wait: Boolean
+  )(implicit
     ec: ExecutionContext
   ): Future[result.ElasticResult[Boolean]] =
     executeAsyncRestAction[IndexRequest, IndexResponse, Boolean](
@@ -530,6 +533,9 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
         .`type`("_doc")
         .id(id)
         .source(source, XContentType.JSON)
+        .setRefreshPolicy(
+          if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+        )
     )(
       executor = (req, listener) => apply().indexAsync(req, RequestOptions.DEFAULT, listener)
     )(response => response.status().getStatus < 400)

@@ -495,6 +495,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
     *   - the type of the entity (default is the entity class name in lowercase)
+    * @param wait
+    *   - whether to wait for a refresh to happen after indexing
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
@@ -502,9 +504,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     entity: U,
     id: String,
     index: Option[String],
-    maybeType: Option[String]
+    maybeType: Option[String],
+    wait: Boolean
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] =
-    delegate.indexAs(entity, id, index, maybeType)
+    delegate.indexAs(entity, id, index, maybeType, wait)
 
   /** Index an entity in the given index.
     *
@@ -517,8 +520,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
-  override def index(index: String, id: String, source: String): ElasticResult[Boolean] =
-    delegate.index(index, id, source)
+  override def index(
+    index: JSONResults,
+    id: JSONResults,
+    source: JSONResults,
+    wait: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.index(index, id, source, false)
 
   /** Index an entity in the given index asynchronously.
     *
@@ -530,6 +538,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the name of the index to index the entity in (default is the entity type name)
     * @param maybeType
     *   - the type of the entity (default is the entity class name in lowercase)
+    * @param wait
+    *   - whether to wait for a refresh to happen after indexing
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
@@ -537,13 +547,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     entity: U,
     id: String,
     index: Option[String],
-    maybeType: Option[String]
+    maybeType: Option[String],
+    wait: Boolean
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
     formats: Formats
   ): Future[ElasticResult[Boolean]] =
-    delegate.indexAsyncAs(entity, id, index, maybeType)
+    delegate.indexAsyncAs(entity, id, index, maybeType, wait)
 
   /** Index an entity in the given index asynchronously.
     *
@@ -553,12 +564,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the id of the entity to index
     * @param source
     *   - the source of the entity to index in JSON format
+    * @param wait
+    *   - whether to wait for a refresh to happen after indexing
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
-  override def indexAsync(index: String, id: String, source: String)(implicit
+  override def indexAsync(index: String, id: String, source: String, wait: Boolean)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Boolean]] = delegate.indexAsync(index, id, source)
+  ): Future[ElasticResult[Boolean]] = delegate.indexAsync(index, id, source, wait)
   override private[client] def executeIndex(
     index: String,
     id: String,
@@ -570,9 +583,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def executeIndexAsync(
     index: String,
     id: String,
-    source: String
+    source: String,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
-    delegate.executeIndexAsync(index, id, source)
+    delegate.executeIndexAsync(index, id, source, wait)
 
   // ==================== UpdateApi ====================
 

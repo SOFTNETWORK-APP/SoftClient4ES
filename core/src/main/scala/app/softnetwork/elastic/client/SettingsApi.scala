@@ -120,6 +120,53 @@ trait SettingsApi { _: IndicesApi =>
     }
   }
 
+  /** Get the refresh interval of an index.
+    * @param index
+    *   - the name of the index to get the refresh interval for
+    * @return
+    *   the refresh interval of the index
+    */
+  def getRefreshInterval(index: String): ElasticResult[String] = {
+    loadSettings(index).flatMap { settingsJson =>
+      ElasticResult.attempt(
+        new JsonParser().parse(settingsJson).getAsJsonObject
+      ) match {
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to parse JSON settings for index '$index': ${error.message}")
+          ElasticFailure(error.copy(operation = Some("getRefreshInterval")))
+        case ElasticSuccess(settingsObj) =>
+          if (Option(settingsObj).isDefined && settingsObj.has("refresh_interval")) {
+            val refreshInterval = settingsObj
+              .getAsJsonPrimitive("refresh_interval")
+              .getAsString
+            ElasticSuccess(refreshInterval)
+          } else {
+            val message = s"refresh_interval not found in the settings for index '$index'."
+            logger.error(s"❌ $message")
+            ElasticFailure(
+              ElasticError(
+                message = message,
+                operation = Some("getRefreshInterval"),
+                index = Some(index)
+              )
+            )
+          }
+      }
+    }
+  }
+
+  /** Check if the refresh interval is enabled for an index.
+    * @param index
+    *   - the name of the index to check
+    * @return
+    *   true if the refresh interval is enabled, false otherwise
+    */
+  def isRefreshEnabled(index: String): ElasticResult[Boolean] = {
+    getRefreshInterval(index).flatMap { refreshInterval =>
+      ElasticSuccess(refreshInterval != "-1")
+    }
+  }
+
   /** Load the settings of an index.
     * @param index
     *   - the name of the index to load the settings for

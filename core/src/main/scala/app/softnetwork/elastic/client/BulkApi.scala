@@ -452,7 +452,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     failed: FailedDocument
   )(implicit system: ActorSystem): Future[Boolean] = {
     implicit val ec: ExecutionContext = system.dispatcher
-    indexAsync(failed.index, failed.document, failed.id).flatMap {
+    indexAsync(failed.index, failed.document, failed.id, wait = false).flatMap {
       case ElasticSuccess(true) =>
         Future.successful(true)
 
