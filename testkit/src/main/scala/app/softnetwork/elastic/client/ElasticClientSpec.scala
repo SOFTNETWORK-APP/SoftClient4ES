@@ -700,7 +700,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result = sClient.indexAs(sample, uuid, wait = false).get
     result shouldBe true
 
-    sClient.indexAsyncAs(sample, uuid, wait = false).complete() match {
+    sClient.indexAsyncAs(sample, uuid, wait = true).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
@@ -742,7 +742,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result = sClient.indexAs(sample, uuid, Some(index), wait = false).get
     result shouldBe true
 
-    sClient.delete(sample.uuid, index).get shouldBe true
+    sClient.delete(sample.uuid, index, wait = false).get shouldBe true
 
     //blockUntilEmpty(index)
 
@@ -757,7 +757,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result = sClient.indexAs(sample, uuid, Some(index), wait = false).get
     result shouldBe true
 
-    sClient.deleteAsync(sample.uuid, index).complete() match {
+    sClient.deleteAsync(sample.uuid, index, wait = true).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }

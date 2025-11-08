@@ -28,7 +28,7 @@ import scala.util.{Failure, Success}
 
 /** Delete Management API
   */
-trait DeleteApi extends ElasticClientHelpers { _: RefreshApi =>
+trait DeleteApi extends ElasticClientHelpers { _: SettingsApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -39,10 +39,12 @@ trait DeleteApi extends ElasticClientHelpers { _: RefreshApi =>
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
+    * @param wait
+    *   - whether to wait for a refresh to happen after deleting (default is false)
     * @return
     *   true if the entity was deleted successfully, false otherwise
     */
-  def delete(id: String, index: String): ElasticResult[Boolean] = {
+  def delete(id: String, index: String, wait: Boolean): ElasticResult[Boolean] = {
     validateIndexName(index) match {
       case Some(error) =>
         return ElasticResult.failure(
@@ -58,10 +60,12 @@ trait DeleteApi extends ElasticClientHelpers { _: RefreshApi =>
 
     logger.debug(s"Deleting document with id '$id' from index '$index'")
 
-    executeDelete(index, id) match {
-      case _ @ElasticSuccess(true) =>
+    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1)
+    val waitEnabled = wait && isRefreshEnabled(index).getOrElse(false)
+    executeDelete(index, id, waitEnabled) match {
+      case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Successfully deleted document with id '$id' from index '$index'")
-        this.refresh(index)
+        success
       case success @ ElasticSuccess(_) =>
         logger.info(s"✅ Document with id '$id' not found in index '$index'")
         success
@@ -78,10 +82,12 @@ trait DeleteApi extends ElasticClientHelpers { _: RefreshApi =>
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
+    * @param wait
+    *   - whether to wait for a refresh to happen after deleting (default is false)
     * @return
     *   a Future that completes with true if the entity was deleted successfully, false otherwise
     */
-  def deleteAsync(id: String, index: String)(implicit
+  def deleteAsync(id: String, index: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = {
     validateIndexName(index) match {
@@ -101,13 +107,15 @@ trait DeleteApi extends ElasticClientHelpers { _: RefreshApi =>
 
     logger.debug(s"Deleting asynchronously document with id '$id' from index '$index'")
 
+    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1)
+    val waitEnabled = wait && isRefreshEnabled(index).getOrElse(false)
     val promise: Promise[ElasticResult[Boolean]] = Promise()
-    executeDeleteAsync(index, id) onComplete {
+    executeDeleteAsync(index, id, waitEnabled) onComplete {
       case Success(s) =>
         s match {
-          case _ @ElasticSuccess(true) =>
+          case success @ ElasticSuccess(true) =>
             logger.info(s"✅ Successfully deleted document with id '$id' from index '$index'")
-            promise.success(this.refresh(index))
+            promise.success(success)
           case success @ ElasticSuccess(_) =>
             logger.warn(s"❌ Document with id '$id' in index '$index' not deleted")
             promise.success(success)
@@ -132,9 +140,13 @@ trait DeleteApi extends ElasticClientHelpers { _: RefreshApi =>
   // METHODS TO IMPLEMENT
   // ========================================================================
 
-  private[client] def executeDelete(index: String, id: String): ElasticResult[Boolean]
+  private[client] def executeDelete(
+    index: String,
+    id: String,
+    wait: Boolean
+  ): ElasticResult[Boolean]
 
-  private[client] def executeDeleteAsync(index: String, id: String)(implicit
+  private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]]
 }

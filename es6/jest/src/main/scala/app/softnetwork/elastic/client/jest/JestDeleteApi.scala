@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{DeleteApi, RefreshApi}
+import app.softnetwork.elastic.client.{DeleteApi, SettingsApi}
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.core.Delete
 
@@ -27,22 +27,30 @@ import scala.concurrent.{ExecutionContext, Future}
   *   [[DeleteApi]] for generic API documentation
   */
 trait JestDeleteApi extends DeleteApi with JestClientHelpers {
-  _: RefreshApi with JestClientCompanion =>
+  _: SettingsApi with JestClientCompanion =>
 
   /** Delete an entity from the given index.
     * @see
     *   [[DeleteApi.delete]]
     */
-  private[client] def executeDelete(index: String, id: String): ElasticResult[Boolean] =
+  override private[client] def executeDelete(
+    index: String,
+    id: String,
+    wait: Boolean
+  ): ElasticResult[Boolean] =
     executeJestBooleanAction(
       operation = "delete",
       index = Some(index),
       retryable = true
     ) {
-      new Delete.Builder(id).index(index).`type`("_doc").build()
+      new Delete.Builder(id)
+        .index(index)
+        .`type`("_doc")
+        .setParameter("refresh", if (wait) "wait_for" else "false")
+        .build()
     }
 
-  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+  override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
     executeAsyncJestAction(
@@ -50,7 +58,11 @@ trait JestDeleteApi extends DeleteApi with JestClientHelpers {
       index = Some(index),
       retryable = true
     ) {
-      new Delete.Builder(id).index(index).`type`("_doc").build()
+      new Delete.Builder(id)
+        .index(index)
+        .`type`("_doc")
+        .setParameter("refresh", if (wait) "wait_for" else "false")
+        .build()
     }(result => result.isSucceeded)
 
 }

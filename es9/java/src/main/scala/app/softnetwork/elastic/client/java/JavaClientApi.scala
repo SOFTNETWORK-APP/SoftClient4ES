@@ -639,11 +639,12 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
   *   [[DeleteApi]] for delete operations
   */
 trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
-  _: RefreshApi with JavaClientCompanion =>
+  _: SettingsApi with JavaClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
-    id: String
+    id: String,
+    wait: Boolean
   ): result.ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "delete",
@@ -652,7 +653,11 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
     )(
       apply()
         .delete(
-          new DeleteRequest.Builder().index(index).id(id).build()
+          new DeleteRequest.Builder()
+            .index(index)
+            .id(id)
+            .refresh(if (wait) Refresh.WaitFor else Refresh.False)
+            .build()
         )
     )(
       _.shards()
@@ -660,13 +665,17 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
         .intValue() == 0
     )
 
-  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+  override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[result.ElasticResult[Boolean]] =
     fromCompletableFuture(
       async()
         .delete(
-          new DeleteRequest.Builder().index(index).id(id).build()
+          new DeleteRequest.Builder()
+            .index(index)
+            .id(id)
+            .refresh(if (wait) Refresh.WaitFor else Refresh.False)
+            .build()
         )
     ).map { response =>
       if (response.shards().failed().intValue() == 0) {

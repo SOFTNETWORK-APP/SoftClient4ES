@@ -724,11 +724,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
+    * @param wait
+    *   - whether to wait for a refresh to happen after deleting (default is false)
     * @return
     *   true if the entity was deleted successfully, false otherwise
     */
-  override def delete(id: String, index: String): ElasticResult[Boolean] =
-    delegate.delete(id, index)
+  override def delete(id: String, index: String, wait: Boolean): ElasticResult[Boolean] =
+    delegate.delete(id, index, wait)
 
   /** Delete an entity from the given index asynchronously.
     *
@@ -736,24 +738,27 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the id of the entity to delete
     * @param index
     *   - the name of the index to delete the entity from
+    * @param wait
+    *   - whether to wait for a refresh to happen after deleting (default is false)
     * @return
     *   a Future that completes with true if the entity was deleted successfully, false otherwise
     */
-  override def deleteAsync(id: String, index: String)(implicit
+  override def deleteAsync(id: String, index: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
-    delegate.deleteAsync(id, index)
+    delegate.deleteAsync(id, index, wait)
 
   override private[client] def executeDelete(
     index: String,
-    id: String
+    id: String,
+    wait: Boolean
   ): ElasticResult[Boolean] =
-    delegate.executeDelete(index, id)
+    delegate.executeDelete(index, id, wait)
 
-  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+  override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
-    delegate.executeDeleteAsync(index, id)
+    delegate.executeDeleteAsync(index, id, wait)
 
   // ==================== GetApi ====================
 

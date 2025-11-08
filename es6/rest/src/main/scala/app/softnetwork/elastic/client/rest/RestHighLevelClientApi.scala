@@ -593,11 +593,12 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
   *   [[DeleteApi]] for generic API documentation
   */
 trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHelpers {
-  _: RefreshApi with RestHighLevelClientCompanion =>
+  _: SettingsApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
-    id: String
+    id: String,
+    wait: Boolean
   ): result.ElasticResult[Boolean] =
     executeRestAction[DeleteRequest, DeleteResponse, Boolean](
       operation = "delete",
@@ -605,11 +606,14 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
       retryable = false
     )(
       request = new DeleteRequest(index, "_doc", id)
+        .setRefreshPolicy(
+          if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+        )
     )(
       executor = req => apply().delete(req, RequestOptions.DEFAULT)
     )(response => response.status().getStatus < 400)
 
-  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+  override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[result.ElasticResult[Boolean]] =
     executeAsyncRestAction[DeleteRequest, DeleteResponse, Boolean](
@@ -618,6 +622,9 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
       retryable = false
     )(
       request = new DeleteRequest(index, "_doc", id)
+        .setRefreshPolicy(
+          if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+        )
     )(
       executor = (req, listener) => apply().deleteAsync(req, RequestOptions.DEFAULT, listener)
     )(response => response.status().getStatus < 400)

@@ -129,7 +129,7 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def deleteDocument(uuid: String): Boolean = {
-    delete(uuid, index) match {
+    delete(uuid, index, wait = true) match {
       case ElasticSuccess(value) => value
       case ElasticFailure(elasticError) =>
         logger.error(s"${elasticError.message}")

@@ -507,17 +507,17 @@ class MetricsElasticClient(
 
   // ==================== DeleteApi ====================
 
-  override def delete(id: String, index: String): ElasticResult[Boolean] = {
+  override def delete(id: String, index: String, wait: Boolean): ElasticResult[Boolean] = {
     measureResult("delete", Some(index)) {
-      delegate.delete(id, index)
+      delegate.delete(id, index, wait)
     }
   }
 
-  override def deleteAsync(id: String, index: String)(implicit
+  override def deleteAsync(id: String, index: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = {
     measureAsync("deleteAsync", Some(index)) {
-      delegate.deleteAsync(id, index)
+      delegate.deleteAsync(id, index, wait)
     }
   }
 

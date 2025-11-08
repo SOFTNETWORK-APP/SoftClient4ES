@@ -236,7 +236,8 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   override private[client] def executeDelete(
     index: String,
-    id: String
+    id: String,
+    wait: Boolean
   ): ElasticResult[Boolean] =
     ElasticResult.success(if (elasticDocuments.get(id).isDefined) {
       elasticDocuments.delete(id)
@@ -245,11 +246,11 @@ trait MockElasticClientApi extends ElasticClientApi {
       false
     })
 
-  override private[client] def executeDeleteAsync(index: String, id: String)(implicit
+  override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
     Future {
-      executeDelete(index, id)
+      executeDelete(index, id, wait)
     }
 
   // ==================== GetApi ====================
