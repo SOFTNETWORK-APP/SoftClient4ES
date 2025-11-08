@@ -51,7 +51,7 @@ import org.elasticsearch.action.search.{
 import org.elasticsearch.action.support.WriteRequest
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
-import org.elasticsearch.action.{ActionListener, DocWriteRequest}
+import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
 import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
 import org.elasticsearch.client.indices.{
@@ -508,7 +508,15 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
         )
     )(
       executor = req => apply().index(req, RequestOptions.DEFAULT)
-    )(response => response.status().getStatus < 400)
+    )(
+      transformer = resp =>
+        resp.getResult match {
+          case DocWriteResponse.Result.CREATED | DocWriteResponse.Result.UPDATED |
+              DocWriteResponse.Result.NOOP =>
+            true
+          case _ => false
+        }
+    )
 
   override private[client] def executeIndexAsync(
     index: String,
@@ -532,7 +540,15 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
         )
     )(
       executor = (req, listener) => apply().indexAsync(req, RequestOptions.DEFAULT, listener)
-    )(response => response.status().getStatus < 400)
+    )(
+      transformer = resp =>
+        resp.getResult match {
+          case DocWriteResponse.Result.CREATED | DocWriteResponse.Result.UPDATED |
+              DocWriteResponse.Result.NOOP =>
+            true
+          case _ => false
+        }
+    )
 
 }
 
@@ -562,7 +578,19 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
         )
     )(
       executor = req => apply().update(req, RequestOptions.DEFAULT)
-    )(response => response.status().getStatus < 400)
+    )(
+      transformer = resp =>
+        resp.getResult match {
+          case DocWriteResponse.Result.CREATED |
+              DocWriteResponse.Result.UPDATED | DocWriteResponse.Result.NOOP =>
+            true
+          case DocWriteResponse.Result.NOT_FOUND =>
+            throw new IOException(
+              s"Document with id: $id not found in index: $index"
+            ) // if upsert is false
+          case _ => false
+        }
+    )
 
   override private[client] def executeUpdateAsync(
     index: String,
@@ -584,7 +612,19 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
         )
     )(
       executor = (req, listener) => apply().updateAsync(req, RequestOptions.DEFAULT, listener)
-    )(response => response.status().getStatus < 400)
+    )(
+      transformer = resp =>
+        resp.getResult match {
+          case DocWriteResponse.Result.CREATED |
+              DocWriteResponse.Result.UPDATED | DocWriteResponse.Result.NOOP =>
+            true
+          case DocWriteResponse.Result.NOT_FOUND =>
+            throw new IOException(
+              s"Document with id: $id not found in index: $index"
+            ) // if upsert is false
+          case _ => false
+        }
+    )
 
 }
 
@@ -611,7 +651,13 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
         )
     )(
       executor = req => apply().delete(req, RequestOptions.DEFAULT)
-    )(response => response.status().getStatus < 400)
+    )(
+      transformer = resp =>
+        resp.getResult match {
+          case DocWriteResponse.Result.DELETED | DocWriteResponse.Result.NOOP => true
+          case _                                                              => false
+        }
+    )
 
   override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
@@ -627,7 +673,13 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
         )
     )(
       executor = (req, listener) => apply().deleteAsync(req, RequestOptions.DEFAULT, listener)
-    )(response => response.status().getStatus < 400)
+    )(
+      transformer = resp =>
+        resp.getResult match {
+          case DocWriteResponse.Result.DELETED | DocWriteResponse.Result.NOOP => true
+          case _                                                              => false
+        }
+    )
 
 }
 

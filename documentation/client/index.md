@@ -10,7 +10,7 @@ The **IndexApi** trait provides functionality to index documents into Elasticsea
 - Synchronous and asynchronous indexing
 - Automatic JSON serialization from Scala objects
 - Type-safe indexing with implicit serialization
-- Automatic index refresh after indexing
+- Wait for a refresh to happen after indexing if required
 - Comprehensive validation and error handling
 - Support for custom index names and document IDs
 
@@ -33,7 +33,8 @@ def indexAs[U <: AnyRef](
   entity: U,
   id: String,
   index: Option[String] = None,
-  maybeType: Option[String] = None
+  maybeType: Option[String] = None,
+  wait: Boolean = false
 )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean]
 ```
 
@@ -42,6 +43,7 @@ def indexAs[U <: AnyRef](
 - `id` - The document ID
 - `index` - Optional index name (defaults to entity type name in lowercase)
 - `maybeType` - Optional type name (defaults to entity class name in lowercase)
+- `wait` - If `true`, waits for a refresh to happen after indexing (default is `false`)
 - `u` - Implicit ClassTag for type information
 - `formats` - Implicit JSON serialization formats
 
@@ -52,7 +54,7 @@ def indexAs[U <: AnyRef](
 **Behavior:**
 - Automatically serializes entity to JSON
 - Defaults index name to entity class name if not provided
-- Automatically refreshes index after successful indexing
+- Waits for a refresh to happen after successful indexing (disabled by default)
 
 **Examples:**
 
@@ -141,13 +143,14 @@ Indexes a document into Elasticsearch using a raw JSON string.
 **Signature:**
 
 ```scala
-def index(index: String, id: String, source: String): ElasticResult[Boolean]
+def index(index: String, id: String, source: String, wait: Boolean = false): ElasticResult[Boolean]
 ```
 
 **Parameters:**
 - `index` - The index name
 - `id` - The document ID
 - `source` - The document as a JSON string
+- `wait` - If `true`, waits for a refresh to happen after indexing (default is `false`)
 
 **Returns:**
 - `ElasticSuccess[Boolean]` with `true` if indexed successfully
@@ -157,8 +160,8 @@ def index(index: String, id: String, source: String): ElasticResult[Boolean]
 - Index name format validation
 
 **Behavior:**
-- Automatically refreshes index after successful indexing
 - Creates or updates document (upsert behavior)
+- Waits for a refresh to happen after successful indexing (disabled by default)
 
 **Examples:**
 
@@ -255,7 +258,8 @@ def indexAsyncAs[U <: AnyRef](
   entity: U,
   id: String,
   index: Option[String] = None,
-  maybeType: Option[String] = None
+  maybeType: Option[String] = None,
+  wait: Boolean = false
 )(implicit
   u: ClassTag[U],
   ec: ExecutionContext,
@@ -268,6 +272,7 @@ def indexAsyncAs[U <: AnyRef](
 - `id` - The document ID
 - `index` - Optional index name
 - `maybeType` - Optional type name
+- `wait` - If `true`, waits for a refresh to happen after indexing (default is `false`)
 - `u` - Implicit ClassTag
 - `ec` - Implicit ExecutionContext for async execution
 - `formats` - Implicit JSON serialization formats
@@ -400,7 +405,8 @@ Asynchronously indexes a document using a raw JSON string.
 def indexAsync(
   index: String,
   id: String,
-  source: String
+  source: String,
+  wait: Boolean = false
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]]
 ```
 
@@ -408,6 +414,7 @@ def indexAsync(
 - `index` - The index name
 - `id` - The document ID
 - `source` - The document as a JSON string
+- `wait` - If `true`, waits for a refresh to happen after indexing (default is `false`)
 - `ec` - Implicit ExecutionContext
 
 **Returns:**
@@ -520,7 +527,8 @@ client.indexAsync("products", "prod-001", json)
 private[client] def executeIndex(
   index: String,
   id: String,
-  source: String
+  source: String,
+  wait: Boolean
 ): ElasticResult[Boolean]
 ```
 
@@ -530,23 +538,30 @@ private[client] def executeIndex(
 private[client] def executeIndex(
   index: String,
   id: String,
-  source: String
+  source: String,
+  wait: Boolean
 ): ElasticResult[Boolean] = {
-  executeRestAction[IndexResponse, Boolean](
+  executeRestAction[IndexRequest, IndexResponse, Boolean](
     operation = "index",
-    index = Some(index)
+    index = Some(index),
+    retryable = false
+  )(request =
+    new IndexRequest(index)
+      .id(id)
+      .source(source, XContentType.JSON)
+      .setRefreshPolicy(
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      )
   )(
-    action = {
-      val request = new IndexRequest(index)
-        .id(id)
-        .source(source, XContentType.JSON)
-      client.index(request, RequestOptions.DEFAULT)
-    }
+    executor = req => apply().index(req, RequestOptions.DEFAULT)
   )(
-    transformer = resp => {
-      resp.getResult == DocWriteResponse.Result.CREATED ||
-      resp.getResult == DocWriteResponse.Result.UPDATED
-    }
+    transformer = resp =>
+      resp.getResult match {
+        case DocWriteResponse.Result.CREATED |
+             DocWriteResponse.Result.UPDATED | DocWriteResponse.Result.NOOP =>
+          true
+        case _ => false
+      }
   )
 }
 ```
@@ -569,36 +584,31 @@ private[client] def executeIndexAsync(
 private[client] def executeIndexAsync(
   index: String,
   id: String,
-  source: String
+  source: String,
+  wait: Boolean
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] = {
-  val promise = Promise[ElasticResult[Boolean]]()
-  
-  val request = new IndexRequest(index)
-    .id(id)
-    .source(source, XContentType.JSON)
-  
-  client.indexAsync(
-    request,
-    RequestOptions.DEFAULT,
-    new ActionListener[IndexResponse] {
-      override def onResponse(response: IndexResponse): Unit = {
-        val success = response.getResult == DocWriteResponse.Result.CREATED ||
-                     response.getResult == DocWriteResponse.Result.UPDATED
-        promise.success(ElasticSuccess(success))
+  executeAsyncRestAction[IndexRequest, IndexResponse, Boolean](
+    operation = "indexAsync",
+    index = Some(index),
+    retryable = false
+  )(
+    request = new IndexRequest(index)
+      .id(id)
+      .source(source, XContentType.JSON)
+      .setRefreshPolicy(
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      )
+  )(
+    executor = (req, listener) => apply().indexAsync(req, RequestOptions.DEFAULT, listener)
+  )(
+    transformer = resp =>
+      resp.getResult match {
+        case DocWriteResponse.Result.CREATED |
+             DocWriteResponse.Result.UPDATED | DocWriteResponse.Result.NOOP =>
+          true
+        case _ => false
       }
-      
-      override def onFailure(e: Exception): Unit = {
-        promise.success(ElasticFailure(ElasticError(
-          message = s"Async indexing failed: ${e.getMessage}",
-          operation = Some("indexAsync"),
-          index = Some(index),
-          cause = Some(e)
-        )))
-      }
-    }
   )
-  
-  promise.future
 }
 ```
 

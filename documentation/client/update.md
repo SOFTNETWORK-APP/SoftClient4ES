@@ -11,7 +11,7 @@ The **UpdateApi** trait provides functionality to update documents in Elasticsea
 - Automatic JSON serialization from Scala objects
 - Upsert support (insert if document doesn't exist)
 - Type-safe updates with implicit serialization
-- Automatic index refresh after updates
+- Wait for a refresh to happen after update if required
 - Comprehensive validation and error handling
 - Partial document updates
 
@@ -25,7 +25,7 @@ The **UpdateApi** trait provides functionality to update documents in Elasticsea
 
 **Update vs Index:**
 - **Update:** Modifies existing document fields (partial update)
-- **Index:** Replaces entire document (full replacement)
+- **Index :** Replaces entire document (full replacement)
 
 **Upsert Behavior:**
 - `upsert = true`: Creates document if it doesn't exist
@@ -35,7 +35,7 @@ The **UpdateApi** trait provides functionality to update documents in Elasticsea
 1. Retrieves current document
 2. Applies changes
 3. Re-indexes modified document
-4. Optionally refreshes index
+4. Optionally wait for a refresh to happen
 
 ---
 
@@ -52,7 +52,8 @@ def update(
   index: String,
   id: String,
   source: String,
-  upsert: Boolean
+  upsert: Boolean,
+  wait: Boolean = false
 ): ElasticResult[Boolean]
 ```
 
@@ -60,6 +61,7 @@ def update(
 - `index` - The index name
 - `id` - The document ID to update
 - `source` - The update data as JSON (partial or full document)
+- `wait` - If `true`, waits for a refresh to happen after update (default is `false`)
 - `upsert` - Whether to create document if it doesn't exist
 
 **Returns:**
@@ -197,7 +199,8 @@ def updateAs[U <: AnyRef](
   id: String,
   index: Option[String] = None,
   maybeType: Option[String] = None,
-  upsert: Boolean = true
+  upsert: Boolean = true,
+  wait: Boolean = false
 )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean]
 ```
 
@@ -207,6 +210,7 @@ def updateAs[U <: AnyRef](
 - `index` - Optional index name (defaults to entity type name)
 - `maybeType` - Optional type name (defaults to class name in lowercase)
 - `upsert` - Whether to create document if it doesn't exist (default: true)
+- `wait` - If `true`, waits for a refresh to happen after update (default is `false`)
 - `u` - Implicit ClassTag for type information
 - `formats` - Implicit JSON serialization formats
 
@@ -336,7 +340,8 @@ def updateAsync(
   index: String,
   id: String,
   source: String,
-  upsert: Boolean
+  upsert: Boolean,
+  wait: Boolean = false
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]]
 ```
 
@@ -345,6 +350,7 @@ def updateAsync(
 - `id` - The document ID to update
 - `source` - The update data as JSON
 - `upsert` - Whether to create document if it doesn't exist
+- `wait` - If `true`, waits for a refresh to happen after update (default is `false`)
 - `ec` - Implicit ExecutionContext
 
 **Returns:**
@@ -482,7 +488,8 @@ def updateAsyncAs[U <: AnyRef](
   id: String,
   index: Option[String] = None,
   maybeType: Option[String] = None,
-  upsert: Boolean = true
+  upsert: Boolean = true,
+  wait: Boolean = false
 )(implicit
   u: ClassTag[U],
   ec: ExecutionContext,
@@ -495,7 +502,8 @@ def updateAsyncAs[U <: AnyRef](
 - `id` - The document ID to update
 - `index` - Optional index name
 - `maybeType` - Optional type name
-- `upsert` - Whether to create if doesn't exist (default: true)
+- `upsert` - Whether to create document if it doesn't exist (default: true)
+- `wait` - If `true`, waits for a refresh to happen after update (default is `false`)
 - `u` - Implicit ClassTag
 - `ec` - Implicit ExecutionContext
 - `formats` - Implicit JSON serialization formats
@@ -639,7 +647,8 @@ private[client] def executeUpdate(
   index: String,
   id: String,
   source: String,
-  upsert: Boolean
+  upsert: Boolean,
+  wait: Boolean
 ): ElasticResult[Boolean]
 ```
 
@@ -650,27 +659,32 @@ private[client] def executeUpdate(
   index: String,
   id: String,
   source: String,
-  upsert: Boolean
+  upsert: Boolean,
+  wait: Boolean
 ): ElasticResult[Boolean] = {
-  executeRestAction[UpdateResponse, Boolean](
+  executeRestAction[UpdateRequest, UpdateResponse, Boolean](
     operation = "update",
-    index = Some(index)
+    index = Some(index),
+    retryable = false
   )(
-    action = {
-      val request = new UpdateRequest(index, id)
-        .doc(source, XContentType.JSON)
-      
-      if (upsert) {
-        request.docAsUpsert(true)
+    request = new UpdateRequest(index, id)
+      .doc(source, XContentType.JSON)
+      .docAsUpsert(upsert)
+      .setRefreshPolicy(
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      )
+  )(
+    executor = req => apply().update(req, RequestOptions.DEFAULT)
+  )(
+    transformer = resp =>
+      resp.getResult match {
+        case DocWriteResponse.Result.CREATED | DocWriteResponse.Result.UPDATED |
+             DocWriteResponse.Result.NOOP =>
+          true
+        case DocWriteResponse.Result.NOT_FOUND =>
+          throw new IOException(s"Document ($index#$id) not found") // if upsert is false
+        case _ => false
       }
-      
-      client.update(request, RequestOptions.DEFAULT)
-    }
-  )(
-    transformer = resp => {
-      resp.getResult == DocWriteResponse.Result.UPDATED ||
-      resp.getResult == DocWriteResponse.Result.CREATED
-    }
   )
 }
 ```
@@ -684,7 +698,8 @@ private[client] def executeUpdateAsync(
   index: String,
   id: String,
   source: String,
-  upsert: Boolean
+  upsert: Boolean,
+  wait: Boolean
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]]
 ```
 
@@ -695,39 +710,33 @@ private[client] def executeUpdateAsync(
   index: String,
   id: String,
   source: String,
-  upsert: Boolean
+  upsert: Boolean,
+  wait: Boolean
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] = {
-  val promise = Promise[ElasticResult[Boolean]]()
-  
-  val request = new UpdateRequest(index, id)
-    .doc(source, XContentType.JSON)
-  
-  if (upsert) {
-    request.docAsUpsert(true)
-  }
-  
-  client.updateAsync(
-    request,
-    RequestOptions.DEFAULT,
-    new ActionListener[UpdateResponse] {
-      override def onResponse(response: UpdateResponse): Unit = {
-        val success = response.getResult == DocWriteResponse.Result.UPDATED ||
-                     response.getResult == DocWriteResponse.Result.CREATED
-        promise.success(ElasticSuccess(success))
+  executeAsyncRestAction[UpdateRequest, UpdateResponse, Boolean](
+    operation = "updateAsync",
+    index = Some(index),
+    retryable = false
+  )(
+    request = new UpdateRequest(index, id)
+      .doc(source, XContentType.JSON)
+      .docAsUpsert(upsert)
+      .setRefreshPolicy(
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      )
+  )(
+    executor = (req, listener) => apply().updateAsync(req, RequestOptions.DEFAULT, listener)
+  )(
+    transformer = resp =>
+      resp.getResult match {
+        case DocWriteResponse.Result.CREATED | DocWriteResponse.Result.UPDATED |
+             DocWriteResponse.Result.NOOP =>
+          true
+        case DocWriteResponse.Result.NOT_FOUND =>
+          throw new IOException(s"Document ($index#$id) not found") // if upsert is false
+        case _ => false
       }
-      
-      override def onFailure(e: Exception): Unit = {
-        promise.success(ElasticFailure(ElasticError(
-          message = s"Async update failed: ${e.getMessage}",
-          operation = Some("updateAsync"),
-          index = Some(index),
-          cause = Some(e)
-        )))
-      }
-    }
   )
-  
-  promise.future
 }
 ```
 

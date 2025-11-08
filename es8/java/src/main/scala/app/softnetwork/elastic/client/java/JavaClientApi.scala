@@ -31,6 +31,7 @@ import co.elastic.clients.elasticsearch._types.{
   FieldSort,
   FieldValue,
   Refresh,
+  Result,
   SortOptions,
   SortOrder,
   Time
@@ -534,10 +535,11 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
             .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build()
         )
-    )(
-      _.shards()
-        .failed()
-        .intValue() == 0
+    )(resp =>
+      resp.result() match {
+        case Result.Created | Result.Updated | Result.NoOp => true
+        case _                                             => false
+      }
     )
 
   override private[client] def executeIndexAsync(
@@ -558,16 +560,12 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
             .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build()
         )
-    ).map { response =>
-      if (response.shards().failed().intValue() == 0) {
-        result.ElasticSuccess(true)
-      } else {
-        result.ElasticFailure(
-          client.result.ElasticError(s"Failed to index document with id: $id in index: $index")
-        )
+    ).map { resp =>
+      resp.result() match {
+        case Result.Created | Result.Updated | Result.NoOp => result.ElasticSuccess(true)
+        case _                                             => result.ElasticSuccess(false)
       }
     }
-
 }
 
 /** Elasticsearch client implementation of Update API using the Java Client
@@ -600,10 +598,15 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
             .build(),
           classOf[JMap[String, Object]]
         )
-    )(
-      _.shards()
-        .failed()
-        .intValue() == 0
+    )(resp =>
+      resp.result() match {
+        case Result.Created | Result.Updated | Result.NoOp => true
+        case Result.NotFound =>
+          throw new IOException(
+            s"Document with id: $id not found in index: $index"
+          ) // if upsert is false
+        case _ => false
+      }
     )
 
   override private[client] def executeUpdateAsync(
@@ -625,13 +628,16 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
             .build(),
           classOf[JMap[String, Object]]
         )
-    ).map { response =>
-      if (response.shards().failed().intValue() == 0) {
-        result.ElasticSuccess(true)
-      } else {
-        result.ElasticFailure(
-          client.result.ElasticError(s"Failed to update document with id: $id in index: $index")
-        )
+    ).map { resp =>
+      resp.result() match {
+        case Result.Created | Result.Updated | Result.NoOp => result.ElasticSuccess(true)
+        case Result.NotFound =>
+          result.ElasticFailure(
+            result.ElasticError(
+              s"Document with id: $id not found in index: $index"
+            ) // if upsert is false
+          )
+        case _ => result.ElasticSuccess(false)
       }
     }
 
@@ -662,10 +668,11 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
             .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build()
         )
-    )(
-      _.shards()
-        .failed()
-        .intValue() == 0
+    )(resp =>
+      resp.result() match {
+        case Result.Deleted | Result.NoOp => true
+        case _                            => false
+      }
     )
 
   override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
@@ -680,13 +687,10 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
             .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build()
         )
-    ).map { response =>
-      if (response.shards().failed().intValue() == 0) {
-        result.ElasticSuccess(true)
-      } else {
-        result.ElasticFailure(
-          client.result.ElasticError(s"Failed to delete document with id: $id in index: $index")
-        )
+    ).map { resp =>
+      resp.result() match {
+        case Result.Deleted | Result.NoOp => result.ElasticSuccess(true)
+        case _                            => result.ElasticSuccess(false)
       }
     }
 

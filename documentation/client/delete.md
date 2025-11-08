@@ -8,7 +8,7 @@ The **DeleteApi** trait provides functionality to delete documents from Elastics
 
 **Features:**
 - Synchronous and asynchronous document deletion
-- Automatic index refresh after deletion
+- Wait for a refresh to happen after deletion to happen if required
 - Index name validation
 - Comprehensive error handling and logging
 - Safe deletion with existence checking
@@ -24,7 +24,7 @@ The **DeleteApi** trait provides functionality to delete documents from Elastics
 - Deletes a document by its ID from a specific index
 - Returns `true` if document was deleted
 - Returns `false` if document doesn't exist (not an error)
-- Automatically refreshes index after successful deletion
+- Wait for a refresh to happen after deletion if required
 
 **Idempotency:**
 - Delete operations are idempotent
@@ -42,12 +42,13 @@ Deletes a document from an Elasticsearch index by ID.
 **Signature:**
 
 ```scala
-def delete(id: String, index: String): ElasticResult[Boolean]
+def delete(id: String, index: String, wait: Boolean): ElasticResult[Boolean]
 ```
 
 **Parameters:**
 - `id` - The document ID to delete
 - `index` - The index name containing the document
+- `wait` - If `true`, waits for a refresh to happen after deletion (default is `false`)
 
 **Returns:**
 - `ElasticSuccess[Boolean]` with `true` if document was deleted
@@ -58,8 +59,8 @@ def delete(id: String, index: String): ElasticResult[Boolean]
 - Index name format validation
 
 **Behavior:**
-- Automatically refreshes index after successful deletion
 - Logs success/failure with appropriate emoji indicators
+- Waits for a refresh to happen after successful deletion (disabled by default)
 - Returns success even if document doesn't exist (idempotent)
 
 **Examples:**
@@ -205,13 +206,15 @@ Asynchronously deletes a document from an Elasticsearch index.
 ```scala
 def deleteAsync(
   id: String,
-  index: String
+  index: String,
+  wait: Boolean
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]]
 ```
 
 **Parameters:**
 - `id` - The document ID to delete
 - `index` - The index name containing the document
+- `wait` - If `true`, waits for a refresh to happen after deletion (default is `false`)
 - `ec` - Implicit ExecutionContext for async execution
 
 **Returns:**
@@ -414,7 +417,8 @@ val result = Await.result(
 ```scala
 private[client] def executeDelete(
   index: String,
-  id: String
+  id: String,
+  wait: boolean
 ): ElasticResult[Boolean]
 ```
 
@@ -423,20 +427,26 @@ private[client] def executeDelete(
 ```scala
 private[client] def executeDelete(
   index: String,
-  id: String
+  id: String,
+  wait: Boolean
 ): ElasticResult[Boolean] = {
-  executeRestAction[DeleteResponse, Boolean](
+  executeRestAction[DeleteRequest, DeleteResponse, Boolean](
     operation = "delete",
-    index = Some(index)
+    index = Some(index),
+    retryable = false
   )(
-    action = {
-      val request = new DeleteRequest(index, id)
-      client.delete(request, RequestOptions.DEFAULT)
-    }
+    request = new DeleteRequest(index, id)
+      .setRefreshPolicy(
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      )
   )(
-    transformer = resp => {
-      resp.getResult == DocWriteResponse.Result.DELETED
-    }
+    executor = req => apply().delete(req, RequestOptions.DEFAULT)
+  )(
+    transformer = resp =>
+      resp.getResult match {
+        case DocWriteResponse.Result.DELETED | DocWriteResponse.Result.NOOP => true
+        case _                                                              => false
+      }
   )
 }
 ```
@@ -448,7 +458,8 @@ private[client] def executeDelete(
 ```scala
 private[client] def executeDeleteAsync(
   index: String,
-  id: String
+  id: String,
+  wait: Boolean
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]]
 ```
 
@@ -457,33 +468,27 @@ private[client] def executeDeleteAsync(
 ```scala
 private[client] def executeDeleteAsync(
   index: String,
-  id: String
+  id: String,
+  wait: Boolean
 )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] = {
-  val promise = Promise[ElasticResult[Boolean]]()
-  
-  val request = new DeleteRequest(index, id)
-  
-  client.deleteAsync(
-    request,
-    RequestOptions.DEFAULT,
-    new ActionListener[DeleteResponse] {
-      override def onResponse(response: DeleteResponse): Unit = {
-        val deleted = response.getResult == DocWriteResponse.Result.DELETED
-        promise.success(ElasticSuccess(deleted))
+  executeAsyncRestAction[DeleteRequest, DeleteResponse, Boolean](
+    operation = "deleteAsync",
+    index = Some(index),
+    retryable = false
+  )(
+    request = new DeleteRequest(index, id)
+      .setRefreshPolicy(
+        if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+      )
+  )(
+    executor = (req, listener) => apply().deleteAsync(req, RequestOptions.DEFAULT, listener)
+  )(
+    transformer = resp =>
+      resp.getResult match {
+        case DocWriteResponse.Result.DELETED | DocWriteResponse.Result.NOOP => true
+        case _                                                              => false
       }
-      
-      override def onFailure(e: Exception): Unit = {
-        promise.success(ElasticFailure(ElasticError(
-          message = s"Async delete failed: ${e.getMessage}",
-          operation = Some("deleteAsync"),
-          index = Some(index),
-          cause = Some(e)
-        )))
-      }
-    }
   )
-  
-  promise.future
 }
 ```
 
@@ -866,10 +871,10 @@ def hardDeleteSession(id: String): ElasticResult[Boolean] = {
 
 ### Delete vs Update (Soft Delete)
 
-| Operation | Data Retained | Recoverable | Performance | Use Case |
-|-----------|---------------|-------------|-------------|----------|
-| **Hard Delete** | No | No | Fast | Temporary data, logs |
-| **Soft Delete** | Yes | Yes | Slower | User data, orders |
+| Operation       | Data Retained   | Recoverable  | Performance  | Use Case             |
+|-----------------|-----------------|--------------|--------------|----------------------|
+| **Hard Delete** | No              | No           | Fast         | Temporary data, logs |
+| **Soft Delete** | Yes             | Yes          | Slower       | User data, orders    |
 
 ```scala
 // Hard delete

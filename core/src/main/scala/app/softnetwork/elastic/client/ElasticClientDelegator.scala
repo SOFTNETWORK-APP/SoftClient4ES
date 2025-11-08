@@ -29,7 +29,7 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
-import scala.reflect.{classTag, ClassTag}
+import scala.reflect.ClassTag
 
 trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
@@ -505,7 +505,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String,
     index: Option[String],
     maybeType: Option[String],
-    wait: Boolean
+    wait: Boolean = false
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] =
     delegate.indexAs(entity, id, index, maybeType, wait)
 
@@ -524,9 +524,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: JSONResults,
     id: JSONResults,
     source: JSONResults,
-    wait: Boolean
+    wait: Boolean = false
   ): ElasticResult[Boolean] =
-    delegate.index(index, id, source, false)
+    delegate.index(index, id, source, wait)
 
   /** Index an entity in the given index asynchronously.
     *
@@ -548,7 +548,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String,
     index: Option[String],
     maybeType: Option[String],
-    wait: Boolean
+    wait: Boolean = false
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
@@ -572,6 +572,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def indexAsync(index: String, id: String, source: String, wait: Boolean)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = delegate.indexAsync(index, id, source, wait)
+
   override private[client] def executeIndex(
     index: String,
     id: String,
@@ -610,7 +611,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String,
     source: String,
     upsert: Boolean,
-    wait: Boolean
+    wait: Boolean = false
   ): ElasticResult[Boolean] =
     delegate.update(index, id, source, upsert, wait)
 
@@ -637,7 +638,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: Option[String],
     maybeType: Option[String],
     upsert: Boolean,
-    wait: Boolean
+    wait: Boolean = false
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] =
     delegate.updateAs(entity, id, index, maybeType, upsert, wait)
 
@@ -661,7 +662,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String,
     source: String,
     upsert: Boolean,
-    wait: Boolean
+    wait: Boolean = false
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
@@ -690,7 +691,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: Option[String],
     maybeType: Option[String],
     upsert: Boolean,
-    wait: Boolean
+    wait: Boolean = false
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
@@ -729,7 +730,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   true if the entity was deleted successfully, false otherwise
     */
-  override def delete(id: String, index: String, wait: Boolean): ElasticResult[Boolean] =
+  override def delete(id: String, index: String, wait: Boolean = false): ElasticResult[Boolean] =
     delegate.delete(id, index, wait)
 
   /** Delete an entity from the given index asynchronously.
@@ -743,7 +744,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future that completes with true if the entity was deleted successfully, false otherwise
     */
-  override def deleteAsync(id: String, index: String, wait: Boolean)(implicit
+  override def deleteAsync(id: String, index: String, wait: Boolean = false)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
     delegate.deleteAsync(id, index, wait)

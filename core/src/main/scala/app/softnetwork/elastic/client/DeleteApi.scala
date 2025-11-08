@@ -65,6 +65,8 @@ trait DeleteApi extends ElasticClientHelpers { _: SettingsApi =>
     executeDelete(index, id, waitEnabled) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Successfully deleted document with id '$id' from index '$index'")
+        if (waitEnabled)
+          logger.info(s"Waiting for a refresh of index $index to happen")
         success
       case success @ ElasticSuccess(_) =>
         logger.info(s"✅ Document with id '$id' not found in index '$index'")
@@ -115,6 +117,8 @@ trait DeleteApi extends ElasticClientHelpers { _: SettingsApi =>
         s match {
           case success @ ElasticSuccess(true) =>
             logger.info(s"✅ Successfully deleted document with id '$id' from index '$index'")
+            if (waitEnabled)
+              logger.info(s"Waiting for a refresh of index $index to happen")
             promise.success(success)
           case success @ ElasticSuccess(_) =>
             logger.warn(s"❌ Document with id '$id' in index '$index' not deleted")

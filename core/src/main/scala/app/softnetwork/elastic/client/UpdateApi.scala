@@ -90,6 +90,8 @@ trait UpdateApi extends ElasticClientHelpers { _: SettingsApi with Serialization
     executeUpdate(index, id, source, upsert, waitEnabled) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Successfully updated document with id '$id' in index '$index'")
+        if (waitEnabled)
+          logger.info(s"Waiting for a refresh of index $index to happen")
         success
       case ElasticSuccess(false) =>
         val error = s"Document with id '$id' in index '$index' not updated"
@@ -208,6 +210,8 @@ trait UpdateApi extends ElasticClientHelpers { _: SettingsApi with Serialization
         s match {
           case success @ ElasticSuccess(true) =>
             logger.info(s"✅ Successfully updated document with id '$id' in index '$index'")
+            if (waitEnabled)
+              logger.info(s"Waiting for a refresh of index $index to happen")
             promise.success(success)
           case success @ ElasticSuccess(_) =>
             logger.warn(s"❌ Document with id '$id' in index '$index' not updated")

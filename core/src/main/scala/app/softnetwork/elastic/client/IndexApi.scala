@@ -106,6 +106,8 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     executeIndex(index, id, source, waitEnabled) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Document with id '$id' indexed successfully in index '$index'")
+        if (waitEnabled)
+          logger.info(s"Waiting for a refresh of index $index to happen")
         success
       case success @ ElasticSuccess(_) =>
         logger.info(s"✅ Document with id '$id' not indexed in index '$index'")
@@ -197,6 +199,8 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
         result match {
           case success @ ElasticSuccess(true) =>
             logger.info(s"✅ Successfully indexed document with id '$id' in index '$index'")
+            if (waitEnabled)
+              logger.info(s"Waiting for a refresh of index $index to happen")
             promise.success(success)
           case success @ ElasticSuccess(_) =>
             logger.info(s"✅ Document with id '$id' not indexed in index '$index'")

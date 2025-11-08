@@ -696,16 +696,19 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
+    val index = s"sample-$uuid"
+    sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.indexAs(sample, uuid, wait = false).get
+    val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
 
-    sClient.indexAsyncAs(sample, uuid, wait = true).complete() match {
+    sClient.toggleRefresh(index, enable = true).get shouldBe true
+    sClient.indexAsyncAs(sample, uuid, Some(index), wait = true).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
 
-    val result2 = sClient.getAs[Sample](uuid).get
+    val result2 = sClient.getAs[Sample](uuid, Some(index)).get
     result2 match {
       case Some(r) =>
         r.uuid shouldBe uuid
@@ -716,16 +719,19 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
+    val index = s"sample-$uuid"
+    sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.updateAs(sample, uuid, wait = false).get
+    val result = sClient.updateAs(sample, uuid, Some(index)).get
     result shouldBe true
 
-    sClient.updateAsyncAs(sample, uuid, wait = true).complete() match {
+    sClient.toggleRefresh(index, enable = true).get shouldBe true
+    sClient.updateAsyncAs(sample, uuid, Some(index), wait = true).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }
 
-    val result2 = sClient.getAs[Sample](uuid).get
+    val result2 = sClient.getAs[Sample](uuid, Some(index)).get
     result2 match {
       case Some(r) =>
         r.uuid shouldBe uuid
@@ -739,14 +745,17 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.indexAs(sample, uuid, Some(index), wait = false).get
+    val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
 
-    sClient.delete(sample.uuid, index, wait = false).get shouldBe true
+    sClient.delete(sample.uuid, index).get shouldBe true
 
     //blockUntilEmpty(index)
 
-    sClient.getAs[Sample](uuid).isFailure shouldBe true // 404
+    sClient.getAs[Sample](uuid, Some(index)) match {
+      case ElasticSuccess(_)     => fail("Sample should have been deleted")
+      case ElasticFailure(error) => error.statusCode.getOrElse(0) shouldBe 404
+    }
   }
 
   "Delete asynchronously" should "work" in {
@@ -754,9 +763,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val index = s"sample-$uuid"
     sClient.createIndex(index).get shouldBe true
     val sample = Sample(uuid)
-    val result = sClient.indexAs(sample, uuid, Some(index), wait = false).get
+    val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
 
+    sClient.toggleRefresh(index, enable = true).get shouldBe true
     sClient.deleteAsync(sample.uuid, index, wait = true).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
@@ -764,7 +774,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     // blockUntilEmpty(index)
 
-    sClient.getAs[Sample](uuid).isFailure shouldBe true // 404
+    sClient.getAs[Sample](uuid, Some(index)) match {
+      case ElasticSuccess(_)     => fail("Sample should have been deleted")
+      case ElasticFailure(error) => error.statusCode.getOrElse(0) shouldBe 404
+    }
   }
 
   "Index binary data" should "work" in {
@@ -806,7 +819,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
             content = encoded,
             md5 = hashStream(new ByteArrayInputStream(decodeBase64(encoded))).getOrElse("")
           )
-          bClient.indexAs(binary, uuid, wait = false).get shouldBe true
+          bClient.indexAs(binary, uuid).get shouldBe true
           bClient.getAs[Binary](uuid).get match {
             case Some(result) =>
               val decoded = decodeBase64(result.content)
