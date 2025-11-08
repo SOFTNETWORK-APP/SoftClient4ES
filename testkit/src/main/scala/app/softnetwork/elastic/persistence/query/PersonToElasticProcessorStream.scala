@@ -14,25 +14,16 @@
  * limitations under the License.
  */
 
-package app.softnetwork
+package app.softnetwork.elastic.persistence.query
 
-import org.slf4j.Logger
+import app.softnetwork.persistence.person.message.PersonEvent
+import app.softnetwork.persistence.person.model.Person
+import app.softnetwork.persistence.person.query.PersonToExternalProcessorStream
+import app.softnetwork.persistence.query.{InMemoryJournalProvider, InMemoryOffsetProvider}
 
-import java.io.Closeable
-
-package object common {
-
-  trait ClientCompanion extends Closeable { _: { def logger: Logger } =>
-
-    /** Check if client is initialized and connected
-      */
-    def isInitialized: Boolean
-
-    /** Test connection
-      * @return
-      *   true if connection is successful
-      */
-    def testConnection(): Boolean
-  }
-
-}
+trait PersonToElasticProcessorStream
+    extends State2ElasticProcessorStream[Person, PersonEvent]
+    with PersonToExternalProcessorStream
+    with InMemoryJournalProvider
+    with InMemoryOffsetProvider
+    with ElasticProvider[Person]

@@ -129,8 +129,29 @@ lazy val persistence = project
     core % "compile->compile;test->test;it->it"
   )
 
+lazy val testkit = Project(id = "softclient4es-core-testkit", base = file("testkit"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    Publish.noPublishSettings,
+    app.softnetwork.Info.infoSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es8,
+    buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
+    buildInfoObject := "SoftClient4esCoreTestkitBuildInfo",
+    organization := "app.softnetwork.elastic",
+    name := s"softclient4es-core-testkit"
+  )
+  .enablePlugins(BuildInfoPlugin)
+  .dependsOn(
+    core % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    persistence % "compile->compile;test->test;it->it"
+  )
+
 def copyTestkit(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
-  val src = file("core/testkit")
+  val src = file("testkit")
   val target = baseDirectory.value
   streams.value.log.info(
     s"Copying testkit template sources for ES ${elasticSearchMajorVersion(esVersion)}..."
@@ -140,7 +161,7 @@ def copyTestkit(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
 
 def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
   val projectId = s"softclient4es${elasticSearchMajorVersion(esVersion)}-core-testkit"
-  Project(id = projectId, base = file(s"es${elasticSearchMajorVersion(esVersion)}/core/testkit"))
+  Project(id = projectId, base = file(s"es${elasticSearchMajorVersion(esVersion)}/testkit"))
     .configs(IntegrationTest)
     .settings(
       Defaults.itSettings,
@@ -168,8 +189,22 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     )
 }
 
+lazy val bridge = Project(id = "softclient4es-sql-bridge", base = file("bridge"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    Publish.noPublishSettings,
+    moduleSettings,
+    elasticSearchVersion := Versions.es8,
+    organization := "app.softnetwork.elastic",
+    name := s"softclient4es-sql-bridge"
+  )
+  .dependsOn(
+    sql % "compile->compile;test->test;it->it"
+  )
+
 def copyBridge(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
-  val src = file("sql/bridge")
+  val src = file("bridge")
   val target = baseDirectory.value
   streams.value.log.info(
     s"Copying bridge template sources for ES ${elasticSearchMajorVersion(esVersion)}..."
@@ -179,7 +214,7 @@ def copyBridge(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
 
 def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
   val projectId = s"softclient4es${elasticSearchMajorVersion(esVersion)}-sql-bridge"
-  Project(id = projectId, base = file(s"es${elasticSearchMajorVersion(esVersion)}/sql/bridge"))
+  Project(id = projectId, base = file(s"es${elasticSearchMajorVersion(esVersion)}/bridge"))
     .configs(IntegrationTest)
     .settings(
       Defaults.itSettings,
@@ -198,7 +233,7 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
 }
 
 lazy val es6bridge = project
-  .in(file("es6/sql-bridge"))
+  .in(file("es6/bridge"))
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
@@ -211,7 +246,7 @@ lazy val es6bridge = project
 
 lazy val es6testkit = testkitProject(Versions.es6)
 
-lazy val es6embeddedtestkit = project
+/*lazy val es6embeddedtestkit = project
   .in(file("es6/testkit"))
   .configs(IntegrationTest)
   .settings(
@@ -221,7 +256,7 @@ lazy val es6embeddedtestkit = project
   )
   .dependsOn(
     es6testkit % "compile->compile;test->test;it->it"
-  )
+  )*/
 
 lazy val es6rest = project
   .in(file("es6/rest"))
@@ -238,7 +273,7 @@ lazy val es6rest = project
     es6bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es6embeddedtestkit % "test->test;it->it"
+    es6testkit % "test->test;it->it"
   )
 
 lazy val es6jest = project
@@ -256,7 +291,7 @@ lazy val es6jest = project
     es6bridge % "compile->compile;test->test;it->it"
   )
   .dependsOn(
-    es6embeddedtestkit % "test->test;it->it"
+    es6testkit % "test->test;it->it"
   )
 
 lazy val es6 = project
@@ -271,7 +306,6 @@ lazy val es6 = project
   .aggregate(
     es6bridge,
     es6testkit,
-    es6embeddedtestkit,
     es6rest,
     es6jest
   )
@@ -410,8 +444,10 @@ lazy val root = project
   )
   .aggregate(
     sql,
+    bridge,
     core,
     persistence,
+    testkit,
     es6,
     es7,
     es8,

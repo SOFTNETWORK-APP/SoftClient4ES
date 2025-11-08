@@ -14,25 +14,18 @@
  * limitations under the License.
  */
 
-package app.softnetwork
+package app.softnetwork.elastic.sql.bridge
 
-import org.slf4j.Logger
+import app.softnetwork.elastic.sql.query.Criteria
+import com.sksamuel.elastic4s.requests.searches.queries.Query
 
-import java.io.Closeable
+case class ElasticCriteria(criteria: Criteria) {
 
-package object common {
-
-  trait ClientCompanion extends Closeable { _: { def logger: Logger } =>
-
-    /** Check if client is initialized and connected
-      */
-    def isInitialized: Boolean
-
-    /** Test connection
-      * @return
-      *   true if connection is successful
-      */
-    def testConnection(): Boolean
+  def asQuery(group: Boolean = true, innerHitsNames: Set[String] = Set.empty): Query = {
+    val query = criteria.boolQuery.copy(group = group)
+    query
+      .filter(criteria.asFilter(Option(query)))
+      .unfilteredMatchCriteria()
+      .query(innerHitsNames, Option(query))
   }
-
 }

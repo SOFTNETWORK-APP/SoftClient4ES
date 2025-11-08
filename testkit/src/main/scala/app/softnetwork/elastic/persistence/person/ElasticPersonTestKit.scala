@@ -14,25 +14,19 @@
  * limitations under the License.
  */
 
-package app.softnetwork
+package app.softnetwork.elastic.persistence.person
 
-import org.slf4j.Logger
+import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
+import app.softnetwork.persistence.person.PersonTestKit
+import app.softnetwork.persistence.scalatest.InMemoryPersistenceTestKit
 
-import java.io.Closeable
+trait ElasticPersonTestKit
+    extends PersonTestKit
+    with InMemoryPersistenceTestKit
+    with ElasticDockerTestKit {
 
-package object common {
-
-  trait ClientCompanion extends Closeable { _: { def logger: Logger } =>
-
-    /** Check if client is initialized and connected
-      */
-    def isInitialized: Boolean
-
-    /** Test connection
-      * @return
-      *   true if connection is successful
-      */
-    def testConnection(): Boolean
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    initAndJoinCluster()
   }
-
 }

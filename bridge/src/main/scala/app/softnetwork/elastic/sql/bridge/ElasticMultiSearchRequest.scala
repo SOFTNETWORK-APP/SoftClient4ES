@@ -14,25 +14,13 @@
  * limitations under the License.
  */
 
-package app.softnetwork
+package app.softnetwork.elastic.sql.bridge
 
-import org.slf4j.Logger
+import com.sksamuel.elastic4s.requests.searches.{MultiSearchBuilderFn, MultiSearchRequest}
 
-import java.io.Closeable
-
-package object common {
-
-  trait ClientCompanion extends Closeable { _: { def logger: Logger } =>
-
-    /** Check if client is initialized and connected
-      */
-    def isInitialized: Boolean
-
-    /** Test connection
-      * @return
-      *   true if connection is successful
-      */
-    def testConnection(): Boolean
-  }
-
+case class ElasticMultiSearchRequest(
+  requests: Seq[ElasticSearchRequest],
+  multiSearch: MultiSearchRequest
+) {
+  def query: String = MultiSearchBuilderFn(multiSearch).replace("\"version\":true,", "") /*FIXME*/
 }

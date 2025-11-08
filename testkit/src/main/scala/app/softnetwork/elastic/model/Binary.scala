@@ -14,25 +14,16 @@
  * limitations under the License.
  */
 
-package app.softnetwork
+package app.softnetwork.elastic.model
 
-import org.slf4j.Logger
+import app.softnetwork.persistence.model.Timestamped
 
-import java.io.Closeable
+import java.time.Instant
 
-package object common {
-
-  trait ClientCompanion extends Closeable { _: { def logger: Logger } =>
-
-    /** Check if client is initialized and connected
-      */
-    def isInitialized: Boolean
-
-    /** Test connection
-      * @return
-      *   true if connection is successful
-      */
-    def testConnection(): Boolean
-  }
-
-}
+case class Binary(
+  uuid: String,
+  var createdDate: Instant = Instant.now(),
+  var lastUpdated: Instant = Instant.now(),
+  content: String,
+  md5: String
+) extends Timestamped

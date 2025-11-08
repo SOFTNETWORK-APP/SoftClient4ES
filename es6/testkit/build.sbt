@@ -2,7 +2,7 @@ import SoftClient4es.*
 
 organization := "app.softnetwork.elastic"
 
-name := s"softclient4es${elasticSearchMajorVersion(elasticSearchVersion.value)}-embedded-testkit"
+name := s"softclient4es${elasticSearchMajorVersion(elasticSearchVersion.value)}-core-testkit"
 
 libraryDependencies ++= elasticClientDependencies(elasticSearchVersion.value) ++
 elastic4sTestkitDependencies(elasticSearchVersion.value) ++ Seq(
