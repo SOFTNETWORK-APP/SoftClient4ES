@@ -19,7 +19,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.10.1"
+ThisBuild / version := "0.11.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := scala213
 
@@ -245,18 +245,6 @@ lazy val es6bridge = project
   )
 
 lazy val es6testkit = testkitProject(Versions.es6)
-
-/*lazy val es6embeddedtestkit = project
-  .in(file("es6/testkit"))
-  .configs(IntegrationTest)
-  .settings(
-    Defaults.itSettings,
-    moduleSettings,
-    elasticSearchVersion := Versions.es6
-  )
-  .dependsOn(
-    es6testkit % "compile->compile;test->test;it->it"
-  )*/
 
 lazy val es6rest = project
   .in(file("es6/rest"))
