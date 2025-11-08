@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client
+package app.softnetwork.elastic.scalatest
 
 import app.softnetwork.concurrent.scalatest.CompletionTestKit
 import app.softnetwork.serialization.commonFormats

@@ -17,7 +17,6 @@
 package app.softnetwork.elastic.scalatest
 
 import app.softnetwork.elastic.SoftClient4esCoreTestkitBuildInfo
-import app.softnetwork.elastic.client.ElasticRestClientTestKit
 import org.scalatest.matchers.{MatchResult, Matcher}
 import org.scalatest.{BeforeAndAfterAll, Suite}
 import org.slf4j.Logger
