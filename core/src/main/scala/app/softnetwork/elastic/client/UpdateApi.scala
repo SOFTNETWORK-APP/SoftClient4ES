@@ -30,7 +30,7 @@ import scala.util.{Failure, Success}
 
 /** Update Management API
   */
-trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationApi =>
+trait UpdateApi extends ElasticClientHelpers { _: SettingsApi with SerializationApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -45,10 +45,18 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     *   - the source of the entity to update in JSON format
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
-  def update(index: String, id: String, source: String, upsert: Boolean): ElasticResult[Boolean] = {
+  def update(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean,
+    wait: Boolean = false
+  ): ElasticResult[Boolean] = {
     validateIndexName(index) match {
       case Some(error) =>
         return ElasticResult.failure(
@@ -77,10 +85,12 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
 
     logger.debug(s"Updating document with id '$id' in index '$index'")
 
-    executeUpdate(index, id, source, upsert) match {
-      case ElasticSuccess(true) =>
+    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1)
+    val waitEnabled = wait && isRefreshEnabled(index).getOrElse(false)
+    executeUpdate(index, id, source, upsert, waitEnabled) match {
+      case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Successfully updated document with id '$id' in index '$index'")
-        this.refresh(index)
+        success
       case ElasticSuccess(false) =>
         val error = s"Document with id '$id' in index '$index' not updated"
         logger.warn(s"❌ $error")
@@ -110,6 +120,8 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
@@ -118,7 +130,8 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
-    upsert: Boolean = true
+    upsert: Boolean = true,
+    wait: Boolean = false
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] = {
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
     val indexName = index.getOrElse(indexType)
@@ -128,7 +141,7 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
         serialization.write[U](entity)
       }
       .flatMap { source =>
-        this.update(indexName, id, source, upsert)
+        this.update(indexName, id, source, upsert, wait)
       }
   }
 
@@ -141,10 +154,18 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     *   - the source of the entity to update in JSON format
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
-  def updateAsync(index: String, id: String, source: String, upsert: Boolean)(implicit
+  def updateAsync(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean,
+    wait: Boolean = false
+  )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = {
     validateIndexName(index) match {
@@ -179,13 +200,15 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
 
     logger.debug(s"Updating document with id '$id' in index '$index' asynchronously")
 
+    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1)
+    val waitEnabled = wait && isRefreshEnabled(index).getOrElse(false)
     val promise: Promise[ElasticResult[Boolean]] = Promise()
-    executeUpdateAsync(index, id, source, upsert) onComplete {
+    executeUpdateAsync(index, id, source, upsert, waitEnabled) onComplete {
       case Success(s) =>
         s match {
-          case _ @ElasticSuccess(true) =>
+          case success @ ElasticSuccess(true) =>
             logger.info(s"✅ Successfully updated document with id '$id' in index '$index'")
-            promise.success(this.refresh(index))
+            promise.success(success)
           case success @ ElasticSuccess(_) =>
             logger.warn(s"❌ Document with id '$id' in index '$index' not updated")
             promise.success(success)
@@ -217,6 +240,8 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
@@ -225,7 +250,8 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
-    upsert: Boolean = true
+    upsert: Boolean = true,
+    wait: Boolean = false
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
@@ -240,7 +266,7 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
       case failure @ ElasticFailure(_) =>
         logger.error(s"❌ Failed to serialize entity for update in index '$indexName'")
         Future.successful(failure)
-      case ElasticSuccess(source) => this.updateAsync(indexName, id, source, upsert)
+      case ElasticSuccess(source) => this.updateAsync(indexName, id, source, upsert, wait)
     }
   }
 
@@ -252,13 +278,15 @@ trait UpdateApi extends ElasticClientHelpers { _: RefreshApi with SerializationA
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): ElasticResult[Boolean]
 
   private[client] def executeUpdateAsync(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]]
 }

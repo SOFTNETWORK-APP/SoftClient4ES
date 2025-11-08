@@ -600,6 +600,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the source of the entity to update in JSON format
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
@@ -607,9 +609,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): ElasticResult[Boolean] =
-    delegate.update(index, id, source, upsert)
+    delegate.update(index, id, source, upsert, wait)
 
   /** Update an entity in the given index.
     *
@@ -623,6 +626,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
@@ -631,9 +636,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String,
     index: Option[String],
     maybeType: Option[String],
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] =
-    delegate.updateAs(entity, id, index, maybeType, upsert)
+    delegate.updateAs(entity, id, index, maybeType, upsert, wait)
 
   /** Update an entity in the given index asynchronously.
     *
@@ -645,13 +651,21 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the source of the entity to update in JSON format
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
-  override def updateAsync(index: String, id: String, source: String, upsert: Boolean)(implicit
+  override def updateAsync(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean,
+    wait: Boolean
+  )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] =
-    delegate.updateAsync(index, id, source, upsert)
+    delegate.updateAsync(index, id, source, upsert, wait)
 
   /** Update an entity in the given index asynchronously.
     *
@@ -665,6 +679,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
@@ -673,29 +689,32 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String,
     index: Option[String],
     maybeType: Option[String],
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
     formats: Formats
   ): Future[ElasticResult[Boolean]] =
-    delegate.updateAsyncAs(entity, id, index, maybeType, upsert)
+    delegate.updateAsyncAs(entity, id, index, maybeType, upsert, wait)
 
   override private[client] def executeUpdate(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): ElasticResult[Boolean] =
-    delegate.executeUpdate(index, id, source, upsert)
+    delegate.executeUpdate(index, id, source, upsert, wait)
 
   override private[client] def executeUpdateAsync(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
-    delegate.executeUpdateAsync(index, id, source, upsert)
+    delegate.executeUpdateAsync(index, id, source, upsert, wait)
 
   // ==================== DeleteApi ====================
 

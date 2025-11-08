@@ -421,18 +421,25 @@ class MetricsElasticClient(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): ElasticResult[Boolean] = {
     measureResult("update", Some(index)) {
-      delegate.update(index, id, source, upsert)
+      delegate.update(index, id, source, upsert, wait)
     }
   }
 
-  override def updateAsync(index: String, id: String, source: String, upsert: Boolean)(implicit
+  override def updateAsync(
+    index: String,
+    id: String,
+    source: String,
+    upsert: Boolean,
+    wait: Boolean
+  )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = {
     measureAsync("updateAsync", Some(index)) {
-      delegate.updateAsync(index, id, source, upsert)
+      delegate.updateAsync(index, id, source, upsert, wait)
     }
   }
 
@@ -448,6 +455,8 @@ class MetricsElasticClient(
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   true if the entity was updated successfully, false otherwise
     */
@@ -456,10 +465,11 @@ class MetricsElasticClient(
     id: String,
     index: Option[String],
     maybeType: Option[String],
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] =
     measureResult("updateAs", index) {
-      delegate.updateAs(entity, id, index, maybeType, upsert)
+      delegate.updateAs(entity, id, index, maybeType, upsert, wait)
     }
 
   /** Update an entity in the given index asynchronously.
@@ -474,6 +484,8 @@ class MetricsElasticClient(
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param upsert
     *   - true to upsert the entity if it does not exist, false otherwise
+    * @param wait
+    *   - whether to wait for a refresh to happen after updating (default is false)
     * @return
     *   a Future that completes with true if the entity was updated successfully, false otherwise
     */
@@ -482,14 +494,15 @@ class MetricsElasticClient(
     id: String,
     index: Option[String],
     maybeType: Option[String],
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
     formats: Formats
   ): Future[ElasticResult[Boolean]] =
     measureAsync("updateAsyncAs", index) {
-      delegate.updateAsyncAs(entity, id, index, maybeType, upsert)
+      delegate.updateAsyncAs(entity, id, index, maybeType, upsert, wait)
     }
 
   // ==================== DeleteApi ====================

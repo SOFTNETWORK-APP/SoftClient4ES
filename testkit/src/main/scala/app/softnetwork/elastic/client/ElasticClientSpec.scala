@@ -717,10 +717,10 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
     val sample = Sample(uuid)
-    val result = sClient.updateAs(sample, uuid).get
+    val result = sClient.updateAs(sample, uuid, wait = false).get
     result shouldBe true
 
-    sClient.updateAsyncAs(sample, uuid).complete() match {
+    sClient.updateAsyncAs(sample, uuid, wait = true).complete() match {
       case Success(r) => r.get shouldBe true
       case Failure(f) => fail(f.getMessage)
     }

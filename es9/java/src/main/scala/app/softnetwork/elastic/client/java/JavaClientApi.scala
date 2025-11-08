@@ -572,13 +572,14 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
   *   [[UpdateApi]] for update operations
   */
 trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
-  _: RefreshApi with JavaClientCompanion with SerializationApi =>
+  _: SettingsApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeUpdate(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): result.ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "update",
@@ -592,6 +593,7 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
             .id(id)
             .doc(mapper.readValue(source, classOf[JMap[String, Object]]))
             .docAsUpsert(upsert)
+            .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build(),
           classOf[JMap[String, Object]]
         )
@@ -605,7 +607,8 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[result.ElasticResult[Boolean]] =
     fromCompletableFuture(
       async()
@@ -615,6 +618,7 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
             .id(id)
             .doc(mapper.readValue(source, classOf[JMap[String, Object]]))
             .docAsUpsert(upsert)
+            .refresh(if (wait) Refresh.WaitFor else Refresh.False)
             .build(),
           classOf[JMap[String, Object]]
         )

@@ -45,7 +45,7 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     * @param maybeType
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param wait
-    *   - whether to wait for a refresh to happen after indexing
+    *   - whether to wait for a refresh to happen after indexing (default is false)
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
@@ -54,7 +54,7 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
-    wait: Boolean
+    wait: Boolean = false
   )(implicit u: ClassTag[U], formats: Formats): ElasticResult[Boolean] = {
     val indexType = maybeType.getOrElse(u.runtimeClass.getSimpleName.toLowerCase)
     val indexName = index.getOrElse(indexType)
@@ -76,11 +76,16 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     * @param source
     *   - the source of the entity to index in JSON format
     * @param wait
-    *   - whether to wait for a refresh to happen after indexing
+    *   - whether to wait for a refresh to happen after indexing (default is false)
     * @return
     *   true if the entity was indexed successfully, false otherwise
     */
-  def index(index: String, id: String, source: String, wait: Boolean): ElasticResult[Boolean] = {
+  def index(
+    index: String,
+    id: String,
+    source: String,
+    wait: Boolean = false
+  ): ElasticResult[Boolean] = {
     validateIndexName(index) match {
       case Some(error) =>
         return ElasticResult.failure(
@@ -96,7 +101,7 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
 
     logger.debug(s"Indexing document with id '$id' in index '$index'")
 
-    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1) and its interval not too high
+    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1)
     val waitEnabled = wait && isRefreshEnabled(index).getOrElse(false)
     executeIndex(index, id, source, waitEnabled) match {
       case success @ ElasticSuccess(true) =>
@@ -123,7 +128,7 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     * @param maybeType
     *   - the type of the entity (default is the entity class name in lowercase)
     * @param wait
-    *   - whether to wait for a refresh to happen after indexing
+    *   - whether to wait for a refresh to happen after indexing (default is false)
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
@@ -132,7 +137,7 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     id: String,
     index: Option[String] = None,
     maybeType: Option[String] = None,
-    wait: Boolean
+    wait: Boolean = false
   )(implicit
     u: ClassTag[U],
     ec: ExecutionContext,
@@ -159,11 +164,11 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
     * @param source
     *   - the source of the entity to index in JSON format
     * @param wait
-    *   - whether to wait for a refresh to happen after indexing
+    *   - whether to wait for a refresh to happen after indexing (default is false)
     * @return
     *   a Future that completes with true if the entity was indexed successfully, false otherwise
     */
-  def indexAsync(index: String, id: String, source: String, wait: Boolean)(implicit
+  def indexAsync(index: String, id: String, source: String, wait: Boolean = false)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[Boolean]] = {
     validateIndexName(index) match {
@@ -185,7 +190,7 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationA
 
     val promise: Promise[ElasticResult[Boolean]] = Promise()
 
-    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1) and its interval not too high
+    // if wait for next refresh is enabled, we should make sure that the refresh is enabled (different to -1)
     val waitEnabled = wait && isRefreshEnabled(index).getOrElse(false)
     executeIndexAsync(index, id, source, waitEnabled) onComplete {
       case scala.util.Success(result) =>

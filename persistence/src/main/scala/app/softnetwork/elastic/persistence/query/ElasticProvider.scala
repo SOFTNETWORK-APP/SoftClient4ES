@@ -113,7 +113,7 @@ trait ElasticProvider[T <: Timestamped]
     *   whether the operation is successful or not
     */
   override def updateDocument(document: T, upsert: Boolean)(implicit t: ClassTag[T]): Boolean = {
-    updateAs(document, document.uuid, Some(index), Some(_type), upsert) match {
+    updateAs(document, document.uuid, Some(index), Some(_type), upsert, wait = true) match {
       case ElasticSuccess(_) => true
       case ElasticFailure(elasticError) =>
         logger.error(s"${elasticError.message}")
@@ -152,7 +152,8 @@ trait ElasticProvider[T <: Timestamped]
       index,
       uuid,
       data,
-      upsert = true
+      upsert = true,
+      wait = true
     ) match {
       case ElasticSuccess(_) => true
       case ElasticFailure(elasticError) =>

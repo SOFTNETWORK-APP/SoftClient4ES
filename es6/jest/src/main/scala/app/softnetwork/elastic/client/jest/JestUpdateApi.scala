@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{RefreshApi, SerializationApi, UpdateApi}
+import app.softnetwork.elastic.client.{SerializationApi, SettingsApi, UpdateApi}
 import app.softnetwork.elastic.client.bulk.docAsUpsert
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.core.Update
@@ -28,17 +28,18 @@ import scala.concurrent.{ExecutionContext, Future}
   *   [[UpdateApi]] for generic API documentation
   */
 trait JestUpdateApi extends UpdateApi with JestClientHelpers {
-  _: RefreshApi with JestClientCompanion with SerializationApi =>
+  _: SettingsApi with JestClientCompanion with SerializationApi =>
 
   /** Update an entity in the given index.
     * @see
     *   [[UpdateApi.updateAs]]
     */
-  private[client] def executeUpdate(
+  override private[client] def executeUpdate(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): ElasticResult[Boolean] =
     executeJestBooleanAction(
       operation = "update",
@@ -50,14 +51,20 @@ trait JestUpdateApi extends UpdateApi with JestClientHelpers {
           docAsUpsert(source)
         else
           source
-      ).index(index).`type`("_doc").id(id).build()
+      )
+        .index(index)
+        .`type`("_doc")
+        .id(id)
+        .setParameter("refresh", if (wait) "wait_for" else "false")
+        .build()
     }
 
   override private[client] def executeUpdateAsync(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
     executeAsyncJestAction(
       operation = "update",
@@ -69,7 +76,12 @@ trait JestUpdateApi extends UpdateApi with JestClientHelpers {
           docAsUpsert(source)
         else
           source
-      ).index(index).`type`("_doc").id(id).build()
+      )
+        .index(index)
+        .`type`("_doc")
+        .id(id)
+        .setParameter("refresh", if (wait) "wait_for" else "false")
+        .build()
     }(result => result.isSucceeded)
 
 }

@@ -547,12 +547,13 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
   *   [[UpdateApi]] for generic API documentation
   */
 trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHelpers {
-  _: RefreshApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: SettingsApi with RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeUpdate(
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): result.ElasticResult[Boolean] =
     executeRestAction[UpdateRequest, UpdateResponse, Boolean](
       operation = "update",
@@ -562,6 +563,9 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
       request = new UpdateRequest(index, id)
         .doc(source, XContentType.JSON)
         .docAsUpsert(upsert)
+        .setRefreshPolicy(
+          if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+        )
     )(
       executor = req => apply().update(req, RequestOptions.DEFAULT)
     )(response => response.status().getStatus < 400)
@@ -570,7 +574,8 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[result.ElasticResult[Boolean]] =
     executeAsyncRestAction[UpdateRequest, UpdateResponse, Boolean](
       operation = "updateAsync",
@@ -580,6 +585,9 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
       request = new UpdateRequest(index, id)
         .doc(source, XContentType.JSON)
         .docAsUpsert(upsert)
+        .setRefreshPolicy(
+          if (wait) WriteRequest.RefreshPolicy.WAIT_UNTIL else WriteRequest.RefreshPolicy.NONE
+        )
     )(
       executor = (req, listener) => apply().updateAsync(req, RequestOptions.DEFAULT, listener)
     )(response => response.status().getStatus < 400)

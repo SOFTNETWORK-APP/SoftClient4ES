@@ -213,7 +213,8 @@ trait MockElasticClientApi extends ElasticClientApi {
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   ): ElasticResult[Boolean] =
     ElasticResult.success {
       elasticDocuments.createOrUpdate(serialization.read(source), id)
@@ -224,10 +225,11 @@ trait MockElasticClientApi extends ElasticClientApi {
     index: String,
     id: String,
     source: String,
-    upsert: Boolean
+    upsert: Boolean,
+    wait: Boolean
   )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
     Future {
-      executeUpdate(index, id, source, upsert)
+      executeUpdate(index, id, source, upsert, wait)
     }
 
   // ==================== DeleteApi ====================
