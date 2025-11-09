@@ -69,11 +69,50 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
+  it should "accept query with missing Option fields" in {
+    assertCompiles("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.ProductWithOptional
+      import app.softnetwork.elastic.sql.query.SQLQuery
+
+      TestElasticClientApi.searchAs[ProductWithOptional](
+        "SELECT id, name FROM products"
+      )
+    """)
+  }
+
+  it should "accept query with missing fields that have defaults" in {
+    assertCompiles("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.ProductWithDefaults
+      import app.softnetwork.elastic.sql.query.SQLQuery
+
+      TestElasticClientApi.searchAs[ProductWithDefaults](
+        "SELECT id, name FROM products"
+      )
+    """)
+  }
+
+  it should "accept SELECT * with Unchecked variant" in {
+    assertCompiles("""
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+    import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
+    import app.softnetwork.elastic.sql.query.SQLQuery
+
+    TestElasticClientApi.searchAsUnchecked[Product](
+      SQLQuery("SELECT * FROM products")
+    )
+  """)
+  }
+
   // ============================================================
   // Negative Tests (Should NOT Compile)
   // ============================================================
 
-  it should "reject missing fields" in {
+  it should "REJECT query with missing required fields" in {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -85,7 +124,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "reject invalid field names" in {
+  it should "REJECT query with invalid field names" in {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -97,7 +136,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "reject type mismatches" in {
+  it should "REJECT query with type mismatches" in {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -122,7 +161,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "reject dynamic queries (non-literals)" in {
+  it should "REJECT dynamic queries (non-literals)" in {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -134,6 +173,33 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
         s"SELECT id, $dynamicField FROM products"
       )""")
   }
+
+  it should "REJECT SELECT * queries" in {
+    assertDoesNotCompile("""
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+    import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
+    import app.softnetwork.elastic.sql.query.SQLQuery
+
+    TestElasticClientApi.searchAs[Product](
+      "SELECT * FROM products"
+    )
+  """)
+  }
+
+  it should "REJECT SELECT * even with WHERE clause" in {
+    assertDoesNotCompile("""
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+    import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
+    import app.softnetwork.elastic.sql.query.SQLQuery
+
+    TestElasticClientApi.searchAs[Product](
+      "SELECT * FROM products WHERE active = true"
+    )
+  """)
+  }
+
 }
 
 object SQLQueryValidatorSpec {
@@ -144,6 +210,21 @@ object SQLQueryValidatorSpec {
     stock: Int,
     active: Boolean,
     createdAt: java.time.LocalDateTime
+  )
+
+  case class ProductWithOptional(
+    id: String,
+    name: String,
+    price: Option[Double], // ✅ OK if missing
+    stock: Option[Int] // ✅ OK if missing
+  )
+
+  // Case class with default values
+  case class ProductWithDefaults(
+    id: String,
+    name: String,
+    price: Double = 0.0, // ✅ OK if missing
+    stock: Int = 0 // ✅ OK if missing
   )
 
   case class Numbers(

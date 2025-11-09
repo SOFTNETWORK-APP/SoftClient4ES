@@ -29,6 +29,9 @@ trait SQLQueryValidator {
 
   /** Validates an SQL query against a type T. Returns the SQL query if valid, otherwise aborts
     * compilation.
+    * @note
+    *   query fields must not exist in case class because we are using Jackson to deserialize the
+    *   results with the following option DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES = false
     */
   protected def validateSQLQuery[T: c.WeakTypeTag](c: blackbox.Context)(
     query: c.Expr[String]
@@ -46,6 +49,11 @@ trait SQLQueryValidator {
     // 2. Parse the SQL query
     val parsedQuery = parseSQLQuery(c)(sqlQuery)
 
+    // ============================================================
+    // ✅ NEW: Reject SELECT *
+    // ============================================================
+    rejectSelectStar(c)(parsedQuery, sqlQuery)
+
     // 3. Extract the selected fields
     val queryFields = extractQueryFields(parsedQuery)
 
@@ -56,13 +64,13 @@ trait SQLQueryValidator {
     val caseClassFields = extractCaseClassFields(c)(tpe)
     c.echo(c.enclosingPosition, s"📦 Case class fields: ${caseClassFields.mkString(", ")}")
 
-    // 5. Validate the fields
-    validateFields(c)(queryFields, caseClassFields, tpe)
+    // 5. Validate: missing case class fields must have defaults or be Option
+    validateMissingFieldsHaveDefaults(c)(queryFields, caseClassFields, tpe)
 
-    // 6. Validate the types
+    // 7. Validate the types
     validateTypes(c)(parsedQuery, caseClassFields)
 
-    // 7. Return the validated request
+    // 8. Return the validated request
     sqlQuery
   }
 
@@ -108,6 +116,47 @@ trait SQLQueryValidator {
     }
   }
 
+  // ============================================================
+  // ✅ Reject SELECT * (incompatible with compile-time validation)
+  // ============================================================
+  private def rejectSelectStar(c: blackbox.Context)(
+    parsedQuery: SQLSearchRequest,
+    sqlQuery: String
+  ): Unit = {
+
+    // Check if any field is a wildcard (*)
+    val hasWildcard = parsedQuery.select.fields.exists { field =>
+      field.identifier.name == "*"
+    }
+
+    if (hasWildcard) {
+      c.abort(
+        c.enclosingPosition,
+        s"""❌ SELECT * is not allowed with compile-time validation.
+           |
+           |Query: $sqlQuery
+           |
+           |Reason:
+           |  • Cannot validate field existence at compile-time
+           |  • Cannot validate type compatibility at compile-time
+           |  • Schema changes will break silently at runtime
+           |
+           |Solution:
+           |  1. Explicitly list all required fields:
+           |     SELECT id, name, price FROM products
+           |
+           |  2. Use the *Unchecked() variant for dynamic queries:
+           |     searchAsUnchecked[Product](SQLQuery("SELECT * FROM products"))
+           |
+           |Best Practice:
+           |  Always explicitly select only the fields you need.
+           |""".stripMargin
+      )
+    }
+
+    c.echo(c.enclosingPosition, "✅ No SELECT * detected")
+  }
+
   private def extractQueryFields(parsedQuery: SQLSearchRequest): Set[String] = {
     parsedQuery.select.fields.map { field =>
       field.fieldAlias.map(_.alias).getOrElse(field.identifier.name)
@@ -125,17 +174,21 @@ trait SQLQueryValidator {
     }.toMap
   }
 
-  private def validateFields(c: blackbox.Context)(
+  // ============================================================
+  // ✅ VALIDATION 1: Query fields must exist in case class
+  // ============================================================
+  @deprecated
+  private def validateQueryFieldsExist(c: blackbox.Context)(
     queryFields: Set[String],
     caseClassFields: Map[String, c.universe.Type],
     tpe: c.universe.Type
   ): Unit = {
-    val missingFields = caseClassFields.keySet -- queryFields
+    val unknownFields = queryFields.filterNot(f => caseClassFields.contains(f))
 
-    if (missingFields.nonEmpty) {
+    if (unknownFields.nonEmpty) {
       val availableFields = caseClassFields.keys.toSeq.sorted.mkString(", ")
-      val suggestions = missingFields.flatMap { missing =>
-        findClosestMatch(missing, caseClassFields.keys.toSeq)
+      val suggestions = unknownFields.flatMap { unknown =>
+        findClosestMatch(unknown, caseClassFields.keys.toSeq)
       }
 
       val suggestionMsg = if (suggestions.nonEmpty) {
@@ -144,13 +197,112 @@ trait SQLQueryValidator {
 
       c.abort(
         c.enclosingPosition,
-        s"❌ SQL case class fields in ${tpe.typeSymbol.name} not present in ${queryFields.mkString(",")}: " +
-        s"${missingFields.mkString(", ")}\n" +
+        s"❌ SQL query selects fields not present in ${tpe.typeSymbol.name}: " +
+        s"${unknownFields.mkString(", ")}\n" +
         s"Available fields: $availableFields$suggestionMsg"
       )
     }
+
+    c.echo(c.enclosingPosition, "✅ All query fields exist in case class")
   }
 
+  // ============================================================
+  // ✅ VALIDATION 2: Missing fields must have defaults or be Option
+  // ============================================================
+  private def validateMissingFieldsHaveDefaults(c: blackbox.Context)(
+    queryFields: Set[String],
+    caseClassFields: Map[String, c.universe.Type],
+    tpe: c.universe.Type
+  ): Unit = {
+    import c.universe._
+
+    val missingFields = caseClassFields.keySet -- queryFields
+
+    if (missingFields.isEmpty) {
+      c.echo(c.enclosingPosition, "✅ No missing fields to validate")
+      return
+    }
+
+    c.echo(c.enclosingPosition, s"⚠️  Missing fields: ${missingFields.mkString(", ")}")
+
+    // Get constructor parameters with their positions
+    val constructor = tpe.decl(termNames.CONSTRUCTOR).asMethod
+    val params = constructor.paramLists.flatten
+
+    // Build map: fieldName -> (index, hasDefault, isOption)
+    val fieldInfo = params.zipWithIndex.map { case (param, idx) =>
+      val fieldName = param.name.toString
+      val fieldType = param.typeSignature
+
+      // Check if Option
+      val isOption = fieldType.typeConstructor =:= typeOf[Option[_]].typeConstructor
+
+      // Check if has default value
+      val companionSymbol = tpe.typeSymbol.companion
+      val hasDefault = if (companionSymbol != NoSymbol) {
+        val companionType = companionSymbol.typeSignature
+        val defaultMethodName = s"apply$$default$$${idx + 1}"
+        companionType.member(TermName(defaultMethodName)) != NoSymbol
+      } else {
+        false
+      }
+
+      (fieldName, (idx, hasDefault, isOption))
+    }.toMap
+
+    // Check each missing field
+    val fieldsWithoutDefaults = missingFields.filterNot { fieldName =>
+      fieldInfo.get(fieldName) match {
+        case Some((_, hasDefault, isOption)) =>
+          if (isOption) {
+            c.echo(c.enclosingPosition, s"✅ Field '$fieldName' is Option - OK")
+            true
+          } else if (hasDefault) {
+            c.echo(c.enclosingPosition, s"✅ Field '$fieldName' has default value - OK")
+            true
+          } else {
+            c.echo(c.enclosingPosition, s"❌ Field '$fieldName' has NO default and is NOT Option")
+            false
+          }
+        case None =>
+          c.echo(c.enclosingPosition, s"⚠️  Field '$fieldName' not found in constructor")
+          false
+      }
+    }
+
+    if (fieldsWithoutDefaults.nonEmpty) {
+      c.abort(
+        c.enclosingPosition,
+        s"❌ SQL query does not select the following required fields from ${tpe.typeSymbol.name}:\n" +
+        s"  ${fieldsWithoutDefaults.mkString(", ")}\n\n" +
+        s"These fields are missing from the query:\n" +
+        s"  SELECT ${queryFields.mkString(", ")} FROM ...\n\n" +
+        s"To fix this, either:\n" +
+        s"  1. Add them to the SELECT clause\n" +
+        s"  2. Make them Option[T] in the case class\n" +
+        s"  3. Provide default values in the case class definition"
+      )
+    }
+
+    c.echo(c.enclosingPosition, "✅ All missing fields have defaults or are Option")
+  }
+
+  // Helper: Get the index of a field in the case class constructor
+  private def getFieldIndex(c: blackbox.Context)(
+    tpe: c.universe.Type,
+    fieldName: String
+  ): Int = {
+    import c.universe._
+
+    val constructor = tpe.decl(termNames.CONSTRUCTOR).asMethod
+    val params = constructor.paramLists.flatten
+
+    params.indexWhere(_.name.toString == fieldName)
+  }
+
+  // ============================================================
+  // VALIDATION 3: Type compatibility
+  // ============================================================
   private def validateTypes(c: blackbox.Context)(
     parsedQuery: SQLSearchRequest,
     caseClassFields: Map[String, c.universe.Type]
@@ -172,6 +324,8 @@ trait SQLQueryValidator {
         case _ => // Cannot validate without type info
       }
     }
+
+    c.echo(c.enclosingPosition, "✅ Type validation passed")
   }
 
   private def areTypesCompatible(c: blackbox.Context)(
