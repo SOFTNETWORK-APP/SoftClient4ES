@@ -46,6 +46,6 @@ object Versions {
 
   val genericPersistence = "0.8.0"
 
-  val gson = "2.8.0"
+  val gson = "2.8.9"
 
 }
