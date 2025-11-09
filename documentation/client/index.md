@@ -15,7 +15,7 @@ The **IndexApi** trait provides functionality to index documents into Elasticsea
 - Support for custom index names and document IDs
 
 **Dependencies:**
-- Requires `RefreshApi` for automatic refresh after indexing
+- Requires `SettingsApi` to check if index refresh is enabled
 - Requires `SerializationApi` for JSON serialization
 
 ---

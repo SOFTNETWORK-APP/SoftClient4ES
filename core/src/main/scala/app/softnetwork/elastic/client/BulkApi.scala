@@ -76,7 +76,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     *   Future with detailed results
     */
   def bulkWithResult[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
     idKey: Option[String] = None,
@@ -181,7 +181,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     */
   //format:on
   def bulkSource[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
     idKey: Option[String] = None,
@@ -195,13 +195,11 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     system: ActorSystem
   ): Source[Either[FailedDocument, SuccessfulDocument], NotUsed] = {
 
-    implicit val materializer: Materializer = Materializer(system)
     implicit val ec: ExecutionContext = system.dispatcher
 
     var metrics = BulkMetrics()
 
-    Source
-      .fromIterator(() => items)
+    items
       // ✅ Transformation en BulkItem
       .map { item =>
         toBulkItem(
@@ -266,7 +264,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     *   Use `bulkWithResult` to get failure details
     */
   def bulk[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
     idKey: Option[String] = None,
@@ -452,7 +450,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     failed: FailedDocument
   )(implicit system: ActorSystem): Future[Boolean] = {
     implicit val ec: ExecutionContext = system.dispatcher
-    indexAsync(failed.index, failed.document, failed.id, wait = false).flatMap {
+    indexAsync(failed.index, failed.document, failed.id).flatMap {
       case ElasticSuccess(true) =>
         Future.successful(true)
 

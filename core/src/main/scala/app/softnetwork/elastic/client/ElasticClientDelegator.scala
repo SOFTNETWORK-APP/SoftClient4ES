@@ -1222,7 +1222,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   Future with detailed results
     */
   override def bulkWithResult[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String],
     idKey: Option[String],
@@ -1284,7 +1284,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   Source outputting Right(id) or Left(failed)
     */
   override def bulkSource[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String],
     idKey: Option[String],
@@ -1314,7 +1314,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   Use `bulkWithResult` to get failure details
     */
   override def bulk[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String],
     idKey: Option[String],

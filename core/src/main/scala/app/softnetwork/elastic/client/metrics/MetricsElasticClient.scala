@@ -928,7 +928,7 @@ class MetricsElasticClient(
   // ==================== BulkApi ====================
 
   override def bulkWithResult[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
     idKey: Option[String] = None,
@@ -957,7 +957,7 @@ class MetricsElasticClient(
   }
 
   override def bulkSource[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
     idKey: Option[String] = None,
@@ -998,7 +998,7 @@ class MetricsElasticClient(
   }
 
   override def bulk[D](
-    items: Iterator[D],
+    items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
     idKey: Option[String] = None,

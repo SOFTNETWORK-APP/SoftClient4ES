@@ -16,8 +16,9 @@
 
 package app.softnetwork.elastic.client
 
+import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.{Sink, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
@@ -73,6 +74,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   import scala.language.implicitConversions
 
   implicit def toSQLQuery(sqlQuery: String): SQLQuery = SQLQuery(sqlQuery)
+
+  implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+    Source.fromIterator(() => list.iterator)
 
   override def beforeAll(): Unit = {
     super.beforeAll()
@@ -209,7 +213,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     ) shouldBe false
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping")
-    val result = pClient.bulk[String](persons.iterator, identity, idKey = Some("uuid")).get
+    val result = pClient.bulk[String](persons, identity, idKey = Some("uuid")).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -284,7 +288,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     "person_migration" should beCreated()
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_migration")
-    val result = pClient.bulk[String](persons.iterator, identity, idKey = Some("uuid")).get
+    val result = pClient
+      .bulk[String](Source.fromIterator(() => persons.iterator), identity, idKey = Some("uuid"))
+      .get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -365,7 +371,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Bulk index valid json without id key and suffix key" should "work" in {
     implicit val bulkOptions: BulkOptions =
       BulkOptions("person1", "person", 2) // small chunk size to test multiple bulk requests
-    val result = pClient.bulk[String](persons.iterator, identity).get
+    val result = pClient.bulk[String](persons, identity).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -387,7 +393,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   "Bulk index valid json with an id key but no suffix key" should "work" in {
     implicit val bulkOptions: BulkOptions = BulkOptions("person2")
-    val result = pClient.bulk[String](persons.iterator, identity, idKey = Some("uuid")).get
+    val result = pClient.bulk[String](persons, identity, idKey = Some("uuid")).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -422,7 +428,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          persons.iterator,
+          persons,
           identity,
           idKey = Some("uuid"),
           suffixDateKey = Some("birthDate")
@@ -462,7 +468,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     implicit val bulkOptions: BulkOptions = BulkOptions("person_error")
     intercept[JsonParseException] {
       val invalidJson = persons :+ "fail"
-      pClient.bulk[String](invalidJson.iterator, identity).get
+      pClient.bulk[String](invalidJson, identity).get
     }
   }
 
@@ -471,7 +477,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)
@@ -510,7 +516,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     implicit val bulkOptions: BulkOptions = BulkOptions("person5")
     val result = pClient
       .bulk[String](
-        personsWithUpsert.iterator,
+        personsWithUpsert,
         identity,
         idKey = Some("uuid"),
         suffixDateKey = Some("birthDate"),
@@ -552,7 +558,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)
@@ -588,7 +594,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)
@@ -635,7 +641,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)
@@ -663,7 +669,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)
@@ -875,7 +881,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val result =
       pClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)
@@ -1144,7 +1150,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val bulkResult =
       parentClient
         .bulk[String](
-          personsWithUpsert.iterator,
+          personsWithUpsert,
           identity,
           idKey = Some("uuid"),
           update = Some(true)

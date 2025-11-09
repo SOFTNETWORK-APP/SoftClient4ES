@@ -14,7 +14,7 @@ The **DeleteApi** trait provides functionality to delete documents from Elastics
 - Safe deletion with existence checking
 
 **Dependencies:**
-- Requires `RefreshApi` for automatic refresh after deletion
+- Requires `SettingsApi` to check if index refresh is enabled
 
 ---
 

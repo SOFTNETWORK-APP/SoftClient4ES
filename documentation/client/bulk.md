@@ -32,15 +32,15 @@ The **BulkApi** trait provides high-performance bulk operations for Elasticsearc
 
 ```scala
 // Data flow pipeline
-Iterator[D]
+Source[D, NotUsed]
   -> Transform to JSON
   -> Create BulkItem
   -> Apply settings (refresh, replicas)
   -> Group into batches
-  -> Execute bulk requests (parallel)
+  -> Execute bulk requests in parallel
   -> Extract results
   -> Retry failures (automatic)
-  -> Return Either[Failed, Success]
+  -> Return Either[FailedDocument, SuccessfulDocument]
 ```
 
 ### Operation Types
@@ -87,11 +87,10 @@ case class BulkOptions(
 )
 
 // Usage
-implicit val bulkOptions = BulkOptions(
+implicit val bulkOptions: BulkOptions = BulkOptions(
   defaultIndex =  "products",
   maxBulkSize = 5000,
-  balance = 8,
-  retryOnFailure = true
+  balance = 8
 )
 ```
 
@@ -131,7 +130,7 @@ Executes bulk operations with detailed success/failure reporting and metrics.
 
 ```scala
 def bulkWithResult[D](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   toDocument: D => String,
   indexKey: Option[String] = None,
   idKey: Option[String] = None,
@@ -145,7 +144,7 @@ def bulkWithResult[D](
 ```
 
 **Parameters:**
-- `items` - Iterator of documents to process
+- `items` - Source of documents to process
 - `toDocument` - Function to convert document to JSON string
 - `indexKey` - Optional field name containing index name
 - `idKey` - Optional field name containing document ID
@@ -215,7 +214,7 @@ implicit val bulkOptions: BulkOptions = BulkOptions(
 case class Product(id: String, name: String, price: Double, category: String)
 
 // Basic bulk indexing
-val products: Iterator[Product] = getProducts() // Large dataset
+val products: Source[Product, NotUsed] = getProducts() // Large dataset
 
 val toJson: Product => String = product => s"""
 {
@@ -280,11 +279,16 @@ client.bulkWithResult(
 }
 
 // Bulk delete
-val idsToDelete: Iterator[String] = getObsoleteProductIds()
+val obsoleteProducts: Source[Product, NotUsed] = client.scrollAs[Product](
+  """
+    |SELECT uuid AS id, name, price, category, outdated AS obsolete FROM products WHERE outdated = true
+    |""".stripMargin
+)
+val idsToDelete: Source[String, NotUsed] = obsoleteProducts.map(_._1.id)
 
 client.bulkWithResult(
-  items = idsToDelete.map(id => Map("id" -> id)),
-  toDocument = doc => s"""{"id": "${doc("id")}"}""",
+  items = idsToDelete,
+  toDocument = id => s"""{"id": "$id"}""",
   idKey = Some("id"),
   delete = Some(true)
 )
@@ -292,7 +296,7 @@ client.bulkWithResult(
 // Date-based index suffixing
 case class LogEntry(id: String, message: String, timestamp: String)
 
-val logs: Iterator[LogEntry] = getLogEntries()
+val logs: Source[LogEntry, NotUsed] = getLogEntries()
 
 client.bulkWithResult(
   items = logs,
@@ -360,7 +364,7 @@ Returns an Akka Streams Source that emits real-time results for each document.
 
 ```scala
 def bulkSource[D](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   toDocument: D => String,
   idKey: Option[String] = None,
   suffixDateKey: Option[String] = None,
@@ -506,7 +510,7 @@ Legacy synchronous bulk method. **Use `bulkWithResult` instead.**
 ```scala
 @deprecated("Use bulkWithResult for better error handling")
 def bulk[D](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   toDocument: D => String,
   idKey: Option[String] = None,
   suffixDateKey: Option[String] = None,
@@ -701,7 +705,7 @@ case class LogEntry(
   message: String
 )
 
-val logs: Iterator[LogEntry] = streamLogs()
+val logs: Source[LogEntry, NotUsed] = streamLogs()
 
 implicit val logOptions: BulkOptions = BulkOptions(
   defaultIndex = "logs",            // Base index
@@ -731,7 +735,7 @@ client.bulkWithResult(
 ```scala
 case class ProductUpdate(id: String, price: Double, stock: Int)
 
-val updates: Iterator[ProductUpdate] = getProductUpdates()
+val updates: Source[ProductUpdate, NotUsed] = getProductUpdates()
 
 client.bulkWithResult(
   items = updates,
@@ -752,11 +756,11 @@ client.bulkWithResult(
 ### Batch Deletion
 
 ```scala
-val obsoleteIds: Iterator[String] = findObsoleteDocuments()
+val obsoleteIds: Source[String, NotUsed] = findObsoleteDocuments()
 
 client.bulkWithResult(
-  items = obsoleteIds.map(id => Map("id" -> id)),
-  toDocument = doc => s"""{"id": "${doc("id")}"}""",
+  items = obsoleteIds,
+  toDocument = id => s"""{"id": "$id"}""",
   idKey = Some("id"),
   delete = Some(true)
 ).foreach { result =>
@@ -955,23 +959,23 @@ client.bulkSource(
 
 ```scala
 // ✅ Good - balanced batch size
-implicit val options = BulkOptions(
+implicit val options: BulkOptions = BulkOptions(
   defaultIndex = "products",
   maxBulkSize = 1000  // Good for most use cases
 )
 
 // ❌ Too small - overhead
-implicit val tooSmall = BulkOptions(maxBulkSize = 10)
+implicit val tooSmall: BulkOptions = BulkOptions(maxBulkSize = 10)
 
 // ❌ Too large - memory issues
-implicit val tooLarge = BulkOptions(maxBulkSize = 100000)
+implicit val tooLarge: BulkOptions = BulkOptions(maxBulkSize = 100000)
 ```
 
 **2. Disable Refresh for Large Bulks**
 
 ```scala
 // ✅ Good - disable refresh during bulk
-implicit val options = BulkOptions(
+implicit val options: BulkOptions = BulkOptions(
   defaultIndex = "products",
   disableRefresh = true
 )
@@ -1021,13 +1025,13 @@ client.bulkWithResult(items, toJson, Some("id"), callbacks = callbacks)
 
 ```scala
 // Small cluster (1-3 nodes)
-implicit val smallCluster = BulkOptions(balance = 2)
+implicit val smallCluster: BulkOptions = BulkOptions(balance = 2)
 
 // Medium cluster (4-10 nodes)
-implicit val mediumCluster = BulkOptions(balance = 4)
+implicit val mediumCluster: BulkOptions = BulkOptions(balance = 4)
 
 // Large cluster (10+ nodes)
-implicit val largeCluster = BulkOptions(balance = 8)
+implicit val largeCluster: BulkOptions = BulkOptions(balance = 8)
 ```
 
 ---
@@ -1280,7 +1284,7 @@ def testPerformanceMetrics()(implicit system: ActorSystem): Future[Unit] = {
 ```scala
 case class Document(id: String, index: String, data: String)
 
-val multiIndexDocs: Iterator[Document] = getDocuments()
+val multiIndexDocs: Source[Document, NotUsed] = getDocuments()
 
 // Custom transformation to handle multiple indices
 client.bulkWithResult(
@@ -1307,7 +1311,7 @@ client.bulkWithResult(
 
 ```scala
 def bulkWithCondition[D](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   toDocument: D => String,
   condition: D => Boolean
 )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
@@ -1333,7 +1337,7 @@ bulkWithCondition(
 
 ```scala
 def bulkWithTransformation[D, T](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   transform: D => T,
   toDocument: T => String
 )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
@@ -1377,7 +1381,7 @@ bulkWithTransformation(
 
 ```scala
 def bulkWithExternalEnrichment[D](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   enrichmentApi: D => Future[D],
   toDocument: D => String
 )(implicit 
@@ -1407,7 +1411,7 @@ def bulkWithExternalEnrichment[D](
 
 ```scala
 def bulkWithDeduplication[D](
-  items: Iterator[D],
+  items: Source[D, NotUsed],
   getId: D => String,
   toDocument: D => String
 )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
@@ -1441,20 +1445,20 @@ def bulkWithDeduplication[D](
 
 ```scala
 // Problem: Large batches causing OOM
-implicit val problematic = BulkOptions(maxBulkSize = 100000)
+implicit val problematic: BulkOptions = BulkOptions(maxBulkSize = 100000)
 
 // Solution: Reduce batch size
-implicit val fixed = BulkOptions(maxBulkSize = 1000)
+implicit val fixed: BulkOptions = BulkOptions(maxBulkSize = 1000)
 ```
 
 **2. Slow Performance**
 
 ```scala
 // Problem: Sequential processing
-implicit val slow = BulkOptions(balance = 1)
+implicit val slow: BulkOptions = BulkOptions(balance = 1)
 
 // Solution: Increase parallelism
-implicit val fast = BulkOptions(
+implicit val fast: BulkOptions = BulkOptions(
   balance = 8,
   maxBulkSize = 5000,
   disableRefresh = true
@@ -1465,7 +1469,7 @@ implicit val fast = BulkOptions(
 
 ```scala
 // Problem: Retrying non-retryable errors
-implicit val wasteful = BulkOptions(
+implicit val wasteful: BulkOptions = BulkOptions(
   retryOnFailure = true,
   maxRetries = 10
 )
@@ -1484,10 +1488,10 @@ result.foreach { r =>
 
 ```scala
 // Problem: Slow indexing due to frequent refresh
-implicit val slow = BulkOptions(disableRefresh = false)
+implicit val slow: BulkOptions = BulkOptions(disableRefresh = false)
 
 // Solution: Disable refresh during bulk, refresh once at end
-implicit val fast = BulkOptions(disableRefresh = true)
+implicit val fast: BulkOptions = BulkOptions(disableRefresh = true)
 
 client.bulkWithResult(items, toJson, Some("id")).foreach { result =>
   result.indices.foreach(client.refresh)  // Manual refresh
@@ -1541,7 +1545,7 @@ client.bulkWithResult(
 
 ```scala
 // High-performance bulk indexing
-implicit val options = BulkOptions(
+implicit val options: BulkOptions = BulkOptions(
   defaultIndex = "products",
   maxBulkSize = 5000,
   balance = 8,
