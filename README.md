@@ -252,6 +252,219 @@ val sqlQuery = """
 val results = client.search(SQLQuery(sqlQuery))
 ```
 
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "bool": {
+            "filter": [
+              {
+                "exists": {
+                  "field": "firstName"
+                }
+              },
+              {
+                "exists": {
+                  "field": "lastName"
+                }
+              },
+              {
+                "exists": {
+                  "field": "description"
+                }
+              },
+              {
+                "range": {
+                  "preparationTime": {
+                    "lte": 120
+                  }
+                }
+              },
+              {
+                "term": {
+                  "deliveryPeriods.dayOfWeek": {
+                    "value": 6
+                  }
+                }
+              },
+              {
+                "bool": {
+                  "must_not": [
+                    {
+                      "regexp": {
+                        "blockedCustomers": {
+                          "value": ".*uuid.*"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "bool": {
+                  "must_not": [
+                    {
+                      "term": {
+                        "receiptOfOrdersDisabled": {
+                          "value": true
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "bool": {
+                  "should": [
+                    {
+                      "geo_distance": {
+                        "distance": "7000m",
+                        "pickup.location": [
+                          0.0,
+                          0.0
+                        ]
+                      }
+                    },
+                    {
+                      "geo_distance": {
+                        "distance": "7000m",
+                        "withdrawals.location": [
+                          0.0,
+                          0.0
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "size": 0,
+  "min_score": 1.0,
+  "_source": true,
+  "aggs": {
+    "inner_products": {
+      "nested": {
+        "path": "products"
+      },
+      "aggs": {
+        "filtered_inner_products": {
+          "filter": {
+            "bool": {
+              "filter": [
+                {
+                  "bool": {
+                    "must_not": [
+                      {
+                        "term": {
+                          "products.category": {
+                            "value": "coffee"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "match_all": {}
+                },
+                {
+                  "match_all": {}
+                },
+                {
+                  "bool": {
+                    "should": [
+                      {
+                        "match": {
+                          "products.name": {
+                            "query": "lasagnes"
+                          }
+                        }
+                      },
+                      {
+                        "match": {
+                          "products.description": {
+                            "query": "lasagnes"
+                          }
+                        }
+                      },
+                      {
+                        "match": {
+                          "products.ingredients": {
+                            "query": "lasagnes"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "range": {
+                    "products.stock": {
+                      "gt": 0
+                    }
+                  }
+                },
+                {
+                  "term": {
+                    "products.upForSale": {
+                      "value": true
+                    }
+                  }
+                },
+                {
+                  "term": {
+                    "products.deleted": {
+                      "value": false
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "aggs": {
+            "cat": {
+              "terms": {
+                "field": "products.category.keyword"
+              },
+              "aggs": {
+                "min_price": {
+                  "min": {
+                    "field": "products.price"
+                  }
+                },
+                "max_price": {
+                  "max": {
+                    "field": "products.price"
+                  }
+                },
+                "having_filter": {
+                  "bucket_selector": {
+                    "buckets_path": {
+                      "min_price": "inner_products>min_price",
+                      "max_price": "inner_products>max_price"
+                    },
+                    "script": {
+                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 📖 **[Full SQL Documentation](documentation/sql/README.md)**
 
 ---

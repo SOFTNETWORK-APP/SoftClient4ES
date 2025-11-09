@@ -585,8 +585,8 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
     )(
       transformer = resp =>
         resp.getResult match {
-          case DocWriteResponse.Result.CREATED |
-              DocWriteResponse.Result.UPDATED | DocWriteResponse.Result.NOOP =>
+          case DocWriteResponse.Result.CREATED | DocWriteResponse.Result.UPDATED |
+              DocWriteResponse.Result.NOOP =>
             true
           case DocWriteResponse.Result.NOT_FOUND =>
             throw new IOException(
@@ -619,8 +619,8 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
     )(
       transformer = resp =>
         resp.getResult match {
-          case DocWriteResponse.Result.CREATED |
-              DocWriteResponse.Result.UPDATED | DocWriteResponse.Result.NOOP =>
+          case DocWriteResponse.Result.CREATED | DocWriteResponse.Result.UPDATED |
+              DocWriteResponse.Result.NOOP =>
             true
           case DocWriteResponse.Result.NOT_FOUND =>
             throw new IOException(
