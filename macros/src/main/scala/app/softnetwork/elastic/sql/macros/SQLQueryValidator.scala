@@ -42,6 +42,12 @@ trait SQLQueryValidator {
     // 1. Extract the SQL query (must be a literal)
     val sqlQuery = extractSQLString(c)(query)
 
+    // ✅ Check if already validated
+    if (SQLQueryValidator.isCached(sqlQuery)) {
+      debug(c)(s"✅ Query already validated (cached): $sqlQuery")
+      return sqlQuery
+    }
+
     if (sys.props.get("elastic.sql.debug").contains("true")) {
       c.info(c.enclosingPosition, s"Validating SQL: $sqlQuery", force = false)
     }
@@ -75,6 +81,9 @@ trait SQLQueryValidator {
     debug(c)("=" * 80)
 
     // 8. Return the validated request
+    // ✅ Mark as validated
+    SQLQueryValidator.markValidated(sqlQuery)
+
     sqlQuery
   }
 
@@ -167,10 +176,11 @@ trait SQLQueryValidator {
   // ============================================================
   // Reject SELECT * (incompatible with compile-time validation)
   // ============================================================
-  private def rejectSelectStar(c: blackbox.Context)(
+  private def rejectSelectStar[T: c.WeakTypeTag](c: blackbox.Context)(
     parsedQuery: SQLSearchRequest,
     sqlQuery: String
   ): Unit = {
+    import c.universe._
 
     // Check if any field is a wildcard (*)
     val hasWildcard = parsedQuery.select.fields.exists { field =>
@@ -178,6 +188,10 @@ trait SQLQueryValidator {
     }
 
     if (hasWildcard) {
+      val tpe = weakTypeOf[T]
+      val requiredFields = getRequiredFields(c)(tpe)
+      val fieldNames = requiredFields.keys.mkString(", ")
+
       c.abort(
         c.enclosingPosition,
         s"""❌ SELECT * is not allowed with compile-time validation.
@@ -190,11 +204,11 @@ trait SQLQueryValidator {
            |  • Schema changes will break silently at runtime
            |
            |Solution:
-           |  1. Explicitly list all required fields:
-           |     SELECT id, name, price FROM products
+           |  1. Explicitly list all required fields for ${tpe.typeSymbol.name}:
+           |     SELECT $fieldNames FROM ...
            |
            |  2. Use the *Unchecked() variant for dynamic queries:
-           |     searchAsUnchecked[Product](SQLQuery("SELECT * FROM products"))
+           |     searchAsUnchecked[${tpe.typeSymbol.name}](SQLQuery("SELECT * FROM ..."))
            |
            |Best Practice:
            |  Always explicitly select only the fields you need.
@@ -278,12 +292,16 @@ trait SQLQueryValidator {
     */
   private def extractQueryFields(parsedQuery: SQLSearchRequest): Set[String] = {
     parsedQuery.select.fields.flatMap { field =>
-      val f = field.fieldAlias.map(_.alias).getOrElse(field.identifier.name)
-      /*field.identifier.nestedElement match {
-        case Some(nested) => List(f, nested.innerHitsName)
-        case None         => List(f)
-      }*/
-      List(f)
+      val fieldName = field.fieldAlias.map(_.alias).getOrElse(field.identifier.name)
+
+      // ✅ Manage nested fields (ex: "children.name" → "children", "children.name")
+      val nestedParts = fieldName.split("\\.").toList
+
+      // Return all levels of nested fields
+      // Ex: "children.address.city" → ["children", "children.address", "children.address.city"]
+      nestedParts.indices.map { i =>
+        nestedParts.take(i + 1).mkString(".")
+      }
     }.toSet
   }
 
@@ -408,74 +426,63 @@ trait SQLQueryValidator {
   ): Boolean = {
     import c.universe._
 
+    val underlyingType = if (scalaType <:< typeOf[Option[_]]) {
+      scalaType.typeArgs.headOption.getOrElse(scalaType)
+    } else {
+      scalaType
+    }
+
     sqlType match {
       case SQLTypes.TinyInt =>
-        scalaType =:= typeOf[Byte] ||
-          scalaType =:= typeOf[Short] ||
-          scalaType =:= typeOf[Int] ||
-          scalaType =:= typeOf[Long] ||
-          scalaType =:= typeOf[Option[Byte]] ||
-          scalaType =:= typeOf[Option[Short]] ||
-          scalaType =:= typeOf[Option[Int]] ||
-          scalaType =:= typeOf[Option[Long]]
+        underlyingType =:= typeOf[Byte] ||
+          underlyingType =:= typeOf[Short] ||
+          underlyingType =:= typeOf[Int] ||
+          underlyingType =:= typeOf[Long]
 
       case SQLTypes.SmallInt =>
-        scalaType =:= typeOf[Short] ||
-          scalaType =:= typeOf[Int] ||
-          scalaType =:= typeOf[Long] ||
-          scalaType =:= typeOf[Option[Short]] ||
-          scalaType =:= typeOf[Option[Int]] ||
-          scalaType =:= typeOf[Option[Long]]
+        underlyingType =:= typeOf[Short] ||
+          underlyingType =:= typeOf[Int] ||
+          underlyingType =:= typeOf[Long]
 
       case SQLTypes.Int =>
-        scalaType =:= typeOf[Int] ||
-          scalaType =:= typeOf[Long] ||
-          scalaType =:= typeOf[Option[Int]] ||
-          scalaType =:= typeOf[Option[Long]]
+        underlyingType =:= typeOf[Int] ||
+          underlyingType =:= typeOf[Long]
 
       case SQLTypes.BigInt =>
-        scalaType =:= typeOf[Long] ||
-          scalaType =:= typeOf[BigInt] ||
-          scalaType =:= typeOf[Option[Long]] ||
-          scalaType =:= typeOf[Option[BigInt]]
+        underlyingType =:= typeOf[Long] ||
+          underlyingType =:= typeOf[BigInt]
 
       case SQLTypes.Double | SQLTypes.Real =>
-        scalaType =:= typeOf[Double] ||
-          scalaType =:= typeOf[Float] ||
-          scalaType =:= typeOf[Option[Double]] ||
-          scalaType =:= typeOf[Option[Float]]
+        underlyingType =:= typeOf[Double] ||
+          underlyingType =:= typeOf[Float]
 
       case SQLTypes.Char =>
-        scalaType =:= typeOf[String] || // CHAR(n) → String
-          scalaType =:= typeOf[Char] || // CHAR(1) → Char
-          scalaType =:= typeOf[Option[String]] ||
-          scalaType =:= typeOf[Option[Char]]
+        underlyingType =:= typeOf[String] || // CHAR(n) → String
+          underlyingType =:= typeOf[Char] // CHAR(1) → Char
 
       case SQLTypes.Varchar =>
-        scalaType =:= typeOf[String] ||
-          scalaType =:= typeOf[Option[String]]
+        underlyingType =:= typeOf[String]
 
       case SQLTypes.Boolean =>
-        scalaType =:= typeOf[Boolean] ||
-          scalaType =:= typeOf[Option[Boolean]]
+        underlyingType =:= typeOf[Boolean]
 
       case SQLTypes.Time =>
-        scalaType.toString.contains("Instant") ||
-          scalaType.toString.contains("LocalTime")
+        underlyingType.toString.contains("Instant") ||
+          underlyingType.toString.contains("LocalTime")
 
       case SQLTypes.Date =>
-        scalaType.toString.contains("Date") ||
-          scalaType.toString.contains("Instant") ||
-          scalaType.toString.contains("LocalDate")
+        underlyingType.toString.contains("Date") ||
+          underlyingType.toString.contains("Instant") ||
+          underlyingType.toString.contains("LocalDate")
 
       case SQLTypes.DateTime | SQLTypes.Timestamp =>
-        scalaType.toString.contains("LocalDateTime") ||
-          scalaType.toString.contains("ZonedDateTime") ||
-          scalaType.toString.contains("Instant")
+        underlyingType.toString.contains("LocalDateTime") ||
+          underlyingType.toString.contains("ZonedDateTime") ||
+          underlyingType.toString.contains("Instant")
 
       case SQLTypes.Struct =>
-        if (scalaType.typeSymbol.isClass && scalaType.typeSymbol.asClass.isCaseClass) {
-          // validateStructFields(c)(sqlField, scalaType)
+        if (underlyingType.typeSymbol.isClass && underlyingType.typeSymbol.asClass.isCaseClass) {
+          // TODO validateStructFields(c)(sqlField, underlyingType)
           true
         } else {
           false
@@ -555,4 +562,9 @@ trait SQLQueryValidator {
 
 object SQLQueryValidator {
   val DEBUG: Boolean = sys.props.get("sql.macro.debug").contains("true")
+  // ✅ Cache pour éviter les validations redondantes
+  private val validationCache = scala.collection.mutable.Map[String, Boolean]()
+
+  private def isCached(sql: String): Boolean = validationCache.contains(sql.trim)
+  private def markValidated(sql: String): Unit = validationCache(sql.trim) = true
 }
