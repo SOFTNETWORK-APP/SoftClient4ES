@@ -37,10 +37,10 @@ trait SQLQueryValidator {
     query: c.Expr[String]
   ): String = {
 
-    c.echo(c.enclosingPosition, "🚀 MACRO IS BEING CALLED!")
+    debug(c)("🚀 MACRO IS BEING CALLED!")
 
     // 1. Extract the SQL query (must be a literal)
-    val sqlQuery = extractStringLiteral(c)(query)
+    val sqlQuery = extractSQLString(c)(query)
 
     if (sys.props.get("elastic.sql.debug").contains("true")) {
       c.info(c.enclosingPosition, s"Validating SQL: $sqlQuery", force = false)
@@ -57,18 +57,22 @@ trait SQLQueryValidator {
     // 3. Extract the selected fields
     val queryFields = extractQueryFields(parsedQuery)
 
-    c.echo(c.enclosingPosition, s"🔍 Parsed fields: ${queryFields.mkString(", ")}")
+    debug(c)(s"🔍 Parsed fields: ${queryFields.mkString(", ")}")
 
     // 4. Extract the fields from case class T
     val tpe = c.weakTypeOf[T]
     val caseClassFields = extractCaseClassFields(c)(tpe)
-    c.echo(c.enclosingPosition, s"📦 Case class fields: ${caseClassFields.mkString(", ")}")
+    debug(c)(s"📦 Case class fields: ${caseClassFields.mkString(", ")}")
 
     // 5. Validate: missing case class fields must have defaults or be Option
     validateMissingFieldsHaveDefaults(c)(queryFields, caseClassFields, tpe)
 
     // 7. Validate the types
     validateTypes(c)(parsedQuery, caseClassFields)
+
+    debug(c)("=" * 80)
+    debug(c)("✅ SQL Query Validation Complete")
+    debug(c)("=" * 80)
 
     // 8. Return the validated request
     sqlQuery
@@ -78,23 +82,96 @@ trait SQLQueryValidator {
   // Helper Methods
   // ============================================================
 
-  private def extractStringLiteral(c: blackbox.Context)(
-    query: c.Expr[String]
-  ): String = {
+  /** Extracts SQL string from various tree structures. Supports: literals, .stripMargin, and simple
+    * expressions.
+    */
+  protected def extractSQLString(c: blackbox.Context)(query: c.Expr[String]): String = {
     import c.universe._
 
-    query.tree match {
-      case Literal(Constant(sql: String)) =>
-        c.echo(c.enclosingPosition, s"📝 Query: $sql")
-        sql
-      case other =>
-        c.echo(c.enclosingPosition, s"❌ Not a literal: ${showRaw(other)}")
+    debug(c)("=" * 80)
+    debug(c)("🔍 Starting SQL Query Validation")
+    debug(c)("=" * 80)
+
+    val sqlString =
+      (query match {
+        // Case 1: Direct string literal
+        // Example: "SELECT * FROM table"
+        case Literal(Constant(sql: String)) =>
+          debug(c)("📝 Detected: Direct string literal")
+          Some(sql)
+
+        // Case 2: String with .stripMargin
+        // Example: """SELECT * FROM table""".stripMargin
+        case Select(Literal(Constant(sql: String)), TermName("stripMargin")) =>
+          debug(c)("📝 Detected: String with .stripMargin")
+          Some(sql.stripMargin)
+
+        // Case 3: Try to evaluate as compile-time constant
+        case _ =>
+          debug(c)(s"⚠️  Attempting to evaluate: ${showCode(query.tree)}")
+          try {
+            val evaluated = c.eval(c.Expr[String](c.untypecheck(query.tree.duplicate)))
+            debug(c)(s"✅ Successfully evaluated to: $evaluated")
+            Some(evaluated)
+          } catch {
+            case e: Throwable =>
+              debug(c)(s"❌ Could not evaluate: ${e.getMessage}")
+              None
+          }
+      }).getOrElse {
         c.abort(
           c.enclosingPosition,
-          "❌ SQL query must be a string literal for compile-time validation. " +
-          "Use the *Unchecked() variant for dynamic queries."
+          s"""❌ SQL query must be a compile-time constant for validation.
+           |
+           |Found: ${showCode(query.tree)}
+           |Tree structure: ${showRaw(query.tree)}
+           |
+           |✅ Valid usage:
+           |  scrollAs[Product]("SELECT id, name FROM products")
+           |  scrollAs[Product](\"\"\"SELECT id, name FROM products\"\"\".stripMargin)
+           |
+           |❌ For dynamic queries, use:
+           |  scrollAsUnchecked[Product](SQLQuery(dynamicSql), ScrollConfig())
+           |
+           |""".stripMargin
         )
+      }
+
+    debug(c)(s"📝 Extracted SQL: $sqlString")
+
+    sqlString
+  }
+
+  /** Validates the SQL query structure against the type T.
+    */
+  protected def validateQueryStructure[T: c.WeakTypeTag](c: blackbox.Context)(
+    sql: String
+  ): Unit = {
+    import c.universe._
+
+    val tpe = weakTypeOf[T]
+
+    debug(c)(s"🔍 Validating query for type: ${tpe.typeSymbol.name}")
+
+    // Example validations (customize as needed)
+
+    // 1. Check for SELECT *
+    if (sql.matches("(?i).*SELECT\\s+\\*.*")) {
+      c.abort(
+        c.enclosingPosition,
+        s"""❌ SELECT * is not allowed for type-safe queries.
+           |
+           |Please explicitly list all fields required for type ${tpe.typeSymbol.name}.
+           |""".stripMargin
+      )
     }
+
+    // 2. Additional validations...
+    // - Check field names against type T
+    // - Validate JOIN syntax
+    // - etc.
+
+    debug(c)(s"✅ Query structure valid for ${tpe.typeSymbol.name}")
   }
 
   private def parseSQLQuery(c: blackbox.Context)(sqlQuery: String): SQLSearchRequest = {
@@ -154,7 +231,7 @@ trait SQLQueryValidator {
       )
     }
 
-    c.echo(c.enclosingPosition, "✅ No SELECT * detected")
+    debug(c)("✅ No SELECT * detected")
   }
 
   private def extractQueryFields(parsedQuery: SQLSearchRequest): Set[String] = {
@@ -203,7 +280,7 @@ trait SQLQueryValidator {
       )
     }
 
-    c.echo(c.enclosingPosition, "✅ All query fields exist in case class")
+    debug(c)("✅ All query fields exist in case class")
   }
 
   // ============================================================
@@ -219,11 +296,11 @@ trait SQLQueryValidator {
     val missingFields = caseClassFields.keySet -- queryFields
 
     if (missingFields.isEmpty) {
-      c.echo(c.enclosingPosition, "✅ No missing fields to validate")
+      debug(c)("✅ No missing fields to validate")
       return
     }
 
-    c.echo(c.enclosingPosition, s"⚠️  Missing fields: ${missingFields.mkString(", ")}")
+    debug(c)(s"⚠️  Missing fields: ${missingFields.mkString(", ")}")
 
     // Get constructor parameters with their positions
     val constructor = tpe.decl(termNames.CONSTRUCTOR).asMethod
@@ -255,17 +332,17 @@ trait SQLQueryValidator {
       fieldInfo.get(fieldName) match {
         case Some((_, hasDefault, isOption)) =>
           if (isOption) {
-            c.echo(c.enclosingPosition, s"✅ Field '$fieldName' is Option - OK")
+            debug(c)(s"✅ Field '$fieldName' is Option - OK")
             true
           } else if (hasDefault) {
-            c.echo(c.enclosingPosition, s"✅ Field '$fieldName' has default value - OK")
+            debug(c)(s"✅ Field '$fieldName' has default value - OK")
             true
           } else {
-            c.echo(c.enclosingPosition, s"❌ Field '$fieldName' has NO default and is NOT Option")
+            debug(c)(s"❌ Field '$fieldName' has NO default and is NOT Option")
             false
           }
         case None =>
-          c.echo(c.enclosingPosition, s"⚠️  Field '$fieldName' not found in constructor")
+          debug(c)(s"⚠️  Field '$fieldName' not found in constructor")
           false
       }
     }
@@ -284,7 +361,7 @@ trait SQLQueryValidator {
       )
     }
 
-    c.echo(c.enclosingPosition, "✅ All missing fields have defaults or are Option")
+    debug(c)("✅ All missing fields have defaults or are Option")
   }
 
   // Helper: Get the index of a field in the case class constructor
@@ -325,7 +402,7 @@ trait SQLQueryValidator {
       }
     }
 
-    c.echo(c.enclosingPosition, "✅ Type validation passed")
+    debug(c)("✅ Type validation passed")
   }
 
   private def areTypesCompatible(c: blackbox.Context)(
@@ -459,4 +536,14 @@ trait SQLQueryValidator {
 
     dist(s2.length)(s1.length)
   }
+
+  protected def debug(c: blackbox.Context)(msg: String): Unit = {
+    if (SQLQueryValidator.DEBUG) {
+      debug(c)(msg)
+    }
+  }
+}
+
+object SQLQueryValidator {
+  val DEBUG: Boolean = sys.props.get("sql.macro.debug").contains("true")
 }

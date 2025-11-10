@@ -32,21 +32,21 @@ object SQLQueryMacros extends SQLQueryValidator {
   )(
     m: c.Expr[Manifest[T]],
     formats: c.Expr[Formats]
-  ): c.Expr[Seq[T]] = {
+  ): c.Tree = {
     import c.universe._
 
-    c.echo(c.enclosingPosition, "=" * 60)
-    c.echo(c.enclosingPosition, "🚀🚀🚀 MACRO searchAsImpl CALLED 🚀🚀🚀")
-    c.echo(c.enclosingPosition, "=" * 60)
-
-    val tpe = weakTypeOf[T]
+    // 1. Validate the SQL query at compile-time
     val validatedQuery = validateSQLQuery[T](c)(query)
 
-    c.Expr[Seq[T]](q"""
+    // 2. Get the type parameter
+    val tpe = weakTypeOf[T]
+
+    // 3. Generate the call to searchAsUnchecked
+    q"""
       ${c.prefix}.searchAsUnchecked[$tpe](
-        SQLQuery($validatedQuery)
+        _root_.app.softnetwork.elastic.sql.query.SQLQuery($validatedQuery)
       )($m, $formats)
-    """)
+    """
   }
 
   // ============================================================
@@ -54,26 +54,26 @@ object SQLQueryMacros extends SQLQueryValidator {
   // ============================================================
 
   def searchAsyncAsImpl[U: c.WeakTypeTag](c: blackbox.Context)(
-    sqlQuery: c.Expr[String]
+    query: c.Expr[String]
   )(
     m: c.Expr[Any],
     ec: c.Expr[Any],
     formats: c.Expr[Formats]
-  ): c.Expr[Any] = {
+  ): c.Tree = {
     import c.universe._
 
-    c.echo(c.enclosingPosition, "=" * 60)
-    c.echo(c.enclosingPosition, "🚀🚀🚀 MACRO searchAsyncAsImpl CALLED 🚀🚀🚀")
-    c.echo(c.enclosingPosition, "=" * 60)
+    // 1. Validate the SQL query at compile-time
+    val validatedQuery = validateSQLQuery[U](c)(query)
 
+    // 2. Get the type parameter
     val tpe = weakTypeOf[U]
-    val validatedQuery = validateSQLQuery[U](c)(sqlQuery)
 
-    c.Expr[Any](q"""
+    // 3. Generate the call to searchAsUnchecked
+    q"""
       ${c.prefix}.searchAsyncAsUnchecked[$tpe](
-        SQLQuery($validatedQuery)
+        _root_.app.softnetwork.elastic.sql.query.SQLQuery($validatedQuery)
       )($m, $ec, $formats)
-    """)
+    """
   }
 
   // ============================================================
@@ -87,21 +87,21 @@ object SQLQueryMacros extends SQLQueryValidator {
     system: c.Expr[Any],
     m: c.Expr[Any],
     formats: c.Expr[Formats]
-  ): c.Expr[Any] = {
+  ): c.Tree = {
     import c.universe._
 
-    val tpe = weakTypeOf[T]
+    // 1. Validate the SQL query at compile-time
     val validatedQuery = validateSQLQuery[T](c)(sql)
 
-    c.echo(c.enclosingPosition, "=" * 60)
-    c.echo(c.enclosingPosition, "🚀🚀🚀 MACRO scrollAsImpl CALLED 🚀🚀🚀")
-    c.echo(c.enclosingPosition, "=" * 60)
+    // 2. Get the type parameter
+    val tpe = weakTypeOf[T]
 
-    c.Expr[Any](q"""
+    // 3. Generate the call to searchAsUnchecked
+    q"""
       ${c.prefix}.scrollAsUnchecked[$tpe](
-        SQLQuery($validatedQuery),
+        _root_.app.softnetwork.elastic.sql.query.SQLQuery($validatedQuery),
         $config
       )($system, $m, $formats)
-    """)
+    """
   }
 }

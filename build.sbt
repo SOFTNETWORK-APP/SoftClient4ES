@@ -158,7 +158,11 @@ lazy val core = project
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
-    moduleSettings
+    moduleSettings,
+    scalacOptions ++= Seq(
+      "-language:experimental.macros",
+      "-Ymacro-debug-lite"
+    )
   )
   .dependsOn(
     macros % "compile->compile;test->test;it->it"
@@ -213,6 +217,10 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       Defaults.itSettings,
       app.softnetwork.Info.infoSettings,
       moduleSettings,
+      scalacOptions ++= Seq(
+        "-language:experimental.macros",
+        "-Ymacro-debug-lite"
+      ),
       elasticSearchVersion := esVersion,
       buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
       buildInfoObject := "SoftClient4esCoreTestkitBuildInfo",
