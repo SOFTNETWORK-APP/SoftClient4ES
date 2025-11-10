@@ -1206,13 +1206,20 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         | p.uuid,
         | p.name,
         | p.birthDate,
-        | p.children
+        | children.name,
+        | children.birthDate,
+        | children.parentId
         | FROM
         | parent as p
+        | JOIN UNNEST(p.children) as children
+        |WHERE
+        | children.name is not null
         |""".stripMargin
     )
     parents match {
-      case ElasticSuccess(ps) => ps.size shouldBe 3
+      case ElasticSuccess(ps) =>
+        ps.size shouldBe 1
+        ps.head.children.size shouldBe 2
       case ElasticFailure(error) =>
         error.cause match {
           case Some(cause) => log.error("Error during search", cause)

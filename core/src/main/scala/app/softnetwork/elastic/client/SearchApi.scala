@@ -969,14 +969,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val results = ElasticResult.fromTry(convertTo[U](response))
     results
       .fold(
-        onFailure = error =>
+        onFailure = error => {
+          logger.error(
+            s"❌ Conversion to entities failed: ${error.message} with query \n${response.query}\n and results:\n ${response.results}"
+          )
           ElasticResult.failure(
             ElasticError(
               message = s"Failed to convert search results to ${m.runtimeClass.getSimpleName}",
               cause = error.cause,
               operation = Some("convertToEntities")
             )
-          ),
+          )
+        },
         onSuccess = entities => ElasticResult.success(entities)
       )
   }
