@@ -424,9 +424,6 @@ trait SQLQueryValidator {
                  |   FROM ...
                  |   JOIN UNNEST(....$fullFieldName) AS $fieldName
                  |
-                 |✅ Solution 3: Make the nested object optional (if it's not always needed)
-                 |   case class ${tpe.typeSymbol.name}(..., $fieldName: Option[${fieldType.typeSymbol.name}] = None)
-                 |
                  |📚 Note: This applies to ALL nested objects, not just collections.
                  |""".stripMargin
             )
@@ -518,9 +515,6 @@ trait SQLQueryValidator {
                |   SELECT ${selectedNestedFields.mkString(", ")}
                |   FROM ...
                |   JOIN UNNEST(....$fullFieldName) AS $fieldName
-               |
-               |✅ Solution 3: Make the collection optional (if it's not always needed)
-               |   case class ${parentType.typeSymbol.name}(..., $fieldName: Option[List[${elementType.typeSymbol.name}]] = None)
                |
                |📚 Documentation:
                |   https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html

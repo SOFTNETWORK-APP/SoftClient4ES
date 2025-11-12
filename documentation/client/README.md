@@ -3,7 +3,6 @@
 Welcome to the Client Engine Documentation. Navigate through the sections below:
 
 - [Client Common Principles](common_principles.md)
-- [SQL Query Validation](sql_validation.md)
 - [Version Information](version.md)
 - [Flush Index](flush.md)
 - [Refresh Index](refresh.md)
