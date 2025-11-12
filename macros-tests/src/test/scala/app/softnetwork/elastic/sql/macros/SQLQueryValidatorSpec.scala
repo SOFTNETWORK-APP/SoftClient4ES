@@ -167,7 +167,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       case class WrongTypes(id: Int, name: Int)
 
       TestElasticClientApi.searchAs[WrongTypes](
-        "SELECT id::LONG, name FROM products"
+        "SELECT id::BIGINT, name FROM products"
       )""")
   }
 

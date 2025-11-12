@@ -72,11 +72,17 @@ trait SQLQueryValidator {
 
     debug(c)(s"🔍 Unnested collections: ${unnestedCollections.mkString(", ")}")
 
-    // ✅ Recursive validation of required fields
-    validateRequiredFieldsRecursively(c)(tpe, queryFields, unnestedCollections, prefix = "")
-
     // ✅ Recursive validation of unknown fields
-    validateUnknownFieldsRecursively(c)(tpe, queryFields, prefix = "")
+    val unknownFields = validateUnknownFieldsRecursively(c)(tpe, queryFields, prefix = "")
+
+    // ✅ Recursive validation of required fields
+    validateRequiredFieldsRecursively(c)(
+      tpe,
+      queryFields,
+      unknownFields,
+      unnestedCollections,
+      prefix = ""
+    )
 
     // ✅ Extract required fields from the case class
     val requiredFields = getRequiredFields(c)(tpe)
@@ -338,6 +344,7 @@ trait SQLQueryValidator {
   )(
     tpe: c.universe.Type,
     queryFields: Set[String],
+    unknownFields: Set[String],
     unnestedCollections: Set[String],
     prefix: String
   ): Unit = {
@@ -383,6 +390,7 @@ trait SQLQueryValidator {
             fieldName,
             fieldType,
             queryFields,
+            unknownFields,
             unnestedCollections,
             tpe
           )
@@ -428,6 +436,7 @@ trait SQLQueryValidator {
           validateRequiredFieldsRecursively(c)(
             fieldType,
             queryFields,
+            unknownFields,
             unnestedCollections,
             fullFieldName
           )
@@ -439,9 +448,11 @@ trait SQLQueryValidator {
         // ❌ Required field is not selected at all
         debug(c)(s"❌ Field '$fullFieldName' is missing")
 
-        val exampleFields = (queryFields + fullFieldName).mkString(", ")
-        val suggestions = findClosestMatch(fieldName, queryFields.map(_.split("\\.").last).toSeq)
-        val suggestionMsg = suggestions.map(s => s"\nDid you mean: $s?").getOrElse("")
+        val exampleFields = ((queryFields -- unknownFields) + fullFieldName).mkString(", ")
+        val suggestions = findClosestMatch(fieldName, unknownFields.map(_.split("\\.").last).toSeq)
+        val suggestionMsg = suggestions
+          .map(s => s"\nYou have selected unknown field \"$s\", did you mean \"$fullFieldName\"?")
+          .getOrElse("")
 
         c.abort(
           c.enclosingPosition,
@@ -471,6 +482,7 @@ trait SQLQueryValidator {
     fieldName: String,
     fieldType: c.universe.Type,
     queryFields: Set[String],
+    unknownFields: Set[String],
     unnestedCollections: Set[String],
     parentType: c.universe.Type
   ): Unit = {
@@ -526,6 +538,7 @@ trait SQLQueryValidator {
           validateRequiredFieldsRecursively(c)(
             elementType,
             queryFields,
+            unknownFields,
             unnestedCollections,
             fullFieldName
           )
@@ -575,7 +588,7 @@ trait SQLQueryValidator {
     tpe: c.universe.Type,
     queryFields: Set[String],
     prefix: String
-  ): Unit = {
+  ): Set[String] = {
 
     // ✅ Get all valid field paths at this level and below
     val validFieldPaths = buildValidFieldPaths(c)(tpe, prefix)
@@ -601,6 +614,8 @@ trait SQLQueryValidator {
            |""".stripMargin
       )
     }
+
+    unknownFields
   }
 
   // ============================================================
