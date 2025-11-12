@@ -27,11 +27,13 @@ import app.softnetwork.elastic.client.scroll.{
   UseScroll,
   UseSearchAfter
 }
+import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery}
 import org.json4s.{Formats, JNothing}
 import org.json4s.jackson.JsonMethods.parse
 
 import scala.concurrent.{ExecutionContext, Promise}
+import scala.language.experimental.macros
 import scala.util.{Failure, Success}
 
 /** API for scrolling through search results using Akka Streams.
@@ -167,9 +169,57 @@ trait ScrollApi extends ElasticClientHelpers {
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
 
-  /** Typed scroll source
+  /** Typed scroll source converting results into typed entities from an SQL query
+    *
+    * @note
+    *   This method provides compile-time SQL validation via macros.
+    *
+    * @param sql
+    *   - SQL query
+    * @param config
+    *   - Scroll configuration
+    * @param system
+    *   - Actor system
+    * @param m
+    *   - Manifest for type T
+    * @param formats
+    *   - JSON formats
+    * @tparam T
+    *   - Target type
+    * @return
+    *   - Source of tuples (T, ScrollMetrics)
     */
   def scrollAs[T](
+    sql: String,
+    config: ScrollConfig = ScrollConfig()
+  )(implicit
+    system: ActorSystem,
+    m: Manifest[T],
+    formats: Formats
+  ): Source[(T, ScrollMetrics), NotUsed] =
+    macro SQLQueryMacros.scrollAsImpl[T]
+
+  /** Scroll and convert results into typed entities from an SQL query.
+    *
+    * @note
+    *   This method is a variant of scrollAs without compile-time SQL validation.
+    *
+    * @param sql
+    *   - SQL query
+    * @param config
+    *   - Scroll configuration
+    * @param system
+    *   - Actor system
+    * @param m
+    *   - Manifest for type T
+    * @param formats
+    *   - JSON formats
+    * @tparam T
+    *   - Target type
+    * @return
+    *   - Source of tuples (T, ScrollMetrics)
+    */
+  def scrollAsUnchecked[T](
     sql: SQLQuery,
     config: ScrollConfig = ScrollConfig()
   )(implicit

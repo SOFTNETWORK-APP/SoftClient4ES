@@ -3,6 +3,7 @@
 Welcome to the SQL Engine Documentation. Navigate through the sections below:
 
 - [Query Structure](request_structure.md)
+- [Query Validation](validation.md)
 - [Operators](operators.md)
 - [Operator Precedence](operator_precedence.md)
 - [Aggregate Functions](functions_aggregate.md)

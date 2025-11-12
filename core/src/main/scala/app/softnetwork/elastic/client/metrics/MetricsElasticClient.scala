@@ -663,14 +663,17 @@ class MetricsElasticClient(
     * @return
     *   the entities matching the query
     */
-  override def searchAs[U](
+  override def searchAsUnchecked[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("searchAs") {
-      delegate.searchAs[U](sqlQuery)
+      delegate.searchAsUnchecked[U](sqlQuery)
     }
 
   /** Asynchronous search with conversion to typed entities.
+    *
+    * @note
+    *   This method is a variant of searchAsyncAs without compile-time SQL validation.
     *
     * @param sqlQuery
     *   the SQL query
@@ -679,13 +682,13 @@ class MetricsElasticClient(
     * @return
     *   a Future containing the entities
     */
-  override def searchAsyncAs[U](sqlQuery: SQLQuery)(implicit
+  override def searchAsyncAsUnchecked[U](sqlQuery: SQLQuery)(implicit
     m: Manifest[U],
     ec: ExecutionContext,
     formats: Formats
   ): Future[ElasticResult[Seq[U]]] =
     measureAsync("searchAsyncAs") {
-      delegate.searchAsyncAs[U](sqlQuery)
+      delegate.searchAsyncAsUnchecked[U](sqlQuery)
     }
 
   override def singleSearch(
@@ -900,16 +903,33 @@ class MetricsElasticClient(
 
   }
 
-  /** Typed scroll source
+  /** Scroll and convert results into typed entities from an SQL query.
+    *
+    * @note
+    *   This method is a variant of scrollAs without compile-time SQL validation.
+    * @param sql
+    *   - SQL query
+    * @param config
+    *   - Scroll configuration
+    * @param system
+    *   - Actor system
+    * @param m
+    *   - Manifest for type T
+    * @param formats
+    *   - JSON formats
+    * @tparam T
+    *   - Target type
+    * @return
+    *   - Source of tuples (T, ScrollMetrics)
     */
-  override def scrollAs[T](sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scrollAsUnchecked[T](sql: SQLQuery, config: ScrollConfig)(implicit
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats
   ): Source[(T, ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
-    val source = delegate.scrollAs[T](sql, config)
+    val source = delegate.scrollAsUnchecked[T](sql, config)
 
     source.watchTermination() { (_, done) =>
       done.onComplete { result =>

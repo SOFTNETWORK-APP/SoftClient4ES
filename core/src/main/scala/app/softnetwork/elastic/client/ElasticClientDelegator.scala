@@ -521,9 +521,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   true if the entity was indexed successfully, false otherwise
     */
   override def index(
-    index: JSONResults,
-    id: JSONResults,
-    source: JSONResults,
+    index: String,
+    id: String,
+    source: String,
     wait: Boolean = false
   ): ElasticResult[Boolean] =
     delegate.index(index, id, source, wait)
@@ -990,9 +990,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   the entities matching the query
     */
-  override def searchAs[U](
+  override def searchAsUnchecked[U](
     sqlQuery: SQLQuery
-  )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] = delegate.searchAs(sqlQuery)
+  )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
+    delegate.searchAsUnchecked(sqlQuery)
 
   /** Searches and converts results into typed entities.
     *
@@ -1036,6 +1037,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   /** Asynchronous search with conversion to typed entities.
     *
+    * @note
+    *   This method is a variant of searchAsyncAs without compile-time SQL validation.
+    *
     * @param sqlQuery
     *   the SQL query
     * @tparam U
@@ -1043,11 +1047,12 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the entities
     */
-  override def searchAsyncAs[U](sqlQuery: SQLQuery)(implicit
+  override def searchAsyncAsUnchecked[U](sqlQuery: SQLQuery)(implicit
     m: Manifest[U],
     ec: ExecutionContext,
     formats: Formats
-  ): Future[ElasticResult[Seq[U]]] = delegate.searchAsyncAs(sqlQuery)
+  ): Future[ElasticResult[Seq[U]]] =
+    delegate.searchAsyncAsUnchecked(sqlQuery)
 
   /** Asynchronous search with conversion to typed entities.
     *
@@ -1150,13 +1155,32 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     system: ActorSystem
   ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(sql, config)
 
-  /** Typed scroll source
+  /** Scroll and convert results into typed entities from an SQL query.
+    *
+    * @note
+    *   This method is a variant of scrollAs without compile-time SQL validation.
+    *
+    * @param sql
+    *   - SQL query
+    * @param config
+    *   - Scroll configuration
+    * @param system
+    *   - Actor system
+    * @param m
+    *   - Manifest for type T
+    * @param formats
+    *   - JSON formats
+    * @tparam T
+    *   - Target type
+    * @return
+    *   - Source of tuples (T, ScrollMetrics)
     */
-  override def scrollAs[T](sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scrollAsUnchecked[T](sql: SQLQuery, config: ScrollConfig)(implicit
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats
-  ): Source[(T, ScrollMetrics), NotUsed] = delegate.scrollAs(sql, config)
+  ): Source[(T, ScrollMetrics), NotUsed] =
+    delegate.scrollAsUnchecked(sql, config)
 
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,

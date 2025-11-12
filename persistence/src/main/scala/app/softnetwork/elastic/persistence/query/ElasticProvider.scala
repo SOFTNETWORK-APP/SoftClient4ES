@@ -188,7 +188,7 @@ trait ElasticProvider[T <: Timestamped]
   override def searchDocuments(
     query: String
   )(implicit m: Manifest[T], formats: Formats): List[T] = {
-    searchAs[T](SQLQuery(query)) match {
+    searchAsUnchecked[T](SQLQuery(query)) match {
       case ElasticSuccess(results) => results.toList
       case ElasticFailure(elasticError) =>
         logger.error(s"searchDocuments failed -> ${elasticError.message}")

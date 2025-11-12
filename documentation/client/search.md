@@ -14,10 +14,12 @@
   - [singleSearchAsync](#singlesearchasync)
   - [multiSearchAsync](#multisearchasync)
 - [Search with Type Conversion](#search-with-type-conversion)
+  - [searchAsUnchecked](#searchasunchecked)
   - [searchAs](#searchas)
   - [singleSearchAs](#singlesearchas)
   - [multisearchAs](#multisearchas)
 - [Asynchronous Search with Type Conversion](#asynchronous-search-with-type-conversion)
+  - [searchAsyncAsUnchecked](#searchasyncasunchecked)
   - [searchAsyncAs](#searchasyncas)
   - [singleSearchAsyncAs](#singlesearchasyncas)
   - [multiSearchAsyncAs](#multisearchasyncas)
@@ -611,7 +613,7 @@ client.multiSearchAsync(queries, Map.empty, Map.empty).foreach {
 
 ## Search with Type Conversion
 
-### searchAs
+### searchAsUnchecked
 
 Searches and automatically converts results to typed entities using an SQL query.
 
@@ -703,6 +705,29 @@ val result: ElasticResult[List[EnrichedProduct]] = for {
   enriched = products.map(enrichProduct)
 } yield enriched.toList
 ```
+
+---
+
+### searchAs
+
+Searches and automatically converts results to typed entities using an SQL query [validated at compile-time](../sql/validation.md).
+
+**Signature:**
+
+```scala
+def searchAs[U](
+  query: String
+)(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]]
+```
+
+**Parameters:**
+- `query` - SQL query
+- `m` - Implicit Manifest for type information
+- `formats` - Implicit JSON serialization formats
+
+**Returns:**
+- `ElasticSuccess[Seq[U]]` with typed entities
+- `ElasticFailure` with conversion or search errors
 
 ---
 
@@ -818,7 +843,7 @@ client.multisearchAs[Product](queries, Map.empty, Map.empty) match {
 
 ## Asynchronous Search with Type Conversion
 
-### searchAsyncAs
+### searchAsyncAsUnchecked
 
 Asynchronously searches and converts results to typed entities.
 
@@ -879,6 +904,23 @@ Future.sequence(futures).map { results =>
     case ElasticFailure(error) => println(s"❌ Failed: ${error.message}")
   }
 }
+```
+---
+
+### searchAsyncAs
+
+Asynchronously searches and converts results to typed entities using an SQL query [validated at compile-time](../sql/validation.md).
+
+**Signature:**
+
+```scala
+def searchAsyncAs[U](
+  query: String
+)(implicit
+  m: Manifest[U],
+  ec: ExecutionContext,
+  formats: Formats
+): Future[ElasticResult[Seq[U]]]
 ```
 
 ---

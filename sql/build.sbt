@@ -1,4 +1,5 @@
-import SoftClient4es._
+import SoftClient4es.*
+import sbt.Keys.scalaVersion
 
 organization := "app.softnetwork.elastic"
 
@@ -17,7 +18,7 @@ libraryDependencies ++= jacksonDependencies(elasticSearchVersion.value) ++
     "javax.activation" % "activation" % "1.1.1" % Test
   ) :+
 //  ("app.softnetwork.persistence" %% "persistence-core" % Versions.genericPersistence excludeAll(jacksonExclusions: _*)) :+
-  "org.scala-lang" % "scala-reflect" % "2.13.16" :+
+  "org.scala-lang" % "scala-reflect" % scalaVersion.value :+
   "com.google.code.gson" % "gson" % Versions.gson % Test
 
 

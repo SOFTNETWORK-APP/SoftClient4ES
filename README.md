@@ -99,7 +99,7 @@ val searchResult = client.search(SQLQuery("SELECT * FROM users WHERE age > 25"))
 case class Product(id: String, name: String, price: Double, category: String, obsolete: Boolean)
 
 // Scroll through large datasets
-val obsoleteProducts: Source[Product, NotUsed] = client.scrollAs[Product](
+val obsoleteProducts: Source[Product, NotUsed] = client.scrollAsUnchecked[Product](
   """
     |SELECT uuid AS id, name, price, category, outdated AS obsolete FROM products WHERE outdated = true
     |""".stripMargin
@@ -179,7 +179,9 @@ result match {
 
 ---
 
-### **3. SQL to Elasticsearch Query Translation**
+### **3. SQL compatible **
+
+### **3.1 SQL to Elasticsearch Query DSL**
 
 SoftClient4ES includes a powerful SQL parser that translates standard SQL `SELECT` queries into native Elasticsearch queries.
 
@@ -464,6 +466,125 @@ val results = client.search(SQLQuery(sqlQuery))
   }
 }
 ```
+---
+
+### **3.2. Compile-Time SQL Query Validation**
+
+SoftClient4ES provides **compile-time validation** for SQL queries used with type-safe methods like `searchAs[T]` and `scrollAs[T]`. This ensures that your queries are compatible with your Scala case classes **before your code even runs**, preventing runtime deserialization errors.
+
+#### **Why Compile-Time Validation?**
+
+- ✅ **Catch Errors Early**: Detect missing fields, typos, and type mismatches at compile-time
+- ✅ **Type Safety**: Ensure SQL queries match your domain models
+- ✅ **Better Developer Experience**: Get helpful error messages with suggestions
+- ✅ **Prevent Runtime Failures**: No more Jackson deserialization exceptions in production
+
+#### **Validated Operations**
+
+| Validation             | Description                                            | Level      |
+|------------------------|--------------------------------------------------------|------------|
+| **SELECT * Rejection** | Prohibits `SELECT *` to ensure compile-time validation | ❌ ERROR    |
+| **Required Fields**    | Verifies that all required fields are selected         | ❌ ERROR    |
+| **Unknown Fields**     | Detects fields that don't exist in the case class      | ⚠️ WARNING |
+| **Nested Objects**     | Validates the structure of nested objects              | ❌ ERROR    |
+| **Nested Collections** | Validates the use of UNNEST for collections            | ❌ ERROR    |
+| **Type Compatibility** | Checks compatibility between SQL and Scala types       | ❌ ERROR    |
+
+#### **Example 1: Missing Required Field with Nested Object**
+
+```scala
+case class Address(
+  street: String,
+  city: String,
+  country: String
+)
+
+case class User(
+  id: String,
+  name: String,
+  address: Address  // ❌ Required nested object
+)
+
+// ❌ COMPILE ERROR: Missing required field 'address'
+client.searchAs[User]("SELECT id, name FROM users")
+```
+
+**Compile Error:**
+
+```
+❌ SQL query does not select the required field: address
+
+Example query:
+SELECT id, name, address FROM ...
+
+To fix this, either:
+  1. Add it to the SELECT clause
+  2. Make it Option[T] in the case class
+  3. Provide a default value in the case class definition
+```
+
+**✅ Solution:**
+
+```scala
+// Option 1: Select the entire nested object (recommended)
+client.searchAs[User]("SELECT id, name, address FROM users")
+
+// Option 2: Make the field optional
+case class User(
+  id: String,
+  name: String,
+  address: Option[Address] = None
+)
+client.searchAs[User]("SELECT id, name FROM users")
+```
+
+#### **Example 2: Typo Detection with Smart Suggestions**
+
+```scala
+case class Product(
+  id: String,
+  name: String,
+  price: Double,
+  stock: Int
+)
+
+// ❌ COMPILE ERROR: Typo in 'name' -> 'nam'
+client.searchAs[Product]("SELECT id, nam, price, stock FROM products")
+```
+
+**Compile Error:**
+```
+❌ SQL query does not select the required field: name
+You have selected unknown field "nam", did you mean "name"?
+
+Example query:
+SELECT id, price, stock, name FROM ...
+
+To fix this, either:
+  1. Add it to the SELECT clause
+  2. Make it Option[T] in the case class
+  3. Provide a default value in the case class definition
+```
+
+**✅ Solution:**
+```scala
+// Fix the typo
+client.searchAs[Product]("SELECT id, name, price, stock FROM products")
+```
+
+#### **Dynamic Queries (Skip Validation)**
+
+For dynamic SQL queries where validation isn't possible, use the `*Unchecked` variants:
+
+```scala
+val dynamicQuery = buildQueryAtRuntime()
+
+// ✅ Skip compile-time validation for dynamic queries
+client.searchAsUnchecked[Product](SQLQuery(dynamicQuery))
+client.scrollAsUnchecked[Product](dynamicQuery)
+```
+
+📖 **[Full SQL Validation Documentation](documentation/sql/validation.md)**
 
 📖 **[Full SQL Documentation](documentation/sql/README.md)**
 

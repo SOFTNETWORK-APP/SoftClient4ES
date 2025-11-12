@@ -19,7 +19,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.11.0"
+ThisBuild / version := "0.12.0"
 
 ThisBuild / scalaVersion := scala213
 
@@ -103,8 +103,54 @@ lazy val sql = project
   .in(file("sql"))
   .configs(IntegrationTest)
   .settings(
+    Defaults.itSettings
+  )
+
+lazy val macros = project
+  .in(file("macros"))
+  .configs(IntegrationTest)
+  .settings(
+    name := "softclient4es-macros",
+
+    libraryDependencies ++= Seq(
+      "org.scala-lang" % "scala-reflect" % scalaVersion.value,
+      "org.json4s" %% "json4s-native" % Versions.json4s
+    ),
     Defaults.itSettings,
-    moduleSettings
+    moduleSettings,
+    scalacOptions ++= Seq(
+      "-language:experimental.macros",
+      "-Ymacro-annotations",
+      "-Ymacro-debug-lite",              // Debug macros
+      "-Xlog-implicits"                  // Debug implicits
+    )
+  )
+  .dependsOn(sql)
+
+lazy val macrosTests = project
+  .in(file("macros-tests"))
+  .configs(IntegrationTest)
+  .settings(
+    name := "softclient4es-macros-tests",
+    Publish.noPublishSettings,
+
+    libraryDependencies ++= Seq(
+      "org.scalatest" %% "scalatest" % Versions.scalatest % Test
+    ),
+
+    Defaults.itSettings,
+    moduleSettings,
+
+    scalacOptions ++= Seq(
+      "-language:experimental.macros",
+      "-Ymacro-debug-lite"
+    ),
+
+    Test / scalacOptions += "-Xlog-free-terms"
+  )
+  .dependsOn(
+    macros % "compile->compile",
+    sql % "compile->compile"
   )
 
 lazy val core = project
@@ -112,10 +158,14 @@ lazy val core = project
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
-    moduleSettings
+    moduleSettings,
+    scalacOptions ++= Seq(
+      "-language:experimental.macros",
+      "-Ymacro-debug-lite"
+    )
   )
   .dependsOn(
-    sql % "compile->compile;test->test;it->it"
+    macros % "compile->compile;test->test;it->it"
   )
 
 lazy val persistence = project
@@ -167,6 +217,10 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       Defaults.itSettings,
       app.softnetwork.Info.infoSettings,
       moduleSettings,
+      scalacOptions ++= Seq(
+        "-language:experimental.macros",
+        "-Ymacro-debug-lite"
+      ),
       elasticSearchVersion := esVersion,
       buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
       buildInfoObject := "SoftClient4esCoreTestkitBuildInfo",
@@ -432,6 +486,8 @@ lazy val root = project
   )
   .aggregate(
     sql,
+    macros,
+    macrosTests,
     bridge,
     core,
     persistence,

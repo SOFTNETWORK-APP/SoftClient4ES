@@ -90,7 +90,7 @@ def scroll(
 )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed]
 
 // Typed scroll source (automatic deserialization)
-def scrollAs[T](
+def scrollAsUnchecked[T](
   sql: SQLQuery,
   config: ScrollConfig = ScrollConfig()
 )(implicit
@@ -394,7 +394,7 @@ val query = SQLQuery(
 )
 
 // Scroll with automatic type conversion
-client.scrollAs[Product](query).runWith(Sink.foreach { case (product, metrics) =>
+client.scrollAsUnchecked[Product](query).runWith(Sink.foreach { case (product, metrics) =>
   println(s"Product: ${product.name} - $${product.price}")
   println(s"Progress: ${metrics.totalDocuments} products")
 })
@@ -407,7 +407,7 @@ client.scrollAs[Product](query).runWith(Sink.foreach { case (product, metrics) =
 ```scala
 // Collect all products
 val allProducts: Future[Seq[Product]] = 
-  client.scrollAs[Product](query)
+  client.scrollAsUnchecked[Product](query)
     .map(_._1) // Extract product, discard metrics
     .runWith(Sink.seq)
 
@@ -425,7 +425,7 @@ allProducts.foreach { products =>
 
 ```scala
 // Filter expensive products during streaming
-client.scrollAs[Product](query)
+client.scrollAsUnchecked[Product](query)
   .filter { case (product, _) => product.price > 500 }
   .map(_._1) // Extract product
   .runWith(Sink.seq)
@@ -444,7 +444,7 @@ client.scrollAs[Product](query)
 ```scala
 case class ProductSummary(name: String, value: Double)
 
-client.scrollAs[Product](query)
+client.scrollAsUnchecked[Product](query)
   .map { case (product, _) =>
     ProductSummary(
       name = product.name,
@@ -457,6 +457,34 @@ client.scrollAs[Product](query)
     println(f"Total inventory value: $$${totalValue}%,.2f")
   }
 ```
+
+### Validating Query at compile-time
+
+```scala
+val query = 
+  """
+    SELECT id, name, price, category, stock
+    FROM products
+    WHERE category = 'electronics'
+  """
+
+client.scrollAs[Product](query)
+  .map { case (product, _) =>
+    ProductSummary(
+      name = product.name,
+      value = product.price * product.stock
+    )
+  }
+  .runWith(Sink.seq)
+  .foreach { summaries =>
+    val totalValue = summaries.map(_.value).sum
+    println(f"Total inventory value: $$${totalValue}%,.2f")
+  }
+)
+
+```
+
+📖 **[Full SQL Validation Documentation](../sql/validation.md)**
 
 ---
 
@@ -807,7 +835,7 @@ def commitBatch(size: Int): Future[Unit] = {
 case class RawProduct(id: String, name: String, price: Double)
 case class EnrichedProduct(id: String, name: String, price: Double, category: String, tags: Seq[String])
 
-client.scrollAs[RawProduct](query)
+client.scrollAsUnchecked[RawProduct](query)
   .mapAsync(parallelism = 4) { case (raw, _) =>
     // Enrich each product
     enrichProduct(raw)
@@ -904,7 +932,7 @@ case class Statistics(
   )
 }
 
-client.scrollAs[Product](query)
+client.scrollAsUnchecked[Product](query)
   .map(_._1.price) // Extract prices
   .fold(Statistics())(_ update _)
   .runWith(Sink.head)
@@ -922,7 +950,7 @@ client.scrollAs[Product](query)
 ### Conditional Processing
 
 ```scala
-client.scrollAs[Product](query)
+client.scrollAsUnchecked[Product](query)
   .mapAsync(parallelism = 4) { case (product, _) =>
     product.category match {
       case "electronics" => processElectronics(product)
@@ -1003,7 +1031,7 @@ class ScrollApiSpec extends AsyncFlatSpec with Matchers {
     
     // Test
     query = SQLQuery(query = s"SELECT id, value FROM $testIndex")
-    results <- client.scrollAs[TestDoc](query).map(_._1).runWith(Sink.seq)
+    results <- client.scrollAsUnchecked[TestDoc](query).map(_._1).runWith(Sink.seq)
     
     // Assertions
     _ = {
@@ -1259,7 +1287,7 @@ client.scroll(query).map { case (doc, _) =>
 
 // ✅ GOOD: Automatic type conversion
 implicit val formats: Formats = DefaultFormats
-client.scrollAs[Product](query)
+client.scrollAsUnchecked[Product](query)
   .map(_._1)
   .runWith(Sink.seq)
 ```
@@ -1556,7 +1584,7 @@ case class ValidationResult(
 )
 
 def validateData(query: SQLQuery): Future[ValidationResult] = {
-  client.scrollAs[Product](query)
+  client.scrollAsUnchecked[Product](query)
     .map(_._1)
     .runWith(Sink.fold(ValidationResult(0, 0, Seq.empty)) { (result, product) =>
       if (isValid(product)) {
@@ -1598,7 +1626,7 @@ case class CategoryStats(
 )
 
 def aggregateByCategory(query: SQLQuery): Future[Map[String, CategoryStats]] = {
-  client.scrollAs[Product](query)
+  client.scrollAsUnchecked[Product](query)
     .map(_._1)
     .runWith(Sink.fold(Map.empty[String, CategoryStats]) { (stats, product) =>
       val current = stats.getOrElse(
@@ -1645,7 +1673,7 @@ case class EnrichedOrder(
 )
 
 def transformOrders(query: SQLQuery): Future[Seq[EnrichedOrder]] = {
-  client.scrollAs[RawOrder](query)
+  client.scrollAsUnchecked[RawOrder](query)
     .map(_._1)
     .mapAsync(parallelism = 4) { order =>
       // Enrich with customer data

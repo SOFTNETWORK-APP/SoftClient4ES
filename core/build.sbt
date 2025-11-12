@@ -32,4 +32,6 @@ val mockito = Seq(
 
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
 json4s ++ mockito :+ "com.google.code.gson" % "gson" % Versions.gson :+
-  "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging
+  "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
+  "org.scalatest" %% "scalatest" % Versions.scalatest  % Test
+

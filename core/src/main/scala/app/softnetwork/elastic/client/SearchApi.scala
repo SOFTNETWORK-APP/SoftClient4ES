@@ -22,12 +22,14 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
+import scala.language.experimental.macros
 import scala.reflect.{classTag, ClassTag}
 import scala.util.{Failure, Success, Try}
 
@@ -400,7 +402,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Searches and converts results into typed entities from an SQL query.
     *
-    * @param sqlQuery
+    * @note
+    *   This method uses compile-time macros to validate the SQL query against the type U.
+    *
+    * @param query
     *   the SQL query containing fieldAliases and aggregations
     * @tparam U
     *   the type of entities to return
@@ -408,6 +413,23 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   the entities matching the query
     */
   def searchAs[U](
+    query: String
+  )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
+    macro SQLQueryMacros.searchAsImpl[U]
+
+  /** Searches and converts results into typed entities from an SQL query.
+    *
+    * @note
+    *   This method is a variant of searchAs without compile-time SQL validation.
+    *
+    * @param sqlQuery
+    *   the SQL query containing fieldAliases and aggregations
+    * @tparam U
+    *   the type of entities to return
+    * @return
+    *   the entities matching the query
+    */
+  def searchAsUnchecked[U](
     sqlQuery: SQLQuery
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] = {
     for {
@@ -473,7 +495,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Asynchronous search with conversion to typed entities.
     *
-    * @param sqlQuery
+    * @note
+    *   This method uses compile-time macros to validate the SQL query against the type U.
+    *
+    * @param query
     *   the SQL query
     * @tparam U
     *   the type of entities to return
@@ -481,6 +506,27 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   a Future containing the entities
     */
   def searchAsyncAs[U](
+    query: String
+  )(implicit
+    m: Manifest[U],
+    ec: ExecutionContext,
+    formats: Formats
+  ): Future[ElasticResult[Seq[U]]] =
+    macro SQLQueryMacros.searchAsyncAsImpl[U]
+
+  /** Asynchronous search with conversion to typed entities.
+    *
+    * @note
+    *   This method is a variant of searchAsyncAs without compile-time SQL validation.
+    *
+    * @param sqlQuery
+    *   the SQL query
+    * @tparam U
+    *   the type of entities to return
+    * @return
+    *   a Future containing the entities
+    */
+  def searchAsyncAsUnchecked[U](
     sqlQuery: SQLQuery
   )(implicit
     m: Manifest[U],
@@ -923,14 +969,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val results = ElasticResult.fromTry(convertTo[U](response))
     results
       .fold(
-        onFailure = error =>
+        onFailure = error => {
+          logger.error(
+            s"❌ Conversion to entities failed: ${error.message} with query \n${response.query}\n and results:\n ${response.results}"
+          )
           ElasticResult.failure(
             ElasticError(
               message = s"Failed to convert search results to ${m.runtimeClass.getSimpleName}",
               cause = error.cause,
               operation = Some("convertToEntities")
             )
-          ),
+          )
+        },
         onSuccess = entities => ElasticResult.success(entities)
       )
   }

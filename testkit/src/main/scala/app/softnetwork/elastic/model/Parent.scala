@@ -25,7 +25,7 @@ case class Parent(
   uuid: String,
   name: String,
   birthDate: LocalDate,
-  children: Seq[Child] = Seq.empty[Child]
+  children: Seq[Child]
 ) extends Timestamped {
   def addChild(child: Child): Parent = copy(children = children :+ child)
   lazy val createdDate: Instant = Instant.now()
