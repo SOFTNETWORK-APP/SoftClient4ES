@@ -179,7 +179,7 @@ result match {
 
 ---
 
-### **3. SQL compatible **
+### **3. SQL compatible**
 
 ### **3.1 SQL to Elasticsearch Query DSL**
 

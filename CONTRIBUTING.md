@@ -147,16 +147,10 @@ softclient4es/
 │   │           └── client/        # Unit tests
 │   └── build.sbt
 │
-├── persistence/                   # Akka persistence integration module
-│   ├── src/
-│   │   ├── main/scala/
-│   │   │   └── app/softnetwork/elastic/persistence/
-│   │   │       ├── query/        # Event Processor Stream
-│   │   │       └── typed/        
-│   │   └── test/scala/
-│   │       └── app/softnetwork/elastic/
-│   │           └── client/        # Unit tests
-│   └── build.sbt
+├── documentation/                 # Project documentation
+│   ├── client/
+│   ├── sql/
+│   └── best-practices.md
 │
 ├── es6/jest/                      # Jest Client (Elasticsearch 6.x)
 │   ├── src/
@@ -194,6 +188,33 @@ softclient4es/
 │   │           └── persistence/   # Java Client Persistence tests
 │   └── build.sbt
 │
+├── macros/                        # SQL validation module
+│   └──  src/
+│      └── main/scala/
+│          └── app/softnetwork/elastic/sq/macros
+│
+├── macros-tests/                  # SQL validation tests
+│   └──  test/
+│      └── main/scala/
+│          └── app/softnetwork/elastic/sq/macros
+│
+├── persistence/                   # Akka persistence integration module
+│   ├── src/
+│   │   ├── main/scala/
+│   │   │   └── app/softnetwork/elastic/persistence/
+│   │   │       ├── query/        # Event Processor Stream
+│   │   │       └── typed/        
+│   │   └── test/scala/
+│   │       └── app/softnetwork/elastic/
+│   │           └── client/        # Unit tests
+│   └── build.sbt
+│
+├── project/                       # sbt build configuration
+│   ├── build.properties
+│   ├── plugins.sbt
+│   ├── SoftClient4es.scala
+│   └── Versions.scala
+│
 ├── sql/                           # SQL translation module
 │   ├── src/
 │   │   ├── main/scala/
@@ -212,17 +233,6 @@ softclient4es/
 │   │           └── scalatest/     # Testkit utilities
 │   └── build.sbt
 │
-├── documentation/                 # Project documentation
-│   ├── client/
-│   ├── sql/
-│   └── best-practices.md
-│
-├── project/                       # sbt build configuration
-│   ├── build.properties
-│   ├── plugins.sbt
-│   ├── SoftClient4es.scala
-│   └── Versions.scala
-│
 ├── .scalafmt.conf                 # Scalafmt configuration
 ├── .gitignore
 ├── build.sbt                      # Root build configuration
@@ -238,7 +248,8 @@ softclient4es/
 |---------------|---------------------------------------------|-----------------------------------|
 | `sql`         | SQL Parser                                  | Gson                              |
 | `bridge`      | SQL to Elasticsearch DSL translation        | sql, Elastic4s                    |
-| `core`        | Core abstractions, interfaces, and models   | sql, Akka Streams, config         |
+| `macros`      | SQL Query type-safe validation              | sql                               |
+| `core`        | Core abstractions, interfaces, and models   | macros, Akka Streams, config      |
 | `persistence` | Akka persistence integration                | core, Akka persistence            |
 | `jest`        | Elasticsearch 6.x client implementation     | core, Jest client                 |
 | `rest`        | Elasticsearch 7.x client implementation     | core, REST High-Level client      |
@@ -1130,8 +1141,8 @@ Thank you for contributing to SoftClient4ES! Your contributions help make this p
 
 ---
 
-**Last Updated:** 2025-11-07  
-**Version:** 0.11.0
+**Last Updated:** 2025-11-12  
+**Version:** 0.12.0
 
 ---
 
