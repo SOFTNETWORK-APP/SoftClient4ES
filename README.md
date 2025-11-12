@@ -99,7 +99,7 @@ val searchResult = client.search(SQLQuery("SELECT * FROM users WHERE age > 25"))
 case class Product(id: String, name: String, price: Double, category: String, obsolete: Boolean)
 
 // Scroll through large datasets
-val obsoleteProducts: Source[Product, NotUsed] = client.scrollAs[Product](
+val obsoleteProducts: Source[Product, NotUsed] = client.scrollAsUnchecked[Product](
   """
     |SELECT uuid AS id, name, price, category, outdated AS obsolete FROM products WHERE outdated = true
     |""".stripMargin
