@@ -9,7 +9,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
   // Positive Tests (Should Compile)
   // ============================================================
 
-  "SQLQueryValidator" should "validate all numeric types" in {
+  "SQLQueryValidator" should "VALIDATE all numeric types" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -21,7 +21,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "validate string types" in {
+  it should "VALIDATE string types" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -33,7 +33,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "validate temporal types" in {
+  it should "VALIDATE temporal types" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -45,7 +45,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "validate Product with all fields" in {
+  it should "VALIDATE with all fields" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -57,7 +57,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "validate with aliases" in {
+  it should "VALIDATE with aliases" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -69,7 +69,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "accept query with missing Option fields" in {
+  it should "ACCEPT query with missing Option fields" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -82,7 +82,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     """)
   }
 
-  it should "accept query with missing fields that have defaults" in {
+  it should "ACCEPT query with missing fields that have defaults" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -95,7 +95,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     """)
   }
 
-  it should "accept SELECT * with Unchecked variant" in {
+  it should "ACCEPT SELECT * with Unchecked variant" in {
     assertCompiles("""
     import app.softnetwork.elastic.client.macros.TestElasticClientApi
     import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -106,6 +106,28 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       SQLQuery("SELECT * FROM products")
     )
   """)
+  }
+
+  it should "ACCEPT nested object with complete selection" in {
+    assertCompiles("""
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+    import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.{User, Address}
+
+    TestElasticClientApi.searchAs[User](
+      "SELECT id, name, address FROM users"
+    )""")
+  }
+
+  it should "ACCEPT nested object with UNNEST" in {
+    assertCompiles("""
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+    import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.{User, Address}
+
+    TestElasticClientApi.searchAs[User](
+      "SELECT id, name, address.street, address.city, address.country FROM users JOIN UNNEST(users.address) AS address"
+    )""")
   }
 
   // ============================================================
@@ -149,7 +171,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
-  it should "suggest closest field names" in {
+  it should "SUGGEST closest field names" in {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
@@ -200,6 +222,17 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
   """)
   }
 
+  it should "REJECT nested object with individual field selection without UNNEST" in {
+    assertDoesNotCompile("""
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi
+    import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+    import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.{User, Address}
+
+    TestElasticClientApi.searchAs[User](
+      "SELECT id, name, address.street, address.city, address.country FROM users"
+    )""")
+  }
+
 }
 
 object SQLQueryValidatorSpec {
@@ -248,5 +281,17 @@ object SQLQueryValidatorSpec {
     t: java.time.LocalTime,
     dt: java.time.LocalDateTime,
     ts: java.time.Instant
+  )
+
+  case class Address(
+    street: String,
+    city: String,
+    country: String
+  )
+
+  case class User(
+    id: String,
+    name: String,
+    address: Address
   )
 }

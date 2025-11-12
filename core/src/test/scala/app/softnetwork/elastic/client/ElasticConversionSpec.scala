@@ -1,8 +1,5 @@
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.Identifier
-import app.softnetwork.elastic.sql.function.aggregate.ArrayAgg
-import app.softnetwork.elastic.sql.query.{OrderBy, SQLAggregation}
 import org.json4s.ext.{JavaTimeSerializers, JavaTypesSerializers, JodaTimeSerializers}
 import org.json4s.jackson.Serialization
 import org.json4s.{Formats, NoTypeHints}
@@ -59,6 +56,50 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         rows.foreach(println)
       // Map(name -> Laptop, price -> 999.99, category -> Electronics, tags -> List(computer, portable), _id -> 1, _index -> products, _score -> 1.0)
       // Map(name -> Mouse, price -> 29.99, category -> Electronics, _id -> 2, _index -> products, _score -> 0.8)
+      case Failure(error) =>
+        throw error
+    }
+  }
+  it should "parse hits with field object" in {
+    val results =
+      """{
+        |  "took": 8,
+        |  "hits": {
+        |    "total": { "value": 1, "relation": "eq" },
+        |    "max_score": 1.0,
+        |    "hits": [
+        |      {
+        |        "_index": "users",
+        |        "_id": "u1",
+        |        "_score": 1.0,
+        |        "_source": {
+        |          "id": "u1",
+        |          "name": "Alice",
+        |          "address": {
+        |            "street": "123 Main St",
+        |            "city": "Wonderland",
+        |            "country": "Fictionland"
+        |          }
+        |        }
+        |      }
+        |    ]
+        |  }
+        |}""".stripMargin
+    parseResponse(
+      ElasticResponse("", results, Map.empty, Map.empty)
+    ) match {
+      case Success(rows) =>
+        rows.foreach(println)
+        // Map(name -> Alice, address -> Map(street -> 123 Main St, city -> Wonderland, country -> Fictionland), _id -> u1, _index -> users, _score -> 1.0)
+        val users = rows.map(row => convertTo[User](row))
+        users.foreach(println)
+        // User(u1,Alice,Address(123 Main St,Wonderland,Fictionland))
+        users.size shouldBe 1
+        users.head.id shouldBe "u1"
+        users.head.name shouldBe "Alice"
+        users.head.address.street shouldBe "123 Main St"
+        users.head.address.city shouldBe "Wonderland"
+        users.head.address.country shouldBe "Fictionland"
       case Failure(error) =>
         throw error
     }
@@ -637,4 +678,16 @@ case class Sales(
 case class SalesHistory(
   sales_over_time: ZonedDateTime,
   total_revenue: Double
+)
+
+case class Address(
+  street: String,
+  city: String,
+  country: String
+)
+
+case class User(
+  id: String,
+  name: String,
+  address: Address
 )

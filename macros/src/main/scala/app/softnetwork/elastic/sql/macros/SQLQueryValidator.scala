@@ -23,15 +23,19 @@ import app.softnetwork.elastic.sql.query.SQLSearchRequest
 import scala.language.experimental.macros
 import scala.reflect.macros.blackbox
 
-/** Reusable core validation logic for all SQL macros.
+/** SQL Query Validator Trait
+  *
+  * Provides compile-time validation of SQL queries against Scala case classes. Ensures type safety
+  * and prevents runtime deserialization errors.
   */
 trait SQLQueryValidator {
 
   /** Validates an SQL query against a type T. Returns the SQL query if valid, otherwise aborts
     * compilation.
     * @note
-    *   query fields must not exist in case class because we are using Jackson to deserialize the
-    *   results with the following option DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES = false
+    *   query fields that do not exist in case class will be ignored because we are using Jackson to
+    *   deserialize the results with the following option
+    *   DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES = false
     */
   protected def validateSQLQuery[T: c.WeakTypeTag](c: blackbox.Context)(
     query: c.Expr[String]
@@ -50,9 +54,7 @@ trait SQLQueryValidator {
       return sqlQuery
     }
 
-    if (sys.props.get("elastic.sql.debug").contains("true")) {
-      c.info(c.enclosingPosition, s"Validating SQL: $sqlQuery", force = false)
-    }
+    debug(c)(s"🔍 Validating SQL query $sqlQuery for type: ${tpe.typeSymbol.name}")
 
     // ✅ Parse the SQL query
     val parsedQuery = parseSQLQuery(c)(sqlQuery)
@@ -71,10 +73,10 @@ trait SQLQueryValidator {
     debug(c)(s"🔍 Unnested collections: ${unnestedCollections.mkString(", ")}")
 
     // ✅ Recursive validation of required fields
-    validateRequiredFieldsRecursive(c)(tpe, queryFields, unnestedCollections, prefix = "")
+    validateRequiredFieldsRecursively(c)(tpe, queryFields, unnestedCollections, prefix = "")
 
     // ✅ Recursive validation of unknown fields
-    validateUnknownFieldsRecursive(c)(tpe, queryFields, prefix = "")
+    validateUnknownFieldsRecursively(c)(tpe, queryFields, prefix = "")
 
     // ✅ Extract required fields from the case class
     val requiredFields = getRequiredFields(c)(tpe)
@@ -168,7 +170,7 @@ trait SQLQueryValidator {
 
       case Right(Right(multi)) =>
         multi.requests.headOption.getOrElse {
-          c.abort(c.enclosingPosition, "Empty multi-search query")
+          c.abort(c.enclosingPosition, "❌ Empty multi-search query")
         }
 
       case Left(error) =>
@@ -231,6 +233,21 @@ trait SQLQueryValidator {
   // ============================================================
   private def isCaseClassType(c: blackbox.Context)(tpe: c.universe.Type): Boolean = {
     tpe.typeSymbol.isClass && tpe.typeSymbol.asClass.isCaseClass
+  }
+
+  // ============================================================
+  // Helper: Check if a type is a Product (case class or tuple)
+  // ============================================================
+  private def isProductType(c: blackbox.Context)(tpe: c.universe.Type): Boolean = {
+    import c.universe._
+
+    // Check if it's a case class
+    val isCaseClass = tpe.typeSymbol.isClass && tpe.typeSymbol.asClass.isCaseClass
+
+    // Check if it's a Product type (includes tuples)
+    val isProduct = tpe <:< typeOf[Product]
+
+    isCaseClass || isProduct
   }
 
   // ============================================================
@@ -316,7 +333,7 @@ trait SQLQueryValidator {
   // ============================================================
   // Helper: Recursive Validation of Required Fields
   // ============================================================
-  private def validateRequiredFieldsRecursive(
+  private def validateRequiredFieldsRecursively(
     c: blackbox.Context
   )(
     tpe: c.universe.Type,
@@ -326,281 +343,194 @@ trait SQLQueryValidator {
   ): Unit = {
 
     val requiredFields = getRequiredFields(c)(tpe)
+    debug(c)(
+      s"📋 Required fields for ${tpe.typeSymbol.name} (prefix='$prefix'): ${requiredFields.keys.mkString(", ")}"
+    )
 
-    val missingFields = requiredFields.filterNot {
-      case (fieldName, (fieldType, isOption, hasDefault)) =>
-        val fullFieldName = if (prefix.isEmpty) fieldName else s"$prefix.$fieldName"
+    requiredFields.foreach { case (fieldName, (fieldType, isOption, hasDefault)) =>
+      val fullFieldName = if (prefix.isEmpty) fieldName else s"$prefix.$fieldName"
+      debug(c)(
+        s"🔍 Checking field: $fullFieldName (type: $fieldType, optional: $isOption, hasDefault: $hasDefault)"
+      )
 
-        // ✅ Check if the field is directly selected (e.g., "address")
-        val isDirectlySelected = queryFields.contains(fullFieldName)
+      // ✅ Check if the field is directly selected (e.g., "address")
+      val isDirectlySelected = queryFields.contains(fullFieldName)
 
-        // ✅ Check if nested fields of this field are selected (e.g., "address.street")
-        val hasNestedSelection = queryFields.exists(_.startsWith(s"$fullFieldName."))
+      // ✅ Check if nested fields of this field are selected (e.g., "address.street")
+      val hasNestedSelection = queryFields.exists(_.startsWith(s"$fullFieldName."))
 
-        if (isDirectlySelected) {
-          // ✅ Field is selected as a whole (e.g., SELECT address FROM ...)
-          debug(c)(s"✅ Field '$fullFieldName' is directly selected")
-          true
-        } else if (isOption) {
-          // ✅ Field is optional, can be omitted
-          debug(c)(s"✅ Field '$fullFieldName' is Option - OK")
-          true
-        } else if (hasDefault) {
-          // ✅ Field has a default value, can be omitted
-          debug(c)(s"✅ Field '$fullFieldName' has default value - OK")
-          true
-        } else if (hasNestedSelection) {
-          // ⚠️ Nested fields are selected (e.g., SELECT address.street FROM ...)
-          // We must validate that ALL required nested fields are present
-
-          if (isCollectionType(c)(fieldType)) {
-            // ✅ Collection: check if it's unnested
-            validateCollectionFieldsRecursive(c)(
-              fieldName,
-              fieldType,
-              queryFields,
-              unnestedCollections,
-              prefix
-            )
-          } else if (isCaseClassType(c)(fieldType)) {
-            // ✅ Nested case class: validate that ALL required nested fields are selected
-            debug(c)(s"🔍 Validating nested case class fields: $fullFieldName")
-
-            try {
-              validateRequiredFieldsRecursive(c)(
-                fieldType,
-                queryFields,
-                unnestedCollections,
-                prefix = fullFieldName
-              )
-              // ✅ All required nested fields are present
-              debug(c)(s"✅ All required nested fields of '$fullFieldName' are present")
-              true
-            } catch {
-              case _: Throwable =>
-                // ❌ Some required nested fields are missing
-                val nestedFields = getRequiredFields(c)(fieldType)
-                val missingNestedFields = nestedFields.filterNot {
-                  case (nestedFieldName, (nestedFieldType, nestedIsOption, nestedHasDefault)) =>
-                    val fullNestedFieldName = s"$fullFieldName.$nestedFieldName"
-                    val isNestedSelected = queryFields.contains(fullNestedFieldName)
-                    val hasNestedNestedSelection =
-                      queryFields.exists(_.startsWith(s"$fullNestedFieldName."))
-
-                    isNestedSelected || nestedIsOption || nestedHasDefault ||
-                    (hasNestedNestedSelection && isCaseClassType(c)(nestedFieldType))
-                }
-
-                if (missingNestedFields.nonEmpty) {
-                  val missingNames =
-                    missingNestedFields.keys.map(n => s"$fullFieldName.$n").mkString(", ")
-                  val allRequiredFields = nestedFields
-                    .filterNot { case (_, (_, isOpt, hasDef)) => isOpt || hasDef }
-                    .keys
-                    .map(n => s"$fullFieldName.$n")
-                    .mkString(", ")
-
-                  c.abort(
-                    c.enclosingPosition,
-                    s"""❌ Nested case class field '$fullFieldName' has missing required fields:
-                       |$missingNames
-                       |
-                       |When selecting nested fields individually, ALL required fields must be present.
-                       |
-                       |Option 1: Select the entire nested object:
-                       |  SELECT $fullFieldName FROM ...
-                       |
-                       |Option 2: Select ALL required nested fields:
-                       |  SELECT $allRequiredFields FROM ...
-                       |
-                       |Option 3: Make missing fields optional or provide default values in the case class
-                       |""".stripMargin
-                  )
-                }
-
-                false
-            }
-          } else {
-            // ✅ Primitive type with nested selection (shouldn't happen)
-            debug(c)(s"⚠️ Unexpected nested selection for primitive field: $fullFieldName")
-            false
-          }
-        } else {
-          // ❌ Field is not selected at all
-          debug(c)(s"❌ Field '$fullFieldName' is missing")
-          false
-        }
-    }
-
-    if (missingFields.nonEmpty) {
-      val missingFieldNames = missingFields.keys
-        .map { fieldName =>
-          if (prefix.isEmpty) fieldName else s"$prefix.$fieldName"
-        }
-        .mkString(", ")
-
-      val exampleFields = (queryFields ++ missingFields.keys.map { fieldName =>
-        if (prefix.isEmpty) fieldName else s"$prefix.$fieldName"
-      }).mkString(", ")
-
-      val suggestions = missingFields.keys.flatMap { fieldName =>
-        findClosestMatch(fieldName, queryFields.map(_.split("\\.").last).toSeq)
+      // ✅ Determine field characteristics
+      val isCollection = isCollectionType(c)(fieldType)
+      val isNestedObject = isProductType(c)(fieldType)
+      val isNestedCollection = isCollection && {
+        getCollectionElementType(c)(fieldType).exists(isProductType(c))
       }
 
-      val suggestionMsg = if (suggestions.nonEmpty) {
-        s"\nDid you mean: ${suggestions.mkString(", ")}?"
-      } else ""
+      if (isDirectlySelected) {
+        // ✅ Field is selected as a whole (e.g., SELECT address FROM ...)
+        debug(c)(s"✅ Field '$fullFieldName' is directly selected")
+      } else if (isOption || hasDefault) {
+        // ✅ Field is optional or has a default value, can be omitted
+        debug(c)(s"✅ Field '$fullFieldName' is optional or has default - OK")
+      } else if (hasNestedSelection) {
+        // ⚠️ Nested fields are selected (e.g., SELECT address.street FROM ...)
 
-      c.abort(
-        c.enclosingPosition,
-        s"""❌ SQL query does not select the following required fields from ${tpe.typeSymbol.name}:
-           |$missingFieldNames$suggestionMsg
-           |
-           |These fields are missing from the query:
-           |SELECT $exampleFields FROM ...
-           |
-           |To fix this, either:
-           |  1. Add them to the SELECT clause
-           |  2. Make them Option[T] in the case class
-           |  3. Provide default values in the case class definition""".stripMargin
-      )
-    }
-  }
+        if (isNestedCollection) {
+          // ✅ Collection of case classes
+          debug(c)(s"📦 Field '$fullFieldName' is a nested collection")
+          validateNestedCollection(c)(
+            fullFieldName,
+            fieldName,
+            fieldType,
+            queryFields,
+            unnestedCollections,
+            tpe
+          )
+        } else if (isNestedObject) {
+          // ❌ Nested object (non-collection) with individual field selection
+          debug(c)(s"🏗️ Field '$fullFieldName' is a nested object (non-collection)")
 
-  // ============================================================
-  // Helper: Validate Collection Fields Recursively
-  // ============================================================
-  private def validateCollectionFieldsRecursive(
-    c: blackbox.Context
-  )(
-    fieldName: String,
-    fieldType: c.universe.Type,
-    queryFields: Set[String],
-    unnestedCollections: Set[String],
-    prefix: String
-  ): Boolean = {
+          val isUnnested = unnestedCollections.contains(fullFieldName) ||
+            unnestedCollections.contains(fieldName)
 
-    getCollectionElementType(c)(fieldType) match {
-      case Some(elementType) =>
-        val fullFieldName = if (prefix.isEmpty) fieldName else s"$prefix.$fieldName"
-
-        // ✅ Check if the collection is selected as a whole
-        val isDirectlySelected = queryFields.contains(fullFieldName)
-
-        // ✅ Check if the collection is unnested (uses UNNEST)
-        val isUnnested = unnestedCollections.contains(fieldName)
-
-        if (isDirectlySelected) {
-          debug(c)(s"✅ Collection field '$fullFieldName' is directly selected")
-          true
-        } else if (isUnnested) {
-          debug(c)(s"✅ Collection field '$fullFieldName' is unnested")
-          // ✅ For unnested collections, validate nested fields
-          if (isCaseClassType(c)(elementType)) {
-            val nestedFields = getRequiredFields(c)(elementType)
-
-            val missingNestedFields = nestedFields.filterNot {
-              case (nestedFieldName, (nestedFieldType, isOption, hasDefault)) =>
-                val fullNestedFieldName = s"$fullFieldName.$nestedFieldName"
-
-                val isSelected = queryFields.contains(fullNestedFieldName)
-                val hasNestedSelection = queryFields.exists(_.startsWith(s"$fullNestedFieldName."))
-
-                if (isSelected) {
-                  debug(c)(s"✅ Nested field '$fullNestedFieldName' is selected")
-                  true
-                } else if (isOption) {
-                  debug(c)(s"✅ Nested field '$fullNestedFieldName' is Option - OK")
-                  true
-                } else if (hasDefault) {
-                  debug(c)(s"✅ Nested field '$fullNestedFieldName' has default value - OK")
-                  true
-                } else if (hasNestedSelection && isCaseClassType(c)(nestedFieldType)) {
-                  debug(c)(s"🔍 Validating deeply nested case class: $fullNestedFieldName")
-                  try {
-                    validateRequiredFieldsRecursive(c)(
-                      nestedFieldType,
-                      queryFields,
-                      unnestedCollections,
-                      prefix = fullNestedFieldName
-                    )
-                    true
-                  } catch {
-                    case _: Throwable => false
-                  }
-                } else {
-                  debug(c)(s"❌ Nested field '$fullNestedFieldName' is missing")
-                  false
-                }
-            }
-
-            if (missingNestedFields.nonEmpty) {
-              val missingNames =
-                missingNestedFields.keys.map(n => s"$fullFieldName.$n").mkString(", ")
-              val allRequiredFields = nestedFields
-                .filterNot { case (_, (_, isOpt, hasDef)) => isOpt || hasDef }
-                .keys
-                .map(n => s"$fullFieldName.$n")
-                .mkString(", ")
-
-              c.abort(
-                c.enclosingPosition,
-                s"""❌ Unnested collection field '$fullFieldName' is missing required nested fields:
-                   |$missingNames
-                   |
-                   |When using UNNEST, ALL required nested fields must be selected:
-                   |  SELECT $allRequiredFields FROM parent JOIN UNNEST(parent.$fieldName) AS $fieldName
-                   |
-                   |Or make missing nested fields optional or provide default values
-                   |""".stripMargin
-              )
-            }
-
-            true
-          } else {
-            true
-          }
-        } else if (isCaseClassType(c)(elementType)) {
-          // ❌ Collection of case classes with nested field selection but NO UNNEST
-          val hasNestedSelection = queryFields.exists(_.startsWith(s"$fullFieldName."))
-
-          if (hasNestedSelection) {
+          if (!isUnnested) {
             c.abort(
               c.enclosingPosition,
-              s"""❌ Collection field '$fullFieldName' cannot be deserialized correctly.
+              s"""❌ Nested object field '$fullFieldName' cannot be deserialized correctly.
                  |
-                 |You are selecting nested fields of a collection without using UNNEST:
-                 |  ${queryFields.filter(_.startsWith(s"$fullFieldName.")).mkString(", ")}
+                 |❌ Problem:
+                 |   You are selecting nested fields individually:
+                 |   ${queryFields.filter(_.startsWith(s"$fullFieldName.")).mkString(", ")}
                  |
-                 |This will result in flat arrays that cannot be reconstructed into objects.
+                 |   Elasticsearch will return flat fields like:
+                 |   { "$fullFieldName.field1": "value1", "$fullFieldName.field2": "value2" }
                  |
-                 |Example of the problem:
-                 |  Elasticsearch returns: { "children.name": ["Alice", "Bob"], "children.age": [10, 12] }
-                 |  But we need: { "children": [{"name": "Alice", "age": 10}, {"name": "Bob", "age": 12}] }
+                 |   But Jackson needs a structured object like:
+                 |   { "$fullFieldName": {"field1": "value1", "field2": "value2"} }
                  |
-                 |Solution 1: Select the entire collection:
-                 |  SELECT $fullFieldName FROM ...
+                 |✅ Solution 1: Select the entire nested object (recommended)
+                 |   SELECT $fullFieldName FROM ...
                  |
-                 |Solution 2: Use UNNEST to properly handle nested objects:
-                 |  SELECT name, $fieldName.name, $fieldName.age
-                 |  FROM ${if (prefix.isEmpty) "table" else prefix}
-                 |  JOIN UNNEST(${if (prefix.isEmpty) "" else s"$prefix."}$fieldName) AS $fieldName
+                 |✅ Solution 2: Use UNNEST (if you need to filter or join on nested fields)
+                 |   SELECT ${queryFields.filter(_.startsWith(s"$fullFieldName.")).mkString(", ")}
+                 |   FROM ...
+                 |   JOIN UNNEST(....$fullFieldName) AS $fieldName
                  |
-                 |Solution 3: Make the collection optional:
-                 |  $fullFieldName: Option[List[${elementType.typeSymbol.name}]] = None
+                 |✅ Solution 3: Make the nested object optional (if it's not always needed)
+                 |   case class ${tpe.typeSymbol.name}(..., $fieldName: Option[${fieldType.typeSymbol.name}] = None)
+                 |
+                 |📚 Note: This applies to ALL nested objects, not just collections.
                  |""".stripMargin
             )
           }
 
-          false
+          // ✅ With UNNEST: validate nested fields recursively
+          validateRequiredFieldsRecursively(c)(
+            fieldType,
+            queryFields,
+            unnestedCollections,
+            fullFieldName
+          )
         } else {
-          // ✅ Collection of primitive types
-          true
+          // ✅ Primitive type with nested selection (shouldn't happen)
+          debug(c)(s"⚠️ Unexpected nested selection for primitive field: $fullFieldName")
         }
+      } else {
+        // ❌ Required field is not selected at all
+        debug(c)(s"❌ Field '$fullFieldName' is missing")
 
-      case None =>
-        debug(c)(s"⚠️ Cannot extract element type from collection: $fieldName")
-        false
+        val exampleFields = (queryFields + fullFieldName).mkString(", ")
+        val suggestions = findClosestMatch(fieldName, queryFields.map(_.split("\\.").last).toSeq)
+        val suggestionMsg = suggestions.map(s => s"\nDid you mean: $s?").getOrElse("")
+
+        c.abort(
+          c.enclosingPosition,
+          s"""❌ SQL query does not select the required field: $fullFieldName
+             |$suggestionMsg
+             |
+             |Example query:
+             |SELECT $exampleFields FROM ...
+             |
+             |To fix this, either:
+             |  1. Add it to the SELECT clause
+             |  2. Make it Option[T] in the case class
+             |  3. Provide a default value in the case class definition
+             |""".stripMargin
+        )
+      }
+    }
+  }
+
+  // ============================================================
+  // Helper: Validate Nested Collection Fields
+  // ============================================================
+  private def validateNestedCollection(
+    c: blackbox.Context
+  )(
+    fullFieldName: String,
+    fieldName: String,
+    fieldType: c.universe.Type,
+    queryFields: Set[String],
+    unnestedCollections: Set[String],
+    parentType: c.universe.Type
+  ): Unit = {
+
+    // ✅ Check if the collection is unnested (uses UNNEST)
+    val isUnnested = unnestedCollections.contains(fullFieldName) ||
+      unnestedCollections.contains(fieldName)
+
+    if (!isUnnested) {
+      // ❌ Collection with nested field selection but NO UNNEST
+      val selectedNestedFields = queryFields.filter(_.startsWith(s"$fullFieldName."))
+
+      getCollectionElementType(c)(fieldType) match {
+        case Some(elementType) =>
+          c.abort(
+            c.enclosingPosition,
+            s"""❌ Collection field '$fullFieldName' cannot be deserialized correctly.
+               |
+               |❌ Problem:
+               |   You are selecting nested fields without using UNNEST:
+               |   ${selectedNestedFields.mkString(", ")}
+               |
+               |   Elasticsearch will return flat arrays like:
+               |   { "$fullFieldName.field1": ["val1", "val2"], "$fullFieldName.field2": ["val3", "val4"] }
+               |
+               |   But Jackson needs structured objects like:
+               |   { "$fullFieldName": [{"field1": "val1", "field2": "val3"}, {"field1": "val2", "field2": "val4"}] }
+               |
+               |✅ Solution 1: Select the entire collection (recommended for simple queries)
+               |   SELECT $fullFieldName FROM ...
+               |
+               |✅ Solution 2: Use UNNEST for precise field selection (recommended for complex queries)
+               |   SELECT ${selectedNestedFields.mkString(", ")}
+               |   FROM ...
+               |   JOIN UNNEST(....$fullFieldName) AS $fieldName
+               |
+               |✅ Solution 3: Make the collection optional (if it's not always needed)
+               |   case class ${parentType.typeSymbol.name}(..., $fieldName: Option[List[${elementType.typeSymbol.name}]] = None)
+               |
+               |📚 Documentation:
+               |   https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html
+               |""".stripMargin
+          )
+        case None =>
+          debug(c)(s"⚠️ Cannot extract element type from collection: $fullFieldName")
+      }
+    } else {
+      // ✅ Collection is unnested: validate nested fields recursively
+      debug(c)(s"✅ Collection field '$fullFieldName' is unnested")
+
+      getCollectionElementType(c)(fieldType).foreach { elementType =>
+        if (isProductType(c)(elementType)) {
+          validateRequiredFieldsRecursively(c)(
+            elementType,
+            queryFields,
+            unnestedCollections,
+            fullFieldName
+          )
+        }
+      }
     }
   }
 
@@ -639,15 +569,13 @@ trait SQLQueryValidator {
   // ============================================================
   // Helper: Validate Unknown Fields Recursively
   // ============================================================
-  private def validateUnknownFieldsRecursive(
+  private def validateUnknownFieldsRecursively(
     c: blackbox.Context
   )(
     tpe: c.universe.Type,
     queryFields: Set[String],
     prefix: String
   ): Unit = {
-
-    val requiredFields = getRequiredFields(c)(tpe)
 
     // ✅ Get all valid field paths at this level and below
     val validFieldPaths = buildValidFieldPaths(c)(tpe, prefix)
