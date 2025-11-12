@@ -448,7 +448,7 @@ trait SQLQueryValidator {
         val exampleFields = ((queryFields -- unknownFields) + fullFieldName).mkString(", ")
         val suggestions = findClosestMatch(fieldName, unknownFields.map(_.split("\\.").last).toSeq)
         val suggestionMsg = suggestions
-          .map(s => s"\nYou have selected unknown field \"$s\", did you mean \"$fullFieldName\"?")
+          .map(s => s"""\nYou have selected unknown field "$s", did you mean "$fullFieldName"?""")
           .getOrElse("")
 
         c.abort(

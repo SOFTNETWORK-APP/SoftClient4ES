@@ -103,54 +103,29 @@ lazy val sql = project
   .in(file("sql"))
   .configs(IntegrationTest)
   .settings(
-    Defaults.itSettings
+    Defaults.itSettings,
+    moduleSettings
   )
 
 lazy val macros = project
   .in(file("macros"))
   .configs(IntegrationTest)
   .settings(
-    name := "softclient4es-macros",
-
-    libraryDependencies ++= Seq(
-      "org.scala-lang" % "scala-reflect" % scalaVersion.value,
-      "org.json4s" %% "json4s-native" % Versions.json4s
-    ),
     Defaults.itSettings,
-    moduleSettings,
-    scalacOptions ++= Seq(
-      "-language:experimental.macros",
-      "-Ymacro-annotations",
-      "-Ymacro-debug-lite",              // Debug macros
-      "-Xlog-implicits"                  // Debug implicits
-    )
+    moduleSettings
   )
-  .dependsOn(sql)
+  .dependsOn(sql % "compile->compile;test->test;it->it")
 
 lazy val macrosTests = project
   .in(file("macros-tests"))
   .configs(IntegrationTest)
   .settings(
-    name := "softclient4es-macros-tests",
     Publish.noPublishSettings,
-
-    libraryDependencies ++= Seq(
-      "org.scalatest" %% "scalatest" % Versions.scalatest % Test
-    ),
-
     Defaults.itSettings,
-    moduleSettings,
-
-    scalacOptions ++= Seq(
-      "-language:experimental.macros",
-      "-Ymacro-debug-lite"
-    ),
-
-    Test / scalacOptions += "-Xlog-free-terms"
+    moduleSettings
   )
   .dependsOn(
-    macros % "compile->compile",
-    sql % "compile->compile"
+    macros % "compile->compile;test->test;it->it"
   )
 
 lazy val core = project
@@ -486,9 +461,9 @@ lazy val root = project
   )
   .aggregate(
     sql,
+    bridge,
     macros,
     macrosTests,
-    bridge,
     core,
     persistence,
     testkit,
