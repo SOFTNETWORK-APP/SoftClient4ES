@@ -239,7 +239,6 @@ object NestedElements {
       distinctNestedElements
         .groupBy(_.root.path)
         .map(tree => tree._1 -> tree._2.sortBy(_.level).reverse)
-        .toMap
 
     @tailrec
     def getNestedParents(

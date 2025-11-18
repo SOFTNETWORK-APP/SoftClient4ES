@@ -2071,7 +2071,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",LocalDate", ", LocalDate")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll("try\\{", "try {")
-      .replaceAll("\\}catch", "} catch ")
+      .replaceAll("}catch", "} catch ")
       .replaceAll("Exceptione\\)", "Exception e) ")
       .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
       .replaceAll("(\\d)=p", "$1 = p")

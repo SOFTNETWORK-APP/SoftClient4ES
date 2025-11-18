@@ -212,7 +212,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val result = results.head
     result.nested shouldBe true
     result.distinct shouldBe false
-    result.aggName shouldBe "inner_emails.filtered_inner_emails.count_emails"
+    result.aggName shouldBe "inner_emails.filtered_agg.count_emails"
     result.field shouldBe "count_emails"
     result.sources shouldBe Seq[String]("index")
     val query = result.query.getOrElse("")
@@ -2075,7 +2075,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",LocalDate", ", LocalDate")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll("try\\{", "try {")
-      .replaceAll("\\}catch", "} catch ")
+      .replaceAll("}catch", "} catch ")
       .replaceAll("Exceptione\\)", "Exception e) ")
       .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
       .replaceAll("(\\d)=p", "$1 = p")
