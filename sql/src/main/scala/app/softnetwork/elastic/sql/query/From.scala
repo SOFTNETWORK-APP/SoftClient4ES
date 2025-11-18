@@ -98,8 +98,10 @@ case class Unnest(
     updated.identifier.tableAlias match {
       case Some(alias) if updated.identifier.nested =>
         request.unnests.get(alias) match {
-          case Some(parent) if parent.path != updated.path =>
-            return updated.copy(parent = Some(parent))
+          case Some(parent) /*if parent.path != updated.path*/ =>
+            val unnest = updated.copy(parent = Some(parent))
+            request.unnests += unnest.alias.map(_.alias).getOrElse(unnest.name) -> unnest
+            return unnest
           case _ =>
         }
       case _ =>
@@ -233,11 +235,16 @@ object NestedElements {
 
     val distinctNestedElements = nestedElements.groupBy(_.path).map(_._2.head).toList
 
+    val distinctNestedElementsByRoot =
+      distinctNestedElements
+        .groupBy(_.root.path)
+        .map(tree => tree._1 -> tree._2.sortBy(_.level).reverse)
+
     @tailrec
     def getNestedParents(
       n: NestedElement,
       parents: Seq[NestedElement]
-    ): Seq[NestedElement] = {
+    ): NestedElement = {
       n.parent match {
         case Some(p) =>
           if (!nestedParentsPath.contains(p.path)) {
@@ -246,28 +253,31 @@ object NestedElements {
             getNestedParents(p, p +: parents)
           } else {
             nestedParentsPath += p.path -> (p, nestedParentsPath(p.path)._2 :+ n)
-            parents
+            p
           }
-        case _ => parents
+        case _ => n
       }
     }
 
-    val deepestNestedElement =
-      distinctNestedElements.maxBy(_.level) // FIXME we may have multiple deepest elements
-    val nestedParents = getNestedParents(deepestNestedElement, Seq.empty)
+    val nestedParents =
+      distinctNestedElementsByRoot.values.flatten
+        .map(de => getNestedParents(de, Seq.empty))
+        .toSeq
+        .distinct
 
     def innerBuildNestedTree(n: NestedElement): NestedElement = {
       val children = nestedParentsPath.get(n.path).map(_._2).getOrElse(Seq.empty)
       if (children.nonEmpty) {
         val updatedChildren = children.map(innerBuildNestedTree)
-        n.copy(children = updatedChildren)
+        n.copy(children = updatedChildren.groupBy(_.path).map(_._2.head).toSeq)
       } else {
         n
       }
     }
 
     if (nestedParents.nonEmpty) {
-      nestedParents.map(innerBuildNestedTree)
+      val trees = nestedParents.map(innerBuildNestedTree)
+      trees
     } else {
       distinctNestedElements
     }

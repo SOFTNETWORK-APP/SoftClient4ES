@@ -216,39 +216,29 @@ SoftClient4ES includes a powerful SQL parser that translates standard SQL `SELEC
 ```scala
 val sqlQuery = """
   SELECT
-    min(inner_products.price) as min_price,
-    max(inner_products.price) as max_price
-  FROM
-    stores store
-    JOIN UNNEST(store.products) as inner_products
-  WHERE
-    (
-      firstName is not null AND
-      lastName is not null AND
-      description is not null AND
-      preparationTime <= 120 AND
-      store.deliveryPeriods.dayOfWeek=6 AND
-      blockedCustomers not like "%uuid%" AND
-      NOT receiptOfOrdersDisabled=true AND
-      (
-        distance(pickup.location, POINT(0.0, 0.0)) <= 7000 m OR
-        distance(withdrawals.location, POINT(0.0, 0.0)) <= 7000 m
-      )
-    )
-  GROUP BY
-    inner_products.category
-  HAVING inner_products.deleted=false AND
-    inner_products.upForSale=true AND
-    inner_products.stock > 0 AND
-    match (
-      inner_products.name,
-      inner_products.description,
-      inner_products.ingredients
-    ) against ("lasagnes") AND
-    min(inner_products.price) > 5.0 AND
-    max(inner_products.price) < 50.0 AND
-    inner_products.category <> "coffee"
-  LIMIT 10 OFFSET 0
+		restaurant_name,
+		restaurant_city,
+		menu.category AS menu_category,
+		dish.name AS dish_name,
+		ingredient.name AS ingredient_name,
+		COUNT(distinct ingredient.name) AS ingredient_count,
+		AVG(ingredient.cost) AS avg_ingredient_cost,
+		SUM(ingredient.calories) AS total_calories,
+		AVG(dish.price) AS avg_dish_price
+	FROM restaurants 
+		JOIN UNNEST(restaurants.menus) AS menu 
+		JOIN UNNEST (menu.dishes) AS dish 
+		JOIN UNNEST(dish.ingredients) AS ingredient
+	WHERE
+		restaurant_status = 'open'
+	GROUP BY restaurant_name, restaurant_city, menu.category, dish.name, ingredient.name
+	HAVING
+		menu.is_available = true
+		AND COUNT(distinct ingredient.name) >= 3
+		AND AVG(ingredient.cost) <= 5
+		AND SUM(ingredient.calories) <= 800
+		AND AVG(dish.price) >= 10
+	LIMIT 1000
 """
 
 val results = client.search(SQLQuery(sqlQuery))
@@ -260,200 +250,130 @@ val results = client.search(SQLQuery(sqlQuery))
     "bool": {
       "filter": [
         {
-          "bool": {
-            "filter": [
-              {
-                "exists": {
-                  "field": "firstName"
-                }
-              },
-              {
-                "exists": {
-                  "field": "lastName"
-                }
-              },
-              {
-                "exists": {
-                  "field": "description"
-                }
-              },
-              {
-                "range": {
-                  "preparationTime": {
-                    "lte": 120
-                  }
-                }
-              },
-              {
-                "term": {
-                  "deliveryPeriods.dayOfWeek": {
-                    "value": 6
-                  }
-                }
-              },
-              {
-                "bool": {
-                  "must_not": [
-                    {
-                      "regexp": {
-                        "blockedCustomers": {
-                          "value": ".*uuid.*"
-                        }
-                      }
-                    }
-                  ]
-                }
-              },
-              {
-                "bool": {
-                  "must_not": [
-                    {
-                      "term": {
-                        "receiptOfOrdersDisabled": {
-                          "value": true
-                        }
-                      }
-                    }
-                  ]
-                }
-              },
-              {
-                "bool": {
-                  "should": [
-                    {
-                      "geo_distance": {
-                        "distance": "7000m",
-                        "pickup.location": [
-                          0.0,
-                          0.0
-                        ]
-                      }
-                    },
-                    {
-                      "geo_distance": {
-                        "distance": "7000m",
-                        "withdrawals.location": [
-                          0.0,
-                          0.0
-                        ]
-                      }
-                    }
-                  ]
-                }
-              }
-            ]
+          "term": {
+            "restaurant_status": {
+              "value": "open"
+            }
           }
         }
       ]
     }
   },
   "size": 0,
-  "min_score": 1.0,
   "_source": true,
   "aggs": {
-    "inner_products": {
-      "nested": {
-        "path": "products"
+    "restaurant_name": {
+      "terms": {
+        "field": "restaurant_name.keyword",
+        "size": 1000
       },
       "aggs": {
-        "filtered_inner_products": {
-          "filter": {
-            "bool": {
-              "filter": [
-                {
-                  "bool": {
-                    "must_not": [
-                      {
-                        "term": {
-                          "products.category": {
-                            "value": "coffee"
-                          }
-                        }
-                      }
-                    ]
-                  }
-                },
-                {
-                  "match_all": {}
-                },
-                {
-                  "match_all": {}
-                },
-                {
-                  "bool": {
-                    "should": [
-                      {
-                        "match": {
-                          "products.name": {
-                            "query": "lasagnes"
-                          }
-                        }
-                      },
-                      {
-                        "match": {
-                          "products.description": {
-                            "query": "lasagnes"
-                          }
-                        }
-                      },
-                      {
-                        "match": {
-                          "products.ingredients": {
-                            "query": "lasagnes"
-                          }
-                        }
-                      }
-                    ]
-                  }
-                },
-                {
-                  "range": {
-                    "products.stock": {
-                      "gt": 0
-                    }
-                  }
-                },
-                {
-                  "term": {
-                    "products.upForSale": {
-                      "value": true
-                    }
-                  }
-                },
-                {
-                  "term": {
-                    "products.deleted": {
-                      "value": false
-                    }
-                  }
-                }
-              ]
-            }
+        "restaurant_city": {
+          "terms": {
+            "field": "restaurant_city.keyword",
+            "size": 1000
           },
           "aggs": {
-            "cat": {
-              "terms": {
-                "field": "products.category.keyword"
+            "menu": {
+              "nested": {
+                "path": "menus"
               },
               "aggs": {
-                "min_price": {
-                  "min": {
-                    "field": "products.price"
-                  }
-                },
-                "max_price": {
-                  "max": {
-                    "field": "products.price"
-                  }
-                },
-                "having_filter": {
-                  "bucket_selector": {
-                    "buckets_path": {
-                      "min_price": "inner_products>min_price",
-                      "max_price": "inner_products>max_price"
-                    },
-                    "script": {
-                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+                "filtered_menu": {
+                  "filter": {
+                    "bool": {
+                      "filter": [
+                        {
+                          "term": {
+                            "menus.is_available": {
+                              "value": true
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "aggs": {
+                    "menu_category": {
+                      "terms": {
+                        "field": "menus.category.keyword",
+                        "size": 1000
+                      },
+                      "aggs": {
+                        "dish": {
+                          "nested": {
+                            "path": "menus.dishes"
+                          },
+                          "aggs": {
+                            "dish_name": {
+                              "terms": {
+                                "field": "menus.dishes.name.keyword",
+                                "size": 1000
+                              },
+                              "aggs": {
+                                "avg_dish_price": {
+                                  "avg": {
+                                    "field": "menus.dishes.price"
+                                  }
+                                },
+                                "having_filter": {
+                                  "bucket_selector": {
+                                    "buckets_path": {
+                                      "ingredient_count": "ingredient>ingredient_count",
+                                      "avg_dish_price": "avg_dish_price"
+                                    },
+                                    "script": {
+                                      "source": "params.ingredient_count >= 3 && params.avg_dish_price >= 10"
+                                    }
+                                  }
+                                },
+                                "ingredient": {
+                                  "nested": {
+                                    "path": "menus.dishes.ingredients"
+                                  },
+                                  "aggs": {
+                                    "ingredient_count": {
+                                      "cardinality": {
+                                        "field": "menus.dishes.ingredients.name"
+                                      }
+                                    },
+                                    "ingredient_name": {
+                                      "terms": {
+                                        "field": "menus.dishes.ingredients.name.keyword",
+                                        "size": 1000
+                                      },
+                                      "aggs": {
+                                        "avg_ingredient_cost": {
+                                          "avg": {
+                                            "field": "menus.dishes.ingredients.cost"
+                                          }
+                                        },
+                                        "total_calories": {
+                                          "sum": {
+                                            "field": "menus.dishes.ingredients.calories"
+                                          }
+                                        },
+                                        "having_filter": {
+                                          "bucket_selector": {
+                                            "buckets_path": {
+                                              "ingredient_count": "ingredient_count",
+                                              "avg_ingredient_cost": "avg_ingredient_cost",
+                                              "total_calories": "total_calories"
+                                            },
+                                            "script": {
+                                              "source": "params.ingredient_count >= 3 && params.avg_ingredient_cost <= 5 && params.total_calories <= 800"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -867,18 +787,18 @@ ThisBuild / resolvers ++= Seq(
 
 // For Elasticsearch 6
 // Using Jest client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.12.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.13.0
 // Or using Rest High Level client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.12.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.13.0
 
 // For Elasticsearch 7
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.12.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.13.0
 
 // For Elasticsearch 8
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.12.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.13.0
 
 // For Elasticsearch 9
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.12.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.13.0
 ```
 
 ### **Quick Example**
@@ -923,7 +843,6 @@ client.createIndex("users", mapping) match {
 ### **Long-term**
 
 - [ ] Full **JDBC connector for Elasticsearch**
-- [ ] GraphQL query support
 - [ ] Advanced monitoring and metrics
 
 ---

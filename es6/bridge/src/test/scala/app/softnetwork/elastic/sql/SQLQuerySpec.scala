@@ -6,8 +6,6 @@ import app.softnetwork.elastic.sql.query.SQLQuery
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import scala.jdk.CollectionConverters._
-
 /** Created by smanciot on 13/04/17.
   */
 class SQLQuerySpec extends AnyFlatSpec with Matchers {
@@ -795,7 +793,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "aggs": {
       |            "cat": {
       |              "terms": {
-      |                "field": "products.category.keyword"
+      |                "field": "products.category.keyword",
+      |                "size": 10
       |              },
       |              "aggs": {
       |                "min_price": {
@@ -811,8 +810,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                "having_filter": {
       |                  "bucket_selector": {
       |                    "buckets_path": {
-      |                      "min_price": "inner_products>min_price",
-      |                      "max_price": "inner_products>max_price"
+      |                      "min_price": "min_price",
+      |                      "max_price": "max_price"
       |                    },
       |                    "script": {
       |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
@@ -2072,7 +2071,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",LocalDate", ", LocalDate")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll("try\\{", "try {")
-      .replaceAll("\\}catch", "} catch ")
+      .replaceAll("}catch", "} catch ")
       .replaceAll("Exceptione\\)", "Exception e) ")
       .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
       .replaceAll("(\\d)=p", "$1 = p")

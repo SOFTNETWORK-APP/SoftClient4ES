@@ -621,13 +621,11 @@ package object sql {
     def fieldAlias: Option[String]
     def bucket: Option[Bucket]
     def hasBucket: Boolean = bucket.isDefined
-    def metricsPath: Map[String, String] = { // TODO add bucket context ?
+
+    def allMetricsPath: Map[String, String] = {
       if (aggregation) {
         val metricName = aliasOrName
-        nestedElement match {
-          case Some(ne) => Map(metricName -> s"${ne.bucketPath}>$metricName")
-          case _        => Map(metricName -> metricName)
-        }
+        Map(metricName -> metricName)
       } else {
         Map.empty
       }
@@ -820,50 +818,59 @@ package object sql {
 
     def update(request: SQLSearchRequest): Identifier = {
       val parts: Seq[String] = name.split("\\.").toSeq
-      if (request.tableAliases.values.toSeq.contains(parts.head)) {
-        request.unnestAliases.find(_._1 == parts.head) match {
+      val tableAlias = parts.head
+      if (request.tableAliases.values.toSeq.contains(tableAlias)) {
+        request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>
-            this.copy(
-              tableAlias = Some(parts.head),
-              name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
-              nested = true,
-              limit = tuple._2._2,
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-              bucket = request.bucketNames.get(identifierName).orElse(bucket),
-              nestedElement = {
-                request.unnests.get(parts.head) match {
-                  case Some(unnest) => Some(request.toNestedElement(unnest))
-                  case None         => None
-                }
+            val nestedElement =
+              request.unnests.get(tableAlias) match {
+                case Some(unnest) => Some(request.toNestedElement(unnest))
+                case None         => None
               }
-            )
+            this
+              .copy(
+                tableAlias = Some(tableAlias),
+                name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+                nested = true,
+                limit = tuple._2._2,
+                fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                nestedElement = nestedElement
+              )
+              .withFunctions(this.updateFunctions(request))
           case Some(tuple) if nested =>
-            this.copy(
-              tableAlias = Some(parts.head),
-              name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
-              limit = tuple._2._2,
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-              bucket = request.bucketNames.get(identifierName).orElse(bucket)
-            )
+            this
+              .copy(
+                tableAlias = Some(tableAlias),
+                name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+                limit = tuple._2._2,
+                fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+                bucket = request.bucketNames.get(identifierName).orElse(bucket)
+              )
+              .withFunctions(this.updateFunctions(request))
           case None if nested =>
-            this.copy(
-              tableAlias = Some(parts.head),
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-              bucket = request.bucketNames.get(identifierName).orElse(bucket)
-            )
+            this
+              .copy(
+                tableAlias = Some(tableAlias),
+                fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+                bucket = request.bucketNames.get(identifierName).orElse(bucket)
+              )
+              .withFunctions(this.updateFunctions(request))
           case _ =>
             this.copy(
-              tableAlias = Some(parts.head),
+              tableAlias = Some(tableAlias),
               name = parts.tail.mkString("."),
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket)
             )
         }
       } else {
-        this.copy(
-          fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-          bucket = request.bucketNames.get(identifierName).orElse(bucket)
-        )
+        this
+          .copy(
+            fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+            bucket = request.bucketNames.get(identifierName).orElse(bucket)
+          )
+          .withFunctions(this.updateFunctions(request))
       }
     }
   }

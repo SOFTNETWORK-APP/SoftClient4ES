@@ -177,17 +177,6 @@ object SQLAggregation {
 
       require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
 
-      val filteredAggName = "filtered_agg"
-
-      def filtered(): Unit =
-        request.having match {
-          case Some(_) =>
-            aggPath ++= Seq(filteredAggName)
-            aggPath ++= Seq(aggName)
-          case _ =>
-            aggPath ++= Seq(aggName)
-        }
-
       val nestedElement = identifier.nestedElement
 
       val nestedElements: Seq[NestedElement] =
@@ -195,6 +184,7 @@ object SQLAggregation {
 
       nestedElements match {
         case Nil =>
+          aggPath ++= Seq(aggName)
         case nestedElements =>
           def buildNested(n: NestedElement): Unit = {
             aggPath ++= Seq(n.innerHitsName)
@@ -203,10 +193,14 @@ object SQLAggregation {
               children.map(buildNested)
             }
           }
-          buildNested(nestedElements.head)
+          val root = nestedElements.head
+          buildNested(root)
+          request.having match {
+            case Some(_) => aggPath ++= Seq("filtered_agg")
+            case _       =>
+          }
+          aggPath ++= Seq(aggName)
       }
-
-      filtered()
 
       SQLAggregation(
         aggPath.mkString("."),

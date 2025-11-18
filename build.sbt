@@ -238,6 +238,7 @@ def copyBridge(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
   streams.value.log.info(
     s"Copying bridge template sources for ES ${elasticSearchMajorVersion(esVersion)}..."
   )
+  IO.delete(target / "src")
   IO.copyDirectory(src / "src", target / "src")
 }
 

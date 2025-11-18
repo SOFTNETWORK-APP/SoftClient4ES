@@ -48,8 +48,12 @@ case class SQLSearchRequest(
       case _ => Map(name -> b)
     }
   }.toMap
-  lazy val unnests: Map[String, Unnest] =
-    from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
+
+  var unnests: scala.collection.mutable.Map[String, Unnest] = {
+    val map = from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
+    scala.collection.mutable.Map(map.toSeq: _*)
+  }
+
   lazy val nestedFields: Map[String, Seq[Field]] =
     select.fields
       .filterNot(_.aggregation)
@@ -75,16 +79,18 @@ case class SQLSearchRequest(
     nested.filter(n => nestedFieldsWithoutCriteria.keys.toSeq.contains(n.innerHitsName))
 
   def toNestedElement(u: Unnest): NestedElement = {
+    val updated = unnests.getOrElse(u.alias.map(_.alias).getOrElse(u.name), u)
+    val parent = updated.parent.map(toNestedElement)
     NestedElement(
-      path = u.path,
-      innerHitsName = u.innerHitsName,
+      path = updated.path,
+      innerHitsName = updated.innerHitsName,
       size = limit.map(_.limit),
       children = Nil,
       sources = nestedFields
-        .get(u.innerHitsName)
+        .get(updated.innerHitsName)
         .map(_.map(_.identifier.name.split('.').tail.mkString(".")))
         .getOrElse(Nil),
-      parent = u.parent.map(toNestedElement)
+      parent = parent
     )
   }
 
