@@ -63,13 +63,13 @@ sealed trait Criteria extends Updateable with PainlessScript {
     }
   }
 
-  def extractMetricsPath: Map[String, String] =
-    this match { // used for bucket_selector
+  def extractAllMetricsPath: Map[String, String] =
+    this match {
       case Predicate(left, _, right, _, _) =>
-        left.extractMetricsPath ++ right.extractMetricsPath
-      case relation: ElasticRelation => relation.criteria.extractMetricsPath
-      case _: MultiMatchCriteria     => Map.empty //MATCH is not supported in bucket_selector
-      case e: Expression             => e.extractMetricsPath
+        left.extractAllMetricsPath ++ right.extractAllMetricsPath
+      case relation: ElasticRelation => relation.criteria.extractAllMetricsPath
+      case _: MultiMatchCriteria     => Map.empty
+      case e: Expression             => e.extractAllMetricsPath
       case _                         => Map.empty
     }
 
@@ -291,10 +291,12 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case _                    => Seq(identifier)
     }
 
-  override def extractMetricsPath: Map[String, String] = maybeValue match {
-    case Some(v: Identifier) => identifier.metricsPath ++ v.metricsPath
-    case _                   => identifier.metricsPath
-  }
+  override def extractAllMetricsPath: Map[String, String] =
+    maybeValue match {
+      case Some(v: Identifier) =>
+        identifier.allMetricsPath ++ v.allMetricsPath
+      case _ => identifier.allMetricsPath
+    }
 
   override def includes(
     bucket: Bucket,

@@ -60,7 +60,8 @@ case class Bucket(
           val field = request.select.fields(func.value.toInt - 1)
           this.copy(identifier = field.identifier, size = request.limit.map(_.limit))
         }
-      case _ => this.copy(identifier = identifier.update(request))
+      case _ =>
+        this.copy(identifier = identifier.update(request), size = request.limit.map(_.limit))
     }
   }
 
@@ -78,47 +79,51 @@ case class Bucket(
     identifier.nestedElement.map(_.innerHitsName)
 
   lazy val name: String = identifier.fieldAlias.getOrElse(sourceBucket.replace(".", "_"))
+
+  lazy val bucketPath: String = {
+    identifier.nestedElement match {
+      case Some(ne) => ne.bucketPath
+      case None     => "" // Root level
+    }
+  }
 }
 
 object MetricSelectorScript {
-
-  def extractMetricsPath(criteria: Criteria): Map[String, String] = criteria match {
-    case Predicate(left, _, right, _, _) =>
-      extractMetricsPath(left) ++ extractMetricsPath(right)
-    case relation: ElasticRelation => extractMetricsPath(relation.criteria)
-    case _: MultiMatchCriteria     => Map.empty //MATCH is not supported in bucket_selector
-    case e: Expression if e.aggregation =>
-      import e._
-      maybeValue match {
-        case Some(v: Identifier) => identifier.metricsPath ++ v.metricsPath
-        case _                   => identifier.metricsPath
-      }
-    case _ => Map.empty
-  }
 
   def metricSelector(expr: Criteria): String = expr match {
     case Predicate(left, op, right, maybeNot, group) =>
       val leftStr = metricSelector(left)
       val rightStr = metricSelector(right)
-      val opStr = op match {
-        case AND | OR => op.painless(None)
-        case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
+
+      // Filtering all "1 == 1"
+      if (leftStr == "1 == 1" && rightStr == "1 == 1") {
+        "1 == 1"
+      } else if (leftStr == "1 == 1") {
+        rightStr
+      } else if (rightStr == "1 == 1") {
+        leftStr
+      } else {
+        val opStr = op match {
+          case AND | OR => op.painless(None)
+          case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
+        }
+        val not = maybeNot.nonEmpty
+        if (group || not)
+          s"${maybeNot.map(_ => "!").getOrElse("")}($leftStr) $opStr ($rightStr)"
+        else
+          s"$leftStr $opStr $rightStr"
       }
-      val not = maybeNot.nonEmpty
-      if (group || not)
-        s"${maybeNot.map(_ => "!").getOrElse("")}($leftStr) $opStr ($rightStr)"
-      else
-        s"$leftStr $opStr $rightStr"
 
     case relation: ElasticRelation => metricSelector(relation.criteria)
 
-    case _: MultiMatchCriteria => "1 == 1" //MATCH is not supported in bucket_selector
+    case _: MultiMatchCriteria => "1 == 1"
 
     case e: Expression if e.aggregation =>
+      // NO FILTERING: the script is generated for all metrics
       val painless = e.painless(None)
       e.maybeValue match {
         case Some(value) if e.operator.isInstanceOf[ComparisonOperator] =>
-          value.out match { // compare epoch millis
+          value.out match {
             case SQLTypes.Date =>
               s"$painless.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()"
             case SQLTypes.Time if e.operator.isInstanceOf[ComparisonOperator] =>
@@ -129,8 +134,7 @@ object MetricSelectorScript {
           }
         case _ => painless
       }
-
-    case _ => "1 == 1" //throw new IllegalArgumentException(s"Unsupported SQLCriteria type: $expr")
+    case _ => "1 == 1"
   }
 }
 
