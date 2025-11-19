@@ -530,7 +530,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "Country": {
         |      "terms": {
-        |        "field": "Country.keyword",
+        |        "field": "Country",
         |        "exclude": ["USA"],
         |        "order": {
         |          "_key": "asc"
@@ -539,7 +539,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "aggs": {
         |        "City": {
         |          "terms": {
-        |            "field": "City.keyword",
+        |            "field": "City",
         |            "exclude": ["Berlin"],
         |            "order": {
         |              "cnt": "desc"
@@ -793,7 +793,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "aggs": {
         |            "cat": {
         |              "terms": {
-        |                "field": "products.category.keyword",
+        |                "field": "products.category",
         |                "size": 10
         |              },
         |              "aggs": {
@@ -1009,7 +1009,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "userId": {
         |      "terms": {
-        |        "field": "userId.keyword"
+        |        "field": "userId"
         |      },
         |      "aggs": {
         |        "lastSeen": {
@@ -1053,7 +1053,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "Country": {
         |      "terms": {
-        |        "field": "Country.keyword",
+        |        "field": "Country",
         |        "exclude": ["USA"],
         |        "order": {
         |          "_key": "asc"
@@ -1062,7 +1062,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "aggs": {
         |        "City": {
         |          "terms": {
-        |            "field": "City.keyword",
+        |            "field": "City",
         |            "exclude": ["Berlin"]
         |          },
         |          "aggs": {
@@ -1118,7 +1118,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "Country": {
         |      "terms": {
-        |        "field": "Country.keyword",
+        |        "field": "Country",
         |        "exclude": [
         |          "USA"
         |        ],
@@ -1129,7 +1129,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "aggs": {
         |        "City": {
         |          "terms": {
-        |            "field": "City.keyword",
+        |            "field": "City",
         |            "exclude": [
         |              "Berlin"
         |            ]
@@ -1193,7 +1193,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "identifier": {
         |      "terms": {
-        |        "field": "identifier.keyword",
+        |        "field": "identifier",
         |        "order": {
         |          "ct": "desc"
         |        }
@@ -1360,7 +1360,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "identifier": {
         |      "terms": {
-        |        "field": "identifier.keyword",
+        |        "field": "identifier",
         |        "order": {
         |          "ct": "desc"
         |        }
@@ -1517,7 +1517,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "identifier": {
         |      "terms": {
-        |        "field": "identifier.keyword"
+        |        "field": "identifier"
         |      },
         |      "aggs": {
         |        "max_diff": {
@@ -2758,7 +2758,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "dept": {
         |      "terms": {
-        |        "field": "department.keyword"
+        |        "field": "department"
         |      },
         |      "aggs": {
         |        "cnt": {

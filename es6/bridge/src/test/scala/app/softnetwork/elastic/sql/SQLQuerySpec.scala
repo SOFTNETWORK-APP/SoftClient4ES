@@ -530,7 +530,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "Country": {
       |      "terms": {
-      |        "field": "Country.keyword",
+      |        "field": "Country",
       |        "exclude": "USA",
       |        "order": {
       |          "_key": "asc"
@@ -539,7 +539,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "aggs": {
       |        "City": {
       |          "terms": {
-      |            "field": "City.keyword",
+      |            "field": "City",
       |            "exclude": "Berlin",
       |            "order": {
       |              "cnt": "desc"
@@ -793,7 +793,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "aggs": {
       |            "cat": {
       |              "terms": {
-      |                "field": "products.category.keyword",
+      |                "field": "products.category",
       |                "size": 10
       |              },
       |              "aggs": {
@@ -1009,7 +1009,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "userId": {
       |      "terms": {
-      |        "field": "userId.keyword"
+      |        "field": "userId"
       |      },
       |      "aggs": {
       |        "lastSeen": {
@@ -1053,7 +1053,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "Country": {
       |      "terms": {
-      |        "field": "Country.keyword",
+      |        "field": "Country",
       |        "exclude": "USA",
       |        "order": {
       |          "_key": "asc"
@@ -1062,7 +1062,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "aggs": {
       |        "City": {
       |          "terms": {
-      |            "field": "City.keyword",
+      |            "field": "City",
       |            "exclude": "Berlin"
       |          },
       |          "aggs": {
@@ -1118,7 +1118,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "Country": {
         |      "terms": {
-        |        "field": "Country.keyword",
+        |        "field": "Country",
         |        "exclude": "USA",
         |        "order": {
         |          "_key": "asc"
@@ -1127,7 +1127,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "aggs": {
         |        "City": {
         |          "terms": {
-        |            "field": "City.keyword",
+        |            "field": "City",
         |            "exclude": "Berlin"
         |          },
         |          "aggs": {
@@ -1189,7 +1189,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "identifier": {
       |      "terms": {
-      |        "field": "identifier.keyword",
+      |        "field": "identifier",
       |        "order": {
       |          "ct": "desc"
       |        }
@@ -1356,7 +1356,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "identifier": {
       |      "terms": {
-      |        "field": "identifier.keyword",
+      |        "field": "identifier",
       |        "order": {
       |          "ct": "desc"
       |        }
@@ -1513,7 +1513,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "identifier": {
       |      "terms": {
-      |        "field": "identifier.keyword"
+      |        "field": "identifier"
       |      },
       |      "aggs": {
       |        "max_diff": {
@@ -2754,7 +2754,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "aggs": {
       |    "dept": {
       |      "terms": {
-      |        "field": "department.keyword"
+      |        "field": "department"
       |      },
       |      "aggs": {
       |        "cnt": {
@@ -3729,4 +3729,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s+", "")
   }
 
+  it should "test" in {
+    val query =
+      """SELECT name FROM users WHERE status = 'active' AND age > 25
+        |""".stripMargin
+    val select: ElasticSearchRequest = SQLQuery(query)
+    println(select.query)
+  }
 }

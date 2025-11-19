@@ -268,13 +268,13 @@ object ElasticAggregation {
       var agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {
           case Some(direction) =>
-            termsAgg(bucket.name, s"$currentBucketPath.keyword")
+            termsAgg(bucket.name, currentBucketPath)
               .order(Seq(direction match {
                 case Asc => TermsOrder("_key", asc = true)
                 case _   => TermsOrder("_key", asc = false)
               }))
           case None =>
-            termsAgg(bucket.name, s"$currentBucketPath.keyword")
+            termsAgg(bucket.name, currentBucketPath)
         }
       }
       bucket.size.foreach(s => agg = agg.size(s))
