@@ -167,13 +167,17 @@ object ElasticAggregation {
               .fetchSource(
                 th.identifier.name +: th.fields
                   .filterNot(_.isScriptField)
+                  .filterNot(_.sourceField == th.identifier.name)
                   .map(_.sourceField)
+                  .distinct
                   .toArray,
                 Array.empty
               )
               .copy(
                 scripts = th.fields
                   .filter(_.isScriptField)
+                  .groupBy(_.sourceField)
+                  .map(_._2.head)
                   .map(f => f.sourceField -> Script(f.painless(None)).lang("painless"))
                   .toMap
               )
