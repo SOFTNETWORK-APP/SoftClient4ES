@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.function.aggregate.TopHitsAggregation
+import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.{asString, Token}
 
 case class SQLSearchRequest(
@@ -123,16 +123,17 @@ case class SQLSearchRequest(
         .filterNot(_.nested)
         .map(_.sourceField)
         .filterNot(f => excludes.contains(f))
+        .distinct
     else
       Seq.empty
   }
 
-  lazy val topHitsFields: Seq[Field] = select.fields.filter(_.topHits.nonEmpty)
+  lazy val windowFields: Seq[Field] = select.fields.filter(_.windows.nonEmpty)
 
-  lazy val topHitsAggs: Seq[TopHitsAggregation] = topHitsFields.flatMap(_.topHits)
+  lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.windows)
 
   lazy val aggregates: Seq[Field] =
-    select.fields.filter(_.aggregation).filterNot(_.topHits.isDefined) ++ topHitsFields
+    select.fields.filter(_.aggregation).filterNot(_.windows.isDefined) ++ windowFields
 
   lazy val sqlAggregations: Map[String, SQLAggregation] =
     aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
@@ -141,7 +142,7 @@ case class SQLSearchRequest(
 
   lazy val sources: Seq[String] = from.tables.map(_.name)
 
-  lazy val topHitsBuckets: Seq[Bucket] = topHitsAggs
+  lazy val windowBuckets: Seq[Bucket] = windowFunctions
     .flatMap(_.bucketNames)
     .filterNot(bucket =>
       groupBy.map(_.bucketNames).getOrElse(Map.empty).keys.toSeq.contains(bucket._1)
@@ -150,7 +151,7 @@ case class SQLSearchRequest(
     .values
     .toSeq
 
-  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty) ++ topHitsBuckets
+  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty) ++ windowBuckets
 
   override def validate(): Either[String, Unit] = {
     for {

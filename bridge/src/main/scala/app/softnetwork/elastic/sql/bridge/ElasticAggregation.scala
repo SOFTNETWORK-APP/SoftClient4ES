@@ -113,8 +113,8 @@ object ElasticAggregation {
         s"${aggType}_distinct_${sourceField.replace(".", "_")}"
       else {
         aggType match {
-          case th: TopHitsAggregation =>
-            s"${th.topHits.sql.toLowerCase}_${sourceField.replace(".", "_")}"
+          case th: WindowFunction =>
+            s"${th.window.sql.toLowerCase}_${sourceField.replace(".", "_")}"
           case _ =>
             s"${aggType}_${sourceField.replace(".", "_")}"
 
@@ -154,7 +154,7 @@ object ElasticAggregation {
         case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
         case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
-        case th: TopHitsAggregation =>
+        case th: WindowFunction =>
           val limit = {
             th match {
               case _: LastValue => 1
@@ -184,12 +184,12 @@ object ElasticAggregation {
               .size(limit) sortBy th.orderBy.sorts.map(sort =>
               sort.order match {
                 case Some(Desc) =>
-                  th.topHits match {
+                  th.window match {
                     case LAST_VALUE => FieldSort(sort.field).asc()
                     case _          => FieldSort(sort.field).desc()
                   }
                 case _ =>
-                  th.topHits match {
+                  th.window match {
                     case LAST_VALUE => FieldSort(sort.field).desc()
                     case _          => FieldSort(sort.field).asc()
                   }

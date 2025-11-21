@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, TopHitsAggregation}
+import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, WindowFunction}
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain, FunctionUtils}
 import app.softnetwork.elastic.sql.{
   asString,
@@ -64,19 +64,19 @@ case class Field(
 
   override def functions: List[Function] = identifier.functions
 
-  lazy val topHits: Option[TopHitsAggregation] =
-    functions.collectFirst { case th: TopHitsAggregation => th }
+  lazy val windows: Option[WindowFunction] =
+    functions.collectFirst { case th: WindowFunction => th }
 
   def update(request: SQLSearchRequest): Field = {
-    topHits match {
+    windows match {
       case Some(th) =>
-        val topHitsAggregation = th.update(request)
-        val identifier = topHitsAggregation.identifier
+        val windowFunction = th.update(request)
+        val identifier = windowFunction.identifier
         identifier.functions match {
           case _ :: tail =>
-            this.copy(identifier = identifier.withFunctions(functions = topHitsAggregation +: tail))
+            this.copy(identifier = identifier.withFunctions(functions = windowFunction +: tail))
           case _ =>
-            this.copy(identifier = identifier.withFunctions(functions = List(topHitsAggregation)))
+            this.copy(identifier = identifier.withFunctions(functions = List(windowFunction)))
         }
       case None => this.copy(identifier = identifier.update(request))
     }
@@ -162,8 +162,8 @@ object SQLAggregation {
           s"${aggType}_distinct_${sourceField.replace(".", "_")}"
         else {
           aggType match {
-            case th: TopHitsAggregation =>
-              s"${th.topHits.sql.toLowerCase}_${sourceField.replace(".", "_")}"
+            case th: WindowFunction =>
+              s"${th.window.sql.toLowerCase}_${sourceField.replace(".", "_")}"
             case _ =>
               s"${aggType}_${sourceField.replace(".", "_")}"
 
