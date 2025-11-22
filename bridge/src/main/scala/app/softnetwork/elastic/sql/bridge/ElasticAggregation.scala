@@ -113,8 +113,8 @@ object ElasticAggregation {
         s"${aggType}_distinct_${sourceField.replace(".", "_")}"
       else {
         aggType match {
-          case th: TopHitsAggregation =>
-            s"${th.topHits.sql.toLowerCase}_${sourceField.replace(".", "_")}"
+          case th: WindowFunction =>
+            s"${th.window.sql.toLowerCase}_${sourceField.replace(".", "_")}"
           case _ =>
             s"${aggType}_${sourceField.replace(".", "_")}"
 
@@ -154,7 +154,7 @@ object ElasticAggregation {
         case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
         case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
-        case th: TopHitsAggregation =>
+        case th: WindowFunction =>
           val limit = {
             th match {
               case _: LastValue => 1
@@ -167,25 +167,29 @@ object ElasticAggregation {
               .fetchSource(
                 th.identifier.name +: th.fields
                   .filterNot(_.isScriptField)
+                  .filterNot(_.sourceField == th.identifier.name)
                   .map(_.sourceField)
+                  .distinct
                   .toArray,
                 Array.empty
               )
               .copy(
                 scripts = th.fields
                   .filter(_.isScriptField)
+                  .groupBy(_.sourceField)
+                  .map(_._2.head)
                   .map(f => f.sourceField -> Script(f.painless(None)).lang("painless"))
                   .toMap
               )
               .size(limit) sortBy th.orderBy.sorts.map(sort =>
               sort.order match {
                 case Some(Desc) =>
-                  th.topHits match {
+                  th.window match {
                     case LAST_VALUE => FieldSort(sort.field).asc()
                     case _          => FieldSort(sort.field).desc()
                   }
                 case _ =>
-                  th.topHits match {
+                  th.window match {
                     case LAST_VALUE => FieldSort(sort.field).desc()
                     case _          => FieldSort(sort.field).asc()
                   }
@@ -271,13 +275,13 @@ object ElasticAggregation {
       var agg = {
         bucketsDirection.get(bucket.identifier.identifierName) match {
           case Some(direction) =>
-            termsAgg(bucket.name, s"$currentBucketPath.keyword")
+            termsAgg(bucket.name, currentBucketPath)
               .order(Seq(direction match {
                 case Asc => TermsOrder("_key", asc = true)
                 case _   => TermsOrder("_key", asc = false)
               }))
           case None =>
-            termsAgg(bucket.name, s"$currentBucketPath.keyword")
+            termsAgg(bucket.name, currentBucketPath)
         }
       }
       bucket.size.foreach(s => agg = agg.size(s))

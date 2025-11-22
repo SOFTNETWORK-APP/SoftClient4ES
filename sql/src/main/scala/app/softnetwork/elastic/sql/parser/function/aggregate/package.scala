@@ -59,22 +59,22 @@ package object aggregate {
         }
       }
 
-    def first_value: PackratParser[TopHitsAggregation] =
+    def first_value: PackratParser[WindowFunction] =
       FIRST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
         FirstValue(top._1, top._2, top._3)
       }
 
-    def last_value: PackratParser[TopHitsAggregation] =
+    def last_value: PackratParser[WindowFunction] =
       LAST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
         LastValue(top._1, top._2, top._3)
       }
 
-    def array_agg: PackratParser[TopHitsAggregation] =
+    def array_agg: PackratParser[WindowFunction] =
       ARRAY_AGG.regex ~ top_hits ^^ { case _ ~ top =>
         ArrayAgg(top._1, top._2, top._3, limit = None)
       }
 
-    def identifierWithTopHits: PackratParser[Identifier] =
+    def identifierWithWindowFunction: PackratParser[Identifier] =
       (first_value | last_value | array_agg) ^^ { th =>
         th.identifier.withFunctions(th +: th.identifier.functions)
       }

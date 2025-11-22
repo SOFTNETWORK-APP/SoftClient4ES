@@ -1516,15 +1516,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    val sqlResponse =
-      ElasticResponse(
-        "",
-        jsonString,
-        fieldAliases,
-        aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-      )
 
-    parseResponse(sqlResponse) match {
+    parseResponse(
+      jsonString,
+      fieldAliases,
+      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+    ) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} rows from response")
         rows
@@ -1541,9 +1538,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
 
-    parseResponse(sqlResponse) match {
+    parseResponse(jsonString, fieldAliases, Map.empty) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)

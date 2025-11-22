@@ -51,7 +51,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         |  }
         |}""".stripMargin
 
-    parseResponse(ElasticResponse("", results, Map.empty, Map.empty)) match {
+    parseResponse(results, Map.empty, Map.empty) match {
       case Success(rows) =>
         rows.foreach(println)
       // Map(name -> Laptop, price -> 999.99, category -> Electronics, tags -> List(computer, portable), _id -> 1, _index -> products, _score -> 1.0)
@@ -86,7 +86,9 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         |  }
         |}""".stripMargin
     parseResponse(
-      ElasticResponse("", results, Map.empty, Map.empty)
+      results,
+      Map.empty,
+      Map.empty
     ) match {
       case Success(rows) =>
         rows.foreach(println)
@@ -180,16 +182,15 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |}""".stripMargin
 
     parseResponse(
-      ElasticResponse(
-        "",
-        results,
-        Map.empty,
-        Map(
-          "top_products" -> ClientAggregation(
-            "top_products",
-            aggType = AggregationType.ArrayAgg,
-            distinct = false
-          )
+      results,
+      Map.empty,
+      Map(
+        "top_products" -> ClientAggregation(
+          "top_products",
+          aggType = AggregationType.ArrayAgg,
+          distinct = false,
+          "name",
+          window = true
         )
       )
     ) match {
@@ -287,7 +288,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |    }
                     |  }
                     |}""".stripMargin
-    parseResponse(ElasticResponse("", results, Map.empty, Map.empty)) match {
+    parseResponse(results, Map.empty, Map.empty) match {
       case Success(rows) =>
         rows.foreach(println)
         // Map(country -> France, country_doc_count -> 100, city -> Paris, city_doc_count -> 60, product -> Laptop, product_doc_count -> 30, total_sales -> 29997.0, avg_price -> 999.9)
@@ -334,7 +335,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |    }
                     |  }
                     |}""".stripMargin
-    parseResponse(ElasticResponse("", results, Map.empty, Map.empty)) match {
+    parseResponse(results, Map.empty, Map.empty) match {
       case Success(rows) =>
         rows.foreach(println)
         // Map(date -> 2024-01-01T00:00:00.000Z, doc_count -> 100, total_sales -> 50000.0)
@@ -634,16 +635,15 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |}""".stripMargin
 
     parseResponse(
-      ElasticResponse(
-        "",
-        results,
-        Map.empty,
-        Map(
-          "employees" -> ClientAggregation(
-            aggName = "employees",
-            aggType = AggregationType.ArrayAgg,
-            distinct = false
-          )
+      results,
+      Map.empty,
+      Map(
+        "employees" -> ClientAggregation(
+          aggName = "employees",
+          aggType = AggregationType.ArrayAgg,
+          distinct = false,
+          "name",
+          window = true
         )
       )
     ) match {

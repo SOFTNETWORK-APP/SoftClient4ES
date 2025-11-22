@@ -44,11 +44,11 @@ trait ElasticConversion {
     m: Manifest[T],
     formats: Formats
   ): Try[Seq[T]] = {
-    parseResponse(response).map { rows =>
-      rows.map { row =>
+    Try(
+      response.results.map { row =>
         convertTo[T](row)(m, formats)
       }
-    }
+    )
   }
 
   // Formatters for elasticsearch ISO 8601 date/time strings
@@ -60,15 +60,17 @@ trait ElasticConversion {
     * multi-search (msearch/UNION ALL) responses
     */
   def parseResponse(
-    response: ElasticResponse
+    results: String,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, ClientAggregation]
   ): Try[Seq[Map[String, Any]]] = {
-    val json = mapper.readTree(response.results)
+    val json = mapper.readTree(results)
     // Check if it's a multi-search response (array of responses)
     if (json.isArray) {
-      parseMultiSearchResponse(json, response.fieldAliases, response.aggregations)
+      parseMultiSearchResponse(json, fieldAliases, aggregations)
     } else {
       // Single search response
-      parseSingleSearchResponse(json, response.fieldAliases, response.aggregations)
+      parseSingleSearchResponse(json, fieldAliases, aggregations)
     }
   }
 

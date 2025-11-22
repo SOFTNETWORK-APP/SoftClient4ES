@@ -39,18 +39,21 @@ package object client extends SerializationApi {
   type JSONResults = String
 
   /** Elastic response case class
+    * @param sql
+    *   - the SQL query if any
     * @param query
     *   - the JSON query
     * @param results
-    *   - the JSON results
+    *   - the results as a sequence of rows
     * @param fieldAliases
     *   - the field aliases used
     * @param aggregations
     *   - the aggregations expected
     */
   case class ElasticResponse(
+    sql: Option[String] = None,
     query: JSONQuery,
-    results: JSONResults,
+    results: Seq[Map[String, Any]],
     fieldAliases: Map[String, String],
     aggregations: Map[String, ClientAggregation]
   )
@@ -69,9 +72,14 @@ package object client extends SerializationApi {
     * @param types
     *   - the target types @deprecated types are deprecated in ES 7+
     */
-  case class ElasticQuery(query: JSONQuery, indices: Seq[String], types: Seq[String] = Seq.empty)
+  case class ElasticQuery(
+    query: JSONQuery,
+    indices: Seq[String],
+    types: Seq[String] = Seq.empty,
+    sql: Option[String] = None
+  )
 
-  case class ElasticQueries(queries: List[ElasticQuery])
+  case class ElasticQueries(queries: List[ElasticQuery], sql: Option[String] = None)
 
   /** Retry configuration
     */
@@ -137,7 +145,9 @@ package object client extends SerializationApi {
   case class ClientAggregation(
     aggName: String,
     aggType: AggregationType.AggregationType,
-    distinct: Boolean
+    distinct: Boolean,
+    sourceField: String,
+    window: Boolean
   ) {
     def multivalued: Boolean = aggType == AggregationType.ArrayAgg
     def singleValued: Boolean = !multivalued
@@ -155,6 +165,12 @@ package object client extends SerializationApi {
       case _: ArrayAgg   => AggregationType.ArrayAgg
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
-    ClientAggregation(agg.aggName, aggType, agg.distinct)
+    ClientAggregation(
+      agg.aggName,
+      aggType,
+      agg.distinct,
+      agg.sourceField,
+      agg.aggType.isInstanceOf[WindowFunction]
+    )
   }
 }
