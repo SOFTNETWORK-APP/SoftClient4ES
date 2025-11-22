@@ -3731,7 +3731,15 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "test" in {
     val query =
-      """SELECT name FROM users WHERE status = 'active' AND age > 25
+      """SELECT
+        |    name,
+        |    department,
+        |    salary,
+        |    FIRST_VALUE(salary) OVER (
+        |      PARTITION BY department
+        |      ORDER BY hire_date
+        |    ) as firstSalaryInDept
+        |  FROM employees
         |""".stripMargin
     val select: ElasticSearchRequest = SQLQuery(query)
     println(select.query)

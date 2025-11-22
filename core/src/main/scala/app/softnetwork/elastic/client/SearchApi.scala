@@ -68,7 +68,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           collection.immutable.Seq(single.sources: _*),
           sql = Some(sql.query)
         )
-        singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
+        if (
+          single.windowFunctions.nonEmpty && (single.fields.nonEmpty || single.windowFunctions
+            .flatMap(_.fields)
+            .distinct
+            .size > 1)
+        )
+          searchWithWindowEnrichment(sql, single)
+        else
+          singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
       case Some(Right(multiple)) =>
         val elasticQueries = ElasticQueries(
@@ -1083,4 +1091,327 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       )
   }
 
+  // ========================================================================
+  // WINDOW FUNCTION SEARCH
+  // ========================================================================
+
+  /** Search with window function enrichment
+    *
+    * Strategy:
+    *   1. Execute aggregation query to compute window values 2. Execute main query (without window
+    *      functions) 3. Enrich results with window values
+    */
+  private def searchWithWindowEnrichment(
+    sql: SQLQuery,
+    request: SQLSearchRequest
+  ): ElasticResult[ElasticResponse] = {
+
+    logger.info(s"🪟 Detected ${request.windowFunctions.size} window functions")
+
+    for {
+      // Step 1: Execute window aggregations
+      windowCache <- executeWindowAggregations(request)
+
+      // Step 2: Execute base query (without window functions)
+      baseResponse <- executeBaseQuery(sql, request)
+
+      // Step 3: Enrich results
+      enrichedResponse <- enrichResponseWithWindowValues(baseResponse, windowCache, request)
+
+    } yield enrichedResponse
+  }
+
+  // ========================================================================
+  // WINDOW AGGREGATION EXECUTION
+  // ========================================================================
+
+  /** Execute aggregation queries for all window functions Returns a cache of partition key ->
+    * window values
+    */
+  protected def executeWindowAggregations(
+    request: SQLSearchRequest
+  ): ElasticResult[WindowCache] = {
+
+    // Build aggregation request
+    val aggRequest = buildWindowAggregationRequest(request)
+    val sql = aggRequest.sql
+
+    logger.info(
+      s"🔍 Executing window aggregation query:\n$sql"
+    )
+
+    // Execute aggregation using existing search infrastructure
+    val elasticQuery = ElasticQuery(
+      aggRequest,
+      collection.immutable.Seq(aggRequest.sources: _*),
+      sql = Some(sql)
+    )
+
+    for {
+      // Use singleSearch to execute aggregation
+      aggResponse <- singleSearch(
+        elasticQuery,
+        aggRequest.fieldAliases,
+        aggRequest.sqlAggregations
+      )
+
+      // Parse aggregation results into cache
+      cache <- parseWindowAggregationsToCache(aggResponse, request)
+
+    } yield cache
+  }
+
+  /** Build aggregation request for window functions
+    */
+  private def buildWindowAggregationRequest(
+    request: SQLSearchRequest
+  ): SQLSearchRequest = {
+
+    // Create modified request with:
+    // - Only window buckets in GROUP BY
+    // - Only window aggregations in SELECT
+    // - No LIMIT (need all partitions)
+    // - Same WHERE clause (to match base query filtering)
+    request
+      .copy(
+        select = request.select.copy(fields = request.windowFields),
+        groupBy = request.groupBy.map(_.copy(buckets = request.windowBuckets)),
+        orderBy = None, // Not needed for aggregations
+        limit = None // Need all buckets
+      )
+      .update()
+  }
+
+  /** Parse aggregation response into window cache Uses your existing
+    * ElasticConversion.parseResponse
+    */
+  private def parseWindowAggregationsToCache(
+    response: ElasticResponse,
+    request: SQLSearchRequest
+  ): ElasticResult[WindowCache] = {
+
+    logger.info(
+      s"🔍 Parsing window aggregations to cache for query \n${response.sql.getOrElse(response.query)}"
+    )
+
+    val aggRows = response.results
+
+    logger.info(s"✅ Parsed ${aggRows.size} aggregation buckets")
+
+    // Build cache: partition key -> window values
+    val cache = aggRows.map { row =>
+      val partitionKey = extractPartitionKey(row, request)
+      val windowValues = extractWindowValues(row, response.aggregations)
+
+      partitionKey -> windowValues
+    }.toMap
+
+    ElasticResult.success(WindowCache(cache))
+  }
+
+  // ========================================================================
+  // BASE QUERY EXECUTION
+  // ========================================================================
+
+  /** Execute base query without window functions
+    */
+  private def executeBaseQuery(
+    sql: SQLQuery,
+    request: SQLSearchRequest
+  ): ElasticResult[ElasticResponse] = {
+
+    val baseQuery = createBaseQuery(sql, request)
+
+    logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
+
+    singleSearch(
+      ElasticQuery(
+        baseQuery,
+        collection.immutable.Seq(baseQuery.sources: _*),
+        sql = Some(baseQuery.sql)
+      ),
+      baseQuery.fieldAliases,
+      baseQuery.sqlAggregations
+    )
+  }
+
+  /** Create base query by removing window functions from SELECT
+    */
+  protected def createBaseQuery(
+    sql: SQLQuery,
+    request: SQLSearchRequest
+  ): SQLSearchRequest = {
+
+    // Remove window function fields from SELECT
+    val baseFields = request.select.fields.filterNot(_.windows.nonEmpty)
+
+    // Create modified request
+    val baseRequest = request
+      .copy(
+        select = request.select.copy(fields = baseFields)
+      )
+      .copy(score = sql.score)
+      .update()
+
+    baseRequest
+  }
+
+  /** Extract partition key from aggregation row
+    */
+  private def extractPartitionKey(
+    row: Map[String, Any],
+    request: SQLSearchRequest
+  ): PartitionKey = {
+
+    // Get all partition fields from window functions
+    val partitionFields = request.windowFunctions
+      .flatMap(_.partitionBy)
+      .map(_.aliasOrName)
+      .distinct
+
+    if (partitionFields.isEmpty) {
+      return PartitionKey(Map("__global__" -> true))
+    }
+
+    val keyValues = partitionFields.flatMap { field =>
+      row.get(field).map(field -> _)
+    }.toMap
+
+    PartitionKey(keyValues)
+  }
+
+  /** Extract window function values from aggregation row
+    */
+  private def extractWindowValues(
+    row: Map[String, Any],
+    aggregations: Map[String, ClientAggregation]
+  ): WindowValues = {
+
+    val values = aggregations
+      .filter(_._2.window)
+      .map { wf =>
+        val fieldName = wf._1
+
+        val aggType = wf._2.aggType
+
+        val sourceField = wf._2.sourceField
+
+        // Get value from row (already processed by ElasticConversion)
+        val value = row.get(fieldName).orElse {
+          logger.warn(s"⚠️ Window function '$fieldName' not found in aggregation result")
+          None
+        }
+
+        val validatedValue =
+          value match {
+            case Some(m: Map[String, Any]) =>
+              m.get(sourceField) match {
+                case Some(v) =>
+                  aggType match {
+                    case AggregationType.ArrayAgg =>
+                      v match {
+                        case l: List[_] =>
+                          Some(l)
+                        case other =>
+                          logger.warn(
+                            s"⚠️ Expected List for ARRAY_AGG '$fieldName', got ${other.getClass.getSimpleName}"
+                          )
+                          Some(List(other)) // Wrap into a List
+                      }
+                    case _ => Some(v)
+                  }
+                case None =>
+                  None
+              }
+            case other =>
+              other
+          }
+
+        fieldName -> validatedValue
+      }
+      .collect { case (name, Some(value)) =>
+        name -> value
+      }
+
+    WindowValues(values)
+  }
+
+  // ========================================================================
+  // RESULT ENRICHMENT
+  // ========================================================================
+
+  /** Enrich response with window values
+    */
+  private def enrichResponseWithWindowValues(
+    response: ElasticResponse,
+    cache: WindowCache,
+    request: SQLSearchRequest
+  ): ElasticResult[ElasticResponse] = {
+
+    val baseRows = response.results
+    // Enrich each row
+    val enrichedRows = baseRows.map { row =>
+      enrichDocumentWithWindowValues(row, cache, request)
+    }
+
+    ElasticResult.success(response.copy(results = enrichedRows))
+  }
+
+  /** Enrich a single document with window values
+    */
+  protected def enrichDocumentWithWindowValues(
+    doc: Map[String, Any],
+    cache: WindowCache,
+    request: SQLSearchRequest
+  ): Map[String, Any] = {
+
+    if (request.windowFunctions.isEmpty) {
+      return doc
+    }
+
+    // Build partition key from document
+    val partitionKey = extractPartitionKey(doc, request)
+
+    // Lookup window values
+    cache.get(partitionKey) match {
+      case Some(windowValues) =>
+        // Merge document with window values
+        doc ++ windowValues.values
+
+      case None =>
+        logger.warn(s"⚠️ No window values found for partition: ${partitionKey.values}")
+
+        // Add null values for missing window functions
+        val nullValues = request.windowFunctions.map { wf =>
+          wf.identifier.aliasOrName -> null
+        }.toMap
+
+        doc ++ nullValues
+    }
+  }
+
+  // ========================================================================
+  // HELPER CASE CLASSES
+  // ========================================================================
+
+  /** Partition key for window function cache
+    */
+  protected case class PartitionKey(values: Map[String, Any]) {
+    override def hashCode(): Int = values.hashCode()
+    override def equals(obj: Any): Boolean = obj match {
+      case other: PartitionKey => values == other.values
+      case _                   => false
+    }
+  }
+
+  /** Window function values for a partition
+    */
+  protected case class WindowValues(values: Map[String, Any])
+
+  /** Cache of partition key -> window values
+    */
+  protected case class WindowCache(cache: Map[PartitionKey, WindowValues]) {
+    def get(key: PartitionKey): Option[WindowValues] = cache.get(key)
+    def size: Int = cache.size
+  }
 }
