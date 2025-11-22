@@ -149,6 +149,8 @@ case class SQLSearchRequest(
     )
     .toMap
     .values
+    .groupBy(_.identifier.aliasOrName)
+    .map(_._2.head)
     .toSeq
 
   lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty) ++ windowBuckets

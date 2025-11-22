@@ -263,15 +263,11 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     aggregations: Map[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = jsonObject.toString
-    val sqlResponse =
-      ElasticResponse(
-        "",
-        jsonString,
-        fieldAliases,
-        aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-      )
-
-    parseResponse(sqlResponse) match {
+    parseResponse(
+      jsonString,
+      fieldAliases,
+      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+    ) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse Jest scroll response: ${ex.getMessage}", ex)
@@ -286,9 +282,8 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = jsonObject.toString
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
 
-    parseResponse(sqlResponse) match {
+    parseResponse(jsonString, fieldAliases, Map.empty) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse Jest search after response: ${ex.getMessage}", ex)
