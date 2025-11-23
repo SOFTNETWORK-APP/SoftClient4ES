@@ -137,7 +137,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val indices = elasticQuery.indices.mkString(",")
 
     logger.debug(
-      s"Searching with query \n${sql.getOrElse(query)}\nin indices '$indices'"
+      s"🔍 Searching with query \n${sql.getOrElse(query)}\nin indices '$indices'"
     )
 
     executeSingleSearch(elasticQuery) match {
@@ -236,7 +236,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     )
 
     logger.debug(
-      s"Multi-searching with query \n${sql.getOrElse(query)}"
+      s"🔍 Multi-searching with query \n${sql.getOrElse(query)}"
     )
 
     executeMultiSearch(elasticQueries) match {

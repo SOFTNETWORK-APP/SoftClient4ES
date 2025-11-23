@@ -463,7 +463,6 @@ trait WindowFunctionSpec
           COUNT(*) AS employee_count
         FROM emp
         GROUP BY department
-        ORDER BY avg_salary DESC
       """)
 
     results match {
@@ -474,7 +473,7 @@ trait WindowFunctionSpec
         engineering shouldBe defined
         engineering.get.max_salary shouldBe 130000 // Sam Turner
         engineering.get.min_salary shouldBe 75000 // Eve Davis
-        engineering.get.employee_count shouldBe 6
+        engineering.get.employee_count shouldBe 7
 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")

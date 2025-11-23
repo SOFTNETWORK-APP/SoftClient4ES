@@ -145,10 +145,15 @@ object ElasticAggregation {
     val _agg =
       aggType match {
         case COUNT =>
+          val field =
+            sourceField match {
+              case "*" | "_id" | "_index" | "_type" => "_id"
+              case _                                => sourceField
+            }
           if (distinct)
-            cardinalityAgg(aggName, sourceField)
+            cardinalityAgg(aggName, field)
           else {
-            valueCountAgg(aggName, sourceField)
+            valueCountAgg(aggName, field)
           }
         case MIN => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
         case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
