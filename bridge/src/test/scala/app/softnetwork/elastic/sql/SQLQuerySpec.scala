@@ -542,7 +542,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "terms": {
         |            "field": "City",
         |            "exclude": ["Berlin"],
-        |            "min_doc_count": 0,
+        |            "min_doc_count": 1,
         |            "order": {
         |              "cnt": "desc"
         |            }
@@ -1060,7 +1060,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "terms": {
         |        "field": "Country",
         |        "exclude": ["USA"],
-        |        "min_doc_count":1,
+        |        "min_doc_count": 1,
         |        "order": {
         |          "_key": "asc"
         |        }
@@ -1070,7 +1070,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "terms": {
         |            "field": "City",
         |            "exclude": ["Berlin"],
-        |            "min_doc_count":0
+        |            "min_doc_count": 1
         |          },
         |          "aggs": {
         |            "cnt": {
@@ -1127,7 +1127,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "terms": {
         |        "field": "Country",
         |        "exclude": ["USA"],
-        |        "min_doc_count":1,
+        |        "min_doc_count": 1,
         |        "order": {
         |          "_key": "asc"
         |        }
@@ -1137,7 +1137,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "terms": {
         |            "field": "City",
         |            "exclude": ["Berlin"],
-        |            "min_doc_count":0
+        |            "min_doc_count": 1
         |          },
         |          "aggs": {
         |            "cnt": {
@@ -1199,7 +1199,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "identifier": {
         |      "terms": {
         |        "field": "identifier",
-        |        "min_doc_count":1,
+        |        "min_doc_count": 1,
         |        "order": {
         |          "ct": "desc"
         |        }
@@ -1367,7 +1367,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "identifier": {
         |      "terms": {
         |        "field": "identifier",
-        |        "min_doc_count":1,
+        |        "min_doc_count": 1,
         |        "order": {
         |          "ct": "desc"
         |        }
@@ -1525,7 +1525,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "identifier": {
         |      "terms": {
         |        "field": "identifier",
-        |        "min_doc_count":1
+        |        "min_doc_count": 1
         |      },
         |      "aggs": {
         |        "max_diff": {
@@ -2767,7 +2767,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "dept": {
         |      "terms": {
         |        "field": "department",
-        |        "min_doc_count":1
+        |        "min_doc_count": 1
         |      },
         |      "aggs": {
         |        "cnt": {
