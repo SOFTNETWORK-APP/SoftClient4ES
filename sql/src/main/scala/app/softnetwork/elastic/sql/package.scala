@@ -69,6 +69,7 @@ package object sql {
     def isTemporal: Boolean = out.isInstanceOf[SQLTemporal]
     def isAggregation: Boolean = false
     def hasAggregation: Boolean = isAggregation
+    def shouldBeScripted: Boolean = false
   }
 
   trait TokenValue extends Token {
@@ -735,8 +736,7 @@ package object sql {
     def checkNotNull: String =
       if (path.isEmpty) ""
       else
-        s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value${painlessMethods
-          .mkString("")})"
+        s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
 
     override def painless(context: Option[PainlessContext]): String = {
       val base =

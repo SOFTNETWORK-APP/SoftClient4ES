@@ -282,18 +282,18 @@ object ElasticAggregation {
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
   ): Option[Aggregation] = {
-    var first = false
     val nbBuckets = buckets.size
     buckets.reverse.foldLeft(Option.empty[Aggregation]) { (current, bucket) =>
       // Determine the bucketPath of the current bucket
       val currentBucketPath = bucket.identifier.path
 
-      val minDocCount =
-        if ((first || current.isEmpty) && nbBuckets > 1) {
-          0
+      val aggScript =
+        if (bucket.shouldBeScripted) {
+          val context = PainlessContext()
+          val painless = bucket.painless(Some(context))
+          Some(Script(s"$context$painless").lang("painless"))
         } else {
-          first = true
-          1
+          None
         }
 
       var agg: Aggregation = {
@@ -320,32 +320,74 @@ object ElasticAggregation {
               } else {
                 None
               }
-            bucketsDirection.get(bucket.identifier.identifierName) match {
-              case Some(direction) =>
-                DateHistogramAggregation(bucket.name, calendarInterval = interval)
-                  .field(currentBucketPath)
-                  .minDocCount(minDocCount)
-                  .order(direction match {
-                    case Asc => HistogramOrder("_key", asc = true)
-                    case _   => HistogramOrder("_key", asc = false)
-                  })
+
+            aggScript match {
+              case Some(script) =>
+                // Scripted date histogram
+                bucketsDirection.get(bucket.identifier.identifierName) match {
+                  case Some(direction) =>
+                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                      .script(script)
+                      .minDocCount(1)
+                      .order(direction match {
+                        case Asc => HistogramOrder("_key", asc = true)
+                        case _   => HistogramOrder("_key", asc = false)
+                      })
+                  case _ =>
+                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                      .script(script)
+                      .minDocCount(1)
+                }
               case _ =>
-                DateHistogramAggregation(bucket.name, calendarInterval = interval)
-                  .field(currentBucketPath)
-                  .minDocCount(minDocCount)
+                // Standard date histogram
+                bucketsDirection.get(bucket.identifier.identifierName) match {
+                  case Some(direction) =>
+                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                      .field(currentBucketPath)
+                      .minDocCount(1)
+                      .order(direction match {
+                        case Asc => HistogramOrder("_key", asc = true)
+                        case _   => HistogramOrder("_key", asc = false)
+                      })
+                  case _ =>
+                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                      .field(currentBucketPath)
+                      .minDocCount(1)
+                }
             }
+
           case _ =>
-            bucketsDirection.get(bucket.identifier.identifierName) match {
-              case Some(direction) =>
-                termsAgg(bucket.name, currentBucketPath)
-                  .minDocCount(minDocCount)
-                  .order(Seq(direction match {
-                    case Asc => TermsOrder("_key", asc = true)
-                    case _   => TermsOrder("_key", asc = false)
-                  }))
+            aggScript match {
+              case Some(script) =>
+                // Scripted terms aggregation
+                bucketsDirection.get(bucket.identifier.identifierName) match {
+                  case Some(direction) =>
+                    TermsAggregation(bucket.name)
+                      .script(script)
+                      .minDocCount(1)
+                      .order(Seq(direction match {
+                        case Asc => TermsOrder("_key", asc = true)
+                        case _   => TermsOrder("_key", asc = false)
+                      }))
+                  case _ =>
+                    TermsAggregation(bucket.name)
+                      .script(script)
+                      .minDocCount(1)
+                }
               case _ =>
-                termsAgg(bucket.name, currentBucketPath)
-                  .minDocCount(minDocCount)
+                // Standard terms aggregation
+                bucketsDirection.get(bucket.identifier.identifierName) match {
+                  case Some(direction) =>
+                    termsAgg(bucket.name, currentBucketPath)
+                      .minDocCount(1)
+                      .order(Seq(direction match {
+                        case Asc => TermsOrder("_key", asc = true)
+                        case _   => TermsOrder("_key", asc = false)
+                      }))
+                  case _ =>
+                    termsAgg(bucket.name, currentBucketPath)
+                      .minDocCount(1)
+                }
             }
         }
       }

@@ -139,6 +139,9 @@ package object function {
         case f => f
       }
     }
+
+    override def shouldBeScripted: Boolean = functions.exists(_.shouldBeScripted)
+
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
@@ -277,6 +280,8 @@ package object function {
     override def args: List[PainlessScript] = List(left, right)
 
     override def nullable: Boolean = left.nullable || right.nullable
+
+    override def shouldBeScripted: Boolean = left.shouldBeScripted || right.shouldBeScripted
   }
 
   trait TransformFunction[In <: SQLType, Out <: SQLType] extends FunctionN[In, Out] {
@@ -312,6 +317,8 @@ package object function {
             s"$base${painless(context)}"
       }
     }
+
+    override def shouldBeScripted: Boolean = true
   }
 
 }

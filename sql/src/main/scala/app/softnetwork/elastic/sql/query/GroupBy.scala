@@ -18,7 +18,15 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.operator._
-import app.softnetwork.elastic.sql.{Expr, Identifier, LongValue, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.{
+  Expr,
+  Identifier,
+  LongValue,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex,
+  Updateable
+}
 
 case object GroupBy extends Expr("GROUP BY") with TokenRegex
 
@@ -45,7 +53,8 @@ case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
 case class Bucket(
   identifier: Identifier,
   size: Option[Int] = None
-) extends Updateable {
+) extends Updateable
+    with PainlessScript {
   override def sql: String = s"$identifier"
   def update(request: SQLSearchRequest): Bucket = {
     identifier.functions.headOption match {
@@ -88,6 +97,18 @@ case class Bucket(
   }
 
   override def out: SQLType = identifier.out
+
+  override def shouldBeScripted: Boolean = identifier.shouldBeScripted
+
+  /** Generate painless script for this token
+    *
+    * @param context
+    *   the painless context
+    * @return
+    *   the painless script
+    */
+  override def painless(context: Option[PainlessContext]): String =
+    identifier.painless(context)
 }
 
 object MetricSelectorScript {
