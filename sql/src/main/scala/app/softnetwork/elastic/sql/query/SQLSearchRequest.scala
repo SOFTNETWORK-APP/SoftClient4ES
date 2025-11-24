@@ -38,7 +38,7 @@ case class SQLSearchRequest(
   lazy val bucketNames: Map[String, Bucket] = buckets.flatMap { b =>
     val name = b.identifier.identifierName
     "\\d+".r.findFirstIn(name) match {
-      case Some(n) =>
+      case Some(n) if name.trim.split(" ").length == 1 =>
         val identifier = select.fields(n.toInt - 1).identifier
         val updated = b.copy(identifier = select.fields(n.toInt - 1).identifier)
         Map(
@@ -114,7 +114,12 @@ case class SQLSearchRequest(
     )
   }
 
-  lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)
+  lazy val scriptFields: Seq[Field] = {
+    if (aggregates.nonEmpty)
+      Seq.empty
+    else
+      select.fields.filter(_.isScriptField)
+  }
 
   lazy val fields: Seq[String] = {
     if (aggregates.isEmpty && buckets.isEmpty && bucketScripts.isEmpty)

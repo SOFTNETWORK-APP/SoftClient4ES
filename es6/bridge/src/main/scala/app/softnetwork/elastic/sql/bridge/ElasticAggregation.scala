@@ -279,7 +279,6 @@ object ElasticAggregation {
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
   ): Option[Aggregation] = {
-    val nbBuckets = buckets.size
     buckets.reverse.foldLeft(Option.empty[Aggregation]) { (current, bucket) =>
       // Determine the bucketPath of the current bucket
       val currentBucketPath = bucket.identifier.path

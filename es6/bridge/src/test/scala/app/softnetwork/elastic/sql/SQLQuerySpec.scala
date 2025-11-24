@@ -1918,7 +1918,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param1 != null ? param1 : param2"
+      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)"
       |      }
       |    }
       |  },
@@ -1952,6 +1952,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
+      .replaceAll(";\\(param", "; (param")
   }
 
   it should "handle nullif function as script field" in {
@@ -1968,7 +1969,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param3 != null ? param3 : param4"
+      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)"
       |      }
       |    }
       |  },
@@ -2010,6 +2011,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
+      .replaceAll(";\\(param", "; (param")
   }
 
   it should "handle cast function as script field" in {
@@ -2026,7 +2028,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { param3 != null ? param3 : param4 } catch (Exception e) { return null; }"
+      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }"
       |      }
       |    },
       |    "c2": {
@@ -2094,6 +2096,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
       .replaceAll("try \\{", "try { ")
       .replaceAll("} catch", " } catch")
+      .replaceAll(";\\(param", "; (param")
   }
 
   it should "handle case function as script field" in { // 40
@@ -2754,14 +2757,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "size": 0,
-      |  "script_fields": {
-      |    "hire_date": {
-      |      "script": {
-      |        "lang": "painless",
-      |        "source": "def param1 = (doc['hire_date'].size() == 0 ? null : doc['hire_date'].value.toLocalDate()); param1"
-      |      }
-      |    }
-      |  },
       |  "_source": false,
       |  "aggs": {
       |    "dept": {
