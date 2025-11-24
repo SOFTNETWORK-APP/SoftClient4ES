@@ -409,8 +409,8 @@ package object bridge {
       request.buckets,
       request.aggregates.map(
         ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
-      ),
-      request.orderBy.map(_.sorts).getOrElse(Seq.empty)
+      )
+      // request.orderBy.map(_.sorts).getOrElse(Seq.empty)
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
