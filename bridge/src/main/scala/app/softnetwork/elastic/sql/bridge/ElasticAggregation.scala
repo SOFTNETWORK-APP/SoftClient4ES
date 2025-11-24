@@ -156,7 +156,7 @@ object ElasticAggregation {
         case COUNT =>
           val field =
             sourceField match {
-              case "*" | "_id" | "_index" | "_type" => "_id"
+              case "*" | "_id" | "_index" | "_type" => "_index"
               case _                                => sourceField
             }
           if (distinct)
