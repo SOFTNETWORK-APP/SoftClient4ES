@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.{Expr, Identifier, LongValue, TokenRegex, Updateable}
 
@@ -86,6 +86,8 @@ case class Bucket(
       case None     => "" // Root level
     }
   }
+
+  override def out: SQLType = identifier.out
 }
 
 object MetricSelectorScript {
@@ -118,7 +120,7 @@ object MetricSelectorScript {
 
     case _: MultiMatchCriteria => "1 == 1"
 
-    case e: Expression if e.aggregation =>
+    case e: Expression if e.isAggregation =>
       // NO FILTERING: the script is generated for all metrics
       val painless = e.painless(None)
       e.maybeValue match {

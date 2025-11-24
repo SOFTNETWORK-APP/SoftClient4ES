@@ -34,10 +34,6 @@ package object client extends SerializationApi {
     */
   type JSONQuery = String
 
-  /** Type alias for JSON results
-    */
-  type JSONResults = String
-
   /** Elastic response case class
     * @param sql
     *   - the SQL query if any

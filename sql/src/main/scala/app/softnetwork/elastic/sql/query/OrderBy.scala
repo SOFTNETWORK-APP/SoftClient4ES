@@ -28,17 +28,20 @@ case object Desc extends Expr("DESC") with SortOrder
 case object Asc extends Expr("ASC") with SortOrder
 
 case class FieldSort(
-  field: String,
-  order: Option[SortOrder],
-  functions: List[Function] = List.empty
+  field: Identifier,
+  order: Option[SortOrder]
 ) extends FunctionChain
     with Updateable {
+  lazy val functions: List[Function] = field.functions
   lazy val direction: SortOrder = order.getOrElse(Asc)
-  lazy val name: String = toSQL(field)
+  lazy val name: String = field.identifierName
   override def sql: String = s"$name $direction"
   override def update(request: SQLSearchRequest): FieldSort = this.copy(
-    field = Identifier(field).update(request).name
+    field = field.update(request)
   )
+  def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
+
+  def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation
 }
 
 case class OrderBy(sorts: Seq[FieldSort]) extends Updateable {

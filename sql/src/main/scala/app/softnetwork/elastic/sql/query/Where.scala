@@ -353,9 +353,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     }
   }
 
-  override lazy val aggregation: Boolean = maybeValue match {
-    case Some(v: FunctionChain) => identifier.aggregation || v.aggregation
-    case _                      => identifier.aggregation
+  override lazy val isAggregation: Boolean = maybeValue match {
+    case Some(v: FunctionChain) => identifier.isAggregation || v.isAggregation
+    case _                      => identifier.isAggregation
   }
 
   def hasBucket: Boolean = identifier.hasBucket || maybeValue.exists {
@@ -421,7 +421,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo(${painlessValue(context)}) < 0"
-              case _: SQLTemporal if !aggregation && !hasBucket =>
+              case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isBefore(${painlessValue(context)})"
               case _ =>
             }
@@ -429,7 +429,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo(${painlessValue(context)}) > 0"
-              case _: SQLTemporal if !aggregation && !hasBucket =>
+              case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isAfter(${painlessValue(context)})"
               case _ =>
             }
@@ -437,7 +437,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo(${painlessValue(context)}) == 0"
-              case _: SQLTemporal if !aggregation && !hasBucket =>
+              case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isEqual(${painlessValue(context)})"
               case _ =>
             }
@@ -445,7 +445,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo(${painlessValue(context)}) != 0"
-              case _: SQLTemporal if !aggregation && !hasBucket =>
+              case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isEqual(${painlessValue(context)}) == false"
               case _ =>
             }
@@ -453,7 +453,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo(${painlessValue(context)}) >= 0"
-              case _: SQLTemporal if !aggregation && !hasBucket =>
+              case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isBefore(${painlessValue(context)}) == false"
               case _ =>
             }
@@ -461,7 +461,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo(${painlessValue(context)}) <= 0"
-              case _: SQLTemporal if !aggregation && !hasBucket =>
+              case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isAfter(${painlessValue(context)}) == false"
               case _ =>
             }

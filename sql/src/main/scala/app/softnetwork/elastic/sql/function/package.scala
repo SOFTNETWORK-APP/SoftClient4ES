@@ -93,7 +93,9 @@ package object function {
 
     lazy val aggregateFunction: Option[AggregateFunction] = aggregations.headOption
 
-    lazy val aggregation: Boolean = aggregateFunction.isDefined
+    override def isAggregation: Boolean = aggregateFunction.isDefined
+
+    override def hasAggregation: Boolean = functions.exists(_.hasAggregation)
 
     override def in: SQLType = functions.lastOption.map(_.in).getOrElse(super.in)
 

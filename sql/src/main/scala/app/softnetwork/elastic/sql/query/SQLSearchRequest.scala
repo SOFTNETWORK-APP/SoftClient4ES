@@ -56,7 +56,7 @@ case class SQLSearchRequest(
 
   lazy val nestedFields: Map[String, Seq[Field]] =
     select.fields
-      .filterNot(_.aggregation)
+      .filterNot(_.isAggregation)
       .filter(_.nested)
       .groupBy(_.identifier.innerHitsName.getOrElse(""))
   lazy val nested: Seq[NestedElement] =
@@ -117,7 +117,7 @@ case class SQLSearchRequest(
   lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)
 
   lazy val fields: Seq[String] = {
-    if (aggregates.isEmpty && buckets.isEmpty)
+    if (aggregates.isEmpty && buckets.isEmpty && bucketScripts.isEmpty)
       select.fields
         .filterNot(_.isScriptField)
         .filterNot(_.nested)
@@ -128,12 +128,12 @@ case class SQLSearchRequest(
       Seq.empty
   }
 
-  lazy val windowFields: Seq[Field] = select.fields.filter(_.windows.nonEmpty)
+  lazy val windowFields: Seq[Field] = select.fields.filter(_.isWindow)
 
   lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.windows)
 
   lazy val aggregates: Seq[Field] =
-    select.fields.filter(_.aggregation).filterNot(_.windows.isDefined) ++ windowFields
+    select.fields.filter(_.isAggregation).filterNot(_.windows.isDefined) ++ windowFields
 
   lazy val sqlAggregations: Map[String, SQLAggregation] =
     aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
@@ -175,7 +175,8 @@ case class SQLSearchRequest(
       _ <- {
         // validate that non-aggregated fields are not present when group by is present
         if (groupBy.isDefined) {
-          val nonAggregatedFields = select.fields.filterNot(f => f.aggregation || f.isScriptField)
+          val nonAggregatedFields =
+            select.fields.filterNot(f => f.hasAggregation)
           val invalidFields = nonAggregatedFields.filterNot(f =>
             buckets.exists(b =>
               b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField.replace(".", "_"))
@@ -194,4 +195,6 @@ case class SQLSearchRequest(
       }
     } yield ()
   }
+
+  lazy val bucketScripts: Seq[Field] = select.fields.filter(_.isBucketScript)
 }

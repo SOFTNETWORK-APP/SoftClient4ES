@@ -16,7 +16,13 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble, SQLTemporal, SQLVarchar}
+import app.softnetwork.elastic.sql.`type`.{
+  SQLBigInt,
+  SQLDouble,
+  SQLNumeric,
+  SQLTemporal,
+  SQLVarchar
+}
 import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
@@ -35,7 +41,7 @@ import com.sksamuel.elastic4s.searches.aggs.{
 }
 import com.sksamuel.elastic4s.searches.queries.{BoolQuery, InnerHit, Query}
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
-import com.sksamuel.elastic4s.searches.sort.FieldSort
+import com.sksamuel.elastic4s.searches.sort.{FieldSort, ScriptSort, ScriptSortType}
 
 import scala.language.implicitConversions
 
@@ -403,7 +409,8 @@ package object bridge {
       request.buckets,
       request.aggregates.map(
         ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
-      )
+      ),
+      request.orderBy.map(_.sorts).getOrElse(Seq.empty)
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
@@ -453,7 +460,7 @@ package object bridge {
       _search
     }
 
-    _search = scriptFields.filterNot(_.aggregation) match {
+    _search = scriptFields.filterNot(_.isAggregation) match {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
@@ -474,17 +481,55 @@ package object bridge {
 
     _search = orderBy match {
       case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
-        _search sortBy o.sorts.map(sort =>
-          sort.order match {
-            case Some(Desc) => FieldSort(sort.field).desc()
-            case _          => FieldSort(sort.field).asc()
+        _search sortBy o.sorts.map { sort =>
+          if (sort.isScriptSort) {
+            val context = PainlessContext()
+            val painless = sort.field.painless(Some(context))
+            val painlessScript = s"$context$painless"
+            val script =
+              sort.out match {
+                case _: SQLTemporal if !painless.endsWith("toEpochMilli()") =>
+                  val parts = painlessScript.split(";").toSeq
+                  if (parts.size > 1) {
+                    val lastPart = parts.last.trim.stripPrefix("return ")
+                    if (lastPart.split(" ").toSeq.size == 1) {
+                      val newLastPart =
+                        s"""($lastPart != null) ? $lastPart.toInstant().toEpochMilli() : null"""
+                      s"${parts.dropRight(1).mkString(";")}; return $newLastPart"
+                    } else {
+                      painlessScript
+                    }
+                  } else {
+                    s"$painlessScript.toInstant().toEpochMilli()"
+                  }
+                case _ => painlessScript
+              }
+            val scriptSort =
+              ScriptSort(
+                script = Script(script = script)
+                  .lang("painless")
+                  .scriptType(Source),
+                scriptSortType = sort.field.out match {
+                  case _: SQLTemporal | _: SQLNumeric => ScriptSortType.Number
+                  case _                              => ScriptSortType.String
+                }
+              )
+            sort.order match {
+              case Some(Desc) => scriptSort.desc()
+              case _          => scriptSort.asc()
+            }
+          } else {
+            sort.order match {
+              case Some(Desc) => FieldSort(sort.field.aliasOrName).desc()
+              case _          => FieldSort(sort.field.aliasOrName).asc()
+            }
           }
-        )
+        }
       case _ => _search
     }
 
     if (allAggregations.nonEmpty || buckets.nonEmpty) {
-      _search size 0
+      _search size 0 fetchSource false
     } else {
       limit match {
         case Some(l) => _search limit l.limit from l.offset.map(_.offset).getOrElse(0)
@@ -508,7 +553,7 @@ package object bridge {
 
   implicit def expressionToQuery(expression: GenericExpression): Query = {
     import expression._
-    if (aggregation)
+    if (isAggregation)
       return matchAllQuery()
     if (
       identifier.functions.nonEmpty && (identifier.functions.size > 1 || (identifier.functions.head match {

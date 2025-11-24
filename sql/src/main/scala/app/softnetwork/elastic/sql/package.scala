@@ -67,6 +67,8 @@ package object sql {
     def nullable: Boolean = !system
     def dateMathScript: Boolean = false
     def isTemporal: Boolean = out.isInstanceOf[SQLTemporal]
+    def isAggregation: Boolean = false
+    def hasAggregation: Boolean = isAggregation
   }
 
   trait TokenValue extends Token {
@@ -623,7 +625,7 @@ package object sql {
     def hasBucket: Boolean = bucket.isDefined
 
     def allMetricsPath: Map[String, String] = {
-      if (aggregation) {
+      if (isAggregation) {
         val metricName = aliasOrName
         Map(metricName -> metricName)
       } else {
@@ -675,7 +677,7 @@ package object sql {
       }
 
     def paramName: String =
-      if (aggregation && functions.size == 1) s"params.$aliasOrName"
+      if (isAggregation && functions.size == 1) s"params.$aliasOrName"
       else if (path.nonEmpty)
         s"doc['$path'].value"
       else ""
@@ -762,7 +764,7 @@ package object sql {
     override def param: String = paramName
 
     private[this] var _nullable =
-      this.name.nonEmpty && (!aggregation || functions.size > 1)
+      this.name.nonEmpty && (!isAggregation || functions.size > 1)
 
     protected def nullable_=(b: Boolean): Unit = {
       _nullable = b

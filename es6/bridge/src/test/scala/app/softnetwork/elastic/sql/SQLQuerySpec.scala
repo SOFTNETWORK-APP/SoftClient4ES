@@ -526,12 +526,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "size": 0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "Country": {
       |      "terms": {
       |        "field": "Country",
       |        "exclude": "USA",
+      |        "min_doc_count": 1,
       |        "order": {
       |          "_key": "asc"
       |        }
@@ -541,6 +542,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "terms": {
       |            "field": "City",
       |            "exclude": "Berlin",
+      |            "min_doc_count": 0,
       |            "order": {
       |              "cnt": "desc"
       |            }
@@ -709,7 +711,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  },
       |  "size": 0,
       |  "min_score": 1.0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "inner_products": {
       |      "nested": {
@@ -794,7 +796,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "cat": {
       |              "terms": {
       |                "field": "products.category",
-      |                "size": 10
+      |                "size": 10,
+      |                "min_doc_count": 1
       |              },
       |              "aggs": {
       |                "min_price": {
@@ -1005,11 +1008,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "size": 0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "userId": {
       |      "terms": {
-      |        "field": "userId"
+      |        "field": "userId",
+      |        "min_doc_count": 1
       |      },
       |      "aggs": {
       |        "lastSeen": {
@@ -1049,12 +1053,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "size": 0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "Country": {
       |      "terms": {
       |        "field": "Country",
       |        "exclude": "USA",
+      |        "min_doc_count":1,
       |        "order": {
       |          "_key": "asc"
       |        }
@@ -1063,7 +1068,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "City": {
       |          "terms": {
       |            "field": "City",
-      |            "exclude": "Berlin"
+      |            "exclude": "Berlin",
+      |            "min_doc_count":0
       |          },
       |          "aggs": {
       |            "cnt": {
@@ -1114,12 +1120,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "match_all": {}
         |  },
         |  "size": 0,
-        |  "_source": true,
+        |  "_source": false,
         |  "aggs": {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
         |        "exclude": "USA",
+        |        "min_doc_count":1,
         |        "order": {
         |          "_key": "asc"
         |        }
@@ -1128,7 +1135,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        "City": {
         |          "terms": {
         |            "field": "City",
-        |            "exclude": "Berlin"
+        |            "exclude": "Berlin",
+        |            "min_doc_count":0
         |          },
         |          "aggs": {
         |            "cnt": {
@@ -1185,11 +1193,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    }
       |  },
       |  "size": 0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "identifier": {
       |      "terms": {
       |        "field": "identifier",
+      |        "min_doc_count":1,
       |        "order": {
       |          "ct": "desc"
       |        }
@@ -1352,11 +1361,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    }
       |  },
       |  "size": 0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "identifier": {
       |      "terms": {
       |        "field": "identifier",
+      |        "min_doc_count":1,
       |        "order": {
       |          "ct": "desc"
       |        }
@@ -1509,11 +1519,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "match_all": {}
       |  },
       |  "size": 0,
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "identifier": {
       |      "terms": {
-      |        "field": "identifier"
+      |        "field": "identifier",
+      |        "min_doc_count":1
       |      },
       |      "aggs": {
       |        "max_diff": {
@@ -2750,11 +2761,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      }
       |    }
       |  },
-      |  "_source": true,
+      |  "_source": false,
       |  "aggs": {
       |    "dept": {
       |      "terms": {
-      |        "field": "department"
+      |        "field": "department",
+      |        "min_doc_count":1
       |      },
       |      "aggs": {
       |        "cnt": {
@@ -3599,7 +3611,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        "match_all": {}
         |    },
         |    "size": 0,
-        |    "_source": true,
+        |    "_source": false,
         |    "aggs": {
         |        "avg_popularity": {
         |            "avg": {
@@ -3633,7 +3645,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "match_all": {}
         |  },
         |  "size": 0,
-        |  "_source": true,
+        |  "_source": false,
         |  "aggs": {
         |    "comments": {
         |      "nested": {
@@ -3694,7 +3706,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    }
         |  },
         |  "size": 0,
-        |  "_source": true,
+        |  "_source": false,
         |  "aggs": {
         |    "comments": {
         |      "nested": {
@@ -3732,15 +3744,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "test" in {
     val query =
       """SELECT
-        |    name,
-        |    department,
-        |    salary,
-        |    FIRST_VALUE(salary) OVER (
-        |      PARTITION BY department
-        |      ORDER BY hire_date
-        |    ) as firstSalaryInDept
-        |  FROM employees
-        |""".stripMargin
+        |    category,
+        |    SUM(amount) AS totalSales,
+        |    COUNT(*) AS orderCount,
+        |    DATE_TRUNC(sales_date, MONTH) as salesMonth
+        |  FROM orders
+        |  GROUP BY DATE_TRUNC(sales_date, MONTH), category
+        |  ORDER BY DATE_TRUNC(sales_date, MONTH) DESC, category ASC""".stripMargin.replaceAll(
+        "\n",
+        " "
+      )
     val select: ElasticSearchRequest = SQLQuery(query)
     println(select.query)
   }

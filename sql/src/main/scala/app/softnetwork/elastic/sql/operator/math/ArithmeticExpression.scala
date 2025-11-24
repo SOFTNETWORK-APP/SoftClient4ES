@@ -129,4 +129,5 @@ case class ArithmeticExpression(
       expr
   }
 
+  override def hasAggregation: Boolean = left.hasAggregation || right.hasAggregation
 }

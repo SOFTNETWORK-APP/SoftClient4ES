@@ -40,7 +40,8 @@ case class Field(
     with FunctionChain
     with PainlessScript
     with DateMathScript {
-  def isScriptField: Boolean = functions.nonEmpty && !aggregation && identifier.bucket.isEmpty
+  def isScriptField: Boolean =
+    functions.nonEmpty && !hasAggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String = {
     if (identifier.nested) {
@@ -66,6 +67,8 @@ case class Field(
 
   lazy val windows: Option[WindowFunction] =
     functions.collectFirst { case th: WindowFunction => th }
+
+  def isWindow: Boolean = windows.isDefined
 
   def update(request: SQLSearchRequest): Field = {
     windows match {
@@ -93,6 +96,8 @@ case class Field(
   lazy val nested: Boolean = identifier.nested
 
   lazy val path: String = identifier.path
+
+  def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation
 }
 
 case object Except extends Expr("except") with TokenRegex

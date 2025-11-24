@@ -37,10 +37,16 @@ package object aggregate {
 
     def aggregate_function: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
+    def aggWithFunction: PackratParser[Identifier] =
+      identifierWithArithmeticExpression |
+      identifierWithTransformation |
+      identifierWithIntervalFunction |
+      identifierWithFunction |
+      identifier
+
     def identifierWithAggregation: PackratParser[Identifier] =
-      aggregate_function ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
-        case a ~ _ ~ i ~ _ =>
-          i.withFunctions(a +: i.functions)
+      aggregate_function ~ start ~ aggWithFunction ~ end ^^ { case a ~ _ ~ i ~ _ =>
+        i.withFunctions(a +: i.functions)
       }
 
     def partition_by: PackratParser[Seq[Identifier]] =
@@ -55,7 +61,7 @@ package object aggregate {
       start ~ identifier ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
         o match {
           case Some((pb, ob)) => (id, pb, ob)
-          case None           => (id, Seq.empty, OrderBy(Seq(FieldSort(id.name, order = None))))
+          case None           => (id, Seq.empty, OrderBy(Seq(FieldSort(id, order = None))))
         }
       }
 

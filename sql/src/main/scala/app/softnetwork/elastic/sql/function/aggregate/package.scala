@@ -23,6 +23,8 @@ package object aggregate {
 
   sealed trait AggregateFunction extends Function {
     def multivalued: Boolean = false
+
+    override def isAggregation: Boolean = true
   }
 
   case object COUNT extends Expr("COUNT") with AggregateFunction
@@ -88,7 +90,7 @@ package object aggregate {
       updated.withFields(
         fields = request.select.fields
           .filterNot(field =>
-            field.aggregation || request.bucketNames.keys.toSeq
+            field.isAggregation || request.bucketNames.keys.toSeq
               .contains(field.identifier.identifierName)
           )
           .filterNot(f => request.excludes.contains(f.sourceField))
