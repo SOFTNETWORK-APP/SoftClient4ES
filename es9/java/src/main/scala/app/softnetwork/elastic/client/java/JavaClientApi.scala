@@ -48,7 +48,6 @@ import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESS
 import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
-import co.elastic.clients.elasticsearch.sql.QueryRequest
 import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
@@ -750,11 +749,6 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
   */
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   _: JavaClientCompanion with SerializationApi =>
-
-  val response = apply().sql().query(new QueryRequest.Builder().query("SELECT 1").build())
-  val row = response.rows().get(0)
-  val data = row.get(0)
-  data.toJson
 
   override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
