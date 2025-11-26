@@ -354,8 +354,13 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   }
 
   override lazy val isAggregation: Boolean = maybeValue match {
-    case Some(v: FunctionChain) => identifier.isAggregation || v.isAggregation
-    case _                      => identifier.isAggregation
+    case Some(v) => identifier.isAggregation || v.isAggregation
+    case _       => identifier.isAggregation
+  }
+
+  override lazy val hasAggregation: Boolean = maybeValue match {
+    case Some(v) => identifier.hasAggregation || v.hasAggregation
+    case _       => identifier.hasAggregation
   }
 
   def hasBucket: Boolean = identifier.hasBucket || maybeValue.exists {

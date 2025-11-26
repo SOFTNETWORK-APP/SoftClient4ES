@@ -34,7 +34,7 @@ import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.script.ScriptType.Source
 import com.sksamuel.elastic4s.searches.aggs.{
-  Aggregation,
+  AbstractAggregation,
   FilterAggregation,
   NestedAggregation,
   TermsAggregation
@@ -144,7 +144,7 @@ package object bridge {
   implicit def requestToRootAggregations(
     request: SQLSearchRequest,
     aggregations: Seq[ElasticAggregation]
-  ): Seq[Aggregation] = {
+  ): Seq[AbstractAggregation] = {
     val notNestedAggregations = aggregations.filterNot(_.nested)
 
     val notNestedBuckets = request.buckets.filterNot(_.nested)
@@ -259,7 +259,7 @@ package object bridge {
             requestToNestedFilterAggregation(request, n.innerHitsName)
 
           // Build buckets for this nested aggregation
-          val buckets: Seq[Aggregation] =
+          val buckets: Seq[AbstractAggregation] =
             ElasticAggregation.buildBuckets(
               nestedBuckets,
               request.sorts -- directions.keys,
@@ -375,7 +375,7 @@ package object bridge {
     }
 
   private def addNestedAggregationsToTermsAggregation(
-    agg: Aggregation,
+    agg: AbstractAggregation,
     nested: Seq[NestedAggregation]
   ): Option[TermsAggregation] = {
     agg match {
@@ -399,6 +399,7 @@ package object bridge {
 
   implicit def requestToElasticSearchRequest(request: SQLSearchRequest): ElasticSearchRequest =
     ElasticSearchRequest(
+      request.sql,
       request.select.fields,
       request.select.except,
       request.sources,
@@ -407,17 +408,20 @@ package object bridge {
       request.limit.flatMap(_.offset.map(_.offset)).orElse(Some(0)),
       request,
       request.buckets,
-      request.aggregates.map(
-        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
-      )
-      // request.orderBy.map(_.sorts).getOrElse(Seq.empty)
+      request.having.flatMap(_.criteria),
+      request.orderBy.map(_.sorts).getOrElse(Seq.empty)
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
 
     val aggregations = request.aggregates.map(
-      ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+      ElasticAggregation(
+        _,
+        request.having.flatMap(_.criteria),
+        request.sorts,
+        request.sqlAggregations
+      )
     )
 
     val rootAggregations = requestToRootAggregations(request, aggregations)
@@ -988,7 +992,7 @@ package object bridge {
         case Left(l) =>
           val filteredAgg: Option[FilterAggregation] = requestToFilterAggregation(l)
           l.aggregates
-            .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts, l.sqlAggregations))
             .map(aggregation => {
               val queryFiltered =
                 l.where

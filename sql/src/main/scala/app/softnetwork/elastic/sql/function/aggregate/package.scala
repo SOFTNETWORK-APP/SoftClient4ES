@@ -25,6 +25,10 @@ package object aggregate {
     def multivalued: Boolean = false
 
     override def isAggregation: Boolean = true
+
+    override def hasAggregation: Boolean = true
+
+    def isBucketScript: Boolean = false
   }
 
   case object COUNT extends Expr("COUNT") with AggregateFunction
@@ -54,6 +58,34 @@ package object aggregate {
   case object OVER extends Expr("OVER") with TokenRegex
 
   case object PARTITION_BY extends Expr("PARTITION BY") with TokenRegex
+
+  case class BucketScriptAggregation(
+    identifier: Identifier,
+    params: Map[String, String] = Map.empty
+  ) extends AggregateFunction
+      with FunctionWithIdentifier
+      with Updateable {
+    override def sql: String = identifier.sql
+
+    override def hasAggregation: Boolean = true
+
+    override def shouldBeScripted: Boolean = true
+
+    override def isBucketScript: Boolean = true
+
+    override def update(request: SQLSearchRequest): BucketScriptAggregation = {
+      val identifiers = FunctionUtils.aggregateIdentifiers(identifier)
+      val params = identifiers.flatMap {
+        case identifier: Identifier =>
+          val name = identifier.metricName.getOrElse(identifier.aliasOrName)
+          Some(name -> request.fieldAliases.getOrElse(identifier.identifierName, name))
+        case _ => None
+      }.toMap
+      this.copy(params = params)
+    }
+
+    override def toString: String = "bucket_script"
+  }
 
   sealed trait WindowFunction
       extends AggregateFunction

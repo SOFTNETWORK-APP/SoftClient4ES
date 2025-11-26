@@ -122,7 +122,7 @@ case class SQLSearchRequest(
   }
 
   lazy val fields: Seq[String] = {
-    if (aggregates.isEmpty && buckets.isEmpty && bucketScripts.isEmpty)
+    if (aggregates.isEmpty && buckets.isEmpty)
       select.fields
         .filterNot(_.isScriptField)
         .filterNot(_.nested)
@@ -138,7 +138,9 @@ case class SQLSearchRequest(
   lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.windows)
 
   lazy val aggregates: Seq[Field] =
-    select.fields.filter(_.isAggregation).filterNot(_.windows.isDefined) ++ windowFields
+    select.fields
+      .filter(f => f.isAggregation || f.isBucketScript)
+      .filterNot(_.windows.isDefined) ++ windowFields
 
   lazy val sqlAggregations: Map[String, SQLAggregation] =
     aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
@@ -201,5 +203,4 @@ case class SQLSearchRequest(
     } yield ()
   }
 
-  lazy val bucketScripts: Seq[Field] = select.fields.filter(_.isBucketScript)
 }

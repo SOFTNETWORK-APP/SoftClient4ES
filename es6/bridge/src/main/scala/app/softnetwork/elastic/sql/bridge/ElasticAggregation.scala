@@ -28,6 +28,7 @@ import app.softnetwork.elastic.sql.query.{
   MetricSelectorScript,
   NestedElement,
   NestedElements,
+  SQLAggregation,
   SortOrder
 }
 import app.softnetwork.elastic.sql.function._
@@ -36,6 +37,7 @@ import app.softnetwork.elastic.sql.function.time.DateTrunc
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
+  bucketScriptAggregation,
   bucketSelectorAggregation,
   cardinalityAgg,
   maxAgg,
@@ -49,6 +51,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.searches.DateHistogramInterval
 import com.sksamuel.elastic4s.searches.aggs.{
+  AbstractAggregation,
   Aggregation,
   CardinalityAggregation,
   DateHistogramAggregation,
@@ -74,7 +77,7 @@ case class ElasticAggregation(
   nestedAgg: Option[NestedAggregation] = None,
   filteredAgg: Option[FilterAggregation] = None,
   aggType: AggregateFunction,
-  agg: Aggregation,
+  agg: AbstractAggregation,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None
 ) {
@@ -94,7 +97,8 @@ object ElasticAggregation {
   def apply(
     sqlAgg: Field,
     having: Option[Criteria],
-    bucketsDirection: Map[String, SortOrder]
+    bucketsDirection: Map[String, SortOrder],
+    allAggregations: Map[String, SQLAggregation]
   ): ElasticAggregation = {
     import sqlAgg._
     val sourceField = identifier.path
@@ -111,9 +115,14 @@ object ElasticAggregation {
 
     val distinct = identifier.distinct
 
-    val aggType = aggregateFunction.getOrElse(
-      throw new IllegalArgumentException("Aggregation function is required")
-    )
+    val aggType = {
+      if (isBucketScript) {
+        BucketScriptAggregation(identifier)
+      } else
+        aggregateFunction.getOrElse(
+          throw new IllegalArgumentException("Aggregation function is required")
+        )
+    }
 
     val aggName = {
       if (fieldAlias.isDefined)
@@ -135,7 +144,8 @@ object ElasticAggregation {
 
     val (aggFuncs, transformFuncs) = FunctionUtils.aggregateAndTransformFunctions(identifier)
 
-    require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
+    if (!isBucketScript)
+      require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
 
     def aggWithFieldOrScript(
       buildField: (String, String) => Aggregation,
@@ -171,9 +181,8 @@ object ElasticAggregation {
         case th: WindowFunction =>
           val limit = {
             th match {
-              case _: LastValue => 1
-//                case _: FirstValue => 1
-              case _ => th.limit.map(_.limit).getOrElse(1)
+              case _: LastValue | _: FirstValue => Some(1)
+              case _                            => th.limit.map(_.limit)
             }
           }
           val topHits =
@@ -193,9 +202,9 @@ object ElasticAggregation {
                   .groupBy(_.sourceField)
                   .map(_._2.head)
                   .map(f => f.sourceField -> Script(f.painless(None)).lang("painless"))
-                  .toMap
-              )
-              .size(limit) sortBy th.orderBy.sorts.map(sort =>
+                  .toMap,
+                size = limit
+              ) sortBy th.orderBy.sorts.map(sort =>
               sort.order match {
                 case Some(Desc) =>
                   th.window match {
@@ -210,6 +219,24 @@ object ElasticAggregation {
               }
             )
           topHits
+        case script: BucketScriptAggregation =>
+          val params = allAggregations.get(aggName) match {
+            case Some(sqlAgg) =>
+              sqlAgg.aggType match {
+                case bsa: BucketScriptAggregation =>
+                  extractMetricsPathForBucketScript(bsa, allAggregations.values.toSeq)
+                case _ => Map.empty
+              }
+            case None => Map.empty
+          }
+          val painless = script.identifier.painless(None)
+          bucketScriptAggregation(
+            aggName,
+            Script(s"$painless").lang("painless"),
+            params.toMap
+          )
+        case _ =>
+          throw new IllegalArgumentException(s"Unsupported aggregation type: $aggType")
       }
 
     val nestedElement = identifier.nestedElement
@@ -273,7 +300,7 @@ object ElasticAggregation {
   def buildBuckets(
     buckets: Seq[Bucket],
     bucketsDirection: Map[String, SortOrder],
-    aggregations: Seq[Aggregation],
+    aggregations: Seq[AbstractAggregation],
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria],
     nested: Option[NestedElement],
@@ -284,7 +311,7 @@ object ElasticAggregation {
       val currentBucketPath = bucket.identifier.path
 
       val aggScript =
-        if (bucket.shouldBeScripted) {
+        if (!bucket.isBucketScript && bucket.shouldBeScripted) {
           val context = PainlessContext()
           val painless = bucket.painless(Some(context))
           Some(Script(s"$context$painless").lang("painless"))
@@ -576,6 +603,54 @@ object ElasticAggregation {
     }
   }
 
+  def extractMetricsPathForBucketScript(
+    bucketScriptAggregation: BucketScriptAggregation,
+    allAggregations: Seq[SQLAggregation]
+  ): Map[String, String] = {
+    val currentBucketPath =
+      bucketScriptAggregation.identifier.nestedElement.map(_.bucketPath).getOrElse("")
+    // Extract ALL metrics paths
+    val allMetricsPaths = bucketScriptAggregation.params.keys
+    val result =
+      allMetricsPaths.flatMap { metricName =>
+        allAggregations.find(agg => agg.aggName == metricName || agg.field == metricName) match {
+          case Some(sqlAgg) =>
+            val metricBucketPath = sqlAgg.nestedElement
+              .map(_.bucketPath)
+              .getOrElse("")
+            if (metricBucketPath == currentBucketPath) {
+              // Metric of the same level
+              Some(metricName -> metricName)
+            } else if (isDirectChild(metricBucketPath, currentBucketPath)) {
+              // Metric of a direct child
+              // CHECK if it is a "global" metric (cardinality, etc.) or a bucket metric (avg, sum, etc.)
+              val isGlobalMetric = sqlAgg.isGlobalMetric
+
+              if (isGlobalMetric) {
+                // Global metric: can be referenced from the parent
+                val childNestedName = sqlAgg.nestedElement
+                  .map(_.innerHitsName)
+                  .getOrElse("")
+                //              println(
+                //                s"[DEBUG extractMetricsPath] Direct child (global metric): $metricName -> $childNestedName>$metricName"
+                //              )
+                Some(metricName -> s"$childNestedName>$metricName")
+              } else {
+                // Bucket metric: cannot be referenced from the parent
+                //              println(
+                //                s"[DEBUG extractMetricsPath] Direct child (bucket metric): $metricName -> SKIP (bucket-level metric)"
+                //              )
+                None
+              }
+            } else {
+              None
+            }
+          case _ => None
+        }
+      }
+    result.toMap
+  }
+
   /** Extracts the buckets_path for a given bucket
     */
   def extractMetricsPathForBucket(
@@ -593,7 +668,7 @@ object ElasticAggregation {
     //    println(s"[DEBUG extractMetricsPath] allMetricsPaths = $allMetricsPaths")
 
     // Filter and adapt the paths for this bucket
-    val result = allMetricsPaths.flatMap { case (metricName, metricPath) =>
+    val result = allMetricsPaths.flatMap { case (metricName, _) =>
       allElasticAggregations.find(agg =>
         agg.aggName == metricName || agg.field == metricName
       ) match {

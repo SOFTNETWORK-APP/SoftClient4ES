@@ -100,6 +100,10 @@ case class Bucket(
 
   override def shouldBeScripted: Boolean = identifier.shouldBeScripted
 
+  override def hasAggregation: Boolean = identifier.hasAggregation
+
+  def isBucketScript: Boolean = !identifier.isAggregation && hasAggregation
+
   /** Generate painless script for this token
     *
     * @param context
