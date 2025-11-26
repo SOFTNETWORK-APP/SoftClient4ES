@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
+import app.softnetwork.elastic.sql.function.aggregate.{COUNT, MAX, MIN}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.operator._
@@ -625,12 +625,10 @@ package object sql {
     def bucket: Option[Bucket]
     def hasBucket: Boolean = bucket.isDefined
 
-    def allMetricsPath: Map[String, String] = {
-      if (isAggregation) {
-        val metricName = aliasOrName
-        Map(metricName -> metricName)
-      } else {
-        Map.empty
+    lazy val allMetricsPath: Map[String, String] = {
+      metricName match {
+        case Some(name) => Map(name -> name)
+        case _          => Map.empty
       }
     }
 
@@ -667,7 +665,7 @@ package object sql {
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
-    def path: String =
+    lazy val path: String =
       nestedElement match {
         case Some(ne) =>
           name.split("\\.") match {
@@ -677,13 +675,32 @@ package object sql {
         case None => name
       }
 
-    def paramName: String =
-      if (isAggregation && functions.size == 1) s"params.$aliasOrName"
+    lazy val paramName: String =
+      if (isAggregation && functions.size == 1) s"params.${metricName.getOrElse(aliasOrName)}"
       else if (path.nonEmpty)
         s"doc['$path'].value"
       else ""
 
-    def script: Option[String] =
+    lazy val metricName: Option[String] =
+      aggregateFunction match {
+        case Some(af) =>
+          af match {
+            case COUNT =>
+              aliasOrName match {
+                case "*" =>
+                  if (distinct) {
+                    Some(s"count_distinct_all")
+                  } else {
+                    Some(s"count_all")
+                  }
+                case _ => Some(aliasOrName)
+              }
+            case _ => Some(aliasOrName)
+          }
+        case _ => None
+      }
+
+    lazy val script: Option[String] =
       if (isTemporal) {
         var orderedFunctions = FunctionUtils.transformFunctions(this).reverse
 
@@ -777,7 +794,7 @@ package object sql {
       this
     }
 
-    override def value: String =
+    override lazy val value: String =
       script match {
         case Some(s) => s
         case _       => painless(None)
