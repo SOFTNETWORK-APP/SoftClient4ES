@@ -91,7 +91,12 @@ package object client extends SerializationApi {
       )
       .getOrElse("")
 
-  case class ElasticQueries(queries: List[ElasticQuery], sql: Option[String] = None)
+    override def toString: String = s"""
+        |ElasticQueries:
+        |  SQL: ${sql.getOrElse(sqlQuery)}
+        |  Multiquery: $multiQuery
+        |""".stripMargin
+  }
 
   /** Retry configuration
     */
