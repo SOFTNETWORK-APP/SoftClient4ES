@@ -122,7 +122,7 @@ case class SQLSearchRequest(
   }
 
   lazy val fields: Seq[String] = {
-    if (aggregates.isEmpty && buckets.isEmpty)
+    if (buckets.isEmpty)
       select.fields
         .filterNot(_.isScriptField)
         .filterNot(_.nested)
@@ -140,7 +140,7 @@ case class SQLSearchRequest(
   lazy val aggregates: Seq[Field] =
     select.fields
       .filter(f => f.isAggregation || f.isBucketScript)
-      .filterNot(_.windows.isDefined) ++ windowFields
+      .filterNot(_.isWindow) ++ windowFields
 
   lazy val sqlAggregations: Map[String, SQLAggregation] =
     aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap

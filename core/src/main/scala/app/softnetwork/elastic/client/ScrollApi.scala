@@ -122,12 +122,7 @@ trait ScrollApi extends ElasticClientHelpers {
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     sql.request match {
       case Some(Left(single)) =>
-        if (
-          single.windowFunctions.nonEmpty && (single.fields.nonEmpty || single.windowFunctions
-            .flatMap(_.fields)
-            .distinct
-            .size > 1)
-        )
+        if (single.windowFunctions.nonEmpty)
           return scrollWithWindowEnrichment(sql, single, config)
 
         val sqlRequest = single.copy(score = sql.score)

@@ -29,6 +29,10 @@ package object aggregate {
     override def hasAggregation: Boolean = true
 
     def isBucketScript: Boolean = false
+
+    /** Indicates whether this aggregation is a windowing function with partitioning or not
+      */
+    def isWindowing: Boolean = false
   }
 
   case object COUNT extends Expr("COUNT") with AggregateFunction
@@ -97,6 +101,8 @@ package object aggregate {
     def window: Window
     def limit: Option[Limit]
 
+    override def isWindowing: Boolean = buckets.nonEmpty
+
     lazy val buckets: Seq[Bucket] = partitionBy.map(identifier => Bucket(identifier, None))
 
     lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
@@ -120,12 +126,16 @@ package object aggregate {
       val updated = this
         .withPartitionBy(partitionBy = partitionBy.map(_.update(request)))
       updated.withFields(
-        fields = request.select.fields
-          .filterNot(field =>
-            field.isAggregation || request.bucketNames.keys.toSeq
-              .contains(field.identifier.identifierName)
-          )
-          .filterNot(f => request.excludes.contains(f.sourceField))
+        fields = if (isWindowing) {
+          request.select.fields
+            .filterNot(field =>
+              field.isAggregation || request.bucketNames.keys.toSeq
+                .contains(field.identifier.identifierName)
+            )
+            .filterNot(f => request.excludes.contains(f.sourceField))
+        } else {
+          updated.fields
+        }
       )
     }
   }

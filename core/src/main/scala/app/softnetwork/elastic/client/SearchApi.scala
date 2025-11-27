@@ -68,12 +68,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           collection.immutable.Seq(single.sources: _*),
           sql = Some(sql.query)
         )
-        if (
-          single.windowFunctions.nonEmpty && (single.fields.nonEmpty || single.windowFunctions
-            .flatMap(_.fields)
-            .distinct
-            .size > 1)
-        )
+        if (single.windowBuckets.nonEmpty)
           searchWithWindowEnrichment(sql, single)
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
@@ -829,7 +824,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed search with inner hits in indices '${elasticQuery.indices.mkString(",")}'"
         )
         ElasticResult.attempt {
-          new JsonParser().parse(response).getAsJsonObject
+          JsonParser.parseString(response).getAsJsonObject
         } match {
           case ElasticFailure(error) =>
             logger.error(
@@ -918,7 +913,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed multi-search inner hits with ${elasticQueries.queries.size} queries"
         )
         ElasticResult.attempt {
-          new JsonParser().parse(response).getAsJsonObject
+          JsonParser.parseString(response).getAsJsonObject
         } match {
           case ElasticFailure(error) =>
             logger.error(
@@ -1287,51 +1282,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     aggregations: Map[String, ClientAggregation]
   ): WindowValues = {
 
-    val values = aggregations
-      .filter(_._2.window)
-      .map { wf =>
-        val fieldName = wf._1
-
-        val aggType = wf._2.aggType
-
-        val sourceField = wf._2.sourceField
-
-        // Get value from row (already processed by ElasticConversion)
-        val value = row.get(fieldName).orElse {
-          logger.warn(s"⚠️ Window function '$fieldName' not found in aggregation result")
-          None
-        }
-
-        val validatedValue =
-          value match {
-            case Some(m: Map[String, Any]) =>
-              m.get(sourceField) match {
-                case Some(v) =>
-                  aggType match {
-                    case AggregationType.ArrayAgg =>
-                      v match {
-                        case l: List[_] =>
-                          Some(l)
-                        case other =>
-                          logger.warn(
-                            s"⚠️ Expected List for ARRAY_AGG '$fieldName', got ${other.getClass.getSimpleName}"
-                          )
-                          Some(List(other)) // Wrap into a List
-                      }
-                    case _ => Some(v)
-                  }
-                case None =>
-                  None
-              }
-            case other =>
-              other
-          }
-
-        fieldName -> validatedValue
-      }
-      .collect { case (name, Some(value)) =>
-        name -> value
-      }
+    val values = extractAggregationValues(row, aggregations)
 
     WindowValues(values)
   }

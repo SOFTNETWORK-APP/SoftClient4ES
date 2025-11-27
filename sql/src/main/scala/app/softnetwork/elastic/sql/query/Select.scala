@@ -73,7 +73,7 @@ case class Field(
   lazy val windows: Option[WindowFunction] =
     functions.collectFirst { case th: WindowFunction => th }
 
-  def isWindow: Boolean = windows.isDefined
+  def isWindow: Boolean = windows.nonEmpty //.exists(_.partitionBy.nonEmpty)
 
   def update(request: SQLSearchRequest): Field = {
     windows match {

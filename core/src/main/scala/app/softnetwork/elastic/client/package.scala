@@ -137,13 +137,17 @@ package object client extends SerializationApi {
     * @param distinct
     *   - when the aggregation is multivalued define if its values should be returned distinct or
     *     not
+    * @param sourceField
+    *   - the source field of the aggregation
+    * @param windowing
+    *   - whether the aggregation is a window function with partitioning
     */
   case class ClientAggregation(
     aggName: String,
     aggType: AggregationType.AggregationType,
     distinct: Boolean,
     sourceField: String,
-    window: Boolean
+    windowing: Boolean
   ) {
     def multivalued: Boolean = aggType == AggregationType.ArrayAgg
     def singleValued: Boolean = !multivalued
@@ -166,7 +170,7 @@ package object client extends SerializationApi {
       aggType,
       agg.distinct,
       agg.sourceField,
-      agg.aggType.isInstanceOf[WindowFunction]
+      agg.aggType.isWindowing
     )
   }
 }
