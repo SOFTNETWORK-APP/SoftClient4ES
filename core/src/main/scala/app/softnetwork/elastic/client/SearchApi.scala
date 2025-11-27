@@ -132,19 +132,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val indices = elasticQuery.indices.mkString(",")
 
     logger.debug(
-      s"🔍 Searching with query \n${sql.getOrElse(query)}\nin indices '$indices'"
+      s"🔍 Searching with query \n$elasticQuery\nin indices '$indices'"
     )
 
     executeSingleSearch(elasticQuery) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed search for query \n${sql.getOrElse(query)}\nin indices '$indices'"
+          s"✅ Successfully executed search for query \n$elasticQuery\nin indices '$indices'"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
         ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
-              s"✅ Successfully parsed search results for query \n${sql.getOrElse(query)}\nin indices '$indices'"
+              s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
             )
             ElasticResult.success(
               ElasticResponse(
@@ -170,8 +170,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message =
-              s"Failed to execute search for query \n${sql.getOrElse(query)}\nin indices '$indices'",
+            message = s"Failed to execute search for query \n$elasticQuery\nin indices '$indices'",
             index = Some(indices),
             operation = Some("search")
           )
@@ -231,19 +230,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     )
 
     logger.debug(
-      s"🔍 Multi-searching with query \n${sql.getOrElse(query)}"
+      s"🔍 Multi-searching with query \n$elasticQueries"
     )
 
     executeMultiSearch(elasticQueries) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed multi-search for query \n${sql.getOrElse(query)}"
+          s"✅ Successfully executed multi-search for query \n$elasticQueries"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
         ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
-              s"✅ Successfully parsed multi-search results for query '${sql.getOrElse(query)}'"
+              s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
             )
             ElasticResult.success(
               ElasticResponse(
@@ -256,7 +255,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             )
           case ElasticFailure(error) =>
             logger.error(
-              s"❌ Failed to parse multi-search results for query \n${sql.getOrElse(query)}\n -> ${error.message}"
+              s"❌ Failed to parse multi-search results for query \n$elasticQueries\n -> ${error.message}"
             )
             ElasticResult.failure(
               error.copy(
@@ -267,14 +266,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message = s"Failed to execute multi-search for query \n${sql.getOrElse(query)}",
+            message = s"Failed to execute multi-search for query \n$elasticQueries",
             operation = Some("multiSearch")
           )
         logger.error(s"❌ ${error.message}")
         ElasticResult.failure(error)
       case ElasticFailure(error) =>
         logger.error(
-          s"❌ Failed to execute multi-search for query \n${sql.getOrElse(query)}\n -> ${error.message}"
+          s"❌ Failed to execute multi-search for query \n$elasticQueries\n -> ${error.message}"
         )
         ElasticResult.failure(
           error.copy(
@@ -358,13 +357,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     executeSingleSearchAsync(elasticQuery).flatMap {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed asynchronous search for query \n${sql.getOrElse(query)}\nin indices '$indices'"
+          s"✅ Successfully executed asynchronous search for query \n$elasticQuery\nin indices '$indices'"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
         ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
-              s"✅ Successfully parsed search results for query \n${sql.getOrElse(query)}\nin indices '$indices'"
+              s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
             )
             Future.successful(
               ElasticResult.success(
@@ -395,7 +394,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         val error =
           ElasticError(
             message =
-              s"Failed to execute asynchronous search for query \n${sql.getOrElse(query)}\nin indices '$indices'",
+              s"Failed to execute asynchronous search for query \n$elasticQuery\nin indices '$indices'",
             index = Some(elasticQuery.indices.mkString(",")),
             operation = Some("searchAsync")
           )
@@ -443,13 +442,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     executeMultiSearchAsync(elasticQueries).flatMap {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed asynchronous multi-search for query \n${sql.getOrElse(query)}"
+          s"✅ Successfully executed asynchronous multi-search for query \n$elasticQueries"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
         ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
-              s"✅ Successfully parsed multi-search results for query '${sql.getOrElse(query)}'"
+              s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
             )
             Future.successful(
               ElasticResult.success(
@@ -464,7 +463,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             )
           case ElasticFailure(error) =>
             logger.error(
-              s"❌ Failed to parse multi-search results for query \n${sql.getOrElse(query)}\n -> ${error.message}"
+              s"❌ Failed to parse multi-search results for query \n$elasticQueries\n -> ${error.message}"
             )
             Future.successful(
               ElasticResult.failure(
@@ -477,15 +476,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message =
-              s"Failed to execute asynchronous multi-search for query \n${sql.getOrElse(query)}",
+            message = s"Failed to execute asynchronous multi-search for query \n$elasticQueries",
             operation = Some("multiSearchAsync")
           )
         logger.error(s"❌ ${error.message}")
         Future.successful(ElasticResult.failure(error))
       case ElasticFailure(error) =>
         logger.error(
-          s"❌ Failed to execute asynchronous multi-search for query \n${sql.getOrElse(query)}\n -> ${error.message}"
+          s"❌ Failed to execute asynchronous multi-search for query \n$elasticQueries\n -> ${error.message}"
         )
         Future.successful(
           ElasticResult.failure(

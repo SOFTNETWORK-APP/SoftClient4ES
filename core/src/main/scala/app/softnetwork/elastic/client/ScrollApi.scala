@@ -347,7 +347,7 @@ trait ScrollApi extends ElasticClientHelpers {
     val strategy = determineScrollStrategy(elasticQuery, aggregations)
 
     logger.info(
-      s"Using scroll strategy: $strategy for query on ${elasticQuery.indices.mkString(", ")}"
+      s"Using scroll strategy: $strategy for query \n$elasticQuery"
     )
 
     strategy match {

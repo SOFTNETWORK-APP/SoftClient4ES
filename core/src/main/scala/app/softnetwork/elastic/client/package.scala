@@ -73,7 +73,23 @@ package object client extends SerializationApi {
     indices: Seq[String],
     types: Seq[String] = Seq.empty,
     sql: Option[String] = None
-  )
+  ) {
+    override def toString: String = s"""ElasticQuery:
+        |  Indices: ${indices.mkString(",")}
+        |  Types: ${types.mkString(",")}
+        |  SQL: ${sql.getOrElse("")}
+        |  Query: $query
+        |""".stripMargin
+  }
+
+  case class ElasticQueries(queries: List[ElasticQuery], sql: Option[String] = None) {
+    val multiQuery: String = queries.map(_.query).mkString("\n")
+
+    val sqlQuery: String = sql
+      .orElse(
+        Option(queries.flatMap(_.sql).mkString("\nUNION ALL\n"))
+      )
+      .getOrElse("")
 
   case class ElasticQueries(queries: List[ElasticQuery], sql: Option[String] = None)
 
