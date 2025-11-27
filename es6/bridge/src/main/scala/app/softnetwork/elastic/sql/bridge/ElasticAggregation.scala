@@ -308,7 +308,7 @@ object ElasticAggregation {
   ): Option[Aggregation] = {
     buckets.reverse.foldLeft(Option.empty[Aggregation]) { (current, bucket) =>
       // Determine the bucketPath of the current bucket
-      val currentBucketPath = bucket.identifier.path
+      val currentNestedPath = bucket.identifier.path
 
       val aggScript =
         if (!bucket.isBucketScript && bucket.shouldBeScripted) {
@@ -366,7 +366,7 @@ object ElasticAggregation {
                 bucketsDirection.get(bucket.identifier.identifierName) match {
                   case Some(direction) =>
                     DateHistogramAggregation(bucket.name, interval = interval)
-                      .field(currentBucketPath)
+                      .field(currentNestedPath)
                       .minDocCount(1)
                       .order(direction match {
                         case Asc => HistogramOrder("_key", asc = true)
@@ -374,7 +374,7 @@ object ElasticAggregation {
                       })
                   case _ =>
                     DateHistogramAggregation(bucket.name, interval = interval)
-                      .field(currentBucketPath)
+                      .field(currentNestedPath)
                       .minDocCount(1)
                 }
             }
@@ -401,14 +401,14 @@ object ElasticAggregation {
                 // Standard terms aggregation
                 bucketsDirection.get(bucket.identifier.identifierName) match {
                   case Some(direction) =>
-                    termsAgg(bucket.name, currentBucketPath)
+                    termsAgg(bucket.name, currentNestedPath)
                       .minDocCount(1)
                       .order(Seq(direction match {
                         case Asc => TermsOrder("_key", asc = true)
                         case _   => TermsOrder("_key", asc = false)
                       }))
                   case _ =>
-                    termsAgg(bucket.name, currentBucketPath)
+                    termsAgg(bucket.name, currentNestedPath)
                       .minDocCount(1)
                 }
             }
@@ -504,7 +504,7 @@ object ElasticAggregation {
     allElasticAggregations: Seq[ElasticAggregation]
   ): String = {
 
-    val currentBucketPath = nested.map(_.bucketPath).getOrElse("")
+    val currentNestedPath = nested.map(_.nestedPath).getOrElse("")
 
     // No filtering
     val fullScript = MetricSelectorScript
@@ -514,7 +514,7 @@ object ElasticAggregation {
       .replaceAll("1 == 1", "")
       .trim
 
-    //    println(s"[DEBUG] currentBucketPath = $currentBucketPath")
+    //    println(s"[DEBUG] currentNestedPath = $currentNestedPath")
     //    println(s"[DEBUG] fullScript (complete) = $fullScript")
 
     if (fullScript.isEmpty) {
@@ -536,17 +536,17 @@ object ElasticAggregation {
         ) match {
           case Some(elasticAgg) =>
             val metricBucketPath = elasticAgg.nestedElement
-              .map(_.bucketPath)
+              .map(_.nestedPath)
               .getOrElse("")
 
             //            println(
             //              s"[DEBUG] metricName = $metricName, metricBucketPath = $metricBucketPath, aggType = ${elasticAgg.agg.getClass.getSimpleName}"
             //            )
 
-            val belongsToLevel = metricBucketPath == currentBucketPath
+            val belongsToLevel = metricBucketPath == currentNestedPath
 
             val isDirectChildAndAccessible =
-              if (isDirectChild(metricBucketPath, currentBucketPath)) {
+              if (isDirectChild(metricBucketPath, currentNestedPath)) {
                 // Check if it's a "global" metric (cardinality, etc.)
                 elasticAgg.isGlobalMetric
               } else {
@@ -562,7 +562,7 @@ object ElasticAggregation {
 
           case None =>
             //            println(s"[DEBUG] metricName = $metricName NOT FOUND")
-            currentBucketPath.isEmpty
+            currentNestedPath.isEmpty
         }
       }
     }
@@ -608,7 +608,7 @@ object ElasticAggregation {
     allAggregations: Seq[SQLAggregation]
   ): Map[String, String] = {
     val currentBucketPath =
-      bucketScriptAggregation.identifier.nestedElement.map(_.bucketPath).getOrElse("")
+      bucketScriptAggregation.identifier.nestedElement.map(_.nestedPath).getOrElse("")
     // Extract ALL metrics paths
     val allMetricsPaths = bucketScriptAggregation.params.keys
     val result =
@@ -616,7 +616,7 @@ object ElasticAggregation {
         allAggregations.find(agg => agg.aggName == metricName || agg.field == metricName) match {
           case Some(sqlAgg) =>
             val metricBucketPath = sqlAgg.nestedElement
-              .map(_.bucketPath)
+              .map(_.nestedPath)
               .getOrElse("")
             if (metricBucketPath == currentBucketPath) {
               // Metric of the same level
@@ -659,7 +659,7 @@ object ElasticAggregation {
     allElasticAggregations: Seq[ElasticAggregation]
   ): Map[String, String] = {
 
-    val currentBucketPath = nested.map(_.bucketPath).getOrElse("")
+    val currentBucketPath = nested.map(_.nestedPath).getOrElse("")
 
     // Extract ALL metrics paths
     val allMetricsPaths = criteria.extractAllMetricsPath
@@ -674,7 +674,7 @@ object ElasticAggregation {
       ) match {
         case Some(elasticAgg) =>
           val metricBucketPath = elasticAgg.nestedElement
-            .map(_.bucketPath)
+            .map(_.nestedPath)
             .getOrElse("")
 
           //          println(

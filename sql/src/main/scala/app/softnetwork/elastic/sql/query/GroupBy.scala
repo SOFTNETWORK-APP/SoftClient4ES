@@ -89,9 +89,9 @@ case class Bucket(
 
   lazy val name: String = identifier.fieldAlias.getOrElse(sourceBucket.replace(".", "_"))
 
-  lazy val bucketPath: String = {
+  lazy val nestedPath: String = {
     identifier.nestedElement match {
-      case Some(ne) => ne.bucketPath
+      case Some(ne) => ne.nestedPath
       case None     => "" // Root level
     }
   }
