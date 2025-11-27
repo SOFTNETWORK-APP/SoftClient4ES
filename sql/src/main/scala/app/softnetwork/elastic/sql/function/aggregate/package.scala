@@ -155,8 +155,7 @@ package object aggregate {
       .update(request)
       .asInstanceOf[FirstValue]
       .copy(
-        identifier = identifier.update(request),
-        orderBy = orderBy.update(request)
+        identifier = identifier.update(request)
       )
   }
 
@@ -175,8 +174,7 @@ package object aggregate {
       .update(request)
       .asInstanceOf[LastValue]
       .copy(
-        identifier = identifier.update(request),
-        orderBy = orderBy.update(request)
+        identifier = identifier.update(request)
       )
   }
 
@@ -196,7 +194,6 @@ package object aggregate {
       .asInstanceOf[ArrayAgg]
       .copy(
         identifier = identifier.update(request),
-        orderBy = orderBy.update(request),
         limit = limit.orElse(request.limit)
       )
     override def multivalued: Boolean = true
