@@ -155,13 +155,17 @@ trait ElasticConversion {
         parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
-        // Case 4 : Hits + global aggregations
+        // Case 4 : Hits + global aggregations + top_hits aggregations
         val globalMetrics = extractGlobalMetrics(aggs)
+        val allTopHits = extractAggregationValues(
+          extractAllTopHits(aggs, fieldAliases, aggregations),
+          aggregations
+        )
         hits.map { hit =>
           val source = extractSource(hit, fieldAliases)
           val metadata = extractHitMetadata(hit)
           val innerHits = extractInnerHits(hit, fieldAliases)
-          globalMetrics ++ source ++ metadata ++ innerHits
+          globalMetrics ++ allTopHits ++ source ++ metadata ++ innerHits
         }
 
       case _ =>
@@ -352,61 +356,10 @@ trait ElasticConversion {
     } else if (bucketAggs.isEmpty) {
       // No buckets : it is a leaf aggregation (metrics or top_hits)
       val metrics = extractMetrics(aggsNode)
-      val allTopHits = extractAllTopHits(aggsNode)
+      val allTopHits = extractAllTopHits(aggsNode, fieldAliases, aggregations)
 
       if (allTopHits.nonEmpty) {
-        // Process each top_hits aggregation with their names
-        val topHitsData = allTopHits.map { case (topHitName, hits) =>
-          // Determine if it is a multivalued aggregation (array_agg, ...)
-          val hasMultipleValues = aggregations.get(topHitName) match {
-            case Some(agg) => agg.multivalued
-            case None      =>
-              // Fallback on naming convention if aggregation is not found
-              !topHitName.toLowerCase.matches("(first|last)_.*")
-          }
-
-          val processedHits = hits.map { hit =>
-            val source = extractSource(hit, fieldAliases)
-            if (hasMultipleValues) {
-              source.size match {
-                case 0 => null
-                case 1 =>
-                  // If only one field in source and multivalued, return the value directly
-                  val value = source.head._2
-                  value match {
-                    case list: List[_]  => list
-                    case map: Map[_, _] => map
-                    case other          => other
-                  }
-                case _ =>
-                  // Multiple fields: return as object
-                  val metadata = extractHitMetadata(hit)
-                  val innerHits = extractInnerHits(hit, fieldAliases)
-                  source ++ metadata ++ innerHits
-              }
-            } else {
-              val metadata = extractHitMetadata(hit)
-              val innerHits = extractInnerHits(hit, fieldAliases)
-              source ++ metadata ++ innerHits
-            }
-          }
-
-          // If multipleValues = true OR more than one hit, return a list
-          // If multipleValues = false AND only one hit, return an object
-          topHitName -> {
-            if (!hasMultipleValues && processedHits.size == 1)
-              processedHits.head
-            else {
-              if (aggregations.get(topHitName).exists(_.distinct))
-                processedHits.distinct
-              else
-                processedHits
-            }
-          }
-        }
-
-        Seq(parentContext ++ metrics ++ topHitsData)
-
+        Seq(parentContext ++ metrics ++ allTopHits)
       } else if (metrics.nonEmpty || parentContext.nonEmpty) {
         Seq(parentContext ++ metrics)
       } else {
@@ -414,7 +367,7 @@ trait ElasticConversion {
       }
     } else {
       // Handle each aggregation with buckets
-      bucketAggs.flatMap { case (aggName, buckets, aggValue) =>
+      bucketAggs.flatMap { case (aggName, buckets, _) =>
         buckets.flatMap { bucket =>
           val bucketKey = extractBucketKey(bucket)
           val docCount = Option(bucket.get("doc_count"))
@@ -572,23 +525,80 @@ trait ElasticConversion {
   }
 
   /** Extract all top_hits aggregations with their names and hits */
-  def extractAllTopHits(aggsNode: JsonNode): Map[String, Seq[JsonNode]] = {
+  def extractAllTopHits(
+    aggsNode: JsonNode,
+    fieldAliases: Map[String, String],
+    aggregations: Map[String, ClientAggregation]
+  ): Map[String, Any] = {
     if (!aggsNode.isObject) return Map.empty
-    aggsNode
-      .properties()
-      .asScala
-      .collect {
-        case entry if entry.getValue.has("hits") =>
-          val normalizedKey = normalizeAggregationKey(entry.getKey)
-          val hitsNode = entry.getValue.path("hits").path("hits")
-          val hits = if (hitsNode.isArray) {
-            hitsNode.elements().asScala.toSeq
-          } else {
-            Seq.empty
-          }
-          normalizedKey -> hits
+    val allTopHits =
+      aggsNode
+        .properties()
+        .asScala
+        .collect {
+          case entry if entry.getValue.has("hits") =>
+            val normalizedKey = normalizeAggregationKey(entry.getKey)
+            val hitsNode = entry.getValue.path("hits").path("hits")
+            val hits = if (hitsNode.isArray) {
+              hitsNode.elements().asScala.toSeq
+            } else {
+              Seq.empty
+            }
+            normalizedKey -> hits
+        }
+        .toMap
+
+    // Process each top_hits aggregation with their names
+    val row = allTopHits.map { case (topHitName, hits) =>
+      // Determine if it is a multivalued aggregation (array_agg, ...)
+      val hasMultipleValues = aggregations.get(topHitName) match {
+        case Some(agg) => agg.multivalued
+        case None      =>
+          // Fallback on naming convention if aggregation is not found
+          !topHitName.toLowerCase.matches("(first|last)_.*")
       }
-      .toMap
+
+      val processedHits = hits.map { hit =>
+        val source = extractSource(hit, fieldAliases)
+        if (hasMultipleValues) {
+          source.size match {
+            case 0 => null
+            case 1 =>
+              // If only one field in source and multivalued, return the value directly
+              val value = source.head._2
+              value match {
+                case list: List[_]  => list
+                case map: Map[_, _] => map
+                case other          => other
+              }
+            case _ =>
+              // Multiple fields: return as object
+              val metadata = extractHitMetadata(hit)
+              val innerHits = extractInnerHits(hit, fieldAliases)
+              source ++ metadata ++ innerHits
+          }
+        } else {
+          val metadata = extractHitMetadata(hit)
+          val innerHits = extractInnerHits(hit, fieldAliases)
+          source ++ metadata ++ innerHits
+        }
+      }
+
+      // If multipleValues = true OR more than one hit, return a list
+      // If multipleValues = false AND only one hit, return an object
+      topHitName -> {
+        if (!hasMultipleValues && processedHits.size == 1)
+          processedHits.head
+        else {
+          if (aggregations.get(topHitName).exists(_.distinct))
+            processedHits.distinct
+          else
+            processedHits
+        }
+      }
+    }
+
+    row
   }
 
   /** Extract global metrics from aggregations (for hits + aggs case)
@@ -620,6 +630,53 @@ trait ElasticConversion {
         }
       }
       .toMap
+  }
+
+  def extractAggregationValues(
+    row: Map[String, Any],
+    aggregations: Map[String, ClientAggregation]
+  ): Map[String, Any] = {
+    val values = aggregations
+      .map { wf =>
+        val fieldName = wf._1
+
+        val aggType = wf._2.aggType
+
+        val sourceField = wf._2.sourceField
+
+        // Get value from row (already processed by ElasticConversion)
+        val value = row.get(fieldName).orElse {
+          None
+        }
+
+        val validatedValue =
+          value match {
+            case Some(m: Map[String, Any]) =>
+              m.get(sourceField) match {
+                case Some(v) =>
+                  aggType match {
+                    case AggregationType.ArrayAgg =>
+                      v match {
+                        case l: List[_] =>
+                          Some(l)
+                        case other =>
+                          Some(List(other)) // Wrap into a List
+                      }
+                    case _ => Some(v)
+                  }
+                case None =>
+                  None
+              }
+            case other =>
+              other
+          }
+
+        fieldName -> validatedValue
+      }
+      .collect { case (name, Some(value)) =>
+        name -> value
+      }
+    values
   }
 
   /** Convert recursively a JsonNode to Map
