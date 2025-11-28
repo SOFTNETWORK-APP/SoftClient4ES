@@ -2759,17 +2759,17 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  "size": 0,
       |  "_source": false,
       |  "aggs": {
+      |    "cnt": {
+      |      "cardinality": {
+      |        "field": "salary"
+      |      }
+      |    },
       |    "dept": {
       |      "terms": {
       |        "field": "department",
       |        "min_doc_count": 1
       |      },
       |      "aggs": {
-      |        "cnt": {
-      |          "cardinality": {
-      |            "field": "salary"
-      |          }
-      |        },
       |        "first_salary": {
       |          "top_hits": {
       |            "size": 1,

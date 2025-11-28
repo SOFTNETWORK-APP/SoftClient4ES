@@ -2752,24 +2752,24 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-    """{
+      """{
         |  "query": {
         |    "match_all": {}
         |  },
         |  "size": 0,
         |  "_source": false,
         |  "aggs": {
+        |    "cnt": {
+        |      "cardinality": {
+        |        "field": "salary"
+        |      }
+        |    },
         |    "dept": {
         |      "terms": {
         |        "field": "department",
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
-        |        "cnt": {
-        |          "cardinality": {
-        |            "field": "salary"
-        |          }
-        |        },
         |        "first_salary": {
         |          "top_hits": {
         |            "size": 1,
