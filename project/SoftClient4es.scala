@@ -153,8 +153,8 @@ trait SoftClient4es {
       case 6 =>
         Seq(
           "io.searchbox" % "jest" % Versions.jest,
-          "com.google.guava" % "guava" % "33.5.0-jre",
-        ).map(_.excludeAll((httpComponentsExclusions /*++ Seq(guavaExclusion)*/) *))
+          "com.google.guava" % "guava" % "33.5.0-jre"
+        ).map(_.excludeAll(httpComponentsExclusions /*++ Seq(guavaExclusion)*/ *))
       case _ => Seq.empty
     })
   }

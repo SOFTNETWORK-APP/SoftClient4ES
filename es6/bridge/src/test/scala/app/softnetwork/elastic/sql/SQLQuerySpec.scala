@@ -3738,19 +3738,75 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "test" in {
-    val query =
+    /*val query =
       """SELECT
-        |    category,
-        |    SUM(amount) AS totalSales,
-        |    COUNT(*) AS orderCount,
-        |    DATE_TRUNC(sales_date, MONTH) as salesMonth
-        |  FROM orders
-        |  GROUP BY DATE_TRUNC(sales_date, MONTH), category
-        |  ORDER BY DATE_TRUNC(sales_date, MONTH) DESC, category ASC""".stripMargin.replaceAll(
-        "\n",
-        " "
-      )
+        |  category,
+        |  SUM(amount) AS totalSales,
+        |  COUNT(*) AS orderCount,
+        |  DATE_TRUNC(sales_date, MONTH) as salesMonth,
+        |  YEAR(sales_date) as salesYear
+        |FROM orders
+        |WHERE sales_date IS NOT NULL AND sales_date BETWEEN '2024-01-01' AND '2024-12-31' AND category IN ('Electronics', 'Books', 'Clothing')
+        |GROUP BY YEAR(sales_date), DATE_TRUNC(sales_date, MONTH), category
+        |ORDER BY YEAR(sales_date) DESC, DATE_TRUNC(sales_date, MONTH) DESC, category ASC""".stripMargin
+        .replaceAll(
+          "\n",
+          " "
+        )
     val select: ElasticSearchRequest = SQLQuery(query)
-    println(select.query)
+    println(select.query)*/
+    val query =
+      """  SELECT
+        |    product_id AS productId,
+        |    product_name AS productName,
+        |    DATE_TRUNC( sale_date, MONTH ) AS saleMonth,
+        |    SUM(amount) AS monthlySales,
+        |    FIRST_VALUE(amount) OVER (
+        |      PARTITION BY product_id, DATE_TRUNC( sale_date, MONTH )
+        |      ORDER BY sale_date ASC
+        |    ) AS launchMonthSales,
+        |    LAST_VALUE(amount) OVER (
+        |      PARTITION BY product_id, DATE_TRUNC( sale_date, MONTH )
+        |      ORDER BY sale_date ASC
+        |    ) AS peakMonthSales,
+        |    ARRAY_AGG(amount) OVER (
+        |      PARTITION BY product_id
+        |      ORDER BY sale_date ASC
+        |    ) AS allMonthlySales
+        |  FROM sales
+        |  WHERE sale_date >= '2024-01-01'
+        |  GROUP BY product_id, product_name, DATE_TRUNC( sale_date, MONTH )
+        |  ORDER BY product_id, DATE_TRUNC( sale_date, MONTH )
+        |""".stripMargin
+    SQLQuery(query).request.flatMap(_.left.toOption) match {
+      case Some(request) =>
+        val aggRequest =
+          request
+            .copy(
+              select = request.select.copy(fields = request.windowFields),
+              groupBy = None, //request.groupBy.map(_.copy(buckets = request.windowBuckets)),
+              orderBy = None, // Not needed for aggregations
+              limit = None // Need all buckets
+            )
+            .update()
+
+        val windowRequest: ElasticSearchRequest = aggRequest
+        println(windowRequest.query)
+
+        // Remove window function fields from SELECT
+        val baseFields = request.select.fields.filterNot(_.identifier.hasWindow)
+
+        // Create modified request
+        val baseRequest: ElasticSearchRequest = request
+          .copy(
+            select = request.select.copy(fields = baseFields)
+          )
+          .update()
+
+        println(baseRequest.query)
+
+      case _ =>
+
+    }
   }
 }
