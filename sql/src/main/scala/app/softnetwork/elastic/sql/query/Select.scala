@@ -70,13 +70,8 @@ case class Field(
 
   override def functions: List[Function] = identifier.functions
 
-  lazy val windows: Option[WindowFunction] =
-    functions.collectFirst { case th: WindowFunction => th }
-
-  def isWindow: Boolean = windows.nonEmpty //.exists(_.partitionBy.nonEmpty)
-
   def update(request: SQLSearchRequest): Field = {
-    windows match {
+    identifier.windows match {
       case Some(th) =>
         val windowFunction = th.update(request)
         val identifier = windowFunction.identifier
@@ -144,7 +139,8 @@ case class SQLAggregation(
   aggType: AggregateFunction,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None,
-  buckets: Seq[String] = Seq.empty
+  buckets: Seq[String] = Seq.empty,
+  bucketPath: String = ""
 ) {
   val nested: Boolean = nestedElement.nonEmpty
   val multivalued: Boolean = aggType.multivalued
@@ -225,6 +221,12 @@ object SQLAggregation {
         aggPath ++= Seq(aggName)
     }
 
+    val bucketPath =
+      aggType.bucketPath match {
+        case paths if paths.isEmpty => identifier.bucketPath
+        case other                  => other
+      }
+
     Some(
       SQLAggregation(
         aggPath.mkString("."),
@@ -234,7 +236,8 @@ object SQLAggregation {
         aggType = aggType,
         direction = direction,
         nestedElement = identifier.nestedElement,
-        buckets = request.buckets.map { _.name }
+        buckets = request.buckets.map { _.name },
+        bucketPath = bucketPath
       )
     )
   }

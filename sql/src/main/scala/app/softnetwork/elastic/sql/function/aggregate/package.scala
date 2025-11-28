@@ -16,8 +16,15 @@
 
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.query.{Bucket, Field, Limit, OrderBy, SQLSearchRequest}
-import app.softnetwork.elastic.sql.{asString, Expr, Identifier, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.query.{
+  Bucket,
+  BucketPath,
+  Field,
+  Limit,
+  OrderBy,
+  SQLSearchRequest
+}
+import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
 package object aggregate {
 
@@ -33,6 +40,9 @@ package object aggregate {
     /** Indicates whether this aggregation is a windowing function with partitioning or not
       */
     def isWindowing: Boolean = false
+
+    def bucketPath: String = ""
+
   }
 
   case object COUNT extends Expr("COUNT") with AggregateFunction
@@ -77,12 +87,21 @@ package object aggregate {
 
     override def isBucketScript: Boolean = true
 
+    lazy val aggregations: Seq[AggregateFunction] = FunctionUtils.aggregateFunctions(identifier)
+
+    // Get the longest bucket path among the aggregations involved in the bucket script
+    // TODO we should check that all bucket paths among the aggregations belong to the same buckets tree
+    override lazy val bucketPath: String =
+      aggregations.map(_.bucketPath).distinct.sortBy(_.length).reverse.headOption.getOrElse("")
+
     override def update(request: SQLSearchRequest): BucketScriptAggregation = {
       val identifiers = FunctionUtils.aggregateIdentifiers(identifier)
       val params = identifiers.flatMap {
         case identifier: Identifier =>
           val name = identifier.metricName.getOrElse(identifier.aliasOrName)
-          Some(name -> request.fieldAliases.getOrElse(identifier.identifierName, name))
+          Some(
+            name -> request.fieldAliases.getOrElse(identifier.identifierName, name)
+          ) // TODO may be be a path
         case _ => None
       }.toMap
       this.copy(params = params)
@@ -105,6 +124,8 @@ package object aggregate {
 
     lazy val buckets: Seq[Bucket] = partitionBy.map(identifier => Bucket(identifier, None))
 
+    override lazy val bucketPath: String = BucketPath(buckets).path
+
     lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
       b.identifier.identifierName -> b
     }.toMap
@@ -126,16 +147,16 @@ package object aggregate {
       val updated = this
         .withPartitionBy(partitionBy = partitionBy.map(_.update(request)))
       updated.withFields(
-        fields = if (isWindowing) {
-          request.select.fields
-            .filterNot(field =>
-              field.isAggregation || request.bucketNames.keys.toSeq
-                .contains(field.identifier.identifierName)
-            )
-            .filterNot(f => request.excludes.contains(f.sourceField))
-        } else {
-          updated.fields
-        }
+        fields = request.select.fields
+          .filterNot(field =>
+            field.isAggregation || request.bucketNames.keys.toSeq
+              .contains(field.identifier.identifierName)
+          )
+          .filterNot(field =>
+            updated.bucketNames.keys.toSeq
+              .contains(field.identifier.identifierName)
+          )
+          .filterNot(f => request.excludes.contains(f.sourceField))
       )
     }
   }
@@ -155,7 +176,8 @@ package object aggregate {
       .update(request)
       .asInstanceOf[FirstValue]
       .copy(
-        identifier = identifier.update(request)
+        identifier = identifier.update(request),
+        orderBy = orderBy.update(request)
       )
   }
 
@@ -174,7 +196,8 @@ package object aggregate {
       .update(request)
       .asInstanceOf[LastValue]
       .copy(
-        identifier = identifier.update(request)
+        identifier = identifier.update(request),
+        orderBy = orderBy.update(request)
       )
   }
 
@@ -194,6 +217,7 @@ package object aggregate {
       .asInstanceOf[ArrayAgg]
       .copy(
         identifier = identifier.update(request),
+        orderBy = orderBy.update(request),
         limit = limit.orElse(request.limit)
       )
     override def multivalued: Boolean = true

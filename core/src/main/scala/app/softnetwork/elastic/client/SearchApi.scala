@@ -68,7 +68,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           collection.immutable.Seq(single.sources: _*),
           sql = Some(sql.query)
         )
-        if (single.windowBuckets.nonEmpty)
+        if (single.windowFunctions.exists(_.isWindowing))
           searchWithWindowEnrichment(sql, single)
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
@@ -131,7 +131,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val query = elasticQuery.query
     val indices = elasticQuery.indices.mkString(",")
 
-    logger.debug(
+    logger.info(
       s"🔍 Searching with query \n$elasticQuery\nin indices '$indices'"
     )
 
@@ -1168,7 +1168,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     request
       .copy(
         select = request.select.copy(fields = request.windowFields),
-        groupBy = request.groupBy.map(_.copy(buckets = request.windowBuckets)),
+        groupBy = None, //request.groupBy.map(_.copy(buckets = request.windowBuckets)),
         orderBy = None, // Not needed for aggregations
         limit = None // Need all buckets
       )
@@ -1236,7 +1236,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   ): SQLSearchRequest = {
 
     // Remove window function fields from SELECT
-    val baseFields = request.select.fields.filterNot(_.windows.nonEmpty)
+    val baseFields = request.select.fields.filterNot(_.identifier.hasWindow)
 
     // Create modified request
     val baseRequest = request

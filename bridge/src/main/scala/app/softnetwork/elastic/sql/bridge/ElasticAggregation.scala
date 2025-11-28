@@ -20,8 +20,9 @@ import app.softnetwork.elastic.sql.PainlessContext
 import app.softnetwork.elastic.sql.`type`.SQLTemporal
 import app.softnetwork.elastic.sql.query.{
   Asc,
-  Bucket,
   BucketIncludesExcludes,
+  BucketNode,
+  BucketTree,
   Criteria,
   Desc,
   Field,
@@ -79,7 +80,8 @@ case class ElasticAggregation(
   aggType: AggregateFunction,
   agg: AbstractAggregation,
   direction: Option[SortOrder] = None,
-  nestedElement: Option[NestedElement] = None
+  nestedElement: Option[NestedElement] = None,
+  bucketPath: String = ""
 ) {
   val nested: Boolean = nestedElement.nonEmpty
   val filtered: Boolean = filteredAgg.nonEmpty
@@ -115,7 +117,7 @@ object ElasticAggregation {
 
     val distinct = identifier.distinct
 
-    val aggType = {
+    var aggType = {
       if (isBucketScript) {
         BucketScriptAggregation(identifier)
       } else
@@ -208,13 +210,13 @@ object ElasticAggregation {
               sort.order match {
                 case Some(Desc) =>
                   th.window match {
-                    case LAST_VALUE => FieldSort(sort.field.aliasOrName).asc()
-                    case _          => FieldSort(sort.field.aliasOrName).desc()
+                    case LAST_VALUE => FieldSort(sort.field.name).asc()
+                    case _          => FieldSort(sort.field.name).desc()
                   }
                 case _ =>
                   th.window match {
-                    case LAST_VALUE => FieldSort(sort.field.aliasOrName).desc()
-                    case _          => FieldSort(sort.field.aliasOrName).asc()
+                    case LAST_VALUE => FieldSort(sort.field.name).desc()
+                    case _          => FieldSort(sort.field.name).asc()
                   }
               }
             )
@@ -224,6 +226,7 @@ object ElasticAggregation {
             case Some(sqlAgg) =>
               sqlAgg.aggType match {
                 case bsa: BucketScriptAggregation =>
+                  aggType = bsa
                   extractMetricsPathForBucketScript(bsa, allAggregations.values.toSeq)
                 case _ => Map.empty
               }
@@ -284,6 +287,12 @@ object ElasticAggregation {
           Some(nestedAgg)
       }
 
+    val bucketPath =
+      aggType.bucketPath match {
+        case paths if paths.isEmpty => identifier.bucketPath
+        case other                  => other
+      }
+
     ElasticAggregation(
       aggPath.mkString("."),
       field,
@@ -293,205 +302,218 @@ object ElasticAggregation {
       aggType = aggType,
       agg = _agg,
       direction = direction,
-      nestedElement = nestedElement
+      nestedElement = nestedElement,
+      bucketPath = bucketPath
     )
   }
 
   def buildBuckets(
-    buckets: Seq[Bucket],
+    buckets: Seq[Seq[BucketNode]],
     bucketsDirection: Map[String, SortOrder],
-    aggregations: Seq[AbstractAggregation],
+    aggs: Seq[ElasticAggregation],
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria],
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
-  ): Option[Aggregation] = {
-    buckets.reverse.foldLeft(Option.empty[Aggregation]) { (current, bucket) =>
-      // Determine the bucketPath of the current bucket
-      val currentNestedPath = bucket.identifier.path
+  ): Seq[Aggregation] = {
+    println(
+      s"[DEBUG] buildBuckets called with buckets: \n${BucketTree(buckets.flatMap(_.headOption))}"
+    )
+    buckets.flatMap { tree =>
+      tree.reverse.foldLeft(Option.empty[Aggregation]) { (current, node) =>
+        val currentBucketPath = node.bucketPath
 
-      val aggScript =
-        if (!bucket.isBucketScript && bucket.shouldBeScripted) {
-          val context = PainlessContext()
-          val painless = bucket.painless(Some(context))
-          Some(Script(s"$context$painless").lang("painless"))
-        } else {
-          None
-        }
+        val bucket = node.bucket
 
-      var agg: Aggregation = {
-        bucket.out match {
-          case _: SQLTemporal =>
-            val functions = bucket.identifier.functions
-            val interval: Option[DateHistogramInterval] =
-              if (functions.size == 1) {
-                functions.head match {
-                  case trunc: DateTrunc =>
-                    trunc.unit match {
-                      case TimeUnit.YEARS    => Option(DateHistogramInterval.Year)
-                      case TimeUnit.QUARTERS => Option(DateHistogramInterval.Quarter)
-                      case TimeUnit.MONTHS   => Option(DateHistogramInterval.Month)
-                      case TimeUnit.WEEKS    => Option(DateHistogramInterval.Week)
-                      case TimeUnit.DAYS     => Option(DateHistogramInterval.Day)
-                      case TimeUnit.HOURS    => Option(DateHistogramInterval.Hour)
-                      case TimeUnit.MINUTES  => Option(DateHistogramInterval.Minute)
-                      case TimeUnit.SECONDS  => Option(DateHistogramInterval.Second)
-                      case _                 => None
-                    }
-                  case _ => None
-                }
-              } else {
-                None
-              }
+        val aggregations =
+          aggs.filter(agg => agg.bucketPath == currentBucketPath).map(_.agg)
 
-            aggScript match {
-              case Some(script) =>
-                // Scripted date histogram
-                bucketsDirection.get(bucket.identifier.identifierName) match {
-                  case Some(direction) =>
-                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
-                      .script(script)
-                      .minDocCount(1)
-                      .order(direction match {
-                        case Asc => HistogramOrder("_key", asc = true)
-                        case _   => HistogramOrder("_key", asc = false)
-                      })
-                  case _ =>
-                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
-                      .script(script)
-                      .minDocCount(1)
-                }
-              case _ =>
-                // Standard date histogram
-                bucketsDirection.get(bucket.identifier.identifierName) match {
-                  case Some(direction) =>
-                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
-                      .field(currentNestedPath)
-                      .minDocCount(1)
-                      .order(direction match {
-                        case Asc => HistogramOrder("_key", asc = true)
-                        case _   => HistogramOrder("_key", asc = false)
-                      })
-                  case _ =>
-                    DateHistogramAggregation(bucket.name, calendarInterval = interval)
-                      .field(currentNestedPath)
-                      .minDocCount(1)
-                }
-            }
+        // Determine the nested path of the current bucket
+        val currentBucketNestedPath = bucket.identifier.path
 
-          case _ =>
-            aggScript match {
-              case Some(script) =>
-                // Scripted terms aggregation
-                bucketsDirection.get(bucket.identifier.identifierName) match {
-                  case Some(direction) =>
-                    TermsAggregation(bucket.name)
-                      .script(script)
-                      .minDocCount(1)
-                      .order(Seq(direction match {
-                        case Asc => TermsOrder("_key", asc = true)
-                        case _   => TermsOrder("_key", asc = false)
-                      }))
-                  case _ =>
-                    TermsAggregation(bucket.name)
-                      .script(script)
-                      .minDocCount(1)
-                }
-              case _ =>
-                // Standard terms aggregation
-                bucketsDirection.get(bucket.identifier.identifierName) match {
-                  case Some(direction) =>
-                    termsAgg(bucket.name, currentNestedPath)
-                      .minDocCount(1)
-                      .order(Seq(direction match {
-                        case Asc => TermsOrder("_key", asc = true)
-                        case _   => TermsOrder("_key", asc = false)
-                      }))
-                  case _ =>
-                    termsAgg(bucket.name, currentNestedPath)
-                      .minDocCount(1)
-                }
-            }
-        }
-      }
-      agg match {
-        case termsAgg: TermsAggregation =>
-          bucket.size.foreach(s => agg = termsAgg.size(s))
-          having match {
-            case Some(criteria) =>
-              criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
-                case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                  agg = termsAgg.includeRegex(regex)
-                case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                  agg = termsAgg.includeExactValues(values.toArray)
-                case _ =>
-              }
-              criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
-                case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                  agg = termsAgg.excludeRegex(regex)
-                case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                  agg = termsAgg.excludeExactValues(values.toArray)
-                case _ =>
-              }
-            case _ =>
+        val aggScript =
+          if (!bucket.isBucketScript && bucket.shouldBeScripted) {
+            val context = PainlessContext()
+            val painless = bucket.painless(Some(context))
+            Some(Script(s"$context$painless").lang("painless"))
+          } else {
+            None
           }
-        case _ =>
-      }
-      current match {
-        case Some(subAgg) =>
-          agg match {
-            case termsAgg: TermsAggregation =>
-              agg = termsAgg.subaggs(Seq(subAgg))
-            case dateHistogramAgg: DateHistogramAggregation =>
-              agg = dateHistogramAgg.subaggs(Seq(subAgg))
+
+        var agg: Aggregation = {
+          bucket.out match {
+            case _: SQLTemporal =>
+              val functions = bucket.identifier.functions
+              val interval: Option[DateHistogramInterval] =
+                if (functions.size == 1) {
+                  functions.head match {
+                    case trunc: DateTrunc =>
+                      trunc.unit match {
+                        case TimeUnit.YEARS    => Option(DateHistogramInterval.Year)
+                        case TimeUnit.QUARTERS => Option(DateHistogramInterval.Quarter)
+                        case TimeUnit.MONTHS   => Option(DateHistogramInterval.Month)
+                        case TimeUnit.WEEKS    => Option(DateHistogramInterval.Week)
+                        case TimeUnit.DAYS     => Option(DateHistogramInterval.Day)
+                        case TimeUnit.HOURS    => Option(DateHistogramInterval.Hour)
+                        case TimeUnit.MINUTES  => Option(DateHistogramInterval.Minute)
+                        case TimeUnit.SECONDS  => Option(DateHistogramInterval.Second)
+                        case _                 => None
+                      }
+                    case _ => None
+                  }
+                } else {
+                  None
+                }
+
+              aggScript match {
+                case Some(script) =>
+                  // Scripted date histogram
+                  bucketsDirection.get(bucket.identifier.identifierName) match {
+                    case Some(direction) =>
+                      DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                        .script(script)
+                        .minDocCount(1)
+                        .order(direction match {
+                          case Asc => HistogramOrder("_key", asc = true)
+                          case _   => HistogramOrder("_key", asc = false)
+                        })
+                    case _ =>
+                      DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                        .script(script)
+                        .minDocCount(1)
+                  }
+                case _ =>
+                  // Standard date histogram
+                  bucketsDirection.get(bucket.identifier.identifierName) match {
+                    case Some(direction) =>
+                      DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                        .field(currentBucketNestedPath)
+                        .minDocCount(1)
+                        .order(direction match {
+                          case Asc => HistogramOrder("_key", asc = true)
+                          case _   => HistogramOrder("_key", asc = false)
+                        })
+                    case _ =>
+                      DateHistogramAggregation(bucket.name, calendarInterval = interval)
+                        .field(currentBucketNestedPath)
+                        .minDocCount(1)
+                  }
+              }
+
             case _ =>
+              aggScript match {
+                case Some(script) =>
+                  // Scripted terms aggregation
+                  bucketsDirection.get(bucket.identifier.identifierName) match {
+                    case Some(direction) =>
+                      TermsAggregation(bucket.name)
+                        .script(script)
+                        .minDocCount(1)
+                        .order(Seq(direction match {
+                          case Asc => TermsOrder("_key", asc = true)
+                          case _   => TermsOrder("_key", asc = false)
+                        }))
+                    case _ =>
+                      TermsAggregation(bucket.name)
+                        .script(script)
+                        .minDocCount(1)
+                  }
+                case _ =>
+                  // Standard terms aggregation
+                  bucketsDirection.get(bucket.identifier.identifierName) match {
+                    case Some(direction) =>
+                      termsAgg(bucket.name, currentBucketNestedPath)
+                        .minDocCount(1)
+                        .order(Seq(direction match {
+                          case Asc => TermsOrder("_key", asc = true)
+                          case _   => TermsOrder("_key", asc = false)
+                        }))
+                    case _ =>
+                      termsAgg(bucket.name, currentBucketNestedPath)
+                        .minDocCount(1)
+                  }
+              }
           }
-          Some(agg)
-        case None =>
-          val subaggs =
+        }
+        agg match {
+          case termsAgg: TermsAggregation =>
+            bucket.size.foreach(s => agg = termsAgg.size(s))
             having match {
               case Some(criteria) =>
-                val script = metricSelectorForBucket(
-                  criteria,
-                  nested,
-                  allElasticAggregations
-                )
-
-                if (script.nonEmpty) {
-                  val bucketSelector =
-                    bucketSelectorAggregation(
-                      "having_filter",
-                      Script(script),
-                      extractMetricsPathForBucket(
-                        criteria,
-                        nested,
-                        allElasticAggregations
-                      )
-                    )
-                  aggregations :+ bucketSelector
-                } else {
-                  aggregations
+                criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
+                  case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+                    agg = termsAgg.includeRegex(regex)
+                  case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+                    agg = termsAgg.includeExactValues(values.toArray)
+                  case _ =>
                 }
-              case None =>
-                aggregations
+                criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
+                  case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+                    agg = termsAgg.excludeRegex(regex)
+                  case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+                    agg = termsAgg.excludeExactValues(values.toArray)
+                  case _ =>
+                }
+              case _ =>
             }
+          case _ =>
+        }
+        current match {
+          case Some(subAgg) =>
+            agg match {
+              case termsAgg: TermsAggregation =>
+                agg = termsAgg.subaggs(aggregations :+ subAgg)
+              case dateHistogramAgg: DateHistogramAggregation =>
+                agg = dateHistogramAgg.subaggs(aggregations :+ subAgg)
+              case _ =>
+            }
+            Some(agg)
+          case None =>
+            val subaggs =
+              having match {
+                case Some(criteria) =>
+                  val script = metricSelectorForBucket(
+                    criteria,
+                    nested,
+                    allElasticAggregations
+                  )
 
-          agg match {
-            case termsAgg: TermsAggregation =>
-              val aggregationsWithOrder: Seq[TermsOrder] = aggregationsDirection.toSeq.map { kv =>
-                kv._2 match {
-                  case Asc => TermsOrder(kv._1, asc = true)
-                  case _   => TermsOrder(kv._1, asc = false)
-                }
+                  if (script.nonEmpty) {
+                    val bucketSelector =
+                      bucketSelectorAggregation(
+                        "having_filter",
+                        Script(script),
+                        extractMetricsPathForBucket(
+                          criteria,
+                          nested,
+                          allElasticAggregations
+                        )
+                      )
+                    aggregations :+ bucketSelector
+                  } else {
+                    aggregations
+                  }
+                case None =>
+                  aggregations
               }
-              if (aggregationsWithOrder.nonEmpty)
-                agg = termsAgg.order(aggregationsWithOrder).copy(subaggs = subaggs)
-              else
-                agg = termsAgg.copy(subaggs = subaggs)
-            case dateHistogramAggregation: DateHistogramAggregation =>
-              agg = dateHistogramAggregation.copy(subaggs = subaggs)
-          }
-          Some(agg)
+
+            agg match {
+              case termsAgg: TermsAggregation =>
+                val aggregationsWithOrder: Seq[TermsOrder] = aggregationsDirection.toSeq.map { kv =>
+                  kv._2 match {
+                    case Asc => TermsOrder(kv._1, asc = true)
+                    case _   => TermsOrder(kv._1, asc = false)
+                  }
+                }
+                if (aggregationsWithOrder.nonEmpty)
+                  agg = termsAgg.order(aggregationsWithOrder).copy(subaggs = subaggs)
+                else
+                  agg = termsAgg.copy(subaggs = subaggs)
+              case dateHistogramAggregation: DateHistogramAggregation =>
+                agg = dateHistogramAggregation.copy(subaggs = subaggs)
+            }
+            Some(agg)
+        }
       }
     }
   }

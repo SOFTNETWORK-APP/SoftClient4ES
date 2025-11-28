@@ -190,7 +190,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           aggType = AggregationType.ArrayAgg,
           distinct = false,
           "name",
-          windowing = true
+          windowing = true,
+          ""
         )
       )
     ) match {
@@ -643,7 +644,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           aggType = AggregationType.ArrayAgg,
           distinct = false,
           "name",
-          windowing = true
+          windowing = true,
+          ""
         )
       )
     ) match {

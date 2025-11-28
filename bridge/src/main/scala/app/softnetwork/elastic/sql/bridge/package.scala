@@ -151,7 +151,7 @@ package object bridge {
   ): Seq[AbstractAggregation] = {
     val notNestedAggregations = aggregations.filterNot(_.nested)
 
-    val notNestedBuckets = request.buckets.filterNot(_.nested)
+    val notNestedBuckets = request.bucketTree.filterNot(_.bucket.nested)
 
     val rootAggregations = notNestedAggregations match {
       case Nil =>
@@ -164,8 +164,8 @@ package object bridge {
           None,
           aggregations
         ) match {
-          case Some(b) => Seq(b)
-          case _       => Seq.empty
+          case Nil  => Seq.empty
+          case aggs => aggs
         }
         buckets
       case aggs =>
@@ -179,14 +179,18 @@ package object bridge {
         val buckets = ElasticAggregation.buildBuckets(
           notNestedBuckets,
           request.sorts -- directions.keys,
-          aggregations,
+          aggs,
           directions,
           request.having.flatMap(_.criteria),
           None,
           aggs
         ) match {
-          case Some(b) => Seq(b)
-          case _       => aggregations
+          case Nil => aggs.map(_.agg)
+          case aggs =>
+            if (request.groupBy.isEmpty && request.windowFunctions.exists(_.isWindowing))
+              notNestedAggregations.filter(_.bucketPath.isEmpty).map(_.agg) ++ aggs
+            else
+              aggs
         }
         buckets
     }
@@ -210,12 +214,14 @@ package object bridge {
 
     // Group nested buckets by their nested path
     val nestedGroupedBuckets =
-      request.buckets
-        .filter(_.nested)
-        .groupBy(
-          _.nestedBucket.getOrElse(
-            throw new IllegalArgumentException(
-              "Nested bucket must have a nested element"
+      request.bucketTree
+        .filter(_.bucket.nested)
+        .map(tree =>
+          tree.groupBy(
+            _.bucket.nestedBucket.getOrElse(
+              throw new IllegalArgumentException(
+                "Nested bucket must have a nested element"
+              )
             )
           )
         )
@@ -235,17 +241,16 @@ package object bridge {
 
           // Get the buckets for this nested element
           val nestedBuckets =
-            nestedGroupedBuckets.getOrElse(n.innerHitsName, Seq.empty)
+            nestedGroupedBuckets.map(_.getOrElse(n.innerHitsName, Seq.empty))
 
           val notRelatedAggregationsToBuckets = elasticAggregations
             .filterNot { ea =>
-              nestedBuckets.exists(nb => nb.identifier.path == ea.sourceField)
+              nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField)
             }
-            .map(_.agg)
 
           val relatedAggregationsToBuckets = elasticAggregations
             .filter { ea =>
-              nestedBuckets.exists(nb => nb.identifier.path == ea.sourceField)
+              nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField)
             }
             .map(_.agg)
 
@@ -273,8 +278,12 @@ package object bridge {
               Some(n),
               aggregations
             ) match {
-              case Some(b) => Seq(b)
-              case _       => notRelatedAggregationsToBuckets
+              case Nil => notRelatedAggregationsToBuckets.map(_.agg)
+              case aggs =>
+                if (request.groupBy.isEmpty && request.windowFunctions.exists(_.isWindowing))
+                  notRelatedAggregationsToBuckets.filter(_.bucketPath.isEmpty).map(_.agg) ++ aggs
+                else
+                  aggs
             }
 
           val children = n.children

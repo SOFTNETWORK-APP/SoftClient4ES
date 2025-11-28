@@ -122,10 +122,11 @@ case class SQLSearchRequest(
   }
 
   lazy val fields: Seq[String] = {
-    if (buckets.isEmpty)
+    if (groupBy.isEmpty && !windowFunctions.exists(_.isWindowing))
       select.fields
         .filterNot(_.isScriptField)
         .filterNot(_.nested)
+        .filterNot(_.isAggregation)
         .map(_.sourceField)
         .filterNot(f => excludes.contains(f))
         .distinct
@@ -133,14 +134,14 @@ case class SQLSearchRequest(
       Seq.empty
   }
 
-  lazy val windowFields: Seq[Field] = select.fields.filter(_.isWindow)
+  lazy val windowFields: Seq[Field] = select.fields.filter(_.identifier.hasWindow)
 
-  lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.windows)
+  lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
   lazy val aggregates: Seq[Field] =
     select.fields
       .filter(f => f.isAggregation || f.isBucketScript)
-      .filterNot(_.isWindow) ++ windowFields
+      .filterNot(_.identifier.hasWindow) ++ windowFields
 
   lazy val sqlAggregations: Map[String, SQLAggregation] =
     aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
@@ -149,18 +150,13 @@ case class SQLSearchRequest(
 
   lazy val sources: Seq[String] = from.tables.map(_.name)
 
-  lazy val windowBuckets: Seq[Bucket] = windowFunctions
-    .flatMap(_.bucketNames)
-    .filterNot(bucket =>
-      groupBy.map(_.bucketNames).getOrElse(Map.empty).keys.toSeq.contains(bucket._1)
+  lazy val bucketTree: BucketTree = BucketTree.fromBuckets(
+    Seq(groupBy.map(_.buckets).getOrElse(Seq.empty)) ++ windowFunctions.map(
+      _.buckets
     )
-    .toMap
-    .values
-    .groupBy(_.identifier.aliasOrName)
-    .map(_._2.head)
-    .toSeq
+  )
 
-  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty) ++ windowBuckets
+  lazy val buckets: Seq[Bucket] = bucketTree.allBuckets.flatten
 
   override def validate(): Either[String, Unit] = {
     for {
