@@ -2752,7 +2752,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-      """{
+    """{
         |  "query": {
         |    "match_all": {}
         |  },
