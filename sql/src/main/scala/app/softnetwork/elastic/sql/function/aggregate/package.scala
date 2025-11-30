@@ -216,7 +216,7 @@ package object aggregate {
     override def window: Window = ARRAY_AGG
     override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
       this.copy(partitionBy = partitionBy)
-    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+    override def withFields(fields: Seq[Field]): WindowFunction = this
     override def update(request: SQLSearchRequest): WindowFunction = super
       .update(request)
       .asInstanceOf[ArrayAgg]

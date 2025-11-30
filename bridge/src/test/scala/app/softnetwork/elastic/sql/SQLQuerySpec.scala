@@ -1205,11 +1205,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        }
         |      },
         |      "aggs": {
-        |        "ct": {
-        |          "value_count": {
-        |            "field": "identifier2"
-        |          }
-        |        },
         |        "lastSeen": {
         |          "max": {
         |            "field": "createdAt",
@@ -1217,6 +1212,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "lang": "painless",
         |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
         |            }
+        |          }
+        |        },
+        |        "ct": {
+        |          "value_count": {
+        |            "field": "identifier2"
         |          }
         |        }
         |      }
@@ -1373,11 +1373,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |        }
         |      },
         |      "aggs": {
-        |        "ct": {
-        |          "value_count": {
-        |            "field": "identifier2"
-        |          }
-        |        },
         |        "lastSeen": {
         |          "max": {
         |            "field": "createdAt",
@@ -1385,6 +1380,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "lang": "painless",
         |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
         |            }
+        |          }
+        |        },
+        |        "ct": {
+        |          "value_count": {
+        |            "field": "identifier2"
         |          }
         |        }
         |      }
