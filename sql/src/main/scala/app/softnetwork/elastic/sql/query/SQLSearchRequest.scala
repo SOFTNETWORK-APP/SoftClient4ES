@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.function.aggregate.TopHitsAggregation
+import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.{asString, Token}
 
 case class SQLSearchRequest(
@@ -38,7 +38,7 @@ case class SQLSearchRequest(
   lazy val bucketNames: Map[String, Bucket] = buckets.flatMap { b =>
     val name = b.identifier.identifierName
     "\\d+".r.findFirstIn(name) match {
-      case Some(n) =>
+      case Some(n) if name.trim.split(" ").length == 1 =>
         val identifier = select.fields(n.toInt - 1).identifier
         val updated = b.copy(identifier = select.fields(n.toInt - 1).identifier)
         Map(
@@ -56,7 +56,7 @@ case class SQLSearchRequest(
 
   lazy val nestedFields: Map[String, Seq[Field]] =
     select.fields
-      .filterNot(_.aggregation)
+      .filterNot(_.isAggregation)
       .filter(_.nested)
       .groupBy(_.identifier.innerHitsName.getOrElse(""))
   lazy val nested: Seq[NestedElement] =
@@ -114,25 +114,34 @@ case class SQLSearchRequest(
     )
   }
 
-  lazy val scriptFields: Seq[Field] = select.fields.filter(_.isScriptField)
+  lazy val scriptFields: Seq[Field] = {
+    if (aggregates.nonEmpty)
+      Seq.empty
+    else
+      select.fields.filter(_.isScriptField)
+  }
 
   lazy val fields: Seq[String] = {
-    if (aggregates.isEmpty && buckets.isEmpty)
+    if (groupBy.isEmpty && !windowFunctions.exists(_.isWindowing))
       select.fields
         .filterNot(_.isScriptField)
         .filterNot(_.nested)
+        .filterNot(_.isAggregation)
         .map(_.sourceField)
         .filterNot(f => excludes.contains(f))
+        .distinct
     else
       Seq.empty
   }
 
-  lazy val topHitsFields: Seq[Field] = select.fields.filter(_.topHits.nonEmpty)
+  lazy val windowFields: Seq[Field] = select.fields.filter(_.identifier.hasWindow)
 
-  lazy val topHitsAggs: Seq[TopHitsAggregation] = topHitsFields.flatMap(_.topHits)
+  lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
   lazy val aggregates: Seq[Field] =
-    select.fields.filter(_.aggregation).filterNot(_.topHits.isDefined) ++ topHitsFields
+    select.fields
+      .filter(f => f.isAggregation || f.isBucketScript)
+      .filterNot(_.identifier.hasWindow) ++ windowFields
 
   lazy val sqlAggregations: Map[String, SQLAggregation] =
     aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
@@ -141,16 +150,13 @@ case class SQLSearchRequest(
 
   lazy val sources: Seq[String] = from.tables.map(_.name)
 
-  lazy val topHitsBuckets: Seq[Bucket] = topHitsAggs
-    .flatMap(_.bucketNames)
-    .filterNot(bucket =>
-      groupBy.map(_.bucketNames).getOrElse(Map.empty).keys.toSeq.contains(bucket._1)
+  lazy val bucketTree: BucketTree = BucketTree.fromBuckets(
+    Seq(groupBy.map(_.buckets).getOrElse(Seq.empty)) ++ windowFunctions.map(
+      _.buckets
     )
-    .toMap
-    .values
-    .toSeq
+  )
 
-  lazy val buckets: Seq[Bucket] = groupBy.map(_.buckets).getOrElse(Seq.empty) ++ topHitsBuckets
+  lazy val buckets: Seq[Bucket] = bucketTree.allBuckets.flatten
 
   override def validate(): Either[String, Unit] = {
     for {
@@ -172,7 +178,8 @@ case class SQLSearchRequest(
       _ <- {
         // validate that non-aggregated fields are not present when group by is present
         if (groupBy.isDefined) {
-          val nonAggregatedFields = select.fields.filterNot(f => f.aggregation || f.isScriptField)
+          val nonAggregatedFields =
+            select.fields.filterNot(f => f.hasAggregation)
           val invalidFields = nonAggregatedFields.filterNot(f =>
             buckets.exists(b =>
               b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField.replace(".", "_"))
@@ -191,4 +198,5 @@ case class SQLSearchRequest(
       }
     } yield ()
   }
+
 }

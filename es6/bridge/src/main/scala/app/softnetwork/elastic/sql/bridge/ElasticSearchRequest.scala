@@ -16,11 +16,12 @@
 
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.query.{Bucket, Criteria, Except, Field}
+import app.softnetwork.elastic.sql.query.{Bucket, Criteria, Except, Field, FieldSort, Limit}
 import com.sksamuel.elastic4s.searches.SearchRequest
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 
 case class ElasticSearchRequest(
+  sql: String,
   fields: Seq[Field],
   except: Option[Except],
   sources: Seq[String],
@@ -29,7 +30,8 @@ case class ElasticSearchRequest(
   offset: Option[Int],
   search: SearchRequest,
   buckets: Seq[Bucket] = Seq.empty,
-  aggregations: Seq[ElasticAggregation] = Seq.empty
+  having: Option[Criteria] = None,
+  sorts: Seq[FieldSort] = Seq.empty
 ) {
   def minScore(score: Option[Double]): ElasticSearchRequest = {
     score match {

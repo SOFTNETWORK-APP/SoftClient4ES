@@ -37,10 +37,16 @@ package object aggregate {
 
     def aggregate_function: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
+    def aggWithFunction: PackratParser[Identifier] =
+      identifierWithArithmeticExpression |
+      identifierWithTransformation |
+      identifierWithIntervalFunction |
+      identifierWithFunction |
+      identifier
+
     def identifierWithAggregation: PackratParser[Identifier] =
-      aggregate_function ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
-        case a ~ _ ~ i ~ _ =>
-          i.withFunctions(a +: i.functions)
+      aggregate_function ~ start ~ aggWithFunction ~ end ^^ { case a ~ _ ~ i ~ _ =>
+        i.withFunctions(a +: i.functions)
       }
 
     def partition_by: PackratParser[Seq[Identifier]] =
@@ -55,26 +61,26 @@ package object aggregate {
       start ~ identifier ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
         o match {
           case Some((pb, ob)) => (id, pb, ob)
-          case None           => (id, Seq.empty, OrderBy(Seq(FieldSort(id.name, order = None))))
+          case None           => (id, Seq.empty, OrderBy(Seq(FieldSort(id, order = None))))
         }
       }
 
-    def first_value: PackratParser[TopHitsAggregation] =
+    def first_value: PackratParser[WindowFunction] =
       FIRST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
         FirstValue(top._1, top._2, top._3)
       }
 
-    def last_value: PackratParser[TopHitsAggregation] =
+    def last_value: PackratParser[WindowFunction] =
       LAST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
         LastValue(top._1, top._2, top._3)
       }
 
-    def array_agg: PackratParser[TopHitsAggregation] =
+    def array_agg: PackratParser[WindowFunction] =
       ARRAY_AGG.regex ~ top_hits ^^ { case _ ~ top =>
         ArrayAgg(top._1, top._2, top._3, limit = None)
       }
 
-    def identifierWithTopHits: PackratParser[Identifier] =
+    def identifierWithWindowFunction: PackratParser[Identifier] =
       (first_value | last_value | array_agg) ^^ { th =>
         th.identifier.withFunctions(th +: th.identifier.functions)
       }

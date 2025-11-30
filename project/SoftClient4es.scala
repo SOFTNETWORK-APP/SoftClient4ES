@@ -152,8 +152,9 @@ trait SoftClient4es {
     (elasticSearchMajorVersion(esVersion) match {
       case 6 =>
         Seq(
-          "io.searchbox" % "jest" % Versions.jest
-        ).map(_.excludeAll((httpComponentsExclusions ++ Seq(guavaExclusion)) *))
+          "io.searchbox" % "jest" % Versions.jest,
+          "com.google.guava" % "guava" % "33.5.0-jre"
+        ).map(_.excludeAll(httpComponentsExclusions /*++ Seq(guavaExclusion)*/ *))
       case _ => Seq.empty
     })
   }

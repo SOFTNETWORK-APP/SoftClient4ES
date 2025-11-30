@@ -1453,15 +1453,12 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
         case Left(l)  => convertToJson(l)
         case Right(r) => convertToJson(r)
       }
-    val sqlResponse =
-      ElasticResponse(
-        "",
-        jsonString,
-        fieldAliases,
-        aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-      )
 
-    parseResponse(sqlResponse) match {
+    parseResponse(
+      jsonString,
+      fieldAliases,
+      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+    ) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} rows from response (hits + aggregations)")
         rows
@@ -1478,9 +1475,8 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = convertToJson(response)
-    val sqlResponse = ElasticResponse("", jsonString, fieldAliases, Map.empty)
 
-    parseResponse(sqlResponse) match {
+    parseResponse(jsonString, fieldAliases, Map.empty) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} hits from response")
         rows

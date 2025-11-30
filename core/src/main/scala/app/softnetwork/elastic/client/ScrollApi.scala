@@ -19,6 +19,7 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Sink, Source}
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll.{
   ScrollConfig,
   ScrollMetrics,
@@ -28,11 +29,11 @@ import app.softnetwork.elastic.client.scroll.{
   UseSearchAfter
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
 import org.json4s.{Formats, JNothing}
 import org.json4s.jackson.JsonMethods.parse
 
-import scala.concurrent.{ExecutionContext, Promise}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.experimental.macros
 import scala.util.{Failure, Success}
 
@@ -121,6 +122,9 @@ trait ScrollApi extends ElasticClientHelpers {
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     sql.request match {
       case Some(Left(single)) =>
+        if (single.windowFunctions.nonEmpty)
+          return scrollWithWindowEnrichment(sql, single, config)
+
         val sqlRequest = single.copy(score = sql.score)
         val elasticQuery =
           ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
@@ -343,7 +347,7 @@ trait ScrollApi extends ElasticClientHelpers {
     val strategy = determineScrollStrategy(elasticQuery, aggregations)
 
     logger.info(
-      s"Using scroll strategy: $strategy for query on ${elasticQuery.indices.mkString(", ")}"
+      s"Using scroll strategy: $strategy for query \n$elasticQuery"
     )
 
     strategy match {
@@ -363,6 +367,75 @@ trait ScrollApi extends ElasticClientHelpers {
         logger.info("Falling back to classic scroll")
         scrollClassic(elasticQuery, fieldAliases, aggregations, config)
     }
+  }
+
+  // ========================================================================
+  // WINDOW FUNCTION SEARCH
+  // ========================================================================
+
+  /** Scroll with window function enrichment
+    */
+  private def scrollWithWindowEnrichment(
+    sql: SQLQuery,
+    request: SQLSearchRequest,
+    config: ScrollConfig
+  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    logger.info(s"🪟 Scrolling with ${request.windowFunctions.size} window functions")
+
+    // Execute window aggregations first
+    val windowCacheFuture: Future[ElasticResult[WindowCache]] =
+      Future(executeWindowAggregations(request))
+
+    // Create base query without window functions
+    val baseQuery = createBaseQuery(sql, request)
+
+    // Stream and enrich
+    Source
+      .futureSource(
+        windowCacheFuture.map {
+          case ElasticSuccess(cache) =>
+            scrollWithMetrics(
+              ElasticQuery(
+                baseQuery,
+                collection.immutable.Seq(baseQuery.sources: _*)
+              ),
+              baseQuery.fieldAliases,
+              baseQuery.sqlAggregations,
+              config,
+              baseQuery.sorts.nonEmpty
+            )
+              .map { case (doc, metrics) =>
+                val enrichedDoc = enrichDocumentWithWindowValues(doc, cache, request)
+                (enrichedDoc, metrics)
+              }
+
+          case ElasticFailure(error) =>
+            logger.error(s"❌ Failed to compute window functions: ${error.message}")
+            if (config.failOnWindowError.getOrElse(false)) {
+              // Strict mode: propagate the error
+              Source.failed(
+                new RuntimeException(s"Window function computation failed: ${error.message}")
+              )
+            } else {
+              // Fallback: return base results without enrichment
+              logger.warn("⚠️ Falling back to base results without window enrichment")
+              scrollWithMetrics(
+                ElasticQuery(
+                  baseQuery,
+                  collection.immutable.Seq(baseQuery.sources: _*)
+                ),
+                baseQuery.fieldAliases,
+                baseQuery.sqlAggregations,
+                config,
+                baseQuery.sorts.nonEmpty
+              )
+            }
+        }
+      )
+      .mapMaterializedValue(_ => NotUsed)
   }
 
 }

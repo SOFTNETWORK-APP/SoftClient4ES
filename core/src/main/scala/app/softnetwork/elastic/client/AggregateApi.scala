@@ -130,59 +130,41 @@ trait SingleValueAggregateApi
       // Execute the search
       search(sqlQuery)
         .flatMap { response =>
-          // Parse the response
-          val parseResult = ElasticResult.fromTry(parseResponse(response))
+          val results = response.results
+          val aggregationResults = results.flatMap { result =>
+            response.aggregations.map { case (name, aggregation) =>
+              // Attempt to process each aggregation
+              val aggregationResult = ElasticResult.attempt {
+                val value = findAggregation(name, result).orNull match {
+                  case b: Boolean     => BooleanValue(b)
+                  case n: Number      => NumericValue(n)
+                  case s: String      => StringValue(s)
+                  case t: Temporal    => TemporalValue(t)
+                  case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
+                  case s: Seq[_] if aggregation.multivalued =>
+                    getAggregateValue(s, aggregation.distinct)
+                  case _ => EmptyValue
+                }
 
-          parseResult match {
-            // Case 1: Parse successful - process the results
-            case ElasticSuccess(results) =>
-              val aggregationResults = results.flatMap { result =>
-                response.aggregations.map { case (name, aggregation) =>
-                  // Attempt to process each aggregation
-                  val aggregationResult = ElasticResult.attempt {
-                    val value = findAggregation(name, result).orNull match {
-                      case b: Boolean     => BooleanValue(b)
-                      case n: Number      => NumericValue(n)
-                      case s: String      => StringValue(s)
-                      case t: Temporal    => TemporalValue(t)
-                      case m: Map[_, Any] => ObjectValue(m.map(kv => kv._1.toString -> kv._2))
-                      case s: Seq[_] if aggregation.multivalued =>
-                        getAggregateValue(s, aggregation.distinct)
-                      case _ => EmptyValue
-                    }
-
-                    SingleValueAggregateResult(name, aggregation.aggType, value)
-                  }
-
-                  // Convert failures to results with errors
-                  aggregationResult match {
-                    case ElasticSuccess(result) => result
-                    case ElasticFailure(error) =>
-                      SingleValueAggregateResult(
-                        name,
-                        aggregation.aggType,
-                        EmptyValue,
-                        error = Some(s"Failed to process aggregation: ${error.message}")
-                      )
-                  }
-                }.toSeq
+                SingleValueAggregateResult(name, aggregation.aggType, value)
               }
 
-              ElasticResult.success(aggregationResults)
-
-            // Case 2: Parse failed - returning empty results with errors
-            case ElasticFailure(error) =>
-              val errorResults = response.aggregations.map { case (name, aggregation) =>
-                SingleValueAggregateResult(
-                  name,
-                  aggregation.aggType,
-                  EmptyValue,
-                  error = Some(s"Parse error: ${error.message}")
-                )
-              }.toSeq
-
-              ElasticResult.success(errorResults)
+              // Convert failures to results with errors
+              aggregationResult match {
+                case ElasticSuccess(result) => result
+                case ElasticFailure(error) =>
+                  SingleValueAggregateResult(
+                    name,
+                    aggregation.aggType,
+                    EmptyValue,
+                    error = Some(s"Failed to process aggregation: ${error.message}")
+                  )
+              }
+            }.toSeq
           }
+
+          ElasticResult.success(aggregationResults)
+
         }
         .fold(
           // If search() fails, throw an exception

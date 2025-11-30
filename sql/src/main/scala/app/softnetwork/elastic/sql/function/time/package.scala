@@ -23,7 +23,6 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   LiteralParam,
   PainlessContext,
-  PainlessParam,
   PainlessScript,
   StringValue,
   TokenRegex
@@ -269,6 +268,9 @@ package object time {
         case _ => super.toPainlessCall(callArgs, context)
       }
     }
+
+    override def shouldBeScripted: Boolean = false
+
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {

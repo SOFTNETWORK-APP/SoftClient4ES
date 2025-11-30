@@ -264,13 +264,13 @@ val results = client.search(SQLQuery(sqlQuery))
   "aggs": {
     "restaurant_name": {
       "terms": {
-        "field": "restaurant_name.keyword",
+        "field": "restaurant_name",
         "size": 1000
       },
       "aggs": {
         "restaurant_city": {
           "terms": {
-            "field": "restaurant_city.keyword",
+            "field": "restaurant_city",
             "size": 1000
           },
           "aggs": {
@@ -296,7 +296,7 @@ val results = client.search(SQLQuery(sqlQuery))
                   "aggs": {
                     "menu_category": {
                       "terms": {
-                        "field": "menus.category.keyword",
+                        "field": "menus.category",
                         "size": 1000
                       },
                       "aggs": {
@@ -307,7 +307,7 @@ val results = client.search(SQLQuery(sqlQuery))
                           "aggs": {
                             "dish_name": {
                               "terms": {
-                                "field": "menus.dishes.name.keyword",
+                                "field": "menus.dishes.name",
                                 "size": 1000
                               },
                               "aggs": {
@@ -339,7 +339,7 @@ val results = client.search(SQLQuery(sqlQuery))
                                     },
                                     "ingredient_name": {
                                       "terms": {
-                                        "field": "menus.dishes.ingredients.name.keyword",
+                                        "field": "menus.dishes.ingredients.name",
                                         "size": 1000
                                       },
                                       "aggs": {
@@ -787,18 +787,18 @@ ThisBuild / resolvers ++= Seq(
 
 // For Elasticsearch 6
 // Using Jest client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.14.0
 // Or using Rest High Level client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.14.0
 
 // For Elasticsearch 7
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.14.0
 
 // For Elasticsearch 8
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.14.0
 
 // For Elasticsearch 9
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.14.0
 ```
 
 ### **Quick Example**

@@ -218,9 +218,9 @@ case class NestedElement(
     }
   }
 
-  lazy val bucketPath: String = {
+  lazy val nestedPath: String = {
     parent match {
-      case Some(p) => s"${p.bucketPath}>$innerHitsName"
+      case Some(p) => s"${p.nestedPath}>$innerHitsName"
       case None    => innerHitsName
     }
   }

@@ -16,7 +16,13 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLBigInt, SQLDouble, SQLTemporal, SQLVarchar}
+import app.softnetwork.elastic.sql.`type`.{
+  SQLBigInt,
+  SQLDouble,
+  SQLNumeric,
+  SQLTemporal,
+  SQLVarchar
+}
 import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
@@ -28,14 +34,14 @@ import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.script.ScriptType.Source
 import com.sksamuel.elastic4s.searches.aggs.{
-  Aggregation,
+  AbstractAggregation,
   FilterAggregation,
   NestedAggregation,
   TermsAggregation
 }
 import com.sksamuel.elastic4s.searches.queries.{BoolQuery, InnerHit, Query}
 import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
-import com.sksamuel.elastic4s.searches.sort.FieldSort
+import com.sksamuel.elastic4s.searches.sort.{FieldSort, ScriptSort, ScriptSortType}
 
 import scala.language.implicitConversions
 
@@ -138,10 +144,10 @@ package object bridge {
   implicit def requestToRootAggregations(
     request: SQLSearchRequest,
     aggregations: Seq[ElasticAggregation]
-  ): Seq[Aggregation] = {
+  ): Seq[AbstractAggregation] = {
     val notNestedAggregations = aggregations.filterNot(_.nested)
 
-    val notNestedBuckets = request.buckets.filterNot(_.nested)
+    val notNestedBuckets = request.bucketTree.filterNot(_.bucket.nested)
 
     val rootAggregations = notNestedAggregations match {
       case Nil =>
@@ -154,8 +160,8 @@ package object bridge {
           None,
           aggregations
         ) match {
-          case Some(b) => Seq(b)
-          case _       => Seq.empty
+          case Nil  => Seq.empty
+          case aggs => aggs
         }
         buckets
       case aggs =>
@@ -164,19 +170,21 @@ package object bridge {
           .map(agg => agg.agg.name -> agg.direction.get)
           .toMap
 
-        val aggregations = aggs.map(_.agg)
-
         val buckets = ElasticAggregation.buildBuckets(
           notNestedBuckets,
           request.sorts -- directions.keys,
-          aggregations,
+          aggs,
           directions,
           request.having.flatMap(_.criteria),
           None,
           aggs
         ) match {
-          case Some(b) => Seq(b)
-          case _       => aggregations
+          case Nil => aggs.map(_.agg)
+          case aggs =>
+            if (request.groupBy.isEmpty && request.windowFunctions.exists(_.isWindowing))
+              notNestedAggregations.filter(_.bucketPath.isEmpty).map(_.agg) ++ aggs
+            else
+              aggs
         }
         buckets
     }
@@ -200,12 +208,14 @@ package object bridge {
 
     // Group nested buckets by their nested path
     val nestedGroupedBuckets =
-      request.buckets
-        .filter(_.nested)
-        .groupBy(
-          _.nestedBucket.getOrElse(
-            throw new IllegalArgumentException(
-              "Nested bucket must have a nested element"
+      request.bucketTree
+        .filter(_.bucket.nested)
+        .map(tree =>
+          tree.groupBy(
+            _.bucket.nestedBucket.getOrElse(
+              throw new IllegalArgumentException(
+                "Nested bucket must have a nested element"
+              )
             )
           )
         )
@@ -225,17 +235,16 @@ package object bridge {
 
           // Get the buckets for this nested element
           val nestedBuckets =
-            nestedGroupedBuckets.getOrElse(n.innerHitsName, Seq.empty)
+            nestedGroupedBuckets.map(_.getOrElse(n.innerHitsName, Seq.empty))
 
           val notRelatedAggregationsToBuckets = elasticAggregations
             .filterNot { ea =>
-              nestedBuckets.exists(nb => nb.identifier.path == ea.sourceField)
+              nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField)
             }
-            .map(_.agg)
 
           val relatedAggregationsToBuckets = elasticAggregations
             .filter { ea =>
-              nestedBuckets.exists(nb => nb.identifier.path == ea.sourceField)
+              nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField)
             }
             .map(_.agg)
 
@@ -253,7 +262,7 @@ package object bridge {
             requestToNestedFilterAggregation(request, n.innerHitsName)
 
           // Build buckets for this nested aggregation
-          val buckets: Seq[Aggregation] =
+          val buckets: Seq[AbstractAggregation] =
             ElasticAggregation.buildBuckets(
               nestedBuckets,
               request.sorts -- directions.keys,
@@ -263,8 +272,12 @@ package object bridge {
               Some(n),
               aggregations
             ) match {
-              case Some(b) => Seq(b)
-              case _       => notRelatedAggregationsToBuckets
+              case Nil => notRelatedAggregationsToBuckets.map(_.agg)
+              case aggs =>
+                if (request.groupBy.isEmpty && request.windowFunctions.exists(_.isWindowing))
+                  notRelatedAggregationsToBuckets.filter(_.bucketPath.isEmpty).map(_.agg) ++ aggs
+                else
+                  aggs
             }
 
           val children = n.children
@@ -369,7 +382,7 @@ package object bridge {
     }
 
   private def addNestedAggregationsToTermsAggregation(
-    agg: Aggregation,
+    agg: AbstractAggregation,
     nested: Seq[NestedAggregation]
   ): Option[TermsAggregation] = {
     agg match {
@@ -393,6 +406,7 @@ package object bridge {
 
   implicit def requestToElasticSearchRequest(request: SQLSearchRequest): ElasticSearchRequest =
     ElasticSearchRequest(
+      request.sql,
       request.select.fields,
       request.select.except,
       request.sources,
@@ -401,16 +415,20 @@ package object bridge {
       request.limit.flatMap(_.offset.map(_.offset)).orElse(Some(0)),
       request,
       request.buckets,
-      request.aggregates.map(
-        ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
-      )
+      request.having.flatMap(_.criteria),
+      request.orderBy.map(_.sorts).getOrElse(Seq.empty)
     ).minScore(request.score)
 
   implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
     import request._
 
     val aggregations = request.aggregates.map(
-      ElasticAggregation(_, request.having.flatMap(_.criteria), request.sorts)
+      ElasticAggregation(
+        _,
+        request.having.flatMap(_.criteria),
+        request.sorts,
+        request.sqlAggregations
+      )
     )
 
     val rootAggregations = requestToRootAggregations(request, aggregations)
@@ -453,7 +471,7 @@ package object bridge {
       _search
     }
 
-    _search = scriptFields.filterNot(_.aggregation) match {
+    _search = scriptFields.filterNot(_.isAggregation) match {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
@@ -474,17 +492,55 @@ package object bridge {
 
     _search = orderBy match {
       case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
-        _search sortBy o.sorts.map(sort =>
-          sort.order match {
-            case Some(Desc) => FieldSort(sort.field).desc()
-            case _          => FieldSort(sort.field).asc()
+        _search sortBy o.sorts.map { sort =>
+          if (sort.isScriptSort) {
+            val context = PainlessContext()
+            val painless = sort.field.painless(Some(context))
+            val painlessScript = s"$context$painless"
+            val script =
+              sort.out match {
+                case _: SQLTemporal if !painless.endsWith("toEpochMilli()") =>
+                  val parts = painlessScript.split(";").toSeq
+                  if (parts.size > 1) {
+                    val lastPart = parts.last.trim.stripPrefix("return ")
+                    if (lastPart.split(" ").toSeq.size == 1) {
+                      val newLastPart =
+                        s"""($lastPart != null) ? $lastPart.toInstant().toEpochMilli() : null"""
+                      s"${parts.dropRight(1).mkString(";")}; return $newLastPart"
+                    } else {
+                      painlessScript
+                    }
+                  } else {
+                    s"$painlessScript.toInstant().toEpochMilli()"
+                  }
+                case _ => painlessScript
+              }
+            val scriptSort =
+              ScriptSort(
+                script = Script(script = script)
+                  .lang("painless")
+                  .scriptType(Source),
+                scriptSortType = sort.field.out match {
+                  case _: SQLTemporal | _: SQLNumeric => ScriptSortType.Number
+                  case _                              => ScriptSortType.String
+                }
+              )
+            sort.order match {
+              case Some(Desc) => scriptSort.desc()
+              case _          => scriptSort.asc()
+            }
+          } else {
+            sort.order match {
+              case Some(Desc) => FieldSort(sort.field.aliasOrName).desc()
+              case _          => FieldSort(sort.field.aliasOrName).asc()
+            }
           }
-        )
+        }
       case _ => _search
     }
 
-    if (allAggregations.nonEmpty || buckets.nonEmpty) {
-      _search size 0
+    if (allAggregations.nonEmpty && fields.isEmpty) {
+      _search size 0 fetchSource false
     } else {
       limit match {
         case Some(l) => _search limit l.limit from l.offset.map(_.offset).getOrElse(0)
@@ -508,7 +564,7 @@ package object bridge {
 
   implicit def expressionToQuery(expression: GenericExpression): Query = {
     import expression._
-    if (aggregation)
+    if (isAggregation)
       return matchAllQuery()
     if (
       identifier.functions.nonEmpty && (identifier.functions.size > 1 || (identifier.functions.head match {
@@ -943,7 +999,7 @@ package object bridge {
         case Left(l) =>
           val filteredAgg: Option[FilterAggregation] = requestToFilterAggregation(l)
           l.aggregates
-            .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts))
+            .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts, l.sqlAggregations))
             .map(aggregation => {
               val queryFiltered =
                 l.where

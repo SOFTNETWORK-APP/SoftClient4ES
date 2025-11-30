@@ -16,12 +16,21 @@
 
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.query.{Bucket, GroupBy}
 
 trait GroupByParser {
   self: Parser with WhereParser =>
 
-  def bucket: PackratParser[Bucket] = (long | identifier) ^^ { i =>
+  def bucketWithFunction: PackratParser[Identifier] =
+    identifierWithArithmeticExpression |
+    identifierWithTransformation |
+    identifierWithAggregation |
+    identifierWithIntervalFunction |
+    identifierWithFunction |
+    identifier
+
+  def bucket: PackratParser[Bucket] = (long | bucketWithFunction) ^^ { i =>
     Bucket(i)
   }
 

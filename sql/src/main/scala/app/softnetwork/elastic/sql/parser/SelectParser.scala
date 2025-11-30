@@ -22,7 +22,7 @@ trait SelectParser {
   self: Parser with WhereParser =>
 
   def field: PackratParser[Field] =
-    (identifierWithTopHits |
+    (identifierWithWindowFunction |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithAggregation |
