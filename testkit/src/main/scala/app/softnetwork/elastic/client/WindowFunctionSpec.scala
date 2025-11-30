@@ -1499,6 +1499,71 @@ trait WindowFunctionSpec
     }
   }
 
+  it should "handle 3 different window partitions simultaneously" in {
+    val results = client.searchAs[EmployeeMultiWindowPartitions]("""
+      SELECT
+        department,
+        location,
+        level,
+        name,
+        salary,
+        hire_date,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS first_salary_dept_loc,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS first_salary_dept,
+        AVG(salary) OVER (
+          PARTITION BY level
+        ) AS avg_salary_level
+      FROM emp
+      ORDER BY department, location, hire_date
+      LIMIT 20
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        employees should have size 20
+
+        log.info(s"\n=== Testing 3 distinct window partitions ===")
+
+        // Window 1: PARTITION BY department, location
+        val byDeptLoc = employees.groupBy(e => (e.department, e.location))
+        log.info(s"\nWindow 1: ${byDeptLoc.size} partitions (department, location)")
+        byDeptLoc.foreach { case ((dept, loc), emps) =>
+          val firstValues = emps.flatMap(_.first_salary_dept_loc).distinct
+          firstValues should have size 1
+          log.info(s"  ✓ ($dept, $loc): FIRST=${firstValues.head}")
+        }
+
+        // Window 2: PARTITION BY department
+        val byDept = employees.groupBy(_.department)
+        log.info(s"\nWindow 2: ${byDept.size} partitions (department)")
+        byDept.foreach { case (dept, emps) =>
+          val firstValues = emps.flatMap(_.first_salary_dept).distinct
+          firstValues should have size 1
+          log.info(s"  ✓ $dept: FIRST=${firstValues.head}")
+        }
+
+        // Window 3: PARTITION BY level
+        val byLevel = employees.groupBy(_.level)
+        log.info(s"\nWindow 3: ${byLevel.size} partitions (level)")
+        byLevel.foreach { case (level, emps) =>
+          val avgValues = emps.flatMap(_.avg_salary_level).distinct
+          avgValues should have size 1
+          val expectedAvg = emps.map(_.salary).sum.toDouble / emps.size
+          avgValues.head shouldBe expectedAvg +- 0.01
+          log.info(s"  ✓ $level: AVG=${avgValues.head} (${emps.size} employees)")
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
   "Scroll API with distinct window partitions" should "compute correctly with streaming and different partitions" in {
     val config = ScrollConfig(scrollSize = 5, logEvery = 5)
     val startTime = System.currentTimeMillis()
@@ -1545,6 +1610,79 @@ trait WindowFunctionSpec
       case scala.util.Success(_)  => // OK
       case scala.util.Failure(ex) => fail(s"Scroll failed: ${ex.getMessage}")
     }
+  }
+
+  it should "handle 3 distinct partitions with small scroll size" in {
+    val config = ScrollConfig(scrollSize = 3, logEvery = 3)
+    val startTime = System.currentTimeMillis()
+
+    var batchCount = 0
+    val futureResults = client
+      .scrollAs[EmployeeMultiWindowPartitions](
+        """
+      SELECT
+        department,
+        location,
+        level,
+        name,
+        salary,
+        hire_date,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS first_salary_dept_loc,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS first_salary_dept,
+        AVG(salary) OVER (
+          PARTITION BY level
+        ) AS avg_salary_level
+      FROM emp
+      LIMIT 20
+    """,
+        config
+      )
+      .map { batch =>
+        batchCount += 1
+        log.info(s"  Batch $batchCount: ${batch._2.totalDocuments} documents")
+        batch
+      }
+      .runWith(Sink.seq)
+
+    val results = Await.result(futureResults, 30.seconds).map(_._1)
+    val duration = System.currentTimeMillis() - startTime
+
+    results should have size 20
+    log.info(s"\n✓ Scrolled ${results.size} documents in $batchCount batches (${duration}ms)")
+
+    // Check all 3 partitions
+    val byDeptLoc = results.groupBy(e => (e.department, e.location))
+    val byDept = results.groupBy(_.department)
+    val byLevel = results.groupBy(_.level)
+
+    log.info(s"\nPartition counts:")
+    log.info(s"  (department, location): ${byDeptLoc.size} partitions")
+    log.info(s"  (department): ${byDept.size} partitions")
+    log.info(s"  (level): ${byLevel.size} partitions")
+
+    // Check each partition
+    byDeptLoc.foreach { case ((dept, loc), emps) =>
+      val firstValues = emps.flatMap(_.first_salary_dept_loc).distinct
+      firstValues should have size 1
+    }
+
+    byDept.foreach { case (dept, emps) =>
+      val firstValues = emps.flatMap(_.first_salary_dept).distinct
+      firstValues should have size 1
+    }
+
+    byLevel.foreach { case (level, emps) =>
+      val avgValues = emps.flatMap(_.avg_salary_level).distinct
+      avgValues should have size 1
+    }
+
+    log.info("✓ All 3 partitions computed correctly")
   }
 
   "Search and Scroll APIs with distinct window partitions" should "maintain consistency between them" in {

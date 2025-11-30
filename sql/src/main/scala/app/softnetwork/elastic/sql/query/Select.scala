@@ -139,7 +139,6 @@ case class SQLAggregation(
   aggType: AggregateFunction,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None,
-  buckets: Seq[String] = Seq.empty,
   bucketPath: String = ""
 ) {
   val nested: Boolean = nestedElement.nonEmpty
@@ -149,6 +148,11 @@ case class SQLAggregation(
       case COUNT => true
       case _     => false
     })
+  val bucketRoot: String =
+    bucketPath.split(">").toSeq match {
+      case Nil => ""
+      case seq => seq.head
+    }
 }
 
 object SQLAggregation {
@@ -236,7 +240,6 @@ object SQLAggregation {
         aggType = aggType,
         direction = direction,
         nestedElement = identifier.nestedElement,
-        buckets = request.buckets.map { _.name },
         bucketPath = bucketPath
       )
     )

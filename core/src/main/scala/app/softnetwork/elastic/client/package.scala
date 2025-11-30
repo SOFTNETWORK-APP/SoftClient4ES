@@ -171,7 +171,8 @@ package object client extends SerializationApi {
     distinct: Boolean,
     sourceField: String,
     windowing: Boolean,
-    bucketPath: String
+    bucketPath: String,
+    bucketRoot: String
   ) {
     def multivalued: Boolean = aggType == AggregationType.ArrayAgg
     def singleValued: Boolean = !multivalued
@@ -187,6 +188,11 @@ package object client extends SerializationApi {
       case _: FirstValue => AggregationType.FirstValue
       case _: LastValue  => AggregationType.LastValue
       case _: ArrayAgg   => AggregationType.ArrayAgg
+      case _: CountAgg   => AggregationType.Count
+      case _: MinAgg     => AggregationType.Min
+      case _: MaxAgg     => AggregationType.Max
+      case _: AvgAgg     => AggregationType.Avg
+      case _: SumAgg     => AggregationType.Sum
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
     ClientAggregation(
@@ -195,7 +201,8 @@ package object client extends SerializationApi {
       agg.distinct,
       agg.sourceField,
       agg.aggType.isWindowing,
-      agg.bucketPath
+      agg.bucketPath,
+      agg.bucketRoot
     )
   }
 }

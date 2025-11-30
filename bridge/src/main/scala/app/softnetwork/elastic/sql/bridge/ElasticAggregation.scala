@@ -181,46 +181,73 @@ object ElasticAggregation {
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
         case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
         case th: WindowFunction =>
-          val limit = {
-            th match {
-              case _: LastValue | _: FirstValue => Some(1)
-              case _                            => th.limit.map(_.limit)
-            }
-          }
-          val topHits =
-            topHitsAgg(aggName)
-              .fetchSource(
-                th.identifier.name +: th.fields
-                  .filterNot(_.isScriptField)
-                  .filterNot(_.sourceField == th.identifier.name)
-                  .map(_.sourceField)
-                  .distinct
-                  .toArray,
-                Array.empty
-              )
-              .copy(
-                scripts = th.fields
-                  .filter(_.isScriptField)
-                  .groupBy(_.sourceField)
-                  .map(_._2.head)
-                  .map(f => f.sourceField -> Script(f.painless(None)).lang("painless"))
-                  .toMap,
-                size = limit
-              ) sortBy th.orderBy.sorts.map(sort =>
-              sort.order match {
-                case Some(Desc) =>
-                  th.window match {
-                    case LAST_VALUE => FieldSort(sort.field.name).asc()
-                    case _          => FieldSort(sort.field.name).desc()
-                  }
-                case _ =>
-                  th.window match {
-                    case LAST_VALUE => FieldSort(sort.field.name).desc()
-                    case _          => FieldSort(sort.field.name).asc()
-                  }
+          th.window match {
+            case COUNT =>
+              val field =
+                sourceField match {
+                  case "*" | "_id" | "_index" | "_type" => "_index"
+                  case _                                => sourceField
+                }
+              if (distinct)
+                cardinalityAgg(aggName, field)
+              else {
+                valueCountAgg(aggName, field)
               }
-            )
-          topHits
+            case MIN =>
+              aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
+            case MAX =>
+              aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
+            case AVG =>
+              aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
+            case SUM =>
+              aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+            case _ =>
+              val limit = {
+                th match {
+                  case _: LastValue | _: FirstValue => Some(1)
+                  case _                            => th.limit.map(_.limit)
+                }
+              }
+              val topHits =
+                topHitsAgg(aggName)
+                  .fetchSource(
+                    th.identifier.name +: th.fields
+                      .filterNot(_.isScriptField)
+                      .filterNot(_.sourceField == th.identifier.name)
+                      .map(_.sourceField)
+                      .distinct
+                      .toArray,
+                    Array.empty
+                  )
+                  .copy(
+                    scripts = th.fields
+                      .filter(_.isScriptField)
+                      .groupBy(_.sourceField)
+                      .map(_._2.head)
+                      .map(f => f.sourceField -> Script(f.painless(None)).lang("painless"))
+                      .toMap,
+                    size = limit,
+                    sorts = th.orderBy
+                      .map(
+                        _.sorts.map(sort =>
+                          sort.order match {
+                            case Some(Desc) =>
+                              th.window match {
+                                case LAST_VALUE => FieldSort(sort.field.name).asc()
+                                case _          => FieldSort(sort.field.name).desc()
+                              }
+                            case _ =>
+                              th.window match {
+                                case LAST_VALUE => FieldSort(sort.field.name).desc()
+                                case _          => FieldSort(sort.field.name).asc()
+                              }
+                          }
+                        )
+                      )
+                      .getOrElse(Seq.empty)
+                  )
+              topHits
+          }
         case script: BucketScriptAggregation =>
           val params = allAggregations.get(aggName) match {
             case Some(sqlAgg) =>

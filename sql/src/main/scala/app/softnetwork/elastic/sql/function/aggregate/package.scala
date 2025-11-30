@@ -45,15 +45,15 @@ package object aggregate {
 
   }
 
-  case object COUNT extends Expr("COUNT") with AggregateFunction
+  case object COUNT extends Expr("COUNT") with AggregateFunction with Window
 
-  case object MIN extends Expr("MIN") with AggregateFunction
+  case object MIN extends Expr("MIN") with AggregateFunction with Window
 
-  case object MAX extends Expr("MAX") with AggregateFunction
+  case object MAX extends Expr("MAX") with AggregateFunction with Window
 
-  case object AVG extends Expr("AVG") with AggregateFunction
+  case object AVG extends Expr("AVG") with AggregateFunction with Window
 
-  case object SUM extends Expr("SUM") with AggregateFunction
+  case object SUM extends Expr("SUM") with AggregateFunction with Window
 
   sealed trait Window extends TokenRegex
 
@@ -116,7 +116,7 @@ package object aggregate {
       with Updateable {
     def partitionBy: Seq[Identifier]
     def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction
-    def orderBy: OrderBy
+    def orderBy: Option[OrderBy]
     def window: Window
     def limit: Option[Limit]
 
@@ -131,10 +131,15 @@ package object aggregate {
     }.toMap
 
     override def sql: String = {
-      val partitionByStr =
-        if (partitionBy.nonEmpty) s"$PARTITION_BY ${partitionBy.mkString(", ")}"
-        else ""
-      s"$window($identifier) $OVER ($partitionByStr$orderBy)"
+      (partitionBy, orderBy) match {
+        case (Nil, None) => s"$window($identifier)"
+        case _ =>
+          val orderByStr = orderBy.map(_.sql).getOrElse("")
+          val partitionByStr =
+            if (partitionBy.nonEmpty) s"$PARTITION_BY ${partitionBy.mkString(", ")}"
+            else ""
+          s"$window($identifier) $OVER ($partitionByStr$orderByStr)"
+      }
     }
 
     override def toSQL(base: String): String = sql
@@ -164,7 +169,7 @@ package object aggregate {
   case class FirstValue(
     identifier: Identifier,
     partitionBy: Seq[Identifier] = Seq.empty,
-    orderBy: OrderBy,
+    orderBy: Option[OrderBy],
     fields: Seq[Field] = Seq.empty
   ) extends WindowFunction {
     override def limit: Option[Limit] = Some(Limit(1, None))
@@ -177,14 +182,14 @@ package object aggregate {
       .asInstanceOf[FirstValue]
       .copy(
         identifier = identifier.update(request),
-        orderBy = orderBy.update(request)
+        orderBy = orderBy.map(_.update(request))
       )
   }
 
   case class LastValue(
     identifier: Identifier,
     partitionBy: Seq[Identifier] = Seq.empty,
-    orderBy: OrderBy,
+    orderBy: Option[OrderBy],
     fields: Seq[Field] = Seq.empty
   ) extends WindowFunction {
     override def limit: Option[Limit] = Some(Limit(1, None))
@@ -197,30 +202,149 @@ package object aggregate {
       .asInstanceOf[LastValue]
       .copy(
         identifier = identifier.update(request),
-        orderBy = orderBy.update(request)
+        orderBy = orderBy.map(_.update(request))
       )
   }
 
   case class ArrayAgg(
     identifier: Identifier,
     partitionBy: Seq[Identifier] = Seq.empty,
-    orderBy: OrderBy,
+    orderBy: Option[OrderBy],
     fields: Seq[Field] = Seq.empty,
     limit: Option[Limit] = None
   ) extends WindowFunction {
     override def window: Window = ARRAY_AGG
     override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
       this.copy(partitionBy = partitionBy)
-    override def withFields(fields: Seq[Field]): WindowFunction = this
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
     override def update(request: SQLSearchRequest): WindowFunction = super
       .update(request)
       .asInstanceOf[ArrayAgg]
       .copy(
         identifier = identifier.update(request),
-        orderBy = orderBy.update(request),
+        orderBy = orderBy.map(_.update(request)),
         limit = limit.orElse(request.limit)
       )
     override def multivalued: Boolean = true
   }
 
+  case class CountAgg(
+    identifier: Identifier,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = COUNT
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SQLSearchRequest): WindowFunction = super
+      .update(request)
+      .asInstanceOf[CountAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
+
+  case class MinAgg(
+    identifier: Identifier,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = MIN
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SQLSearchRequest): WindowFunction = super
+      .update(request)
+      .asInstanceOf[MinAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
+
+  case class MaxAgg(
+    identifier: Identifier,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = MAX
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SQLSearchRequest): WindowFunction = super
+      .update(request)
+      .asInstanceOf[MaxAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
+
+  case class AvgAgg(
+    identifier: Identifier,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = AVG
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SQLSearchRequest): WindowFunction = super
+      .update(request)
+      .asInstanceOf[AvgAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
+
+  case class SumAgg(
+    identifier: Identifier,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = SUM
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SQLSearchRequest): WindowFunction = super
+      .update(request)
+      .asInstanceOf[SumAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
 }

@@ -208,6 +208,13 @@ case class BucketNode(
       case None    => identifier
     }
   }
+
+  def root: BucketNode = {
+    parent match {
+      case Some(p) => p.root
+      case None    => this
+    }
+  }
 }
 
 case class BucketTree(

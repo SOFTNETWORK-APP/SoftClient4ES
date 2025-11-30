@@ -191,6 +191,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           distinct = false,
           "name",
           windowing = true,
+          "",
           ""
         )
       )
@@ -645,6 +646,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           distinct = false,
           "name",
           windowing = true,
+          "",
           ""
         )
       )
@@ -1017,7 +1019,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           distinct = false,
           "salary",
           windowing = true,
-          bucketPath = "department>location"
+          bucketPath = "department>location",
+          bucketRoot = "department"
         ),
         "last_in_dept_loc" -> ClientAggregation(
           aggName = "last_in_dept_loc",
@@ -1025,7 +1028,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           distinct = false,
           "salary",
           windowing = true,
-          bucketPath = "department>location"
+          bucketPath = "department>location",
+          bucketRoot = "department"
         ),
         "first_in_dept" -> ClientAggregation(
           aggName = "first_in_dept",
@@ -1033,7 +1037,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           distinct = false,
           "salary",
           windowing = true,
-          bucketPath = "department"
+          bucketPath = "department",
+          bucketRoot = "department"
         ),
         "last_in_dept" -> ClientAggregation(
           aggName = "last_in_dept",
@@ -1041,7 +1046,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
           distinct = false,
           "salary",
           windowing = true,
-          bucketPath = "department"
+          bucketPath = "department",
+          bucketRoot = "department"
         )
       )
     parseResponse(
@@ -1055,6 +1061,451 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         val windows = rows.map(row => convertTo[EmployeeDistinctPartitions](row))
         windows.foreach(println)
         windows.size shouldBe 6
+      case Failure(error) =>
+        throw error
+    }
+  }
+
+  it should "parse window results with metrics" in {
+    val results =
+      """
+        {
+          "took" : 60,
+          "timed_out" : false,
+          "_shards" : {
+            "failed" : 0.0,
+            "successful" : 1.0,
+            "total" : 1.0,
+            "skipped" : 0.0
+          },
+          "hits" : {
+            "total" : {
+              "relation" : "eq",
+              "value" : 20
+            },
+            "hits" : [ ],
+            "max_score" : null
+          },
+          "aggregations" : {
+            "sterms#level" : {
+              "buckets" : [ {
+                "avg#avg_salary_level" : {
+                  "value" : 95000.0
+                },
+                "doc_count" : 7,
+                "key" : "Senior"
+              }, {
+                "avg#avg_salary_level" : {
+                  "value" : 70600.0
+                },
+                "doc_count" : 5,
+                "key" : "Junior"
+              }, {
+                "avg#avg_salary_level" : {
+                  "value" : 79200.0
+                },
+                "doc_count" : 5,
+                "key" : "Mid"
+              }, {
+                "avg#avg_salary_level" : {
+                  "value" : 107500.0
+                },
+                "doc_count" : 2,
+                "key" : "Lead"
+              }, {
+                "avg#avg_salary_level" : {
+                  "value" : 130000.0
+                },
+                "doc_count" : 1,
+                "key" : "Principal"
+              } ],
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0
+            },
+            "sterms#department" : {
+              "buckets" : [ {
+                "sterms#location" : {
+                  "buckets" : [ {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 3
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_2",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 120000
+                          },
+                          "sort" : [ 1515542400000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 3,
+                    "key" : "New York"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 3
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_19",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 130000
+                          },
+                          "sort" : [ 1433116800000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 3,
+                    "key" : "San Francisco"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 1
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_16",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 105000
+                          },
+                          "sort" : [ 1460246400000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 1,
+                    "key" : "Remote"
+                  } ],
+                  "doc_count_error_upper_bound" : 0,
+                  "sum_other_doc_count" : 0
+                },
+                "top_hits#first_salary_dept" : {
+                  "hits" : {
+                    "total" : {
+                      "relation" : "eq",
+                      "value" : 7
+                    },
+                    "hits" : [ {
+                      "_index" : "emp",
+                      "_id" : "emp_19",
+                      "_score" : null,
+                      "_source" : {
+                        "salary" : 130000
+                      },
+                      "sort" : [ 1433116800000 ]
+                    } ],
+                    "max_score" : null
+                  }
+                },
+                "doc_count" : 7,
+                "key" : "Engineering"
+              }, {
+                "sterms#location" : {
+                  "buckets" : [ {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 3
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_7",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 90000
+                          },
+                          "sort" : [ 1543536000000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 3,
+                    "key" : "Chicago"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 2
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_9",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 95000
+                          },
+                          "sort" : [ 1488931200000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 2,
+                    "key" : "New York"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 1
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_17",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 92000
+                          },
+                          "sort" : [ 1551312000000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 1,
+                    "key" : "Remote"
+                  } ],
+                  "doc_count_error_upper_bound" : 0,
+                  "sum_other_doc_count" : 0
+                },
+                "top_hits#first_salary_dept" : {
+                  "hits" : {
+                    "total" : {
+                      "relation" : "eq",
+                      "value" : 6
+                    },
+                    "hits" : [ {
+                      "_index" : "emp",
+                      "_id" : "emp_9",
+                      "_score" : null,
+                      "_source" : {
+                        "salary" : 95000
+                      },
+                      "sort" : [ 1488931200000 ]
+                    } ],
+                    "max_score" : null
+                  }
+                },
+                "doc_count" : 6,
+                "key" : "Sales"
+              }, {
+                "sterms#location" : {
+                  "buckets" : [ {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 2
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_11",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 88000
+                          },
+                          "sort" : [ 1526342400000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 2,
+                    "key" : "San Francisco"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 1
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_12",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 65000
+                          },
+                          "sort" : [ 1611100800000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 1,
+                    "key" : "Chicago"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 1
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_18",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 81000
+                          },
+                          "sort" : [ 1599696000000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 1,
+                    "key" : "Remote"
+                  } ],
+                  "doc_count_error_upper_bound" : 0,
+                  "sum_other_doc_count" : 0
+                },
+                "top_hits#first_salary_dept" : {
+                  "hits" : {
+                    "total" : {
+                      "relation" : "eq",
+                      "value" : 4
+                    },
+                    "hits" : [ {
+                      "_index" : "emp",
+                      "_id" : "emp_11",
+                      "_score" : null,
+                      "_source" : {
+                        "salary" : 88000
+                      },
+                      "sort" : [ 1526342400000 ]
+                    } ],
+                    "max_score" : null
+                  }
+                },
+                "doc_count" : 4,
+                "key" : "Marketing"
+              }, {
+                "sterms#location" : {
+                  "buckets" : [ {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 2
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_15",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 85000
+                          },
+                          "sort" : [ 1512086400000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 2,
+                    "key" : "New York"
+                  }, {
+                    "top_hits#first_salary_dept_loc" : {
+                      "hits" : {
+                        "total" : {
+                          "relation" : "eq",
+                          "value" : 1
+                        },
+                        "hits" : [ {
+                          "_index" : "emp",
+                          "_id" : "emp_14",
+                          "_score" : null,
+                          "_source" : {
+                            "salary" : 68000
+                          },
+                          "sort" : [ 1604534400000 ]
+                        } ],
+                        "max_score" : null
+                      }
+                    },
+                    "doc_count" : 1,
+                    "key" : "Chicago"
+                  } ],
+                  "doc_count_error_upper_bound" : 0,
+                  "sum_other_doc_count" : 0
+                },
+                "top_hits#first_salary_dept" : {
+                  "hits" : {
+                    "total" : {
+                      "relation" : "eq",
+                      "value" : 3
+                    },
+                    "hits" : [ {
+                      "_index" : "emp",
+                      "_id" : "emp_15",
+                      "_score" : null,
+                      "_source" : {
+                        "salary" : 85000
+                      },
+                      "sort" : [ 1512086400000 ]
+                    } ],
+                    "max_score" : null
+                  }
+                },
+                "doc_count" : 3,
+                "key" : "HR"
+              } ],
+              "doc_count_error_upper_bound" : 0,
+              "sum_other_doc_count" : 0
+            }
+          }
+        }
+        """
+    val aggregations =
+      Map(
+        "first_salary_dept_loc" -> ClientAggregation(
+          aggName = "first_salary_dept_loc",
+          aggType = AggregationType.FirstValue,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "department>location",
+          bucketRoot = "department"
+        ),
+        "first_salary_dept" -> ClientAggregation(
+          aggName = "first_salary_dept",
+          aggType = AggregationType.FirstValue,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "department",
+          bucketRoot = "department"
+        ),
+        "avg_salary_level" -> ClientAggregation(
+          aggName = "avg_salary_level",
+          aggType = AggregationType.Avg,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "level",
+          bucketRoot = "level"
+        )
+      )
+    parseResponse(
+      results,
+      Map.empty,
+      aggregations
+    ) match {
+      case Success(results) =>
+        val rows = results.map(row => extractAggregationValues(row, aggregations))
+        rows.foreach(println)
+        val windows = rows.map(row => convertTo[EmployeeMultiWindowPartitions](row)).distinct
+        windows.foreach(println)
+        windows.size shouldBe 55
       case Failure(error) =>
         throw error
     }
@@ -1100,4 +1551,10 @@ case class EmployeeDistinctPartitions(
   last_in_dept_loc: Option[Int] = None,
   first_in_dept: Option[Int] = None,
   last_in_dept: Option[Int] = None
+)
+
+case class EmployeeMultiWindowPartitions(
+  first_salary_dept_loc: Option[Int] = None,
+  first_salary_dept: Option[Int] = None,
+  avg_salary_level: Option[Double] = None
 )

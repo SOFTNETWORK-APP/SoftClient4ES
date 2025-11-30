@@ -148,11 +148,27 @@ trait ElasticConversion {
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
-        parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
+        val ret = parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
+        val groupedRows: Map[String, Seq[Map[String, Any]]] =
+          ret.groupBy(_.getOrElse("bucket_root", "").toString)
+        groupedRows.values.foldLeft(Seq(Map.empty[String, Any])) { (acc, group) =>
+          for {
+            accMap   <- acc
+            groupMap <- group
+          } yield accMap ++ groupMap
+        }
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
-        parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
+        val ret = parseAggregations(aggs, Map.empty, fieldAliases, aggregations)
+        val groupedRows: Map[String, Seq[Map[String, Any]]] =
+          ret.groupBy(_.getOrElse("bucket_root", "").toString)
+        groupedRows.values.foldLeft(Seq(Map.empty[String, Any])) { (acc, group) =>
+          for {
+            accMap   <- acc
+            groupMap <- group
+          } yield accMap ++ groupMap
+        }
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations + top_hits aggregations
@@ -355,7 +371,7 @@ trait ElasticConversion {
       }
     } else if (bucketAggs.isEmpty) {
       // No buckets : it is a leaf aggregation (metrics or top_hits)
-      val metrics = extractMetrics(aggsNode)
+      val metrics = extractMetrics(aggsNode, aggregations)
       val allTopHits = extractAllTopHits(aggsNode, fieldAliases, aggregations)
 
       if (allTopHits.nonEmpty) {
@@ -369,6 +385,7 @@ trait ElasticConversion {
       // Handle each aggregation with buckets
       bucketAggs.flatMap { case (aggName, buckets, _) =>
         buckets.flatMap { bucket =>
+          val metrics = extractMetrics(bucket, aggregations)
           val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
 
           val bucketKey = extractBucketKey(bucket)
@@ -379,7 +396,7 @@ trait ElasticConversion {
           val currentContext = parentContext ++ Map(
             aggName                 -> bucketKey,
             s"${aggName}_doc_count" -> docCount
-          ) ++ allTopHits
+          ) ++ metrics ++ allTopHits
 
           // Check for sub-aggregations
           val subAggFields = bucket
@@ -468,62 +485,76 @@ trait ElasticConversion {
 
   /** Extract metrics from an aggregation node
     */
-  def extractMetrics(aggsNode: JsonNode): Map[String, Any] = {
+  def extractMetrics(
+    aggsNode: JsonNode,
+    aggregations: Map[String, ClientAggregation]
+  ): Map[String, Any] = {
     if (!aggsNode.isObject) return Map.empty
-    aggsNode
-      .properties()
-      .asScala
-      .flatMap { entry =>
-        val name = normalizeAggregationKey(entry.getKey)
-        val value = entry.getValue
+    var bucketRoot: Option[String] = None
+    val metrics =
+      aggsNode
+        .properties()
+        .asScala
+        .flatMap { entry =>
+          val name = normalizeAggregationKey(entry.getKey)
+          aggregations.get(name) match {
+            case Some(agg) =>
+              bucketRoot = Some(agg.bucketRoot)
+            case _ =>
+          }
+          val value = entry.getValue
 
-        // Detect simple metric values
-        Option(value.get("value"))
-          .filter(!_.isNull)
-          .map { metricValue =>
-            val numericValue = if (metricValue.isIntegralNumber) {
-              metricValue.asLong()
-            } else if (metricValue.isFloatingPointNumber) {
-              metricValue.asDouble()
-            } else {
-              metricValue.asText()
+          // Detect simple metric values
+          Option(value.get("value"))
+            .filter(!_.isNull)
+            .map { metricValue =>
+              val numericValue = if (metricValue.isIntegralNumber) {
+                metricValue.asLong()
+              } else if (metricValue.isFloatingPointNumber) {
+                metricValue.asDouble()
+              } else {
+                metricValue.asText()
+              }
+              name -> numericValue
             }
-            name -> numericValue
-          }
-          .orElse {
-            // Stats aggregations
-            if (value.has("count") && value.has("sum") && value.has("avg")) {
-              Some(
-                name -> Map(
-                  "count" -> value.get("count").asLong(),
-                  "sum"   -> Option(value.get("sum")).filterNot(_.isNull).map(_.asDouble()),
-                  "avg"   -> Option(value.get("avg")).filterNot(_.isNull).map(_.asDouble()),
-                  "min"   -> Option(value.get("min")).filterNot(_.isNull).map(_.asDouble()),
-                  "max"   -> Option(value.get("max")).filterNot(_.isNull).map(_.asDouble())
-                ).collect { case (k, Some(v)) => k -> v; case (k, v: Long) => k -> v }
-              )
-            } else {
-              None
+            .orElse {
+              // Stats aggregations
+              if (value.has("count") && value.has("sum") && value.has("avg")) {
+                Some(
+                  name -> Map(
+                    "count" -> value.get("count").asLong(),
+                    "sum"   -> Option(value.get("sum")).filterNot(_.isNull).map(_.asDouble()),
+                    "avg"   -> Option(value.get("avg")).filterNot(_.isNull).map(_.asDouble()),
+                    "min"   -> Option(value.get("min")).filterNot(_.isNull).map(_.asDouble()),
+                    "max"   -> Option(value.get("max")).filterNot(_.isNull).map(_.asDouble())
+                  ).collect { case (k, Some(v)) => k -> v; case (k, v: Long) => k -> v }
+                )
+              } else {
+                None
+              }
             }
-          }
-          .orElse {
-            // Percentiles
-            if (value.has("values") && value.get("values").isObject) {
-              val percentiles = value
-                .get("values")
-                .properties()
-                .asScala
-                .map { pEntry =>
-                  pEntry.getKey -> pEntry.getValue.asDouble()
-                }
-                .toMap
-              Some(name -> percentiles)
-            } else {
-              None
+            .orElse {
+              // Percentiles
+              if (value.has("values") && value.get("values").isObject) {
+                val percentiles = value
+                  .get("values")
+                  .properties()
+                  .asScala
+                  .map { pEntry =>
+                    pEntry.getKey -> pEntry.getValue.asDouble()
+                  }
+                  .toMap
+                Some(name -> percentiles)
+              } else {
+                None
+              }
             }
-          }
-      }
-      .toMap
+        }
+        .toMap
+    bucketRoot match {
+      case Some(root) => metrics + ("bucket_root" -> root)
+      case None       => metrics
+    }
   }
 
   /** Extract all top_hits aggregations with their names and hits */
@@ -533,6 +564,7 @@ trait ElasticConversion {
     aggregations: Map[String, ClientAggregation]
   ): Map[String, Any] = {
     if (!aggsNode.isObject) return Map.empty
+    var bucketRoot: Option[String] = None
     val allTopHits =
       aggsNode
         .properties()
@@ -553,11 +585,18 @@ trait ElasticConversion {
     // Process each top_hits aggregation with their names
     val row = allTopHits.map { case (topHitName, hits) =>
       // Determine if it is a multivalued aggregation (array_agg, ...)
-      val hasMultipleValues = aggregations.get(topHitName) match {
+      val agg = aggregations.get(topHitName)
+      val hasMultipleValues = agg match {
         case Some(agg) => agg.multivalued
         case None      =>
           // Fallback on naming convention if aggregation is not found
           !topHitName.toLowerCase.matches("(first|last)_.*")
+      }
+
+      agg match {
+        case Some(agg) =>
+          bucketRoot = Some(agg.bucketRoot)
+        case _ =>
       }
 
       val processedHits = hits.map { hit =>
@@ -582,7 +621,7 @@ trait ElasticConversion {
         } else {
           val metadata = extractHitMetadata(hit)
           val innerHits = extractInnerHits(hit, fieldAliases)
-          source ++ metadata ++ innerHits
+          source ++ metadata ++ innerHits ++ Map("bucket_root" -> bucketRoot)
         }
       }
 
@@ -600,7 +639,10 @@ trait ElasticConversion {
       }
     }
 
-    row
+    bucketRoot match {
+      case Some(root) => row + ("bucket_root" -> root)
+      case None       => row
+    }
   }
 
   /** Extract global metrics from aggregations (for hits + aggs case)
