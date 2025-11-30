@@ -1547,4 +1547,121 @@ trait WindowFunctionSpec
     }
   }
 
+  "Search and Scroll APIs with distinct window partitions" should "maintain consistency between them" in {
+    // Search
+    val searchResults = client.searchAs[EmployeeDistinctPartitions]("""
+      SELECT
+        department,
+        location,
+        name,
+        salary,
+        hire_date,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS first_in_dept_loc,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS last_in_dept_loc,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS first_in_dept,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS last_in_dept
+      FROM emp
+      WHERE department IN ('Engineering', 'Sales')
+      LIMIT 20
+    """) match {
+      case ElasticSuccess(emps)  => emps
+      case ElasticFailure(error) => fail(s"Search failed: ${error.message}")
+    }
+
+    // Scroll
+    val config = ScrollConfig(scrollSize = 4)
+    val futureScrollResults = client
+      .scrollAs[EmployeeDistinctPartitions](
+        """
+      SELECT
+        department,
+        location,
+        name,
+        salary,
+        hire_date,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS first_in_dept_loc,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS last_in_dept_loc,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS first_in_dept,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS last_in_dept
+      FROM emp
+      WHERE department IN ('Engineering', 'Sales')
+      LIMIT 20
+    """,
+        config
+      )
+      .runWith(Sink.seq)
+
+    val scrollResults = Await.result(futureScrollResults, 30.seconds).map(_._1)
+
+    log.info(s"\n=== Comparing Search vs Scroll for distinct partitions ===")
+    log.info(s"  Search: ${searchResults.size} results")
+    log.info(s"  Scroll: ${scrollResults.size} results")
+
+    searchResults.size shouldBe scrollResults.size
+
+    // Compare Window 1: (dept, loc)
+    val searchByDeptLoc = searchResults.groupBy(e => (e.department, e.location))
+    val scrollByDeptLoc = scrollResults.groupBy(e => (e.department, e.location))
+
+    searchByDeptLoc.keys shouldBe scrollByDeptLoc.keys
+
+    log.info("\n--- Window 1: PARTITION BY (department, location) ---")
+    searchByDeptLoc.foreach { case (key @ (dept, loc), searchEmps) =>
+      val scrollEmps = scrollByDeptLoc(key)
+
+      val searchFirst = searchEmps.flatMap(_.first_in_dept_loc).distinct.head
+      val scrollFirst = scrollEmps.flatMap(_.first_in_dept_loc).distinct.head
+      val searchLast = searchEmps.flatMap(_.last_in_dept_loc).distinct.head
+      val scrollLast = scrollEmps.flatMap(_.last_in_dept_loc).distinct.head
+
+      searchFirst shouldBe scrollFirst
+      searchLast shouldBe scrollLast
+
+      log.info(s"  ✓ ($dept, $loc): FIRST=$searchFirst, LAST=$searchLast (consistent)")
+    }
+
+    // Compare Window 2: (dept)
+    val searchByDept = searchResults.groupBy(_.department)
+    val scrollByDept = scrollResults.groupBy(_.department)
+
+    log.info("\n--- Window 2: PARTITION BY (department) ---")
+    searchByDept.foreach { case (dept, searchEmps) =>
+      val scrollEmps = scrollByDept(dept)
+
+      val searchFirst = searchEmps.flatMap(_.first_in_dept).distinct.head
+      val scrollFirst = scrollEmps.flatMap(_.first_in_dept).distinct.head
+      val searchLast = searchEmps.flatMap(_.last_in_dept).distinct.head
+      val scrollLast = scrollEmps.flatMap(_.last_in_dept).distinct.head
+
+      searchFirst shouldBe scrollFirst
+      searchLast shouldBe scrollLast
+
+      log.info(s"  ✓ $dept: FIRST=$searchFirst, LAST=$searchLast (consistent)")
+    }
+  }
+
 }
