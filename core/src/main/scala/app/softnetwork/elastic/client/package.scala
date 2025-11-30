@@ -162,6 +162,8 @@ package object client extends SerializationApi {
     *   - the source field of the aggregation
     * @param windowing
     *   - whether the aggregation is a window function with partitioning
+    * @param bucketPath
+    *   - the bucket path for pipeline aggregations
     */
   case class ClientAggregation(
     aggName: String,

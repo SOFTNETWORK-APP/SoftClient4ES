@@ -658,6 +658,407 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         throw error
     }
   }
+
+  it should "parse window results with distinct partitions" in {
+    val results =
+      """
+      {
+        "took" : 71,
+        "timed_out" : false,
+        "_shards" : {
+          "failed" : 0.0,
+          "successful" : 1.0,
+          "total" : 1.0,
+          "skipped" : 0.0
+        },
+        "hits" : {
+          "total" : {
+            "relation" : "eq",
+            "value" : 13
+          },
+          "hits" : [ ],
+          "max_score" : null
+        },
+        "aggregations" : {
+          "sterms#department" : {
+            "buckets" : [ {
+              "top_hits#last_in_dept" : {
+                "hits" : {
+                  "total" : {
+                    "relation" : "eq",
+                    "value" : 7
+                  },
+                  "hits" : [ {
+                    "_index" : "emp",
+                    "_id" : "emp_5",
+                    "_score" : null,
+                    "_source" : {
+                      "salary" : 75000
+                    },
+                    "sort" : [ 1613088000000 ]
+                  } ],
+                  "max_score" : null
+                }
+              },
+              "top_hits#first_in_dept" : {
+                "hits" : {
+                  "total" : {
+                    "relation" : "eq",
+                    "value" : 7
+                  },
+                  "hits" : [ {
+                    "_index" : "emp",
+                    "_id" : "emp_19",
+                    "_score" : null,
+                    "_source" : {
+                      "salary" : 130000
+                    },
+                    "sort" : [ 1433116800000 ]
+                  } ],
+                  "max_score" : null
+                }
+              },
+              "sterms#location" : {
+                "buckets" : [ {
+                  "top_hits#last_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 3
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_5",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 75000
+                        },
+                        "sort" : [ 1613088000000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "top_hits#first_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 3
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_2",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 120000
+                        },
+                        "sort" : [ 1515542400000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "doc_count" : 3,
+                  "key" : "New York"
+                }, {
+                  "top_hits#last_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 3
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_3",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 85000
+                        },
+                        "sort" : [ 1592611200000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "top_hits#first_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 3
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_19",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 130000
+                        },
+                        "sort" : [ 1433116800000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "doc_count" : 3,
+                  "key" : "San Francisco"
+                }, {
+                  "top_hits#last_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 1
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_16",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 105000
+                        },
+                        "sort" : [ 1460246400000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "top_hits#first_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 1
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_16",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 105000
+                        },
+                        "sort" : [ 1460246400000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "doc_count" : 1,
+                  "key" : "Remote"
+                } ],
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0
+              },
+              "doc_count" : 7,
+              "key" : "Engineering"
+            }, {
+              "top_hits#last_in_dept" : {
+                "hits" : {
+                  "total" : {
+                    "relation" : "eq",
+                    "value" : 6
+                  },
+                  "hits" : [ {
+                    "_index" : "emp",
+                    "_id" : "emp_20",
+                    "_score" : null,
+                    "_source" : {
+                      "salary" : 75000
+                    },
+                    "sort" : [ 1615766400000 ]
+                  } ],
+                  "max_score" : null
+                }
+              },
+              "top_hits#first_in_dept" : {
+                "hits" : {
+                  "total" : {
+                    "relation" : "eq",
+                    "value" : 6
+                  },
+                  "hits" : [ {
+                    "_index" : "emp",
+                    "_id" : "emp_9",
+                    "_score" : null,
+                    "_source" : {
+                      "salary" : 95000
+                    },
+                    "sort" : [ 1488931200000 ]
+                  } ],
+                  "max_score" : null
+                }
+              },
+              "sterms#location" : {
+                "buckets" : [ {
+                  "top_hits#last_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 3
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_20",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 75000
+                        },
+                        "sort" : [ 1615766400000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "top_hits#first_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 3
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_7",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 90000
+                        },
+                        "sort" : [ 1543536000000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "doc_count" : 3,
+                  "key" : "Chicago"
+                }, {
+                  "top_hits#last_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 2
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_6",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 80000
+                        },
+                        "sort" : [ 1563753600000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "top_hits#first_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 2
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_9",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 95000
+                        },
+                        "sort" : [ 1488931200000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "doc_count" : 2,
+                  "key" : "New York"
+                }, {
+                  "top_hits#last_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 1
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_17",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 92000
+                        },
+                        "sort" : [ 1551312000000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "top_hits#first_in_dept_loc" : {
+                    "hits" : {
+                      "total" : {
+                        "relation" : "eq",
+                        "value" : 1
+                      },
+                      "hits" : [ {
+                        "_index" : "emp",
+                        "_id" : "emp_17",
+                        "_score" : null,
+                        "_source" : {
+                          "salary" : 92000
+                        },
+                        "sort" : [ 1551312000000 ]
+                      } ],
+                      "max_score" : null
+                    }
+                  },
+                  "doc_count" : 1,
+                  "key" : "Remote"
+                } ],
+                "doc_count_error_upper_bound" : 0,
+                "sum_other_doc_count" : 0
+              },
+              "doc_count" : 6,
+              "key" : "Sales"
+            } ],
+            "doc_count_error_upper_bound" : 0,
+            "sum_other_doc_count" : 0
+          }
+        }
+      }"""
+    val aggregations =
+      Map(
+        "first_in_dept_loc" -> ClientAggregation(
+          aggName = "first_in_dept_loc",
+          aggType = AggregationType.FirstValue,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "department>location"
+        ),
+        "last_in_dept_loc" -> ClientAggregation(
+          aggName = "last_in_dept_loc",
+          aggType = AggregationType.LastValue,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "department>location"
+        ),
+        "first_in_dept" -> ClientAggregation(
+          aggName = "first_in_dept",
+          aggType = AggregationType.FirstValue,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "department"
+        ),
+        "last_in_dept" -> ClientAggregation(
+          aggName = "last_in_dept",
+          aggType = AggregationType.LastValue,
+          distinct = false,
+          "salary",
+          windowing = true,
+          bucketPath = "department"
+        )
+      )
+    parseResponse(
+      results,
+      Map.empty,
+      aggregations
+    ) match {
+      case Success(results) =>
+        val rows = results.map(row => extractAggregationValues(row, aggregations))
+        rows.foreach(println)
+        val windows = rows.map(row => convertTo[EmployeeDistinctPartitions](row))
+        windows.foreach(println)
+        windows.size shouldBe 6
+      case Failure(error) =>
+        throw error
+    }
+  }
 }
 
 case class Products(category: String, top_products: List[Product], avg_price: Double)
@@ -692,4 +1093,11 @@ case class User(
   id: String,
   name: String,
   address: Address
+)
+
+case class EmployeeDistinctPartitions(
+  first_in_dept_loc: Option[Int] = None,
+  last_in_dept_loc: Option[Int] = None,
+  first_in_dept: Option[Int] = None,
+  last_in_dept: Option[Int] = None
 )

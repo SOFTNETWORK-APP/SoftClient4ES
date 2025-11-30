@@ -369,6 +369,8 @@ trait ElasticConversion {
       // Handle each aggregation with buckets
       bucketAggs.flatMap { case (aggName, buckets, _) =>
         buckets.flatMap { bucket =>
+          val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
+
           val bucketKey = extractBucketKey(bucket)
           val docCount = Option(bucket.get("doc_count"))
             .map(_.asLong())
@@ -377,7 +379,7 @@ trait ElasticConversion {
           val currentContext = parentContext ++ Map(
             aggName                 -> bucketKey,
             s"${aggName}_doc_count" -> docCount
-          )
+          ) ++ allTopHits
 
           // Check for sub-aggregations
           val subAggFields = bucket

@@ -83,4 +83,51 @@ package object window {
     hire_date: String,
     first_in_dept_loc: Option[Int] = None
   )
+
+  case class EmployeeDistinctPartitions(
+    department: String,
+    location: String,
+    name: String,
+    salary: Int,
+    hire_date: String,
+    // Window 1: PARTITION BY department, location
+    first_in_dept_loc: Option[Int] = None,
+    last_in_dept_loc: Option[Int] = None,
+    // Window 2: PARTITION BY department (différent!)
+    first_in_dept: Option[Int] = None,
+    last_in_dept: Option[Int] = None
+  )
+
+  case class EmployeeMultiWindowPartitions(
+    department: String,
+    location: String,
+    level: String,
+    name: String,
+    salary: Int,
+    hire_date: String,
+    // Window 1: PARTITION BY department, location
+    first_salary_dept_loc: Option[Int] = None,
+    // Window 2: PARTITION BY department
+    first_salary_dept: Option[Int] = None,
+    // Window 3: PARTITION BY level
+    avg_salary_level: Option[Double] = None
+  )
+
+  case class EmployeeComplexWindows(
+    department: String,
+    location: String,
+    name: String,
+    salary: Int,
+    hire_date: String,
+    level: String,
+    // Window 1: PARTITION BY department, location ORDER BY hire_date
+    first_hire_dept_loc: Option[String] = None,
+    // Window 2: PARTITION BY department ORDER BY salary DESC
+    top_earner_dept: Option[String] = None,
+    // Window 3: PARTITION BY location ORDER BY hire_date
+    first_hire_location: Option[String] = None,
+    // Window 4: Global (no partition)
+    global_rank: Option[Int] = None
+  )
+
 }

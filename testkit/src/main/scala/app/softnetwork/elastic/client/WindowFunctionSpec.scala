@@ -1270,4 +1270,281 @@ trait WindowFunctionSpec
       emp.department should not be empty
     }
   }
+
+  // ========================================================================
+  // Multi partitioning integration tests
+  // ========================================================================
+
+  private def checkEmployeesWithDistinctPartitions(
+    employees: Seq[EmployeeDistinctPartitions]
+  ): Unit = {
+    employees should not be empty
+    log.info(s"\n=== Testing ${employees.size} employees with 2 distinct window partitions ===")
+
+    // Verify that all values are present
+    employees.foreach { emp =>
+      emp.first_in_dept_loc shouldBe defined
+      emp.last_in_dept_loc shouldBe defined
+      emp.first_in_dept shouldBe defined
+      emp.last_in_dept shouldBe defined
+    }
+
+    // Display data for debugging
+    log.info("\n--- Raw Data ---")
+    employees.sortBy(e => (e.department, e.location, e.hire_date)).foreach { emp =>
+      log.info(
+        f"${emp.department}%-12s ${emp.location}%-15s ${emp.name}%-20s " +
+        f"salary=${emp.salary}%6d hire=${emp.hire_date} " +
+        f"| first_loc=${emp.first_in_dept_loc.get}%6d last_loc=${emp.last_in_dept_loc.get}%6d " +
+        f"first_dept=${emp.first_in_dept.get}%6d last_dept=${emp.last_in_dept.get}%6d"
+      )
+    }
+
+    // ============================================================
+    // Test Window 1: PARTITION BY (department, location)
+    // ============================================================
+    log.info("\n--- Window 1: PARTITION BY (department, location) ---")
+    val byDeptLoc = employees.groupBy(e => (e.department, e.location))
+
+    byDeptLoc.foreach { case ((dept, loc), emps) =>
+      val sortedByHireDate = emps.sortBy(_.hire_date)
+
+      // Tous les employés de cette partition doivent avoir le même FIRST_VALUE et LAST_VALUE
+      val firstValuesLoc = emps.flatMap(_.first_in_dept_loc).distinct
+      val lastValuesLoc = emps.flatMap(_.last_in_dept_loc).distinct
+
+      withClue(
+        s"Partition ($dept, $loc) should have exactly 1 distinct first_in_dept_loc value\n"
+      ) {
+        firstValuesLoc should have size 1
+      }
+
+      withClue(s"Partition ($dept, $loc) should have exactly 1 distinct last_in_dept_loc value\n") {
+        lastValuesLoc should have size 1
+      }
+
+      val expectedFirstLoc = sortedByHireDate.head.salary
+      val expectedLastLoc = sortedByHireDate.last.salary
+
+      withClue(
+        s"Partition ($dept, $loc)\n" +
+        s"  Expected first: ${sortedByHireDate.head.name} hired on ${sortedByHireDate.head.hire_date} with salary $expectedFirstLoc\n" +
+        s"  Actual first_in_dept_loc: ${firstValuesLoc.head}\n"
+      ) {
+        firstValuesLoc.head shouldBe expectedFirstLoc
+      }
+
+      withClue(
+        s"Partition ($dept, $loc)\n" +
+        s"  Expected last: ${sortedByHireDate.last.name} hired on ${sortedByHireDate.last.hire_date} with salary $expectedLastLoc\n" +
+        s"  Actual last_in_dept_loc: ${lastValuesLoc.head}\n"
+      ) {
+        lastValuesLoc.head shouldBe expectedLastLoc
+      }
+
+      log.info(f"  ✓ ($dept%-12s, $loc%-15s): ${emps.size} emps")
+      log.info(
+        f"      FIRST_LOC=$expectedFirstLoc%6d (${sortedByHireDate.head.name}%-20s ${sortedByHireDate.head.hire_date})"
+      )
+      log.info(
+        f"      LAST_LOC =$expectedLastLoc%6d (${sortedByHireDate.last.name}%-20s ${sortedByHireDate.last.hire_date})"
+      )
+    }
+
+    // ============================================================
+    // Test Window 2: PARTITION BY (department)
+    // ============================================================
+    log.info("\n--- Window 2: PARTITION BY (department) ---")
+    val byDept = employees.groupBy(_.department)
+
+    byDept.foreach { case (dept, emps) =>
+      val sortedByHireDate = emps.sortBy(_.hire_date)
+
+      val firstValuesDept = emps.flatMap(_.first_in_dept).distinct
+      val lastValuesDept = emps.flatMap(_.last_in_dept).distinct
+
+      withClue(s"Department $dept should have exactly 1 distinct first_in_dept value\n") {
+        firstValuesDept should have size 1
+      }
+
+      withClue(s"Department $dept should have exactly 1 distinct last_in_dept value\n") {
+        lastValuesDept should have size 1
+      }
+
+      val expectedFirstDept = sortedByHireDate.head.salary
+      val expectedLastDept = sortedByHireDate.last.salary
+
+      withClue(
+        s"Department $dept\n" +
+        s"  Expected first: ${sortedByHireDate.head.name} hired on ${sortedByHireDate.head.hire_date} with salary $expectedFirstDept\n" +
+        s"  Actual first_in_dept: ${firstValuesDept.head}\n"
+      ) {
+        firstValuesDept.head shouldBe expectedFirstDept
+      }
+
+      withClue(
+        s"Department $dept\n" +
+        s"  Expected last: ${sortedByHireDate.last.name} hired on ${sortedByHireDate.last.hire_date} with salary $expectedLastDept\n" +
+        s"  Actual last_in_dept: ${lastValuesDept.head}\n"
+      ) {
+        lastValuesDept.head shouldBe expectedLastDept
+      }
+
+      log.info(f"  ✓ $dept%-12s: ${emps.size} emps")
+      log.info(
+        f"      FIRST_DEPT=$expectedFirstDept%6d (${sortedByHireDate.head.name}%-20s ${sortedByHireDate.head.hire_date})"
+      )
+      log.info(
+        f"      LAST_DEPT =$expectedLastDept%6d (${sortedByHireDate.last.name}%-20s ${sortedByHireDate.last.hire_date})"
+      )
+    }
+
+    // ============================================================
+    // Checking the consistency between the two partitions
+    // ============================================================
+    log.info("\n--- Verifying distinct partition results ---")
+
+    byDept.foreach { case (dept, deptEmps) =>
+      val deptLocations = deptEmps.map(_.location).distinct.sorted
+
+      log.info(s"\n$dept has ${deptLocations.size} locations: ${deptLocations.mkString(", ")}")
+
+      val deptFirstSalary = deptEmps.flatMap(_.first_in_dept).distinct.head
+      val deptLastSalary = deptEmps.flatMap(_.last_in_dept).distinct.head
+      val deptFirstHire = deptEmps.minBy(_.hire_date)
+      val deptLastHire = deptEmps.maxBy(_.hire_date)
+
+      log.info(f"  Department-level window:")
+      log.info(
+        f"    FIRST = $deptFirstSalary%6d (${deptFirstHire.name} @ ${deptFirstHire.location}, ${deptFirstHire.hire_date})"
+      )
+      log.info(
+        f"    LAST  = $deptLastSalary%6d (${deptLastHire.name} @ ${deptLastHire.location}, ${deptLastHire.hire_date})"
+      )
+
+      deptLocations.foreach { loc =>
+        val locEmps = deptEmps.filter(_.location == loc)
+        val locFirstSalary = locEmps.flatMap(_.first_in_dept_loc).distinct.head
+        val locLastSalary = locEmps.flatMap(_.last_in_dept_loc).distinct.head
+        val locFirstHire = locEmps.minBy(_.hire_date)
+        val locLastHire = locEmps.maxBy(_.hire_date)
+
+        log.info(f"  Location-level window ($loc):")
+        log.info(
+          f"    FIRST = $locFirstSalary%6d (${locFirstHire.name}, ${locFirstHire.hire_date})"
+        )
+        log.info(f"    LAST  = $locLastSalary%6d (${locLastHire.name}, ${locLastHire.hire_date})")
+
+        // Logical check : the hiring date at the departmental level
+        // must be <= on all dates at the level (department, location)
+        withClue(
+          s"$dept: First hire date at dept level (${deptFirstHire.hire_date}) " +
+          s"should be <= first hire at ($dept, $loc) level (${locFirstHire.hire_date})\n"
+        ) {
+          deptFirstHire.hire_date should be <= locFirstHire.hire_date
+        }
+
+        withClue(
+          s"$dept: Last hire date at dept level (${deptLastHire.hire_date}) " +
+          s"should be >= last hire at ($dept, $loc) level (${locLastHire.hire_date})\n"
+        ) {
+          deptLastHire.hire_date should be >= locLastHire.hire_date
+        }
+      }
+
+      if (deptLocations.size > 1) {
+        log.info(s"  ✓ Different partitions produce different results (as expected)")
+      } else {
+        log.info(s"  ℹ Single location - partition results are identical")
+      }
+    }
+  }
+
+  "Search API with distinct window partitions" should "compute FIRST_VALUE and LAST_VALUE on different partitions" in {
+    val results = client.searchAs[EmployeeDistinctPartitions]("""
+      SELECT
+        department,
+        location,
+        name,
+        salary,
+        hire_date,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS first_in_dept_loc,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS last_in_dept_loc,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS first_in_dept,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS last_in_dept
+      FROM emp
+      WHERE department IN ('Engineering', 'Sales')
+      ORDER BY department, location, hire_date
+      LIMIT 20
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        checkEmployeesWithDistinctPartitions(employees)
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  "Scroll API with distinct window partitions" should "compute correctly with streaming and different partitions" in {
+    val config = ScrollConfig(scrollSize = 5, logEvery = 5)
+    val startTime = System.currentTimeMillis()
+
+    val futureResults = client
+      .scrollAs[EmployeeDistinctPartitions](
+        """
+      SELECT
+        department,
+        location,
+        name,
+        salary,
+        hire_date,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS first_in_dept_loc,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department, location
+          ORDER BY hire_date ASC
+        ) AS last_in_dept_loc,
+        FIRST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS first_in_dept,
+        LAST_VALUE(salary) OVER (
+          PARTITION BY department
+          ORDER BY hire_date ASC
+        ) AS last_in_dept
+      FROM emp
+      ORDER BY department, location, hire_date
+      LIMIT 20
+    """,
+        config
+      )
+      .runWith(Sink.seq)
+
+    futureResults await { value =>
+      val duration = System.currentTimeMillis() - startTime
+      val results = value.map(_._1)
+      checkEmployeesWithDistinctPartitions(results)
+      duration should be < 1000L
+    } match {
+      case scala.util.Success(_)  => // OK
+      case scala.util.Failure(ex) => fail(s"Scroll failed: ${ex.getMessage}")
+    }
+  }
+
 }
