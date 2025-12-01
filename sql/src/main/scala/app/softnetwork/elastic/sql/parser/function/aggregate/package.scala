@@ -96,27 +96,27 @@ package object aggregate {
       }
 
     def count_agg: PackratParser[WindowFunction] =
-      count ~ window_function() ^^ { case _ ~ top =>
+      count ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         CountAgg(top._1, top._2)
       }
 
     def min_agg: PackratParser[WindowFunction] =
-      min ~ window_function() ^^ { case _ ~ top =>
+      min ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         MinAgg(top._1, top._2)
       }
 
     def max_agg: PackratParser[WindowFunction] =
-      max ~ window_function() ^^ { case _ ~ top =>
+      max ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         MaxAgg(top._1, top._2)
       }
 
     def avg_agg: PackratParser[WindowFunction] =
-      avg ~ window_function() ^^ { case _ ~ top =>
+      avg ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         AvgAgg(top._1, top._2)
       }
 
     def sum_agg: PackratParser[WindowFunction] =
-      sum ~ window_function() ^^ { case _ ~ top =>
+      sum ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         SumAgg(top._1, top._2)
       }
 

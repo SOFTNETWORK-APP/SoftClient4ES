@@ -238,7 +238,12 @@ trait Parser
     "length",
     "lower",
     "upper",
-    "trim"
+    "trim",
+    "first",
+    "last",
+    "array_agg",
+    "first_value",
+    "last_value"
 //    "ltrim",
 //    "rtrim",
 //    "replace",

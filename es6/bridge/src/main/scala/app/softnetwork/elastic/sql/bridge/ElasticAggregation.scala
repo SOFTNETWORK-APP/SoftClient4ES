@@ -659,17 +659,17 @@ object ElasticAggregation {
     val currentBucketPath =
       bucketScriptAggregation.identifier.nestedElement.map(_.nestedPath).getOrElse("")
     // Extract ALL metrics paths
-    val allMetricsPaths = bucketScriptAggregation.params.keys
+    val allMetricsPaths = bucketScriptAggregation.params
     val result =
-      allMetricsPaths.flatMap { metricName =>
-        allAggregations.find(agg => agg.aggName == metricName || agg.field == metricName) match {
+      allMetricsPaths.flatMap { metric =>
+        allAggregations.find(agg => agg.aggName == metric._2 || agg.field == metric._2) match {
           case Some(sqlAgg) =>
             val metricBucketPath = sqlAgg.nestedElement
               .map(_.nestedPath)
               .getOrElse("")
             if (metricBucketPath == currentBucketPath) {
               // Metric of the same level
-              Some(metricName -> metricName)
+              Some(metric._1 -> metric._2)
             } else if (isDirectChild(metricBucketPath, currentBucketPath)) {
               // Metric of a direct child
               // CHECK if it is a "global" metric (cardinality, etc.) or a bucket metric (avg, sum, etc.)
@@ -683,7 +683,7 @@ object ElasticAggregation {
                 //              println(
                 //                s"[DEBUG extractMetricsPath] Direct child (global metric): $metricName -> $childNestedName>$metricName"
                 //              )
-                Some(metricName -> s"$childNestedName>$metricName")
+                Some(metric._1 -> s"$childNestedName>${metric._2}")
               } else {
                 // Bucket metric: cannot be referenced from the parent
                 //              println(

@@ -33,6 +33,7 @@ trait OrderByParser {
   def fieldWithFunction: PackratParser[Identifier] =
     identifierWithArithmeticExpression |
     identifierWithTransformation |
+    identifierWithWindowFunction |
     identifierWithAggregation |
     identifierWithIntervalFunction |
     identifierWithFunction |

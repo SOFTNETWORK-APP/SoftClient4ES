@@ -25,6 +25,7 @@ trait GroupByParser {
   def bucketWithFunction: PackratParser[Identifier] =
     identifierWithArithmeticExpression |
     identifierWithTransformation |
+    identifierWithWindowFunction |
     identifierWithAggregation |
     identifierWithIntervalFunction |
     identifierWithFunction |
