@@ -106,13 +106,15 @@ trait Parser
 
   def separator: PackratParser[Delimiter] = "," ^^ (_ => Separator)
 
-  def valueExpr: PackratParser[PainlessScript] =
+  def valueExpr: PackratParser[PainlessScript] = {
     // the order is important here
+    identifierWithWindowFunction |
     identifierWithTransformation | // transformations applied to an identifier
     identifierWithIntervalFunction |
     identifierWithFunction | // fonctions applied to an identifier
     identifierWithValue |
     identifier
+  }
 
   implicit def functionAsIdentifier(mf: Function): Identifier = mf match {
     case id: Identifier => id
