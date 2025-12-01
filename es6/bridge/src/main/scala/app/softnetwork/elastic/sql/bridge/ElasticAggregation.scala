@@ -159,7 +159,14 @@ object ElasticAggregation {
         val script = Script(s"$context$scriptSrc").lang("painless")
         buildScript(aggName, script)
       } else {
-        buildField(aggName, sourceField)
+        aggType match {
+          case th: WindowFunction if th.shouldBeScripted =>
+            val context = PainlessContext()
+            val scriptSrc = th.identifier.painless(Some(context))
+            val script = Script(s"$context$scriptSrc").lang("painless")
+            buildScript(aggName, script)
+          case _ => buildField(aggName, sourceField)
+        }
       }
     }
 

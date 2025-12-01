@@ -37,6 +37,8 @@ package object function {
 
   trait FunctionWithIdentifier extends Function {
     def identifier: Identifier
+
+    override def shouldBeScripted: Boolean = identifier.shouldBeScripted
   }
 
   trait FunctionWithValue[+T] extends Function with TokenValue {
