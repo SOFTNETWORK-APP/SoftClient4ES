@@ -1065,7 +1065,7 @@ Since this query includes non-aggregated fields, a separate search query would b
 ⚠️ **ROWS/RANGE Frames**: Not yet supported  
 ⚠️ **RANK/ROW_NUMBER**: Not yet supported  
 ⚠️ **LEAD/LAG**: Not yet supported  
-⚠️ **NTILE**: Not yet supported
+⚠️ **NTILE**: Not yet supported  
 ⚠️ **Partition Cardinality**: Very high cardinality partitions may impact performance
 
 📖 **[Full Window Functions Documentation](documentation/sql/functions_aggregate.md)**
