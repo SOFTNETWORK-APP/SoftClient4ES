@@ -37,46 +37,93 @@ package object aggregate {
 
     def aggregate_function: PackratParser[AggregateFunction] = count | min | max | avg | sum
 
+    def aggWithFunction: PackratParser[Identifier] =
+      identifierWithArithmeticExpression |
+      identifierWithTransformation |
+      identifierWithIntervalFunction |
+      identifierWithFunction |
+      identifier
+
     def identifierWithAggregation: PackratParser[Identifier] =
-      aggregate_function ~ start ~ (identifierWithFunction | identifierWithIntervalFunction | identifier) ~ end ^^ {
-        case a ~ _ ~ i ~ _ =>
-          i.withFunctions(a +: i.functions)
+      aggregate_function ~ start ~ aggWithFunction ~ end ^^ { case a ~ _ ~ i ~ _ =>
+        i.withFunctions(a +: i.functions)
       }
 
     def partition_by: PackratParser[Seq[Identifier]] =
-      PARTITION_BY.regex ~> rep1sep(identifier, separator)
+      PARTITION_BY.regex ~> rep1sep(identifierWithTransformation | identifier, separator)
 
-    private[this] def over: Parser[(Seq[Identifier], OrderBy)] =
-      OVER.regex ~> start ~ partition_by.? ~ orderBy <~ end ^^ { case _ ~ pb ~ ob =>
-        (pb.getOrElse(Seq.empty), ob)
+    private[this] def over: Parser[(Seq[Identifier], Option[OrderBy], Option[Limit])] =
+      OVER.regex ~> start ~ partition_by.? ~ orderBy.? ~ limit.? <~ end ^^ { case _ ~ pb ~ ob ~ l =>
+        (pb.getOrElse(Seq.empty), ob, l)
       }
 
-    private[this] def top_hits: PackratParser[(Identifier, Seq[Identifier], OrderBy)] =
-      start ~ identifier ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
+    private[this] def window_function(
+      windowId: PackratParser[Identifier] = identifier
+    ): PackratParser[(Identifier, Seq[Identifier], Option[OrderBy], Option[Limit])] =
+      start ~ windowId ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
         o match {
-          case Some((pb, ob)) => (id, pb, ob)
-          case None           => (id, Seq.empty, OrderBy(Seq(FieldSort(id.name, order = None))))
+          case Some((pb, ob, l)) => (id, pb, ob, l)
+          case None              => (id, Seq.empty, None, None)
         }
       }
 
-    def first_value: PackratParser[TopHitsAggregation] =
-      FIRST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
-        FirstValue(top._1, top._2, top._3)
+    def first_value: PackratParser[WindowFunction] =
+      FIRST_VALUE.regex ~ window_function() ^^ { case _ ~ top =>
+        FirstValue(
+          top._1,
+          top._2,
+          top._3.orElse(Option(OrderBy(Seq(FieldSort(top._1, order = None)))))
+        )
       }
 
-    def last_value: PackratParser[TopHitsAggregation] =
-      LAST_VALUE.regex ~ top_hits ^^ { case _ ~ top =>
-        LastValue(top._1, top._2, top._3)
+    def last_value: PackratParser[WindowFunction] =
+      LAST_VALUE.regex ~ window_function() ^^ { case _ ~ top =>
+        LastValue(
+          top._1,
+          top._2,
+          top._3.orElse(Option(OrderBy(Seq(FieldSort(top._1, order = None)))))
+        )
       }
 
-    def array_agg: PackratParser[TopHitsAggregation] =
-      ARRAY_AGG.regex ~ top_hits ^^ { case _ ~ top =>
-        ArrayAgg(top._1, top._2, top._3, limit = None)
+    def array_agg: PackratParser[WindowFunction] =
+      ARRAY_AGG.regex ~ window_function() ^^ { case _ ~ top =>
+        ArrayAgg(
+          top._1,
+          top._2,
+          top._3.orElse(Option(OrderBy(Seq(FieldSort(top._1, order = None))))),
+          limit = top._4
+        )
       }
 
-    def identifierWithTopHits: PackratParser[Identifier] =
-      (first_value | last_value | array_agg) ^^ { th =>
-        th.identifier.withFunctions(th +: th.identifier.functions)
+    def count_agg: PackratParser[WindowFunction] =
+      count ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
+        CountAgg(top._1, top._2)
+      }
+
+    def min_agg: PackratParser[WindowFunction] =
+      min ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
+        MinAgg(top._1, top._2)
+      }
+
+    def max_agg: PackratParser[WindowFunction] =
+      max ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
+        MaxAgg(top._1, top._2)
+      }
+
+    def avg_agg: PackratParser[WindowFunction] =
+      avg ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
+        AvgAgg(top._1, top._2)
+      }
+
+    def sum_agg: PackratParser[WindowFunction] =
+      sum ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
+        SumAgg(top._1, top._2)
+      }
+
+    def identifierWithWindowFunction: PackratParser[Identifier] =
+      (first_value | last_value | array_agg | count_agg | min_agg | max_agg | avg_agg | sum_agg) ^^ {
+        th =>
+          th.identifier.withFunctions(th +: th.identifier.functions)
       }
 
   }

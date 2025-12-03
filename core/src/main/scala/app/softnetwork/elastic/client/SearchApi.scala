@@ -65,9 +65,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       case Some(Left(single)) =>
         val elasticQuery = ElasticQuery(
           single,
-          collection.immutable.Seq(single.sources: _*)
+          collection.immutable.Seq(single.sources: _*),
+          sql = Some(sql.query)
         )
-        singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
+        if (single.windowFunctions.exists(_.isWindowing) && single.groupBy.isEmpty)
+          searchWithWindowEnrichment(sql, single)
+        else
+          singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
       case Some(Right(multiple)) =>
         val elasticQueries = ElasticQueries(
@@ -76,17 +80,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               query,
               collection.immutable.Seq(query.sources: _*)
             )
-          }.toList
+          }.toList,
+          sql = Some(sql.query)
         )
         multiSearch(elasticQueries, multiple.fieldAliases, multiple.sqlAggregations)
 
       case None =>
         logger.error(
-          s"❌ Failed to execute search for query '${sql.query}'"
+          s"❌ Failed to execute search for query \n${sql.query}"
         )
         ElasticResult.failure(
           ElasticError(
-            message = s"SQL query does not contain a valid search request: ${sql.query}",
+            message = s"SQL query does not contain a valid search request\n${sql.query}",
             operation = Some("search")
           )
         )
@@ -122,36 +127,59 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       case None => // continue
     }
 
-    logger.debug(
-      s"Searching with query '${elasticQuery.query}' in indices '${elasticQuery.indices.mkString(",")}'"
+    val sql = elasticQuery.sql
+    val query = elasticQuery.query
+    val indices = elasticQuery.indices.mkString(",")
+
+    logger.info(
+      s"🔍 Searching with query \n$elasticQuery\nin indices '$indices'"
     )
 
     executeSingleSearch(elasticQuery) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed search in indices '${elasticQuery.indices.mkString(",")}'"
+          s"✅ Successfully executed search for query \n$elasticQuery\nin indices '$indices'"
         )
-        ElasticResult.success(
-          ElasticResponse(
-            elasticQuery.query,
-            response,
-            fieldAliases,
-            aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-          )
-        )
+        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+          case success @ ElasticSuccess(_) =>
+            logger.info(
+              s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
+            )
+            ElasticResult.success(
+              ElasticResponse(
+                sql,
+                query,
+                success.value,
+                fieldAliases,
+                aggs
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to parse search results for query \n${sql
+                .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
+            )
+            ElasticResult.failure(
+              error.copy(
+                operation = Some("search"),
+                index = Some(elasticQuery.indices.mkString(","))
+              )
+            )
+        }
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message =
-              s"Failed to execute search in indices '${elasticQuery.indices.mkString(",")}'",
-            index = Some(elasticQuery.indices.mkString(",")),
+            message = s"Failed to execute search for query \n$elasticQuery\nin indices '$indices'",
+            index = Some(indices),
             operation = Some("search")
           )
         logger.error(s"❌ ${error.message}")
         ElasticResult.failure(error)
       case ElasticFailure(error) =>
         logger.error(
-          s"❌ Failed to execute search in indices '${elasticQuery.indices.mkString(",")}': ${error.message}"
+          s"❌ Failed to execute search for query \n${sql
+            .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
         )
         ElasticResult.failure(
           error.copy(
@@ -196,34 +224,56 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
     }
 
+    val query = elasticQueries.queries.map(_.query).mkString("\n")
+    val sql = elasticQueries.sql.orElse(
+      Option(elasticQueries.queries.flatMap(_.sql).mkString("\nUNION ALL\n"))
+    )
+
     logger.debug(
-      s"Multi-searching with ${elasticQueries.queries.size} queries"
+      s"🔍 Multi-searching with query \n$elasticQueries"
     )
 
     executeMultiSearch(elasticQueries) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed multi-search with ${elasticQueries.queries.size} queries"
+          s"✅ Successfully executed multi-search for query \n$elasticQueries"
         )
-        ElasticResult.success(
-          ElasticResponse(
-            elasticQueries.queries.map(_.query).mkString("\n"),
-            response,
-            fieldAliases,
-            aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-          )
-        )
+        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+          case success @ ElasticSuccess(_) =>
+            logger.info(
+              s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
+            )
+            ElasticResult.success(
+              ElasticResponse(
+                sql,
+                query,
+                success.value,
+                fieldAliases,
+                aggs
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to parse multi-search results for query \n$elasticQueries\n -> ${error.message}"
+            )
+            ElasticResult.failure(
+              error.copy(
+                operation = Some("multiSearch")
+              )
+            )
+        }
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message = s"Failed to execute multi-search with ${elasticQueries.queries.size} queries",
+            message = s"Failed to execute multi-search for query \n$elasticQueries",
             operation = Some("multiSearch")
           )
         logger.error(s"❌ ${error.message}")
         ElasticResult.failure(error)
       case ElasticFailure(error) =>
         logger.error(
-          s"❌ Failed to execute multi-search with ${elasticQueries.queries.size} queries: ${error.message}"
+          s"❌ Failed to execute multi-search for query \n$elasticQueries\n -> ${error.message}"
         )
         ElasticResult.failure(
           error.copy(
@@ -301,25 +351,50 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
+    val sql = elasticQuery.sql
+    val query = elasticQuery.query
+    val indices = elasticQuery.indices.mkString(",")
     executeSingleSearchAsync(elasticQuery).flatMap {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed asynchronous search for query '${elasticQuery.query}'"
+          s"✅ Successfully executed asynchronous search for query \n$elasticQuery\nin indices '$indices'"
         )
-        Future.successful(
-          ElasticResult.success(
-            ElasticResponse(
-              elasticQuery.query,
-              response,
-              fieldAliases,
-              aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+          case success @ ElasticSuccess(_) =>
+            logger.info(
+              s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
             )
-          )
-        )
+            Future.successful(
+              ElasticResult.success(
+                ElasticResponse(
+                  sql,
+                  query,
+                  success.value,
+                  fieldAliases,
+                  aggs
+                )
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to parse search results for query \n${sql
+                .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
+            )
+            Future.successful(
+              ElasticResult.failure(
+                error.copy(
+                  operation = Some("searchAsync"),
+                  index = Some(indices)
+                )
+              )
+            )
+        }
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message = s"Failed to execute asynchronous search for query '${elasticQuery.query}'",
+            message =
+              s"Failed to execute asynchronous search for query \n$elasticQuery\nin indices '$indices'",
             index = Some(elasticQuery.indices.mkString(",")),
             operation = Some("searchAsync")
           )
@@ -327,7 +402,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         Future.successful(ElasticResult.failure(error))
       case ElasticFailure(error) =>
         logger.error(
-          s"❌ Failed to execute asynchronous search for query '${elasticQuery.query}': ${error.message}"
+          s"❌ Failed to execute asynchronous search for query \n${sql
+            .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
         )
         Future.successful(
           ElasticResult.failure(
@@ -358,33 +434,56 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
+    val query = elasticQueries.queries.map(_.query).mkString("\n")
+    val sql = elasticQueries.sql.orElse(
+      Option(elasticQueries.queries.flatMap(_.sql).mkString("\nUNION ALL\n"))
+    )
+
     executeMultiSearchAsync(elasticQueries).flatMap {
       case ElasticSuccess(Some(response)) =>
         logger.info(
-          s"✅ Successfully executed asynchronous multi-search with ${elasticQueries.queries.size} queries"
+          s"✅ Successfully executed asynchronous multi-search for query \n$elasticQueries"
         )
-        Future.successful(
-          ElasticResult.success(
-            ElasticResponse(
-              elasticQueries.queries.map(_.query).mkString("\n"),
-              response,
-              fieldAliases,
-              aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+          case success @ ElasticSuccess(_) =>
+            logger.info(
+              s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
             )
-          )
-        )
+            Future.successful(
+              ElasticResult.success(
+                ElasticResponse(
+                  sql,
+                  query,
+                  success.value,
+                  fieldAliases,
+                  aggs
+                )
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to parse multi-search results for query \n$elasticQueries\n -> ${error.message}"
+            )
+            Future.successful(
+              ElasticResult.failure(
+                error.copy(
+                  operation = Some("multiSearchAsync")
+                )
+              )
+            )
+        }
       case ElasticSuccess(_) =>
         val error =
           ElasticError(
-            message =
-              s"Failed to execute asynchronous multi-search with ${elasticQueries.queries.size} queries",
+            message = s"Failed to execute asynchronous multi-search for query \n$elasticQueries",
             operation = Some("multiSearchAsync")
           )
         logger.error(s"❌ ${error.message}")
         Future.successful(ElasticResult.failure(error))
       case ElasticFailure(error) =>
         logger.error(
-          s"❌ Failed to execute asynchronous multi-search with ${elasticQueries.queries.size} queries: ${error.message}"
+          s"❌ Failed to execute asynchronous multi-search for query \n$elasticQueries\n -> ${error.message}"
         )
         Future.successful(
           ElasticResult.failure(
@@ -723,7 +822,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed search with inner hits in indices '${elasticQuery.indices.mkString(",")}'"
         )
         ElasticResult.attempt {
-          new JsonParser().parse(response).getAsJsonObject
+          JsonParser.parseString(response).getAsJsonObject
         } match {
           case ElasticFailure(error) =>
             logger.error(
@@ -812,7 +911,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed multi-search inner hits with ${elasticQueries.queries.size} queries"
         )
         ElasticResult.attempt {
-          new JsonParser().parse(response).getAsJsonObject
+          JsonParser.parseString(response).getAsJsonObject
         } match {
           case ElasticFailure(error) =>
             logger.error(
@@ -985,4 +1084,283 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       )
   }
 
+  // ========================================================================
+  // WINDOW FUNCTION SEARCH
+  // ========================================================================
+
+  /** Search with window function enrichment
+    *
+    * Strategy:
+    *   1. Execute aggregation query to compute window values 2. Execute main query (without window
+    *      functions) 3. Enrich results with window values
+    */
+  private def searchWithWindowEnrichment(
+    sql: SQLQuery,
+    request: SQLSearchRequest
+  ): ElasticResult[ElasticResponse] = {
+
+    logger.info(s"🪟 Detected ${request.windowFunctions.size} window functions")
+
+    for {
+      // Step 1: Execute window aggregations
+      windowCache <- executeWindowAggregations(request)
+
+      // Step 2: Execute base query (without window functions)
+      baseResponse <- executeBaseQuery(sql, request)
+
+      // Step 3: Enrich results
+      enrichedResponse <- enrichResponseWithWindowValues(baseResponse, windowCache, request)
+
+    } yield enrichedResponse
+  }
+
+  // ========================================================================
+  // WINDOW AGGREGATION EXECUTION
+  // ========================================================================
+
+  /** Execute aggregation queries for all window functions Returns a cache of partition key ->
+    * window values
+    */
+  protected def executeWindowAggregations(
+    request: SQLSearchRequest
+  ): ElasticResult[WindowCache] = {
+
+    // Build aggregation request
+    val aggRequest = buildWindowAggregationRequest(request)
+    val sql = aggRequest.sql
+
+    logger.info(
+      s"🔍 Executing window aggregation query:\n$sql"
+    )
+
+    // Execute aggregation using existing search infrastructure
+    val elasticQuery = ElasticQuery(
+      aggRequest,
+      collection.immutable.Seq(aggRequest.sources: _*),
+      sql = Some(sql)
+    )
+
+    for {
+      // Use singleSearch to execute aggregation
+      aggResponse <- singleSearch(
+        elasticQuery,
+        aggRequest.fieldAliases,
+        aggRequest.sqlAggregations
+      )
+
+      // Parse aggregation results into cache
+      cache <- parseWindowAggregationsToCache(aggResponse, request)
+
+    } yield cache
+  }
+
+  /** Build aggregation request for window functions
+    */
+  private def buildWindowAggregationRequest(
+    request: SQLSearchRequest
+  ): SQLSearchRequest = {
+
+    // Create modified request with:
+    // - Only window buckets in GROUP BY
+    // - Only window aggregations in SELECT
+    // - No LIMIT (need all partitions)
+    // - Same WHERE clause (to match base query filtering)
+    request
+      .copy(
+        select = request.select.copy(fields = request.windowFields),
+        groupBy = None, //request.groupBy.map(_.copy(buckets = request.windowBuckets)),
+        orderBy = None, // Not needed for aggregations
+        limit = None // Need all buckets
+      )
+      .update()
+  }
+
+  /** Parse aggregation response into window cache Uses your existing
+    * ElasticConversion.parseResponse
+    */
+  private def parseWindowAggregationsToCache(
+    response: ElasticResponse,
+    request: SQLSearchRequest
+  ): ElasticResult[WindowCache] = {
+
+    logger.info(
+      s"🔍 Parsing window aggregations to cache for query \n${response.sql.getOrElse(response.query)}"
+    )
+
+    val aggRows = response.results
+
+    logger.info(s"✅ Parsed ${aggRows.size} aggregation buckets")
+
+    // Build cache: partition key -> window values
+    val cache = aggRows.map { row =>
+      val partitionKey = extractPartitionKey(row, request)
+      val windowValues = extractWindowValues(row, response.aggregations)
+
+      partitionKey -> windowValues
+    }.toMap
+
+    ElasticResult.success(WindowCache(cache))
+  }
+
+  // ========================================================================
+  // BASE QUERY EXECUTION
+  // ========================================================================
+
+  /** Execute base query without window functions
+    */
+  private def executeBaseQuery(
+    sql: SQLQuery,
+    request: SQLSearchRequest
+  ): ElasticResult[ElasticResponse] = {
+
+    val baseQuery = createBaseQuery(sql, request)
+
+    logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
+
+    singleSearch(
+      ElasticQuery(
+        baseQuery,
+        collection.immutable.Seq(baseQuery.sources: _*),
+        sql = Some(baseQuery.sql)
+      ),
+      baseQuery.fieldAliases,
+      baseQuery.sqlAggregations
+    )
+  }
+
+  /** Create base query by removing window functions from SELECT
+    */
+  protected def createBaseQuery(
+    sql: SQLQuery,
+    request: SQLSearchRequest
+  ): SQLSearchRequest = {
+
+    // Remove window function fields from SELECT
+    val baseFields = request.select.fields.filterNot(_.identifier.hasWindow)
+
+    // Create modified request
+    val baseRequest = request
+      .copy(
+        select = request.select.copy(fields = baseFields)
+      )
+      .copy(score = sql.score)
+      .update()
+
+    baseRequest
+  }
+
+  /** Extract partition key from aggregation row
+    */
+  private def extractPartitionKey(
+    row: Map[String, Any],
+    request: SQLSearchRequest
+  ): PartitionKey = {
+
+    // Get all partition fields from window functions
+    val partitionFields = request.windowFunctions
+      .flatMap(_.partitionBy)
+      .map(_.aliasOrName)
+      .distinct
+
+    if (partitionFields.isEmpty) {
+      return PartitionKey(Map("__global__" -> true))
+    }
+
+    val keyValues = partitionFields.flatMap { field =>
+      row.get(field).map(field -> _)
+    }.toMap
+
+    PartitionKey(keyValues)
+  }
+
+  /** Extract window function values from aggregation row
+    */
+  private def extractWindowValues(
+    row: Map[String, Any],
+    aggregations: Map[String, ClientAggregation]
+  ): WindowValues = {
+
+    val values = extractAggregationValues(row, aggregations)
+
+    WindowValues(values)
+  }
+
+  // ========================================================================
+  // RESULT ENRICHMENT
+  // ========================================================================
+
+  /** Enrich response with window values
+    */
+  private def enrichResponseWithWindowValues(
+    response: ElasticResponse,
+    cache: WindowCache,
+    request: SQLSearchRequest
+  ): ElasticResult[ElasticResponse] = {
+
+    val baseRows = response.results
+    // Enrich each row
+    val enrichedRows = baseRows.map { row =>
+      enrichDocumentWithWindowValues(row, cache, request)
+    }
+
+    ElasticResult.success(response.copy(results = enrichedRows))
+  }
+
+  /** Enrich a single document with window values
+    */
+  protected def enrichDocumentWithWindowValues(
+    doc: Map[String, Any],
+    cache: WindowCache,
+    request: SQLSearchRequest
+  ): Map[String, Any] = {
+
+    if (request.windowFunctions.isEmpty) {
+      return doc
+    }
+
+    // Build partition key from document
+    val partitionKey = extractPartitionKey(doc, request)
+
+    // Lookup window values
+    cache.get(partitionKey) match {
+      case Some(windowValues) =>
+        // Merge document with window values
+        doc ++ windowValues.values
+
+      case None =>
+        logger.warn(s"⚠️ No window values found for partition: ${partitionKey.values}")
+
+        // Add null values for missing window functions
+        val nullValues = request.windowFunctions.map { wf =>
+          wf.identifier.aliasOrName -> null
+        }.toMap
+
+        doc ++ nullValues
+    }
+  }
+
+  // ========================================================================
+  // HELPER CASE CLASSES
+  // ========================================================================
+
+  /** Partition key for window function cache
+    */
+  protected case class PartitionKey(values: Map[String, Any]) {
+    override def hashCode(): Int = values.hashCode()
+    override def equals(obj: Any): Boolean = obj match {
+      case other: PartitionKey => values == other.values
+      case _                   => false
+    }
+  }
+
+  /** Window function values for a partition
+    */
+  protected case class WindowValues(values: Map[String, Any])
+
+  /** Cache of partition key -> window values
+    */
+  protected case class WindowCache(cache: Map[PartitionKey, WindowValues]) {
+    def get(key: PartitionKey): Option[WindowValues] = cache.get(key)
+    def size: Int = cache.size
+  }
 }

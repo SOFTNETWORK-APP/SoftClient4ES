@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql.macros
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.function.aggregate.{COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.SQLSearchRequest
 
@@ -199,7 +200,20 @@ trait SQLQueryValidator {
 
     // Check if any field is a wildcard (*)
     val hasWildcard = parsedQuery.select.fields.exists { field =>
-      field.identifier.name == "*"
+      field.identifier.name == "*" && (field.aggregateFunction match {
+        case Some(agg) =>
+          agg match {
+            case COUNT => false // COUNT(*) is allowed
+            case th: WindowFunction =>
+              th.window match {
+                case COUNT => false // COUNT(*) window function is allowed
+                case _     => true // Other window functions with * are not allowed
+              }
+            case _ => true // Other aggregates with * are not allowed
+          }
+        case _ =>
+          true
+      })
     }
 
     if (hasWildcard) {

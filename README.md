@@ -260,18 +260,20 @@ val results = client.search(SQLQuery(sqlQuery))
     }
   },
   "size": 0,
-  "_source": true,
+  "_source": false,
   "aggs": {
     "restaurant_name": {
       "terms": {
-        "field": "restaurant_name.keyword",
-        "size": 1000
+        "field": "restaurant_name",
+        "size": 1000,
+        "min_doc_count": 1
       },
       "aggs": {
         "restaurant_city": {
           "terms": {
-            "field": "restaurant_city.keyword",
-            "size": 1000
+            "field": "restaurant_city",
+            "size": 1000,
+            "min_doc_count": 1
           },
           "aggs": {
             "menu": {
@@ -296,8 +298,9 @@ val results = client.search(SQLQuery(sqlQuery))
                   "aggs": {
                     "menu_category": {
                       "terms": {
-                        "field": "menus.category.keyword",
-                        "size": 1000
+                        "field": "menus.category",
+                        "size": 1000,
+                        "min_doc_count": 1
                       },
                       "aggs": {
                         "dish": {
@@ -307,15 +310,11 @@ val results = client.search(SQLQuery(sqlQuery))
                           "aggs": {
                             "dish_name": {
                               "terms": {
-                                "field": "menus.dishes.name.keyword",
-                                "size": 1000
+                                "field": "menus.dishes.name",
+                                "size": 1000,
+                                "min_doc_count": 1
                               },
                               "aggs": {
-                                "avg_dish_price": {
-                                  "avg": {
-                                    "field": "menus.dishes.price"
-                                  }
-                                },
                                 "having_filter": {
                                   "bucket_selector": {
                                     "buckets_path": {
@@ -339,8 +338,9 @@ val results = client.search(SQLQuery(sqlQuery))
                                     },
                                     "ingredient_name": {
                                       "terms": {
-                                        "field": "menus.dishes.ingredients.name.keyword",
-                                        "size": 1000
+                                        "field": "menus.dishes.ingredients.name",
+                                        "size": 1000,
+                                        "min_doc_count": 1
                                       },
                                       "aggs": {
                                         "avg_ingredient_cost": {
@@ -388,7 +388,691 @@ val results = client.search(SQLQuery(sqlQuery))
 ```
 ---
 
-### **3.2. Compile-Time SQL Query Validation**
+### **3.2 Window Functions Support**
+
+SoftClient4ES supports **SQL window functions** that are automatically translated into Elasticsearch aggregations. Window functions allow you to perform calculations across sets of rows that are related to the current row, without collapsing the result set.
+
+#### **Supported Window Functions**
+
+| Window Function    | SQL Syntax                                                        | Description                                     | Use Case                             |
+|--------------------|-------------------------------------------------------------------|-------------------------------------------------|--------------------------------------|
+| **FIRST_VALUE**    | `FIRST_VALUE(field) OVER (PARTITION BY ... ORDER BY ...)`         | Returns the first value in an ordered partition | Get first sale amount per product    |
+| **LAST_VALUE**     | `LAST_VALUE(field) OVER (PARTITION BY ... ORDER BY ...)`          | Returns the last value in an ordered partition  | Get most recent price per product    |
+| **ARRAY_AGG**      | `ARRAY_AGG(field) OVER (PARTITION BY ... ORDER BY ... LIMIT ...)` | Aggregates values into an array                 | Collect all sale amounts per product |
+| **COUNT**          | `COUNT(field) OVER (PARTITION BY ...)`                            | Counts values in each partition                 | Count sales per product              |
+| **SUM**            | `SUM(field) OVER (PARTITION BY ...)`                              | Sums values in each partition                   | Calculate total sales per product    |
+| **AVG**            | `AVG(field) OVER (PARTITION BY ...)`                              | Averages values in each partition               | Calculate average price per category |
+| **MIN**            | `MIN(field) OVER (PARTITION BY ...)`                              | Finds minimum value in each partition           | Find lowest price per product        |
+| **MAX**            | `MAX(field) OVER (PARTITION BY ...)`                              | Finds maximum value in each partition           | Find highest sale per product        |
+| **COUNT DISTINCT** | `COUNT(DISTINCT field) OVER (PARTITION BY ...)`                   | Counts unique values in each partition          | Count unique customers per product   |
+
+#### **Key Features**
+
+✅ **PARTITION BY**: Group rows into partitions for separate calculations  
+✅ **ORDER BY**: Define ordering within partitions (required for `FIRST_VALUE`, `LAST_VALUE`, `ARRAY_AGG`)  
+✅ **Multiple Partitions**: Support for different partition schemes in the same query  
+✅ **Mixed Aggregations**: Combine window functions with standard `GROUP BY` aggregations  
+✅ **In-Memory Join**: Window function results are joined with main query results via partition keys  
+✅ **Type Safety**: Full compile-time validation for window function queries
+
+#### **How Window Functions Work**
+
+When a SQL query mixes window functions with non-aggregated fields, SoftClient4ES executes **two separate queries**:
+
+1. **Window Functions Query**: Computes window function results using aggregations
+2. **Main Query**: Retrieves non-aggregated fields using standard Elasticsearch search
+
+The results are then **joined in memory** using the partition keys (`PARTITION BY` fields), ensuring that each row from the main query is enriched with its corresponding window function values.
+
+**Query Execution Flow:**
+
+```
+SQL Query with Window Functions
+         ↓
+    ┌────────────────────────────────────┐
+    │  Query Analysis & Decomposition    │
+    └────────────────────────────────────┘
+         ↓                    ↓
+    ┌─────────────┐    ┌──────────────────┐
+    │ Main Query  │    │ Window Functions │
+    │ (Fields)    │    │ Query (Aggs)     │
+    └─────────────┘    └──────────────────┘
+         ↓                    ↓
+    ┌─────────────┐    ┌──────────────────┐
+    │ ES Search   │    │ ES Aggregations  │
+    └─────────────┘    └──────────────────┘
+         ↓                    ↓
+    ┌─────────────────────────────────────┐
+    │   In-Memory Join (Partition Keys)   │
+    └─────────────────────────────────────┘
+         ↓
+    ┌─────────────────────────────────────┐
+    │      Enriched Result Set            │
+    └─────────────────────────────────────┘
+```
+
+#### **Example 1: Product Sales Analysis with Window Functions**
+
+```scala
+case class ProductSalesAnalysis(
+  productId: String,
+  productName: String,
+  saleMonth: String,
+  monthlySales: Double,
+  firstSaleAmount: Double,      // FIRST_VALUE
+  lastSaleAmount: Double,        // LAST_VALUE
+  allSaleAmounts: List[Double],  // ARRAY_AGG
+  totalSales: Double,            // SUM OVER
+  avgSaleAmount: Double,         // AVG OVER
+  minSaleAmount: Double,         // MIN OVER
+  maxSaleAmount: Double,         // MAX OVER
+  saleCount: Long,               // COUNT OVER
+  uniqueCustomers: Long          // COUNT DISTINCT OVER
+)
+
+// Type-safe execution with compile-time validation
+val results: Source[ProductSalesAnalysis, NotUsed] = 
+  client.scrollAs[ProductSalesAnalysis]("""
+  SELECT
+    product_id AS productId,
+    product_name AS productName,
+    DATE_TRUNC('month', sale_date) AS saleMonth,
+    SUM(amount) AS monthlySales,
+    
+    -- Window functions with different partitions
+    FIRST_VALUE(amount) OVER (
+      PARTITION BY product_id, DATE_TRUNC('month', sale_date) 
+      ORDER BY sale_date ASC
+    ) AS firstSaleAmount,
+    
+    LAST_VALUE(amount) OVER (
+      PARTITION BY product_id, DATE_TRUNC('month', sale_date) 
+      ORDER BY sale_date ASC
+    ) AS lastSaleAmount,
+    
+    ARRAY_AGG(amount) OVER (
+      PARTITION BY product_id 
+      ORDER BY sale_date ASC
+      LIMIT 100
+    ) AS allSaleAmounts,
+    
+    SUM(amount) OVER (PARTITION BY product_id) AS totalSales,
+    AVG(amount) OVER (PARTITION BY product_id) AS avgSaleAmount,
+    MIN(amount) OVER (PARTITION BY product_id) AS minSaleAmount,
+    MAX(amount) OVER (PARTITION BY product_id) AS maxSaleAmount,
+    COUNT(amount) OVER (PARTITION BY product_id) AS saleCount,
+    COUNT(DISTINCT customer_id) OVER (PARTITION BY product_id) AS uniqueCustomers
+    
+  FROM sales
+  WHERE sale_date >= '2024-01-01'
+  GROUP BY product_id, product_name, DATE_TRUNC('month', sale_date)
+  ORDER BY product_id, saleMonth
+""")
+
+results.runWith(Sink.foreach { analysis =>
+  println(s"""
+    Product: ${analysis.productName} (${analysis.productId})
+    Month: ${analysis.saleMonth}
+    Monthly Sales: ${analysis.monthlySales}
+    First Sale: ${analysis.firstSaleAmount}
+    Last Sale: ${analysis.lastSaleAmount}
+    All Sales: ${analysis.allSaleAmounts.mkString("[", ", ", "]")}
+    Total Sales (All Time): ${analysis.totalSales}
+    Average Sale: ${analysis.avgSaleAmount}
+    Price Range: ${analysis.minSaleAmount} - ${analysis.maxSaleAmount}
+    Sale Count: ${analysis.saleCount}
+    Unique Customers: ${analysis.uniqueCustomers}
+  """)
+})
+```
+
+#### **Example 1: Translation to Elasticsearch DSL**
+
+Since we use `GROUP BY` there is none non-aggregated fields and the SQL query above is decomposed into only one Elasticsearch query:
+
+**Query: Window Functions Aggregations**
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "sale_date": {
+              "gte": "2024-01-01"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 0,
+  "_source": false,
+  "aggs": {
+    "productId": {
+      "terms": {
+        "field": "product_id",
+        "min_doc_count": 1,
+        "order": {
+          "_key": "asc"
+        }
+      },
+      "aggs": {
+        "allSaleAmounts": {
+          "top_hits": {
+            "size": 100,
+            "sort": [
+              {
+                "sale_date": {
+                  "order": "asc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "amount"
+              ]
+            }
+          }
+        },
+        "totalSales": {
+          "sum": {
+            "field": "amount"
+          }
+        },
+        "avgSaleAmount": {
+          "avg": {
+            "field": "amount"
+          }
+        },
+        "minSaleAmount": {
+          "min": {
+            "field": "amount"
+          }
+        },
+        "maxSaleAmount": {
+          "max": {
+            "field": "amount"
+          }
+        },
+        "saleCount": {
+          "value_count": {
+            "field": "amount"
+          }
+        },
+        "uniqueCustomers": {
+          "cardinality": {
+            "field": "customer_id"
+          }
+        },
+        "saleMonth": {
+          "date_histogram": {
+            "interval": "1M",
+            "min_doc_count": 1,
+            "field": "sale_date"
+          },
+          "aggs": {
+            "firstSaleAmount": {
+              "top_hits": {
+                "size": 1,
+                "sort": [
+                  {
+                    "sale_date": {
+                      "order": "asc"
+                    }
+                  }
+                ],
+                "_source": {
+                  "includes": [
+                    "amount"
+                  ]
+                }
+              }
+            },
+            "lastSaleAmount": {
+              "top_hits": {
+                "size": 1,
+                "sort": [
+                  {
+                    "sale_date": {
+                      "order": "desc"
+                    }
+                  }
+                ],
+                "_source": {
+                  "includes": [
+                    "amount"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "productName": {
+          "terms": {
+            "field": "product_name",
+            "min_doc_count": 1
+          },
+          "aggs": {
+            "saleMonth": {
+              "date_histogram": {
+                "interval": "1M",
+                "min_doc_count": 1,
+                "field": "sale_date"
+              },
+              "aggs": {
+                "monthlySales": {
+                  "sum": {
+                    "field": "amount"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### **Example 2: Customer Purchase Patterns**
+
+```scala
+case class CustomerPurchasePattern(
+  customerId: String,
+  customerName: String,
+  purchaseDate: String,
+  amount: Double,
+  firstPurchaseAmount: Double,
+  lastPurchaseAmount: Double,
+  allPurchaseAmounts: List[Double],
+  totalSpent: Double,
+  avgPurchaseAmount: Double,
+  purchaseCount: Long
+)
+
+val sqlQuery = """
+  SELECT
+    customer_id AS customerId,
+    customer_name AS customerName,
+    purchase_date AS purchaseDate,
+    amount,
+    
+    FIRST_VALUE(amount) OVER (
+      PARTITION BY customer_id 
+      ORDER BY purchase_date ASC
+    ) AS firstPurchaseAmount,
+    
+    LAST_VALUE(amount) OVER (
+      PARTITION BY customer_id 
+      ORDER BY purchase_date ASC
+    ) AS lastPurchaseAmount,
+    
+    ARRAY_AGG(amount) OVER (
+      PARTITION BY customer_id 
+      ORDER BY purchase_date ASC
+      LIMIT 100
+    ) AS allPurchaseAmounts,
+    
+    SUM(amount) OVER (PARTITION BY customer_id) AS totalSpent,
+    AVG(amount) OVER (PARTITION BY customer_id) AS avgPurchaseAmount,
+    COUNT(*) OVER (PARTITION BY customer_id) AS purchaseCount
+    
+  FROM purchases
+  WHERE purchase_date >= '2024-01-01'
+  ORDER BY customer_id, purchase_date
+"""
+
+val patterns: Source[CustomerPurchasePattern, NotUsed] = 
+  client.scrollAs[CustomerPurchasePattern](sqlQuery)
+```
+
+**Execution Strategy for Mixed Queries:**
+
+Since this query includes non-aggregated fields (`customerName`, `purchaseDate`, `amount`), the execution involves:
+
+1. **Window Functions Query**: Computes all `OVER` clause results grouped by `customer_id`
+2. **Main Query**: Retrieves individual purchase records with fields
+3. **In-Memory Join**: Each purchase record is enriched with window function values matching its `customer_id`
+
+#### **Example 2: Translation to Elasticsearch DSL**
+
+The SQL query above is decomposed into two Elasticsearch queries:
+
+**Query 1: Window Functions Aggregations**
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "purchase_date": {
+              "gte": "2024-01-01"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 0,
+  "_source": false,
+  "aggs": {
+    "customerId": {
+      "terms": {
+        "field": "customer_id",
+        "min_doc_count": 1
+      },
+      "aggs": {
+        "firstPurchaseAmount": {
+          "top_hits": {
+            "size": 1,
+            "sort": [
+              {
+                "purchase_date": {
+                  "order": "asc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "amount"
+              ]
+            }
+          }
+        },
+        "lastPurchaseAmount": {
+          "top_hits": {
+            "size": 1,
+            "sort": [
+              {
+                "purchase_date": {
+                  "order": "desc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "amount"
+              ]
+            }
+          }
+        },
+        "allPurchaseAmounts": {
+          "top_hits": {
+            "size": 100,
+            "sort": [
+              {
+                "purchase_date": {
+                  "order": "asc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "amount"
+              ]
+            }
+          }
+        },
+        "totalSpent": {
+          "sum": {
+            "field": "amount"
+          }
+        },
+        "avgPurchaseAmount": {
+          "avg": {
+            "field": "amount"
+          }
+        },
+        "purchaseCount": {
+          "value_count": {
+            "field": "_index"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**Query 2: Main Query (Non-Aggregated Fields)**
+
+Since this query includes non-aggregated fields, a separate search query would be executed:
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "purchase_date": {
+              "gte": "2024-01-01"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "sort": [
+    {
+      "customerId": {
+        "order": "asc"
+      }
+    },
+    {
+      "purchaseDate": {
+        "order": "asc"
+      }
+    }
+  ],
+  "_source": {
+    "includes": [
+      "customer_id",
+      "customer_name",
+      "purchase_date",
+      "amount"
+    ]
+  }
+}
+```
+
+#### **Example 3: Time-Series Analysis with Window Functions**
+
+```scala
+val sqlQuery = """
+  SELECT
+    sensor_id AS sensorId,
+    timestamp,
+    temperature,
+    
+    -- Rolling statistics using window functions
+    AVG(temperature) OVER (
+      PARTITION BY sensor_id 
+      ORDER BY timestamp 
+    ) AS movingAvg,
+    
+    MIN(temperature) OVER (PARTITION BY sensor_id) AS minTemp,
+    MAX(temperature) OVER (PARTITION BY sensor_id) AS maxTemp,
+    
+    FIRST_VALUE(temperature) OVER (
+      PARTITION BY sensor_id 
+      ORDER BY timestamp ASC
+    ) AS firstReading,
+    
+    LAST_VALUE(temperature) OVER (
+      PARTITION BY sensor_id 
+      ORDER BY timestamp ASC
+    ) AS currentReading
+    
+  FROM sensor_data
+  WHERE timestamp >= NOW() - INTERVAL 1 HOUR
+  ORDER BY sensor_id, timestamp
+"""
+```
+
+#### **Example 3: Translation to Elasticsearch DSL**
+
+The SQL query above is decomposed into two Elasticsearch queries:
+
+**Query 1: Window Functions Aggregations**
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "timestamp": {
+              "gte": "now-1H"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 0,
+  "_source": false,
+  "aggs": {
+    "sensorId": {
+      "terms": {
+        "field": "sensor_id",
+        "min_doc_count": 1
+      },
+      "aggs": {
+        "movingAvg": {
+          "avg": {
+            "field": "temperature"
+          }
+        },
+        "minTemp": {
+          "min": {
+            "field": "temperature"
+          }
+        },
+        "maxTemp": {
+          "max": {
+            "field": "temperature"
+          }
+        },
+        "firstReading": {
+          "top_hits": {
+            "size": 1,
+            "sort": [
+              {
+                "timestamp": {
+                  "order": "asc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "temperature"
+              ]
+            }
+          }
+        },
+        "currentReading": {
+          "top_hits": {
+            "size": 1,
+            "sort": [
+              {
+                "timestamp": {
+                  "order": "desc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "temperature"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+**Query 2: Main Query (Non-Aggregated Fields)**
+
+Since this query includes non-aggregated fields, a separate search query would be executed:
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "timestamp": {
+              "gte": "now-1H"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "sort": [
+    {
+      "sensorId": {
+        "order": "asc"
+      }
+    },
+    {
+      "timestamp": {
+        "order": "asc"
+      }
+    }
+  ],
+  "_source": {
+    "includes": [
+      "sensor_id",
+      "timestamp",
+      "temperature"
+    ]
+  }
+}
+```
+
+#### **Performance Considerations**
+
+| Consideration           | Recommendation                                           | Impact            |
+|-------------------------|----------------------------------------------------------|-------------------|
+| **ARRAY_AGG Size**      | Use `LIMIT` in `OVER` clause to control array size       | Memory usage      |
+| **Multiple Partitions** | Different partition keys require separate aggregations   | Query complexity  |
+| **ORDER BY in OVER**    | Adds sorting overhead; use only when necessary           | Performance       |
+| **Large Result Sets**   | Use `scrollAs[T]` instead of `searchAs[T]` for streaming | Memory efficiency |
+| **In-Memory Join**      | Partition keys should have reasonable cardinality        | Memory & CPU      |
+| **Mixed Queries**       | Non-aggregated fields require additional search query    | Network & latency |
+
+#### **Best Practices**
+
+✅ **Minimize Partition Keys**: Use the smallest set of partition keys necessary  
+✅ **Reuse Partitions**: Group window functions with the same `PARTITION BY` clause  
+✅ **Limit Array Sizes**: Control `ARRAY_AGG` result size to prevent memory issues  
+✅ **Use Streaming**: Prefer `scrollAs[T]` for large datasets  
+✅ **Index Partition Fields**: Ensure partition key fields are indexed in Elasticsearch  
+✅ **Monitor Memory**: Track memory usage when joining large result sets
+
+#### **Limitations**
+
+⚠️ **ROWS/RANGE Frames**: Not yet supported  
+⚠️ **RANK/ROW_NUMBER**: Not yet supported  
+⚠️ **LEAD/LAG**: Not yet supported  
+⚠️ **NTILE**: Not yet supported
+⚠️ **Partition Cardinality**: Very high cardinality partitions may impact performance
+
+📖 **[Full Window Functions Documentation](documentation/sql/functions_aggregate.md)**
+
+---
+
+### **3.3. Compile-Time SQL Query Validation**
 
 SoftClient4ES provides **compile-time validation** for SQL queries used with type-safe methods like `searchAs[T]` and `scrollAs[T]`. This ensures that your queries are compatible with your Scala case classes **before your code even runs**, preventing runtime deserialization errors.
 
@@ -787,18 +1471,18 @@ ThisBuild / resolvers ++= Seq(
 
 // For Elasticsearch 6
 // Using Jest client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.14.0
 // Or using Rest High Level client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.14.0
 
 // For Elasticsearch 7
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.14.0
 
 // For Elasticsearch 8
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.14.0
 
 // For Elasticsearch 9
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.13.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.14.0
 ```
 
 ### **Quick Example**

@@ -16,7 +16,13 @@
 
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.function.aggregate.{MAX, MIN}
+import app.softnetwork.elastic.sql.function.aggregate.{
+  AggregateFunction,
+  COUNT,
+  MAX,
+  MIN,
+  WindowFunction
+}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.operator._
@@ -67,6 +73,9 @@ package object sql {
     def nullable: Boolean = !system
     def dateMathScript: Boolean = false
     def isTemporal: Boolean = out.isInstanceOf[SQLTemporal]
+    def isAggregation: Boolean = false
+    def hasAggregation: Boolean = isAggregation
+    def shouldBeScripted: Boolean = false
   }
 
   trait TokenValue extends Token {
@@ -622,12 +631,14 @@ package object sql {
     def bucket: Option[Bucket]
     def hasBucket: Boolean = bucket.isDefined
 
-    def allMetricsPath: Map[String, String] = {
-      if (aggregation) {
-        val metricName = aliasOrName
-        Map(metricName -> metricName)
-      } else {
-        Map.empty
+    lazy val aggregations: Seq[AggregateFunction] = FunctionUtils.aggregateFunctions(this)
+
+    def bucketPath: String
+
+    lazy val allMetricsPath: Map[String, String] = {
+      metricName match {
+        case Some(name) => Map(name -> name)
+        case _          => Map.empty
       }
     }
 
@@ -664,7 +675,7 @@ package object sql {
 
     lazy val aliasOrName: String = fieldAlias.getOrElse(name)
 
-    def path: String =
+    lazy val path: String =
       nestedElement match {
         case Some(ne) =>
           name.split("\\.") match {
@@ -674,13 +685,32 @@ package object sql {
         case None => name
       }
 
-    def paramName: String =
-      if (aggregation && functions.size == 1) s"params.$aliasOrName"
+    lazy val paramName: String =
+      if (isAggregation && functions.size == 1) s"params.${metricName.getOrElse(aliasOrName)}"
       else if (path.nonEmpty)
         s"doc['$path'].value"
       else ""
 
-    def script: Option[String] =
+    lazy val metricName: Option[String] =
+      aggregateFunction match {
+        case Some(af) =>
+          af match {
+            case COUNT =>
+              aliasOrName match {
+                case "*" =>
+                  if (distinct) {
+                    Some(s"count_distinct_all")
+                  } else {
+                    Some(s"count_all")
+                  }
+                case _ => Some(aliasOrName)
+              }
+            case _ => Some(aliasOrName)
+          }
+        case _ => None
+      }
+
+    lazy val script: Option[String] =
       if (isTemporal) {
         var orderedFunctions = FunctionUtils.transformFunctions(this).reverse
 
@@ -733,8 +763,7 @@ package object sql {
     def checkNotNull: String =
       if (path.isEmpty) ""
       else
-        s"(!doc.containsKey('$path') || doc['$path'].empty ? $nullValue : doc['$path'].value${painlessMethods
-          .mkString("")})"
+        s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
 
     override def painless(context: Option[PainlessContext]): String = {
       val base =
@@ -762,7 +791,7 @@ package object sql {
     override def param: String = paramName
 
     private[this] var _nullable =
-      this.name.nonEmpty && (!aggregation || functions.size > 1)
+      this.name.nonEmpty && (!isAggregation || functions.size > 1)
 
     protected def nullable_=(b: Boolean): Unit = {
       _nullable = b
@@ -775,7 +804,7 @@ package object sql {
       this
     }
 
-    override def value: String =
+    override lazy val value: String =
       script match {
         case Some(s) => s
         case _       => painless(None)
@@ -785,6 +814,14 @@ package object sql {
       case g: GenericIdentifier => g.copy(nested = nested)
       case _                    => this
     }
+
+    lazy val windows: Option[WindowFunction] =
+      functions.collectFirst { case th: WindowFunction => th }
+
+    def hasWindow: Boolean = windows.nonEmpty
+
+    def isWindowing: Boolean = windows.exists(_.partitionBy.nonEmpty)
+
   }
 
   object Identifier {
@@ -805,7 +842,8 @@ package object sql {
     functions: List[Function] = List.empty,
     fieldAlias: Option[String] = None,
     bucket: Option[Bucket] = None,
-    nestedElement: Option[NestedElement] = None
+    nestedElement: Option[NestedElement] = None,
+    bucketPath: String = ""
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
@@ -817,6 +855,19 @@ package object sql {
     }
 
     def update(request: SQLSearchRequest): Identifier = {
+      val bucketPath: String =
+        request.groupBy match {
+          case Some(gb) =>
+            BucketPath(
+              gb.buckets.map(b => request.bucketNames.getOrElse(b.identifier.identifierName, b))
+            ).path
+          case None /*if this.bucketPath.isEmpty*/ =>
+            aggregateFunction match {
+              case Some(af) => af.bucketPath
+              case _        => this.bucketPath
+            }
+          //case _ => this.bucketPath
+        }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
       if (request.tableAliases.values.toSeq.contains(tableAlias)) {
@@ -835,7 +886,8 @@ package object sql {
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
-                nestedElement = nestedElement
+                nestedElement = nestedElement,
+                bucketPath = bucketPath
               )
               .withFunctions(this.updateFunctions(request))
           case Some(tuple) if nested =>
@@ -845,7 +897,8 @@ package object sql {
                 name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket)
+                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                bucketPath = bucketPath
               )
               .withFunctions(this.updateFunctions(request))
           case None if nested =>
@@ -853,7 +906,8 @@ package object sql {
               .copy(
                 tableAlias = Some(tableAlias),
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket)
+                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                bucketPath = bucketPath
               )
               .withFunctions(this.updateFunctions(request))
           case _ =>
@@ -861,14 +915,16 @@ package object sql {
               tableAlias = Some(tableAlias),
               name = parts.tail.mkString("."),
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-              bucket = request.bucketNames.get(identifierName).orElse(bucket)
+              bucket = request.bucketNames.get(identifierName).orElse(bucket),
+              bucketPath = bucketPath
             )
         }
       } else {
         this
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-            bucket = request.bucketNames.get(identifierName).orElse(bucket)
+            bucket = request.bucketNames.get(identifierName).orElse(bucket),
+            bucketPath = bucketPath
           )
           .withFunctions(this.updateFunctions(request))
       }

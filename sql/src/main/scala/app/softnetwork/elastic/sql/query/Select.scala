@@ -16,7 +16,12 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, TopHitsAggregation}
+import app.softnetwork.elastic.sql.function.aggregate.{
+  AggregateFunction,
+  BucketScriptAggregation,
+  COUNT,
+  WindowFunction
+}
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain, FunctionUtils}
 import app.softnetwork.elastic.sql.{
   asString,
@@ -40,7 +45,8 @@ case class Field(
     with FunctionChain
     with PainlessScript
     with DateMathScript {
-  def isScriptField: Boolean = functions.nonEmpty && !aggregation && identifier.bucket.isEmpty
+  def isScriptField: Boolean =
+    functions.nonEmpty && !hasAggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String = {
     if (identifier.nested) {
@@ -64,19 +70,16 @@ case class Field(
 
   override def functions: List[Function] = identifier.functions
 
-  lazy val topHits: Option[TopHitsAggregation] =
-    functions.collectFirst { case th: TopHitsAggregation => th }
-
   def update(request: SQLSearchRequest): Field = {
-    topHits match {
+    identifier.windows match {
       case Some(th) =>
-        val topHitsAggregation = th.update(request)
-        val identifier = topHitsAggregation.identifier
+        val windowFunction = th.update(request)
+        val identifier = windowFunction.identifier
         identifier.functions match {
           case _ :: tail =>
-            this.copy(identifier = identifier.withFunctions(functions = topHitsAggregation +: tail))
+            this.copy(identifier = identifier.withFunctions(functions = windowFunction +: tail))
           case _ =>
-            this.copy(identifier = identifier.withFunctions(functions = List(topHitsAggregation)))
+            this.copy(identifier = identifier.withFunctions(functions = List(windowFunction)))
         }
       case None => this.copy(identifier = identifier.update(request))
     }
@@ -93,6 +96,8 @@ case class Field(
   lazy val nested: Boolean = identifier.nested
 
   lazy val path: String = identifier.path
+
+  def isBucketScript: Boolean = !isAggregation && hasAggregation
 }
 
 case object Except extends Expr("except") with TokenRegex
@@ -134,74 +139,99 @@ case class SQLAggregation(
   aggType: AggregateFunction,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None,
-  buckets: Seq[String] = Seq.empty
+  bucketPath: String = ""
 ) {
   val nested: Boolean = nestedElement.nonEmpty
   val multivalued: Boolean = aggType.multivalued
+  val isGlobalMetric: Boolean =
+    distinct && (aggType match {
+      case COUNT => true
+      case _     => false
+    })
+  val bucketRoot: String =
+    bucketPath.split(">").toSeq match {
+      case Nil => ""
+      case seq => seq.head
+    }
 }
 
 object SQLAggregation {
   def fromField(field: Field, request: SQLSearchRequest): Option[SQLAggregation] = {
-    field.aggregateFunction.map { aggType =>
-      import field._
-      val sourceField = identifier.path
+    import field._
 
-      val direction = request.sorts.get(identifier.identifierName)
+    val aggType = aggregateFunction match {
+      case Some(agg) => agg
+      case None if field.isBucketScript =>
+        BucketScriptAggregation(identifier).update(request)
+      case _ => return None
+    }
 
-      val _field = fieldAlias match {
-        case Some(alias) => alias.alias
-        case _           => sourceField
-      }
+    val sourceField = identifier.path
 
-      val distinct = identifier.distinct
+    val direction = request.sorts.get(identifier.identifierName)
 
-      val aggName = {
-        if (fieldAlias.isDefined)
-          _field
-        else if (distinct)
-          s"${aggType}_distinct_${sourceField.replace(".", "_")}"
-        else {
-          aggType match {
-            case th: TopHitsAggregation =>
-              s"${th.topHits.sql.toLowerCase}_${sourceField.replace(".", "_")}"
-            case _ =>
-              s"${aggType}_${sourceField.replace(".", "_")}"
+    val _field = fieldAlias match {
+      case Some(alias) => alias.alias
+      case _           => sourceField
+    }
 
-          }
+    val distinct = identifier.distinct
+
+    val aggName = {
+      if (fieldAlias.isDefined)
+        _field
+      else if (distinct)
+        s"${aggType}_distinct_${sourceField.replace(".", "_")}"
+      else {
+        aggType match {
+          case th: WindowFunction =>
+            s"${th.window.sql.toLowerCase}_${sourceField.replace(".", "_")}"
+          case _ =>
+            s"${aggType}_${sourceField.replace(".", "_")}"
+
         }
       }
+    }
 
-      var aggPath = Seq[String]()
+    var aggPath = Seq[String]()
 
-      val (aggFuncs, _) = FunctionUtils.aggregateAndTransformFunctions(identifier)
+    val (aggFuncs, _) = FunctionUtils.aggregateAndTransformFunctions(identifier)
 
+    if (!isBucketScript)
       require(aggFuncs.size == 1, s"Multiple aggregate functions not supported: $aggFuncs")
 
-      val nestedElement = identifier.nestedElement
+    val nestedElement = identifier.nestedElement
 
-      val nestedElements: Seq[NestedElement] =
-        nestedElement.map(n => NestedElements.buildNestedTrees(Seq(n))).getOrElse(Nil)
+    val nestedElements: Seq[NestedElement] =
+      nestedElement.map(n => NestedElements.buildNestedTrees(Seq(n))).getOrElse(Nil)
 
-      nestedElements match {
-        case Nil =>
-          aggPath ++= Seq(aggName)
-        case nestedElements =>
-          def buildNested(n: NestedElement): Unit = {
-            aggPath ++= Seq(n.innerHitsName)
-            val children = n.children
-            if (children.nonEmpty) {
-              children.map(buildNested)
-            }
+    nestedElements match {
+      case Nil =>
+        aggPath ++= Seq(aggName)
+      case nestedElements =>
+        def buildNested(n: NestedElement): Unit = {
+          aggPath ++= Seq(n.innerHitsName)
+          val children = n.children
+          if (children.nonEmpty) {
+            children.map(buildNested)
           }
-          val root = nestedElements.head
-          buildNested(root)
-          request.having match {
-            case Some(_) => aggPath ++= Seq("filtered_agg")
-            case _       =>
-          }
-          aggPath ++= Seq(aggName)
+        }
+        val root = nestedElements.head
+        buildNested(root)
+        request.having match {
+          case Some(_) => aggPath ++= Seq("filtered_agg")
+          case _       =>
+        }
+        aggPath ++= Seq(aggName)
+    }
+
+    val bucketPath =
+      aggType.bucketPath match {
+        case paths if paths.isEmpty => identifier.bucketPath
+        case other                  => other
       }
 
+    Some(
       SQLAggregation(
         aggPath.mkString("."),
         _field,
@@ -209,9 +239,9 @@ object SQLAggregation {
         distinct = distinct,
         aggType = aggType,
         direction = direction,
-        nestedElement = field.identifier.nestedElement,
-        buckets = request.buckets.map { _.name }
+        nestedElement = identifier.nestedElement,
+        bucketPath = bucketPath
       )
-    }
+    )
   }
 }

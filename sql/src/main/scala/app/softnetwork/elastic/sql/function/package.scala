@@ -37,6 +37,8 @@ package object function {
 
   trait FunctionWithIdentifier extends Function {
     def identifier: Identifier
+
+    override def shouldBeScripted: Boolean = identifier.shouldBeScripted
   }
 
   trait FunctionWithValue[+T] extends Function with TokenValue {
@@ -57,6 +59,61 @@ package object function {
       aggregateAndTransformFunctions(chain)._2
     }
 
+    def aggregateFunctions(
+      fun: Function,
+      acc: Seq[AggregateFunction] = Seq.empty
+    ): Seq[AggregateFunction] = {
+      fun match {
+        case fwi: FunctionWithIdentifier => aggregateFunctions(fwi.identifier, acc)
+        case fc: FunctionChain =>
+          fc.functions.foldLeft(acc) {
+            case (innerAcc, af: AggregateFunction) => innerAcc :+ af
+            case (innerAcc, i: FunctionWithIdentifier) =>
+              aggregateFunctions(i.identifier, innerAcc)
+            case (innerAcc, fc: FunctionChain)          => aggregateFunctions(fc, innerAcc)
+            case (innerAcc, b: BinaryFunction[_, _, _]) => aggregateFunctions(b, innerAcc)
+            case (innerAcc, _)                          => innerAcc
+          }
+        case b: BinaryFunction[_, _, _] =>
+          val leftAcc = b.left match {
+            case f: Function => aggregateFunctions(f, acc)
+            case _           => acc
+          }
+          b.right match {
+            case f: Function => aggregateFunctions(f, leftAcc)
+            case _           => leftAcc
+          }
+        case _ => acc
+      }
+    }
+
+    def aggregateIdentifiers(
+      fun: Function,
+      acc: Seq[FunctionChain] = Seq.empty
+    ): Seq[FunctionChain] = {
+      fun match {
+        case fwi: FunctionWithIdentifier => aggregateIdentifiers(fwi.identifier, acc)
+        case fc: FunctionChain =>
+          fc.functions.foldLeft(acc) {
+            case (innerAcc, _: AggregateFunction) => innerAcc :+ fc
+            case (innerAcc, i: FunctionWithIdentifier) =>
+              aggregateIdentifiers(i.identifier, innerAcc)
+            case (innerAcc, fc: FunctionChain)          => aggregateIdentifiers(fc, innerAcc)
+            case (innerAcc, b: BinaryFunction[_, _, _]) => aggregateIdentifiers(b, innerAcc)
+            case (innerAcc, _)                          => innerAcc
+          }
+        case b: BinaryFunction[_, _, _] =>
+          val leftAcc = b.left match {
+            case f: Function => aggregateIdentifiers(f, acc)
+            case _           => acc
+          }
+          b.right match {
+            case f: Function => aggregateIdentifiers(f, leftAcc)
+            case _           => leftAcc
+          }
+        case _ => acc
+      }
+    }
   }
 
   trait FunctionChain extends Function {
@@ -93,7 +150,9 @@ package object function {
 
     lazy val aggregateFunction: Option[AggregateFunction] = aggregations.headOption
 
-    lazy val aggregation: Boolean = aggregateFunction.isDefined
+    override def isAggregation: Boolean = aggregateFunction.isDefined
+
+    override def hasAggregation: Boolean = functions.exists(_.hasAggregation)
 
     override def in: SQLType = functions.lastOption.map(_.in).getOrElse(super.in)
 
@@ -137,6 +196,9 @@ package object function {
         case f => f
       }
     }
+
+    override def shouldBeScripted: Boolean = functions.exists(_.shouldBeScripted)
+
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
@@ -275,6 +337,10 @@ package object function {
     override def args: List[PainlessScript] = List(left, right)
 
     override def nullable: Boolean = left.nullable || right.nullable
+
+    override def hasAggregation: Boolean = left.hasAggregation || right.hasAggregation
+
+    override def shouldBeScripted: Boolean = true
   }
 
   trait TransformFunction[In <: SQLType, Out <: SQLType] extends FunctionN[In, Out] {
@@ -310,6 +376,8 @@ package object function {
             s"$base${painless(context)}"
       }
     }
+
+    override def shouldBeScripted: Boolean = true
   }
 
 }

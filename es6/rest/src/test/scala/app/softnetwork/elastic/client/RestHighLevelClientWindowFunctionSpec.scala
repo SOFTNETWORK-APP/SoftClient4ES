@@ -1,0 +1,3 @@
+package app.softnetwork.elastic.client
+
+class RestHighLevelClientWindowFunctionSpec extends WindowFunctionSpec

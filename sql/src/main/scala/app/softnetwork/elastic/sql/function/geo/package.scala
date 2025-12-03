@@ -152,7 +152,7 @@ package object geo {
         identifiers.zipWithIndex
           .map { case (a, i) =>
             val name = a.name
-            s"def arg$i = (!doc.containsKey('$name') || doc['$name'].empty ? ${a.nullValue} : doc['$name']);"
+            s"def arg$i = (doc['$name'].size() == 0 ? ${a.nullValue} : doc['$name']);"
           }
           .mkString(" ")
 

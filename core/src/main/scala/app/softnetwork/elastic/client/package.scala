@@ -34,23 +34,22 @@ package object client extends SerializationApi {
     */
   type JSONQuery = String
 
-  /** Type alias for JSON results
-    */
-  type JSONResults = String
-
   /** Elastic response case class
+    * @param sql
+    *   - the SQL query if any
     * @param query
     *   - the JSON query
     * @param results
-    *   - the JSON results
+    *   - the results as a sequence of rows
     * @param fieldAliases
     *   - the field aliases used
     * @param aggregations
     *   - the aggregations expected
     */
   case class ElasticResponse(
+    sql: Option[String] = None,
     query: JSONQuery,
-    results: JSONResults,
+    results: Seq[Map[String, Any]],
     fieldAliases: Map[String, String],
     aggregations: Map[String, ClientAggregation]
   )
@@ -69,9 +68,35 @@ package object client extends SerializationApi {
     * @param types
     *   - the target types @deprecated types are deprecated in ES 7+
     */
-  case class ElasticQuery(query: JSONQuery, indices: Seq[String], types: Seq[String] = Seq.empty)
+  case class ElasticQuery(
+    query: JSONQuery,
+    indices: Seq[String],
+    types: Seq[String] = Seq.empty,
+    sql: Option[String] = None
+  ) {
+    override def toString: String = s"""ElasticQuery:
+        |  Indices: ${indices.mkString(",")}
+        |  Types: ${types.mkString(",")}
+        |  SQL: ${sql.getOrElse("")}
+        |  Query: $query
+        |""".stripMargin
+  }
 
-  case class ElasticQueries(queries: List[ElasticQuery])
+  case class ElasticQueries(queries: List[ElasticQuery], sql: Option[String] = None) {
+    val multiQuery: String = queries.map(_.query).mkString("\n")
+
+    val sqlQuery: String = sql
+      .orElse(
+        Option(queries.flatMap(_.sql).mkString("\nUNION ALL\n"))
+      )
+      .getOrElse("")
+
+    override def toString: String = s"""
+        |ElasticQueries:
+        |  SQL: ${sql.getOrElse(sqlQuery)}
+        |  Multiquery: $multiQuery
+        |""".stripMargin
+  }
 
   /** Retry configuration
     */
@@ -133,11 +158,21 @@ package object client extends SerializationApi {
     * @param distinct
     *   - when the aggregation is multivalued define if its values should be returned distinct or
     *     not
+    * @param sourceField
+    *   - the source field of the aggregation
+    * @param windowing
+    *   - whether the aggregation is a window function with partitioning
+    * @param bucketPath
+    *   - the bucket path for pipeline aggregations
     */
   case class ClientAggregation(
     aggName: String,
     aggType: AggregationType.AggregationType,
-    distinct: Boolean
+    distinct: Boolean,
+    sourceField: String,
+    windowing: Boolean,
+    bucketPath: String,
+    bucketRoot: String
   ) {
     def multivalued: Boolean = aggType == AggregationType.ArrayAgg
     def singleValued: Boolean = !multivalued
@@ -153,8 +188,21 @@ package object client extends SerializationApi {
       case _: FirstValue => AggregationType.FirstValue
       case _: LastValue  => AggregationType.LastValue
       case _: ArrayAgg   => AggregationType.ArrayAgg
+      case _: CountAgg   => AggregationType.Count
+      case _: MinAgg     => AggregationType.Min
+      case _: MaxAgg     => AggregationType.Max
+      case _: AvgAgg     => AggregationType.Avg
+      case _: SumAgg     => AggregationType.Sum
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
-    ClientAggregation(agg.aggName, aggType, agg.distinct)
+    ClientAggregation(
+      agg.aggName,
+      aggType,
+      agg.distinct,
+      agg.sourceField,
+      agg.aggType.isWindowing,
+      agg.bucketPath,
+      agg.bucketRoot
+    )
   }
 }

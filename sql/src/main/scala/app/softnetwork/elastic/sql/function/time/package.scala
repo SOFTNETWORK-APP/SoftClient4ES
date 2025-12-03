@@ -23,7 +23,6 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   LiteralParam,
   PainlessContext,
-  PainlessParam,
   PainlessScript,
   StringValue,
   TokenRegex
@@ -269,6 +268,9 @@ package object time {
         case _ => super.toPainlessCall(callArgs, context)
       }
     }
+
+    override def shouldBeScripted: Boolean = false
+
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
@@ -497,10 +499,10 @@ package object time {
 
   case class DateParse(identifier: Identifier, format: String)
       extends DateFunction
+      with DateMathScript
       with TransformFunction[SQLVarchar, SQLDate]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat
-      with DateMathScript {
+      with FunctionWithDateTimeFormat {
     override def fun: Option[PainlessScript] = None
 
     override def args: List[PainlessScript] = List(identifier)
@@ -546,6 +548,8 @@ package object time {
     }
 
     override def formatScript: Option[String] = Some(format)
+
+    override def shouldBeScripted: Boolean = true // FIXME
   }
 
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {

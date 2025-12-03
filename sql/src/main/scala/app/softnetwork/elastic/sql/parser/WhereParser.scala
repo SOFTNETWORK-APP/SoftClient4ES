@@ -95,6 +95,7 @@ trait WhereParser {
   private def any_identifier: PackratParser[Identifier] =
     identifierWithArithmeticExpression |
     identifierWithTransformation |
+    identifierWithWindowFunction |
     identifierWithAggregation |
     identifierWithIntervalFunction |
     identifierWithFunction |

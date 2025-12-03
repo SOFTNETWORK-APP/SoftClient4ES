@@ -138,9 +138,9 @@ package object cond {
           callArgs
             .take(values.length - 1)
             .map { arg =>
-              s"${arg.trim} != null ? ${arg.trim}" // TODO check when value is nullable and has functions
+              s"(${arg.trim} != null ? ${arg.trim}" // TODO check when value is nullable and has functions
             }
-            .mkString(" : ") + s" : ${callArgs.last}"
+            .mkString(" : ") + s" : ${callArgs.last})"
       }
 
     override def nullable: Boolean = values.forall(_.nullable)

@@ -27,7 +27,8 @@ package object scroll {
     maxDocuments: Option[Long] = None, // Optional maximum number of documents to retrieve
     preferSearchAfter: Boolean = true, // Prefer search_after over scroll when possible
     metrics: ScrollMetrics = ScrollMetrics(), // Initial scroll metrics
-    retryConfig: RetryConfig = RetryConfig() // Retry configuration
+    retryConfig: RetryConfig = RetryConfig(), // Retry configuration
+    failOnWindowError: Option[Boolean] = None
   )
 
   /** Scroll strategy based on query type
