@@ -40,6 +40,9 @@ trait WindowFunctionSpec
 
   override def client: ElasticClientApi = ElasticClientFactory.create(elasticConfig)
 
+  implicit val localDateOrdering: Ordering[LocalDate] =
+    Ordering.by(_.toEpochDay)
+
   override def beforeAll(): Unit = {
     super.beforeAll()
 
