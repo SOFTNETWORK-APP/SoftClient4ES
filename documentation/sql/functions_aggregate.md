@@ -43,6 +43,7 @@ Count rows or non-null expressions. With `DISTINCT` counts distinct values.
 COUNT(*)
 COUNT(expr)
 COUNT(DISTINCT expr)
+COUNT(*) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
@@ -195,6 +196,7 @@ Sum of values.
 ```sql
 SUM(expr)
 SUM(DISTINCT expr)
+SUM(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
@@ -342,6 +344,7 @@ Average of values.
 ```sql
 AVG(expr)
 AVG(DISTINCT expr)
+AVG(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
@@ -491,6 +494,7 @@ Minimum value in group.
 **Syntax:**
 ```sql
 MIN(expr)
+MIN(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
@@ -618,6 +622,7 @@ Maximum value in group.
 **Syntax:**
 ```sql
 MAX(expr)
+MAX(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
@@ -1075,9 +1080,9 @@ SELECT
   ARRAY_AGG(name) OVER (
     PARTITION BY department 
     ORDER BY hire_date ASC
+    LIMIT 100
   ) AS employees
-FROM emp
-LIMIT 100;
+FROM emp;
 -- Result: employees as an array of name values per department (sorted and limited)
 ```
 
@@ -1192,27 +1197,9 @@ SELECT
   ARRAY_AGG(name) OVER (
     PARTITION BY department 
     ORDER BY hire_date ASC
+    LIMIT 100  -- Important: limits result set size
   ) AS employees
-FROM emp
-LIMIT 100;  -- Important: limits result set size
-```
-
-**Comparison with STRING_AGG (if available):**
-```sql
--- ARRAY_AGG returns array
-SELECT 
-  department,
-  ARRAY_AGG(name) OVER (PARTITION BY department) AS name_array
 FROM emp;
--- Result: ['John', 'Jane', 'Bob']
-
--- STRING_AGG returns string (if supported)
-SELECT 
-  department,
-  STRING_AGG(name, ', ') AS name_string
-FROM emp
-GROUP BY department;
--- Result: 'John, Jane, Bob'
 ```
 
 ---

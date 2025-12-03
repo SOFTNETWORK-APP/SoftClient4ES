@@ -199,6 +199,13 @@ case class BucketNode(
 
   def depth: Int = 1 + (if (children.isEmpty) 0 else children.map(_.depth).max)
 
+  def level: Int = {
+    parent match {
+      case Some(p) => 1 + p.level
+      case None    => 0
+    }
+  }
+
   // Check if the node is a leaf
   def isLeaf: Boolean = children.isEmpty
 
@@ -207,6 +214,10 @@ case class BucketNode(
       case Some(p) => s"${p.bucketPath}>$identifier"
       case None    => identifier
     }
+  }
+
+  def parentBucketPath: Option[String] = {
+    parent.map(_.bucketPath)
   }
 
   def root: BucketNode = {

@@ -14,6 +14,7 @@ GROUP BY
 HAVING  
 ORDER BY  
 OFFSET  
+LIMIT
 
 ## Aliases and type conversion
 AS  
@@ -31,6 +32,7 @@ AVG
 MIN  
 MAX  
 OVER  
+PARTITION BY  
 FIRST_VALUE  
 LAST_VALUE  
 ARRAY_AGG 
@@ -87,22 +89,23 @@ ISNOTNULL
 NULLIF
 
 ## Date/Time/Datetime/Timestamp functions
-YEAR  
-QUARTER  
-MONTH  
-WEEK  
-DAY  
-HOUR  
-MINUTE  
-SECOND  
-MILLISECOND  
-MICROSECOND  
-NANOSECOND  
-EPOCHDAY  
-OFFSET_SECONDS  
-LAST_DAY  
-WEEKDAY  
-YEARDAY  
+[//]: # (YEAR  )
+[//]: # (QUARTER  )
+[//]: # (MONTH  )
+[//]: # (WEEK  )
+[//]: # (DAY  )
+[//]: # (HOUR  )
+[//]: # (MINUTE  )
+[//]: # (SECOND  )
+[//]: # (MILLISECOND  )
+[//]: # (MICROSECOND  )
+[//]: # (NANOSECOND  )
+[//]: # (EPOCHDAY  )
+[//]: # (OFFSET_SECONDS  )
+[//]: # (LAST_DAY  )
+[//]: # (LASTDAY)
+[//]: # (WEEKDAY  )
+[//]: # (YEARDAY  )
 INTERVAL  
 CURRENT_DATE  
 CURDATE  

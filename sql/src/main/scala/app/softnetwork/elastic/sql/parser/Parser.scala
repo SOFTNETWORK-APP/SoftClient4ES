@@ -68,7 +68,9 @@ object Parser
   def apply(
     query: String
   ): Either[ParserError, Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
-    val reader = new PackratReader(new CharSequenceReader(query))
+    val normalizedQuery =
+      query.split("\n").map(_.trim).filterNot(_.isEmpty).filterNot(_.startsWith("--")).mkString(" ")
+    val reader = new PackratReader(new CharSequenceReader(normalizedQuery))
     parse(requests, reader) match {
       case NoSuccess(msg, _) =>
         Console.err.println(msg)
@@ -145,6 +147,7 @@ trait Parser
     "current_datetime",
     "current_timestamp",
     "now",
+    "today",
     "coalesce",
     "nullif",
     "isnull",
@@ -161,33 +164,33 @@ trait Parser
     "datetime_add",
     "datetime_sub",
     "interval",
-    "year",
-    "month",
-    "day",
-    "hour",
-    "minute",
-    "second",
-    "quarter",
-    "char",
-    "string",
-    "byte",
-    "tinyint",
-    "short",
-    "smallint",
-    "int",
-    "integer",
-    "long",
-    "bigint",
-    "real",
-    "float",
-    "double",
+//    "year",
+//    "month",
+//    "day",
+//    "hour",
+//    "minute",
+//    "second",
+//    "quarter",
+//    "char",
+//    "string",
+//    "byte",
+//    "tinyint",
+//    "short",
+//    "smallint",
+//    "int",
+//    "integer",
+//    "long",
+//    "bigint",
+//    "real",
+//    "float",
+//    "double",
     "pi",
-    "boolean",
+//    "boolean",
     "distance",
-    "time",
-    "date",
-    "datetime",
-    "timestamp",
+//    "time",
+//    "date",
+//    "datetime",
+//    "timestamp",
     "and",
     "or",
     "not",
@@ -245,10 +248,10 @@ trait Parser
     "last",
     "array_agg",
     "first_value",
-    "last_value"
-//    "ltrim",
-//    "rtrim",
-//    "replace",
+    "last_value",
+    "ltrim",
+    "rtrim",
+    "replace"
   )
 
   private val identifierRegexStr =

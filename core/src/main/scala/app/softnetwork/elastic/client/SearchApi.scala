@@ -68,7 +68,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           collection.immutable.Seq(single.sources: _*),
           sql = Some(sql.query)
         )
-        if (single.windowFunctions.exists(_.isWindowing))
+        if (single.windowFunctions.exists(_.isWindowing) && single.fields.nonEmpty)
           searchWithWindowEnrichment(sql, single)
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)

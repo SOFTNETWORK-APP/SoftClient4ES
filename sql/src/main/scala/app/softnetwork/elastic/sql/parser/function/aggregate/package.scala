@@ -52,18 +52,18 @@ package object aggregate {
     def partition_by: PackratParser[Seq[Identifier]] =
       PARTITION_BY.regex ~> rep1sep(identifierWithTransformation | identifier, separator)
 
-    private[this] def over: Parser[(Seq[Identifier], Option[OrderBy])] =
-      OVER.regex ~> start ~ partition_by.? ~ orderBy.? <~ end ^^ { case _ ~ pb ~ ob =>
-        (pb.getOrElse(Seq.empty), ob)
+    private[this] def over: Parser[(Seq[Identifier], Option[OrderBy], Option[Limit])] =
+      OVER.regex ~> start ~ partition_by.? ~ orderBy.? ~ limit.? <~ end ^^ { case _ ~ pb ~ ob ~ l =>
+        (pb.getOrElse(Seq.empty), ob, l)
       }
 
     private[this] def window_function(
       windowId: PackratParser[Identifier] = identifier
-    ): PackratParser[(Identifier, Seq[Identifier], Option[OrderBy])] =
+    ): PackratParser[(Identifier, Seq[Identifier], Option[OrderBy], Option[Limit])] =
       start ~ windowId ~ end ~ over.? ^^ { case _ ~ id ~ _ ~ o =>
         o match {
-          case Some((pb, ob)) => (id, pb, ob)
-          case None           => (id, Seq.empty, None)
+          case Some((pb, ob, l)) => (id, pb, ob, l)
+          case None              => (id, Seq.empty, None, None)
         }
       }
 
@@ -91,7 +91,7 @@ package object aggregate {
           top._1,
           top._2,
           top._3.orElse(Option(OrderBy(Seq(FieldSort(top._1, order = None))))),
-          limit = None
+          limit = top._4
         )
       }
 
