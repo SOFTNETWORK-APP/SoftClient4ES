@@ -53,4 +53,4 @@ jobs:
         fail_ci_if_error: false
         verbose: true
     - name: Publish
-      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt '+ publish'
+      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" SCALACTIC_FILL_FILE_PATHNAMES=yes sbt '+ publish'
