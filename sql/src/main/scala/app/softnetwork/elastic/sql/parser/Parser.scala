@@ -69,7 +69,11 @@ object Parser
     query: String
   ): Either[ParserError, Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
     val normalizedQuery =
-      query.split("\n").map(_.trim).filterNot(_.isEmpty).filterNot(_.startsWith("--")).mkString(" ")
+      query
+        .split("\n")
+        .map(_.split("--")(0).trim)
+        .filterNot(w => w.isEmpty || w.startsWith("--"))
+        .mkString(" ")
     val reader = new PackratReader(new CharSequenceReader(normalizedQuery))
     parse(requests, reader) match {
       case NoSuccess(msg, _) =>
