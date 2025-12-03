@@ -470,7 +470,9 @@ case class ProductSalesAnalysis(
   uniqueCustomers: Long          // COUNT DISTINCT OVER
 )
 
-val sqlQuery = """
+// Type-safe execution with compile-time validation
+val results: Source[ProductSalesAnalysis, NotUsed] = 
+  client.scrollAs[ProductSalesAnalysis]("""
   SELECT
     product_id AS productId,
     product_name AS productName,
@@ -505,23 +507,19 @@ val sqlQuery = """
   WHERE sale_date >= '2024-01-01'
   GROUP BY product_id, product_name, DATE_TRUNC('month', sale_date)
   ORDER BY product_id, saleMonth
-"""
-
-// Type-safe execution with compile-time validation
-val results: Source[ProductSalesAnalysis, NotUsed] = 
-  client.scrollAs[ProductSalesAnalysis](sqlQuery)
+""")
 
 results.runWith(Sink.foreach { analysis =>
   println(s"""
     Product: ${analysis.productName} (${analysis.productId})
     Month: ${analysis.saleMonth}
-    Monthly Sales: $${analysis.monthlySales}
-    First Sale: $${analysis.firstSaleAmount}
-    Last Sale: $${analysis.lastSaleAmount}
+    Monthly Sales: ${analysis.monthlySales}
+    First Sale: ${analysis.firstSaleAmount}
+    Last Sale: ${analysis.lastSaleAmount}
     All Sales: ${analysis.allSaleAmounts.mkString("[", ", ", "]")}
-    Total Sales (All Time): $${analysis.totalSales}
-    Average Sale: $${analysis.avgSaleAmount}
-    Price Range: $${analysis.minSaleAmount} - $${analysis.maxSaleAmount}
+    Total Sales (All Time): ${analysis.totalSales}
+    Average Sale: ${analysis.avgSaleAmount}
+    Price Range: ${analysis.minSaleAmount} - ${analysis.maxSaleAmount}
     Sale Count: ${analysis.saleCount}
     Unique Customers: ${analysis.uniqueCustomers}
   """)
@@ -915,6 +913,131 @@ val sqlQuery = """
   WHERE timestamp >= NOW() - INTERVAL 1 HOUR
   ORDER BY sensor_id, timestamp
 """
+```
+
+#### **Example 3: Translation to Elasticsearch DSL**
+
+The SQL query above is decomposed into two Elasticsearch queries:
+
+**Query 1: Window Functions Aggregations**
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "timestamp": {
+              "gte": "now-1H"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 0,
+  "_source": false,
+  "aggs": {
+    "sensorId": {
+      "terms": {
+        "field": "sensor_id",
+        "min_doc_count": 1
+      },
+      "aggs": {
+        "movingAvg": {
+          "avg": {
+            "field": "temperature"
+          }
+        },
+        "minTemp": {
+          "min": {
+            "field": "temperature"
+          }
+        },
+        "maxTemp": {
+          "max": {
+            "field": "temperature"
+          }
+        },
+        "firstReading": {
+          "top_hits": {
+            "size": 1,
+            "sort": [
+              {
+                "timestamp": {
+                  "order": "asc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "temperature"
+              ]
+            }
+          }
+        },
+        "currentReading": {
+          "top_hits": {
+            "size": 1,
+            "sort": [
+              {
+                "timestamp": {
+                  "order": "desc"
+                }
+              }
+            ],
+            "_source": {
+              "includes": [
+                "temperature"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+**Query 2: Main Query (Non-Aggregated Fields)**
+
+Since this query includes non-aggregated fields, a separate search query would be executed:
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "timestamp": {
+              "gte": "now-1H"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "sort": [
+    {
+      "sensorId": {
+        "order": "asc"
+      }
+    },
+    {
+      "timestamp": {
+        "order": "asc"
+      }
+    }
+  ],
+  "_source": {
+    "includes": [
+      "sensor_id",
+      "timestamp",
+      "temperature"
+    ]
+  }
+}
 ```
 
 #### **Performance Considerations**
