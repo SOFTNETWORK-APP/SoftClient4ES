@@ -40,4 +40,5 @@ val avro = Seq(
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
 json4s ++ mockito ++ avro :+ "com.google.code.gson" % "gson" % Versions.gson :+
 "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
+"io.delta" %% "delta-standalone" % "0.6.0" :+
 "org.scalatest" %% "scalatest" % Versions.scalatest % Test

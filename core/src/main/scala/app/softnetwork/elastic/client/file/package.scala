@@ -3,6 +3,8 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.stream.scaladsl.Source
 import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.core.{JsonParser, JsonToken}
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.databind.{
   DeserializationFeature,
   JsonNode,
@@ -17,12 +19,16 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.parquet.avro.AvroParquetReader
 import org.apache.parquet.hadoop.ParquetReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import io.delta.standalone.{DeltaLog, Snapshot}
+import io.delta.standalone.data.{CloseableIterator, RowRecord}
+import io.delta.standalone.types._
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.io.{BufferedReader, InputStream, InputStreamReader}
-import scala.concurrent.{blocking, ExecutionContext}
+import scala.concurrent.{blocking, ExecutionContext, Future}
 import scala.io.{Source => IoSource}
 import scala.util.{Failure, Success, Try}
+import scala.jdk.CollectionConverters._
 
 package object file {
 
@@ -38,6 +44,14 @@ package object file {
 
   case object Json extends FileFormat {
     override def name: String = "JSON"
+  }
+
+  case object JsonArray extends FileFormat {
+    override def name: String = "JSON Array"
+  }
+
+  case object Delta extends FileFormat {
+    override def name: String = "Delta Lake"
   }
 
   case object Unknown extends FileFormat {
@@ -370,22 +384,621 @@ package object file {
     }
   }
 
+  /** Source for JSON Array files (single array containing all documents) Format:
+    * [{"id":1},{"id":2},{"id":3}]
+    */
+  object JsonArrayFileSource extends FileSource {
+
+    override def format: FileFormat = JsonArray
+
+    /** Reads a JSON Array file and streams each element
+      */
+    override def fromFile(
+      filePath: String,
+      bufferSize: Int = 500
+    )(implicit
+      ec: ExecutionContext,
+      conf: Configuration = hadoopConfiguration
+    ): Source[String, NotUsed] = {
+
+      // Validate file before processing
+      validateFile(filePath)
+
+      var elementCount = 0L
+      val startTime = System.currentTimeMillis()
+
+      Source
+        .unfoldResource[String, (BufferedReader, JsonParser)](
+          // Create: Open the file and JSON parser
+          create = () => {
+            logger.info(s"📂 Opening JSON Array file: $filePath")
+            Try {
+              val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+              val reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
+              val factory = mapper.getFactory
+              val parser = factory.createParser(reader)
+
+              // Vérifier que c'est bien un array
+              if (parser.nextToken() != JsonToken.START_ARRAY) {
+                throw new IllegalArgumentException(s"File is not a JSON array: $filePath")
+              }
+
+              (reader, parser)
+            } match {
+              case Success(result) => result
+              case Failure(ex) =>
+                logger.error(s"❌ Failed to open JSON Array file: $filePath", ex)
+                throw ex
+            }
+          },
+
+          // Read: Read the next JSON object from the array
+          read = { case (_, parser) =>
+            blocking {
+              Try {
+                if (parser.nextToken() == JsonToken.START_OBJECT) {
+                  elementCount += 1
+                  if (elementCount % 10000 == 0) {
+                    val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                    val throughput = elementCount / elapsed
+                    logger.info(
+                      f"📊 Read $elementCount elements from JSON Array ($throughput%.2f elements/sec)"
+                    )
+                  }
+
+                  // Read the full object
+                  val node = mapper.readTree(parser)
+                  Some(mapper.writeValueAsString(node))
+                } else {
+                  val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                  logger.info(
+                    s"✅ Finished reading JSON Array: $elementCount elements in ${elapsed}s"
+                  )
+                  None
+                }
+              } match {
+                case Success(result) => result
+                case Failure(ex) =>
+                  logger.error(s"❌ Error reading JSON Array element at position $elementCount", ex)
+                  None
+              }
+            }
+          },
+
+          // Close: Close parser and reader
+          close = { case (reader, parser) =>
+            Try {
+              parser.close()
+              reader.close()
+            } match {
+              case Success(_) => logger.debug(s"🔒 Closed JSON Array reader for: $filePath")
+              case Failure(ex) =>
+                logger.warn(s"⚠️  Failed to close JSON Array reader: ${ex.getMessage}")
+            }
+          }
+        )
+        .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
+    }
+
+    /** Alternative: Load entire array in memory (use for small files only!)
+      */
+    def fromFileInMemory(
+      filePath: String,
+      bufferSize: Int = 500
+    )(implicit
+      ec: ExecutionContext,
+      conf: Configuration = hadoopConfiguration
+    ): Source[String, NotUsed] = {
+
+      validateFile(filePath)
+
+      logger.info(s"📂 Loading JSON Array file in memory: $filePath")
+
+      Source
+        .future(Future {
+          blocking {
+            val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+            try {
+              val arrayNode = mapper.readTree(is)
+              if (!arrayNode.isArray) {
+                throw new IllegalArgumentException(s"File is not a JSON array: $filePath")
+              }
+
+              import scala.jdk.CollectionConverters._
+              arrayNode.elements().asScala.map(node => mapper.writeValueAsString(node)).toList
+            } finally {
+              is.close()
+            }
+          }
+        })
+        .mapConcat(identity)
+        .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
+    }
+  }
+
+  /** Source for Delta Lake files using Delta Standalone
+    */
+  object DeltaFileSource extends FileSource {
+
+    override def format: FileFormat = Delta
+
+    override def fromFile(
+      filePath: String,
+      bufferSize: Int = 500
+    )(implicit
+      ec: ExecutionContext,
+      conf: Configuration = hadoopConfiguration
+    ): Source[String, NotUsed] = {
+
+      validateFile(filePath)
+
+      var rowCount = 0L
+      val startTime = System.currentTimeMillis()
+
+      Source
+        .unfoldResource[String, CloseableIterator[RowRecord]](
+          create = () => {
+            logger.info(s"📂 Opening Delta Lake table: $filePath")
+            Try {
+              val deltaLog = DeltaLog.forTable(conf, filePath)
+              val snapshot = deltaLog.snapshot()
+
+              logger.info(
+                s"📊 Delta table version: ${snapshot.getVersion}, " +
+                s"files: ${snapshot.getAllFiles.size()}"
+              )
+
+              snapshot.open()
+            } match {
+              case Success(result) => result
+              case Failure(ex) =>
+                logger.error(s"❌ Failed to open Delta Lake table: $filePath", ex)
+                throw ex
+            }
+          },
+          read = iterator =>
+            blocking {
+              Try {
+                if (iterator.hasNext) {
+                  rowCount += 1
+                  if (rowCount % 10000 == 0) {
+                    val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                    val throughput = rowCount / elapsed
+                    logger.info(f"📊 Read $rowCount rows from Delta ($throughput%.2f rows/sec)")
+                  }
+
+                  val row = iterator.next()
+                  Some(rowRecordToJson(row))
+                } else {
+                  val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                  logger.info(s"✅ Finished reading Delta table: $rowCount rows in ${elapsed}s")
+                  None
+                }
+              } match {
+                case Success(result) => result
+                case Failure(ex) =>
+                  logger.error(s"❌ Error reading Delta row at position $rowCount", ex)
+                  None
+              }
+            },
+          close = iterator =>
+            Try(iterator.close()) match {
+              case Success(_) => logger.debug(s"🔒 Closed Delta reader for: $filePath")
+              case Failure(ex) =>
+                logger.warn(s"⚠️  Failed to close Delta reader: ${ex.getMessage}")
+            }
+        )
+        .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
+    }
+
+    /** Convert Delta Standalone RowRecord to JSON string Utilise l'API réelle: getList/getMap
+      * retournent des java.util collections
+      */
+    private def rowRecordToJson(row: RowRecord): String = {
+      import com.fasterxml.jackson.databind.node.ObjectNode
+
+      val objectNode = mapper.createObjectNode()
+      val schema = row.getSchema
+      val fields = schema.getFields
+
+      fields.foreach { field =>
+        val fieldName = field.getName
+        val fieldType = field.getDataType
+
+        if (row.isNullAt(fieldName)) {
+          objectNode.putNull(fieldName)
+        } else {
+          addValueToNode(objectNode, fieldName, row, fieldType)
+        }
+      }
+
+      mapper.writeValueAsString(objectNode)
+    }
+
+    /** Add typed value to Jackson ObjectNode
+      */
+    private def addValueToNode(
+      node: ObjectNode,
+      fieldName: String,
+      row: RowRecord,
+      dataType: DataType
+    ): Unit = {
+
+      Try {
+        dataType match {
+          case _: StringType =>
+            node.put(fieldName, row.getString(fieldName))
+
+          case _: IntegerType =>
+            node.put(fieldName, row.getInt(fieldName))
+
+          case _: ByteType =>
+            node.put(fieldName, row.getByte(fieldName).toInt)
+
+          case _: ShortType =>
+            node.put(fieldName, row.getShort(fieldName).toInt)
+
+          case _: LongType =>
+            node.put(fieldName, row.getLong(fieldName))
+
+          case _: FloatType =>
+            node.put(fieldName, row.getFloat(fieldName))
+
+          case _: DoubleType =>
+            node.put(fieldName, row.getDouble(fieldName))
+
+          case _: BooleanType =>
+            node.put(fieldName, row.getBoolean(fieldName))
+
+          case _: DecimalType =>
+            node.put(fieldName, row.getBigDecimal(fieldName))
+
+          case _: DateType =>
+            // Date stocké comme Int (jours depuis epoch)
+            val dateValue = row.getInt(fieldName)
+            val date = java.time.LocalDate.ofEpochDay(dateValue.toLong)
+            node.put(fieldName, date.toString)
+
+          case _: TimestampType =>
+            // Timestamp stocké comme Long (microsecondes depuis epoch)
+            val timestampMicros = row.getLong(fieldName)
+            val instant = java.time.Instant.ofEpochMilli(timestampMicros / 1000)
+            node.put(fieldName, instant.toString)
+
+          case arrayType: ArrayType =>
+            val arrayNode = node.putArray(fieldName)
+            // getList retourne java.util.List[Nothing] - on le traite comme Object
+            val list = row.getList(fieldName).asInstanceOf[java.util.List[Any]]
+
+            list.asScala.foreach { element =>
+              if (element == null) {
+                arrayNode.addNull()
+              } else {
+                addElementToArray(arrayNode, element, arrayType.getElementType)
+              }
+            }
+
+          case structType: StructType =>
+            val nestedNode = node.putObject(fieldName)
+            val nestedRow = row.getRecord(fieldName)
+            val nestedFields = structType.getFields
+
+            nestedFields.foreach { nestedField =>
+              val nestedFieldName = nestedField.getName
+              val nestedFieldType = nestedField.getDataType
+
+              if (nestedRow.isNullAt(nestedFieldName)) {
+                nestedNode.putNull(nestedFieldName)
+              } else {
+                addValueToNode(nestedNode, nestedFieldName, nestedRow, nestedFieldType)
+              }
+            }
+
+          case mapType: MapType =>
+            val mapNode = node.putObject(fieldName)
+            // getMap retourne java.util.Map[Nothing, Nothing] - on le traite comme Object
+            val map = row.getMap(fieldName).asInstanceOf[java.util.Map[Any, Any]]
+
+            map.asScala.foreach { case (key, value) =>
+              val keyStr = key.toString
+              if (value == null) {
+                mapNode.putNull(keyStr)
+              } else {
+                addElementToObject(mapNode, keyStr, value, mapType.getValueType)
+              }
+            }
+
+          case _: BinaryType =>
+            val bytes = row.getBinary(fieldName)
+            node.put(fieldName, java.util.Base64.getEncoder.encodeToString(bytes))
+
+          case _ =>
+            // Fallback: convertir en string
+            logger.warn(s"Unsupported data type for field $fieldName: ${dataType.getTypeName}")
+            node.put(fieldName, "")
+        }
+      } match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"Error processing field $fieldName: ${ex.getMessage}", ex)
+          node.put(fieldName, "")
+      }
+    }
+
+    /** Add element to JSON array node
+      */
+    private def addElementToArray(
+      arrayNode: com.fasterxml.jackson.databind.node.ArrayNode,
+      element: Any,
+      elementType: DataType
+    ): Unit = {
+
+      elementType match {
+        case _: StringType =>
+          arrayNode.add(element.toString)
+
+        case _: IntegerType | _: ByteType | _: ShortType =>
+          arrayNode.add(element.asInstanceOf[Number].intValue())
+
+        case _: LongType =>
+          arrayNode.add(element.asInstanceOf[Number].longValue())
+
+        case _: FloatType =>
+          arrayNode.add(element.asInstanceOf[Number].floatValue())
+
+        case _: DoubleType =>
+          arrayNode.add(element.asInstanceOf[Number].doubleValue())
+
+        case _: BooleanType =>
+          arrayNode.add(element.asInstanceOf[Boolean])
+
+        case _: DecimalType =>
+          arrayNode.add(element.asInstanceOf[java.math.BigDecimal])
+
+        case _: DateType =>
+          val days = element.asInstanceOf[Number].intValue()
+          val date = java.time.LocalDate.ofEpochDay(days.toLong)
+          arrayNode.add(date.toString)
+
+        case _: TimestampType =>
+          val micros = element.asInstanceOf[Number].longValue()
+          val instant = java.time.Instant.ofEpochMilli(micros / 1000)
+          arrayNode.add(instant.toString)
+
+        case structType: StructType =>
+          val nestedNode = arrayNode.addObject()
+          val nestedRow = element.asInstanceOf[RowRecord]
+          val nestedFields = structType.getFields
+
+          nestedFields.foreach { field =>
+            val nestedFieldName = field.getName
+            if (!nestedRow.isNullAt(nestedFieldName)) {
+              addValueToNode(nestedNode, nestedFieldName, nestedRow, field.getDataType)
+            } else {
+              nestedNode.putNull(nestedFieldName)
+            }
+          }
+
+        case arrayType: ArrayType =>
+          // Array imbriqué
+          val nestedArrayNode = arrayNode.addArray()
+          val nestedList = element.asInstanceOf[java.util.List[Any]]
+          nestedList.asScala.foreach { nestedElement =>
+            if (nestedElement == null) {
+              nestedArrayNode.addNull()
+            } else {
+              addElementToArray(nestedArrayNode, nestedElement, arrayType.getElementType)
+            }
+          }
+
+        case _ =>
+          arrayNode.add(element.toString)
+      }
+    }
+
+    /** Add element to JSON object node
+      */
+    private def addElementToObject(
+      objectNode: com.fasterxml.jackson.databind.node.ObjectNode,
+      key: String,
+      value: Any,
+      valueType: DataType
+    ): Unit = {
+
+      valueType match {
+        case _: StringType =>
+          objectNode.put(key, value.toString)
+
+        case _: IntegerType | _: ByteType | _: ShortType =>
+          objectNode.put(key, value.asInstanceOf[Number].intValue())
+
+        case _: LongType =>
+          objectNode.put(key, value.asInstanceOf[Number].longValue())
+
+        case _: FloatType =>
+          objectNode.put(key, value.asInstanceOf[Number].floatValue())
+
+        case _: DoubleType =>
+          objectNode.put(key, value.asInstanceOf[Number].doubleValue())
+
+        case _: BooleanType =>
+          objectNode.put(key, value.asInstanceOf[Boolean])
+
+        case _: DecimalType =>
+          objectNode.put(key, value.asInstanceOf[java.math.BigDecimal])
+
+        case _ =>
+          objectNode.put(key, value.toString)
+      }
+    }
+
+    /** Read Delta with version (time travel)
+      */
+    def fromFileAtVersion(
+      filePath: String,
+      version: Long,
+      bufferSize: Int = 500
+    )(implicit
+      ec: ExecutionContext,
+      conf: Configuration = hadoopConfiguration
+    ): Source[String, NotUsed] = {
+
+      validateFile(filePath)
+
+      var rowCount = 0L
+      val startTime = System.currentTimeMillis()
+
+      Source
+        .unfoldResource[String, (DeltaLog, CloseableIterator[RowRecord], Snapshot)](
+          create = () => {
+            logger.info(s"📂 Opening Delta Lake table at version $version: $filePath")
+            val deltaLog = DeltaLog.forTable(conf, filePath)
+            val snapshot = deltaLog.getSnapshotForVersionAsOf(version)
+
+            logger.info(s"📊 Delta table version $version, files: ${snapshot.getAllFiles.size()}")
+
+            val iterator = snapshot.open()
+            (deltaLog, iterator, snapshot)
+          },
+          read = { case (deltaLog, iterator, snapshot) =>
+            blocking {
+              Try {
+                if (iterator.hasNext) {
+                  rowCount += 1
+                  if (rowCount % 10000 == 0) {
+                    val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                    val throughput = rowCount / elapsed
+                    logger.info(
+                      f"📊 Read $rowCount rows from Delta v$version ($throughput%.2f rows/sec)"
+                    )
+                  }
+                  Some(rowRecordToJson(iterator.next()))
+                } else {
+                  val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                  logger.info(
+                    s"✅ Finished reading Delta table v$version: $rowCount rows in ${elapsed}s"
+                  )
+                  None
+                }
+              } match {
+                case Success(result) => result
+                case Failure(ex) =>
+                  logger.error(s"❌ Error reading Delta row at position $rowCount", ex)
+                  None
+              }
+            }
+          },
+          close = { case (deltaLog, iterator, snapshot) =>
+            Try(iterator.close())
+          }
+        )
+        .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
+    }
+
+    /** Read Delta with timestamp (time travel)
+      */
+    def fromFileAtTimestamp(
+      filePath: String,
+      timestampMillis: Long,
+      bufferSize: Int = 500
+    )(implicit
+      ec: ExecutionContext,
+      conf: Configuration = hadoopConfiguration
+    ): Source[String, NotUsed] = {
+
+      validateFile(filePath)
+
+      logger.info(s"📂 Opening Delta Lake table at timestamp $timestampMillis: $filePath")
+
+      val deltaLog = DeltaLog.forTable(conf, filePath)
+      val snapshot = deltaLog.getSnapshotForTimestampAsOf(timestampMillis)
+
+      logger.info(s"📊 Resolved to version: ${snapshot.getVersion}")
+
+      fromFileAtVersion(filePath, snapshot.getVersion, bufferSize)
+    }
+
+    /** Get Delta table metadata
+      */
+    def getTableInfo(
+      filePath: String
+    )(implicit conf: Configuration = hadoopConfiguration): DeltaTableInfo = {
+      val deltaLog = DeltaLog.forTable(conf, filePath)
+      val snapshot = deltaLog.snapshot()
+      val metadata = snapshot.getMetadata
+
+      DeltaTableInfo(
+        version = snapshot.getVersion,
+        numFiles = snapshot.getAllFiles.size(),
+        schema = metadata.getSchema.getTreeString,
+        partitionColumns = metadata.getPartitionColumns.asScala.toList,
+        createdTime = metadata.getCreatedTime.orElse(0L),
+        description = Option(metadata.getDescription)
+      )
+    }
+  }
+
+  /** Case class for Delta table information
+    */
+  case class DeltaTableInfo(
+    version: Long,
+    numFiles: Int,
+    schema: String,
+    partitionColumns: List[String],
+    createdTime: Long,
+    description: Option[String]
+  )
+
   /** Automatic file format detection */
   object FileFormatDetector {
 
-    def detect(filePath: String): FileFormat = {
+    def detect(filePath: String)(implicit conf: Configuration = hadoopConfiguration): FileFormat = {
       val lowerPath = filePath.toLowerCase
+      val path = new Path(filePath)
 
       if (lowerPath.endsWith(".parquet") || lowerPath.endsWith(".parq")) {
         Parquet
-      } else if (
-        lowerPath.endsWith(".json") || lowerPath
-          .endsWith(".jsonl") || lowerPath.endsWith(".ndjson")
-      ) {
+      } else if (lowerPath.endsWith(".jsonl") || lowerPath.endsWith(".ndjson")) {
         Json
+      } else if (lowerPath.endsWith(".json")) {
+        // Distinguer JSON Lines vs JSON Array en lisant le premier caractère
+        detectJsonType(filePath)
+      } else if (isDeltaTable(filePath)) {
+        Delta
       } else {
         Unknown
       }
+    }
+
+    /** Detect if it's a Delta Lake table (check for _delta_log directory)
+      */
+    private def isDeltaTable(
+      filePath: String
+    )(implicit conf: Configuration = hadoopConfiguration): Boolean = {
+      Try {
+        val fs = FileSystem.get(conf)
+        val deltaLogPath = new Path(filePath, "_delta_log")
+        fs.exists(deltaLogPath) && fs.isDirectory(deltaLogPath)
+      }.getOrElse(false)
+    }
+
+    /** Distinguish between JSON Lines and JSON Array
+      */
+    private def detectJsonType(
+      filePath: String
+    )(implicit conf: Configuration = hadoopConfiguration): FileFormat = {
+      Try {
+        val is = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+        try {
+          val reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
+          val firstChar = reader.read().toChar
+          reader.close()
+
+          if (firstChar == '[') JsonArray else Json
+        } finally {
+          is.close()
+        }
+      }.getOrElse(Unknown)
     }
 
     /** Detect with validation
@@ -405,10 +1018,14 @@ package object file {
     */
   object FileSourceFactory {
 
-    private def apply(filePath: String): FileSource = {
+    private def apply(
+      filePath: String
+    )(implicit conf: Configuration): FileSource = {
       FileFormatDetector.detect(filePath) match {
-        case Parquet => ParquetFileSource
-        case Json    => JsonFileSource
+        case Parquet   => ParquetFileSource
+        case Json      => JsonFileSource
+        case JsonArray => JsonArrayFileSource
+        case Delta     => DeltaFileSource
         case Unknown =>
           throw new IllegalArgumentException(
             s"Cannot determine file format for: $filePath. Supported: .parquet, .parq, .json, .jsonl, .ndjson"
@@ -416,11 +1033,15 @@ package object file {
       }
     }
 
-    def apply(filePath: String, format: FileFormat): FileSource = {
+    def apply(filePath: String, format: FileFormat)(implicit
+      conf: Configuration = hadoopConfiguration
+    ): FileSource = {
       format match {
-        case Parquet => ParquetFileSource
-        case Json    => JsonFileSource
-        case Unknown => apply(filePath)
+        case Parquet   => ParquetFileSource
+        case Json      => JsonFileSource
+        case JsonArray => JsonArrayFileSource
+        case Delta     => DeltaFileSource
+        case Unknown   => apply(filePath)
       }
     }
 
