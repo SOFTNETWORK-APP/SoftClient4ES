@@ -132,16 +132,16 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Toggle refresh" should "work" in {
     pClient.toggleRefresh("person", enable = false).get shouldBe true
     var settings = pClient.loadSettings("person").get
-    new JsonParser()
-      .parse(settings)
+    JsonParser
+      .parseString(settings)
       .getAsJsonObject
       .get("refresh_interval")
       .getAsString shouldBe "-1"
 
     pClient.toggleRefresh("person", enable = true).get shouldBe true
     settings = pClient.loadSettings("person").get
-    new JsonParser()
-      .parse(settings)
+    JsonParser
+      .parseString(settings)
       .getAsJsonObject
       .get("refresh_interval")
       .getAsString shouldBe "1s"
@@ -159,15 +159,15 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Updating number of replicas" should "work" in {
     pClient.setReplicas("person", 3)
 
-    new JsonParser()
-      .parse(pClient.loadSettings("person").get)
+    JsonParser
+      .parseString(pClient.loadSettings("person").get)
       .getAsJsonObject
       .get("number_of_replicas")
       .getAsString shouldBe "3"
 
     pClient.setReplicas("person", 0)
-    new JsonParser()
-      .parse(pClient.loadSettings("person").get)
+    JsonParser
+      .parseString(pClient.loadSettings("person").get)
       .getAsJsonObject
       .get("number_of_replicas")
       .getAsString shouldBe "0"

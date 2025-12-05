@@ -118,6 +118,119 @@ class FileSourceSpec extends AnyWordSpec with Matchers with ScalaFutures with Be
       result.last should include("Bob")
     }
 
+    "read JSON Array file with nested arrays and objects" in {
+      val tempFile = File.createTempFile("test-nested", ".json")
+      tempFile.deleteOnExit()
+
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""[
+                       |  { "uuid": "A12", "name": "Homer Simpson", "birthDate": "1967-11-21", "childrenCount": 0 },
+                       |  { "uuid": "A14", "name": "Moe Szyslak", "birthDate": "1967-11-21", "childrenCount": 0 },
+                       |  { "uuid": "A16", "name": "Barney Gumble2", "birthDate": "1969-05-09",
+                       |    "children": [
+                       |      { "parentId": "A16", "name": "Steve Gumble", "birthDate": "1999-05-09" },
+                       |      { "parentId": "A16", "name": "Josh Gumble", "birthDate": "2002-05-09" }
+                       |    ],
+                       |    "childrenCount": 2
+                       |  }
+                       |]""".stripMargin)
+      writer.close()
+
+      val result = FileSourceFactory
+        .fromFile(tempFile.getAbsolutePath, format = JsonArray)
+        .runWith(Sink.seq)
+        .futureValue
+
+      result should have size 3
+
+      // Verify first element (no children)
+      result.head should include("Homer Simpson")
+      result.head should include("A12")
+      result.head should include("childrenCount")
+
+      // Verify second element (no children)
+      result(1) should include("Moe Szyslak")
+      result(1) should include("A14")
+
+      // Verify third element (with nested children array)
+      val thirdElement = result(2)
+      thirdElement should include("Barney Gumble2")
+      thirdElement should include("A16")
+      thirdElement should include("children")
+      thirdElement should include("Steve Gumble")
+      thirdElement should include("Josh Gumble")
+      thirdElement should include("parentId")
+
+      // Parse and validate nested structure
+
+      val mapper = JacksonConfig.objectMapper
+
+      val jsonNode = mapper.readTree(thirdElement)
+      jsonNode.get("uuid").asText() shouldBe "A16"
+      jsonNode.get("childrenCount").asInt() shouldBe 2
+
+      val children = jsonNode.get("children")
+      children.isArray shouldBe true
+      children.size() shouldBe 2
+
+      children.get(0).get("name").asText() shouldBe "Steve Gumble"
+      children.get(0).get("parentId").asText() shouldBe "A16"
+
+      children.get(1).get("name").asText() shouldBe "Josh Gumble"
+      children.get(1).get("parentId").asText() shouldBe "A16"
+    }
+
+    "handle JSON Array with empty nested arrays" in {
+      val tempFile = File.createTempFile("test-empty-nested", ".json")
+      tempFile.deleteOnExit()
+
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""[
+                       |  { "uuid": "A12", "name": "Test", "children": [] }
+                       |]""".stripMargin)
+      writer.close()
+
+      val result = FileSourceFactory
+        .fromFile(tempFile.getAbsolutePath, format = JsonArray)
+        .runWith(Sink.seq)
+        .futureValue
+
+      result should have size 1
+      result.head should include("children")
+      result.head should include("[]")
+    }
+
+    "handle deeply nested JSON structures" in {
+      val tempFile = File.createTempFile("test-deep-nested", ".json")
+      tempFile.deleteOnExit()
+
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""[
+                       |  {
+                       |    "level1": {
+                       |      "level2": {
+                       |        "level3": {
+                       |          "data": "deep value",
+                       |          "array": [1, 2, 3]
+                       |        }
+                       |      }
+                       |    }
+                       |  }
+                       |]""".stripMargin)
+      writer.close()
+
+      val result = FileSourceFactory
+        .fromFile(tempFile.getAbsolutePath, format = JsonArray)
+        .runWith(Sink.seq)
+        .futureValue
+
+      result should have size 1
+      result.head should include("deep value")
+      result.head should include("level1")
+      result.head should include("level2")
+      result.head should include("level3")
+    }
+
     "read Parquet file" in {
       // Create temporary Parquet file
       val tempDir = Files.createTempDirectory("parquet-test").toFile
