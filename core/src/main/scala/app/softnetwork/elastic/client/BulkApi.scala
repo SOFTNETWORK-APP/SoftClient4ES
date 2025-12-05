@@ -109,9 +109,9 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     }
 
     // Use the existing API with the file source
-    bulkWithResult(
+    bulkWithResult[String](
       items = source,
-      toDocument = _, // The document is already in JSON format.
+      toDocument = identity, // The document is already in JSON format.
       indexKey = indexKey,
       idKey = idKey,
       suffixDateKey = suffixDateKey,
@@ -139,9 +139,9 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
 
     logger.info(s"📁 Starting bulk from Parquet file: $filePath")
 
-    bulkWithResult(
+    bulkWithResult[String](
       items = ParquetFileSource.fromFile(filePath, bufferSize),
-      toDocument = _,
+      toDocument = identity,
       indexKey = indexKey,
       idKey = idKey,
       callbacks = callbacks
@@ -172,9 +172,9 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
       JsonFileSource.fromFile(filePath, bufferSize)
     }
 
-    bulkWithResult(
+    bulkWithResult[String](
       items = source,
-      toDocument = _,
+      toDocument = identity,
       indexKey = indexKey,
       idKey = idKey,
       callbacks = callbacks
