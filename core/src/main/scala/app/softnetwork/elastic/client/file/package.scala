@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.client
 
 import akka.NotUsed
@@ -17,7 +33,7 @@ import org.apache.avro.generic.GenericRecord
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.parquet.avro.AvroParquetReader
-import org.apache.parquet.hadoop.ParquetReader
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetReader}
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import io.delta.standalone.DeltaLog
 import io.delta.standalone.data.{CloseableIterator, RowRecord}
@@ -311,6 +327,36 @@ package object file {
         )
         .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
     }
+
+    case class ParquetMetadata(
+      numRowGroups: Int,
+      numRows: Long,
+      schema: String
+    )
+
+    def getFileMetadata(filePath: String)(implicit conf: Configuration): ParquetMetadata = {
+      Try(validateFile(filePath, checkIsFile = true)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for Parquet file: $filePath", ex)
+          throw ex
+      }
+
+      val path = new Path(filePath)
+      val inputFile = HadoopInputFile.fromPath(path, conf)
+      val reader = ParquetFileReader.open(inputFile)
+
+      try {
+        val metadata = reader.getFooter.getFileMetaData
+        ParquetMetadata(
+          numRowGroups = reader.getRowGroups.size(),
+          numRows = reader.getRecordCount,
+          schema = metadata.getSchema.toString
+        )
+      } finally {
+        reader.close()
+      }
+    }
   }
 
   /** Source for JSON files (NDJSON or JSON Lines) */
@@ -543,7 +589,12 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
 
-      validateFile(filePath)
+      Try(validateFile(filePath)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for JSON Array file: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       logger.info(s"📂 Loading JSON Array file in memory: $filePath")
 
@@ -565,6 +616,75 @@ package object file {
         })
         .mapConcat(identity)
         .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
+    }
+
+    /** Get metadata about the JSON array
+      */
+    case class JsonArrayMetadata(
+      elementCount: Int,
+      hasNestedArrays: Boolean,
+      hasNestedObjects: Boolean,
+      maxDepth: Int
+    )
+
+    def getMetadata(filePath: String)(implicit conf: Configuration): JsonArrayMetadata = {
+      Try(validateFile(filePath, checkIsFile = true)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for JSON Array file: $filePath", ex)
+          throw ex
+      }
+
+      val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+
+      try {
+        val arrayNode = mapper.readTree(is)
+        if (!arrayNode.isArray) {
+          throw new IllegalArgumentException(s"File is not a JSON array: $filePath")
+        }
+
+        val elements = arrayNode.elements().asScala.toList
+        val hasNestedArrays = elements.exists(hasArrayField)
+        val hasNestedObjects = elements.exists(hasObjectField)
+        val maxDepth = elements.map(calculateDepth).maxOption.getOrElse(0)
+
+        JsonArrayMetadata(
+          elementCount = elements.size,
+          hasNestedArrays = hasNestedArrays,
+          hasNestedObjects = hasNestedObjects,
+          maxDepth = maxDepth
+        )
+      } finally {
+        is.close()
+      }
+    }
+
+    private def hasArrayField(node: JsonNode): Boolean = {
+      if (node.isArray) return true
+      if (node.isObject) {
+        node.fields().asScala.exists(entry => hasArrayField(entry.getValue))
+      } else {
+        false
+      }
+    }
+
+    private def hasObjectField(node: JsonNode): Boolean = {
+      if (node.isObject) return true
+      if (node.isArray) {
+        node.elements().asScala.exists(hasObjectField)
+      } else {
+        false
+      }
+    }
+
+    private def calculateDepth(node: JsonNode): Int = {
+      if (node.isArray) {
+        1 + node.elements().asScala.map(calculateDepth).maxOption.getOrElse(0)
+      } else if (node.isObject) {
+        1 + node.fields().asScala.map(e => calculateDepth(e.getValue)).maxOption.getOrElse(0)
+      } else {
+        0
+      }
     }
   }
 

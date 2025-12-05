@@ -359,6 +359,48 @@ class FileSourceSpec extends AnyWordSpec with Matchers with ScalaFutures with Be
       json should include("France")
     }
 
+    "get Parquet file metadata" in {
+      val tempDir = Files.createTempDirectory("parquet-meta-test").toFile
+      tempDir.deleteOnExit()
+      val parquetFile = new File(tempDir, "meta.parquet")
+      parquetFile.deleteOnExit()
+
+      val schemaString =
+        """message TestRecord {
+          |  required int32 id;
+          |  required binary name (UTF8);
+          |}""".stripMargin
+
+      val schema: MessageType = MessageTypeParser.parseMessageType(schemaString)
+      val groupFactory = new SimpleGroupFactory(schema)
+
+      val path = new Path(parquetFile.getAbsolutePath)
+      val writer = org.apache.parquet.hadoop.example.ExampleParquetWriter
+        .builder(path)
+        .withType(schema)
+        .withCompressionCodec(CompressionCodecName.SNAPPY)
+        .withConf(conf)
+        .build()
+
+      try {
+        (1 to 100).foreach { i =>
+          val record = groupFactory.newGroup()
+          record.add("id", i)
+          record.add("name", s"Person$i")
+          writer.write(record)
+        }
+      } finally {
+        writer.close()
+      }
+
+      val metadata = ParquetFileSource.getFileMetadata(parquetFile.getAbsolutePath)
+
+      metadata.numRowGroups should be > 0
+      metadata.numRows shouldBe 100
+      metadata.schema should include("id")
+      metadata.schema should include("name")
+    }
+
     "read Delta Lake table" in {
       val tempDir = Files.createTempDirectory("delta-test").toFile
       tempDir.deleteOnExit()
