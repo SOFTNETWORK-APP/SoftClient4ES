@@ -21,7 +21,11 @@ import akka.actor.ActorSystem
 import akka.stream.{FlowShape, Materializer}
 import akka.stream.scaladsl.{Balance, Flow, GraphDSL, Merge, Sink, Source}
 import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.file._
 import app.softnetwork.elastic.client.result.{ElasticResult, ElasticSuccess}
+
+import org.apache.hadoop.conf.Configuration
+
 import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods.parse
 
@@ -40,6 +44,142 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   // ========================================================================
   // PUBLIC METHODS
   // ========================================================================
+
+  /** Bulk from a Parquet or JSON file with automatic detection
+    *
+    * @param filePath
+    *   path to the file (.parquet, .json, .jsonl)
+    * @param indexKey
+    *   JSON key to extract the index
+    * @param idKey
+    *   JSON key to extract the ID
+    * @param suffixDateKey
+    *   JSON key to append a date to the index
+    * @param suffixDatePattern
+    *   date formatting pattern
+    * @param update
+    *   true for upsert, false for index
+    * @param delete
+    *   true for delete
+    * @param parentIdKey
+    *   JSON key for the parent
+    * @param callbacks
+    *   callbacks for events
+    * @param bufferSize
+    *   read buffer size
+    * @param validateJson
+    *   validate each JSON line
+    * @param skipInvalid
+    *   ignore invalid JSON lines
+    * @param format
+    *   file format (auto-detection if Unknown)
+    * @param hadoopConf
+    *   custom Hadoop configuration
+    * @param bulkOptions
+    *   configuration options
+    * @return
+    *   Future with the detailed result
+    */
+  def bulkFromFile(
+    filePath: String,
+    indexKey: Option[String] = None,
+    idKey: Option[String] = None,
+    suffixDateKey: Option[String] = None,
+    suffixDatePattern: Option[String] = None,
+    update: Option[Boolean] = None,
+    delete: Option[Boolean] = None,
+    parentIdKey: Option[String] = None,
+    callbacks: BulkCallbacks = BulkCallbacks.default,
+    bufferSize: Int = 500,
+    validateJson: Boolean = true,
+    skipInvalid: Boolean = true,
+    format: FileFormat = Unknown,
+    hadoopConf: Option[Configuration] = None
+  )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
+
+    implicit val ec: ExecutionContext = system.dispatcher
+    implicit val conf: Configuration = hadoopConf.getOrElse(hadoopConfiguration)
+
+    logger.info(s"📁 Starting bulk from file: $filePath")
+
+    val source: Source[String, NotUsed] = if (validateJson) {
+      FileSourceFactory.fromFileValidated(filePath, bufferSize, skipInvalid, format)
+    } else {
+      FileSourceFactory.fromFile(filePath, bufferSize, format)
+    }
+
+    // Use the existing API with the file source
+    bulkWithResult(
+      items = source,
+      toDocument = _, // The document is already in JSON format.
+      indexKey = indexKey,
+      idKey = idKey,
+      suffixDateKey = suffixDateKey,
+      suffixDatePattern = suffixDatePattern,
+      update = update,
+      delete = delete,
+      parentIdKey = parentIdKey,
+      callbacks = callbacks
+    )
+  }
+
+  /** Bulk from a Parquet file specifically
+    */
+  def bulkFromParquet(
+    filePath: String,
+    indexKey: Option[String] = None,
+    idKey: Option[String] = None,
+    callbacks: BulkCallbacks = BulkCallbacks.default,
+    bufferSize: Int = 500,
+    hadoopConf: Option[Configuration] = None
+  )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
+
+    implicit val ec: ExecutionContext = system.dispatcher
+    implicit val conf: Configuration = hadoopConf.getOrElse(hadoopConfiguration)
+
+    logger.info(s"📁 Starting bulk from Parquet file: $filePath")
+
+    bulkWithResult(
+      items = ParquetFileSource.fromFile(filePath, bufferSize),
+      toDocument = _,
+      indexKey = indexKey,
+      idKey = idKey,
+      callbacks = callbacks
+    )
+  }
+
+  /** Bulk from a specific JSON file
+    */
+  def bulkFromJson(
+    filePath: String,
+    indexKey: Option[String] = None,
+    idKey: Option[String] = None,
+    callbacks: BulkCallbacks = BulkCallbacks.default,
+    bufferSize: Int = 500,
+    validateJson: Boolean = true,
+    skipInvalid: Boolean = true,
+    hadoopConf: Option[Configuration] = None
+  )(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
+
+    implicit val ec: ExecutionContext = system.dispatcher
+    implicit val conf: Configuration = hadoopConf.getOrElse(hadoopConfiguration)
+
+    logger.info(s"📁 Starting bulk from JSON file: $filePath")
+
+    val source = if (validateJson) {
+      JsonFileSource.fromFileValidated(filePath, bufferSize, skipInvalid)
+    } else {
+      JsonFileSource.fromFile(filePath, bufferSize)
+    }
+
+    bulkWithResult(
+      items = source,
+      toDocument = _,
+      indexKey = indexKey,
+      idKey = idKey,
+      callbacks = callbacks
+    )
+  }
 
   /** Bulk with detailed results (successes + failures).
     *

@@ -30,8 +30,15 @@ val mockito = Seq(
   "org.mockito" %% "mockito-scala" % "1.17.12" % Test
 )
 
+// Parquet & Avro
+val avro = Seq(
+  "org.apache.parquet" % "parquet-avro" % "1.15.2",
+  "org.apache.avro" % "avro" % "1.11.4",
+  "org.apache.hadoop" % "hadoop-common" % "3.4.2",
+)
+
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
-json4s ++ mockito :+ "com.google.code.gson" % "gson" % Versions.gson :+
+json4s ++ mockito ++ avro :+ "com.google.code.gson" % "gson" % Versions.gson :+
   "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
   "org.scalatest" %% "scalatest" % Versions.scalatest  % Test
 
