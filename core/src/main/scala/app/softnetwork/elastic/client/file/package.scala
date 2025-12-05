@@ -3,7 +3,7 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.stream.scaladsl.Source
 import com.fasterxml.jackson.annotation.JsonInclude
-import com.fasterxml.jackson.core.{JsonParser, JsonToken}
+import com.fasterxml.jackson.core.{JsonFactory, JsonParser, JsonToken}
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.databind.{
   DeserializationFeature,
@@ -15,13 +15,14 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import org.apache.avro.generic.GenericRecord
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.{FSDataInputStream, FileSystem, Path}
 import org.apache.parquet.avro.AvroParquetReader
 import org.apache.parquet.hadoop.ParquetReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import io.delta.standalone.{DeltaLog, Snapshot}
+import io.delta.standalone.DeltaLog
 import io.delta.standalone.data.{CloseableIterator, RowRecord}
 import io.delta.standalone.types._
+import org.apache.parquet.io.SeekableInputStream
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.io.{BufferedReader, InputStream, InputStreamReader}
@@ -391,8 +392,8 @@ package object file {
 
     override def format: FileFormat = JsonArray
 
-    /** Reads a JSON Array file and streams each element
-      */
+    private val jsonFactory = new JsonFactory()
+
     override def fromFile(
       filePath: String,
       bufferSize: Int = 500
@@ -401,29 +402,34 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
 
-      // Validate file before processing
       validateFile(filePath)
 
       var elementCount = 0L
       val startTime = System.currentTimeMillis()
 
       Source
-        .unfoldResource[String, (BufferedReader, JsonParser)](
-          // Create: Open the file and JSON parser
+        .unfoldResource[String, (InputStream, JsonParser)](
+          // Create: Open file via Hadoop and create JSON parser
           create = () => {
-            logger.info(s"📂 Opening JSON Array file: $filePath")
+            logger.info(s"📂 Opening JSON Array file via Hadoop: $filePath")
             Try {
-              val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
-              val reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
-              val factory = mapper.getFactory
-              val parser = factory.createParser(reader)
+              val is: SeekableInputStream =
+                HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
 
-              // Vérifier que c'est bien un array
-              if (parser.nextToken() != JsonToken.START_ARRAY) {
-                throw new IllegalArgumentException(s"File is not a JSON array: $filePath")
+              // Create Jackson parser on top of Hadoop SeekableInputStream
+              val parser = jsonFactory.createParser(is)
+
+              // Expect array start
+              val token = parser.nextToken()
+              if (token != JsonToken.START_ARRAY) {
+                is.close()
+                throw new IllegalArgumentException(
+                  s"Expected JSON array, but found: ${token}. File: $filePath"
+                )
               }
 
-              (reader, parser)
+              logger.info(s"📊 Started parsing JSON Array via Hadoop FS")
+              (is, parser)
             } match {
               case Success(result) => result
               case Failure(ex) =>
@@ -432,48 +438,63 @@ package object file {
             }
           },
 
-          // Read: Read the next JSON object from the array
+          // Read: Parse next element from array
           read = { case (_, parser) =>
             blocking {
               Try {
-                if (parser.nextToken() == JsonToken.START_OBJECT) {
+                val token = parser.nextToken()
+
+                if (token == JsonToken.START_OBJECT || token == JsonToken.START_ARRAY) {
                   elementCount += 1
+
                   if (elementCount % 10000 == 0) {
                     val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
                     val throughput = elementCount / elapsed
-                    logger.info(
-                      f"📊 Read $elementCount elements from JSON Array ($throughput%.2f elements/sec)"
-                    )
+                    logger.info(f"📊 Parsed $elementCount elements ($throughput%.2f elements/sec)")
                   }
 
-                  // Read the full object
-                  val node = mapper.readTree(parser)
+                  // Parse current element as JsonNode
+                  val node: JsonNode = mapper.readTree(parser)
                   Some(mapper.writeValueAsString(node))
-                } else {
+
+                } else if (token == JsonToken.END_ARRAY || token == null) {
                   val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
                   logger.info(
                     s"✅ Finished reading JSON Array: $elementCount elements in ${elapsed}s"
                   )
                   None
+
+                } else {
+                  // Skip unexpected tokens
+                  logger.warn(s"⚠️  Unexpected token in JSON Array: $token")
+                  None
                 }
               } match {
                 case Success(result) => result
                 case Failure(ex) =>
-                  logger.error(s"❌ Error reading JSON Array element at position $elementCount", ex)
+                  logger.error(s"❌ Error parsing JSON Array element at position $elementCount", ex)
                   None
               }
             }
           },
 
-          // Close: Close parser and reader
-          close = { case (reader, parser) =>
+          // Close: Close parser and Hadoop input stream
+          close = { case (inputStream, parser) =>
             Try {
-              parser.close()
-              reader.close()
+              parser.close() // This also closes the underlying stream
             } match {
-              case Success(_) => logger.debug(s"🔒 Closed JSON Array reader for: $filePath")
+              case Success(_) =>
+                logger.debug(s"🔒 Closed JSON Array parser for: $filePath")
               case Failure(ex) =>
-                logger.warn(s"⚠️  Failed to close JSON Array reader: ${ex.getMessage}")
+                logger.warn(s"⚠️  Failed to close JSON Array parser: ${ex.getMessage}")
+            }
+
+            // Ensure Hadoop stream is closed
+            Try(inputStream.close()) match {
+              case Success(_) =>
+                logger.debug(s"🔒 Closed Hadoop input stream for: $filePath")
+              case Failure(ex) =>
+                logger.warn(s"⚠️  Failed to close Hadoop input stream: ${ex.getMessage}")
             }
           }
         )
@@ -504,7 +525,6 @@ package object file {
                 throw new IllegalArgumentException(s"File is not a JSON array: $filePath")
               }
 
-              import scala.jdk.CollectionConverters._
               arrayNode.elements().asScala.map(node => mapper.writeValueAsString(node)).toList
             } finally {
               is.close()
@@ -849,7 +869,7 @@ package object file {
       val startTime = System.currentTimeMillis()
 
       Source
-        .unfoldResource[String, (DeltaLog, CloseableIterator[RowRecord], Snapshot)](
+        .unfoldResource[String, CloseableIterator[RowRecord]](
           create = () => {
             logger.info(s"📂 Opening Delta Lake table at version $version: $filePath")
             val deltaLog = DeltaLog.forTable(conf, filePath)
@@ -857,10 +877,9 @@ package object file {
 
             logger.info(s"📊 Delta table version $version, files: ${snapshot.getAllFiles.size()}")
 
-            val iterator = snapshot.open()
-            (deltaLog, iterator, snapshot)
+            snapshot.open()
           },
-          read = { case (deltaLog, iterator, snapshot) =>
+          read = iterator =>
             blocking {
               Try {
                 if (iterator.hasNext) {
@@ -886,11 +905,8 @@ package object file {
                   logger.error(s"❌ Error reading Delta row at position $rowCount", ex)
                   None
               }
-            }
-          },
-          close = { case (deltaLog, iterator, snapshot) =>
-            Try(iterator.close())
-          }
+            },
+          close = iterator => Try(iterator.close())
         )
         .buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
     }
@@ -961,7 +977,7 @@ package object file {
       } else if (lowerPath.endsWith(".jsonl") || lowerPath.endsWith(".ndjson")) {
         Json
       } else if (lowerPath.endsWith(".json")) {
-        // Distinguer JSON Lines vs JSON Array en lisant le premier caractère
+        // Distinguishing JSON Lines vs JSON Array by reading the first character
         detectJsonType(filePath)
       } else if (isDeltaTable(filePath)) {
         Delta
@@ -978,7 +994,7 @@ package object file {
       Try {
         val fs = FileSystem.get(conf)
         val deltaLogPath = new Path(filePath, "_delta_log")
-        fs.exists(deltaLogPath) && fs.isDirectory(deltaLogPath)
+        fs.exists(deltaLogPath) && fs.getFileStatus(deltaLogPath).isDirectory
       }.getOrElse(false)
     }
 
