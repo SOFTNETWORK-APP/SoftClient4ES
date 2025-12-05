@@ -8,6 +8,7 @@ The **BulkApi** trait provides high-performance bulk operations for Elasticsearc
 
 **Features:**
 - **High-performance streaming** with Akka Streams
+- **Multiple data sources**: In-memory, File-based (JSON, JSON Array, Parquet, Delta Lake)
 - **Automatic retry** with exponential backoff
 - **Parallel processing** with configurable balance
 - **Real-time progress tracking** and metrics
@@ -23,6 +24,7 @@ The **BulkApi** trait provides high-performance bulk operations for Elasticsearc
 - Requires `SettingsApi` for index settings management
 - Requires `IndexApi` for individual document operations (retry)
 - Requires Akka Streams for reactive processing
+- Requires Hadoop for file operations (Parquet, Delta Lake)
 
 ---
 
@@ -42,6 +44,16 @@ Source[D, NotUsed]
   -> Retry failures (automatic)
   -> Return Either[FailedDocument, SuccessfulDocument]
 ```
+
+### Data Sources
+
+| Source Type      | Format        | Description                           |
+|------------------|---------------|---------------------------------------|
+| **In-Memory**    | Scala objects | Direct streaming from collections     |
+| **JSON**         | Text          | Newline-delimited JSON (NDJSON)       |
+| **JSON Array**   | Text          | JSON array with nested structures     |
+| **Parquet**      | Binary        | Columnar storage format               |
+| **Delta Lake**   | Directory     | ACID transactional data lake          |
 
 ### Operation Types
 
@@ -88,7 +100,7 @@ case class BulkOptions(
 
 // Usage
 implicit val bulkOptions: BulkOptions = BulkOptions(
-  defaultIndex =  "products",
+  defaultIndex = "products",
   maxBulkSize = 5000,
   balance = 8
 )
@@ -197,52 +209,173 @@ case class BulkMetrics(
 }
 ```
 
-**Examples:**
+---
+
+### bulkFromFile
+
+**NEW**: Loads and indexes documents directly from files with support for multiple formats.
+
+**Signature:**
 
 ```scala
-import akka.actor.ActorSystem
-import scala.concurrent.ExecutionContext.Implicits.global
+def bulkFromFile(
+  filePath: String,
+  format: FileFormat = Json,
+  indexKey: Option[String] = None,
+  idKey: Option[String] = None,
+  suffixDateKey: Option[String] = None,
+  suffixDatePattern: Option[String] = None,
+  update: Option[Boolean] = None,
+  delete: Option[Boolean] = None,
+  callbacks: BulkCallbacks = BulkCallbacks.default
+)(implicit 
+  bulkOptions: BulkOptions, 
+  system: ActorSystem,
+  conf: Configuration = new Configuration()
+): Future[BulkResult]
+```
 
-implicit val system: ActorSystem = ActorSystem("bulk-system")
-implicit val bulkOptions: BulkOptions = BulkOptions(
-  defaultIndex =  "products",
-  maxBulkSize = 1000,
-  balance = 4
-)
+**Parameters:**
+- `filePath` - Path to the file (local or HDFS)
+- `format` - File format: `Json`, `JsonArray`, `Parquet`, or `Delta`
+- `indexKey` - Optional field name containing index name
+- `idKey` - Optional field name containing document ID
+- `suffixDateKey` - Optional date field for index suffix
+- `suffixDatePattern` - Date pattern for suffix formatting
+- `update` - If true, performs upsert operation
+- `delete` - If true, performs delete operation
+- `callbacks` - Event callbacks for monitoring
+- `bulkOptions` - Implicit bulk configuration
+- `system` - Implicit ActorSystem
+- `conf` - Implicit Hadoop Configuration (for Parquet/Delta)
 
-// Domain model
-case class Product(id: String, name: String, price: Double, category: String)
+**Supported File Formats:**
 
-// Basic bulk indexing
-val products: Source[Product, NotUsed] = getProducts() // Large dataset
+```scala
+sealed trait FileFormat
+case object Json extends FileFormat       // Newline-delimited JSON
+case object JsonArray extends FileFormat  // JSON array with nested objects
+case object Parquet extends FileFormat    // Apache Parquet columnar format
+case object Delta extends FileFormat      // Delta Lake tables
+```
 
-val toJson: Product => String = product => s"""
-{
-  "id": "${product.id}",
-  "name": "${product.name}",
-  "price": ${product.price},
-  "category": "${product.category}"
-}
-"""
+**Returns:**
+- `Future[BulkResult]` with detailed success/failure information
 
-val resultFuture: Future[BulkResult] = client.bulkWithResult(
-  items = products,
-  toDocument = toJson,
+**Examples:**
+
+#### 1. Load from JSON File (NDJSON)
+
+```scala
+// NDJSON file (one JSON object per line):
+// {"id": "1", "name": "Product 1", "price": 10.0}
+// {"id": "2", "name": "Product 2", "price": 20.0}
+
+val result = client.bulkFromFile(
+  filePath = "/data/products.jsonl",
+  format = Json,
   idKey = Some("id")
-)
+).futureValue
 
-resultFuture.foreach { result =>
-  println(s"✅ Success: ${result.successCount}")
-  println(s"❌ Failed: ${result.failedCount}")
-  println(s"📊 Throughput: ${result.metrics.throughput} docs/sec")
-  
-  // Handle failures
-  result.failedDocuments.foreach { failed =>
-    println(s"Failed ID: ${failed.id}, Error: ${failed.error}")
-  }
-}
+println(s"Indexed ${result.successCount} products from JSON")
+```
 
-// With callbacks for real-time monitoring
+#### 2. Load from JSON Array with Nested Objects
+
+```scala
+// JSON Array file:
+// [
+//   { "uuid": "A12", "name": "Homer Simpson", "birthDate": "1967-11-21", "childrenCount": 0 },
+//   { "uuid": "A16", "name": "Barney Gumble", "birthDate": "1969-05-09",
+//     "children": [
+//       { "parentId": "A16", "name": "Steve Gumble", "birthDate": "1999-05-09" },
+//       { "parentId": "A16", "name": "Josh Gumble", "birthDate": "2002-05-09" }
+//     ],
+//     "childrenCount": 2
+//   }
+// ]
+
+val result = client.bulkFromFile(
+  filePath = "/data/persons.json",
+  format = JsonArray,
+  idKey = Some("uuid")
+).futureValue
+
+println(s"Indexed ${result.successCount} persons with nested structures")
+```
+
+#### 3. Load from Parquet File
+
+```scala
+// Parquet file with schema: id, name, price, category
+val result = client.bulkFromFile(
+  filePath = "/data/products.parquet",
+  format = Parquet,
+  idKey = Some("id")
+).futureValue
+
+println(s"Indexed ${result.successCount} products from Parquet")
+println(s"Throughput: ${result.metrics.throughput} docs/sec")
+```
+
+#### 4. Load from Delta Lake Table
+
+```scala
+// Delta Lake table directory structure:
+// /data/delta-products/
+//   ├── _delta_log/
+//   │   ├── 00000000000000000000.json
+//   │   └── 00000000000000000001.json
+//   ├── part-00000.parquet
+//   └── part-00001.parquet
+
+val result = client.bulkFromFile(
+  filePath = "/data/delta-products",
+  format = Delta,
+  idKey = Some("id")
+).futureValue
+
+println(s"Indexed ${result.successCount} products from Delta Lake")
+```
+
+#### 5. Load with Date-Based Index Suffixing
+
+```scala
+// Load logs with automatic date-based index partitioning
+val result = client.bulkFromFile(
+  filePath = "/data/logs.jsonl",
+  format = Json,
+  idKey = Some("id"),
+  suffixDateKey = Some("timestamp"),
+  suffixDatePattern = Some("yyyy-MM-dd")
+)(
+  bulkOptions.copy(defaultIndex = "logs"),
+  system,
+  hadoopConf
+).futureValue
+
+// Creates indices: logs-2024-01-15, logs-2024-01-16, etc.
+println(s"Indexed ${result.successCount} logs across ${result.indices.size} indices")
+result.indices.foreach(idx => println(s"  - $idx"))
+```
+
+#### 6. Load with Update (Upsert)
+
+```scala
+// Update existing documents or insert new ones
+val result = client.bulkFromFile(
+  filePath = "/data/product-updates.json",
+  format = JsonArray,
+  idKey = Some("id"),
+  update = Some(true)  // Upsert mode
+).futureValue
+
+println(s"Updated/Inserted ${result.successCount} products")
+```
+
+#### 7. Load with Callbacks for Monitoring
+
+```scala
 val callbacks = BulkCallbacks(
   onSuccess = (id, index) => 
     logger.info(s"✅ Indexed document $id in $index"),
@@ -252,107 +385,144 @@ val callbacks = BulkCallbacks(
   
   onComplete = result => {
     logger.info(s"""
-      |Bulk operation completed:
+      |📊 File bulk operation completed:
+      |  - File: /data/products.parquet
       |  - Success: ${result.successCount}
       |  - Failed: ${result.failedCount}
       |  - Duration: ${result.metrics.durationMs}ms
       |  - Throughput: ${result.metrics.throughput} docs/sec
     """.stripMargin)
-  }
+  },
+  
+  onBatchComplete = (batchSize, metrics) =>
+    logger.info(s"📦 Processed batch: $batchSize docs (${metrics.throughput} docs/sec)")
 )
 
-client.bulkWithResult(
-  items = products,
-  toDocument = toJson,
+val result = client.bulkFromFile(
+  filePath = "/data/large-dataset.parquet",
+  format = Parquet,
   idKey = Some("id"),
   callbacks = callbacks
-)
+).futureValue
+```
 
-// Bulk update (upsert)
-client.bulkWithResult(
-  items = productUpdates,
-  toDocument = toJson,
-  idKey = Some("id"),
-  update = Some(true)  // Upsert mode
-).foreach { result =>
-  println(s"Updated ${result.successCount} products")
-}
+#### 8. Load from HDFS
 
-// Bulk delete
-val obsoleteProducts: Source[Product, NotUsed] = client.scrollAs[Product](
-  """
-    |SELECT uuid AS id, name, price, category, outdated AS obsolete FROM products WHERE outdated = true
-    |""".stripMargin
-)
-val idsToDelete: Source[String, NotUsed] = obsoleteProducts.map(_._1.id)
+```scala
+// Configure Hadoop for HDFS access
+implicit val hadoopConf: Configuration = new Configuration()
+hadoopConf.set("fs.defaultFS", "hdfs://namenode:8020")
+hadoopConf.set("dfs.client.use.datanode.hostname", "true")
 
-client.bulkWithResult(
-  items = idsToDelete,
-  toDocument = id => s"""{"id": "$id"}""",
-  idKey = Some("id"),
-  delete = Some(true)
-)
+// Load from HDFS
+val result = client.bulkFromFile(
+  filePath = "hdfs://namenode:8020/data/products.parquet",
+  format = Parquet,
+  idKey = Some("id")
+).futureValue
 
-// Date-based index suffixing
-case class LogEntry(id: String, message: String, timestamp: String)
+println(s"Indexed ${result.successCount} products from HDFS")
+```
 
-val logs: Source[LogEntry, NotUsed] = getLogEntries()
+#### 9. Error Handling
 
-client.bulkWithResult(
-  items = logs,
-  toDocument = log => s"""
-  {
-    "id": "${log.id}",
-    "message": "${log.message}",
-    "timestamp": "${log.timestamp}"
+```scala
+val result = client.bulkFromFile(
+  filePath = "/data/products.json",
+  format = JsonArray,
+  idKey = Some("id")
+).futureValue
+
+// Handle failures
+if (result.failedCount > 0) {
+  println(s"⚠️  ${result.failedCount} documents failed to index")
+  
+  // Group errors by type
+  val errorsByType = result.failedDocuments
+    .groupBy(_.error)
+    .view.mapValues(_.size)
+  
+  errorsByType.foreach { case (errorType, count) =>
+    println(s"  - $errorType: $count failures")
   }
-  """,
-  idKey = Some("id"),
-  suffixDateKey = Some("timestamp"),      // Field containing date
-  suffixDatePattern = Some("yyyy-MM-dd")  // Pattern for suffix
-)(
-  bulkOptions.copy(defaultIndex = "logs"),       // Base index: "logs-2024-01-15"
-  system
-)
-
-// Error handling and retry analysis
-resultFuture.foreach { result =>
-  if (result.failedCount > 0) {
-    // Group errors by type
-    val errorsByType = result.failedDocuments
-      .groupBy(_.error)
-      .mapValues(_.size)
-    
-    errorsByType.foreach { case (errorType, count) =>
-      println(s"Error: $errorType - Count: $count")
-    }
-    
-    // Identify retryable failures
-    val retryable = result.failedDocuments.filter(_.retryable)
-    println(s"Retryable failures: ${retryable.size}")
-  }
+  
+  // Write failures to file for investigation
+  val failedIds = result.failedDocuments.map(_.id)
+  java.nio.file.Files.write(
+    java.nio.file.Paths.get("/data/failed-ids.txt"),
+    failedIds.mkString("\n").getBytes
+  )
 }
+```
 
-// Performance tuning example
-implicit val highThroughputOptions: BulkOptions = BulkOptions(
+#### 10. Performance Tuning for Large Files
+
+```scala
+// Optimize for large file processing
+implicit val highPerformanceOptions: BulkOptions = BulkOptions(
   defaultIndex = "products",
   maxBulkSize = 5000,        // Larger batches
   balance = 8,               // More parallel workers
-  disableRefresh = true,     // Disable auto-refresh for speed
+  disableRefresh = true,     // Disable auto-refresh
   retryOnFailure = true,
-  maxRetries = 5
+  maxRetries = 3,
+  logEvery = 20              // Log less frequently
 )
 
-client.bulkWithResult(
-  items = largeDataset,
-  toDocument = toJson,
+val result = client.bulkFromFile(
+  filePath = "/data/large-products.parquet",
+  format = Parquet,
   idKey = Some("id")
-).foreach { result =>
-  // Manual refresh after bulk
-  result.indices.foreach(client.refresh)
-  println(s"Bulk completed: ${result.metrics.throughput} docs/sec")
-}
+).futureValue
+
+// Manual refresh after bulk
+result.indices.foreach(client.refresh)
+
+println(s"""
+  |✅ Large file processing completed:
+  |  - Documents: ${result.successCount}
+  |  - Duration: ${result.metrics.durationMs}ms
+  |  - Throughput: ${result.metrics.throughput} docs/sec
+""".stripMargin)
 ```
+
+#### 11. Delta Lake with Specific Version
+
+```scala
+// Load specific version of Delta table
+val deltaPath = "/data/delta-products"
+
+// Get Delta table info
+val tableInfo = DeltaFileSource.getTableInfo(deltaPath)
+println(s"Delta table version: ${tableInfo.version}")
+println(s"Number of files: ${tableInfo.numFiles}")
+println(s"Size: ${tableInfo.sizeInBytes} bytes")
+
+// Load from specific version
+val result = client.bulkFromFile(
+  filePath = deltaPath,
+  format = Delta,
+  idKey = Some("id")
+).futureValue
+
+println(s"Indexed ${result.successCount} products from Delta Lake v${tableInfo.version}")
+```
+
+---
+
+### File Format Comparison
+
+| Format       | Speed      | Size    | Schema | Nested | Use Case                        |
+|--------------|------------|---------|--------|--------|---------------------------------|
+| **JSON**     | Medium     | Large   | No     | Yes    | Semi-structured data            |
+| **JsonArray**| Medium     | Large   | No     | Yes    | Complex nested structures       |
+| **Parquet**  | Very Fast  | Small   | Yes    | Yes    | Big data, analytics             |
+| **Delta**    | Very Fast  | Small   | Yes    | Yes    | ACID transactions, time travel  |
+
+**Recommendations :**
+- **JSON/JsonArray**: APIs, logs, semi-structured data
+- **Parquet**: Large datasets, columnar analytics
+- **Delta Lake**: Data lakes, versioning, ACID compliance
 
 ---
 
@@ -450,7 +620,7 @@ source
   }
   .runWith(Sink.ignore)
 
-// Integration with other streams
+// Integration with file streaming
 val csvSource: Source[String, NotUsed] = 
   FileIO.fromPath(Paths.get("products.csv"))
     .via(Framing.delimiter(ByteString("\n"), 1024))
@@ -461,7 +631,7 @@ csvSource
   .grouped(1000)
   .flatMapConcat { batch =>
     client.bulkSource(
-      items = batch.iterator,
+      items = Source(batch),
       toDocument = toJson,
       idKey = Some("id")
     )
@@ -525,119 +695,82 @@ def bulk[D](
 
 ---
 
-## Implementation Requirements
+## File-Based Bulk Operations
 
-### toBulkElasticAction
+### File Validation
 
-```scala
-implicit private[client] def toBulkElasticAction(
-  a: BulkActionType
-): BulkElasticAction
-```
-
-Converts internal `BulkActionType` to Elasticsearch-specific bulk action.
-
----
-
-### bulkFlow
+All file-based operations automatically validate:
+- ✅ File/directory existence
+- ✅ Read permissions
+- ✅ File format compatibility
+- ✅ Non-empty content (with warnings)
 
 ```scala
-private[client] def bulkFlow(implicit
-  bulkOptions: BulkOptions,
-  system: ActorSystem
-): Flow[Seq[BulkActionType], BulkResultType, NotUsed]
-```
-
-**Implementation Example:**
-
-```scala
-private[client] def bulkFlow(implicit
-  bulkOptions: BulkOptions,
-  system: ActorSystem
-): Flow[Seq[BulkActionType], BulkResultType, NotUsed] = {
-  
-  implicit val ec: ExecutionContext = system.dispatcher
-  
-  Flow[Seq[BulkActionType]]
-    .mapAsync(1) { actions =>
-      val bulkRequest = new BulkRequest()
-      
-      actions.foreach { action =>
-        val elasticAction = toBulkElasticAction(action)
-        bulkRequest.add(elasticAction)
-      }
-      
-      Future {
-        client.bulk(bulkRequest, RequestOptions.DEFAULT)
-      }
-    }
+// Automatic validation
+try {
+  val result = client.bulkFromFile(
+    filePath = "/data/products.parquet",
+    format = Parquet,
+    idKey = Some("id")
+  ).futureValue
+} catch {
+  case e: IllegalArgumentException if e.getMessage.contains("does not exist") =>
+    println("File not found")
+  case e: IllegalArgumentException if e.getMessage.contains("not a file") =>
+    println("Path is not a file")
+  case e: IllegalArgumentException if e.getMessage.contains("not a directory") =>
+    println("Path is not a directory (required for Delta)")
 }
 ```
 
----
+### File Metadata
 
-### extractBulkResults
-
-```scala
-private[client] def extractBulkResults(
-  result: BulkResultType,
-  originalBatch: Seq[BulkItem]
-): Seq[Either[FailedDocument, SuccessfulDocument]]
-```
-
-**Implementation Example:**
+Get information about files before processing:
 
 ```scala
-private[client] def extractBulkResults(
-  result: BulkResponse,
-  originalBatch: Seq[BulkItem]
-): Seq[Either[FailedDocument, SuccessfulDocument]] = {
-  
-  result.getItems.zip(originalBatch).map { case (item, original) =>
-    if (item.isFailed) {
-      Left(FailedDocument(
-        id = original.id.getOrElse("unknown"),
-        index = original.index,
-        document = original.document,
-        error = item.getFailureMessage,
-        retryable = isRetryable(item.getFailure)
-      ))
-    } else {
-      Right(SuccessfulDocument(
-        id = item.getId,
-        index = item.getIndex
-      ))
-    }
-  }
-}
+// Parquet metadata (available)
+val parquetMeta = ParquetFileSource.getFileMetadata("/data/products.parquet")
+println(s"""
+           |Parquet file:
+           |  Rows: ${parquetMeta.numRows}
+           |  Row groups: ${parquetMeta.numRowGroups}
+           |  Columns: ${parquetMeta.schema.getFieldCount}
+""".stripMargin)
 
-private def isRetryable(failure: BulkItemResponse.Failure): Boolean = {
-  val retryableErrors = Set(
-    "version_conflict_engine_exception",
-    "es_rejected_execution_exception",
-    "timeout_exception"
-  )
-  retryableErrors.exists(failure.getMessage.contains)
-}
+// Delta table info (available)
+val deltaMeta = DeltaFileSource.getTableInfo("/data/delta-products")
+println(s"""
+           |Delta table:
+           |  Version: ${deltaMeta.version}
+           |  Files: ${deltaMeta.numFiles}
+           |  Size: ${deltaMeta.sizeInBytes} bytes
+           |  Partitions: ${deltaMeta.partitionColumns.mkString(", ")}
+""".stripMargin)
+
+// JSON Array metadata (available)
+val jsonMeta = JsonArrayFileSource.getMetadata("/data/persons.json")
+println(s"""
+           |JSON array:
+           |  Elements: ${jsonMeta.elementCount}
+           |  Has nested arrays: ${jsonMeta.hasNestedArrays}
+           |  Has nested objects: ${jsonMeta.hasNestedObjects}
+           |  Max depth: ${jsonMeta.maxDepth}
+""".stripMargin)
 ```
 
----
+### Format-Specific Metadata Methods
 
-### toBulkAction & actionToBulkItem
-
-```scala
-private[client] def toBulkAction(bulkItem: BulkItem): BulkActionType
-
-private[client] def actionToBulkItem(action: BulkActionType): BulkItem
-```
-
-Bidirectional conversion between internal `BulkItem` and Elasticsearch-specific `BulkActionType`.
+| Format       | Metadata Method               | Available Info                                    |
+|--------------|-------------------------------|---------------------------------------------------|
+| **Parquet**  | `getFileMetadata(path)`       | ✅ Rows, row groups, schema, compression         |
+| **Delta**    | `getTableInfo(path)`          | ✅ Version, files, size, partitions              |
+| **JsonArray**| `getMetadata(path)`           | ✅ Element count, nesting info, max depth        |
 
 ---
 
 ## Common Patterns
 
-### High-Throughput Indexing
+### High-Throughput File Indexing
 
 ```scala
 // Optimize for maximum throughput
@@ -650,20 +783,18 @@ implicit val highPerformanceOptions: BulkOptions = BulkOptions(
   logEvery = 50              // Less frequent logging
 )
 
-val result = client.bulkWithResult(
-  items = massiveDataset,
-  toDocument = toJson,
+val result = client.bulkFromFile(
+  filePath = "/data/massive-dataset.parquet",
+  format = Parquet,
   idKey = Some("id")
-)
+).futureValue
 
-result.foreach { r =>
-  // Manual refresh once at the end
-  r.indices.foreach(client.refresh)
-  println(s"Indexed ${r.successCount} documents at ${r.metrics.throughput} docs/sec")
-}
+// Manual refresh once at the end
+result.indices.foreach(client.refresh)
+println(s"Indexed ${result.successCount} documents at ${result.metrics.throughput} docs/sec")
 ```
 
-### Reliable Indexing with Retry
+### Reliable File Indexing with Retry
 
 ```scala
 // Optimize for reliability
@@ -678,93 +809,99 @@ implicit val reliableOptions: BulkOptions = BulkOptions(
   retryBackoffMultiplier = 3.0
 )
 
-val result = client.bulkWithResult(
-  items = criticalData,
-  toDocument = toJson,
+val result = client.bulkFromFile(
+  filePath = "/data/critical-data.json",
+  format = JsonArray,
   idKey = Some("id")
-)
+).futureValue
 
-result.foreach { r =>
-  if (r.failedCount > 0) {
-    // Log all failures for investigation
-    r.failedDocuments.foreach { failed =>
-      logger.error(s"Critical failure: ${failed.id} - ${failed.error}")
-      alerting.sendAlert(s"Failed to index critical document: ${failed.id}")
-    }
+if (result.failedCount > 0) {
+  // Log all failures for investigation
+  result.failedDocuments.foreach { failed =>
+    logger.error(s"Critical failure: ${failed.id} - ${failed.error}")
+    alerting.sendAlert(s"Failed to index critical document: ${failed.id}")
   }
 }
 ```
 
-### Time-Series Data with Date Suffixes
+### Time-Series Data from Files
 
 ```scala
-case class LogEntry(
-  id: String,
-  timestamp: String,  // ISO format: "2024-01-15T10:30:00Z"
-  level: String,
-  message: String
-)
-
-val logs: Source[LogEntry, NotUsed] = streamLogs()
-
+// Load logs with automatic date-based partitioning
 implicit val logOptions: BulkOptions = BulkOptions(
-  defaultIndex = "logs",            // Base index
+  defaultIndex = "logs",
   maxBulkSize = 2000,
   balance = 4
 )
 
-client.bulkWithResult(
-  items = logs,
-  toDocument = log => s"""
-  {
-    "id": "${log.id}",
-    "timestamp": "${log.timestamp}",
-    "level": "${log.level}",
-    "message": "${log.message}"
-  }
-  """,
+val result = client.bulkFromFile(
+  filePath = "/data/application-logs.jsonl",
+  format = Json,
   idKey = Some("id"),
   suffixDateKey = Some("timestamp"),
   suffixDatePattern = Some("yyyy-MM-dd")
-)
+).futureValue
+
 // Creates indices: logs-2024-01-15, logs-2024-01-16, etc.
+println(s"Indexed ${result.successCount} logs across ${result.indices.size} daily indices")
 ```
 
-### Incremental Updates
+### Batch Processing Multiple Files
 
 ```scala
-case class ProductUpdate(id: String, price: Double, stock: Int)
+val files = Seq(
+  "/data/products-2024-01.parquet",
+  "/data/products-2024-02.parquet",
+  "/data/products-2024-03.parquet"
+)
 
-val updates: Source[ProductUpdate, NotUsed] = getProductUpdates()
-
-client.bulkWithResult(
-  items = updates,
-  toDocument = update => s"""
-  {
-    "id": "${update.id}",
-    "price": ${update.price},
-    "stock": ${update.stock}
+val results = Future.sequence(
+  files.map { file =>
+    client.bulkFromFile(
+      filePath = file,
+      format = Parquet,
+      idKey = Some("id")
+    )
   }
-  """,
-  idKey = Some("id"),
-  update = Some(true)  // Upsert mode
-).foreach { result =>
-  println(s"Updated ${result.successCount} products")
+)
+
+results.foreach { resultList =>
+  val totalSuccess = resultList.map(_.successCount).sum
+  val totalFailed = resultList.map(_.failedCount).sum
+  
+  println(s"""
+    |📊 Batch processing completed:
+    |  - Files processed: ${files.size}
+    |  - Total success: $totalSuccess
+    |  - Total failed: $totalFailed
+  """.stripMargin)
 }
 ```
 
-### Batch Deletion
+### Incremental Delta Lake Updates
 
 ```scala
-val obsoleteIds: Source[String, NotUsed] = findObsoleteDocuments()
+// Track last processed version
+var lastVersion: Long = 0
 
-client.bulkWithResult(
-  items = obsoleteIds,
-  toDocument = id => s"""{"id": "$id"}""",
-  idKey = Some("id"),
-  delete = Some(true)
-).foreach { result =>
-  println(s"Deleted ${result.successCount} documents")
+// Get current Delta table version
+val tableInfo = DeltaFileSource.getTableInfo("/data/delta-products")
+
+if (tableInfo.version > lastVersion) {
+  println(s"Processing Delta updates from v$lastVersion to v${tableInfo.version}")
+  
+  val result = client.bulkFromFile(
+    filePath = "/data/delta-products",
+    format = Delta,
+    idKey = Some("id"),
+    update = Some(true)  // Upsert mode
+  ).futureValue
+  
+  lastVersion = tableInfo.version
+  
+  println(s"Updated ${result.successCount} products from Delta Lake")
+} else {
+  println("No new Delta versions to process")
 }
 ```
 
@@ -772,758 +909,339 @@ client.bulkWithResult(
 
 ## Performance Optimization
 
-### Tuning Parameters
+### Tuning Parameters for File Operations
 
-| Parameter        | Low Throughput  | Balanced  | High Throughput  |
-|------------------|-----------------|-----------|------------------|
-| `maxBulkSize`    | 500             | 1000      | 5000-10000       |
-| `balance`        | 1-2             | 4         | 8-16             |
-| `disableRefresh` | false           | false     | true             |
-| `retryOnFailure` | true            | true      | false            |
+| Parameter        | Small Files (<1GB) | Medium Files (1-10GB) | Large Files (>10GB) |
+|------------------|--------------------|-----------------------|---------------------|
+| `maxBulkSize`    | 1000               | 5000                  | 10000               |
+| `balance`        | 4                  | 8                     | 16                  |
+| `disableRefresh` | false              | true                  | true                |
+| `retryOnFailure` | true               | true                  | false               |
+
+### Format-Specific Optimization
+
+```scala
+// JSON - Text parsing overhead
+implicit val textOptions: BulkOptions = BulkOptions(
+  maxBulkSize = 2000,
+  balance = 4
+)
+
+// Parquet/Delta - Binary format, faster
+implicit val binaryOptions: BulkOptions = BulkOptions(
+  maxBulkSize = 10000,
+  balance = 16
+)
+```
 
 ### Memory Considerations
 
 ```scala
-// For large documents, use smaller batches
-implicit val largeDocOptions: BulkOptions = BulkOptions(
-  defaultIndex = "documents",
-  maxBulkSize = 100,  // Fewer large documents per batch
-  balance = 2
+// For large Parquet files with wide schemas
+implicit val wideSchemaOptions: BulkOptions = BulkOptions(
+  maxBulkSize = 500,   // Smaller batches
+  balance = 2          // Less parallelism
 )
 
-// For small documents, use larger batches
-implicit val smallDocOptions: BulkOptions = BulkOptions(
-  defaultIndex = "events",
-  maxBulkSize = 10000,  // Many small documents per batch
+// For narrow schemas (few columns)
+implicit val narrowSchemaOptions: BulkOptions = BulkOptions(
+  maxBulkSize = 10000,
   balance = 8
 )
-```
-
-### Backpressure Handling
-
-```scala
-// Akka Streams automatically handles backpressure
-val source = client.bulkSource(
-  items = infiniteStream,
-  toDocument = toJson,
-  idKey = Some("id")
-)
-
-// Add throttling if needed
-source
-  .throttle(1000, 1.second)  // Max 1000 docs/sec
-  .runWith(Sink.foreach {
-    case Right(success) => println(s"✅ ${success.id}")
-    case Left(failed) => println(s"❌ ${failed.id}")
-  })
-end_scalar
 ```
 
 ---
 
 ## Error Handling
 
-### Retryable vs Non-Retryable Errors
+### File-Specific Errors
 
 ```scala
-// Retryable errors (automatic retry)
-val retryableErrors = Set(
-  "version_conflict_engine_exception",  // Concurrent modification
-  "es_rejected_execution_exception",    // Queue full
-  "timeout_exception",                  // Temporary timeout
-  "connect_exception"                   // Network issue
-)
-
-// Non-retryable errors (fail immediately)
-val nonRetryableErrors = Set(
-  "mapper_parsing_exception",           // Invalid document structure
-  "illegal_argument_exception",         // Invalid field value
-  "index_not_found_exception"           // Missing index
-)
-```
-
-### Handling Failures
-
-```scala
-val result = client.bulkWithResult(
-  items = products,
-  toDocument = toJson,
+val result = client.bulkFromFile(
+  filePath = "/data/products.json",
+  format = JsonArray,
   idKey = Some("id")
 )
 
-result.foreach { r =>
-  if (r.failedCount > 0) {
-    // Group by error type
-    val errorGroups = r.failedDocuments.groupBy(_.error)
+result.recover {
+  case e: IllegalArgumentException if e.getMessage.contains("does not exist") =>
+    logger.error(s"File not found: ${e.getMessage}")
+    BulkResult.empty
+  
+  case e: IllegalArgumentException if e.getMessage.contains("not a JSON array") =>
+    logger.error(s"Invalid JSON format: ${e.getMessage}")
+    BulkResult.empty
+  
+  case e: java.io.IOException =>
+    logger.error(s"IO error reading file: ${e.getMessage}")
+    BulkResult.empty
+  
+  case e: Exception =>
+    logger.error(s"Unexpected error: ${e.getMessage}", e)
+    throw e
+}
+```
+
+### Handling Partial Failures
+
+```scala
+val result = client.bulkFromFile(
+  filePath = "/data/products.parquet",
+  format = Parquet,
+  idKey = Some("id")
+).futureValue
+
+if (result.failedCount > 0) {
+  val failureRate = result.failedCount.toDouble / (result.successCount + result.failedCount)
+  
+  if (failureRate > 0.1) {
+    // More than 10% failures - investigate
+    logger.error(s"High failure rate: ${failureRate * 100}%")
     
-    errorGroups.foreach { case (errorType, failures) =>
-      println(s"Error: $errorType")
-      println(s"Count: ${failures.size}")
+    // Write failed documents for reprocessing
+    val failedJson = result.failedDocuments.map(_.document).mkString("\n")
+    java.nio.file.Files.write(
+      java.nio.file.Paths.get("/data/failed-documents.jsonl"),
+      failedJson.getBytes
+    )
+  }
+}
+```
+
+---
+
+## Testing File-Based Bulk Operations
+
+### Test JSON Array with Nested Objects
+
+```scala
+"bulkFromFile" should "handle JSON array with nested objects" in {
+  implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = "test-json")
+  
+  val tempFile = java.io.File.createTempFile("test", ".json")
+  tempFile.deleteOnExit()
+  
+  val writer = new java.io.PrintWriter(tempFile)
+  writer.println("""[
+    |  {"uuid": "A16", "name": "Person", "children": [
+    |    {"name": "Child 1", "age": 10},
+    |    {"name": "Child 2", "age": 12}
+    |  ]}
+    |]""".stripMargin)
+  writer.close()
+  
+  val result = client.bulkFromFile(
+    filePath = tempFile.getAbsolutePath,
+    format = JsonArray,
+    idKey = Some("uuid")
+  ).futureValue
+  
+  result.successCount shouldBe 1
+  result.failedCount shouldBe 0
+  
+  // Verify nested structure was preserved
+  val doc = client.get("A16", "test-json").futureValue
+  doc should include("children")
+  doc should include("Child 1")
+}
+```
+
+### Test Parquet File Loading
+
+```scala
+"bulkFromFile" should "load and index Parquet file" in {
+  implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = "test-parquet")
+  
+  // Assume Parquet file exists
+  val result = client.bulkFromFile(
+    filePath = "/test-data/products.parquet",
+    format = Parquet,
+    idKey = Some("id")
+  ).futureValue
+  
+  result.successCount should be > 0
+  result.failedCount shouldBe 0
+  result.metrics.throughput should be > 0.0
+}
+```
+
+---
+
+## Best Practices for File-Based Operations
+
+**1. Choose the Right Format**
+
+```scala
+// ✅ Good - Use Parquet for large datasets
+client.bulkFromFile("/data/big-dataset.parquet", Parquet, idKey = Some("id"))
+
+// ❌ Avoid - Json for large datasets (slow parsing)
+client.bulkFromFile("/data/big-dataset.json", Json, idKey = Some("id"))
+```
+
+**2. Validate Files Before Processing**
+
+```scala
+// ✅ Good - Check file metadata first
+val parquetMeta = ParquetFileSource.getFileMetadata("/data/products.parquet")
+if (parquetMeta.numRows > 1000000) {
+  // Use optimized settings for large files
+  implicit val options: BulkOptions = BulkOptions(maxBulkSize = 10000, balance = 16)
+}
+```
+
+**3. Handle Large Files Efficiently**
+
+```scala
+// ✅ Good - Disable refresh for large files
+implicit val options: BulkOptions = BulkOptions(
+  disableRefresh = true,
+  maxBulkSize = 10000
+)
+
+val result = client.bulkFromFile("/data/huge-file.parquet", Parquet, Some("id")).futureValue
+result.indices.foreach(client.refresh)  // Manual refresh once
+```
+
+**4. Monitor File Processing**
+
+```scala
+// ✅ Good - Use callbacks for monitoring
+val callbacks = BulkCallbacks(
+  onBatchComplete = (size, metrics) =>
+    println(s"Processed batch: $size docs at ${metrics.throughput} docs/sec"),
+  onComplete = result =>
+    println(s"File processing: ${result.successCount} success, ${result.failedCount} failed")
+)
+
+client.bulkFromFile("/data/file.parquet", Parquet, Some("id"), callbacks = callbacks)
+```
+
+**5. Use Delta Lake for Incremental Updates**
+
+```scala
+// ✅ Good - Track Delta versions
+val currentVersion = DeltaFileSource.getTableInfo("/data/delta").version
+// Process only new data...
+```
+
+**Example: Smart File Processing with Metadata**
+
+```scala
+def smartBulkFromFile(
+  filePath: String,
+  format: FileFormat,
+  idKey: Option[String]
+)(implicit system: ActorSystem, hadoopConf: Configuration): Future[BulkResult] = {
+  
+  // Auto-tune based on available metadata
+  implicit val bulkOptions: BulkOptions = format match {
+    case Parquet =>
+      val meta = ParquetFileSource.getFileMetadata(filePath)
+      println(s"📊 Parquet file: ${meta.numRows} rows")
       
-      // Handle specific error types
-      errorType match {
-        case e if e.contains("mapper_parsing") =>
-          // Log invalid documents for review
-          failures.foreach { f =>
-            logger.error(s"Invalid document: ${f.document}")
-          }
-        
-        case e if e.contains("version_conflict") =>
-          // Retry with latest version
-          failures.foreach { f =>
-            retryWithFreshVersion(f.id)
-          }
-        
-        case _ =>
-          logger.error(s"Unhandled error: $errorType")
+      if (meta.numRows > 10000000) {
+        // Very large file
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 10000,
+          balance = 16,
+          disableRefresh = true,
+          logEvery = 100
+        )
+      } else if (meta.numRows > 1000000) {
+        // Large file
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 5000,
+          balance = 8,
+          disableRefresh = true
+        )
+      } else {
+        // Small file
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 1000,
+          balance = 4
+        )
       }
-    }
-  }
-}
-```
-
----
-
-## Monitoring and Metrics
-
-### Real-Time Progress Tracking
-
-```scala
-val callbacks = BulkCallbacks(
-  onSuccess = (id, index) => {
-    metricsCollector.incrementSuccess()
-  },
-  
-  onFailure = failed => {
-    metricsCollector.incrementFailure(failed.error)
-  },
-  
-  onComplete = result => {
-    val metrics = result.metrics
-    logger.info(s"""
-      |Bulk Operation Summary:
-      |  Duration: ${metrics.durationMs}ms
-      |  Total Documents: ${metrics.totalDocuments}
-      |  Success: ${result.successCount}
-      |  Failed: ${result.failedCount}
-      |  Throughput: ${metrics.throughput} docs/sec
-      |  Batches: ${metrics.totalBatches}
-      |  Indices: ${result.indices.mkString(", ")}
-    """.stripMargin)
     
-    // Error breakdown
-    metrics.errorsByType.foreach { case (errorType, count) =>
-      logger.info(s"  $errorType: $count")
-    }
-  }
-)
-
-client.bulkWithResult(
-  items = products,
-  toDocument = toJson,
-  idKey = Some("id"),
-  callbacks = callbacks
-)
-```
-
-### Custom Metrics Collection
-
-```scala
-var successCount = 0
-var failureCount = 0
-val startTime = System.currentTimeMillis()
-
-client.bulkSource(
-  items = products,
-  toDocument = toJson,
-  idKey = Some("id")
-).runWith(Sink.foreach {
-  case Right(_) =>
-    successCount += 1
-    if (successCount % 1000 == 0) {
-      val elapsed = System.currentTimeMillis() - startTime
-      val throughput = (successCount * 1000.0) / elapsed
-      println(s"Progress: $successCount docs, $throughput docs/sec")
-    }
-  
-  case Left(_) =>
-    failureCount += 1
-})
-```
-
----
-
-## Best Practices
-
-**1. Choose Appropriate Batch Sizes**
-
-```scala
-// ✅ Good - balanced batch size
-implicit val options: BulkOptions = BulkOptions(
-  defaultIndex = "products",
-  maxBulkSize = 1000  // Good for most use cases
-)
-
-// ❌ Too small - overhead
-implicit val tooSmall: BulkOptions = BulkOptions(maxBulkSize = 10)
-
-// ❌ Too large - memory issues
-implicit val tooLarge: BulkOptions = BulkOptions(maxBulkSize = 100000)
-```
-
-**2. Disable Refresh for Large Bulks**
-
-```scala
-// ✅ Good - disable refresh during bulk
-implicit val options: BulkOptions = BulkOptions(
-  defaultIndex = "products",
-  disableRefresh = true
-)
-
-val result = client.bulkWithResult(items, toJson, Some("id"))
-result.foreach { r =>
-  // Manual refresh once at the end
-  r.indices.foreach(client.refresh)
-}
-```
-
-**3. Handle Failures Appropriately**
-
-```scala
-// ✅ Good - detailed failure handling
-result.foreach { r =>
-  r.failedDocuments.foreach { failed =>
-    if (failed.retryable) {
-      retryQueue.add(failed)
-    } else {
-      deadLetterQueue.add(failed)
-    }
-  }
-}
-
-// ❌ Avoid - ignoring failures
-result.foreach { r =>
-  println(s"Success: ${r.successCount}")
-  // Failures ignored!
-}
-```
-
-**4. Use Callbacks for Monitoring**
-
-```scala
-// ✅ Good - real-time monitoring
-val callbacks = BulkCallbacks(
-  onSuccess = (id, index) => recordSuccess(id, index),
-  onFailure = failed => recordFailure(failed.error),
-  onComplete = result => sendCompletionNotification(result)
-)
-
-client.bulkWithResult(items, toJson, Some("id"), callbacks = callbacks)
-```
-
-**5. Tune Parallelism Based on Cluster Size**
-
-```scala
-// Small cluster (1-3 nodes)
-implicit val smallCluster: BulkOptions = BulkOptions(balance = 2)
-
-// Medium cluster (4-10 nodes)
-implicit val mediumCluster: BulkOptions = BulkOptions(balance = 4)
-
-// Large cluster (10+ nodes)
-implicit val largeCluster: BulkOptions = BulkOptions(balance = 8)
-```
-
----
-
-## Testing Scenarios
-
-### Test Basic Bulk Indexing
-
-```scala
-def testBulkIndexing()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(
-    defaultIndex = "test-bulk",
-    maxBulkSize = 100
-  )
-  
-  val testData = (1 to 1000).map { i =>
-    Map("id" -> s"doc-$i", "name" -> s"Product $i", "price" -> (i * 10.0))
-  }
-  
-  val toJson: Map[String, Any] => String = doc => s"""
-  {
-    "id": "${doc("id")}",
-    "name": "${doc("name")}",
-    "price": ${doc("price")}
-  }
-  """
-  
-  client.bulkWithResult(
-    items = testData.iterator,
-    toDocument = toJson,
-    idKey = Some("id")
-  ).map { result =>
-    assert(result.successCount == 1000, "All documents should be indexed")
-    assert(result.failedCount == 0, "No failures expected")
-    assert(result.indices.contains("test-bulk"), "Index should be created")
-    
-    println(s"✅ Bulk test passed: ${result.successCount} documents indexed")
-  }
-}
-```
-
-### Test Bulk Update
-
-```scala
-def testBulkUpdate()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = "test-bulk")
-  
-  for {
-    // First, index documents
-    _ <- client.bulkWithResult(
-      items = testData.iterator,
-      toDocument = toJson,
-      idKey = Some("id")
-    )
-    
-    // Then, update them
-    updates = testData.map(doc => doc.updated("price", 999.99))
-    updateResult <- client.bulkWithResult(
-      items = updates.iterator,
-      toDocument = toJson,
-      idKey = Some("id"),
-      update = Some(true)
-    )
-    
-    _ = assert(updateResult.successCount == testData.size, "All updates should succeed")
-    
-    // Verify updates
-    doc <- client.get("doc-1", "test-bulk")
-    _ = assert(doc.contains("999.99"), "Price should be updated")
-  } yield {
-    println("✅ Bulk update test passed")
-  }
-}
-```
-
-### Test Bulk Delete
-
-```scala
-def testBulkDelete()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = "test-bulk")
-  
-  for {
-    // Index documents
-    _ <- client.bulkWithResult(
-      items = testData.iterator,
-      toDocument = toJson,
-      idKey = Some("id")
-    )
-    
-    // Delete them
-    deleteResult <- client.bulkWithResult(
-      items = testData.iterator,
-      toDocument = toJson,
-      idKey = Some("id"),
-      delete = Some(true)
-    )
-    
-    _ = assert(deleteResult.successCount == testData.size, "All deletes should succeed")
-    
-    // Verify deletion
-    exists <- client.exists("doc-1", "test-bulk")
-    _ = assert(!exists, "Document should be deleted")
-  } yield {
-    println("✅ Bulk delete test passed")
-  }
-}
-```
-
-### Test Error Handling
-
-```scala
-def testBulkErrorHandling()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(
-    defaultIndex = "test-bulk",
-    retryOnFailure = false  // Disable retry for testing
-  )
-  
-  val mixedData = Seq(
-    """{"id": "valid-1", "name": "Valid Product"}""",
-    """{"id": "invalid", "name": INVALID_JSON}""",  // Invalid JSON
-    """{"id": "valid-2", "name": "Another Valid"}"""
-  )
-  
-  client.bulkWithResult(
-    items = mixedData.iterator,
-    toDocument = identity,
-    idKey = Some("id")
-  ).map { result =>
-    assert(result.successCount == 2, "Two valid documents should succeed")
-    assert(result.failedCount == 1, "One invalid document should fail")
-    
-    val failed = result.failedDocuments.head
-    assert(failed.id == "invalid", "Failed document ID should match")
-    assert(failed.error.contains("parse"), "Error should mention parsing")
-    
-    println("✅ Error handling test passed")
-  }
-}
-```
-
-### Test Date-Based Index Suffixing
-
-```scala
-def testDateSuffixing()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = "logs")
-  
-  val logs = Seq(
-    """{"id": "log-1", "timestamp": "2024-01-15T10:00:00Z", "message": "Log 1"}""",
-    """{"id": "log-2", "timestamp": "2024-01-16T10:00:00Z", "message": "Log 2"}""",
-    """{"id": "log-3", "timestamp": "2024-01-17T10:00:00Z", "message": "Log 3"}"""
-  )
-  
-  client.bulkWithResult(
-    items = logs.iterator,
-    toDocument = identity,
-    idKey = Some("id"),
-    suffixDateKey = Some("timestamp"),
-    suffixDatePattern = Some("yyyy-MM-dd")
-  ).map { result =>
-    assert(result.successCount == 3, "All logs should be indexed")
-    assert(result.indices.contains("logs-2024-01-15"), "Index with date suffix should exist")
-    assert(result.indices.contains("logs-2024-01-16"), "Index with date suffix should exist")
-    assert(result.indices.contains("logs-2024-01-17"), "Index with date suffix should exist")
-    assert(result.indices.size == 3, "Three different indices should be created")
-    
-    println("✅ Date suffixing test passed")
-  }
-}
-```
-
-### Test Retry Mechanism
-
-```scala
-def testRetryMechanism()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(
-    defaultIndex = "test-bulk",
-    retryOnFailure = true,
-    maxRetries = 3,
-    retryDelay = 100.millis
-  )
-  
-  var attemptCount = 0
-  
-  // Simulate transient failure
-  val mockData = Seq("""{"id": "doc-1", "name": "Test"}""")
-  
-  client.bulkWithResult(
-    items = mockData.iterator,
-    toDocument = { doc =>
-      attemptCount += 1
-      if (attemptCount < 3) {
-        // Simulate transient error
-        throw new Exception("Simulated transient error")
+    case Delta =>
+      val info = DeltaFileSource.getTableInfo(filePath)
+      println(s"📊 Delta table: version ${info.version}, ${info.numFiles} files, ${info.sizeInBytes / 1024 / 1024}MB")
+      
+      if (info.sizeInBytes > 1024 * 1024 * 1024) {
+        // >1GB
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 10000,
+          balance = 16,
+          disableRefresh = true
+        )
+      } else {
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 5000,
+          balance = 8
+        )
       }
-      doc
-    },
-    idKey = Some("id")
-  ).map { result =>
-    assert(result.successCount == 1, "Document should succeed after retry")
-    assert(attemptCount >= 2, "Should have retried at least once")
     
-    println(s"✅ Retry test passed (attempts: $attemptCount)")
-  }
-}
-```
-
-### Test Performance Metrics
-
-```scala
-def testPerformanceMetrics()(implicit system: ActorSystem): Future[Unit] = {
-  implicit val bulkOptions: BulkOptions = BulkOptions(
-    defaultIndex = "test-bulk",
-    maxBulkSize = 1000,
-    logEvery = 10
-  )
-  
-  val largeDataset = (1 to 10000).map { i =>
-    s"""{"id": "doc-$i", "name": "Product $i"}"""
-  }
-  
-  client.bulkWithResult(
-    items = largeDataset.iterator,
-    toDocument = identity,
-    idKey = Some("id")
-  ).map { result =>
-    val metrics = result.metrics
+    case JsonArray =>
+      val meta = JsonArrayFileSource.getMetadata(filePath)
+      println(s"📊 JSON array: ${meta.elementCount} elements, nested=${meta.hasNestedArrays}")
+      
+      if (meta.elementCount > 100000) {
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 5000,
+          balance = 8,
+          disableRefresh = true
+        )
+      } else {
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 1000,
+          balance = 4
+        )
+      }
     
-    assert(metrics.totalDocuments == 10000, "Total documents should match")
-    assert(metrics.totalBatches == 10, "Should have 10 batches (1000 each)")
-    assert(metrics.throughput > 0, "Throughput should be calculated")
-    assert(metrics.duration > 0, "Duration should be recorded")
-    
-    println(s"""
-      |✅ Performance test passed:
-      |  Documents: ${metrics.totalDocuments}
-      |  Batches: ${metrics.totalBatches}
-      |  Duration: ${metrics.duration}ms
-      |  Throughput: ${metrics.throughput} docs/sec
-    """.stripMargin)
-  }
-}
-```
-
----
-
-## Advanced Use Cases
-
-### Multi-Index Bulk Operations
-
-```scala
-case class Document(id: String, index: String, data: String)
-
-val multiIndexDocs: Source[Document, NotUsed] = getDocuments()
-
-// Custom transformation to handle multiple indices
-client.bulkWithResult(
-  items = multiIndexDocs,
-  toDocument = doc => s"""
-  {
-    "id": "${doc.id}",
-    "index": "${doc.index}",
-    "data": "${doc.data}"
-  }
-  """,
-  indexKey = Some("index"),  // Dynamic index per document
-  idKey = Some("id")
-)(
-  bulkOptions.copy(defaultIndex = "default"),  // Fallback index
-  system
-).foreach { result =>
-  println(s"Indexed across ${result.indices.size} indices")
-  result.indices.foreach(idx => println(s"  - $idx"))
-}
-```
-
-### Conditional Bulk Operations
-
-```scala
-def bulkWithCondition[D](
-  items: Source[D, NotUsed],
-  toDocument: D => String,
-  condition: D => Boolean
-)(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
-  
-  val filteredItems = items.filter(condition)
-  
-  client.bulkWithResult(
-    items = filteredItems,
-    toDocument = toDocument,
-    idKey = Some("id")
-  )
-}
-
-// Usage: Only index products with price > 0
-bulkWithCondition(
-  items = products,
-  toDocument = toJson,
-  condition = (p: Product) => p.price > 0
-)
-```
-
-### Bulk with Transformation Pipeline
-
-```scala
-def bulkWithTransformation[D, T](
-  items: Source[D, NotUsed],
-  transform: D => T,
-  toDocument: T => String
-)(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
-  
-  val transformedItems = items.map(transform)
-  
-  client.bulkWithResult(
-    items = transformedItems,
-    toDocument = toDocument,
-    idKey = Some("id")
-  )
-}
-
-// Usage: Enrich products before indexing
-case class EnrichedProduct(
-  id: String,
-  name: String,
-  price: Double,
-  category: String,
-  enrichedAt: String
-)
-
-def enrichProduct(product: Product): EnrichedProduct = {
-  EnrichedProduct(
-    id = product.id,
-    name = product.name,
-    price = product.price,
-    category = categorize(product),
-    enrichedAt = java.time.Instant.now().toString
-  )
-}
-
-bulkWithTransformation(
-  items = products,
-  transform = enrichProduct,
-  toDocument = toJson
-)
-```
-
-### Bulk with External API Integration
-
-```scala
-def bulkWithExternalEnrichment[D](
-  items: Source[D, NotUsed],
-  enrichmentApi: D => Future[D],
-  toDocument: D => String
-)(implicit 
-  bulkOptions: BulkOptions, 
-  system: ActorSystem,
-  ec: ExecutionContext
-): Future[BulkResult] = {
-  
-  // Enrich in batches to avoid overwhelming external API
-  val enrichedFuture = Future.sequence(
-    items.grouped(100).map { batch =>
-      Future.sequence(batch.map(enrichmentApi))
-    }
-  ).map(_.flatten)
-  
-  enrichedFuture.flatMap { enrichedItems =>
-    client.bulkWithResult(
-      items = enrichedItems.iterator,
-      toDocument = toDocument,
-      idKey = Some("id")
-    )
-  }
-}
-```
-
-### Bulk with Deduplication
-
-```scala
-def bulkWithDeduplication[D](
-  items: Source[D, NotUsed],
-  getId: D => String,
-  toDocument: D => String
-)(implicit bulkOptions: BulkOptions, system: ActorSystem): Future[BulkResult] = {
-  
-  val seen = scala.collection.mutable.Set[String]()
-  val dedupedItems = items.filter { item =>
-    val id = getId(item)
-    if (seen.contains(id)) {
-      false
-    } else {
-      seen.add(id)
-      true
-    }
+    case _ =>
+      val path = new Path(filePath)
+      val fs = FileSystem.get(conf)
+      val status = fs.getFileStatus(path)
+      val sizeMB = status.getLen() / 1024 / 1024
+      println(s"📊 $format file: ${sizeMB}MB")
+      
+      if (sizeMB > 100) {
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 10000,
+          balance = 16,
+          disableRefresh = true
+        )
+      } else if (sizeMB > 10) {
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 5000,
+          balance = 8
+        )
+      } else {
+        BulkOptions(
+          defaultIndex = "data",
+          maxBulkSize = 1000,
+          balance = 4
+        )
+      }
   }
   
-  client.bulkWithResult(
-    items = dedupedItems,
-    toDocument = toDocument,
-    idKey = Some("id")
-  )
+  client.bulkFromFile(filePath, format, idKey)
 }
-```
 
----
-
-## Troubleshooting
-
-### Common Issues and Solutions
-
-**1. Out of Memory Errors**
-
-```scala
-// Problem: Large batches causing OOM
-implicit val problematic: BulkOptions = BulkOptions(maxBulkSize = 100000)
-
-// Solution: Reduce batch size
-implicit val fixed: BulkOptions = BulkOptions(maxBulkSize = 1000)
-```
-
-**2. Slow Performance**
-
-```scala
-// Problem: Sequential processing
-implicit val slow: BulkOptions = BulkOptions(balance = 1)
-
-// Solution: Increase parallelism
-implicit val fast: BulkOptions = BulkOptions(
-  balance = 8,
-  maxBulkSize = 5000,
-  disableRefresh = true
-)
-```
-
-**3. Too Many Retries**
-
-```scala
-// Problem: Retrying non-retryable errors
-implicit val wasteful: BulkOptions = BulkOptions(
-  retryOnFailure = true,
-  maxRetries = 10
-)
-
-// Solution: Identify and skip non-retryable errors
-result.foreach { r =>
-  r.failedDocuments.foreach { failed =>
-    if (!failed.retryable) {
-      deadLetterQueue.add(failed)  // Don't retry
-    }
+// Usage
+smartBulkFromFile("/data/products.parquet", Parquet, Some("id"))
+  .foreach { result =>
+    println(s"✅ Indexed ${result.successCount} documents at ${result.metrics.throughput} docs/sec")
   }
-}
-```
-
-**4. Index Refresh Issues**
-
-```scala
-// Problem: Slow indexing due to frequent refresh
-implicit val slow: BulkOptions = BulkOptions(disableRefresh = false)
-
-// Solution: Disable refresh during bulk, refresh once at end
-implicit val fast: BulkOptions = BulkOptions(disableRefresh = true)
-
-client.bulkWithResult(items, toJson, Some("id")).foreach { result =>
-  result.indices.foreach(client.refresh)  // Manual refresh
-}
-```
-
----
-
-## Comparison with Other Operations
-
-### Bulk vs Individual Operations
-
-| Aspect             | Individual       | Bulk                  |
-|--------------------|------------------|-----------------------|
-| **Performance**    | Slow (1 req/doc) | Fast (1000s docs/req) |
-| **Network**        | High overhead    | Minimal overhead      |
-| **Memory**         | Low              | Higher                |
-| **Error Handling** | Immediate        | Batched               |
-| **Use Case**       | Single documents | Large datasets        |
-
-```scala
-// Individual indexing (slow)
-products.foreach { product =>
-  client.index("products", product.id, toJson(product))
-}
-
-// Bulk indexing (fast)
-client.bulkWithResult(
-  items = products,
-  toDocument = toJson,
-  idKey = Some("id")
-)
 ```
 
 ---
@@ -1532,36 +1250,54 @@ client.bulkWithResult(
 
 ### Key Takeaways
 
-1. **Use bulk operations for large datasets** (> 100 documents)
-2. **Tune batch size** based on document size and memory
-3. **Disable refresh** during bulk, refresh once at end
-4. **Enable retry** for production reliability
-5. **Monitor metrics** for performance optimization
-6. **Handle failures** appropriately (retry vs dead letter queue)
-7. **Use callbacks** for real-time monitoring
-8. **Adjust parallelism** based on cluster size
+1. **File-based bulk operations** support JSON, JSON Array, Parquet, and Delta Lake
+2. **Parquet and Delta** offer best performance for large datasets
+3. **JSON Array** handles complex nested structures correctly
+4. **Automatic validation** ensures file integrity before processing
+5. **Same configuration** applies to both in-memory and file-based operations
+6. **Streaming architecture** enables processing of files larger than memory
+7. **Delta Lake** provides versioning and ACID compliance
 
 ### Quick Reference
 
 ```scala
-// High-performance bulk indexing
+// High-performance file indexing
 implicit val options: BulkOptions = BulkOptions(
   defaultIndex = "products",
-  maxBulkSize = 5000,
-  balance = 8,
-  disableRefresh = true,
-  retryOnFailure = true,
-  maxRetries = 3
+  maxBulkSize = 10000,
+  balance = 16,
+  disableRefresh = true
 )
 
-client.bulkWithResult(
-  items = products,
-  toDocument = toJson,
-  idKey = Some("id"),
-  callbacks = BulkCallbacks.logging(logger)
+implicit val hadoopConf: Configuration = new Configuration()
+
+// Load from Parquet
+client.bulkFromFile(
+  filePath = "/data/products.parquet",
+  format = Parquet,
+  idKey = Some("id")
 ).foreach { result =>
   result.indices.foreach(client.refresh)
   println(s"Indexed ${result.successCount} docs at ${result.metrics.throughput} docs/sec")
+}
+
+// Load from Delta Lake
+client.bulkFromFile(
+  filePath = "/data/delta-products",
+  format = Delta,
+  idKey = Some("id"),
+  update = Some(true)
+).foreach { result =>
+  println(s"Updated ${result.successCount} products from Delta Lake")
+}
+
+// Load JSON Array with nested objects
+client.bulkFromFile(
+  filePath = "/data/persons.json",
+  format = JsonArray,
+  idKey = Some("uuid")
+).foreach { result =>
+  println(s"Indexed ${result.successCount} persons with nested structures")
 }
 ```
 
