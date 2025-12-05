@@ -15,7 +15,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import org.apache.avro.generic.GenericRecord
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FSDataInputStream, FileSystem, Path}
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.parquet.avro.AvroParquetReader
 import org.apache.parquet.hadoop.ParquetReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
@@ -176,8 +176,18 @@ package object file {
     }
 
     /** Validates that the file exists and is readable
+      *
+      * @param filePath
+      *   Path to validate
+      * @param checkIsFile
+      *   If true, validates it's a file; if false, validates it's a directory
+      * @param conf
+      *   Hadoop configuration
       */
-    protected def validateFile(filePath: String)(implicit conf: Configuration): Unit = {
+    protected def validateFile(
+      filePath: String,
+      checkIsFile: Boolean = true
+    )(implicit conf: Configuration): Unit = {
       val path = new Path(filePath)
       val fs = FileSystem.get(conf)
 
@@ -185,16 +195,23 @@ package object file {
         throw new IllegalArgumentException(s"File does not exist: $filePath")
       }
 
-      if (!fs.isFile(path)) {
+      val status = fs.getFileStatus(path)
+
+      if (checkIsFile && !status.isFile) {
         throw new IllegalArgumentException(s"Path is not a file: $filePath")
       }
 
-      val status = fs.getFileStatus(path)
-      if (status.getLen == 0) {
+      if (!checkIsFile && !status.isDirectory) {
+        throw new IllegalArgumentException(s"Path is not a directory: $filePath")
+      }
+
+      if (checkIsFile && status.getLen == 0) {
         logger.warn(s"⚠️  File is empty: $filePath")
       }
 
-      logger.info(s"📁 Loading file: $filePath (${status.getLen} bytes)")
+      val pathType = if (checkIsFile) "file" else "directory"
+      val sizeInfo = if (checkIsFile) s"(${status.getLen} bytes)" else ""
+      logger.info(s"📁 Loading $pathType: $filePath $sizeInfo")
     }
   }
 
@@ -227,7 +244,12 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
       // Validate file before processing
-      validateFile(filePath)
+      Try(validateFile(filePath)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for Parquet file: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       var recordCount = 0L
       val startTime = System.currentTimeMillis()
@@ -308,7 +330,12 @@ package object file {
     ): Source[String, NotUsed] = {
 
       // Validate file before processing
-      validateFile(filePath)
+      Try(validateFile(filePath)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for JSON file: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       var lineCount = 0L
       val startTime = System.currentTimeMillis()
@@ -402,7 +429,12 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
 
-      validateFile(filePath)
+      Try(validateFile(filePath)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for JSON Array file: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       var elementCount = 0L
       val startTime = System.currentTimeMillis()
@@ -550,7 +582,12 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
 
-      validateFile(filePath)
+      Try(validateFile(filePath, checkIsFile = false)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for Delta Lake table: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       var rowCount = 0L
       val startTime = System.currentTimeMillis()
@@ -863,7 +900,12 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
 
-      validateFile(filePath)
+      Try(validateFile(filePath, checkIsFile = false)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for Delta Lake table: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       var rowCount = 0L
       val startTime = System.currentTimeMillis()
@@ -922,7 +964,12 @@ package object file {
       conf: Configuration = hadoopConfiguration
     ): Source[String, NotUsed] = {
 
-      validateFile(filePath)
+      Try(validateFile(filePath, checkIsFile = false)) match {
+        case Success(_) => // OK
+        case Failure(ex) =>
+          logger.error(s"❌ Validation failed for Delta Lake table: $filePath", ex)
+          return Source.failed(ex)
+      }
 
       logger.info(s"📂 Opening Delta Lake table at timestamp $timestampMillis: $filePath")
 
@@ -970,7 +1017,6 @@ package object file {
 
     def detect(filePath: String)(implicit conf: Configuration = hadoopConfiguration): FileFormat = {
       val lowerPath = filePath.toLowerCase
-      val path = new Path(filePath)
 
       if (lowerPath.endsWith(".parquet") || lowerPath.endsWith(".parq")) {
         Parquet

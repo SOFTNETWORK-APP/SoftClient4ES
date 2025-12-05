@@ -34,7 +34,7 @@ val mockito = Seq(
 val avro = Seq(
   "org.apache.parquet" % "parquet-avro" % "1.15.2" excludeAll (excludeSlf4jAndLog4j *),
   "org.apache.avro" % "avro" % "1.11.4" excludeAll (excludeSlf4jAndLog4j *),
-  "org.apache.hadoop" % "hadoop-common" % "3.4.2" excludeAll (excludeSlf4jAndLog4j *)
+  "org.apache.hadoop" % "hadoop-client" % "3.4.2" excludeAll (excludeSlf4jAndLog4j *)
 )
 
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
