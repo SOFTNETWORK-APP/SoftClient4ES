@@ -27,6 +27,13 @@ trait SoftClient4es {
     )
   )
 
+  lazy val excludeSlf4jAndLog4j: Seq[ExclusionRule] = Seq(
+    ExclusionRule(organization = "org.slf4j", name = "slf4j-log4j12"),
+    ExclusionRule(organization = "org.slf4j", name = "slf4j-reload4j"),
+    ExclusionRule(organization = "log4j", name = "log4j"),
+    ExclusionRule(organization = "org.apache.logging.log4j")
+  )
+
   def jacksonDependencies(esVersion: String): Seq[ModuleID] = {
     val jackson2_19 = "2.19.0"
     val jackson2_13 = "2.13.3"
