@@ -1040,7 +1040,7 @@ if (result.failedCount > 0) {
   result.failedCount shouldBe 0
   
   // Verify nested structure was preserved
-  val doc = client.get("A16", "test-json").futureValue
+  val doc = client.get("A16", "test-json").get
   doc should include("children")
   doc should include("Child 1")
 }
