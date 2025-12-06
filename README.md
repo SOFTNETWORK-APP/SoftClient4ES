@@ -1201,25 +1201,71 @@ The **BulkApi** leverages Akka Streams for efficient, backpressure-aware bulk op
 #### **Features**
 
 ✅ **Streaming Architecture**: Process millions of documents without memory issues  
+✅ **Multiple data sources**: In-memory, File-based (JSON, JSON Array, Parquet, Delta Lake)  
 ✅ **Backpressure Handling**: Automatic flow control based on Elasticsearch capacity  
 ✅ **Error Recovery**: Configurable retry strategies  
 ✅ **Batching**: Automatic batching for optimal performance  
 ✅ **Parallel Processing**: Concurrent bulk requests with configurable parallelism
 
-**Example:**
+#### Data Sources
+
+| Source Type      | Format        | Description                           |
+|------------------|---------------|---------------------------------------|
+| **In-Memory**    | Scala objects | Direct streaming from collections     |
+| **JSON**         | Text          | Newline-delimited JSON (NDJSON)       |
+| **JSON Array**   | Text          | JSON array with nested structures     |
+| **Parquet**      | Binary        | Columnar storage format               |
+| **Delta Lake**   | Directory     | ACID transactional data lake          |
+
+#### Operation Types
+
+| Operation  | Action         | Behavior                                  |
+|------------|----------------|-------------------------------------------|
+| **INDEX**  | Insert/Replace | Creates or replaces entire document       |
+| **UPDATE** | Upsert         | Updates existing or creates new (partial) |
+| **DELETE** | Remove         | Deletes document by ID                    |
+
+**Examples:**
 
 ```scala
-import akka.stream.scaladsl._
-
-// Stream-based bulk indexing
-val documents: List[String] = List(
-  """{"id":"user-1","name":"Alice","age":30}""",
-  """{"id":"user-2","name":"Bob","age":25}""",
-  """{"id":"user-3","name":"Charlie","age":35}"""
+// High-performance file indexing
+implicit val options: BulkOptions = BulkOptions(
+  defaultIndex = "products",
+  maxBulkSize = 10000,
+  balance = 16,
+  disableRefresh = true
 )
 
-implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = "users")
-client.bulkSource(Source.fromIterator(() => documents), identity, indexKey=Some("id"))
+implicit val hadoopConf: Configuration = new Configuration()
+
+// Load from Parquet
+client.bulkFromFile(
+  filePath = "/data/products.parquet",
+  format = Parquet,
+  idKey = Some("id")
+).foreach { result =>
+  result.indices.foreach(client.refresh)
+  println(s"Indexed ${result.successCount} docs at ${result.metrics.throughput} docs/sec")
+}
+
+// Load from Delta Lake
+client.bulkFromFile(
+  filePath = "/data/delta-products",
+  format = Delta,
+  idKey = Some("id"),
+  update = Some(true)
+).foreach { result =>
+  println(s"Updated ${result.successCount} products from Delta Lake")
+}
+
+// Load JSON Array with nested objects
+client.bulkFromFile(
+  filePath = "/data/persons.json",
+  format = JsonArray,
+  idKey = Some("uuid")
+).foreach { result =>
+  println(s"Indexed ${result.successCount} persons with nested structures")
+}
 ```
 
 ---
@@ -1471,18 +1517,18 @@ ThisBuild / resolvers ++= Seq(
 
 // For Elasticsearch 6
 // Using Jest client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.14.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.14.1
 // Or using Rest High Level client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.14.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.14.1
 
 // For Elasticsearch 7
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.14.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.14.1
 
 // For Elasticsearch 8
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.14.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.14.1
 
 // For Elasticsearch 9
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.14.0
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.14.1
 ```
 
 ### **Quick Example**

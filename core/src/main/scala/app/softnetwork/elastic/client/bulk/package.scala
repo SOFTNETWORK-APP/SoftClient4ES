@@ -59,6 +59,8 @@ package object bulk {
       else 0.0
 
     def hasFailures: Boolean = failedCount > 0
+
+    def totalCount: Int = successCount + failedCount
   }
 
   sealed trait DocumentResult {

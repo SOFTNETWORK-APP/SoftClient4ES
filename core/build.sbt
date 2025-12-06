@@ -30,8 +30,15 @@ val mockito = Seq(
   "org.mockito" %% "mockito-scala" % "1.17.12" % Test
 )
 
-libraryDependencies ++= akka ++ typesafeConfig ++ http ++
-json4s ++ mockito :+ "com.google.code.gson" % "gson" % Versions.gson :+
-  "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
-  "org.scalatest" %% "scalatest" % Versions.scalatest  % Test
+// Parquet & Avro
+val avro = Seq(
+  "org.apache.parquet" % "parquet-avro" % "1.15.2" excludeAll (excludeSlf4jAndLog4j *),
+  "org.apache.avro" % "avro" % "1.11.4" excludeAll (excludeSlf4jAndLog4j *),
+  "org.apache.hadoop" % "hadoop-client" % "3.4.2" excludeAll (excludeSlf4jAndLog4j *)
+)
 
+libraryDependencies ++= akka ++ typesafeConfig ++ http ++
+json4s ++ mockito ++ avro :+ "com.google.code.gson" % "gson" % Versions.gson :+
+"com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
+"io.delta" %% "delta-standalone" % "0.6.0" :+
+"org.scalatest" %% "scalatest" % Versions.scalatest % Test
