@@ -646,7 +646,7 @@ package object file {
         val elements = arrayNode.elements().asScala.toList
         val hasNestedArrays = elements.exists(hasArrayField)
         val hasNestedObjects = elements.exists(hasObjectField)
-        val maxDepth = elements.map(calculateDepth).maxOption.getOrElse(0)
+        val maxDepth = elements.map(calculateDepth).reduceOption(_ max _).getOrElse(0)
 
         JsonArrayMetadata(
           elementCount = elements.size,
@@ -662,7 +662,7 @@ package object file {
     private def hasArrayField(node: JsonNode): Boolean = {
       if (node.isArray) return true
       if (node.isObject) {
-        node.fields().asScala.exists(entry => hasArrayField(entry.getValue))
+        node.properties().asScala.exists(entry => hasArrayField(entry.getValue))
       } else {
         false
       }
@@ -679,9 +679,14 @@ package object file {
 
     private def calculateDepth(node: JsonNode): Int = {
       if (node.isArray) {
-        1 + node.elements().asScala.map(calculateDepth).maxOption.getOrElse(0)
+        1 + node.elements().asScala.map(calculateDepth).reduceOption(_ max _).getOrElse(0)
       } else if (node.isObject) {
-        1 + node.fields().asScala.map(e => calculateDepth(e.getValue)).maxOption.getOrElse(0)
+        1 + node
+          .properties()
+          .asScala
+          .map(e => calculateDepth(e.getValue))
+          .reduceOption(_ max _)
+          .getOrElse(0)
       } else {
         0
       }
