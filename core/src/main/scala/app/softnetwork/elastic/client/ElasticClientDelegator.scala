@@ -146,26 +146,26 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     settings: String
   ): ElasticResult[Boolean] =
-    delegate.createIndex(index, settings)
+    delegate.executeCreateIndex(index, settings)
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-    delegate.deleteIndex(index)
+    delegate.executeDeleteIndex(index)
 
   override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
-    delegate.closeIndex(index)
+    delegate.executeCloseIndex(index)
 
   override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] =
-    delegate.openIndex(index)
+    delegate.executeOpenIndex(index)
 
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
     refresh: Boolean
   ): ElasticResult[(Boolean, Option[Long])] =
-    delegate.reindex(sourceIndex, targetIndex, refresh)
+    delegate.executeReindex(sourceIndex, targetIndex, refresh)
 
   override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-    delegate.indexExists(index)
+    delegate.executeIndexExists(index)
 
   // ==================== AliasApi ====================
 
@@ -289,16 +289,16 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     alias: String
   ): ElasticResult[Boolean] =
-    delegate.addAlias(index, alias)
+    delegate.executeAddAlias(index, alias)
 
   override private[client] def executeRemoveAlias(
     index: String,
     alias: String
   ): ElasticResult[Boolean] =
-    delegate.removeAlias(index, alias)
+    delegate.executeRemoveAlias(index, alias)
 
   override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
-    delegate.aliasExists(alias)
+    delegate.executeAliasExists(alias)
 
   override private[client] def executeGetAliases(index: String): ElasticResult[String] =
     delegate.executeGetAliases(index)
@@ -308,7 +308,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     newIndex: String,
     alias: String
   ): ElasticResult[Boolean] =
-    delegate.swapAlias(oldIndex, newIndex, alias)
+    delegate.executeSwapAlias(oldIndex, newIndex, alias)
 
   // ==================== SettingsApi ====================
 
@@ -362,10 +362,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     settings: String
   ): ElasticResult[Boolean] =
-    delegate.updateSettings(index, settings)
+    delegate.executeUpdateSettings(index, settings)
 
   override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
-    delegate.loadSettings(index)
+    delegate.executeLoadSettings(index)
   }
 
   // ==================== MappingApi ====================
@@ -440,10 +440,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     mapping: String
   ): ElasticResult[Boolean] =
-    delegate.setMapping(index, mapping)
+    delegate.executeSetMapping(index, mapping)
 
   override private[client] def executeGetMapping(index: String): ElasticResult[String] = {
-    delegate.getMapping(index)
+    delegate.executeGetMapping(index)
   }
 
   // ==================== RefreshApi ====================
