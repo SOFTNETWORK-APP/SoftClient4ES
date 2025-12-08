@@ -22,7 +22,7 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement, SingleSearch}
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -146,26 +146,26 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     settings: String
   ): ElasticResult[Boolean] =
-    delegate.createIndex(index, settings)
+    delegate.executeCreateIndex(index, settings)
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-    delegate.deleteIndex(index)
+    delegate.executeDeleteIndex(index)
 
   override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
-    delegate.closeIndex(index)
+    delegate.executeCloseIndex(index)
 
   override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] =
-    delegate.openIndex(index)
+    delegate.executeOpenIndex(index)
 
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
     refresh: Boolean
   ): ElasticResult[(Boolean, Option[Long])] =
-    delegate.reindex(sourceIndex, targetIndex, refresh)
+    delegate.executeReindex(sourceIndex, targetIndex, refresh)
 
   override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-    delegate.indexExists(index)
+    delegate.executeIndexExists(index)
 
   // ==================== AliasApi ====================
 
@@ -289,16 +289,16 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     alias: String
   ): ElasticResult[Boolean] =
-    delegate.addAlias(index, alias)
+    delegate.executeAddAlias(index, alias)
 
   override private[client] def executeRemoveAlias(
     index: String,
     alias: String
   ): ElasticResult[Boolean] =
-    delegate.removeAlias(index, alias)
+    delegate.executeRemoveAlias(index, alias)
 
   override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
-    delegate.aliasExists(alias)
+    delegate.executeAliasExists(alias)
 
   override private[client] def executeGetAliases(index: String): ElasticResult[String] =
     delegate.executeGetAliases(index)
@@ -308,7 +308,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     newIndex: String,
     alias: String
   ): ElasticResult[Boolean] =
-    delegate.swapAlias(oldIndex, newIndex, alias)
+    delegate.executeSwapAlias(oldIndex, newIndex, alias)
 
   // ==================== SettingsApi ====================
 
@@ -362,10 +362,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     settings: String
   ): ElasticResult[Boolean] =
-    delegate.updateSettings(index, settings)
+    delegate.executeUpdateSettings(index, settings)
 
   override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
-    delegate.loadSettings(index)
+    delegate.executeLoadSettings(index)
   }
 
   // ==================== MappingApi ====================
@@ -440,10 +440,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     mapping: String
   ): ElasticResult[Boolean] =
-    delegate.setMapping(index, mapping)
+    delegate.executeSetMapping(index, mapping)
 
   override private[client] def executeGetMapping(index: String): ElasticResult[String] = {
-    delegate.getMapping(index)
+    delegate.executeGetMapping(index)
   }
 
   // ==================== RefreshApi ====================
@@ -882,7 +882,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a sequence of aggregated results
     */
-  override def aggregate(sqlQuery: SQLQuery)(implicit
+  override def aggregate(sqlQuery: SelectStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[collection.Seq[SingleValueAggregateResult]]] =
     delegate.aggregate(sqlQuery)
@@ -896,7 +896,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   the Elasticsearch response
     */
-  override def search(sql: SQLQuery): ElasticResult[ElasticResponse] = delegate.search(sql)
+  override def search(sql: SelectStatement): ElasticResult[ElasticResponse] = delegate.search(sql)
 
   /** Search for documents / aggregations matching the Elasticsearch query.
     *
@@ -941,7 +941,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the Elasticsearch response
     */
-  override def searchAsync(sqlQuery: SQLQuery)(implicit
+  override def searchAsync(sqlQuery: SelectStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(sqlQuery)
 
@@ -991,7 +991,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   the entities matching the query
     */
   override def searchAsUnchecked[U](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     delegate.searchAsUnchecked(sqlQuery)
 
@@ -1047,7 +1047,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the entities
     */
-  override def searchAsyncAsUnchecked[U](sqlQuery: SQLQuery)(implicit
+  override def searchAsyncAsUnchecked[U](sqlQuery: SelectStatement)(implicit
     m: Manifest[U],
     ec: ExecutionContext,
     formats: Formats
@@ -1103,7 +1103,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.multiSearchAsyncAs(elasticQueries, fieldAliases, aggregations)
 
   override def searchWithInnerHits[U: Manifest: ClassTag, I: Manifest: ClassTag](
-    sql: SQLQuery,
+    sql: SelectStatement,
     innerField: String
   )(implicit
     formats: Formats
@@ -1123,7 +1123,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.multisearchWithInnerHits[U, I](elasticQueries, innerField)
 
   override private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SQLSearchRequest
+    sqlSearch: SingleSearch
   ): String =
     delegate.sqlSearchRequestToJsonQuery(sqlSearch)
 
@@ -1151,7 +1151,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scroll(sql: SelectStatement, config: ScrollConfig)(implicit
     system: ActorSystem
   ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(sql, config)
 
@@ -1175,7 +1175,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   - Source of tuples (T, ScrollMetrics)
     */
-  override def scrollAsUnchecked[T](sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scrollAsUnchecked[T](sql: SelectStatement, config: ScrollConfig)(implicit
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats

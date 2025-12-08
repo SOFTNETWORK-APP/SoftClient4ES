@@ -19,7 +19,7 @@ package app.softnetwork.elastic.persistence.query
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.client.{ElasticClientApi, ElasticClientDelegator}
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.sql.query.SelectStatement
 import mustache.Mustache
 import org.json4s.Formats
 import app.softnetwork.persistence._
@@ -188,7 +188,7 @@ trait ElasticProvider[T <: Timestamped]
   override def searchDocuments(
     query: String
   )(implicit m: Manifest[T], formats: Formats): List[T] = {
-    searchAsUnchecked[T](SQLQuery(query)) match {
+    searchAsUnchecked[T](SelectStatement(query)) match {
       case ElasticSuccess(results) => results.toList
       case ElasticFailure(elasticError) =>
         logger.error(s"searchDocuments failed -> ${elasticError.message}")

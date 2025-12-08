@@ -6,6 +6,13 @@ A list of reserved words recognized by the parser for this engine.
 
 ## Main clauses
 SELECT  
+INSERT  
+UPDATE  
+DELETE  
+CREATE  
+ALTER  
+DROP  
+TRUNCATE  
 FROM  
 JOIN  
 UNNEST  

@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.sql.query.SelectStatement
 
 import java.time.temporal.Temporal
 import scala.annotation.tailrec
@@ -37,7 +37,7 @@ trait AggregateApi[T <: AggregateResult] {
     * @return
     *   a sequence of aggregated results
     */
-  def aggregate(sqlQuery: SQLQuery)(implicit
+  def aggregate(sqlQuery: SelectStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[_root_.scala.collection.Seq[T]]]
 }
@@ -57,7 +57,7 @@ trait SingleValueAggregateApi
     *   a sequence of aggregated results
     */
   override def aggregate(
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[_root_.scala.collection.Seq[SingleValueAggregateResult]]] = {

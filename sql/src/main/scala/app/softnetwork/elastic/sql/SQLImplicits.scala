@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{Criteria, SQLMultiSearchRequest, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{Criteria, MultiSearch, SingleSearch, Statement}
 
 import scala.util.matching.Regex
 
@@ -27,16 +27,21 @@ object SQLImplicits {
   import scala.language.implicitConversions
 
   implicit def queryToSQLCriteria(query: String): Option[Criteria] = {
-    val maybeQuery: Option[Either[SQLSearchRequest, SQLMultiSearchRequest]] = query
+    val maybeQuery: Option[Statement] = query
     maybeQuery match {
-      case Some(Left(l)) => l.where.flatMap(_.criteria)
-      case _             => None
+      case Some(statement) =>
+        statement match {
+          case single: SingleSearch =>
+            single.where.flatMap(_.criteria)
+          case _ => None
+        }
+      case _ => None
     }
   }
 
-  implicit def queryToSQLQuery(
+  implicit def queryToStatement(
     query: String
-  ): Option[Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
+  ): Option[Statement] = {
     Parser(query) match {
       case Left(_)  => None
       case Right(r) => Some(r)

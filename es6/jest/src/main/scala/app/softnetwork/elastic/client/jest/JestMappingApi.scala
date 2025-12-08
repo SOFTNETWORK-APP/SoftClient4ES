@@ -71,7 +71,7 @@ trait JestMappingApi extends MappingApi with JestClientHelpers {
     getMapping(index).flatMap { jsonString =>
       // ✅ Extracting mapping from JSON
       ElasticResult.attempt(
-        new JsonParser().parse(jsonString).getAsJsonObject
+        JsonParser.parseString(jsonString).getAsJsonObject
       ) match {
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse JSON mapping for index '$index': ${error.message}")

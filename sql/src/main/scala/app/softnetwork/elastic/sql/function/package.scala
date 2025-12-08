@@ -20,7 +20,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
-import app.softnetwork.elastic.sql.query.SQLSearchRequest
+import app.softnetwork.elastic.sql.query.SingleSearch
 
 package object function {
 
@@ -189,7 +189,7 @@ package object function {
       functions.indexOf(function)
     }
 
-    def updateFunctions(request: SQLSearchRequest): List[Function] = {
+    def updateFunctions(request: SingleSearch): List[Function] = {
       functions.map {
         case f: Updateable =>
           f.update(request).asInstanceOf[Function]

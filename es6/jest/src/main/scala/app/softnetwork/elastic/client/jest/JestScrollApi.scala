@@ -145,7 +145,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 logger.debug(s"Fetching next search_after batch (after: ${values.mkString(", ")})")
             }
 
-            val queryJson = new JsonParser().parse(elasticQuery.query).getAsJsonObject
+            val queryJson = JsonParser.parseString(elasticQuery.query).getAsJsonObject
 
             // Check if sorts already exist in the query
             if (!hasSorts && !queryJson.has("sort")) {

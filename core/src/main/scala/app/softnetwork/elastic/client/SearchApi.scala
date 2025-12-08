@@ -23,7 +23,12 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{
+  MultiSearch,
+  SQLAggregation,
+  SelectStatement,
+  SingleSearch
+}
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
 import org.json4s.Formats
 
@@ -60,9 +65,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   the Elasticsearch response
     */
-  def search(sql: SQLQuery): ElasticResult[ElasticResponse] = {
-    sql.request match {
-      case Some(Left(single)) =>
+  def search(sql: SelectStatement): ElasticResult[ElasticResponse] = {
+    sql.statement match {
+      case Some(single: SingleSearch) =>
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*),
@@ -73,7 +78,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
-      case Some(Right(multiple)) =>
+      case Some(multiple: MultiSearch) =>
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -295,19 +300,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   a Future containing the Elasticsearch response
     */
   def searchAsync(
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
-    sqlQuery.request match {
-      case Some(Left(single)) =>
+    sqlQuery.statement match {
+      case Some(single: SingleSearch) =>
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*)
         )
         singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
-      case Some(Right(multiple)) =>
+      case Some(multiple: MultiSearch) =>
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -529,7 +534,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   the entities matching the query
     */
   def searchAsUnchecked[U](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] = {
     for {
       response <- search(sqlQuery)
@@ -626,7 +631,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   a Future containing the entities
     */
   def searchAsyncAsUnchecked[U](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -739,20 +744,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   tuples (main entity, inner hits)
     */
   def searchWithInnerHits[U: Manifest: ClassTag, I: Manifest: ClassTag](
-    sql: SQLQuery,
+    sql: SelectStatement,
     innerField: String
   )(implicit
     formats: Formats
   ): ElasticResult[Seq[(U, Seq[I])]] = {
-    sql.request match {
-      case Some(Left(single)) =>
+    sql.statement match {
+      case Some(single: SingleSearch) =>
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*)
         )
         singleSearchWithInnerHits[U, I](elasticQuery, innerField)
 
-      case Some(Right(multiple)) =>
+      case Some(multiple: MultiSearch) =>
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -981,7 +986,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   JSON string representation of the query
     */
-  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String
+  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch): String
 
   private def parseInnerHits[M: Manifest: ClassTag, I: Manifest: ClassTag](
     searchResult: JsonObject,
@@ -1095,8 +1100,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *      functions) 3. Enrich results with window values
     */
   private def searchWithWindowEnrichment(
-    sql: SQLQuery,
-    request: SQLSearchRequest
+    sql: SelectStatement,
+    request: SingleSearch
   ): ElasticResult[ElasticResponse] = {
 
     logger.info(s"🪟 Detected ${request.windowFunctions.size} window functions")
@@ -1122,7 +1127,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * window values
     */
   protected def executeWindowAggregations(
-    request: SQLSearchRequest
+    request: SingleSearch
   ): ElasticResult[WindowCache] = {
 
     // Build aggregation request
@@ -1157,8 +1162,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Build aggregation request for window functions
     */
   private def buildWindowAggregationRequest(
-    request: SQLSearchRequest
-  ): SQLSearchRequest = {
+    request: SingleSearch
+  ): SingleSearch = {
 
     // Create modified request with:
     // - Only window buckets in GROUP BY
@@ -1180,7 +1185,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   private def parseWindowAggregationsToCache(
     response: ElasticResponse,
-    request: SQLSearchRequest
+    request: SingleSearch
   ): ElasticResult[WindowCache] = {
 
     logger.info(
@@ -1209,8 +1214,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Execute base query without window functions
     */
   private def executeBaseQuery(
-    sql: SQLQuery,
-    request: SQLSearchRequest
+    sql: SelectStatement,
+    request: SingleSearch
   ): ElasticResult[ElasticResponse] = {
 
     val baseQuery = createBaseQuery(sql, request)
@@ -1231,9 +1236,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Create base query by removing window functions from SELECT
     */
   protected def createBaseQuery(
-    sql: SQLQuery,
-    request: SQLSearchRequest
-  ): SQLSearchRequest = {
+    sql: SelectStatement,
+    request: SingleSearch
+  ): SingleSearch = {
 
     // Remove window function fields from SELECT
     val baseFields = request.select.fields.filterNot(_.identifier.hasWindow)
@@ -1253,7 +1258,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   private def extractPartitionKey(
     row: Map[String, Any],
-    request: SQLSearchRequest
+    request: SingleSearch
   ): PartitionKey = {
 
     // Get all partition fields from window functions
@@ -1294,7 +1299,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   private def enrichResponseWithWindowValues(
     response: ElasticResponse,
     cache: WindowCache,
-    request: SQLSearchRequest
+    request: SingleSearch
   ): ElasticResult[ElasticResponse] = {
 
     val baseRows = response.results
@@ -1311,7 +1316,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   protected def enrichDocumentWithWindowValues(
     doc: Map[String, Any],
     cache: WindowCache,
-    request: SQLSearchRequest
+    request: SingleSearch
   ): Map[String, Any] = {
 
     if (request.windowFunctions.isEmpty) {

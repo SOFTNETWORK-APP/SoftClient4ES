@@ -101,7 +101,7 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   def limit: Option[Limit] = None
 
-  def update(request: SQLSearchRequest): Criteria
+  def update(request: SingleSearch): Criteria
 
   def group: Boolean
 
@@ -155,7 +155,7 @@ case class Predicate(
   else leftCriteria} $operator${not
     .map(_ => " NOT")
     .getOrElse("")} ${if (group) s"$rightCriteria)" else rightCriteria}"
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updatedPredicate = this.copy(
       leftCriteria = leftCriteria.update(request),
       rightCriteria = rightCriteria.update(request)
@@ -527,7 +527,7 @@ case class GenericExpression(
 ) extends Expression {
   override def maybeValue: Option[Token] = Option(value)
 
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated =
       value match {
         case id: Identifier =>
@@ -550,7 +550,7 @@ case class IsNullExpr(identifier: Identifier) extends Expression {
 
   override def maybeNot: Option[NOT.type] = None
 
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
       ElasticNested(updated, limit)
@@ -568,7 +568,7 @@ case class IsNotNullExpr(identifier: Identifier) extends Expression {
 
   override def maybeNot: Option[NOT.type] = None
 
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
       ElasticNested(updated, limit)
@@ -599,7 +599,7 @@ object ConditionalFunctionAsCriteria {
 case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditionalFunction[SQLAny] {
   override val conditionalFunction: ConditionalFunction[SQLAny] = IsNull(identifier)
   override val operator: Operator = IS_NULL
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
       ElasticNested(updated, limit)
@@ -629,7 +629,7 @@ case class IsNotNullCriteria(identifier: Identifier)
     identifier
   )
   override val operator: Operator = IS_NOT_NULL
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
       ElasticNested(updated, limit)
@@ -666,7 +666,7 @@ case class InExpr[R, +T <: Value[R]](
   override def sql =
     s"$id $notAsString$operator $values"
   override def operator: Operator = IN
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
       ElasticNested(updated, limit)
@@ -706,7 +706,7 @@ case class BetweenExpr(
 ) extends Expression {
   override def sql = s"$identifier $notAsString$operator $fromTo"
   override def operator: Operator = BETWEEN
-  override def update(request: SQLSearchRequest): Criteria = {
+  override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
       ElasticNested(updated, limit)
@@ -757,7 +757,7 @@ case class DistanceCriteria(
 
   override def sql = s"$distance $operator $geoDistance"
 
-  override def update(request: SQLSearchRequest): DistanceCriteria =
+  override def update(request: SingleSearch): DistanceCriteria =
     this.copy(distance = distance.update(request))
 
   override def maybeValue: Option[Token] = Some(geoDistance)
@@ -775,7 +775,7 @@ case class MultiMatchCriteria(
   override def sql: String =
     s"$operator (${identifiers.mkString(",")}) $AGAINST ($value)"
   override def operator: Operator = MATCH
-  override def update(request: SQLSearchRequest): Criteria =
+  override def update(request: SingleSearch): Criteria =
     this.copy(identifiers = identifiers.map(_.update(request)))
 
   override lazy val nested: Boolean = identifiers.forall(_.nested)
@@ -816,7 +816,7 @@ case class MatchCriteria(
   override def sql: String =
     s"$operator($identifier,$value${options.map(o => s""","$o"""").getOrElse("")})"
   override def operator: Operator = MATCH
-  override def update(request: SQLSearchRequest): Criteria =
+  override def update(request: SingleSearch): Criteria =
     this.copy(identifier = identifier.update(request))
 
   override def maybeValue: Option[Token] = Some(value)
@@ -882,7 +882,7 @@ case class ElasticNested(
 
   def nestedElement: Option[NestedElement] = None
 
-  override def update(request: SQLSearchRequest): ElasticNested =
+  override def update(request: SingleSearch): ElasticNested =
     this.copy(criteria = criteria.update(request))
 
   override def nested: Boolean = true
@@ -902,7 +902,7 @@ case class ElasticChild(
   override val criteria: Criteria
 ) extends ElasticRelation(criteria, Child) {
   def nestedElement: Option[NestedElement] = None
-  override def update(request: SQLSearchRequest): ElasticChild =
+  override def update(request: SingleSearch): ElasticChild =
     this.copy(criteria = criteria.update(request))
 }
 
@@ -910,7 +910,7 @@ case class ElasticParent(
   override val criteria: Criteria
 ) extends ElasticRelation(criteria, Parent) {
   def nestedElement: Option[NestedElement] = None
-  override def update(request: SQLSearchRequest): ElasticParent =
+  override def update(request: SingleSearch): ElasticParent =
     this.copy(criteria = criteria.update(request))
 }
 
@@ -919,7 +919,7 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
     case Some(c) => s" $Where $c"
     case _       => ""
   }
-  def update(request: SQLSearchRequest): Where =
+  def update(request: SingleSearch): Where =
     this.copy(criteria = criteria.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = criteria match {

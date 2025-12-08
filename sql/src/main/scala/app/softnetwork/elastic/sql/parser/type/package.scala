@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.{
   DoubleValue,
   Identifier,
   LongValue,
+  ParamValue,
   PiValue,
   StringValue,
   Value
@@ -48,8 +49,11 @@ package object `type` {
     def boolean: PackratParser[BooleanValue] =
       """(?i)(true|false)\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
+    def param: PackratParser[ParamValue.type] =
+      "?" ^^ (_ => ParamValue)
+
     def value: PackratParser[Value[_]] =
-      literal | pi | double | long | boolean
+      literal | pi | double | long | boolean | param
 
     def identifierWithValue: Parser[Identifier] = (value ^^ functionAsIdentifier) >> cast
 
@@ -87,8 +91,13 @@ package object `type` {
 
     def float_type: PackratParser[SQLTypes.Real.type] = "(?i)float|real".r ^^ (_ => SQLTypes.Real)
 
+    def array_type: PackratParser[SQLTypes.Array] =
+      "(?i)array<".r ~> sql_type <~ ">" ^^ { elementType =>
+        SQLTypes.Array(elementType)
+      }
+
     def sql_type: PackratParser[SQLType] =
-      char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type
+      char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type | array_type
 
   }
 }

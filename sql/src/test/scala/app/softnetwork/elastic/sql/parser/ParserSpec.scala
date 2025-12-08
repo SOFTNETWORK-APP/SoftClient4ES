@@ -1,7 +1,7 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.parser._
-
+import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.query._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -222,14 +222,14 @@ object Queries {
 
 /** Created by smanciot on 15/02/17.
   */
-class SQLParserSpec extends AnyFlatSpec with Matchers {
+class ParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
-  "SQLParser" should "parse numerical EQ" in {
+  "Parser" should "parse numerical EQ" in {
     val result = Parser(numericalEq)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalEq) shouldBe true
   }
@@ -237,7 +237,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical NE" in {
     val result = Parser(numericalNe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalNe) shouldBe true
   }
@@ -245,7 +245,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical LT" in {
     val result = Parser(numericalLt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalLt) shouldBe true
   }
@@ -253,7 +253,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical LE" in {
     val result = Parser(numericalLe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalLe) shouldBe true
   }
@@ -261,7 +261,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical GT" in {
     val result = Parser(numericalGt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalGt) shouldBe true
   }
@@ -269,7 +269,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical GE" in {
     val result = Parser(numericalGe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalGe) shouldBe true
   }
@@ -277,7 +277,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal EQ" in {
     val result = Parser(literalEq)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalEq) shouldBe true
   }
@@ -285,7 +285,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal LIKE" in {
     val result = Parser(literalLike)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalLike) shouldBe true
   }
@@ -293,7 +293,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal RLIKE" in {
     val result = Parser(literalRlike)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalRlike) shouldBe true
   }
@@ -301,7 +301,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal NOT LIKE" in {
     val result = Parser(literalNotLike)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalNotLike) shouldBe true
   }
@@ -309,7 +309,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal NE" in {
     val result = Parser(literalNe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalNe) shouldBe true
   }
@@ -317,7 +317,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal LT" in {
     val result = Parser(literalLt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalLt) shouldBe true
   }
@@ -325,7 +325,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal LE" in {
     val result = Parser(literalLe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalLe) shouldBe true
   }
@@ -333,20 +333,20 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal GT" in {
     val result = Parser(literalGt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalGt) shouldBe true
   }
 
   it should "parse literal GE" in {
     val result = Parser(literalGe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") equalsIgnoreCase literalGe
+    result.toOption.map(_.sql).getOrElse("") equalsIgnoreCase literalGe
   }
 
   it should "parse boolean EQ" in {
     val result = Parser(boolEq)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(boolEq) shouldBe true
   }
@@ -354,7 +354,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse boolean NE" in {
     val result = Parser(boolNe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(boolNe) shouldBe true
   }
@@ -362,7 +362,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse BETWEEN" in {
     val result = Parser(betweenExpression)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(betweenExpression) shouldBe true
   }
@@ -370,7 +370,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse AND predicate" in {
     val result = Parser(andPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(andPredicate) shouldBe true
   }
@@ -378,7 +378,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse OR predicate" in {
     val result = Parser(orPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(orPredicate) shouldBe true
   }
@@ -386,7 +386,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse left predicate with criteria" in {
     val result = Parser(leftPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(leftPredicate) shouldBe true
   }
@@ -394,7 +394,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse right predicate with criteria" in {
     val result = Parser(rightPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(rightPredicate) shouldBe true
   }
@@ -402,7 +402,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse multiple predicates" in {
     val result = Parser(predicates)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(predicates) shouldBe true
   }
@@ -410,14 +410,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse nested predicate" in {
     val result = Parser(nestedPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe nestedPredicate
   }
 
   it should "parse nested criteria" in {
     val result = Parser(nestedCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nestedCriteria) shouldBe true
   }
@@ -425,7 +425,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse child predicate" in {
     val result = Parser(childPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(childPredicate) shouldBe true
   }
@@ -433,7 +433,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse child criteria" in {
     val result = Parser(childCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(childCriteria) shouldBe true
   }
@@ -441,7 +441,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse parent predicate" in {
     val result = Parser(parentPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(parentPredicate) shouldBe true
   }
@@ -449,7 +449,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse parent criteria" in {
     val result = Parser(parentCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(parentCriteria) shouldBe true
   }
@@ -457,7 +457,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IN literal expression" in {
     val result = Parser(inLiteralExpression)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(inLiteralExpression) shouldBe true
   }
@@ -465,7 +465,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IN numerical expression with Int values" in {
     val result = Parser(inNumericalExpressionWithIntValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(inNumericalExpressionWithIntValues) shouldBe true
   }
@@ -473,7 +473,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IN numerical expression with Double values" in {
     val result = Parser(inNumericalExpressionWithDoubleValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(inNumericalExpressionWithDoubleValues) shouldBe true
   }
@@ -481,7 +481,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NOT IN literal expression" in {
     val result = Parser(notInLiteralExpression)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(notInLiteralExpression) shouldBe true
   }
@@ -489,7 +489,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NOT IN numerical expression with Int values" in {
     val result = Parser(notInNumericalExpressionWithIntValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(notInNumericalExpressionWithIntValues) shouldBe true
   }
@@ -497,7 +497,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NOT IN numerical expression with Double values" in {
     val result = Parser(notInNumericalExpressionWithDoubleValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(notInNumericalExpressionWithDoubleValues) shouldBe true
   }
@@ -505,7 +505,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse nested with BETWEEN" in {
     val result = Parser(nestedWithBetween)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nestedWithBetween) shouldBe true
   }
@@ -513,7 +513,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse COUNT" in {
     val result = Parser(COUNT)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(COUNT) shouldBe true
   }
@@ -521,7 +521,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse DISTINCT COUNT" in {
     val result = Parser(countDistinct)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(countDistinct) shouldBe true
   }
@@ -529,7 +529,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse COUNT with nested criteria" in {
     val result = Parser(countNested)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(countNested) shouldBe true
   }
@@ -537,7 +537,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IS NULL" in {
     val result = Parser(isNull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNull) shouldBe true
   }
@@ -545,7 +545,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IS NOT NULL" in {
     val result = Parser(isNotNull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNotNull) shouldBe true
   }
@@ -553,14 +553,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse geo distance criteria" in {
     val result = Parser(geoDistanceCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe geoDistanceCriteria
   }
 
   it should "parse EXCEPT fields" in {
     val result = Parser(except)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(except) shouldBe true
   }
@@ -568,7 +568,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse MATCH criteria" in {
     val result = Parser(matchCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(matchCriteria) shouldBe true
   }
@@ -576,7 +576,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse GROUP BY" in {
     val result = Parser(groupBy)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(groupBy) shouldBe true
   }
@@ -584,7 +584,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ORDER BY" in {
     val result = Parser(orderBy)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(orderBy) shouldBe true
   }
@@ -592,14 +592,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse LIMIT" in {
     val result = Parser(limit)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe limit
   }
 
   it should "parse GROUP BY with ORDER BY and LIMIT" in {
     val result = Parser(groupByWithOrderByAndLimit)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(groupByWithOrderByAndLimit) shouldBe true
   }
@@ -607,7 +607,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse GROUP BY with HAVING" in {
     val result = Parser(groupByWithHaving)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(groupByWithHaving) shouldBe true
   }
@@ -615,7 +615,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date time fields" in {
     val result = Parser(dateTimeWithIntervalFields)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeWithIntervalFields) shouldBe true
   }
@@ -623,7 +623,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse fields with INTERVAL" in {
     val result = Parser(fieldsWithInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(fieldsWithInterval) shouldBe true
   }
@@ -631,7 +631,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse filter with date time and INTERVAL" in {
     val result = Parser(filterWithDateTimeAndInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(filterWithDateTimeAndInterval) shouldBe true
   }
@@ -639,7 +639,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse filter with date and interval" in {
     val result = Parser(filterWithDateAndInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(filterWithDateAndInterval) shouldBe true
   }
@@ -647,7 +647,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse filter with time and interval" in {
     val result = Parser(filterWithTimeAndInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(filterWithTimeAndInterval) shouldBe true
   }
@@ -655,14 +655,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse GROUP BY with HAVING and date time functions" in {
     val result = Parser(groupByWithHavingAndDateTimeFunctions)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe groupByWithHavingAndDateTimeFunctions
   }
 
   it should "parse date_parse function" in {
     val result = Parser(dateParse)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateParse) shouldBe true
   }
@@ -670,7 +670,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_parse_time function" in {
     val result = Parser(dateTimeParse)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeParse) shouldBe true
   }
@@ -678,7 +678,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_diff function" in {
     val result = Parser(dateDiff)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateDiff) shouldBe true
   }
@@ -686,7 +686,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_diff function with aggregation" in {
     val result = Parser(aggregationWithDateDiff)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(aggregationWithDateDiff) shouldBe true
   }
@@ -694,7 +694,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse format_date function" in {
     val result = Parser(dateFormat)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateFormat) shouldBe true
   }
@@ -702,7 +702,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse format_datetime function" in {
     val result = Parser(dateTimeFormat)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeFormat) shouldBe true
   }
@@ -710,7 +710,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_add function" in {
     val result = Parser(dateAdd)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateAdd) shouldBe true
   }
@@ -718,7 +718,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_sub function" in {
     val result = Parser(dateSub)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateSub) shouldBe true
   }
@@ -726,7 +726,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse datetime_add function" in {
     val result = Parser(dateTimeAdd)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeAdd) shouldBe true
   }
@@ -734,7 +734,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse datetime_sub function" in {
     val result = Parser(dateTimeSub)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeSub) shouldBe true
   }
@@ -742,7 +742,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNULL function" in {
     val result = Parser(isnull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isnull) shouldBe true
   }
@@ -750,7 +750,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNOTNULL function" in {
     val result = Parser(isnotnull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isnotnull) shouldBe true
   }
@@ -758,7 +758,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNULL criteria" in {
     val result = Parser(isNullCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNullCriteria) shouldBe true
   }
@@ -766,7 +766,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNOTNULL criteria" in {
     val result = Parser(isNotNullCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNotNullCriteria) shouldBe true
   }
@@ -774,7 +774,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse COALESCE function" in {
     val result = Parser(coalesce)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(coalesce) shouldBe true
   }
@@ -782,7 +782,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NULLIF function" in {
     val result = Parser(nullif)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nullif) shouldBe true
   }
@@ -790,14 +790,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse conversion function" in {
     val result = Parser(conversion)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe conversion
   }
 
   it should "parse all casts function" in {
     val result = Parser(allCasts)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(allCasts) shouldBe true
   }
@@ -805,7 +805,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse CASE WHEN expression" in {
     val result = Parser(caseWhen)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(caseWhen) shouldBe true
   }
@@ -813,7 +813,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse CASE WHEN with expression" in {
     val result = Parser(caseWhenExpr)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(caseWhenExpr) shouldBe true
   }
@@ -821,14 +821,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse EXTRACT function" in {
     val result = Parser(extract)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe extract
   }
 
   it should "parse arithmetic expressions" in {
     val result = Parser(arithmetic)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(arithmetic) shouldBe true
   }
@@ -836,91 +836,377 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse mathematical functions" in {
     val result = Parser(mathematical)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe mathematical
   }
 
   it should "parse string functions" in {
     val result = Parser(string)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe string
   }
 
   it should "parse top hits functions" in {
     val result = Parser(topHits)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe topHits
   }
 
   it should "parse last_day function" in {
     val result = Parser(lastDay)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe lastDay
   }
 
   it should "parse all date extractors" in {
     val result = Parser(extractors)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe extractors
   }
 
   it should "parse geo distance field" in {
     val result = Parser(geoDistance)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe geoDistance
   }
 
   it should "parse BETWEEN with temporal fields" in {
     val result = Parser(betweenTemporal)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe betweenTemporal
   }
 
   it should "parse nested of nested" in {
     val result = Parser(nestedOfNested)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe nestedOfNested
   }
 
   it should "parse predicate with distinct nested" in {
     val result = Parser(predicateWithDistinctNested)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe predicateWithDistinctNested
   }
 
   it should "parse nested without criteria" in {
     val result = Parser(nestedWithoutCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe nestedWithoutCriteria
   }
 
   it should "determine the aggregation context" in {
     val result = Parser(determinationOfTheAggregationContext)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe determinationOfTheAggregationContext
   }
 
   it should "parse aggregation with nested of nested context" in {
     val result = Parser(aggregationWithNestedOfNestedContext)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe aggregationWithNestedOfNestedContext
   }
 
   it should "parse where filters according to scope" in {
     val result = Parser(whereFiltersAccordingToScope)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe whereFiltersAccordingToScope
+  }
+
+  // --- DDL ---
+
+  it should "parse CREATE TABLE if not exists" in {
+    val sql = "CREATE TABLE IF NOT EXISTS users (id INT NOT NULL, name VARCHAR DEFAULT 'anonymous')"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateTable("users", Right(cols), true, false) =>
+        cols.map(_.name) should contain allOf ("id", "name")
+        cols.find(_.name == "id").get.notNull shouldBe true
+        cols.find(_.name == "name").get.defaultValue.map(_.value) shouldBe Some("anonymous")
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "parse CREATE OR REPLACE TABLE as select" in {
+    val sql = "CREATE OR REPLACE TABLE users AS SELECT id, name FROM accounts"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case table: CreateTable =>
+        println(table.sql)
+        table.table shouldBe "users"
+        table.ifNotExists shouldBe false
+        table.orReplace shouldBe true
+        table.columns.map(_.name) should contain allOf ("id", "name")
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "parse DROP TABLE if exists" in {
+    val sql = "DROP TABLE IF EXISTS users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DropTable("users", ie, _) if ie =>
+      case _                               => fail("Expected DropTable")
+    }
+  }
+
+  it should "parse TRUNCATE TABLE" in {
+    val sql = "TRUNCATE TABLE users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case TruncateTable("users") =>
+      case _                      => fail("Expected TruncateTable")
+    }
+  }
+
+  it should "parse ALTER TABLE add column if not exists" in {
+    val sql =
+      """ALTER TABLE users
+        |  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case AddColumn(c, ine) if ine =>
+            c.name shouldBe "age"
+            c.dataType.typeId should include("INT")
+            c.defaultValue.map(_.value) shouldBe Some(0L)
+          case _ => fail("Expected AddColumn")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE rename column" in {
+    val sql =
+      """ALTER TABLE users
+        |  RENAME COLUMN name TO full_name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case RenameColumn(o, n) =>
+            o shouldBe "name"
+            n shouldBe "full_name"
+          case _ => fail("Expected RenameColumn")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column options if exists" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN IF EXISTS status SET OPTIONS (description = 'a description')
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case AlterColumnOptions(c, d, ie) if ie =>
+            c shouldBe "status"
+            d.get("description").map(_.value) shouldBe Some("a description")
+          case _ => fail("Expected AlterColumnDefault")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column default" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status SET DEFAULT 'active'
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case AlterColumnDefault(c, d, _) =>
+            c shouldBe "status"
+            d.value shouldBe "active"
+          case other => fail(s"Expected AlterColumnDefault, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE drop column default" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status DROP DEFAULT
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case DropColumnDefault(c, _) =>
+            c shouldBe "status"
+          case other => fail(s"Expected DropColumnDefault, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column not null" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status SET NOT NULL
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case AlterColumnNotNull(c, _) =>
+            c shouldBe "status"
+          case other => fail(s"Expected AlterColumnNotNull, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE drop column not null" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status DROP NOT NULL
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case DropColumnNotNull(c, _) =>
+            c shouldBe "status"
+          case other => fail(s"Expected DropColumnNotNull, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column type" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status SET DATA TYPE BIGINT
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmt) =>
+        stmt match {
+          case AlterColumnType(c, d, _) =>
+            c shouldBe "status"
+            d shouldBe SQLTypes.BigInt
+          case other => fail(s"Expected AlterColumnType, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE if exists" in {
+    val sql =
+      """ALTER TABLE IF EXISTS users
+        |  ALTER COLUMN status SET DEFAULT 'active'
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", ifExists, stmt) if ifExists =>
+        stmt match {
+          case AlterColumnDefault(c, d, _) =>
+            c shouldBe "status"
+            d.value shouldBe "active"
+          case other => fail(s"Expected AlterColumnDefault, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  // --- DML ---
+
+  it should "parse INSERT INTO ... VALUES" in {
+    val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice')"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", cols, Right(values)) =>
+        cols should contain inOrder ("id", "name")
+        values.map(_.value) should contain inOrder (1, "Alice")
+      case _ => fail("Expected Insert with values")
+    }
+  }
+
+  it should "parse INSERT INTO ... SELECT" in {
+    val sql = "INSERT INTO users SELECT id, name FROM old_users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", Nil, Left(sel: DqlStatement)) =>
+        sel.sql should include("SELECT id, name FROM old_users")
+      case _ => fail("Expected Insert with select")
+    }
+  }
+
+  it should "parse UPDATE" in {
+    val sql = "UPDATE users SET name = 'Bob', age = 42 WHERE id = 1"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Update("users", values, Some(where)) =>
+        values("name").value shouldBe "Bob"
+        values("age").value shouldBe 42
+        where.sql should include("id = 1")
+      case _ => fail("Expected Update")
+    }
+  }
+
+  it should "parse DELETE" in {
+    val sql = "DELETE FROM users WHERE age > 30"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Delete(table, Some(where)) =>
+        table.name shouldBe "users"
+        where.sql should include("age > 30")
+      case _ => fail("Expected Delete")
+    }
   }
 }

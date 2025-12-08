@@ -22,7 +22,7 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.serialization._
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -288,7 +288,7 @@ trait MockElasticClientApi extends ElasticClientApi {
   // ==================== SearchApi ====================
 
   override private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SQLSearchRequest
+    sqlSearch: SingleSearch
   ): String =
     """{
       |  "query": {

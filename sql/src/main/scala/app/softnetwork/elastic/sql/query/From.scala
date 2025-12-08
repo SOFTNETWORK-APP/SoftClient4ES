@@ -46,7 +46,7 @@ case object On extends Expr("ON") with TokenRegex
 
 case class On(criteria: Criteria) extends Updateable {
   override def sql: String = s" $On $criteria"
-  def update(request: SQLSearchRequest): On = this.copy(criteria = criteria.update(request))
+  def update(request: SingleSearch): On = this.copy(criteria = criteria.update(request))
 }
 
 case object Join extends Expr("JOIN") with TokenRegex
@@ -59,7 +59,7 @@ sealed trait Join extends Updateable {
   override def sql: String =
     s" ${asString(joinType)} $Join $source${asString(on)}${asString(alias)}"
 
-  override def update(request: SQLSearchRequest): Join
+  override def update(request: SingleSearch): Join
 
   override def validate(): Either[String, Unit] =
     for {
@@ -90,7 +90,7 @@ case class Unnest(
 ) extends Source
     with Join {
   override def sql: String = s"$Join $Unnest($identifier)${asString(alias)}"
-  def update(request: SQLSearchRequest): Unnest = {
+  def update(request: SingleSearch): Unnest = {
     val updated = this.copy(
       identifier = identifier.withNested(true).update(request),
       limit = limit.orElse(request.limit)
@@ -141,7 +141,8 @@ case class Unnest(
 case class Table(name: String, tableAlias: Option[Alias] = None, joins: Seq[Join] = Nil)
     extends Source {
   override def sql: String = s"$name${asString(tableAlias)} ${joins.map(_.sql).mkString(" ")}".trim
-  def update(request: SQLSearchRequest): Table = this.copy(joins = joins.map(_.update(request)))
+  def update(request: SingleSearch): Table =
+    this.copy(joins = joins.map(_.update(request)))
 
   override def validate(): Either[String, Unit] =
     for {
@@ -179,7 +180,7 @@ case class From(tables: Seq[Table]) extends Updateable {
       (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
     )
     .toMap
-  def update(request: SQLSearchRequest): From =
+  def update(request: SingleSearch): From =
     this.copy(tables = tables.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = {

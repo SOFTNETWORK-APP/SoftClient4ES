@@ -25,7 +25,7 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.persistence._
 import app.softnetwork.persistence.person.model.Person
 import com.fasterxml.jackson.core.JsonParseException
@@ -73,7 +73,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   import scala.language.implicitConversions
 
-  implicit def toSQLQuery(sqlQuery: String): SQLQuery = SQLQuery(sqlQuery)
+  implicit def toSQLQuery(sqlQuery: String): SelectStatement = SelectStatement(sqlQuery)
 
   implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
     Source.fromIterator(() => list.iterator)

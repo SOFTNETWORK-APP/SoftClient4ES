@@ -29,7 +29,7 @@ import app.softnetwork.elastic.client.scroll.{
   UseSearchAfter
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement, SingleSearch}
 import org.json4s.{Formats, JNothing}
 import org.json4s.jackson.JsonMethods.parse
 
@@ -117,11 +117,11 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
-    sql: SQLQuery,
+    sql: SelectStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
-    sql.request match {
-      case Some(Left(single)) =>
+    sql.statement match {
+      case Some(single: SingleSearch) =>
         if (single.windowFunctions.nonEmpty)
           return scrollWithWindowEnrichment(sql, single, config)
 
@@ -136,7 +136,7 @@ trait ScrollApi extends ElasticClientHelpers {
           single.sorts.nonEmpty
         )
 
-      case Some(Right(_)) =>
+      case Some(_) =>
         Source.failed(
           new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
         )
@@ -224,7 +224,7 @@ trait ScrollApi extends ElasticClientHelpers {
     *   - Source of tuples (T, ScrollMetrics)
     */
   def scrollAsUnchecked[T](
-    sql: SQLQuery,
+    sql: SelectStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit
     system: ActorSystem,
@@ -376,8 +376,8 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Scroll with window function enrichment
     */
   private def scrollWithWindowEnrichment(
-    sql: SQLQuery,
-    request: SQLSearchRequest,
+    sql: SelectStatement,
+    request: SingleSearch,
     config: ScrollConfig
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
 

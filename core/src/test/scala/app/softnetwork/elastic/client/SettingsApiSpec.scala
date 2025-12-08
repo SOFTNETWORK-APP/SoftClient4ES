@@ -489,7 +489,7 @@ class SettingsApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        val parsedResult = new JsonParser().parse(result.get).getAsJsonObject
+        val parsedResult = JsonParser.parseString(result.get).getAsJsonObject
         parsedResult.has("number_of_shards") shouldBe true
         parsedResult.get("number_of_shards").getAsString shouldBe "3"
       }

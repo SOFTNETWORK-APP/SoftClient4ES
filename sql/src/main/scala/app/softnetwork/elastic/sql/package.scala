@@ -248,7 +248,7 @@ package object sql {
   }
 
   trait Updateable extends Token {
-    def update(request: SQLSearchRequest): Updateable
+    def update(request: SingleSearch): Updateable
   }
 
   abstract class Expr(override val sql: String) extends Token
@@ -299,6 +299,13 @@ package object sql {
     override def painless(context: Option[PainlessContext]): String = "null"
     override def nullable: Boolean = true
     override def baseType: SQLType = SQLTypes.Null
+  }
+
+  case object ParamValue extends Value[String](null) with TokenRegex {
+    override def sql: String = "?"
+    override def painless(context: Option[PainlessContext]): String = "params.paramValue"
+    override def nullable: Boolean = true
+    override def baseType: SQLType = SQLTypes.Any
   }
 
   case class BooleanValue(override val value: Boolean) extends Value[Boolean](value) {
@@ -606,7 +613,7 @@ package object sql {
 
   trait Source extends Updateable {
     def name: String
-    def update(request: SQLSearchRequest): Source
+    def update(request: SingleSearch): Source
   }
 
   sealed trait Identifier
@@ -620,7 +627,7 @@ package object sql {
 
     def withFunctions(functions: List[Function]): Identifier
 
-    def update(request: SQLSearchRequest): Identifier
+    def update(request: SingleSearch): Identifier
 
     def tableAlias: Option[String]
     def distinct: Boolean
@@ -854,7 +861,7 @@ package object sql {
       id
     }
 
-    def update(request: SQLSearchRequest): Identifier = {
+    def update(request: SingleSearch): Identifier = {
       val bucketPath: String =
         request.groupBy match {
           case Some(gb) =>

@@ -70,7 +70,7 @@ case class Field(
 
   override def functions: List[Function] = identifier.functions
 
-  def update(request: SQLSearchRequest): Field = {
+  def update(request: SingleSearch): Field = {
     identifier.windows match {
       case Some(th) =>
         val windowFunction = th.update(request)
@@ -104,7 +104,7 @@ case object Except extends Expr("except") with TokenRegex
 
 case class Except(fields: Seq[Field]) extends Updateable {
   override def sql: String = s" $Except(${fields.mkString(",")})"
-  def update(request: SQLSearchRequest): Except =
+  def update(request: SingleSearch): Except =
     this.copy(fields = fields.map(_.update(request)))
 }
 
@@ -117,7 +117,7 @@ case class Select(
   lazy val fieldAliases: Map[String, String] = fields.flatMap { field =>
     field.fieldAlias.map(a => field.identifier.identifierName -> a.alias)
   }.toMap
-  def update(request: SQLSearchRequest): Select =
+  def update(request: SingleSearch): Select =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))
 
   override def validate(): Either[String, Unit] =
@@ -156,7 +156,7 @@ case class SQLAggregation(
 }
 
 object SQLAggregation {
-  def fromField(field: Field, request: SQLSearchRequest): Option[SQLAggregation] = {
+  def fromField(field: Field, request: SingleSearch): Option[SQLAggregation] = {
     import field._
 
     val aggType = aggregateFunction match {

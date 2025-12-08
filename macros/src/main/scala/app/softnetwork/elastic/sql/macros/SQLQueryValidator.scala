@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql.macros
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.{COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.SQLSearchRequest
+import app.softnetwork.elastic.sql.query.{MultiSearch, SingleSearch}
 
 import scala.language.experimental.macros
 import scala.reflect.macros.blackbox
@@ -156,7 +156,7 @@ trait SQLQueryValidator {
            |  scrollAs[Product](\"\"\"SELECT id, name FROM products\"\"\".stripMargin)
            |
            |❌ For dynamic queries, use:
-           |  scrollAsUnchecked[Product](SQLQuery(dynamicSql), ScrollConfig())
+           |  scrollAsUnchecked[Product](SelectStatement(dynamicSql), ScrollConfig())
            |
            |""".stripMargin
         )
@@ -170,12 +170,12 @@ trait SQLQueryValidator {
   // ============================================================
   // Helper: Parse SQL query into SQLSearchRequest
   // ============================================================
-  private def parseSQLQuery(c: blackbox.Context)(sqlQuery: String): SQLSearchRequest = {
+  private def parseSQLQuery(c: blackbox.Context)(sqlQuery: String): SingleSearch = {
     Parser(sqlQuery) match {
-      case Right(Left(request)) =>
+      case Right(request: SingleSearch) =>
         request
 
-      case Right(Right(multi)) =>
+      case Right(multi: MultiSearch) =>
         multi.requests.headOption.getOrElse {
           c.abort(c.enclosingPosition, "❌ Empty multi-search query")
         }
@@ -193,7 +193,7 @@ trait SQLQueryValidator {
   // Reject SELECT * (incompatible with compile-time validation)
   // ============================================================
   private def rejectSelectStar[T: c.WeakTypeTag](c: blackbox.Context)(
-    parsedQuery: SQLSearchRequest,
+    parsedQuery: SingleSearch,
     sqlQuery: String
   ): Unit = {
     import c.universe._
@@ -237,7 +237,7 @@ trait SQLQueryValidator {
            |     SELECT $fieldNames FROM ...
            |
            |  2. Use the *Unchecked() variant for dynamic queries:
-           |     searchAsUnchecked[${tpe.typeSymbol.name}](SQLQuery("SELECT * FROM ..."))
+           |     searchAsUnchecked[${tpe.typeSymbol.name}](SelectStatement("SELECT * FROM ..."))
            |
            |Best Practice:
            |  Always explicitly select only the fields you need.
@@ -330,7 +330,7 @@ trait SQLQueryValidator {
   // ============================================================
   // Helper: Extract selected fields from parsed SQL query
   // ============================================================
-  private def extractQueryFields(parsedQuery: SQLSearchRequest): Set[String] = {
+  private def extractQueryFields(parsedQuery: SingleSearch): Set[String] = {
     parsedQuery.select.fields.map { field =>
       field.fieldAlias.map(_.alias).getOrElse(field.identifier.name)
     }.toSet
@@ -339,7 +339,7 @@ trait SQLQueryValidator {
   // ============================================================
   // Helper: Extract UNNEST collections from the query
   // ============================================================
-  private def extractUnnestedCollections(parsedQuery: SQLSearchRequest): Set[String] = {
+  private def extractUnnestedCollections(parsedQuery: SingleSearch): Set[String] = {
     // Check if the query has nested elements (UNNEST)
     parsedQuery.select.fields.flatMap { field =>
       field.identifier.nestedElement.map { nested =>
@@ -630,7 +630,7 @@ trait SQLQueryValidator {
   // Helper: Validate Type compatibility
   // ============================================================
   private def validateTypes(c: blackbox.Context)(
-    parsedQuery: SQLSearchRequest,
+    parsedQuery: SingleSearch,
     requiredFields: Map[String, c.universe.Type]
   ): Unit = {
 

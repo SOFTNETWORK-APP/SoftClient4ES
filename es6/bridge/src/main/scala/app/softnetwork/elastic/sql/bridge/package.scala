@@ -48,7 +48,7 @@ import scala.language.implicitConversions
 package object bridge {
 
   implicit def requestToNestedFilterAggregation(
-    request: SQLSearchRequest,
+    request: SingleSearch,
     innerHitsName: String
   ): Option[FilterAggregation] = {
     val having: Option[Query] =
@@ -125,7 +125,7 @@ package object bridge {
   }
 
   implicit def requestToFilterAggregation(
-    request: SQLSearchRequest
+    request: SingleSearch
   ): Option[FilterAggregation] =
     request.having.flatMap(_.criteria) match {
       case Some(f) =>
@@ -142,7 +142,7 @@ package object bridge {
     }
 
   implicit def requestToRootAggregations(
-    request: SQLSearchRequest,
+    request: SingleSearch,
     aggregations: Seq[ElasticAggregation]
   ): Seq[AbstractAggregation] = {
     val notNestedAggregations = aggregations.filterNot(_.nested)
@@ -192,7 +192,7 @@ package object bridge {
   }
 
   implicit def requestToScopedAggregations(
-    request: SQLSearchRequest,
+    request: SingleSearch,
     aggregations: Seq[ElasticAggregation]
   ): Seq[NestedAggregation] = {
     // Group nested aggregations by their nested path
@@ -324,7 +324,7 @@ package object bridge {
     scopedAggregations
   }
 
-  implicit def requestToNestedWithoutCriteriaQuery(request: SQLSearchRequest): Option[Query] =
+  implicit def requestToNestedWithoutCriteriaQuery(request: SingleSearch): Option[Query] =
     NestedElements.buildNestedTrees(request.nestedElementsWithoutCriteria) match {
       case Nil => None
       case nestedTrees =>
@@ -404,7 +404,7 @@ package object bridge {
     }
   }
 
-  implicit def requestToElasticSearchRequest(request: SQLSearchRequest): ElasticSearchRequest =
+  implicit def requestToElasticSearchRequest(request: SingleSearch): ElasticSearchRequest =
     ElasticSearchRequest(
       request.sql,
       request.select.fields,
@@ -419,7 +419,7 @@ package object bridge {
       request.orderBy.map(_.sorts).getOrElse(Seq.empty)
     ).minScore(request.score)
 
-  implicit def requestToSearchRequest(request: SQLSearchRequest): SearchRequest = {
+  implicit def requestToSearchRequest(request: SingleSearch): SearchRequest = {
     import request._
 
     val aggregations = request.aggregates.map(
@@ -550,7 +550,7 @@ package object bridge {
   }
 
   implicit def requestToMultiSearchRequest(
-    request: SQLMultiSearchRequest
+    request: MultiSearch
   ): MultiSearchRequest = {
     MultiSearchRequest(
       request.requests.map(implicitly[SearchRequest](_))
@@ -991,12 +991,12 @@ package object bridge {
 
   @deprecated
   implicit def sqlQueryToAggregations(
-    query: SQLQuery
+    query: SelectStatement
   ): Seq[ElasticAggregation] = {
     import query._
-    request
+    statement
       .map {
-        case Left(l) =>
+        case l: SingleSearch =>
           val filteredAgg: Option[FilterAggregation] = requestToFilterAggregation(l)
           l.aggregates
             .map(ElasticAggregation(_, l.having.flatMap(_.criteria), l.sorts, l.sqlAggregations))

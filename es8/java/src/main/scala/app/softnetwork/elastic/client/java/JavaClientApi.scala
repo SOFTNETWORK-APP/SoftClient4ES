@@ -24,7 +24,7 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.client
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import co.elastic.clients.elasticsearch._types.{
@@ -401,7 +401,7 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
     getMapping(index).flatMap { jsonString =>
       // ✅ Extracting mapping from JSON
       ElasticResult.attempt(
-        new JsonParser().parse(jsonString).getAsJsonObject
+        JsonParser.parseString(jsonString).getAsJsonObject
       ) match {
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse JSON mapping for index '$index': ${error.message}")
@@ -757,7 +757,7 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   _: JavaClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
+  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   override private[client] def executeSingleSearch(
@@ -1253,7 +1253,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                     )
 
                   // Parse query to add query clause (not indices, they're in PIT)
-                  val queryJson = new JsonParser().parse(elasticQuery.query).getAsJsonObject
+                  val queryJson = JsonParser.parseString(elasticQuery.query).getAsJsonObject
 
                   // Extract query clause if present
                   if (queryJson.has("query")) {

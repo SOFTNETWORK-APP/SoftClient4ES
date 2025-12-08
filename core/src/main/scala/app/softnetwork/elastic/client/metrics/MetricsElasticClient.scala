@@ -30,7 +30,7 @@ import app.softnetwork.elastic.client.{
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -619,7 +619,7 @@ class MetricsElasticClient(
     * @return
     *   a sequence of aggregated results
     */
-  override def aggregate(sqlQuery: SQLQuery)(implicit
+  override def aggregate(sqlQuery: SelectStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[collection.Seq[SingleValueAggregateResult]]] =
     measureAsync("aggregate") {
@@ -635,7 +635,7 @@ class MetricsElasticClient(
     * @return
     *   the Elasticsearch response
     */
-  override def search(sql: SQLQuery): ElasticResult[ElasticResponse] =
+  override def search(sql: SelectStatement): ElasticResult[ElasticResponse] =
     measureResult("search") {
       delegate.search(sql)
     }
@@ -648,7 +648,7 @@ class MetricsElasticClient(
     *   a Future containing the Elasticsearch response
     */
   override def searchAsync(
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync") {
       delegate.searchAsync(sqlQuery)
@@ -664,7 +664,7 @@ class MetricsElasticClient(
     *   the entities matching the query
     */
   override def searchAsUnchecked[U](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("searchAs") {
       delegate.searchAsUnchecked[U](sqlQuery)
@@ -682,7 +682,7 @@ class MetricsElasticClient(
     * @return
     *   a Future containing the entities
     */
-  override def searchAsyncAsUnchecked[U](sqlQuery: SQLQuery)(implicit
+  override def searchAsyncAsUnchecked[U](sqlQuery: SelectStatement)(implicit
     m: Manifest[U],
     ec: ExecutionContext,
     formats: Formats
@@ -848,7 +848,7 @@ class MetricsElasticClient(
     }
 
   override def searchWithInnerHits[U: Manifest: ClassTag, I: Manifest: ClassTag](
-    sql: SQLQuery,
+    sql: SelectStatement,
     innerField: String
   )(implicit
     formats: Formats
@@ -881,7 +881,7 @@ class MetricsElasticClient(
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scroll(sql: SelectStatement, config: ScrollConfig)(implicit
     system: ActorSystem
   ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
@@ -922,7 +922,7 @@ class MetricsElasticClient(
     * @return
     *   - Source of tuples (T, ScrollMetrics)
     */
-  override def scrollAsUnchecked[T](sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scrollAsUnchecked[T](sql: SelectStatement, config: ScrollConfig)(implicit
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats

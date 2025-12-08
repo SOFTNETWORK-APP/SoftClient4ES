@@ -1,8 +1,8 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.Queries._
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.sql.parser.Queries._
+import app.softnetwork.elastic.sql.query.{SelectStatement, SingleSearch}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -12,9 +12,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   import scala.language.implicitConversions
 
-  implicit def sqlQueryToRequest(sqlQuery: SQLQuery): ElasticSearchRequest = {
-    sqlQuery.request match {
-      case Some(Left(value)) =>
+  implicit def sqlQueryToRequest(sqlQuery: SelectStatement): ElasticSearchRequest = {
+    sqlQuery.statement match {
+      case Some(value: SingleSearch) =>
         value.copy(score = sqlQuery.score)
       case None =>
         throw new IllegalArgumentException(
@@ -23,9 +23,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "SQLQuery" should "perform native count" in {
+  "SelectStatement" should "perform native count" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(t.id) c2 from Table t where t.nom = 'Nom'")
+      SelectStatement("select count(t.id) c2 from Table t where t.nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -61,7 +61,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform count distinct" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = 'Nom'")
+      SelectStatement("select count(distinct t.id) as c2 from Table as t where nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -97,7 +97,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = 'Nom'"
       )
     results.size shouldBe 1
@@ -142,7 +142,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with nested criteria" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
       )
     results.size shouldBe 1
@@ -205,7 +205,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with filter" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
       )
     results.size shouldBe 1
@@ -279,7 +279,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with \"and not\" operator" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(distinct inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
       )
     results.size shouldBe 1
@@ -353,7 +353,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with date filtering" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
       )
     results.size shouldBe 1
@@ -421,7 +421,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested select" in {
     val select: ElasticSearchRequest =
-      SQLQuery("""
+      SelectStatement("""
         |SELECT
         |profileId,
         |profile_ccm.email as email,
@@ -499,7 +499,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "exclude fields from select" in {
     val select: ElasticSearchRequest =
-      SQLQuery(
+      SelectStatement(
         except
       )
     select.query shouldBe
@@ -517,7 +517,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform query with group by and having" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHaving)
+      SelectStatement(groupByWithHaving)
     val query = select.query
     println(query)
     query shouldBe
@@ -577,7 +577,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform complex query" in {
     val select: ElasticSearchRequest =
-      SQLQuery(
+      SelectStatement(
         s"""SELECT
            |  inner_products.category as cat,
            |  min(inner_products.price) as min_price,
@@ -839,7 +839,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "add script fields" in {
     val select: ElasticSearchRequest =
-      SQLQuery(fieldsWithInterval)
+      SelectStatement(fieldsWithInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -879,7 +879,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "filter with date time and interval" in {
     val select: ElasticSearchRequest =
-      SQLQuery(filterWithDateTimeAndInterval)
+      SelectStatement(filterWithDateTimeAndInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -914,7 +914,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "filter with date and interval" in {
     val select: ElasticSearchRequest =
-      SQLQuery(filterWithDateAndInterval)
+      SelectStatement(filterWithDateAndInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -949,7 +949,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "filter with time and interval" in {
     val select: ElasticSearchRequest =
-      SQLQuery(filterWithTimeAndInterval)
+      SelectStatement(filterWithTimeAndInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -997,7 +997,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle having with date functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery("""SELECT userId, MAX(createdAt) as lastSeen
+      SelectStatement("""SELECT userId, MAX(createdAt) as lastSeen
                  |FROM table
                  |GROUP BY userId
                  |HAVING MAX(createdAt) > now - interval 7 day""".stripMargin)
@@ -1045,7 +1045,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle group by with having and date time functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHavingAndDateTimeFunctions)
+      SelectStatement(groupByWithHavingAndDateTimeFunctions)
     val query = select.query
     println(query)
     query shouldBe
@@ -1110,7 +1110,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle group by index" in {
     val select: ElasticSearchRequest =
-      SQLQuery(
+      SelectStatement(
         groupByWithHavingAndDateTimeFunctions.replace("GROUP BY Country, City", "GROUP BY 3, 2")
       )
     val query = select.query
@@ -1177,7 +1177,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_parse function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateParse)
+      SelectStatement(dateParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1246,7 +1246,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_format function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateFormat)
+      SelectStatement(dateFormat)
     val query = select.query
     println(query)
     query shouldBe
@@ -1345,7 +1345,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_parse function" in { // #25
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeParse)
+      SelectStatement(dateTimeParse)
     val query = select.query
     println(query)
     query shouldBe
@@ -1415,7 +1415,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_format function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeFormat)
+      SelectStatement(dateTimeFormat)
     val query = select.query
     println(query)
     query shouldBe
@@ -1469,7 +1469,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_diff function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateDiff)
+      SelectStatement(dateDiff)
     val query = select.query
     println(query)
     query shouldBe
@@ -1511,7 +1511,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle aggregation with date_diff function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(aggregationWithDateDiff)
+      SelectStatement(aggregationWithDateDiff)
     val query = select.query
     println(query)
     query shouldBe
@@ -1564,7 +1564,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_add function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateAdd)
+      SelectStatement(dateAdd)
     val query = select.query
     println(query)
     query shouldBe
@@ -1615,7 +1615,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_sub function as script field" in { // 30
     val select: ElasticSearchRequest =
-      SQLQuery(dateSub)
+      SelectStatement(dateSub)
     val query = select.query
     println(query)
     query shouldBe
@@ -1666,7 +1666,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_add function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeAdd)
+      SelectStatement(dateTimeAdd)
     val query = select.query
     println(query)
     query shouldBe
@@ -1717,7 +1717,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_sub function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeSub)
+      SelectStatement(dateTimeSub)
     val query = select.query
     println(query)
     query shouldBe
@@ -1768,7 +1768,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_null function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isnull)
+      SelectStatement(isnull)
     val query = select.query
     println(query)
     query shouldBe
@@ -1806,7 +1806,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_notnull function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isnotnull)
+      SelectStatement(isnotnull)
     val query = select.query
     println(query)
     query shouldBe
@@ -1848,7 +1848,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_null criteria as must_not exists" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isNullCriteria)
+      SelectStatement(isNullCriteria)
     val query = select.query
     println(query)
     query shouldBe
@@ -1880,7 +1880,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_notnull criteria as exists" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isNotNullCriteria)
+      SelectStatement(isNotNullCriteria)
     val query = select.query
     println(query)
     query shouldBe
@@ -1906,7 +1906,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle coalesce function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(coalesce)
+      SelectStatement(coalesce)
     val query = select.query
     println(query)
     query shouldBe
@@ -1957,7 +1957,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle nullif function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(nullif)
+      SelectStatement(nullif)
     val query = select.query
     println(query)
     query shouldBe
@@ -2016,7 +2016,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(conversion)
+      SelectStatement(conversion)
     val query = select.query
     println(query)
     query shouldBe
@@ -2101,7 +2101,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle case function as script field" in { // 40
     val select: ElasticSearchRequest =
-      SQLQuery(caseWhen)
+      SelectStatement(caseWhen)
     val query = select.query
     println(query)
     query shouldBe
@@ -2154,7 +2154,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle case with expression function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(caseWhenExpr)
+      SelectStatement(caseWhenExpr)
     val query = select.query
     println(query)
     query shouldBe
@@ -2209,7 +2209,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle extract function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(extract)
+      SelectStatement(extract)
     val query = select.query
     println(query)
     query shouldBe
@@ -2333,7 +2333,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle arithmetic function as script field and condition" in {
     val select: ElasticSearchRequest =
-      SQLQuery(arithmetic.replace("as group1", ""))
+      SelectStatement(arithmetic.replace("as group1", ""))
     val query = select.query
     println(query)
     query shouldBe
@@ -2422,7 +2422,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle mathematic function as script field and condition" in {
     val select: ElasticSearchRequest =
-      SQLQuery(mathematical)
+      SelectStatement(mathematical)
     val query = select.query
     println(query)
     query shouldBe
@@ -2592,7 +2592,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle string function as script field and condition" in { // 45
     val select: ElasticSearchRequest =
-      SQLQuery(string)
+      SelectStatement(string)
     val query = select.query
     println(query)
     query shouldBe
@@ -2748,7 +2748,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle top hits aggregation" in {
     val select: ElasticSearchRequest =
-      SQLQuery(topHits)
+      SelectStatement(topHits)
     val query = select.query
     println(query)
     query shouldBe
@@ -2865,7 +2865,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle last day function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(lastDay)
+      SelectStatement(lastDay)
     val query = select.query
     println(query)
     query shouldBe
@@ -2932,7 +2932,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle all extractors" in {
     val select: ElasticSearchRequest =
-      SQLQuery(extractors)
+      SelectStatement(extractors)
     val query = select.query
     println(query)
     query shouldBe
@@ -3069,7 +3069,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle geo distance as script fields and criteria" in {
     val select: ElasticSearchRequest =
-      SQLQuery(geoDistance)
+      SelectStatement(geoDistance)
     val query = select.query
     println(query)
     query shouldBe
@@ -3191,7 +3191,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle between with temporal" in { // 50
     val select: ElasticSearchRequest =
-      SQLQuery(betweenTemporal)
+      SelectStatement(betweenTemporal)
     val query = select.query
     println(query)
     query shouldBe
@@ -3276,7 +3276,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle nested of nested" in {
     val select: ElasticSearchRequest =
-      SQLQuery(nestedOfNested)
+      SelectStatement(nestedOfNested)
     val query = select.query
     println(query)
     query shouldBe
@@ -3384,7 +3384,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle predicate with distinct nested" in {
     val select: ElasticSearchRequest =
-      SQLQuery(predicateWithDistinctNested)
+      SelectStatement(predicateWithDistinctNested)
     val query = select.query
     println(query)
     query shouldBe
@@ -3494,7 +3494,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle nested without criteria" in {
     val select: ElasticSearchRequest =
-      SQLQuery(nestedWithoutCriteria)
+      SelectStatement(nestedWithoutCriteria)
     val query = select.query
     println(query)
     query shouldBe
@@ -3598,7 +3598,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "determine the aggregation context" in {
     val select: ElasticSearchRequest =
-      SQLQuery(determinationOfTheAggregationContext)
+      SelectStatement(determinationOfTheAggregationContext)
     val query = select.query
     println(query)
     query shouldBe
@@ -3632,7 +3632,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle aggregation with nested of nested context" in {
     val select: ElasticSearchRequest =
-      SQLQuery(aggregationWithNestedOfNestedContext)
+      SelectStatement(aggregationWithNestedOfNestedContext)
     val query = select.query
     println(query)
     query shouldBe
@@ -3668,7 +3668,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle where filters according to scope" in {
     val select: ElasticSearchRequest =
-      SQLQuery(whereFiltersAccordingToScope)
+      SelectStatement(whereFiltersAccordingToScope)
     val query = select.query
     println(query)
     query shouldBe
@@ -3753,7 +3753,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
           "\n",
           " "
         )
-    val select: ElasticSearchRequest = SQLQuery(query)
+    val select: ElasticSearchRequest = SelectStatement(query)
     println(select.query)*/
     val query =
       """  SELECT
@@ -3778,8 +3778,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  GROUP BY product_id, product_name, DATE_TRUNC( sale_date, MONTH )
         |  ORDER BY product_id, DATE_TRUNC( sale_date, MONTH )
         |""".stripMargin
-    SQLQuery(query).request.flatMap(_.left.toOption) match {
-      case Some(request) =>
+    SelectStatement(query).statement match {
+      case Some(request: SingleSearch) =>
         val aggRequest =
           request
             .copy(

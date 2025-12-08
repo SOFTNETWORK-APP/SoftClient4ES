@@ -12,7 +12,7 @@ import org.scalatest.matchers.should.Matchers
   */
 class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
 
-  import Queries._
+  import parser.Queries._
 
   import scala.language.implicitConversions
 

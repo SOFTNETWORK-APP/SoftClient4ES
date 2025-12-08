@@ -292,7 +292,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       // ✅ Extracting aliases from JSON
       ElasticResult.fromTry(
         Try {
-          new JsonParser().parse(jsonString).getAsJsonObject
+          JsonParser.parseString(jsonString).getAsJsonObject
         }
       ) match {
         case ElasticFailure(error) =>

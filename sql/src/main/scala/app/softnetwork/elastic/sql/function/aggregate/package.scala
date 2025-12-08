@@ -16,14 +16,7 @@
 
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.query.{
-  Bucket,
-  BucketPath,
-  Field,
-  Limit,
-  OrderBy,
-  SQLSearchRequest
-}
+import app.softnetwork.elastic.sql.query.{Bucket, BucketPath, Field, Limit, OrderBy, SingleSearch}
 import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
 package object aggregate {
@@ -94,7 +87,7 @@ package object aggregate {
     override lazy val bucketPath: String =
       aggregations.map(_.bucketPath).distinct.sortBy(_.length).reverse.headOption.getOrElse("")
 
-    override def update(request: SQLSearchRequest): BucketScriptAggregation = {
+    override def update(request: SingleSearch): BucketScriptAggregation = {
       val identifiers = FunctionUtils.aggregateIdentifiers(identifier)
       val params = identifiers.flatMap {
         case identifier: Identifier =>
@@ -148,7 +141,7 @@ package object aggregate {
 
     def withFields(fields: Seq[Field]): WindowFunction
 
-    def update(request: SQLSearchRequest): WindowFunction = {
+    def update(request: SingleSearch): WindowFunction = {
       val updated = this
         .withPartitionBy(partitionBy = partitionBy.map(_.update(request)))
       updated.withFields(
@@ -177,7 +170,7 @@ package object aggregate {
     override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
       this.copy(partitionBy = partitionBy)
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[FirstValue]
       .copy(
@@ -197,7 +190,7 @@ package object aggregate {
     override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
       this.copy(partitionBy = partitionBy)
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[LastValue]
       .copy(
@@ -217,7 +210,7 @@ package object aggregate {
     override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
       this.copy(partitionBy = partitionBy)
     override def withFields(fields: Seq[Field]): WindowFunction = this
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[ArrayAgg]
       .copy(
@@ -244,7 +237,7 @@ package object aggregate {
 
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
 
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[CountAgg]
       .copy(
@@ -268,7 +261,7 @@ package object aggregate {
 
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
 
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[MinAgg]
       .copy(
@@ -292,7 +285,7 @@ package object aggregate {
 
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
 
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[MaxAgg]
       .copy(
@@ -316,7 +309,7 @@ package object aggregate {
 
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
 
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[AvgAgg]
       .copy(
@@ -340,7 +333,7 @@ package object aggregate {
 
     override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
 
-    override def update(request: SQLSearchRequest): WindowFunction = super
+    override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[SumAgg]
       .copy(
