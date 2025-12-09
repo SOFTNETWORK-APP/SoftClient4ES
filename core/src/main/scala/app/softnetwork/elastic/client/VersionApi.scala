@@ -18,6 +18,8 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 
+import java.util.concurrent.atomic.AtomicReference
+
 trait VersionApi extends ElasticClientHelpers { _: SerializationApi =>
 
   // ========================================================================
@@ -25,22 +27,22 @@ trait VersionApi extends ElasticClientHelpers { _: SerializationApi =>
   // ========================================================================
 
   // Cache ES version (avoids calling it every time)
-  @volatile private var cachedVersion: Option[String] = None
+  private val cachedVersion = new AtomicReference[Option[String]](None)
 
   /** Get Elasticsearch version.
     * @return
     *   the Elasticsearch version
     */
   def version: ElasticResult[String] = {
-    cachedVersion match {
+    cachedVersion.get match {
       case Some(version) =>
         ElasticSuccess(version)
       case None =>
         executeVersion() match {
-          case success @ ElasticSuccess(version) =>
+          case ElasticSuccess(version) =>
             logger.info(s"✅ Elasticsearch version: $version")
-            cachedVersion = Some(version)
-            success
+            cachedVersion.compareAndSet(None, Some(version))
+            ElasticSuccess(cachedVersion.get.getOrElse(version))
           case failure @ ElasticFailure(error) =>
             logger.error(s"❌ Failed to get Elasticsearch version: ${error.message}")
             failure
