@@ -29,38 +29,30 @@ import org.elasticsearch.client.{RestClient, RestClientBuilder}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.{Future, Promise}
 
 trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
 
   val logger: Logger = LoggerFactory getLogger getClass.getName
 
-  @volatile private var asyncClient: Option[ElasticsearchAsyncClient] = None
-
-  /** Lock object for synchronized initialization
-    */
-  private val lock = new Object()
+  private val asyncRef = new AtomicReference[Option[ElasticsearchAsyncClient]](None)
 
   lazy val mapper: ObjectMapper with ClassTagExtensions = new ObjectMapper() with ClassTagExtensions
 
   def async(): ElasticsearchAsyncClient = {
-    // First check (no locking) - fast path for already initialized client
-    asyncClient match {
+    asyncRef.get() match {
       case Some(c) => c
-      case None    =>
-        // Second check with lock - slow path for initialization
-        lock.synchronized {
-          asyncClient match {
-            case Some(c) =>
-              c // Another thread initialized while we were waiting
-            case None =>
-              val c = createAsyncClient()
-              asyncClient = Some(c)
-              logger.info(
-                s"Elasticsearch async Client initialized for ${elasticConfig.credentials.url}"
-              )
-              c
-          }
+      case None =>
+        val c = createAsyncClient()
+        if (asyncRef.compareAndSet(None, Some(c))) {
+          logger.info(
+            s"Elasticsearch async Client initialized for ${elasticConfig.credentials.url}"
+          )
+          c
+        } else {
+          // Another thread initialized while we were waiting
+          asyncRef.get().get
         }
     }
   }

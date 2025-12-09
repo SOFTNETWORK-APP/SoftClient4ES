@@ -23,6 +23,7 @@ import org.slf4j.Logger
 import java.io.Closeable
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import scala.language.reflectiveCalls
 import scala.util.{Failure, Success, Try}
 
@@ -32,18 +33,9 @@ trait ElasticClientCompanion[T <: Closeable] extends ClientCompanion { _: { def 
 
   private val failures = new AtomicInteger(0)
 
-  /** Thread-safe client instance using double-checked locking pattern
-    * @volatile
-    *   ensures visibility across threads
-    */
-  @volatile private var client: Option[T] = None
+  private val ref = new AtomicReference[Option[T]](None)
 
-  /** Lock object for synchronized initialization
-    */
-  private val lock = new Object()
-
-  /** Get or create Elastic Client instance (thread-safe, lazy initialization) Uses double-checked
-    * locking for optimal performance
+  /** Get or create Elastic Client instance (thread-safe) using atomic reference
     *
     * @return
     *   Elastic Client instance
@@ -51,21 +43,16 @@ trait ElasticClientCompanion[T <: Closeable] extends ClientCompanion { _: { def 
     *   if client creation fails
     */
   def apply(): T = {
-    // First check (no locking) - fast path for already initialized client
-    client match {
+    ref.get() match {
       case Some(c) => c
-      case None    =>
-        // Second check with lock - slow path for initialization
-        lock.synchronized {
-          client match {
-            case Some(c) =>
-              c // Another thread initialized while we were waiting
-            case None =>
-              val c = createClient()
-              client = Some(c)
-              logger.info(s"Elasticsearch Client initialized for ${elasticConfig.credentials.url}")
-              c
-          }
+      case None =>
+        val c = createClient()
+        if (ref.compareAndSet(None, Some(c))) {
+          logger.info(s"Elasticsearch Client initialized for ${elasticConfig.credentials.url}")
+          c
+        } else {
+          // Another thread initialized while we were waiting
+          ref.get().get
         }
     }
   }
@@ -141,22 +128,20 @@ trait ElasticClientCompanion[T <: Closeable] extends ClientCompanion { _: { def 
 
   /** Check if client is initialized and connected
     */
-  override def isInitialized: Boolean = client.isDefined
+  override def isInitialized: Boolean = ref.get().isDefined
 
   /** Close the client and release resources Idempotent - safe to call multiple times
     */
   override def close(): Unit = {
-    lock.synchronized {
-      client.foreach { c =>
-        Try {
-          c.close()
-          logger.info("Elasticsearch Client closed successfully")
-        }.recover { case ex: Exception =>
-          logger.warn(s"Error closing Elasticsearch Client: ${ex.getMessage}", ex)
-        }
-        client = None
+    ref.get().foreach { c =>
+      Try {
+        c.close()
+        logger.info("Elasticsearch Client closed successfully")
+      }.recover { case ex: Exception =>
+        logger.warn(s"Error closing Elasticsearch Client: ${ex.getMessage}", ex)
       }
     }
+    ref.set(None)
   }
 
   /** Reset client (force reconnection on next access) Useful for connection recovery scenarios
