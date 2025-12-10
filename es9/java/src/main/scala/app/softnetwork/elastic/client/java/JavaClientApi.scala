@@ -155,7 +155,8 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): result.ElasticResult[(Boolean, Option[Long])] =
     executeJavaAction(
       operation = "reindex",

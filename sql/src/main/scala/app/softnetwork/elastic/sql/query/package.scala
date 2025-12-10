@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.SQLType
-import app.softnetwork.elastic.sql.schema.Column
+import app.softnetwork.elastic.sql.schema.{Column, Partition}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 
 package object query {
@@ -303,7 +303,9 @@ package object query {
     table: String,
     ddl: Either[DqlStatement, List[Column]],
     ifNotExists: Boolean = false,
-    orReplace: Boolean = false
+    orReplace: Boolean = false,
+    primaryKey: List[String] = Nil,
+    partitionBy: Option[Partition] = None
   ) extends DdlStatement {
 
     override def sql: String = {

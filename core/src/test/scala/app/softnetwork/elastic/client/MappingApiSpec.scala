@@ -72,7 +72,8 @@ class MappingApiSpec
     override private[client] def executeReindex(
       sourceIndex: String,
       targetIndex: String,
-      refresh: Boolean
+      refresh: Boolean,
+      pipeline: Option[String]
     ): ElasticResult[(Boolean, Option[Long])] = {
       executeReindexFunction(sourceIndex, targetIndex, refresh)
     }

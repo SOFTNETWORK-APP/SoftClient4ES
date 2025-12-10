@@ -57,7 +57,8 @@ class IndicesApiSpec
     override private[client] def executeReindex(
       sourceIndex: String,
       targetIndex: String,
-      refresh: Boolean
+      refresh: Boolean,
+      pipeline: Option[String]
     ): ElasticResult[(Boolean, Option[Long])] = {
       executeReindexResult
     }
@@ -688,7 +689,8 @@ class IndicesApiSpec
           override private[client] def executeReindex(
             sourceIndex: String,
             targetIndex: String,
-            refresh: Boolean
+            refresh: Boolean,
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
@@ -739,7 +741,8 @@ class IndicesApiSpec
           override private[client] def executeReindex(
             sourceIndex: String,
             targetIndex: String,
-            refresh: Boolean
+            refresh: Boolean,
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
@@ -942,7 +945,8 @@ class IndicesApiSpec
           override private[client] def executeReindex(
             sourceIndex: String,
             targetIndex: String,
-            refresh: Boolean
+            refresh: Boolean,
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
@@ -978,7 +982,8 @@ class IndicesApiSpec
           override private[client] def executeReindex(
             sourceIndex: String,
             targetIndex: String,
-            refresh: Boolean
+            refresh: Boolean,
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
@@ -1015,7 +1020,8 @@ class IndicesApiSpec
           override private[client] def executeReindex(
             sourceIndex: String,
             targetIndex: String,
-            refresh: Boolean
+            refresh: Boolean,
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
@@ -1050,7 +1056,8 @@ class IndicesApiSpec
           override private[client] def executeReindex(
             sourceIndex: String,
             targetIndex: String,
-            refresh: Boolean
+            refresh: Boolean,
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }

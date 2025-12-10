@@ -2,6 +2,8 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.schema.Partition
+import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -927,15 +929,29 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   // --- DDL ---
 
   it should "parse CREATE TABLE if not exists" in {
-    val sql = "CREATE TABLE IF NOT EXISTS users (id INT NOT NULL, name VARCHAR DEFAULT 'anonymous')"
+    val sql =
+      """CREATE TABLE IF NOT EXISTS users (
+        |  id INT NOT NULL,
+        |  name VARCHAR DEFAULT 'anonymous',
+        |  birthdate DATE,
+        |  PRIMARY KEY (id)
+        |) PARTITION BY birthdate""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case CreateTable("users", Right(cols), true, false) =>
+      case CreateTable(
+            "users",
+            Right(cols),
+            true,
+            false,
+            List("id"),
+            Some(Partition("birthdate", TimeUnit.DAYS))
+          ) =>
         cols.map(_.name) should contain allOf ("id", "name")
         cols.find(_.name == "id").get.notNull shouldBe true
         cols.find(_.name == "name").get.defaultValue.map(_.value) shouldBe Some("anonymous")
+        cols.find(_.name == "birthdate").get.dataType.typeId should include("DATE")
       case _ => fail("Expected CreateTable")
     }
   }

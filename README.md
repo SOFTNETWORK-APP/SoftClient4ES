@@ -1191,6 +1191,8 @@ client.searchAsUnchecked[Product](SQLQuery(dynamicQuery))
 client.scrollAsUnchecked[Product](dynamicQuery)
 ```
 
+---
+
 ### **3.4 DML Support**
 
 SoftClient4ES supports **SQL Data Manipulation Language (DML)** statements for interacting with Elasticsearch indices.
@@ -1213,12 +1215,28 @@ DELETE FROM users WHERE age > 30;
 
 ---
 
+#### 🔄 DML Execution Strategy
+
+The SQL DML statements (`INSERT`, `UPDATE`, `DELETE`) are automatically translated into Elasticsearch operations.  
+The execution path depends on the **number of impacted rows**:
+
+- **Single row impacted** → direct ES operation:
+	- `INSERT` → `_index`
+	- `UPDATE` → `_update`
+	- `DELETE` → `_delete`
+
+- **Multiple rows impacted** → bulk ingestion:
+	- All operations are batched and executed via the `_bulk` API.
+	- Bulk execution is implemented using **Akka Streams**, ensuring efficient back‑pressure handling, parallelism, and resilience for large datasets.
+
+---
+
 ### **3.5 DDL Support**
 
 SoftClient4ES also supports **SQL Data Definition Language (DDL)** statements to manage table schemas mapped to Elasticsearch indices.
 
 #### **Supported DDL Statements**
-- ✅ `CREATE TABLE [IF NOT EXISTS] …` with column definitions, `DEFAULT`, `NOT NULL`, `OPTIONS`, and `FIELDS` (multi‑fields or STRUCT)
+- ✅ `CREATE TABLE [IF NOT EXISTS] …` with column definitions, `DEFAULT`, `NOT NULL`, `OPTIONS`, `FIELDS` (multi‑fields or STRUCT) and `PARTITION BY …`
 - ✅ `CREATE OR REPLACE TABLE … AS SELECT …`
 - ✅ `ALTER TABLE …` with multiple sub‑statements:
 	- `ADD COLUMN [IF NOT EXISTS] …`
@@ -1236,8 +1254,9 @@ SoftClient4ES also supports **SQL Data Definition Language (DDL)** statements to
 ```sql
 CREATE TABLE IF NOT EXISTS users (
   id INT NOT NULL,
-  name VARCHAR DEFAULT 'anonymous'
-);
+  name VARCHAR DEFAULT 'anonymous',
+  birthdate DATE
+) PARTITION BY birthdate (MONTH);
 
 ALTER TABLE users (
   ADD COLUMN IF NOT EXISTS age INT DEFAULT 0,
@@ -1252,6 +1271,20 @@ ALTER TABLE users (
 DROP TABLE IF EXISTS users CASCADE;
 TRUNCATE TABLE users;
 ```
+
+---
+
+#### 🔄 MappingApi Migration Workflow
+
+The `MappingApi` provides intelligent mapping management with **automatic migration, validation, and rollback capabilities**. This ensures that SQL commands such as `ALTER TABLE … ALTER COLUMN SET TYPE …` are safely translated into Elasticsearch operations.
+
+##### ✨ Features
+- ✅ **Automatic Change Detection**: Compares existing mappings with new ones
+- ✅ **Safe Migration Strategy**: Creates temporary indices, reindexes, and renames atomically
+- ✅ **Automatic Rollback**: Reverts to original state if migration fails
+- ✅ **Backup & Restore**: Preserves original mappings and settings
+- ✅ **Progress Tracking**: Detailed logging of migration steps
+- ✅ **Validation**: Strict JSON validation with error reporting
 
 ---
 

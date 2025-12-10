@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.time.TimeUnit
 
 package object schema {
   case class Column(
@@ -45,79 +46,140 @@ package object schema {
     }
   }
 
+  case class Partition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends Token {
+    def sql: String = s"PARTITION BY $column ($granularity)"
+
+    val dateRounding: String = granularity.script.get
+
+    val dateFormats: List[String] = granularity match {
+      case TimeUnit.YEARS  => List("yyyy")
+      case TimeUnit.MONTHS => List("yyyy-MM")
+      case TimeUnit.DAYS   => List("yyyy-MM-dd")
+      case TimeUnit.HOURS  => List("yyyy-MM-dd'T'HH", "yyyy-MM-dd HH")
+      case TimeUnit.MINUTES =>
+        List("yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm")
+      case TimeUnit.SECONDS =>
+        List("yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss")
+      case _ => List.empty
+    }
+  }
+
+  case class ColumnNotFound(column: String, table: String)
+      extends Exception(s"Column $column  does not exist in table $table")
+
   case class Table(
     name: String,
     columns: List[Column],
-    options: Map[String, Value[_]] = Map.empty
+    primaryKey: List[String] = Nil,
+    partitionBy: Option[Partition] = None,
+    defaultPipeline: Option[String] = None,
+    finalPipeline: Option[String] = None
   ) extends Token {
-    lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
+    private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
 
     def sql: String = {
       val cols = columns.map(_.sql).mkString(", ")
-      val opts = if (options.nonEmpty) {
-        s" OPTIONS (${options.map { case (k, v) => s"$k = $v" }.mkString(", ")}) "
+      val pkStr = if (primaryKey.nonEmpty) {
+        s", PRIMARY KEY (${primaryKey.mkString(", ")})"
       } else {
         ""
       }
-      s"CREATE OR REPLACE TABLE $name ($cols)$opts"
+      s"CREATE OR REPLACE TABLE $name ($cols$pkStr)${partitionBy.getOrElse("")}"
     }
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
       statements.foldLeft(this) { (table, statement) =>
         statement match {
           case AddColumn(column, ifNotExists) =>
-            table.copy(columns = table.columns :+ column)
+            if (ifNotExists && table.cols.contains(column.name)) table
+            else if (!table.cols.contains(column.name))
+              table.copy(columns = table.columns :+ column)
+            else throw ColumnNotFound(column.name, table.name)
           case DropColumn(columnName, ifExists) =>
-            table.copy(columns = table.columns.filterNot(_.name == columnName))
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(columns = table.columns.filterNot(_.name == columnName))
+            else throw ColumnNotFound(columnName, table.name)
           case RenameColumn(oldName, newName) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == oldName) col.copy(name = newName) else col
-              }
-            )
+            if (cols.contains(oldName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == oldName) col.copy(name = newName) else col
+                }
+              )
+            else throw ColumnNotFound(oldName, table.name)
           case AlterColumnType(columnName, newType, ifExists) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == columnName) col.copy(dataType = newType)
-                else col
-              }
-            )
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) col.copy(dataType = newType)
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
           case AlterColumnDefault(columnName, newDefault, ifExists) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == columnName) col.copy(defaultValue = Some(newDefault))
-                else col
-              }
-            )
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) col.copy(defaultValue = Some(newDefault))
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnDefault(columnName, ifExists) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == columnName) col.copy(defaultValue = None)
-                else col
-              }
-            )
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) col.copy(defaultValue = None)
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
           case AlterColumnNotNull(columnName, ifExists) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == columnName) col.copy(notNull = true)
-                else col
-              }
-            )
+            if (!table.cols.contains(columnName) && ifExists) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) col.copy(notNull = true)
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnNotNull(columnName, ifExists) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == columnName) col.copy(notNull = false)
-                else col
-              }
-            )
+            if (!table.cols.contains(columnName) && ifExists) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) col.copy(notNull = false)
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
           case AlterColumnOptions(columnName, newOptions, ifExists) =>
-            table.copy(
-              columns = table.columns.map { col =>
-                if (col.name == columnName)
-                  col.copy(options = col.options ++ newOptions)
-                else col
-              }
-            )
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(options = col.options ++ newOptions)
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
+          case AlterColumnFields(columnName, newFields, ifExists) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(multiFields = newFields.toList)
+                  else col
+                }
+              )
+            else throw ColumnNotFound(columnName, table.name)
           case _ => table
         }
       }

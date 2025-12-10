@@ -174,7 +174,8 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): result.ElasticResult[(Boolean, Option[Long])] =
     executeRestAction[Request, org.elasticsearch.client.Response, (Boolean, Option[Long])](
       operation = "reindex",

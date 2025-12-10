@@ -114,10 +114,11 @@ class MetricsElasticClient(
   override def reindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] = {
     measureResult("reindex", Some(s"$sourceIndex->$targetIndex")) {
-      delegate.reindex(sourceIndex, targetIndex, refresh)
+      delegate.reindex(sourceIndex, targetIndex, refresh, pipeline)
     }
   }
 

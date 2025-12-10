@@ -99,7 +99,8 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
   private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
     executeJestAction[JestResult, (Boolean, Option[Long])](
       operation = "reindex",

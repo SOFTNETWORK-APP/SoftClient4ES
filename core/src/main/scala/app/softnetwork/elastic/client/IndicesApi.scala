@@ -247,7 +247,8 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
   def reindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean = true
+    refresh: Boolean = true,
+    pipeline: Option[String] = None
   ): ElasticResult[(Boolean, Option[Long])] = {
     // Validation...
     validateIndexName(sourceIndex) match {
@@ -322,7 +323,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
     }
 
     // ✅ Performing the reindex with extracting the number of documents
-    executeReindex(sourceIndex, targetIndex, refresh) match {
+    executeReindex(sourceIndex, targetIndex, refresh, pipeline) match {
       case ElasticFailure(error) =>
         logger.error(s"Reindex failed for index '$targetIndex': ${error.message}")
         ElasticFailure(error)
@@ -407,7 +408,8 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
   private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])]
 
   private[client] def executeIndexExists(index: String): ElasticResult[Boolean]

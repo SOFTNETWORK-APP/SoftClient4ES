@@ -110,7 +110,8 @@ trait MockElasticClientApi extends ElasticClientApi {
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
     ElasticResult.success((true, Some(elasticDocuments.getAll.keys.size)))
 

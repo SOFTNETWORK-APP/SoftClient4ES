@@ -29,7 +29,8 @@ import app.softnetwork.elastic.sql.parser.function.string.StringParser
 import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.Column
+import app.softnetwork.elastic.sql.schema.{Column, Partition}
+import app.softnetwork.elastic.sql.time.TimeUnit
 
 import scala.language.implicitConversions
 import scala.language.existentials
@@ -73,12 +74,12 @@ object Parser
     }
 
   def options: PackratParser[Map[String, Value[_]]] =
-    "OPTIONS" ~ "(" ~ repsep(option, separator) ~ ")" ^^ { case _ ~ _ ~ opts ~ _ =>
+    "OPTIONS" ~ start ~ repsep(option, separator) ~ end ^^ { case _ ~ _ ~ opts ~ _ =>
       opts.toMap
     }
 
   def multiFields: PackratParser[List[Column]] =
-    "FIELDS" ~ "(" ~ repsep(column, separator) ~ ")" ^^ { case _ ~ _ ~ cols ~ _ =>
+    "FIELDS" ~ start ~ repsep(column, separator) ~ end ^^ { case _ ~ _ ~ cols ~ _ =>
       cols
     } | success(Nil)
 
@@ -114,25 +115,59 @@ object Parser
     }
 
   def columns: PackratParser[List[Column]] =
-    "(" ~ repsep(column, separator) ~ ")" ^^ { case _ ~ cols ~ _ => cols }
+    start ~ repsep(column, separator) ~ end ^^ { case _ ~ cols ~ _ => cols }
+
+  def primaryKey: PackratParser[List[String]] =
+    separator ~ "PRIMARY" ~ "KEY" ~ start ~ repsep(ident, separator) ~ end ^^ {
+      case _ ~ _ ~ _ ~ _ ~ keys ~ _ =>
+        keys
+    } | success(Nil)
+
+  def granularity: PackratParser[TimeUnit] = start ~
+    (("YEAR" ^^^ TimeUnit.YEARS) |
+    ("MONTH" ^^^ TimeUnit.MONTHS) |
+    ("DAY" ^^^ TimeUnit.DAYS) |
+    ("HOUR" ^^^ TimeUnit.HOURS) |
+    ("MINUTE" ^^^ TimeUnit.MINUTES) |
+    ("SECOND" ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
+
+  def partitionBy: PackratParser[Option[Partition]] =
+    opt("PARTITION" ~ "BY" ~ ident ~ opt(granularity)) ^^ {
+      case Some(_ ~ _ ~ pb ~ gf) => Some(Partition(pb, gf.getOrElse(TimeUnit.DAYS)))
+      case None                  => None
+    }
+
+  def columnsWithPartitionBy: PackratParser[(List[Column], List[String], Option[Partition])] =
+    start ~ repsep(column, separator) ~ primaryKey ~ end ~ partitionBy ^^ {
+      case _ ~ cols ~ pk ~ _ ~ pb =>
+        (cols, pk, pb)
+    }
 
   def createOrReplaceTable: PackratParser[CreateTable] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columns | ("AS" ~> dqlStatement)) ^^ {
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
       case _ ~ name ~ lr =>
         lr match {
-          case cols: List[Column] =>
-            CreateTable(name, Right(cols), ifNotExists = false, orReplace = true)
+          case (cols: List[Column], pk: List[String], p: Option[Partition]) =>
+            CreateTable(
+              name,
+              Right(cols),
+              ifNotExists = false,
+              orReplace = true,
+              primaryKey = pk,
+              partitionBy = p
+            )
           case sel: DqlStatement =>
             CreateTable(name, Left(sel), ifNotExists = false, orReplace = true)
         }
     }
 
   def createTable: PackratParser[CreateTable] =
-    ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columns | ("AS" ~> dqlStatement)) ^^ {
+    ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
       case _ ~ ine ~ name ~ lr =>
         lr match {
-          case cols: List[Column] => CreateTable(name, Right(cols), ine)
-          case sel: DqlStatement  => CreateTable(name, Left(sel), ine)
+          case (cols: List[Column], pk: List[String], p: Option[Partition]) =>
+            CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p)
+          case sel: DqlStatement => CreateTable(name, Left(sel), ine)
         }
     }
 
@@ -233,8 +268,8 @@ object Parser
 
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
   def insert: PackratParser[Insert] =
-    ("INSERT" ~ "INTO") ~ ident ~ opt("(" ~> repsep(ident, separator) <~ ")") ~
-    (("VALUES" ~ "(" ~> repsep(value, separator) <~ ")") ^^ { vs => Right(vs) }
+    ("INSERT" ~ "INTO") ~ ident ~ opt(start ~> repsep(ident, separator) <~ end) ~
+    (("VALUES" ~ start ~> repsep(value, separator) <~ end) ^^ { vs => Right(vs) }
     | dqlStatement ^^ { q => Left(q) }) ^^ { case _ ~ table ~ colsOpt ~ vals =>
       Insert(table, colsOpt.getOrElse(Nil), vals)
     }

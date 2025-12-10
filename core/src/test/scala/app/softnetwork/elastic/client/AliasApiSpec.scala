@@ -77,9 +77,10 @@ class AliasApiSpec
     override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeReindex(
-      sourceIndex: String,
-      targetIndex: String,
-      refresh: Boolean
+      sourceIndex: JSONQuery,
+      targetIndex: JSONQuery,
+      refresh: Boolean,
+      pipeline: Option[JSONQuery]
     ): ElasticResult[(Boolean, Option[Long])] = ???
     override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
   }
@@ -1663,9 +1664,10 @@ class AliasApiSpec
             ???
           override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
           override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
+            sourceIndex: JSONQuery,
+            targetIndex: JSONQuery,
+            refresh: Boolean,
+            pipeline: Option[JSONQuery]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }

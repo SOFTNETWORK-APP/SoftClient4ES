@@ -128,9 +128,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def reindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
-    delegate.reindex(sourceIndex, targetIndex, refresh)
+    delegate.reindex(sourceIndex, targetIndex, refresh, pipeline)
 
   /** Check if an index exists.
     *
@@ -160,9 +161,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
-    delegate.executeReindex(sourceIndex, targetIndex, refresh)
+    delegate.executeReindex(sourceIndex, targetIndex, refresh, pipeline)
 
   override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
     delegate.executeIndexExists(index)

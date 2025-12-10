@@ -25,7 +25,6 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
-import app.softnetwork.elastic.client
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import co.elastic.clients.elasticsearch._types.{
   FieldSort,
@@ -160,7 +159,8 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): result.ElasticResult[(Boolean, Option[Long])] =
     executeJavaAction(
       operation = "reindex",
