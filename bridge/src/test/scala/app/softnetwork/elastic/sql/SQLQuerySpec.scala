@@ -1481,7 +1481,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "diff": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); def param2 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param2)"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param2)"
         |      }
         |    }
         |  },
@@ -1532,7 +1532,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); def param2 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param3 = (param2 == null) ? null : ZonedDateTime.parse(param2, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param3)"
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); def param3 = (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param3, param2)"
         |            }
         |          }
         |        }

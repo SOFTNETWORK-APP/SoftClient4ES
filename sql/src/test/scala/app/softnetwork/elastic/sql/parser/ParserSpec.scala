@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.PainlessContext
+import app.softnetwork.elastic.sql.{Identifier, PainlessContext}
 import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
@@ -936,7 +936,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         |  id INT NOT NULL,
         |  name VARCHAR DEFAULT 'anonymous',
         |  birthdate DATE,
-        |  age INT SCRIPT AS (date_diff(CURRENT_DATE, birthdate, YEAR)),
+        |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
         |  PRIMARY KEY (id)
         |) PARTITION BY birthdate""".stripMargin
     val result = Parser(sql)
@@ -956,7 +956,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         cols.find(_.name == "name").get.defaultValue.map(_.value) shouldBe Some("anonymous")
         cols.find(_.name == "birthdate").get.dataType.typeId should include("DATE")
         cols.find(_.name == "age").get.script.nonEmpty shouldBe true
-      //.map(_.painless(Some(PainlessContext(Processor)))).getOrElse("") should include("...") FIXME
+        cols.find(_.name == "age").get.processorScript.getOrElse("") should include(
+          """def param1 = ctx.birthdate;
+          |def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate();
+          |(param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)""".stripMargin
+            .replaceAll("\n", " ")
+        )
       case _ => fail("Expected CreateTable")
     }
   }

@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql
 
+import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -43,7 +44,16 @@ package object schema {
       } else {
         ""
       }
-      s"$name $dataType$opts$notNullOpt$defaultOpt$fieldsOpt"
+      val scriptOpt = script.map(s => s" SCRIPT AS ($s)").getOrElse("")
+      s"$name $dataType$fieldsOpt$scriptOpt$notNullOpt$defaultOpt$opts"
+    }
+
+    def processorScript: Option[String] = {
+      script.map { s =>
+        val context = PainlessContext(Processor)
+        val script = s.painless(Some(context))
+        s"$context$script"
+      }
     }
   }
 

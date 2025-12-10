@@ -165,7 +165,7 @@ package object sql {
       token match {
         case identifier: Identifier if isProcessor =>
           addParam(
-            LiteralParam(identifier.processParamName, identifier.processCheckNotNull)
+            LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
           )
         case param: PainlessParam
             if param.param.nonEmpty && (param.isInstanceOf[LiteralParam] || param.nullable) =>
@@ -190,7 +190,7 @@ package object sql {
     def get(token: Token): Option[String] = {
       token match {
         case identifier: Identifier if isProcessor =>
-          get(LiteralParam(identifier.processParamName, identifier.processCheckNotNull))
+          get(LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ ))
         case param: PainlessParam =>
           if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
           else None
@@ -792,7 +792,11 @@ package object sql {
       else
         s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
 
-    lazy val processParamName: String = s"ctx.$path"
+    lazy val processParamName: String = {
+      if (path.nonEmpty)
+        s"ctx.$path"
+      else ""
+    }
 
     lazy val processCheckNotNull: Option[String] =
       if (path.isEmpty || !nullable) None

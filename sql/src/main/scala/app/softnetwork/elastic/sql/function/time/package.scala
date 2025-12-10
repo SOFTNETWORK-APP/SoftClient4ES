@@ -388,7 +388,7 @@ package object time {
     override lazy val words: List[String] = List(sql, "DATEDIFF")
   }
 
-  case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
+  case class DateDiff(start: PainlessScript, end: PainlessScript, unit: TimeUnit)
       extends DateTimeFunction
       with BinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
       with PainlessScript {
@@ -402,7 +402,7 @@ package object time {
 
     override def sql: String = DateDiff.sql
 
-    override def toSQL(base: String): String = s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
+    override def toSQL(base: String): String = s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       s"${unit.painless(context)}${DateDiff.painless(context)}(${callArgs.mkString(", ")})"
