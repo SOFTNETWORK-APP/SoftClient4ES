@@ -1,8 +1,10 @@
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.PainlessContext
+import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.Partition
+import app.softnetwork.elastic.sql.schema.DdlPartition
 import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -934,6 +936,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         |  id INT NOT NULL,
         |  name VARCHAR DEFAULT 'anonymous',
         |  birthdate DATE,
+        |  age INT SCRIPT AS (date_diff(CURRENT_DATE, birthdate, YEAR)),
         |  PRIMARY KEY (id)
         |) PARTITION BY birthdate""".stripMargin
     val result = Parser(sql)
@@ -946,12 +949,14 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             true,
             false,
             List("id"),
-            Some(Partition("birthdate", TimeUnit.DAYS))
+            Some(DdlPartition("birthdate", TimeUnit.DAYS))
           ) =>
         cols.map(_.name) should contain allOf ("id", "name")
         cols.find(_.name == "id").get.notNull shouldBe true
         cols.find(_.name == "name").get.defaultValue.map(_.value) shouldBe Some("anonymous")
         cols.find(_.name == "birthdate").get.dataType.typeId should include("DATE")
+        cols.find(_.name == "age").get.script.nonEmpty shouldBe true
+      //.map(_.painless(Some(PainlessContext(Processor)))).getOrElse("") should include("...") FIXME
       case _ => fail("Expected CreateTable")
     }
   }

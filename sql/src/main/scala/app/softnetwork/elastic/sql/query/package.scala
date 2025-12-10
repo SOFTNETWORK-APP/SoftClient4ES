@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.SQLType
-import app.softnetwork.elastic.sql.schema.{Column, Partition}
+import app.softnetwork.elastic.sql.schema.{DdlColumn, DdlPartition}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 
 package object query {
@@ -301,11 +301,11 @@ package object query {
 
   case class CreateTable(
     table: String,
-    ddl: Either[DqlStatement, List[Column]],
+    ddl: Either[DqlStatement, List[DdlColumn]],
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     primaryKey: List[String] = Nil,
-    partitionBy: Option[Partition] = None
+    partitionBy: Option[DdlPartition] = None
   ) extends DdlStatement {
 
     override def sql: String = {
@@ -320,16 +320,16 @@ package object query {
       }
     }
 
-    lazy val columns: Seq[Column] = {
+    lazy val columns: Seq[DdlColumn] = {
       ddl match {
         case Left(select) =>
           select match {
             case s: SingleSearch =>
-              s.select.fields.map(f => Column(f.identifier.aliasOrName, f.out))
+              s.select.fields.map(f => DdlColumn(f.identifier.aliasOrName, f.out))
             case m: MultiSearch =>
               m.requests.headOption
                 .map { req =>
-                  req.select.fields.map(f => Column(f.identifier.aliasOrName, f.out))
+                  req.select.fields.map(f => DdlColumn(f.identifier.aliasOrName, f.out))
                 }
                 .getOrElse(Nil)
             case _ => Nil
@@ -354,7 +354,8 @@ package object query {
   }
 
   sealed trait AlterTableStatement extends Token
-  case class AddColumn(column: Column, ifNotExists: Boolean = false) extends AlterTableStatement {
+  case class AddColumn(column: DdlColumn, ifNotExists: Boolean = false)
+      extends AlterTableStatement {
     override def sql: String = {
       val ifNotExistsClause = if (ifNotExists) " IF NOT EXISTS" else ""
       s"ADD COLUMN$ifNotExistsClause ${column.sql}"
@@ -421,7 +422,7 @@ package object query {
   }
   case class AlterColumnFields(
     columnName: String,
-    fields: Seq[Column],
+    fields: Seq[DdlColumn],
     ifExists: Boolean = false
   ) extends AlterTableStatement {
     override def sql: String = {

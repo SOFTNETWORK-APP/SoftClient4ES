@@ -110,12 +110,6 @@ package object sql {
       }
     }
 
-    def paramValue: String =
-      if (nullable && checkNotNull.nonEmpty)
-        checkNotNull
-      else
-        s"$param${painlessMethods.mkString("")}"
-
     private[this] var _painlessMethods: collection.mutable.Seq[String] =
       collection.mutable.Seq.empty
 
@@ -129,14 +123,26 @@ package object sql {
 
   }
 
-  case class LiteralParam(param: String) extends PainlessParam {
+  case class LiteralParam(literal: String, maybeCheckNotNull: Option[String] = None)
+      extends PainlessParam {
+    override def param: String = literal
     override def sql: String = ""
-    override def checkNotNull: String = ""
+    override def nullable: Boolean = maybeCheckNotNull.nonEmpty
+    override def checkNotNull: String = maybeCheckNotNull.getOrElse("")
+  }
+
+  sealed trait PainlessContextType
+
+  case object PainlessContextType {
+    case object Processor extends PainlessContextType
+    case object Query extends PainlessContextType
   }
 
   /** Context for painless scripts
+    * @param context
+    *   the context type
     */
-  case class PainlessContext() {
+  case class PainlessContext(context: PainlessContextType = PainlessContextType.Query) {
     // List of parameter keys
     private[this] var _keys: collection.mutable.Seq[PainlessParam] = collection.mutable.Seq.empty
 
@@ -145,6 +151,8 @@ package object sql {
 
     // Last parameter name added
     private[this] var _lastParam: Option[String] = None
+
+    def isProcessor: Boolean = context == PainlessContextType.Processor
 
     /** Add a token parameter to the context if not already present
       *
@@ -155,6 +163,10 @@ package object sql {
       */
     def addParam(token: Token): Option[String] = {
       token match {
+        case identifier: Identifier if isProcessor =>
+          addParam(
+            LiteralParam(identifier.processParamName, identifier.processCheckNotNull)
+          )
         case param: PainlessParam
             if param.param.nonEmpty && (param.isInstanceOf[LiteralParam] || param.nullable) =>
           get(param) match {
@@ -177,6 +189,8 @@ package object sql {
 
     def get(token: Token): Option[String] = {
       token match {
+        case identifier: Identifier if isProcessor =>
+          get(LiteralParam(identifier.processParamName, identifier.processCheckNotNull))
         case param: PainlessParam =>
           if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
           else None
@@ -205,13 +219,19 @@ package object sql {
       else None
     }
 
+    private[this] def paramValue(param: PainlessParam): String =
+      if (param.nullable && param.checkNotNull.nonEmpty)
+        param.checkNotNull
+      else
+        s"${param.param}${param.painlessMethods.mkString("")}"
+
     override def toString: String = {
       if (isEmpty) ""
       else
         _keys
           .flatMap { param =>
             get(param) match {
-              case Some(v) => Some(s"def $v = ${param.paramValue}; ")
+              case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
               case None    => None // should not happen
             }
           }
@@ -771,6 +791,13 @@ package object sql {
       if (path.isEmpty) ""
       else
         s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
+
+    lazy val processParamName: String = s"ctx.$path"
+
+    lazy val processCheckNotNull: Option[String] =
+      if (path.isEmpty || !nullable) None
+      else
+        Option(s"(ctx.$path == null ? $nullValue : ctx.$path${painlessMethods.mkString("")})")
 
     override def painless(context: Option[PainlessContext]): String = {
       val base =

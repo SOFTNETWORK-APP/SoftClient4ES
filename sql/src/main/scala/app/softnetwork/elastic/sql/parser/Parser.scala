@@ -29,7 +29,7 @@ import app.softnetwork.elastic.sql.parser.function.string.StringParser
 import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.{Column, Partition}
+import app.softnetwork.elastic.sql.schema.{DdlColumn, DdlPartition}
 import app.softnetwork.elastic.sql.time.TimeUnit
 
 import scala.language.implicitConversions
@@ -78,7 +78,7 @@ object Parser
       opts.toMap
     }
 
-  def multiFields: PackratParser[List[Column]] =
+  def multiFields: PackratParser[List[DdlColumn]] =
     "FIELDS" ~ start ~ repsep(column, separator) ~ end ^^ { case _ ~ _ ~ cols ~ _ =>
       cols
     } | success(Nil)
@@ -107,14 +107,25 @@ object Parser
       case None        => None
     }
 
-  def column: PackratParser[Column] =
-    ident ~ sql_type ~ (options | success(
+  def script: PackratParser[PainlessScript] =
+    ("SCRIPT" ~ "AS") ~ start ~ (identifierWithArithmeticExpression |
+    identifierWithTransformation |
+    identifierWithIntervalFunction |
+    identifierWithFunction) ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
+
+  def column: PackratParser[DdlColumn] =
+    ident ~ sql_type ~ (script | multiFields) ~ notNull ~ defaultVal ~ (options | success(
       Map.empty[String, Value[_]]
-    )) ~ notNull ~ defaultVal ~ multiFields ^^ { case name ~ dt ~ opts ~ nn ~ dv ~ mfs =>
-      Column(name, dt, opts, mfs, nn, dv)
+    )) ^^ { case name ~ dt ~ mfs ~ nn ~ dv ~ opts =>
+      mfs match {
+        case script: PainlessScript =>
+          DdlColumn(name, dt, Some(script), Nil, nn, dv, opts)
+        case cols: List[DdlColumn] =>
+          DdlColumn(name, dt, None, cols, nn, dv, opts)
+      }
     }
 
-  def columns: PackratParser[List[Column]] =
+  def columns: PackratParser[List[DdlColumn]] =
     start ~ repsep(column, separator) ~ end ^^ { case _ ~ cols ~ _ => cols }
 
   def primaryKey: PackratParser[List[String]] =
@@ -131,13 +142,13 @@ object Parser
     ("MINUTE" ^^^ TimeUnit.MINUTES) |
     ("SECOND" ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
 
-  def partitionBy: PackratParser[Option[Partition]] =
+  def partitionBy: PackratParser[Option[DdlPartition]] =
     opt("PARTITION" ~ "BY" ~ ident ~ opt(granularity)) ^^ {
-      case Some(_ ~ _ ~ pb ~ gf) => Some(Partition(pb, gf.getOrElse(TimeUnit.DAYS)))
+      case Some(_ ~ _ ~ pb ~ gf) => Some(DdlPartition(pb, gf.getOrElse(TimeUnit.DAYS)))
       case None                  => None
     }
 
-  def columnsWithPartitionBy: PackratParser[(List[Column], List[String], Option[Partition])] =
+  def columnsWithPartitionBy: PackratParser[(List[DdlColumn], List[String], Option[DdlPartition])] =
     start ~ repsep(column, separator) ~ primaryKey ~ end ~ partitionBy ^^ {
       case _ ~ cols ~ pk ~ _ ~ pb =>
         (cols, pk, pb)
@@ -147,7 +158,7 @@ object Parser
     ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
       case _ ~ name ~ lr =>
         lr match {
-          case (cols: List[Column], pk: List[String], p: Option[Partition]) =>
+          case (cols: List[DdlColumn], pk: List[String], p: Option[DdlPartition]) =>
             CreateTable(
               name,
               Right(cols),
@@ -165,7 +176,7 @@ object Parser
     ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
       case _ ~ ine ~ name ~ lr =>
         lr match {
-          case (cols: List[Column], pk: List[String], p: Option[Partition]) =>
+          case (cols: List[DdlColumn], pk: List[String], p: Option[DdlPartition]) =>
             CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p)
           case sel: DqlStatement => CreateTable(name, Left(sel), ine)
         }

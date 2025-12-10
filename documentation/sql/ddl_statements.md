@@ -223,14 +223,14 @@ CREATE TABLE [IF NOT EXISTS] table_name (
 
 ### Supported Granularities
 
-| SQL Granularity | ES `date_rounding` | Recommended `date_formats`         | Example Index Name |
-|-----------------|--------------------|------------------------------------|--------------------|
-| YEAR            | "y"                | ["yyyy"]                           | users-2025         |
-| MONTH           | "M"                | ["yyyy-MM", "yyyy-MM-dd"]          | users-2025-12      |
-| DAY (default)   | "d"                | ["yyyy-MM-dd"]                     | users-2025-12-10   |
-| HOUR            | "h"                | ["yyyy-MM-dd'T'HH", "yyyy-MM-dd HH"] | users-2025-12-10-09 |
-| MINUTE          | "m"                | ["yyyy-MM-dd'T'HH:mm"]             | users-2025-12-10-09-46 |
-| SECOND          | "s"                | ["yyyy-MM-dd'T'HH:mm:ss"]          | users-2025-12-10-09-46-30 |
+| SQL Granularity | ES `date_rounding` | Example Index Name        |
+|-----------------|--------------------|---------------------------|
+| YEAR            | "y"                | users-2025                |
+| MONTH           | "M"                | users-2025-12             |
+| DAY (default)   | "d"                | users-2025-12-10          |
+| HOUR            | "h"                | users-2025-12-10-09       |
+| MINUTE          | "m"                | users-2025-12-10-09-46    |
+| SECOND          | "s"                | users-2025-12-10-09-46-30 |
 
 ---
 
@@ -317,6 +317,78 @@ PUT _ingest/pipeline/users-composite-id
 - **SQL ↔ ES Mapping**:
 	- `PRIMARY KEY (id)` → `_id = id`
 	- `PRIMARY KEY (id, birthdate)` → `_id = "{{id}}-{{birthdate}}"`
+
+---
+
+## Scripted Columns 🧮
+
+SoftClient4ES supports scripted columns in `CREATE TABLE`.  
+These columns are **computed at ingestion time** using an ingest pipeline `script` processor.  
+The value is persisted in `_source` and behaves like any other field.
+
+---
+
+### ✅ Syntax
+
+```sql
+CREATE TABLE table_name (
+  column_definitions,
+  scripted_column TYPE SCRIPT AS (sql_expression)
+);
+```
+
+- `scripted_column` is a regular column name.
+- `TYPE` defines the target type (`INT`, `VARCHAR`, etc.).
+- `SCRIPT AS (sql_expression)` defines the computation in SQL syntax.
+- The expression is translated into **Painless** for Elasticsearch.
+
+---
+
+### 📌 SQL → ES Translation
+
+**SQL:**
+```sql
+CREATE TABLE users (
+  id INT NOT NULL,
+	name VARCHAR,
+  birthdate DATE,
+  age INT SCRIPT AS (YEAR(CURRENT_DATE) - YEAR(birthdate)),
+  PRIMARY KEY (id)
+) PARTITION BY birthdate (MONTH);
+```
+
+**Elasticsearch pipeline:**
+```curl
+PUT _ingest/pipeline/users-pipeline
+{
+  "processors": [
+    {
+      "script": {
+        "source": "ctx.age = ChronoUnit.YEARS.between(ctx.birthdate, Instant.now())"
+      }
+    }
+  ]
+}
+```
+
+---
+
+### 📖 Examples
+
+| SQL Script Expression                      | ES Painless Translation (ingest)                                   |
+|--------------------------------------------|--------------------------------------------------------------------|
+| `YEAR(CURRENT_DATE) - YEAR(birthdate)`     | `ctx.age = ChronoUnit.YEARS.between(ctx.birthdate, Instant.now())` |
+| `UPPER(name)`                              | `ctx.name_upper = ctx.name.toUpperCase()`                          |
+| `CONCAT(firstname, ' ', lastname)`         | `ctx.fullname = ctx.firstname + ' ' + ctx.lastname`                |
+| `CASE WHEN status = 'X' THEN 1 ELSE 0 END` | `ctx.flag = ctx.status == 'X' ? 1 : 0`                             |
+
+---
+
+### 📝 Notes
+- Scripted columns are **evaluated once at ingestion**.
+- They are **persisted** in `_source`, unlike runtime fields.
+- SQL expressions are translated into equivalent **Painless** code.
+- This feature allows declarative enrichment directly in the DDL.
 
 ---
 

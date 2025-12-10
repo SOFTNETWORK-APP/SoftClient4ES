@@ -21,13 +21,14 @@ import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.time.TimeUnit
 
 package object schema {
-  case class Column(
+  case class DdlColumn(
     name: String,
     dataType: SQLType,
-    options: Map[String, Value[_]] = Map.empty,
-    multiFields: List[Column] = Nil,
+    script: Option[PainlessScript] = None,
+    multiFields: List[DdlColumn] = Nil,
     notNull: Boolean = false,
-    defaultValue: Option[Value[_]] = None
+    defaultValue: Option[Value[_]] = None,
+    options: Map[String, Value[_]] = Map.empty
   ) extends Token {
     def sql: String = {
       val opts = if (options.nonEmpty) {
@@ -46,7 +47,7 @@ package object schema {
     }
   }
 
-  case class Partition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends Token {
+  case class DdlPartition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends Token {
     def sql: String = s"PARTITION BY $column ($granularity)"
 
     val dateRounding: String = granularity.script.get
@@ -64,18 +65,18 @@ package object schema {
     }
   }
 
-  case class ColumnNotFound(column: String, table: String)
+  case class DdlColumnNotFound(column: String, table: String)
       extends Exception(s"Column $column  does not exist in table $table")
 
-  case class Table(
+  case class DdlTable(
     name: String,
-    columns: List[Column],
+    columns: List[DdlColumn],
     primaryKey: List[String] = Nil,
-    partitionBy: Option[Partition] = None,
+    partitionBy: Option[DdlPartition] = None,
     defaultPipeline: Option[String] = None,
     finalPipeline: Option[String] = None
   ) extends Token {
-    private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
+    private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
 
     def sql: String = {
       val cols = columns.map(_.sql).mkString(", ")
@@ -87,19 +88,19 @@ package object schema {
       s"CREATE OR REPLACE TABLE $name ($cols$pkStr)${partitionBy.getOrElse("")}"
     }
 
-    def merge(statements: Seq[AlterTableStatement]): Table = {
+    def merge(statements: Seq[AlterTableStatement]): DdlTable = {
       statements.foldLeft(this) { (table, statement) =>
         statement match {
           case AddColumn(column, ifNotExists) =>
             if (ifNotExists && table.cols.contains(column.name)) table
             else if (!table.cols.contains(column.name))
               table.copy(columns = table.columns :+ column)
-            else throw ColumnNotFound(column.name, table.name)
+            else throw DdlColumnNotFound(column.name, table.name)
           case DropColumn(columnName, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
               table.copy(columns = table.columns.filterNot(_.name == columnName))
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case RenameColumn(oldName, newName) =>
             if (cols.contains(oldName))
               table.copy(
@@ -107,7 +108,7 @@ package object schema {
                   if (col.name == oldName) col.copy(name = newName) else col
                 }
               )
-            else throw ColumnNotFound(oldName, table.name)
+            else throw DdlColumnNotFound(oldName, table.name)
           case AlterColumnType(columnName, newType, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -117,7 +118,7 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnDefault(columnName, newDefault, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -127,7 +128,7 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case DropColumnDefault(columnName, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -137,7 +138,7 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnNotNull(columnName, ifExists) =>
             if (!table.cols.contains(columnName) && ifExists) table
             else if (table.cols.contains(columnName))
@@ -147,7 +148,7 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case DropColumnNotNull(columnName, ifExists) =>
             if (!table.cols.contains(columnName) && ifExists) table
             else if (table.cols.contains(columnName))
@@ -157,7 +158,7 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnOptions(columnName, newOptions, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -168,7 +169,7 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnFields(columnName, newFields, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -179,10 +180,27 @@ package object schema {
                   else col
                 }
               )
-            else throw ColumnNotFound(columnName, table.name)
+            else throw DdlColumnNotFound(columnName, table.name)
           case _ => table
         }
       }
+    }
+
+    override def validate(): Either[SQL, Unit] = {
+      var errors = Seq[String]()
+      // check that primary key columns exist
+      primaryKey.foreach { pk =>
+        if (!cols.contains(pk)) {
+          errors = errors :+ s"Primary key column $pk does not exist in table $name"
+        }
+      }
+      // check that partition column exists
+      partitionBy.foreach { partition =>
+        if (!cols.contains(partition.column)) {
+          errors = errors :+ s"Partition column ${partition.column} does not exist in table $name"
+        }
+      }
+      if (errors.isEmpty) Right(()) else Left(errors.mkString("\n"))
     }
   }
 
