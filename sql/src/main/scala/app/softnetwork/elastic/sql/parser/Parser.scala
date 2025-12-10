@@ -171,6 +171,11 @@ object Parser
       AlterColumnOptions(col, opts, ifExists = ie)
     }
 
+  def setColumnFields: PackratParser[AlterColumnFields] =
+    alterColumnIfExists ~ ident ~ "SET" ~ multiFields ^^ { case ie ~ col ~ _ ~ fields =>
+      AlterColumnFields(col, fields, ifExists = ie)
+    }
+
   def setColumnType: PackratParser[AlterColumnType] =
     alterColumnIfExists ~ ident ~ ("SET" ~ "DATA" ~ "TYPE") ~ sql_type ^^ {
       case ie ~ name ~ _ ~ newType => AlterColumnType(name, newType, ifExists = ie)
@@ -205,11 +210,22 @@ object Parser
     setColumnDefault |
     dropColumnDefault |
     setColumnNotNull |
-    dropColumnNotNull
+    dropColumnNotNull |
+    setColumnFields
 
   def alterTable: PackratParser[AlterTable] =
-    ("ALTER" ~ "TABLE") ~ ifExists ~ ident ~ alterTableStatement ^^ { case _ ~ ie ~ table ~ stmt =>
-      AlterTable(table, ie, stmt)
+    ("ALTER" ~ "TABLE") ~ ifExists ~ ident ~ start.? ~ repsep(
+      alterTableStatement,
+      separator
+    ) ~ end.? ^^ { case _ ~ ie ~ table ~ s ~ stmts ~ e =>
+      if (s.isDefined && e.isEmpty) {
+        throw new Exception("Mismatched closing parentheses in ALTER TABLE statement")
+      } else if (s.isEmpty && e.isDefined) {
+        throw new Exception("Mismatched opening parentheses in ALTER TABLE statement")
+      } else if (s.isEmpty && e.isEmpty && stmts.size > 1) {
+        throw new Exception("Multiple ALTER TABLE statements require parentheses")
+      } else
+        AlterTable(table, ie, stmts)
     }
 
   def ddlStatement: PackratParser[DdlStatement] =

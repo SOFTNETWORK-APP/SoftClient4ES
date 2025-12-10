@@ -337,11 +337,17 @@ package object query {
     }
   }
 
-  case class AlterTable(table: String, ifExists: Boolean, statement: AlterTableStatement)
+  case class AlterTable(table: String, ifExists: Boolean, statements: List[AlterTableStatement])
       extends DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS " else ""
-      s"ALTER TABLE $table$ifExistsClause $statement"
+      val parenthesesNeeded = statements.size > 1
+      val statementsSql = if (parenthesesNeeded) {
+        statements.map(_.sql).mkString("(\n\t", ",\n\t", "\n)")
+      } else {
+        statements.map(_.sql).mkString("")
+      }
+      s"ALTER TABLE $table$ifExistsClause $statementsSql"
     }
   }
 
@@ -409,6 +415,17 @@ package object query {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"ALTER COLUMN$ifExistsClause $columnName DROP NOT NULL"
+    }
+  }
+  case class AlterColumnFields(
+    columnName: String,
+    fields: Seq[Column],
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      val fieldsSql = fields.map(_.sql).mkString("(\n\t\t", ",\n\t\t", "\n\t)")
+      s"ALTER COLUMN$ifExistsClause $columnName SET FIELDS $fieldsSql"
     }
   }
 

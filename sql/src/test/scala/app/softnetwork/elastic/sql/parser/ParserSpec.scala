@@ -987,9 +987,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case AddColumn(c, ine) if ine =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AddColumn(c, ine)) if ine =>
             c.name shouldBe "age"
             c.dataType.typeId should include("INT")
             c.defaultValue.map(_.value) shouldBe Some(0L)
@@ -1008,9 +1008,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case RenameColumn(o, n) =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(RenameColumn(o, n)) =>
             o shouldBe "name"
             n shouldBe "full_name"
           case _ => fail("Expected RenameColumn")
@@ -1028,9 +1028,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case AlterColumnOptions(c, d, ie) if ie =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnOptions(c, d, ie)) if ie =>
             c shouldBe "status"
             d.get("description").map(_.value) shouldBe Some("a description")
           case _ => fail("Expected AlterColumnDefault")
@@ -1048,9 +1048,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case AlterColumnDefault(c, d, _) =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnDefault(c, d, _)) =>
             c shouldBe "status"
             d.value shouldBe "active"
           case other => fail(s"Expected AlterColumnDefault, got $other")
@@ -1068,9 +1068,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case DropColumnDefault(c, _) =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(DropColumnDefault(c, _)) =>
             c shouldBe "status"
           case other => fail(s"Expected DropColumnDefault, got $other")
         }
@@ -1087,9 +1087,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case AlterColumnNotNull(c, _) =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnNotNull(c, _)) =>
             c shouldBe "status"
           case other => fail(s"Expected AlterColumnNotNull, got $other")
         }
@@ -1106,9 +1106,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case DropColumnNotNull(c, _) =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(DropColumnNotNull(c, _)) =>
             c shouldBe "status"
           case other => fail(s"Expected DropColumnNotNull, got $other")
         }
@@ -1125,9 +1125,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmt) =>
-        stmt match {
-          case AlterColumnType(c, d, _) =>
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnType(c, d, _)) =>
             c shouldBe "status"
             d shouldBe SQLTypes.BigInt
           case other => fail(s"Expected AlterColumnType, got $other")
@@ -1145,13 +1145,49 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", ifExists, stmt) if ifExists =>
-        stmt match {
-          case AlterColumnDefault(c, d, _) =>
+      case AlterTable("users", ifExists, stmts) if ifExists =>
+        stmts match {
+          case List(AlterColumnDefault(c, d, _)) =>
             c shouldBe "status"
             d.value shouldBe "active"
           case other => fail(s"Expected AlterColumnDefault, got $other")
         }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE with multiple statements" in {
+    val sql =
+      """ALTER TABLE users (
+        |  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0,
+        |  RENAME COLUMN name TO full_name,
+        |  ALTER COLUMN IF EXISTS status SET DEFAULT 'active',
+        |  ALTER COLUMN IF EXISTS profile SET FIELDS (
+        |    description VARCHAR DEFAULT 'N/A',
+        |    visibility BOOLEAN DEFAULT true
+        |  )
+        |)""".stripMargin
+
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    println(stmt.sql)
+    stmt.sql.replaceAll("\t", "  ") shouldBe sql
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts.length shouldBe 4
+        stmts.collect { case AddColumn(c, true) => c.name } should contain("age")
+        stmts.collect { case RenameColumn(o, n) => (o, n) } should contain(("name", "full_name"))
+        stmts.collect { case AlterColumnDefault(c, d, true) =>
+          List(c, d.value)
+        }.flatten should contain allOf ("status", "active")
+        stmts.collect { case AlterColumnFields("profile", fields, true) =>
+          fields.map(f => (f.name, f.dataType.typeId, f.defaultValue.map(_.value)))
+        }.flatten should contain allOf (("description", "VARCHAR", Some("N/A")), (
+          "visibility",
+          "BOOLEAN",
+          Some(true)
+        ))
       case _ => fail("Expected AlterTable")
     }
   }
