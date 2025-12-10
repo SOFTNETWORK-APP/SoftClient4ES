@@ -210,6 +210,9 @@ SoftClient4ES includes a powerful SQL parser that translates standard SQL `SELEC
 - ✅ Date / Time functions (`YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `MILLISECOND`, `MICROSECOND`, `NANOSECOND`, `EPOCHDAY`, `OFFSET_SECONDS`, `LAST_DAY`, `WEEKDAY`, `YEARDAY`, `INTERVAL`, `CURRENT_DATE`, `CURDATE`, `TODAY`, `NOW`, `CURRENT_TIME`, `CURTIME`, `CURRENT_DATETIME`, `CURRENT_TIMESTAMP`, `DATE_ADD`, `DATEADD`, `DATE_SUB`, `DATESUB`, `DATETIME_ADD`, `DATETIMEADD`, `DATETIME_SUB`, `DATETIMESUB`, `DATE_DIFF`, `DATEDIFF`, `DATE_FORMAT`, `DATE_PARSE`, `DATETIME_FORMAT`, `DATETIME_PARSE`, `DATE_TRUNC`, `EXTRACT`)
 - ✅ Geospatial functions (`POINT`, `ST_DISTANCE`)
 - ✅ Aggregate functions (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `DISTINCT`, `FIRST_VALUE`, `LAST_VALUE`, `ARRAY_AGG`)
+- ✅ [Window functions](#32-window-functions-support) with `OVER` clause
+- ✅ [DML Support](#34-dml-support) (`INSERT`, `UPDATE`, `DELETE`)
+- ✅ [DDL Support](#35-ddl-support) (`CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`)
 
 **Example:**
 
@@ -1188,6 +1191,70 @@ client.searchAsUnchecked[Product](SQLQuery(dynamicQuery))
 client.scrollAsUnchecked[Product](dynamicQuery)
 ```
 
+### **3.4 DML Support**
+
+SoftClient4ES supports **SQL Data Manipulation Language (DML)** statements for interacting with Elasticsearch indices.
+
+#### **Supported DML Statements**
+- ✅ `INSERT INTO … VALUES (…)`
+- ✅ `INSERT INTO … SELECT …`
+- ✅ `UPDATE … SET … [WHERE …]`
+- ✅ `DELETE FROM … [WHERE …]`
+
+**Examples:**
+```sql
+INSERT INTO users (id, name) VALUES (1, 'Alice');
+INSERT INTO users SELECT id, name FROM old_users;
+
+UPDATE users SET name = 'Bob', age = 42 WHERE id = 1;
+
+DELETE FROM users WHERE age > 30;
+```
+
+---
+
+### **3.5 DDL Support**
+
+SoftClient4ES also supports **SQL Data Definition Language (DDL)** statements to manage table schemas mapped to Elasticsearch indices.
+
+#### **Supported DDL Statements**
+- ✅ `CREATE TABLE [IF NOT EXISTS] …` with column definitions, `DEFAULT`, `NOT NULL`, `OPTIONS`, and `FIELDS` (multi‑fields or STRUCT)
+- ✅ `CREATE OR REPLACE TABLE … AS SELECT …`
+- ✅ `ALTER TABLE …` with multiple sub‑statements:
+	- `ADD COLUMN [IF NOT EXISTS] …`
+	- `DROP COLUMN [IF EXISTS] …`
+	- `RENAME COLUMN … TO …`
+	- `ALTER COLUMN [IF EXISTS] … SET OPTIONS (…)`
+	- `ALTER COLUMN [IF EXISTS] … SET DEFAULT … / DROP DEFAULT`
+	- `ALTER COLUMN [IF EXISTS] … SET NOT NULL / DROP NOT NULL`
+	- `ALTER COLUMN [IF EXISTS] … SET DATA TYPE …`
+	- `ALTER COLUMN [IF EXISTS] … SET FIELDS (…)` (define nested STRUCT or multi‑fields)
+- ✅ `DROP TABLE [IF EXISTS] … [CASCADE]`
+- ✅ `TRUNCATE TABLE …`
+
+**Examples:**
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id INT NOT NULL,
+  name VARCHAR DEFAULT 'anonymous'
+);
+
+ALTER TABLE users (
+  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0,
+  RENAME COLUMN name TO full_name,
+  ALTER COLUMN IF EXISTS status SET DEFAULT 'active',
+  ALTER COLUMN IF EXISTS profile SET FIELDS (
+    description VARCHAR DEFAULT 'N/A',
+    visibility BOOLEAN DEFAULT true
+  )
+);
+
+DROP TABLE IF EXISTS users CASCADE;
+TRUNCATE TABLE users;
+```
+
+---
+
 📖 **[Full SQL Validation Documentation](documentation/sql/validation.md)**
 
 📖 **[Full SQL Documentation](documentation/sql/README.md)**
@@ -1517,18 +1584,18 @@ ThisBuild / resolvers ++= Seq(
 
 // For Elasticsearch 6
 // Using Jest client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.15.0
 // Or using Rest High Level client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.15.0
 
 // For Elasticsearch 7
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.15.0
 
 // For Elasticsearch 8
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.15.0
 
 // For Elasticsearch 9
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.15.0
 ```
 
 ### **Quick Example**

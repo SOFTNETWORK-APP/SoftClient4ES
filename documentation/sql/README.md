@@ -14,5 +14,5 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [Conditional Functions](functions_conditional.md)
 - [Geo Functions](functions_geo.md)
 - [Keywords](keywords.md)
-- [DML Statements](dml_statements.md)
-- [DDL Statements](ddl_statements.md)
+- [DML Support](dml_statements.md)
+- [DDL Support](ddl_statements.md)
