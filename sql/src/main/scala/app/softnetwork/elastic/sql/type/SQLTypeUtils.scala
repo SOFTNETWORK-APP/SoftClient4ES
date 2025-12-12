@@ -21,6 +21,38 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes._
 
 object SQLTypeUtils {
 
+  def painlessType(sqlType: SQLType): String = sqlType match {
+    case TinyInt   => "byte"
+    case SmallInt  => "short"
+    case Int       => "int"
+    case BigInt    => "long"
+    case Double    => "double"
+    case Real      => "float"
+    case Numeric   => "java.math.BigDecimal"
+    case Varchar   => "String"
+    case Boolean   => "boolean"
+    case Date      => "LocalDate"
+    case Time      => "LocalTime"
+    case DateTime  => "LocalDateTime"
+    case Timestamp => "ZonedDateTime"
+    case Temporal  => "ZonedDateTime"
+    case Array(inner) =>
+      inner match {
+        case TinyInt  => "byte[]"
+        case SmallInt => "short[]"
+        case Int      => "int[]"
+        case BigInt   => "long[]"
+        case Double   => "double[]"
+        case Real     => "float[]"
+        case Boolean  => "boolean[]"
+        case _        => s"java.util.List<${painlessType(inner)}>"
+      }
+    case Struct => "Map<String, Object>"
+    case Any    => "Object"
+    case Null   => "Object"
+    case _      => "Object"
+  }
+
   def matches(out: SQLType, in: SQLType): Boolean =
     out.typeId == in.typeId ||
     (out.typeId == Temporal.typeId && Set(

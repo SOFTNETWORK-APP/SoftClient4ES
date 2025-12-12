@@ -16,6 +16,8 @@
 
 package app.softnetwork.elastic.sql.`type`
 
+import app.softnetwork.elastic.schema.EsField
+
 object SQLTypes {
   case object Any extends SQLAny { val typeId = "ANY" }
 
@@ -41,12 +43,52 @@ object SQLTypes {
 
   case object Char extends SQLChar { val typeId = "CHAR" }
   case object Varchar extends SQLVarchar { val typeId = "VARCHAR" }
+  case object Text extends EsqlText { val typeId = "TEXT" }
+  case object Keyword extends EsqlKeyword { val typeId = "KEYWORD" }
 
   case object Boolean extends SQLBool { val typeId = "BOOLEAN" }
 
   case class Array(elementType: SQLType) extends SQLArray {
-    val typeId = s"array<${elementType.typeId}>"
+    val typeId = s"ARRAY<${elementType.typeId}>"
   }
 
   case object Struct extends SQLStruct { val typeId = "STRUCT" }
+
+  def apply(typeName: String): SQLType = typeName.toLowerCase match {
+    case "null"                     => Null
+    case "boolean"                  => Boolean
+    case "int"                      => Int
+    case "long" | "bigint"          => BigInt
+    case "short" | "smallint"       => SmallInt
+    case "byte" | "tinyint"         => TinyInt
+    case "keyword"                  => Keyword
+    case "text"                     => Text
+    case "varchar"                  => Varchar
+    case "datetime" | "timestamp"   => DateTime
+    case "date"                     => Date
+    case "time"                     => Time
+    case "double"                   => Double
+    case "float" | "real"           => Real
+    case "object" | "struct"        => Struct
+    case "nested" | "array<struct>" => Array(Struct)
+    case _                          => Any
+  }
+
+  def apply(field: EsField): SQLType = field.`type` match {
+    case "null"    => Null
+    case "boolean" => Boolean
+    case "integer" => Int
+    case "long"    => BigInt
+    case "short"   => SmallInt
+    case "byte"    => TinyInt
+    case "keyword" => Keyword
+    case "text"    => Text
+    case "date"    => DateTime
+    case "double"  => Double
+    case "float"   => Real
+    case "object"  => Struct
+    case "nested"  => Array(Struct)
+    case _         => Any
+  }
+
 }

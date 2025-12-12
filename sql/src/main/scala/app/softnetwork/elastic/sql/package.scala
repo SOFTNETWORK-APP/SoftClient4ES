@@ -16,21 +16,14 @@
 
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.function.aggregate.{
-  AggregateFunction,
-  COUNT,
-  MAX,
-  MIN,
-  WindowFunction
-}
+import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
-import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
+import com.fasterxml.jackson.databind.JsonNode
 
 import java.security.MessageDigest
-import java.util.regex.Pattern
 import scala.reflect.runtime.universe._
 import scala.util.Try
 import scala.util.matching.Regex
@@ -275,28 +268,10 @@ package object sql {
 
   case object Distinct extends Expr("DISTINCT") with TokenRegex
 
-  abstract class Value[+T](val value: T)(implicit ev$1: T => Ordered[T])
+  abstract class Value[+T](val value: T)
       extends Token
       with PainlessScript
       with FunctionWithValue[T] {
-    def choose[R >: T](
-      values: Seq[R],
-      operator: Option[ExpressionOperator],
-      separator: String = "|"
-    )(implicit ev: R => Ordered[R]): Option[R] = {
-      if (values.isEmpty)
-        None
-      else
-        operator match {
-          case Some(EQ)        => values.find(_ == value)
-          case Some(NE | DIFF) => values.find(_ != value)
-          case Some(GE)        => values.filter(_ >= value).sorted.reverse.headOption
-          case Some(GT)        => values.filter(_ > value).sorted.reverse.headOption
-          case Some(LE)        => values.filter(_ <= value).sorted.headOption
-          case Some(LT)        => values.filter(_ < value).sorted.headOption
-          case _               => values.headOption
-        }
-    }
     override def painless(context: Option[PainlessContext]): String =
       SQLTypeUtils.coerce(
         value match {
@@ -312,6 +287,69 @@ package object sql {
       )
 
     override def nullable: Boolean = false
+  }
+
+  object Value {
+    def apply[R: TypeTag, T <: Value[R]](value: Any): Value[_] = {
+      value match {
+        case null       => Null
+        case b: Boolean => BooleanValue(b)
+        case c: Char    => CharValue(c)
+        case s: String  => StringValue(s)
+        case b: Byte    => ByteValue(b)
+        case s: Short   => ShortValue(s)
+        case i: Int     => IntValue(i)
+        case l: Long    => LongValue(l)
+        case f: Float   => FloatValue(f)
+        case d: Double  => DoubleValue(d)
+        case a: Array[T] =>
+          val values = a.toSeq.map(apply)
+          values.headOption match {
+            case Some(_: StringValue) =>
+              StringValues(values.asInstanceOf[Seq[StringValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: ByteValue) =>
+              ByteValues(values.asInstanceOf[Seq[ByteValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: ShortValue) =>
+              ShortValues(values.asInstanceOf[Seq[ShortValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: IntValue) =>
+              IntValues(values.asInstanceOf[Seq[IntValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: LongValue) =>
+              LongValues(values.asInstanceOf[Seq[LongValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: FloatValue) =>
+              FloatValues(values.asInstanceOf[Seq[FloatValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: DoubleValue) =>
+              DoubleValues(values.asInstanceOf[Seq[DoubleValue]]).asInstanceOf[Values[R, T]]
+            case _ => throw new IllegalArgumentException("Unsupported Values type")
+          }
+        case other => StringValue(other.toString)
+      }
+    }
+
+    def apply(node: JsonNode): Option[Any] = {
+      node match {
+        case n if n.isNull    => Some(null)
+        case n if n.isTextual => Some(n.asText())
+        case n if n.isBoolean => Some(n.asBoolean())
+        case n if n.isShort   => Some(node.asInstanceOf[Short])
+        case n if n.isInt     => Some(n.asInt())
+        case n if n.isLong    => Some(n.asLong())
+        case n if n.isDouble  => Some(n.asDouble())
+        case n if n.isFloat   => Some(node.asInstanceOf[Float])
+        case n if n.isArray =>
+          import scala.jdk.CollectionConverters._
+          val arr = n
+            .elements()
+            .asScala
+            .flatMap(apply)
+            .toList
+          Some(arr)
+        case n if n.isObject =>
+          // The raw JSON object is stored as a string. TODO consider mapping to a Map[String, Any]
+          Some(n.toString)
+        case _ =>
+          None
+      }
+    }
   }
 
   case object Null extends Value[Null](null) with TokenRegex {
@@ -340,47 +378,11 @@ package object sql {
 
   case class StringValue(override val value: String) extends Value[String](value) {
     override def sql: String = s"""'$value'"""
-    import SQLImplicits._
-    private lazy val pattern: Pattern = value.pattern
-    def like: Seq[String] => Boolean = {
-      _.exists { pattern.matcher(_).matches() }
-    }
-    def eq: Seq[String] => Boolean = {
-      _.exists { _.contentEquals(value) }
-    }
-    def ne: Seq[String] => Boolean = {
-      _.forall { !_.contentEquals(value) }
-    }
-    override def choose[R >: String](
-      values: Seq[R],
-      operator: Option[ExpressionOperator],
-      separator: String = "|"
-    )(implicit ev: R => Ordered[R]): Option[R] = {
-      operator match {
-        case Some(EQ)           => values.find(v => v.toString contentEquals value)
-        case Some(NE | DIFF)    => values.find(v => !(v.toString contentEquals value))
-        case Some(LIKE | RLIKE) => values.find(v => pattern.matcher(v.toString).matches())
-        case None               => Some(values.mkString(separator))
-        case _                  => super.choose(values, operator, separator)
-      }
-    }
     override def baseType: SQLType = SQLTypes.Varchar
   }
 
-  sealed abstract class NumericValue[T: Numeric](override val value: T)(implicit
-    ev$1: T => Ordered[T]
-  ) extends Value[T](value) {
+  sealed abstract class NumericValue[T: Numeric](override val value: T) extends Value[T](value) {
     override def sql: String = value.toString
-    override def choose[R >: T](
-      values: Seq[R],
-      operator: Option[ExpressionOperator],
-      separator: String = "|"
-    )(implicit ev: R => Ordered[R]): Option[R] = {
-      operator match {
-        case None => if (values.isEmpty) None else Some(values.max)
-        case _    => super.choose(values, operator, separator)
-      }
-    }
     private[this] val num: Numeric[T] = implicitly[Numeric[T]]
     def toDouble: Double = num.toDouble(value)
     def toEither: Either[Long, Double] = value match {
@@ -389,14 +391,6 @@ package object sql {
       case d: Double => Right(d)
       case f: Float  => Right(f.toDouble)
       case _         => Right(toDouble)
-    }
-    def max: Seq[T] => T = x => Try(x.max).getOrElse(num.zero)
-    def min: Seq[T] => T = x => Try(x.min).getOrElse(num.zero)
-    def eq: Seq[T] => Boolean = {
-      _.exists { _ == value }
-    }
-    def ne: Seq[T] => Boolean = {
-      _.forall { _ != value }
     }
     override def baseType: SQLNumeric = SQLTypes.Numeric
   }
@@ -505,8 +499,7 @@ package object sql {
       extends FromTo(from, to)
 
   sealed abstract class Values[+R: TypeTag, +T <: Value[R]](val values: Seq[T])
-      extends Token
-      with PainlessScript {
+      extends Value[Seq[T]](values) {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
     override def painless(context: Option[PainlessContext]): String =
       s"[${values.map(_.painless(context)).mkString(",")}]"
@@ -562,25 +555,6 @@ package object sql {
   case class DoubleValues(override val values: Seq[DoubleValue])
       extends NumericValues[Double](values) {
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Double)
-  }
-
-  def choose[T](
-    values: Seq[T],
-    criteria: Option[Criteria],
-    function: Option[Function] = None
-  )(implicit ev$1: T => Ordered[T]): Option[T] = {
-    criteria match {
-      case Some(GenericExpression(_, operator, value: Value[T] @unchecked, _)) =>
-        value.choose[T](values, Some(operator))
-      case _ =>
-        function match {
-          case Some(MIN) => Some(values.min)
-          case Some(MAX) => Some(values.max)
-          // FIXME        case Some(SQLSum) => Some(values.sum)
-          // FIXME        case Some(SQLAvg) => Some(values.sum / values.length  )
-          case _ => values.headOption
-        }
-    }
   }
 
   def toRegex(value: String): String = {
@@ -794,7 +768,7 @@ package object sql {
 
     lazy val processParamName: String = {
       if (path.nonEmpty)
-        s"ctx.$path"
+        s"ctx['$path']"
       else ""
     }
 

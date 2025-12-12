@@ -16,16 +16,352 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.PainlessContextType.Processor
-import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.schema.{EsField, EsIndexMeta}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import app.softnetwork.elastic.sql.time.TimeUnit
+import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.node.ObjectNode
+
+import scala.language.implicitConversions
+import scala.jdk.CollectionConverters._
 
 package object schema {
+  val mapper: ObjectMapper = JacksonConfig.objectMapper
+
+  sealed trait DdlProcessorType {
+    def name: String
+  }
+
+  object DdlProcessorType {
+    case object Script extends DdlProcessorType {
+      def name: String = "script"
+    }
+    case object Rename extends DdlProcessorType {
+      def name: String = "rename"
+    }
+    case object Remove extends DdlProcessorType {
+      def name: String = "remove"
+    }
+    case object Set extends DdlProcessorType {
+      def name: String = "set"
+    }
+    case object DateIndexName extends DdlProcessorType {
+      def name: String = "date_index_name"
+    }
+  }
+
+  sealed trait DdlProcessor extends Token {
+    def column: String
+    def ignoreFailure: Boolean
+    final def node: ObjectNode = {
+      val node = mapper.createObjectNode()
+      val props = mapper.createObjectNode()
+      for ((key, value) <- properties) {
+        value match {
+          case v: String     => props.put(key, v)
+          case v: Boolean    => props.put(key, v)
+          case v: Int        => props.put(key, v)
+          case v: Long       => props.put(key, v)
+          case v: Double     => props.put(key, v)
+          case v: ObjectNode => props.set(key, v)
+          case v: Seq[_] =>
+            val arrayNode = mapper.createArrayNode()
+            v.foreach {
+              case s: String     => arrayNode.add(s)
+              case b: Boolean    => arrayNode.add(b)
+              case i: Int        => arrayNode.add(i)
+              case l: Long       => arrayNode.add(l)
+              case d: Double     => arrayNode.add(d)
+              case o: ObjectNode => arrayNode.add(o)
+              case _             =>
+            }
+            props.set(key, arrayNode)
+          case _ =>
+        }
+      }
+      node.set(processorType.name, props)
+      node
+    }
+    def json: String = node.toString
+    def processorType: DdlProcessorType
+    def description: String = sql
+    def name: String = processorType.name
+    def properties: Map[String, Any]
+  }
+
+  case class DdlScriptProcessor(
+    script: String,
+    column: String,
+    dataType: SQLType,
+    source: String,
+    ignoreFailure: Boolean = true
+  ) extends DdlProcessor {
+    override def sql: SQL = s"$column $dataType SCRIPT AS ($script)"
+
+    override def baseType: SQLType = dataType
+
+    def processorType: DdlProcessorType = DdlProcessorType.Script
+
+    override def properties: Map[SQL, Any] = Map(
+      "description"    -> description,
+      "lang"           -> "painless",
+      "source"         -> source,
+      "ignore_failure" -> ignoreFailure
+    )
+
+  }
+
+  case class DdlRenameProcessor(
+    column: String,
+    newName: String,
+    ignoreFailure: Boolean = true,
+    ignoreMissing: Boolean = true
+  ) extends DdlProcessor {
+    def processorType: DdlProcessorType = DdlProcessorType.Rename
+
+    def sql: String = s"$column RENAME TO $newName"
+
+    override def properties: Map[SQL, Any] = Map(
+      "description"    -> description,
+      "field"          -> column,
+      "target_field"   -> newName,
+      "ignore_failure" -> ignoreFailure,
+      "ignore_missing" -> ignoreMissing
+    )
+
+  }
+
+  case class DdlRemoveProcessor(
+    sql: String,
+    column: String,
+    ignoreFailure: Boolean = true,
+    ignoreMissing: Boolean = true
+  ) extends DdlProcessor {
+    def processorType: DdlProcessorType = DdlProcessorType.Remove
+
+    override def properties: Map[SQL, Any] = Map(
+      "description"    -> description,
+      "field"          -> column,
+      "ignore_failure" -> ignoreFailure,
+      "ignore_missing" -> ignoreMissing
+    )
+
+  }
+
+  case class DdlPrimaryKeyProcessor(
+    sql: String,
+    column: String,
+    value: Set[String],
+    ignoreFailure: Boolean = false,
+    ignoreEmptyValue: Boolean = false,
+    separator: String = "|"
+  ) extends DdlProcessor {
+    def processorType: DdlProcessorType = DdlProcessorType.Set
+
+    override def properties: Map[SQL, Any] = Map(
+      "description"        -> description,
+      "field"              -> column,
+      "value"              -> value.mkString("{{", separator, "}}"),
+      "ignore_failure"     -> ignoreFailure,
+      "ignore_empty_value" -> ignoreEmptyValue
+    )
+
+  }
+
+  case class DdlDefaultValueProcessor(
+    sql: String,
+    column: String,
+    value: Value[_],
+    ignoreFailure: Boolean = true
+  ) extends DdlProcessor {
+    def processorType: DdlProcessorType = DdlProcessorType.Set
+
+    def _if: String = {
+      if (column.contains("."))
+        s"""ctx.${column.split(".").mkString("?.")} == null"""
+      else
+        s"""ctx.$column == null"""
+    }
+
+    override def properties: Map[SQL, Any] = Map(
+      "description"    -> description,
+      "field"          -> column,
+      "value"          -> value.value,
+      "ignore_failure" -> ignoreFailure,
+      "if"             -> _if
+    )
+  }
+
+  case class DdlDateIndexNameProcessor(
+    sql: String,
+    column: String,
+    dateRounding: String,
+    dateFormats: List[String],
+    prefix: String,
+    separator: String = "-",
+    ignoreFailure: Boolean = true
+  ) extends DdlProcessor {
+    def processorType: DdlProcessorType = DdlProcessorType.DateIndexName
+
+    override def properties: Map[SQL, Any] = Map(
+      "description"       -> description,
+      "field"             -> column,
+      "date_rounding"     -> dateRounding,
+      "date_formats"      -> dateFormats,
+      "index_name_prefix" -> prefix,
+      "separator"         -> separator,
+      "ignore_failure"    -> ignoreFailure
+    )
+
+  }
+
+  implicit def primaryKeyToDdlProcessor(
+    primaryKey: List[String]
+  ): Seq[DdlProcessor] = {
+    if (primaryKey.nonEmpty) {
+      Seq(
+        DdlPrimaryKeyProcessor(
+          sql = s"PRIMARY KEY (${primaryKey.mkString(", ")})",
+          column = "_id",
+          value = primaryKey.toSet
+        )
+      )
+    } else {
+      Nil
+    }
+  }
+
+  object DdlProcessor {
+    private val ScriptDescRegex =
+      """^\s*([a-zA-Z0-9_]+)\s([a-zA-Z]+)\s+SCRIPT\s+AS\s*\((.*)\)\s*$""".r
+
+    def apply(node: JsonNode): Option[DdlProcessor] = {
+      val processorType = node.fieldNames().next() // "set", "script", "date_index_name", etc.
+      val props = node.get(processorType)
+
+      processorType match {
+        case "set" =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
+          val valueNode = props.get("value")
+          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
+
+          if (field == "_id" && desc.startsWith("PRIMARY KEY")) {
+            // DdlPrimaryKeyProcessor
+            // description: "PRIMARY KEY (id)"
+            val inside = desc.stripPrefix("PRIMARY KEY").trim.stripPrefix("(").stripSuffix(")")
+            val cols = inside.split(",").map(_.trim).filter(_.nonEmpty).toSet
+            Some(
+              DdlPrimaryKeyProcessor(
+                sql = desc,
+                column = "_id",
+                value = cols,
+                ignoreFailure = ignoreFailure
+              )
+            )
+          } else if (desc.startsWith(s"$field DEFAULT")) {
+            Some(
+              DdlDefaultValueProcessor(
+                sql = desc,
+                column = field,
+                value = Value(valueNode.asText()),
+                ignoreFailure = ignoreFailure
+              )
+            )
+          } else {
+            None
+          }
+
+        case "script" =>
+          val desc = props.get("description").asText()
+          val lang = props.get("lang").asText()
+          require(lang == "painless", s"Only painless supported, got $lang")
+          val source = props.get("source").asText()
+          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
+
+          desc match {
+            case ScriptDescRegex(col, dataType, script) =>
+              Some(
+                DdlScriptProcessor(
+                  script = script,
+                  column = col,
+                  dataType = SQLTypes(dataType),
+                  source = source,
+                  ignoreFailure = ignoreFailure
+                )
+              )
+            case _ =>
+              None
+          }
+
+        case "date_index_name" =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
+          val rounding = props.get("date_rounding").asText()
+          val formats = Option(props.get("date_formats"))
+            .map(_.elements().asScala.toList.map(_.asText()))
+            .getOrElse(Nil)
+          val prefix = props.get("index_name_prefix").asText()
+
+          Some(
+            DdlDateIndexNameProcessor(
+              sql = desc,
+              column = field,
+              dateRounding = rounding,
+              dateFormats = formats,
+              prefix = prefix
+            )
+          )
+
+        case _ => None
+      }
+    }
+  }
+
+  sealed trait DdlPipelineType {
+    def name: String
+  }
+
+  object DdlPipelineType {
+    case object Default extends DdlPipelineType {
+      def name: String = "DEFAULT"
+    }
+    case object Final extends DdlPipelineType {
+      def name: String = "FINAL"
+    }
+    case object Custom extends DdlPipelineType {
+      def name: String = "CUSTOM"
+    }
+  }
+
+  case class DdlPipeline(
+    name: String,
+    ddlPipelineType: DdlPipelineType,
+    ddlProcessors: Seq[DdlProcessor]
+  ) extends Token {
+    def sql: String =
+      s"CREATE OR REPLACE ${ddlPipelineType.name} PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql).mkString(", ")})"
+
+    def node: ObjectNode = {
+      val node = mapper.createObjectNode()
+      val processorsNode = mapper.createArrayNode()
+      ddlProcessors.foreach { processor =>
+        processorsNode.add(processor.node)
+      }
+      node.put("description", sql)
+      node.set("processors", processorsNode)
+      node
+    }
+
+    def json: String = node.toString
+  }
+
   case class DdlColumn(
     name: String,
     dataType: SQLType,
-    script: Option[PainlessScript] = None,
+    script: Option[DdlScriptProcessor] = None,
     multiFields: List[DdlColumn] = Nil,
     notNull: Boolean = false,
     defaultValue: Option[Value[_]] = None,
@@ -48,15 +384,27 @@ package object schema {
       s"$name $dataType$fieldsOpt$scriptOpt$notNullOpt$defaultOpt$opts"
     }
 
-    def processorScript: Option[String] = {
-      script.map { s =>
-        val context = PainlessContext(Processor)
-        val script = s.painless(Some(context))
-        s"$context$script"
-      }
-    }
+    def ddlProcessors: Seq[DdlProcessor] = script.toSeq ++
+      defaultValue.map { dv =>
+        DdlDefaultValueProcessor(
+          sql = s"$name DEFAULT $dv",
+          column = name,
+          value = dv
+        )
+      }.toSeq
   }
 
+  object DdlColumn {
+    def apply(field: EsField): DdlColumn = {
+      DdlColumn(
+        name = field.name,
+        dataType = SQLTypes(field),
+        multiFields = field.fields.map(apply),
+        defaultValue = field.null_value,
+        options = field.options
+      )
+    }
+  }
   case class DdlPartition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends Token {
     def sql: String = s"PARTITION BY $column ($granularity)"
 
@@ -73,6 +421,15 @@ package object schema {
         List("yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss")
       case _ => List.empty
     }
+
+    def ddlProcessor(table: DdlTable): DdlDateIndexNameProcessor =
+      DdlDateIndexNameProcessor(
+        sql,
+        column,
+        dateRounding,
+        dateFormats,
+        prefix = s"${table.name}-"
+      )
   }
 
   case class DdlColumnNotFound(column: String, table: String)
@@ -97,6 +454,9 @@ package object schema {
       }
       s"CREATE OR REPLACE TABLE $name ($cols$pkStr)${partitionBy.getOrElse("")}"
     }
+
+    def ddlProcessors: Seq[DdlProcessor] =
+      columns.flatMap(_.ddlProcessors) ++ partitionBy.map(_.ddlProcessor(this)).toSeq ++ primaryKey
 
     def merge(statements: Seq[AlterTableStatement]): DdlTable = {
       statements.foldLeft(this) { (table, statement) =>
@@ -194,6 +554,7 @@ package object schema {
           case _ => table
         }
       }
+
     }
 
     override def validate(): Either[SQL, Unit] = {
@@ -212,6 +573,87 @@ package object schema {
       }
       if (errors.isEmpty) Right(()) else Left(errors.mkString("\n"))
     }
+
+    lazy val ddlPipeline: DdlPipeline = DdlPipeline(
+      name = s"${name}_ddl_default_pipeline",
+      ddlPipelineType = DdlPipelineType.Default,
+      ddlProcessors = ddlProcessors
+    )
   }
 
+  object DdlTable {
+    def apply(indexMeta: EsIndexMeta): DdlTable = {
+      // 1. Columns from the mapping
+      val initialCols: Map[String, DdlColumn] =
+        indexMeta.mapping.fields.map { field =>
+          val name = field.name
+          name -> DdlColumn(
+            name = name,
+            dataType = SQLTypes(field),
+            script = None,
+            multiFields = field.fields.map(DdlColumn(_)),
+            notNull = false, // TODO add required
+            defaultValue = field.null_value,
+            options = field.options
+          )
+        }.toMap
+
+      // 2. PK + partition + pipelines from meta
+      var primaryKey: List[String] = indexMeta.ddlMeta.primary_key
+      var partitionBy: Option[DdlPartition] = indexMeta.ddlMeta.partition_by.map { p =>
+        val granularity = TimeUnit(p.granularity)
+        DdlPartition(p.column, granularity)
+      }
+      val defaultPipelineName = indexMeta.ddlMeta.default_pipeline
+      val finalPipelineName = indexMeta.ddlMeta.final_pipeline
+
+      // 3. Enrichment from the default pipeline (if provided)
+      val enrichedCols = scala.collection.mutable.Map.from(initialCols)
+
+      indexMeta.defaultPipeline.foreach { pipeline =>
+        val processorsNode = pipeline.get("processors")
+        if (processorsNode != null && processorsNode.isArray) {
+          val processors: Seq[DdlProcessor] =
+            processorsNode.elements().asScala.toSeq.flatMap(DdlProcessor(_))
+
+          processors.foreach {
+            case p: DdlScriptProcessor =>
+              val col = p.column
+              enrichedCols.get(col).foreach { c =>
+                enrichedCols.update(col, c.copy(script = Some(p)))
+              }
+
+            case p: DdlDefaultValueProcessor =>
+              val col = p.column
+              enrichedCols.get(col).foreach { c =>
+                enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))
+              }
+
+            case p: DdlDateIndexNameProcessor =>
+              if (partitionBy.isEmpty) {
+                val granularity = TimeUnit(p.dateRounding)
+                partitionBy = Some(DdlPartition(p.column, granularity))
+              }
+
+            case p: DdlPrimaryKeyProcessor =>
+              if (primaryKey.isEmpty) {
+                primaryKey = p.value.toList
+              }
+
+            case _ => // ignore others (rename/remove...) ou gère-les si tu veux les remonter en DDL
+          }
+        }
+      }
+
+      // 4. Construction finale du DdlTable
+      DdlTable(
+        name = indexMeta.name,
+        columns = enrichedCols.values.toList.sortBy(_.name),
+        primaryKey = primaryKey,
+        partitionBy = partitionBy,
+        defaultPipeline = defaultPipelineName,
+        finalPipeline = finalPipelineName
+      )
+    }
+  }
 }

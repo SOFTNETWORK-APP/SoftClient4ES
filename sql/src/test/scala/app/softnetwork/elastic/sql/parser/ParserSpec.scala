@@ -1,7 +1,5 @@
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.{Identifier, PainlessContext}
-import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.DdlPartition
@@ -943,7 +941,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case CreateTable(
+      case ct @ CreateTable(
             "users",
             Right(cols),
             true,
@@ -956,12 +954,20 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         cols.find(_.name == "name").get.defaultValue.map(_.value) shouldBe Some("anonymous")
         cols.find(_.name == "birthdate").get.dataType.typeId should include("DATE")
         cols.find(_.name == "age").get.script.nonEmpty shouldBe true
-        cols.find(_.name == "age").get.processorScript.getOrElse("") should include(
-          """def param1 = ctx.birthdate;
+        cols
+          .find(_.name == "age")
+          .get
+          .script
+          .map(p => p.source)
+          .getOrElse("") should include(
+          """def param1 = ctx['birthdate'];
           |def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate();
-          |(param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)""".stripMargin
+          |ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)""".stripMargin
             .replaceAll("\n", " ")
         )
+        val json = ct.ddlTable.ddlPipeline.json
+        print(json)
+        json shouldBe "{\"description\":\"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), PARTITION BY birthdate (DAY), PRIMARY KEY (id))\",\"processors\":[{\"set\":{\"field\":\"name\",\"if\":\"ctx.name == null\",\"description\":\"name DEFAULT 'anonymous'\",\"ignore_failure\":true,\"value\":\"anonymous\"}},{\"script\":{\"description\":\"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))\",\"lang\":\"painless\",\"source\":\"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)\",\"ignore_failure\":true}},{\"date_index_name\":{\"field\":\"birthdate\",\"index_name_prefix\":\"users-\",\"date_formats\":[\"yyyy-MM-dd\"],\"ignore_failure\":true,\"date_rounding\":\"d\",\"description\":\"PARTITION BY birthdate (DAY)\",\"separator\":\"-\"}},{\"set\":{\"field\":\"_id\",\"description\":\"PRIMARY KEY (id)\",\"ignore_failure\":false,\"ignore_empty_value\":false,\"value\":\"{{id}}\"}}]}"
       case _ => fail("Expected CreateTable")
     }
   }

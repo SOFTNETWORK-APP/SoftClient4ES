@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.operator._
@@ -29,7 +30,7 @@ import app.softnetwork.elastic.sql.parser.function.string.StringParser
 import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.{DdlColumn, DdlPartition}
+import app.softnetwork.elastic.sql.schema.{DdlColumn, DdlPartition, DdlScriptProcessor}
 import app.softnetwork.elastic.sql.time.TimeUnit
 
 import scala.language.implicitConversions
@@ -114,12 +115,40 @@ object Parser
     identifierWithFunction) ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
 
   def column: PackratParser[DdlColumn] =
-    ident ~ sql_type ~ (script | multiFields) ~ notNull ~ defaultVal ~ (options | success(
+    ident ~ extension_type ~ (script | multiFields) ~ notNull ~ defaultVal ~ (options | success(
       Map.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ nn ~ dv ~ opts =>
       mfs match {
         case script: PainlessScript =>
-          DdlColumn(name, dt, Some(script), Nil, nn, dv, opts)
+          val ctx = PainlessContext(Processor)
+          val scr = script.painless(Some(ctx))
+          val temp = s"$ctx$scr"
+          val ret =
+            temp.split(";") match {
+              case Array(single) if single.trim.startsWith("return ") =>
+                val stripReturn = single.trim.stripPrefix("return ").trim
+                s"ctx.$name = $stripReturn"
+              case multiple =>
+                val last = multiple.last.trim
+                val temp = multiple.dropRight(1) :+ s" ctx.$name = $last"
+                temp.mkString(";")
+            }
+          DdlColumn(
+            name,
+            dt,
+            Some(
+              DdlScriptProcessor(
+                script = script.sql,
+                column = name,
+                dataType = dt,
+                source = ret
+              )
+            ),
+            Nil,
+            nn,
+            dv,
+            opts
+          )
         case cols: List[DdlColumn] =>
           DdlColumn(name, dt, None, cols, nn, dv, opts)
       }
@@ -223,7 +252,7 @@ object Parser
     }
 
   def setColumnType: PackratParser[AlterColumnType] =
-    alterColumnIfExists ~ ident ~ ("SET" ~ "DATA" ~ "TYPE") ~ sql_type ^^ {
+    alterColumnIfExists ~ ident ~ ("SET" ~ "DATA" ~ "TYPE") ~ extension_type ^^ {
       case ie ~ name ~ _ ~ newType => AlterColumnType(name, newType, ifExists = ie)
     }
 

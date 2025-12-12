@@ -99,5 +99,12 @@ package object `type` {
     def sql_type: PackratParser[SQLType] =
       char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type | array_type
 
+    def text_type: PackratParser[SQLTypes.Text.type] =
+      "(?i)text".r ^^ (_ => SQLTypes.Text)
+
+    def keyword_type: PackratParser[SQLTypes.Keyword.type] =
+      "(?i)keyword".r ^^ (_ => SQLTypes.Keyword)
+
+    def extension_type: PackratParser[SQLType] = sql_type | text_type | keyword_type
   }
 }

@@ -113,6 +113,17 @@ package object time {
   sealed trait FixedUnit extends TimeUnit
 
   object TimeUnit {
+    def apply(script: String): TimeUnit = script match {
+      case "y" => YEARS
+      case "M" => MONTHS
+      case "w" => WEEKS
+      case "d" => DAYS
+      case "H" => HOURS
+      case "m" => MINUTES
+      case "s" => SECONDS
+      case _   => throw new IllegalArgumentException(s"Invalid time unit script: $script")
+    }
+
     case object YEARS extends Expr("YEAR") with CalendarUnit {
       override def script: Option[String] = Some("y")
     }

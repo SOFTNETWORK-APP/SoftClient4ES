@@ -17,8 +17,20 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.SQLType
-import app.softnetwork.elastic.sql.schema.{DdlColumn, DdlPartition}
+import app.softnetwork.elastic.sql.schema.{
+  DdlColumn,
+  DdlDefaultValueProcessor,
+  DdlPartition,
+  DdlPipeline,
+  DdlPipelineType,
+  DdlProcessor,
+  DdlRemoveProcessor,
+  DdlRenameProcessor,
+  DdlTable
+}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
+
+import java.time.Instant
 
 package object query {
   sealed trait Statement extends Token
@@ -337,6 +349,15 @@ package object query {
         case Right(cols) => cols
       }
     }
+
+    lazy val ddlTable: DdlTable = DdlTable(
+      name = table,
+      columns = columns.toList,
+      primaryKey = primaryKey,
+      partitionBy = partitionBy
+    )
+
+    lazy val ddlPipeline: DdlPipeline = ddlTable.ddlPipeline
   }
 
   case class AlterTable(table: String, ifExists: Boolean, statements: List[AlterTableStatement])
@@ -351,9 +372,16 @@ package object query {
       }
       s"ALTER TABLE $table$ifExistsClause $statementsSql"
     }
+
+    lazy val ddlProcessors: Seq[DdlProcessor] = statements.flatMap(_.ddlProcessor)
+
+    lazy val pipeline: DdlPipeline =
+      DdlPipeline(s"alter-$table-${Instant.now}", DdlPipelineType.Custom, ddlProcessors)
   }
 
-  sealed trait AlterTableStatement extends Token
+  sealed trait AlterTableStatement extends Token {
+    def ddlProcessor: Option[DdlProcessor] = None
+  }
   case class AddColumn(column: DdlColumn, ifNotExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
@@ -366,9 +394,11 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"DROP COLUMN$ifExistsClause $columnName"
     }
+    override def ddlProcessor: Option[DdlProcessor] = Some(DdlRemoveProcessor(sql, columnName))
   }
   case class RenameColumn(oldName: String, newName: String) extends AlterTableStatement {
     override def sql: String = s"RENAME COLUMN $oldName TO $newName"
+    override def ddlProcessor: Option[DdlProcessor] = Some(DdlRenameProcessor(oldName, newName))
   }
   case class AlterColumnOptions(
     columnName: String,
@@ -398,6 +428,14 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"ALTER COLUMN$ifExistsClause $columnName SET DEFAULT $defaultValue"
     }
+    override def ddlProcessor: Option[DdlProcessor] =
+      Some(
+        DdlDefaultValueProcessor(
+          sql,
+          columnName,
+          defaultValue
+        )
+      )
   }
   case class DropColumnDefault(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
@@ -405,6 +443,13 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"ALTER COLUMN$ifExistsClause $columnName DROP DEFAULT"
     }
+    override def ddlProcessor: Option[DdlProcessor] =
+      Some(
+        DdlRemoveProcessor(
+          sql,
+          columnName
+        )
+      )
   }
   case class AlterColumnNotNull(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
