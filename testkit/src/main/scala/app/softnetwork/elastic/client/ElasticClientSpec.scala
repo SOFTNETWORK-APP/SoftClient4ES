@@ -80,7 +80,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    pClient.createIndex("person")
+    pClient.createIndex("person", mappings = None, aliases = Nil)
   }
 
   override def afterAll(): Unit = {
@@ -103,7 +103,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   )
 
   "Creating an index and then delete it" should "work fine" in {
-    pClient.createIndex("create_delete")
+    pClient.createIndex("create_delete", mappings = None, aliases = Nil)
     blockUntilIndexExists("create_delete")
     "create_delete" should beCreated
 
@@ -174,7 +174,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Setting a mapping" should "work" in {
-    pClient.createIndex("person_mapping")
+    pClient.createIndex("person_mapping", mappings = None, aliases = Nil)
     blockUntilIndexExists("person_mapping")
     "person_mapping" should beCreated()
 
@@ -270,7 +270,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Updating a mapping" should "work" in {
-    pClient.createIndex("person_migration").get shouldBe true
+    pClient.createIndex("person_migration", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -528,7 +528,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk upsert valid json with an id key and a suffix key" should "work" in {
-    pClient.createIndex("person5").get shouldBe true
+    pClient.createIndex("person5", mappings = None, aliases = Nil).get shouldBe true
     implicit val bulkOptions: BulkOptions = BulkOptions("person5")
     val result = pClient
       .bulk[String](
@@ -735,7 +735,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -758,7 +758,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.updateAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -781,7 +781,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Delete" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -799,7 +799,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Delete asynchronously" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -819,7 +819,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Index binary data" should "work" in {
-    bClient.createIndex("binaries").get shouldBe true
+    bClient.createIndex("binaries", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -875,7 +875,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Aggregations" should "work" in {
-    pClient.createIndex("person10").get shouldBe true
+    pClient.createIndex("person10", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -1136,7 +1136,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Nested queries" should "work" in {
-    parentClient.createIndex("parent").get shouldBe true
+    parentClient.createIndex("parent", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {

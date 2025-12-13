@@ -80,8 +80,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   true if the index was created successfully, false otherwise
     */
-  override def createIndex(index: String, settings: String): ElasticResult[Boolean] =
-    delegate.createIndex(index, settings)
+  override def createIndex(
+    index: String,
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
+  ): ElasticResult[Boolean] =
+    delegate.createIndex(index, settings, mappings, aliases)
 
   /** Delete an index with the provided name.
     *
@@ -145,9 +150,11 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
   ): ElasticResult[Boolean] =
-    delegate.executeCreateIndex(index, settings)
+    delegate.executeCreateIndex(index, settings, None, Nil)
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     delegate.executeDeleteIndex(index)

@@ -84,10 +84,19 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
     *   - the name of the index to create
     * @param settings
     *   - the settings to apply to the index (default is defaultSettings)
+    * @param mappings
+    *   - optional mappings to apply to the index
+    * @param aliases
+    *   - optional aliases to apply to the index
     * @return
     *   true if the index was created successfully, false otherwise
     */
-  def createIndex(index: String, settings: String = defaultSettings): ElasticResult[Boolean] = {
+  def createIndex(
+    index: String,
+    settings: String = defaultSettings,
+    mappings: Option[String] = None,
+    aliases: Seq[String] = Nil
+  ): ElasticResult[Boolean] = {
     validateIndexName(index) match {
       case Some(error) =>
         return ElasticFailure(
@@ -113,9 +122,33 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
       case None => // OK
     }
 
+    mappings.map(validateJsonMappings) match {
+      case Some(Some(error)) =>
+        return ElasticFailure(
+          error.copy(
+            operation = Some("createIndex"),
+            statusCode = Some(400),
+            message = s"Invalid mappings: ${error.message}"
+          )
+        )
+      case _ => // OK
+    }
+
+    aliases.flatMap(alias => validateAliasName(alias)) match {
+      case error :: _ =>
+        return ElasticFailure(
+          error.copy(
+            operation = Some("createIndex"),
+            statusCode = Some(400),
+            message = s"Invalid alias: ${error.message}"
+          )
+        )
+      case Nil => // OK
+    }
+
     logger.info(s"Creating index '$index' with settings: $settings")
 
-    executeCreateIndex(index, settings) match {
+    executeCreateIndex(index, settings, mappings, aliases) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Index '$index' created successfully")
         success
@@ -397,7 +430,12 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
   // METHODS TO IMPLEMENT
   // ========================================================================
 
-  private[client] def executeCreateIndex(index: String, settings: String): ElasticResult[Boolean]
+  private[client] def executeCreateIndex(
+    index: String,
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
+  ): ElasticResult[Boolean]
 
   private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean]
 

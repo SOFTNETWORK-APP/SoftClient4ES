@@ -87,9 +87,14 @@ class MetricsElasticClient(
 
   // ==================== IndicesApi ====================
 
-  override def createIndex(index: String, settings: String): ElasticResult[Boolean] = {
+  override def createIndex(
+    index: String,
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
+  ): ElasticResult[Boolean] = {
     measureResult("createIndex", Some(index)) {
-      delegate.createIndex(index, settings)
+      delegate.createIndex(index, settings, mappings, aliases)
     }
   }
 

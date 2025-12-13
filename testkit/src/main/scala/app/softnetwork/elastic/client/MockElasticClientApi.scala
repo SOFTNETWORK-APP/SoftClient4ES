@@ -94,7 +94,9 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
   ): ElasticResult[Boolean] =
     ElasticResult.success(true)
 

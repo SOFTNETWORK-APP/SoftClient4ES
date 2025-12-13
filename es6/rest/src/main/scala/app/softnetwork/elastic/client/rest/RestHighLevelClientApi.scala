@@ -26,7 +26,7 @@ import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
-import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest
+import org.elasticsearch.action.admin.indices.alias.{Alias, IndicesAliasesRequest}
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest.AliasActions
 import org.elasticsearch.action.admin.indices.alias.get.GetAliasesRequest
 import org.elasticsearch.action.admin.indices.close.CloseIndexRequest
@@ -125,14 +125,19 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
   _: RefreshApi with RestHighLevelClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
   ): result.ElasticResult[Boolean] = {
     executeRestBooleanAction[CreateIndexRequest, AcknowledgedResponse](
       operation = "createIndex",
       index = Some(index),
       retryable = false
     )(
-      request = new CreateIndexRequest(index).settings(settings, XContentType.JSON)
+      request = new CreateIndexRequest(index)
+        .settings(settings, XContentType.JSON)
+        .aliases(aliases.map(alias => new Alias(alias)).asJava)
+        .mapping(mappings.getOrElse("{}"), XContentType.JSON)
     )(
       executor = req => apply().indices().create(req, RequestOptions.DEFAULT)
     )

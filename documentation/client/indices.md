@@ -82,13 +82,17 @@ Creates a new index with specified settings.
 ```scala
 def createIndex(
   index: String,
-  settings: String = defaultSettings
+  settings: String = defaultSettings,
+  mappings: Option[String] = None,
+  aliases: Seq[String] = Seq.empty
 ): ElasticResult[Boolean]
 ```
 
 **Parameters:**
 - `index` - Name of the index to create
 - `settings` - JSON settings for the index (defaults to `defaultSettings`)
+- `mappings` - Optional JSON mappings for the index
+- `aliases` - Optional list of aliases to assign to the index
 
 **Returns:**
 - `ElasticSuccess[Boolean]` with `true` if created, `false` otherwise
@@ -97,6 +101,8 @@ def createIndex(
 **Validation:**
 - Index name format validation
 - JSON settings syntax validation
+- JSON mappings syntax validation if provided
+- Alias name format validation
 
 **Examples:**
 

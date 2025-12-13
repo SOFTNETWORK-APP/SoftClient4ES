@@ -158,7 +158,19 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     indexExists(index).flatMap {
       case false =>
         // Scenario 1: Index doesn't exist
-        createIndexWithMapping(index, mapping, settings)
+        createIndex(index, settings, Some(mapping), Nil).flatMap {
+          case true =>
+            logger.info(s"✅ Index '$index' created with mapping successfully")
+            ElasticResult.success(true)
+          case false =>
+            ElasticResult.failure(
+              ElasticError(
+                message = s"Failed to create index '$index' with mapping",
+                index = Some(index),
+                operation = Some("updateMapping")
+              )
+            )
+        }
 
       case true =>
         // Check if mapping needs update
@@ -175,27 +187,6 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
 
         }
     }
-  }
-
-  /** Create a new index with the given mapping.
-    */
-  private def createIndexWithMapping(
-    index: String,
-    mapping: String,
-    settings: String
-  ): ElasticResult[Boolean] = {
-    logger.info(s"Creating new index '$index' with mapping")
-
-    for {
-      _ <- createIndex(index, settings)
-        .filter(_ == true, s"Failed to create index '$index'")
-        .logSuccess(logger, _ => s"✅ Index '$index' created successfully")
-
-      _ <- setMapping(index, mapping)
-        .filter(_ == true, s"Failed to set mapping for index '$index'")
-        .logSuccess(logger, _ => s"✅ Mapping for index '$index' set successfully")
-
-    } yield true
   }
 
   private def migrateMappingWithRollback(
@@ -266,7 +257,7 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
 
     for {
       // Create temp index
-      _ <- createIndex(tempIndex, settings)
+      _ <- createIndex(tempIndex, settings, None, Nil)
         .filter(_ == true, s"❌ Failed to create temp index '$tempIndex'")
 
       _ <- setMapping(tempIndex, mapping)
@@ -281,7 +272,7 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
         .filter(_ == true, s"❌ Failed to delete original index")
 
       // Recreate original with new mapping
-      _ <- createIndex(index, settings)
+      _ <- createIndex(index, settings, None, Nil)
         .filter(_ == true, s"❌ Failed to recreate original index")
 
       _ <- setMapping(index, mapping)
@@ -323,7 +314,7 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
       }
 
       // Recreate with original settings and mapping
-      _ <- createIndex(index, originalSettings)
+      _ <- createIndex(index, originalSettings, None, Nil)
         .filter(_ == true, s"❌ Rollback: Failed to recreate index")
 
       _ <- setMapping(index, originalMapping)

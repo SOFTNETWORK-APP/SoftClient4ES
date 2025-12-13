@@ -55,7 +55,9 @@ class SettingsApiSpec
     // Other required methods
     override private[client] def executeCreateIndex(
       index: String,
-      settings: String
+      settings: String,
+      mappings: Option[String],
+      aliases: Seq[String]
     ): ElasticResult[Boolean] = ???
     override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeReindex(
@@ -737,7 +739,9 @@ class SettingsApiSpec
             ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -790,7 +794,9 @@ class SettingsApiSpec
             ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -840,7 +846,9 @@ class SettingsApiSpec
             ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -1406,7 +1414,9 @@ class SettingsApiSpec
             ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -1448,7 +1458,9 @@ class SettingsApiSpec
             ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -1490,7 +1502,9 @@ class SettingsApiSpec
           override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???

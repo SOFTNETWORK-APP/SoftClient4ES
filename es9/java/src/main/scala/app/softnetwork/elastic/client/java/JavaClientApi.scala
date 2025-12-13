@@ -27,6 +27,7 @@ import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.client
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
+import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
   FieldSort,
   FieldValue,
@@ -102,7 +103,9 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
   _: JavaClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[String]
   ): result.ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "createIndex",
@@ -115,6 +118,14 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
           new CreateIndexRequest.Builder()
             .index(index)
             .settings(new IndexSettings.Builder().withJson(new StringReader(settings)).build())
+            .aliases(aliases.map(key => (key, new Alias.Builder().build())).toMap.asJava)
+            .mappings(
+              new TypeMapping.Builder()
+                .withJson(
+                  new StringReader(mappings.getOrElse("{}"))
+                )
+                .build()
+            )
             .build()
         )
     )(_.acknowledged())

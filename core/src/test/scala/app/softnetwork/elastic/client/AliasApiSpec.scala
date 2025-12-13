@@ -71,7 +71,9 @@ class AliasApiSpec
     // Other required methods
     override private[client] def executeCreateIndex(
       index: String,
-      settings: String
+      settings: String,
+      mappings: Option[String],
+      aliases: Seq[String]
     ): ElasticResult[Boolean] = ???
     override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = ???
@@ -1656,7 +1658,9 @@ class AliasApiSpec
           ): ElasticResult[Boolean] = ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: JSONQuery,
+            mappings: Option[JSONQuery],
+            aliases: Seq[JSONQuery]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???

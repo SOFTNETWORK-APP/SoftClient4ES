@@ -176,6 +176,16 @@ trait ElasticClientHelpers {
     validateJson("validateJsonSettings", settings)
   }
 
+  /** Validate the JSON mappings.
+    * @param mappings
+    *   mappings in JSON format
+    * @return
+    *   Some(ElasticError) if invalid, None if valid
+    */
+  protected def validateJsonMappings(mappings: String): Option[ElasticError] = {
+    validateJson("validateJsonMappings", mappings)
+  }
+
   /** Validate the alias name. Aliases follow the same rules as indexes.
     * @param alias
     *   alias name to validate

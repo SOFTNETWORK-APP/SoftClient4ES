@@ -37,7 +37,9 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
     */
   private[client] def executeCreateIndex(
     index: String,
-    settings: String = defaultSettings
+    settings: String = defaultSettings,
+    mappings: Option[String],
+    aliases: Seq[String]
   ): ElasticResult[Boolean] = {
     executeJestBooleanAction(
       operation = "createIndex",
@@ -46,6 +48,8 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
     ) {
       new CreateIndex.Builder(index)
         .settings(settings)
+        .aliases(aliases.map(alias => s"""{"$alias":{}}""").mkString(","))
+        .mappings(mappings.getOrElse("{}"))
         .build()
     }
   }

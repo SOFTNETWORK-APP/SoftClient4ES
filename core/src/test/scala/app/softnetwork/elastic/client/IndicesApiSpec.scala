@@ -37,7 +37,9 @@ class IndicesApiSpec
 
     override private[client] def executeCreateIndex(
       index: String,
-      settings: String
+      settings: String,
+      mappings: Option[String],
+      aliases: Seq[String]
     ): ElasticResult[Boolean] = {
       executeCreateIndexResult
     }
@@ -144,7 +146,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex("my-index")
+        val result = indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         result shouldBe ElasticSuccess(true)
@@ -161,7 +163,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex("my-index", customSettings)
+        val result = indicesApi.createIndex("my-index", customSettings, None, Nil)
 
         // Then
         result.isSuccess shouldBe true
@@ -176,7 +178,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(false)
 
         // When
-        val result = indicesApi.createIndex("my-index")
+        val result = indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         result shouldBe ElasticSuccess(false)
@@ -191,7 +193,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticFailure(error)
 
         // When
-        val result = indicesApi.createIndex("my-index")
+        val result = indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -202,7 +204,7 @@ class IndicesApiSpec
 
       "reject invalid index name" in {
         // When
-        val result = indicesApi.createIndex("INVALID")
+        val result = indicesApi.createIndex("INVALID", mappings = None, aliases = Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -216,7 +218,7 @@ class IndicesApiSpec
 
       "reject empty index name" in {
         // When
-        val result = indicesApi.createIndex("")
+        val result = indicesApi.createIndex("", mappings = None, aliases = Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -229,7 +231,7 @@ class IndicesApiSpec
         val invalidJson = """{"index": invalid json}"""
 
         // When
-        val result = indicesApi.createIndex("my-index", invalidJson)
+        val result = indicesApi.createIndex("my-index", invalidJson, None, Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -243,7 +245,7 @@ class IndicesApiSpec
 
       "reject empty settings" in {
         // When
-        val result = indicesApi.createIndex("my-index", "")
+        val result = indicesApi.createIndex("my-index", "", None, Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -253,7 +255,7 @@ class IndicesApiSpec
 
       "reject null settings" in {
         // When
-        val result = indicesApi.createIndex("my-index", null)
+        val result = indicesApi.createIndex("my-index", null, None, Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -270,7 +272,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticFailure(error)
 
         // When
-        val result = indicesApi.createIndex("my-index")
+        val result = indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -284,7 +286,7 @@ class IndicesApiSpec
         val invalidJson = """invalid"""
 
         // When - Invalid index name should fail first
-        val result = indicesApi.createIndex("INVALID", invalidJson)
+        val result = indicesApi.createIndex("INVALID", invalidJson, None, Nil)
 
         // Then
         result.error.get.message should include("Invalid index")
@@ -679,7 +681,9 @@ class IndicesApiSpec
 
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -731,7 +735,9 @@ class IndicesApiSpec
 
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -763,9 +769,10 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex("my-index").map { success =>
-          if (success) "Created" else "Not created"
-        }
+        val result =
+          indicesApi.createIndex("my-index", mappings = None, aliases = Nil).map { success =>
+            if (success) "Created" else "Not created"
+          }
 
         // Then
         result shouldBe ElasticSuccess("Created")
@@ -777,9 +784,10 @@ class IndicesApiSpec
         indicesApi.executeIndexExistsResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex("my-index").flatMap { _ =>
-          indicesApi.indexExists("my-index")
-        }
+        val result =
+          indicesApi.createIndex("my-index", mappings = None, aliases = Nil).flatMap { _ =>
+            indicesApi.indexExists("my-index")
+          }
 
         // Then
         result shouldBe ElasticSuccess(true)
@@ -792,7 +800,7 @@ class IndicesApiSpec
 
         // When
         val result = for {
-          created <- indicesApi.createIndex("my-index")
+          created <- indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
           opened  <- indicesApi.openIndex("my-index")
         } yield created && opened
 
@@ -807,7 +815,7 @@ class IndicesApiSpec
 
         // When
         val result = indicesApi
-          .createIndex("my-index")
+          .createIndex("my-index", mappings = None, aliases = Nil)
           .map(!_)
           .flatMap(v => ElasticSuccess(s"Result: $v"))
 
@@ -827,7 +835,7 @@ class IndicesApiSpec
         indicesApi.executeDeleteIndexResult = ElasticSuccess(true)
 
         // When
-        val created = indicesApi.createIndex("test-index")
+        val created = indicesApi.createIndex("test-index", mappings = None, aliases = Nil)
         val closed = indicesApi.closeIndex("test-index")
         val opened = indicesApi.openIndex("test-index")
         val deleted = indicesApi.deleteIndex("test-index")
@@ -849,9 +857,9 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result1 = indicesApi.createIndex("index1")
-        val result2 = indicesApi.createIndex("index2")
-        val result3 = indicesApi.createIndex("index3")
+        val result1 = indicesApi.createIndex("index1", mappings = None, aliases = Nil)
+        val result2 = indicesApi.createIndex("index2", mappings = None, aliases = Nil)
+        val result3 = indicesApi.createIndex("index3", mappings = None, aliases = Nil)
 
         // Then
         result1.isSuccess shouldBe true
@@ -870,7 +878,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticFailure(error)
 
         // When
-        val result = indicesApi.createIndex("my-index")
+        val result = indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         result.isFailure shouldBe true
@@ -931,7 +939,9 @@ class IndicesApiSpec
 
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = {
             executeCalled = true
             ElasticSuccess(true)
@@ -954,7 +964,7 @@ class IndicesApiSpec
         }
 
         // When
-        validatingApi.createIndex("INVALID")
+        validatingApi.createIndex("INVALID", mappings = None, aliases = Nil)
 
         // Then
         executeCalled shouldBe false
@@ -968,7 +978,9 @@ class IndicesApiSpec
 
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = {
             executeCalled = true
             ElasticSuccess(true)
@@ -991,7 +1003,7 @@ class IndicesApiSpec
         }
 
         // When
-        validatingApi.createIndex("valid-index", "invalid json")
+        validatingApi.createIndex("valid-index", "invalid json", None, Nil)
 
         // Then
         executeCalled shouldBe false
@@ -1010,7 +1022,9 @@ class IndicesApiSpec
 
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -1046,7 +1060,9 @@ class IndicesApiSpec
 
           override private[client] def executeCreateIndex(
             index: String,
-            settings: String
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[String]
           ): ElasticResult[Boolean] = ???
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
@@ -1077,7 +1093,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        indicesApi.createIndex("my-index")
+        indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         verify(mockLogger, atLeastOnce).info(any[String])
@@ -1089,7 +1105,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticFailure(ElasticError("Failed"))
 
         // When
-        indicesApi.createIndex("my-index")
+        indicesApi.createIndex("my-index", mappings = None, aliases = Nil)
 
         // Then
         verify(mockLogger).error(any[String])
@@ -1130,7 +1146,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex(maxName)
+        val result = indicesApi.createIndex(maxName, mappings = None, aliases = Nil)
 
         // Then
         result.isSuccess shouldBe true
@@ -1186,7 +1202,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex("my-index", complexSettings)
+        val result = indicesApi.createIndex("my-index", complexSettings, None, Nil)
 
         // Then
         result.isSuccess shouldBe true
@@ -1199,7 +1215,7 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When
-        val result = indicesApi.createIndex("my-index", settings)
+        val result = indicesApi.createIndex("my-index", settings, None, Nil)
 
         // Then
         result.isSuccess shouldBe true
@@ -1216,7 +1232,7 @@ class IndicesApiSpec
         indicesApi.executeDeleteIndexResult = ElasticSuccess(true)
 
         // When
-        val created = indicesApi.createIndex("new-index")
+        val created = indicesApi.createIndex("new-index", mappings = None, aliases = Nil)
         val reindexed = indicesApi.reindex("old-index", "new-index")
         val deleted = indicesApi.deleteIndex("old-index")
 
@@ -1229,13 +1245,13 @@ class IndicesApiSpec
       "handle multiple operations with mixed results" in {
         // Given
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
-        val result1 = indicesApi.createIndex("index1")
+        val result1 = indicesApi.createIndex("index1", mappings = None, aliases = Nil)
 
         indicesApi.executeCreateIndexResult = ElasticFailure(ElasticError("Already exists"))
-        val result2 = indicesApi.createIndex("index2")
+        val result2 = indicesApi.createIndex("index2", mappings = None, aliases = Nil)
 
         indicesApi.executeCreateIndexResult = ElasticSuccess(false)
-        val result3 = indicesApi.createIndex("index3")
+        val result3 = indicesApi.createIndex("index3", mappings = None, aliases = Nil)
 
         // Then
         result1.isSuccess shouldBe true
@@ -1270,7 +1286,8 @@ class IndicesApiSpec
         indicesApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // When - Simulate concurrent calls
-        val results = (1 to 5).map(i => indicesApi.createIndex(s"index-$i"))
+        val results =
+          (1 to 5).map(i => indicesApi.createIndex(s"index-$i", mappings = None, aliases = Nil))
 
         // Then
         results.foreach(_.isSuccess shouldBe true)
