@@ -935,6 +935,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         |  name VARCHAR DEFAULT 'anonymous',
         |  birthdate DATE,
         |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+        |  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
         |  PRIMARY KEY (id)
         |) PARTITION BY birthdate""".stripMargin
     val result = Parser(sql)
@@ -965,9 +966,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           |ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)""".stripMargin
             .replaceAll("\n", " ")
         )
+        cols.find(_.name == "ingested_at").get.defaultValue.map(_.value) shouldBe Some(
+          "_ingest.timestamp"
+        )
         val json = ct.ddlTable.ddlPipeline.json
         print(json)
-        json shouldBe "{\"description\":\"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), PARTITION BY birthdate (DAY), PRIMARY KEY (id))\",\"processors\":[{\"set\":{\"field\":\"name\",\"if\":\"ctx.name == null\",\"description\":\"name DEFAULT 'anonymous'\",\"ignore_failure\":true,\"value\":\"anonymous\"}},{\"script\":{\"description\":\"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))\",\"lang\":\"painless\",\"source\":\"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)\",\"ignore_failure\":true}},{\"date_index_name\":{\"field\":\"birthdate\",\"index_name_prefix\":\"users-\",\"date_formats\":[\"yyyy-MM-dd\"],\"ignore_failure\":true,\"date_rounding\":\"d\",\"description\":\"PARTITION BY birthdate (DAY)\",\"separator\":\"-\"}},{\"set\":{\"field\":\"_id\",\"description\":\"PRIMARY KEY (id)\",\"ignore_failure\":false,\"ignore_empty_value\":false,\"value\":\"{{id}}\"}}]}"
+        json shouldBe """{"description":"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, PARTITION BY birthdate (DAY), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM-dd"],"ignore_failure":true,"date_rounding":"d","description":"PARTITION BY birthdate (DAY)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
       case _ => fail("Expected CreateTable")
     }
   }

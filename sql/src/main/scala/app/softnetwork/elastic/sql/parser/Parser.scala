@@ -102,8 +102,12 @@ object Parser
       case None    => false
     }
 
+  def ingest_id: PackratParser[Value[_]] = "_id" ^^ (_ => IdValue)
+
+  def ingest_timestamp: PackratParser[Value[_]] = "_ingest.timestamp" ^^ (_ => IngestTimestampValue)
+
   def defaultVal: PackratParser[Option[Value[_]]] =
-    opt("DEFAULT" ~ value) ^^ {
+    opt("DEFAULT" ~ (value | ingest_id | ingest_timestamp)) ^^ {
       case Some(_ ~ v) => Some(v)
       case None        => None
     }

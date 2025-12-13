@@ -186,9 +186,14 @@ package object schema {
     }
 
     override def properties: Map[SQL, Any] = Map(
-      "description"    -> description,
-      "field"          -> column,
-      "value"          -> value.value,
+      "description" -> description,
+      "field"       -> column,
+      "value" -> {
+        value match {
+          case IdValue | IngestTimestampValue => s"{{${value.value}}}"
+          case _                              => value.value
+        }
+      },
       "ignore_failure" -> ignoreFailure,
       "if"             -> _if
     )
@@ -441,18 +446,24 @@ package object schema {
     primaryKey: List[String] = Nil,
     partitionBy: Option[DdlPartition] = None,
     defaultPipeline: Option[String] = None,
-    finalPipeline: Option[String] = None
+    finalPipeline: Option[String] = None,
+    options: Map[String, Value[_]] = Map.empty
   ) extends Token {
     private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
 
     def sql: String = {
+      val opts = if (options.nonEmpty) {
+        s" OPTIONS (${options.map { case (k, v) => s"$k = $v" }.mkString(", ")}) "
+      } else {
+        ""
+      }
       val cols = columns.map(_.sql).mkString(", ")
       val pkStr = if (primaryKey.nonEmpty) {
         s", PRIMARY KEY (${primaryKey.mkString(", ")})"
       } else {
         ""
       }
-      s"CREATE OR REPLACE TABLE $name ($cols$pkStr)${partitionBy.getOrElse("")}"
+      s"CREATE OR REPLACE TABLE $name ($cols$pkStr)${partitionBy.getOrElse("")}$opts"
     }
 
     def ddlProcessors: Seq[DdlProcessor] =

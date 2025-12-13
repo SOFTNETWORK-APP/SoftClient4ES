@@ -295,13 +295,19 @@ package object sql {
         case null       => Null
         case b: Boolean => BooleanValue(b)
         case c: Char    => CharValue(c)
-        case s: String  => StringValue(s)
-        case b: Byte    => ByteValue(b)
-        case s: Short   => ShortValue(s)
-        case i: Int     => IntValue(i)
-        case l: Long    => LongValue(l)
-        case f: Float   => FloatValue(f)
-        case d: Double  => DoubleValue(d)
+        case s: String =>
+          s match {
+            case "null"              => Null
+            case "_id"               => IdValue
+            case "_ingest.timestamp" => IngestTimestampValue
+            case _                   => StringValue(s)
+          }
+        case b: Byte   => ByteValue(b)
+        case s: Short  => ShortValue(s)
+        case i: Int    => IntValue(i)
+        case l: Long   => LongValue(l)
+        case f: Float  => FloatValue(f)
+        case d: Double => DoubleValue(d)
         case a: Array[T] =>
           val values = a.toSeq.map(apply)
           values.headOption match {
@@ -379,6 +385,19 @@ package object sql {
   case class StringValue(override val value: String) extends Value[String](value) {
     override def sql: String = s"""'$value'"""
     override def baseType: SQLType = SQLTypes.Varchar
+  }
+
+  case object IdValue extends Value[String]("_id") with TokenRegex {
+    override def sql: String = value
+    override def painless(context: Option[PainlessContext]): String = s"{{$value}}"
+    override def baseType: SQLType = SQLTypes.Varchar
+  }
+
+  case object IngestTimestampValue extends Value[String]("_ingest.timestamp") with TokenRegex {
+    override def sql: String = value
+    override def painless(context: Option[PainlessContext]): String =
+      s"{{$value}}"
+    override def baseType: SQLType = SQLTypes.Timestamp
   }
 
   sealed abstract class NumericValue[T: Numeric](override val value: T) extends Value[T](value) {
