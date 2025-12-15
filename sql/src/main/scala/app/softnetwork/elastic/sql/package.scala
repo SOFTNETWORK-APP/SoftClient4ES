@@ -24,6 +24,7 @@ import app.softnetwork.elastic.sql.query._
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.security.MessageDigest
+import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe._
 import scala.util.Try
 import scala.util.matching.Regex
@@ -325,8 +326,19 @@ package object sql {
               FloatValues(values.asInstanceOf[Seq[FloatValue]]).asInstanceOf[Values[R, T]]
             case Some(_: DoubleValue) =>
               DoubleValues(values.asInstanceOf[Seq[DoubleValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: BooleanValue) =>
+              BooleanValues(values.asInstanceOf[Seq[BooleanValue]])
+                .asInstanceOf[Values[R, T]]
+            case Some(_: ObjectValue) =>
+              ObjectValues(
+                values
+                  .asInstanceOf[Seq[ObjectValue]]
+              ).asInstanceOf[Values[R, T]]
             case _ => throw new IllegalArgumentException("Unsupported Values type")
           }
+        case o: Map[_, _] =>
+          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }
+          ObjectValue(map)
         case other => StringValue(other.toString)
       }
     }
@@ -350,12 +362,28 @@ package object sql {
             .toList
           Some(arr)
         case n if n.isObject =>
-          // The raw JSON object is stored as a string. TODO consider mapping to a Map[String, Any]
-          Some(n.toString)
+          val map = n
+            .properties()
+            .asScala
+            .flatMap { entry =>
+              val key = entry.getKey
+              val valueNode = entry.getValue
+              apply(valueNode).map(value => key -> value)
+            }
+            .toMap
+          Some(map)
         case _ =>
           None
       }
     }
+  }
+
+  case class ObjectValue(override val value: Map[String, Value[_]])
+      extends Value[Map[String, Value[_]]](value) {
+    override def sql: String = value
+      .map { case (k, v) => s""""$k" = ${v.sql}""" }
+      .mkString("(", ", ", ")")
+    override def baseType: SQLType = SQLTypes.Struct
   }
 
   case object Null extends Value[Null](null) with TokenRegex {
@@ -574,6 +602,22 @@ package object sql {
   case class DoubleValues(override val values: Seq[DoubleValue])
       extends NumericValues[Double](values) {
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Double)
+  }
+
+  case class BooleanValues(override val values: Seq[BooleanValue])
+      extends Values[Boolean, Value[Boolean]](values) {
+    def eq: Seq[Boolean] => Boolean = {
+      _.exists { b => innerValues.contains(b) }
+    }
+    def ne: Seq[Boolean] => Boolean = {
+      _.forall { b => !innerValues.contains(b) }
+    }
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Boolean)
+  }
+
+  case class ObjectValues(override val values: Seq[ObjectValue])
+      extends Values[Map[String, Value[_]], ObjectValue](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Struct)
   }
 
   def toRegex(value: String): String = {

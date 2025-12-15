@@ -18,12 +18,16 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.{
   BooleanValue,
+  BooleanValues,
   DoubleValue,
+  DoubleValues,
   Identifier,
   LongValue,
+  LongValues,
   ParamValue,
   PiValue,
   StringValue,
+  StringValues,
   Value
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
@@ -52,8 +56,26 @@ package object `type` {
     def param: PackratParser[ParamValue.type] =
       "?" ^^ (_ => ParamValue)
 
+    def literals: PackratParser[Value[_]] = "[" ~> repsep(literal, ",") <~ "]" ^^ { list =>
+      StringValues(list)
+    }
+
+    def longs: PackratParser[Value[_]] = "[" ~> repsep(long, ",") <~ "]" ^^ { list =>
+      LongValues(list)
+    }
+
+    def doubles: PackratParser[Value[_]] = "[" ~> repsep(double, ",") <~ "]" ^^ { list =>
+      DoubleValues(list)
+    }
+
+    def booleans: PackratParser[BooleanValues] = "[" ~> repsep(boolean, ",") <~ "]" ^^ { list =>
+      BooleanValues(list)
+    }
+
+    def array: PackratParser[Value[_]] = literals | longs | doubles | booleans
+
     def value: PackratParser[Value[_]] =
-      literal | pi | double | long | boolean | param
+      literal | pi | double | long | boolean | param | array
 
     def identifierWithValue: Parser[Identifier] = (value ^^ functionAsIdentifier) >> cast
 

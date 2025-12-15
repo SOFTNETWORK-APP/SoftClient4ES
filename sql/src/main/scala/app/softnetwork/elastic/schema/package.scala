@@ -6,16 +6,37 @@ import com.fasterxml.jackson.databind.JsonNode
 import scala.jdk.CollectionConverters._
 
 package object schema {
-  final case class EsField(
+
+  private[schema] def extractOptions(
+    node: JsonNode,
+    ignoredKeys: Set[String] = Set.empty
+  ): Map[String, Value[_]] = {
+    node
+      .properties()
+      .asScala
+      .flatMap { entry =>
+        val key = entry.getKey
+        val value = entry.getValue
+
+        if (ignoredKeys.contains(key)) {
+          None
+        } else {
+          Value(value).map(key -> Value(_))
+        }
+      }
+      .toMap
+  }
+
+  final case class Field(
     name: String,
     `type`: String,
     null_value: Option[Value[_]] = None,
-    fields: List[EsField] = Nil,
+    fields: List[Field] = Nil,
     options: Map[String, Value[_]] = Map.empty
   )
 
-  object EsField {
-    def apply(name: String, node: JsonNode): EsField = {
+  object Field {
+    def apply(name: String, node: JsonNode): Field = {
       val tpe = Option(node.get("type")).map(_.asText()).getOrElse("object")
 
       val nullValue =
@@ -30,9 +51,9 @@ package object schema {
           }.toList)
           .getOrElse(Nil)
 
-      val options = extractOptions(node)
+      val options = extractOptions(node, ignoredKeys = Set("type", "null_value", "fields"))
 
-      EsField(
+      Field(
         name = name,
         `type` = tpe,
         null_value = nullValue,
@@ -41,122 +62,141 @@ package object schema {
       )
 
     }
-
-    private[this] def extractOptions(node: JsonNode): Map[String, Value[_]] = {
-      val ignoredKeys = Set("type", "null_value", "fields")
-
-      node
-        .properties()
-        .asScala
-        .flatMap { entry =>
-          val key = entry.getKey
-          val value = entry.getValue
-
-          if (ignoredKeys.contains(key)) {
-            None
-          } else {
-            Value(value).map(key -> Value(_))
-          }
-        }
-        .toMap
-    }
-
   }
 
-  final case class EsMapping(
-    fields: List[EsField] = Nil
+  final case class Mappings(
+    fields: List[Field] = Nil,
+    primaryKey: List[String] = Nil,
+    partitionBy: Option[EsPartitionBy] = None,
+    options: Map[String, Value[_]] = Map.empty
   )
 
-  object EsMapping {
-    def apply(root: JsonNode): EsMapping = {
-      val fields = Option(root.path("mappings").path("properties"))
+  object Mappings {
+    def apply(root: JsonNode): Mappings = {
+      val mappings = root.path("mappings")
+      val fields = Option(mappings.get("properties"))
+        .orElse(Option(mappings.path("_doc").get("properties")))
         .map(_.properties().asScala.map { entry =>
           val name = entry.getKey
           val value = entry.getValue
-          EsField(name, value)
+          Field(name, value)
         }.toList)
         .getOrElse(Nil)
 
-      EsMapping(fields = fields)
+      val options = extractOptions(mappings, ignoredKeys = Set("properties", "_doc"))
+      val meta = options.get("_meta")
+      val primaryKey: List[String] = meta
+        .map {
+          case m: Map[_, _] =>
+            m.asInstanceOf[Map[String, Value[_]]].get("primary_key") match {
+              case Some(pk: Value[_]) =>
+                pk.value match {
+                  case list: List[_] => list.map(_.toString)
+                  case str: String   => List(str)
+                  case _             => List.empty
+                }
+              case _ => List.empty
+            }
+          case _ => List.empty
+        }
+        .getOrElse(List.empty)
+
+      val partitionBy: Option[EsPartitionBy] = meta.flatMap {
+        case m: Map[_, _] =>
+          m.asInstanceOf[Map[String, Value[_]]].get("partition_by") match {
+            case Some(pb: Value[_]) =>
+              pb.value match {
+                case map: Map[_, _] =>
+                  val partitionMap = map.asInstanceOf[Map[String, String]]
+                  val column = partitionMap.getOrElse("column", "date")
+                  val granularity = partitionMap.getOrElse("granularity", "d")
+                  Some(EsPartitionBy(column, granularity))
+                case _ => None
+              }
+            case _ => None
+          }
+        case _ => None
+      }
+
+      Mappings(
+        fields = fields,
+        primaryKey = primaryKey,
+        partitionBy = partitionBy,
+        options = options
+      )
     }
+
   }
 
-  final case class EsPartitionMeta(
+  final case class EsPartitionBy(
     column: String,
     granularity: String // "d", "M", "y", etc.
   )
 
-  final case class EsDdlMeta(
-    primary_key: List[String] = Nil,
-    partition_by: Option[EsPartitionMeta] = None,
-    default_pipeline: Option[String] = None,
-    final_pipeline: Option[String] = None
-  )
+  final case class Settings(
+    options: Map[String, Value[_]] = Map.empty
+  ) {
 
-  object EsDdlMeta {
-    def apply(settings: JsonNode): EsDdlMeta = {
+    lazy val defaultPipeline: Option[String] = {
+      options.get("default_pipeline").map(_.value).flatMap {
+        case v: String => Some(v)
+        case _         => None
+      }
+    }
+
+    lazy val finalPipeline: Option[String] = {
+      options.get("final_pipeline").map(_.value).flatMap {
+        case v: String => Some(v)
+        case _         => None
+      }
+    }
+  }
+
+  object Settings {
+    def apply(settings: JsonNode): Settings = {
       val index = settings.path("settings").path("index")
 
-      val defaultPipeline = Option(index.get("default_pipeline")).map(_.asText())
-      val finalPipeline = Option(index.get("final_pipeline")).map(_.asText())
+      val options = extractOptions(index)
 
-      val ddlNode = index
-        .path("meta")
-        .path("ddl")
-
-      if (ddlNode.isMissingNode)
-        return EsDdlMeta(
-          default_pipeline = defaultPipeline,
-          final_pipeline = finalPipeline
-        )
-
-      val primaryKey = Option(ddlNode.path("primary_key"))
-        .filter(_.isArray)
-        .map(_.elements().asScala.map(_.asText()).toList)
-        .getOrElse(Nil)
-
-      val partitionBy =
-        Option(ddlNode.path("partition_by")).filter(_.isObject).map { partitionNode =>
-          val column = Option(partitionNode.get("column"))
-            .map(_.asText())
-            .getOrElse("date")
-          val granularity = Option(partitionNode.get("granularity"))
-            .map(_.asText())
-            .getOrElse("d")
-          EsPartitionMeta(column, granularity)
-        }
-
-      EsDdlMeta(
-        primary_key = primaryKey,
-        partition_by = partitionBy,
-        default_pipeline = defaultPipeline,
-        final_pipeline = finalPipeline
+      Settings(
+        options = options
       )
     }
   }
 
-  final case class EsIndexMeta(
+  final case class Index(
     name: String,
-    mapping: EsMapping,
-    ddlMeta: EsDdlMeta,
-    defaultPipeline: Option[JsonNode] = None // existing "DDL default" pipeline
-  )
+    mappings: Mappings,
+    settings: Settings,
+    pipeline: Option[JsonNode] = None
+  ) {
+    lazy val defaultPipeline: Option[String] = {
+      settings.options.get("default_pipeline").map(_.value).flatMap {
+        case v: String => Some(v)
+        case _         => None
+      }
+    }
 
-  object EsIndexMeta {
+    lazy val finalPipeline: Option[String] = {
+      settings.options.get("final_pipeline").map(_.value).flatMap {
+        case v: String => Some(v)
+        case _         => None
+      }
+    }
+  }
+
+  object Index {
     def apply(
       name: String,
       settings: JsonNode,
       mappings: JsonNode,
-      defaultPipeline: Option[JsonNode]
-    ): EsIndexMeta = {
-      val mapping = EsMapping(mappings)
-      val ddlMeta = EsDdlMeta(settings)
-
-      EsIndexMeta(
+      pipeline: Option[JsonNode]
+    ): Index = {
+      Index(
         name = name,
-        mapping = mapping,
-        ddlMeta = ddlMeta,
-        defaultPipeline = defaultPipeline
+        mappings = Mappings(mappings),
+        settings = Settings(settings),
+        pipeline = pipeline
       )
     }
   }

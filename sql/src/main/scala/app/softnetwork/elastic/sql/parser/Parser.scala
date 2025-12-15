@@ -69,8 +69,13 @@ object Parser
 
   def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_]*""".r
 
+  def objectValue: PackratParser[ObjectValue] =
+    start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
+      ObjectValue(opts.toMap)
+    }
+
   def option: PackratParser[(String, Value[_])] =
-    ident ~ "=" ~ value ^^ { case key ~ _ ~ value =>
+    ident ~ "=" ~ (value | objectValue) ^^ { case key ~ _ ~ value =>
       (key, value)
     }
 
@@ -181,24 +186,35 @@ object Parser
       case None                  => None
     }
 
-  def columnsWithPartitionBy: PackratParser[(List[DdlColumn], List[String], Option[DdlPartition])] =
-    start ~ repsep(column, separator) ~ primaryKey ~ end ~ partitionBy ^^ {
-      case _ ~ cols ~ pk ~ _ ~ pb =>
-        (cols, pk, pb)
+  def columnsWithPartitionBy
+    : PackratParser[(List[DdlColumn], List[String], Option[DdlPartition], Map[String, Any])] =
+    start ~ repsep(
+      column,
+      separator
+    ) ~ primaryKey ~ end ~ partitionBy ~ ((separator.? ~> options) | success(
+      Map.empty[String, Value[_]]
+    )) ^^ { case _ ~ cols ~ pk ~ _ ~ pb ~ opts =>
+      (cols, pk, pb, opts)
     }
 
   def createOrReplaceTable: PackratParser[CreateTable] =
     ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
       case _ ~ name ~ lr =>
         lr match {
-          case (cols: List[DdlColumn], pk: List[String], p: Option[DdlPartition]) =>
+          case (
+                cols: List[DdlColumn],
+                pk: List[String],
+                p: Option[DdlPartition],
+                opts: Map[String, Value[_]]
+              ) =>
             CreateTable(
               name,
               Right(cols),
               ifNotExists = false,
               orReplace = true,
               primaryKey = pk,
-              partitionBy = p
+              partitionBy = p,
+              options = opts
             )
           case sel: DqlStatement =>
             CreateTable(name, Left(sel), ifNotExists = false, orReplace = true)
@@ -209,8 +225,13 @@ object Parser
     ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
       case _ ~ ine ~ name ~ lr =>
         lr match {
-          case (cols: List[DdlColumn], pk: List[String], p: Option[DdlPartition]) =>
-            CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p)
+          case (
+                cols: List[DdlColumn],
+                pk: List[String],
+                p: Option[DdlPartition],
+                opts: Map[String, Value[_]]
+              ) =>
+            CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p, options = opts)
           case sel: DqlStatement => CreateTable(name, Left(sel), ine)
         }
     }

@@ -317,7 +317,8 @@ package object query {
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     primaryKey: List[String] = Nil,
-    partitionBy: Option[DdlPartition] = None
+    partitionBy: Option[DdlPartition] = None,
+    options: Map[String, Value[_]] = Map.empty
   ) extends DdlStatement {
 
     override def sql: String = {
@@ -350,14 +351,35 @@ package object query {
       }
     }
 
+    lazy val mappings: Map[String, Value[_]] = options.get("mappings") match {
+      case Some(value) =>
+        value match {
+          case o: ObjectValue => o.value
+          case _              => Map.empty
+        }
+      case None => Map.empty
+    }
+
+    lazy val settings: Map[String, Value[_]] = options.get("settings") match {
+      case Some(value) =>
+        value match {
+          case o: ObjectValue => o.value
+          case _              => Map.empty
+        }
+      case None => Map.empty
+    }
+
     lazy val ddlTable: DdlTable = DdlTable(
       name = table,
       columns = columns.toList,
       primaryKey = primaryKey,
-      partitionBy = partitionBy
+      partitionBy = partitionBy,
+      mappings = mappings,
+      settings = settings
     )
 
     lazy val ddlPipeline: DdlPipeline = ddlTable.ddlPipeline
+
   }
 
   case class AlterTable(table: String, ifExists: Boolean, statements: List[AlterTableStatement])

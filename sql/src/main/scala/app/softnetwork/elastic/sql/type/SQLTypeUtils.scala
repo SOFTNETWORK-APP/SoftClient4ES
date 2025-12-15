@@ -53,6 +53,28 @@ object SQLTypeUtils {
     case _      => "Object"
   }
 
+  def elasticType(sqlType: SQLType): String = sqlType match {
+    case Null           => "null"
+    case TinyInt        => "byte"
+    case SmallInt       => "short"
+    case Int            => "integer"
+    case BigInt         => "long"
+    case Double         => "double"
+    case Real           => "float"
+    case Numeric        => "scaled_float"
+    case Varchar | Text => "text"
+    case Keyword        => "keyword"
+    case Boolean        => "boolean"
+    case Date           => "date"
+    case Time           => "date"
+    case DateTime       => "date"
+    case Timestamp      => "date"
+    case Temporal       => "date"
+    case Array(Struct)  => "nested"
+    case Struct         => "object"
+    case _              => "object"
+  }
+
   def matches(out: SQLType, in: SQLType): Boolean =
     out.typeId == in.typeId ||
     (out.typeId == Temporal.typeId && Set(

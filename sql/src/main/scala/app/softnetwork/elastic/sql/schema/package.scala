@@ -16,8 +16,8 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.schema.{EsField, EsIndexMeta}
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.schema.{Field, Index}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -86,7 +86,7 @@ package object schema {
     }
     def json: String = node.toString
     def processorType: DdlProcessorType
-    def description: String = sql
+    def description: String = sql.trim
     def name: String = processorType.name
     def properties: Map[String, Any]
   }
@@ -347,7 +347,7 @@ package object schema {
     ddlProcessors: Seq[DdlProcessor]
   ) extends Token {
     def sql: String =
-      s"CREATE OR REPLACE ${ddlPipelineType.name} PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql).mkString(", ")})"
+      s"CREATE OR REPLACE ${ddlPipelineType.name} PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql.trim).mkString(", ")})"
 
     def node: ObjectNode = {
       val node = mapper.createObjectNode()
@@ -361,6 +361,27 @@ package object schema {
     }
 
     def json: String = node.toString
+  }
+
+  private[schema] def update(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
+    updates.foreach { case (k, v) =>
+      v match {
+        case Null            => node.putNull(k)
+        case BooleanValue(b) => node.put(k, b)
+        case StringValue(s)  => node.put(k, s)
+        case ByteValue(b)    => node.put(k, b)
+        case ShortValue(s)   => node.put(k, s)
+        case IntValue(i)     => node.put(k, i)
+        case LongValue(l)    => node.put(k, l)
+        case DoubleValue(d)  => node.put(k, d)
+        case FloatValue(f)   => node.put(k, f)
+        case ObjectValue(value) =>
+          if (value.nonEmpty)
+            node.set(k, update(mapper.createObjectNode(), value))
+        case _ => // do nothing
+      }
+    }
+    node
   }
 
   case class DdlColumn(
@@ -385,7 +406,7 @@ package object schema {
       } else {
         ""
       }
-      val scriptOpt = script.map(s => s" SCRIPT AS ($s)").getOrElse("")
+      val scriptOpt = script.map(s => s" SCRIPT AS (${s.script})").getOrElse("")
       s"$name $dataType$fieldsOpt$scriptOpt$notNullOpt$defaultOpt$opts"
     }
 
@@ -397,10 +418,33 @@ package object schema {
           value = dv
         )
       }.toSeq
+
+    def node: ObjectNode = {
+      val root = mapper.createObjectNode()
+      val esType = SQLTypeUtils.elasticType(dataType)
+      root.put("type", esType)
+      defaultValue.foreach { dv =>
+        update(root, Map("null_value" -> dv))
+      }
+      if (multiFields.nonEmpty) {
+        val name =
+          esType match {
+            case "object" | "nested" => "properties"
+            case _                   => "fields"
+          }
+        val fieldsNode = mapper.createObjectNode()
+        multiFields.foreach { field =>
+          fieldsNode.replace(field.name, field.node)
+        }
+        root.set(name, fieldsNode)
+      }
+      update(root, options)
+      root
+    }
   }
 
   object DdlColumn {
-    def apply(field: EsField): DdlColumn = {
+    def apply(field: Field): DdlColumn = {
       DdlColumn(
         name = field.name,
         dataType = SQLTypes(field),
@@ -410,8 +454,9 @@ package object schema {
       )
     }
   }
+
   case class DdlPartition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends Token {
-    def sql: String = s"PARTITION BY $column ($granularity)"
+    def sql: String = s" PARTITION BY $column ($granularity)"
 
     val dateRounding: String = granularity.script.get
 
@@ -447,23 +492,38 @@ package object schema {
     partitionBy: Option[DdlPartition] = None,
     defaultPipeline: Option[String] = None,
     finalPipeline: Option[String] = None,
-    options: Map[String, Value[_]] = Map.empty
+    mappings: Map[String, Value[_]] = Map.empty,
+    settings: Map[String, Value[_]] = Map.empty
   ) extends Token {
     private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
 
     def sql: String = {
-      val opts = if (options.nonEmpty) {
-        s" OPTIONS (${options.map { case (k, v) => s"$k = $v" }.mkString(", ")}) "
-      } else {
-        ""
-      }
-      val cols = columns.map(_.sql).mkString(", ")
+      val opts =
+        if (mappings.nonEmpty || settings.nonEmpty) {
+          val mappingOpts =
+            if (mappings.nonEmpty) {
+              s"mappings = (${mappings.map { case (k, v) => s"$k = $v" }.mkString(", ")})"
+            } else {
+              ""
+            }
+          val settingsOpts =
+            if (settings.nonEmpty) {
+              s"settings = (${mappings.map { case (k, v) => s"$k = $v" }.mkString(", ")})"
+            } else {
+              ""
+            }
+          val separator = if (partitionBy.nonEmpty) "," else ""
+          s"$separator OPTIONS = (${Seq(mappingOpts, settingsOpts).filter(_.nonEmpty).mkString(", ")})"
+        } else {
+          ""
+        }
+      val cols = columns.map(_.sql).mkString(",\n\t")
       val pkStr = if (primaryKey.nonEmpty) {
-        s", PRIMARY KEY (${primaryKey.mkString(", ")})"
+        s",\n\tPRIMARY KEY (${primaryKey.mkString(", ")})\n"
       } else {
         ""
       }
-      s"CREATE OR REPLACE TABLE $name ($cols$pkStr)${partitionBy.getOrElse("")}$opts"
+      s"CREATE OR REPLACE TABLE $name (\n\t$cols$pkStr)${partitionBy.getOrElse("")}$opts"
     }
 
     def ddlProcessors: Seq[DdlProcessor] =
@@ -590,13 +650,54 @@ package object schema {
       ddlPipelineType = DdlPipelineType.Default,
       ddlProcessors = ddlProcessors
     )
+
+    lazy val indexMappings: ObjectNode = {
+      val node = mapper.createObjectNode()
+      val fields = mapper.createObjectNode()
+      columns.foreach { column =>
+        fields.replace(column.name, column.node)
+      }
+      node.set("properties", fields)
+      update(node, mappings)
+      if (primaryKey.nonEmpty || partitionBy.nonEmpty) {
+        val meta = Option(node.get("_meta")).getOrElse(mapper.createObjectNode())
+        if (meta != null && meta.isObject) {
+          val metaObj = meta.asInstanceOf[ObjectNode]
+          if (primaryKey.nonEmpty) {
+            val pkArray = mapper.createArrayNode()
+            primaryKey.foreach(pk => pkArray.add(pk))
+            metaObj.replace("primary_key", pkArray)
+          }
+          partitionBy.foreach { partition =>
+            val partitionObj = mapper.createObjectNode()
+            partitionObj.put("column", partition.column)
+            partitionObj.put("granularity", partition.granularity.script.get)
+            metaObj.replace("partition_by", partitionObj)
+          }
+          node.replace("_meta", metaObj)
+        }
+      }
+      node
+    }
+
+    lazy val indexSettings: ObjectNode = {
+      val node = mapper.createObjectNode()
+      val index = mapper.createObjectNode()
+      update(index, settings)
+      node.set("index", index)
+      node
+    }
+
+    lazy val pipeline: ObjectNode = {
+      ddlPipeline.node
+    }
   }
 
   object DdlTable {
-    def apply(indexMeta: EsIndexMeta): DdlTable = {
+    def apply(index: Index): DdlTable = {
       // 1. Columns from the mapping
       val initialCols: Map[String, DdlColumn] =
-        indexMeta.mapping.fields.map { field =>
+        index.mappings.fields.map { field =>
           val name = field.name
           name -> DdlColumn(
             name = name,
@@ -609,19 +710,19 @@ package object schema {
           )
         }.toMap
 
-      // 2. PK + partition + pipelines from meta
-      var primaryKey: List[String] = indexMeta.ddlMeta.primary_key
-      var partitionBy: Option[DdlPartition] = indexMeta.ddlMeta.partition_by.map { p =>
+      // 2. PK + partition + pipelines from index mappings and settings
+      var primaryKey: List[String] = index.mappings.primaryKey
+      var partitionBy: Option[DdlPartition] = index.mappings.partitionBy.map { p =>
         val granularity = TimeUnit(p.granularity)
         DdlPartition(p.column, granularity)
       }
-      val defaultPipelineName = indexMeta.ddlMeta.default_pipeline
-      val finalPipelineName = indexMeta.ddlMeta.final_pipeline
+      val defaultPipelineName = index.settings.defaultPipeline
+      val finalPipelineName = index.settings.finalPipeline
 
-      // 3. Enrichment from the default pipeline (if provided)
+      // 3. Enrichment from the pipeline (if provided)
       val enrichedCols = scala.collection.mutable.Map.from(initialCols)
 
-      indexMeta.defaultPipeline.foreach { pipeline =>
+      index.pipeline.foreach { pipeline =>
         val processorsNode = pipeline.get("processors")
         if (processorsNode != null && processorsNode.isArray) {
           val processors: Seq[DdlProcessor] =
@@ -656,9 +757,9 @@ package object schema {
         }
       }
 
-      // 4. Construction finale du DdlTable
+      // 4. Final construction of the DdlTable
       DdlTable(
-        name = indexMeta.name,
+        name = index.name,
         columns = enrichedCols.values.toList.sortBy(_.name),
         primaryKey = primaryKey,
         partitionBy = partitionBy,
