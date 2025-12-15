@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.{ObjectValue, Value}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.DdlPartition
@@ -932,12 +933,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val sql =
       """CREATE TABLE IF NOT EXISTS users (
         |  id INT NOT NULL,
-        |  name VARCHAR DEFAULT 'anonymous',
+        |  name VARCHAR FIELDS(raw Keyword) DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
         |  birthdate DATE,
         |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
         |  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
         |  PRIMARY KEY (id)
-        |) PARTITION BY birthdate""".stripMargin
+        |) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false))""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -948,7 +949,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             true,
             false,
             List("id"),
-            Some(DdlPartition("birthdate", TimeUnit.DAYS))
+            Some(DdlPartition("birthdate", TimeUnit.MONTHS)),
+            _
           ) =>
         cols.map(_.name) should contain allOf ("id", "name")
         cols.find(_.name == "id").get.notNull shouldBe true
@@ -969,9 +971,21 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         cols.find(_.name == "ingested_at").get.defaultValue.map(_.value) shouldBe Some(
           "_ingest.timestamp"
         )
+        ct.mappings.get("dynamic").map(_.value) shouldBe Some(false)
+        val sql = ct.ddlTable.sql
+        println(sql)
         val json = ct.ddlTable.ddlPipeline.json
-        print(json)
-        json shouldBe """{"description":"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, PARTITION BY birthdate (DAY), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM-dd"],"ignore_failure":true,"date_rounding":"d","description":"PARTITION BY birthdate (DAY)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        println(json)
+        json shouldBe """{"description":"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M","description":"PARTITION BY birthdate (MONTH)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        val indexMappings = ct.ddlTable.indexMappings
+        println(indexMappings)
+        indexMappings.toString shouldBe "{\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"text\",\"null_value\":\"anonymous\",\"fields\":{\"raw\":{\"type\":\"keyword\"}},\"analyzer\":\"french\",\"search_analyzer\":\"french\"},\"birthdate\":{\"type\":\"date\"},\"age\":{\"type\":\"integer\"},\"ingested_at\":{\"type\":\"date\"}},\"dynamic\":false,\"_meta\":{\"primary_key\":[\"id\"],\"partition_by\":{\"column\":\"birthdate\",\"granularity\":\"M\"}}}"
+        val indexSettings = ct.ddlTable.indexSettings
+        println(indexSettings)
+        indexSettings.toString shouldBe """{"index":{}}"""
+        val pipeline = ct.ddlTable.pipeline
+        println(pipeline)
+        pipeline.toString shouldBe """{"description":"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M","description":"PARTITION BY birthdate (MONTH)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
       case _ => fail("Expected CreateTable")
     }
   }
