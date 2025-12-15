@@ -490,8 +490,6 @@ package object schema {
     columns: List[DdlColumn],
     primaryKey: List[String] = Nil,
     partitionBy: Option[DdlPartition] = None,
-    defaultPipeline: Option[String] = None,
-    finalPipeline: Option[String] = None,
     mappings: Map[String, Value[_]] = Map.empty,
     settings: Map[String, Value[_]] = Map.empty
   ) extends Token {
@@ -651,6 +649,26 @@ package object schema {
       ddlProcessors = ddlProcessors
     )
 
+    lazy val defaultPipeline: String =
+      settings
+        .get("default_pipeline")
+        .map(_.value)
+        .flatMap {
+          case v: String => Some(v)
+          case _         => None
+        }
+        .getOrElse("_none")
+
+    lazy val finalPipeline: String =
+      settings
+        .get("final_pipeline")
+        .map(_.value)
+        .flatMap {
+          case v: String => Some(v)
+          case _         => None
+        }
+        .getOrElse("_none")
+
     lazy val indexMappings: ObjectNode = {
       val node = mapper.createObjectNode()
       val fields = mapper.createObjectNode()
@@ -716,8 +734,6 @@ package object schema {
         val granularity = TimeUnit(p.granularity)
         DdlPartition(p.column, granularity)
       }
-      val defaultPipelineName = index.settings.defaultPipeline
-      val finalPipelineName = index.settings.finalPipeline
 
       // 3. Enrichment from the pipeline (if provided)
       val enrichedCols = scala.collection.mutable.Map.from(initialCols)
@@ -762,9 +778,7 @@ package object schema {
         name = index.name,
         columns = enrichedCols.values.toList.sortBy(_.name),
         primaryKey = primaryKey,
-        partitionBy = partitionBy,
-        defaultPipeline = defaultPipelineName,
-        finalPipeline = finalPipelineName
+        partitionBy = partitionBy
       )
     }
   }

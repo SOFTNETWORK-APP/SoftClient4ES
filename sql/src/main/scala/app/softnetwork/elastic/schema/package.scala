@@ -43,7 +43,8 @@ package object schema {
         Option(node.get("null_value")).flatMap(Value(_)).map(Value(_))
 
       val fields =
-        Option(node.get("fields"))
+        Option(node.get("fields")) // multi-fields
+          .orElse(Option(node.get("properties"))) // object/nested fields
           .map(_.properties().asScala.map { entry =>
             val name = entry.getKey
             val value = entry.getValue
@@ -51,7 +52,8 @@ package object schema {
           }.toList)
           .getOrElse(Nil)
 
-      val options = extractOptions(node, ignoredKeys = Set("type", "null_value", "fields"))
+      val options =
+        extractOptions(node, ignoredKeys = Set("type", "null_value", "fields", "properties"))
 
       Field(
         name = name,
@@ -135,22 +137,7 @@ package object schema {
 
   final case class Settings(
     options: Map[String, Value[_]] = Map.empty
-  ) {
-
-    lazy val defaultPipeline: Option[String] = {
-      options.get("default_pipeline").map(_.value).flatMap {
-        case v: String => Some(v)
-        case _         => None
-      }
-    }
-
-    lazy val finalPipeline: Option[String] = {
-      options.get("final_pipeline").map(_.value).flatMap {
-        case v: String => Some(v)
-        case _         => None
-      }
-    }
-  }
+  )
 
   object Settings {
     def apply(settings: JsonNode): Settings = {
@@ -169,21 +156,7 @@ package object schema {
     mappings: Mappings,
     settings: Settings,
     pipeline: Option[JsonNode] = None
-  ) {
-    lazy val defaultPipeline: Option[String] = {
-      settings.options.get("default_pipeline").map(_.value).flatMap {
-        case v: String => Some(v)
-        case _         => None
-      }
-    }
-
-    lazy val finalPipeline: Option[String] = {
-      settings.options.get("final_pipeline").map(_.value).flatMap {
-        case v: String => Some(v)
-        case _         => None
-      }
-    }
-  }
+  )
 
   object Index {
     def apply(
