@@ -274,7 +274,7 @@ package object schema {
     def json: String = node.toString
   }
 
-  private[schema] def update(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
+  private[schema] def updateNode(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
     updates.foreach { case (k, v) =>
       v match {
         case Null                 => node.putNull(k)
@@ -300,13 +300,13 @@ package object schema {
             case LongValue(l)    => arrayNode.add(l)
             case DoubleValue(d)  => arrayNode.add(d)
             case FloatValue(f)   => arrayNode.add(f)
-            case ObjectValue(o)  => arrayNode.add(update(mapper.createObjectNode(), o))
+            case ObjectValue(o)  => arrayNode.add(updateNode(mapper.createObjectNode(), o))
             case _               => // do nothing
           }
           node.set(k, arrayNode)
         case ObjectValue(value) =>
           if (value.nonEmpty)
-            node.set(k, update(mapper.createObjectNode(), value))
+            node.set(k, updateNode(mapper.createObjectNode(), value))
         case _ => // do nothing
       }
     }
@@ -321,11 +321,28 @@ package object schema {
     defaultValue: Option[Value[_]] = None,
     notNull: Boolean = false,
     comment: Option[String] = None,
-    options: Map[String, Value[_]] = Map.empty
+    options: Map[String, Value[_]] = Map.empty,
+    struct: Option[DdlColumn] = None
   ) extends Token {
+    def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
+    def level: Int = struct.map(_.level + 1).getOrElse(0)
+    def update(struct: Option[DdlColumn] = None): DdlColumn = {
+      val updated = this.copy(struct = struct)
+      updated.copy(
+        multiFields = multiFields.map { field =>
+          field.update(Some(updated))
+        },
+        script = script.map { sc =>
+          sc.copy(
+            column = updated.path,
+            source = sc.source.replace(s"ctx.$name", s"ctx.${updated.path}")
+          )
+        }
+      )
+    }
     def sql: String = {
       val opts = if (options.nonEmpty) {
-        s" OPTIONS (${options.map { case (k, v) => s"$k = ${v.ddl}" }.mkString(", ")}) "
+        s" OPTIONS (${options.map { case (k, v) => s"$k = ${v.ddl}" }.mkString(", ")})"
       } else {
         ""
       }
@@ -333,29 +350,30 @@ package object schema {
       val notNullOpt = if (notNull) " NOT NULL" else ""
       val commentOpt = comment.map(c => s" COMMENT '$c'").getOrElse("")
       val fieldsOpt = if (multiFields.nonEmpty) {
-        s" FIELDS (${multiFields.mkString(", ")})"
+        s" FIELDS (\n\t${multiFields.mkString(s",\n\t")}\n\t)"
       } else {
         ""
       }
       val scriptOpt = script.map(s => s" SCRIPT AS (${s.script})").getOrElse("")
-      s"$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
+      val tabs = "\t" * level
+      s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
-    def ddlProcessors: Seq[DdlProcessor] = script.toSeq ++
+    def ddlProcessors: Seq[DdlProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
         DdlDefaultValueProcessor(
           sql = s"$name DEFAULT $dv",
-          column = name,
+          column = path,
           value = dv
         )
-      }.toSeq
+      }.toSeq ++ multiFields.flatMap(_.ddlProcessors)
 
     def node: ObjectNode = {
       val root = mapper.createObjectNode()
       val esType = SQLTypeUtils.elasticType(dataType)
       root.put("type", esType)
       defaultValue.foreach { dv =>
-        update(root, Map("null_value" -> dv))
+        updateNode(root, Map("null_value" -> dv))
       }
       if (multiFields.nonEmpty) {
         val name =
@@ -376,6 +394,7 @@ package object schema {
               ObjectValue(
                 Map(
                   "sql"      -> StringValue(s.script),
+                  "column"   -> StringValue(path),
                   "painless" -> StringValue(s.source)
                 )
               )
@@ -396,7 +415,7 @@ package object schema {
             ) ++ sql_script.map(st => "script" -> st)
           )
       }
-      update(root, options ++ Map("meta" -> meta))
+      updateNode(root, options ++ Map("meta" -> meta))
       root
     }
   }
@@ -440,6 +459,8 @@ package object schema {
     settings: Map[String, Value[_]] = Map.empty
   ) extends Token {
     private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
+
+    def update(): DdlTable = this.copy(columns = columns.map(_.update()))
 
     def sql: String = {
       val opts =
@@ -626,7 +647,7 @@ package object schema {
         fields.replace(column.name, column.node)
       }
       node.set("properties", fields)
-      update(node, mappings)
+      updateNode(node, mappings)
       if (primaryKey.nonEmpty || partitionBy.nonEmpty) {
         val meta = Option(node.get("_meta")).getOrElse(mapper.createObjectNode())
         if (meta != null && meta.isObject) {
@@ -651,7 +672,7 @@ package object schema {
     lazy val indexSettings: ObjectNode = {
       val node = mapper.createObjectNode()
       val index = mapper.createObjectNode()
-      update(index, settings)
+      updateNode(index, settings)
       node.set("index", index)
       node
     }

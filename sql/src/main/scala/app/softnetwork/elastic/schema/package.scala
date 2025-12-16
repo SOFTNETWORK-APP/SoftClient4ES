@@ -390,7 +390,7 @@ package object schema {
         partitionBy = partitionBy,
         esMappings.options,
         esSettings.options
-      )
+      ).update()
     }
   }
 

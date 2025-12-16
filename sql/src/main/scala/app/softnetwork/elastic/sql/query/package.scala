@@ -376,7 +376,7 @@ package object query {
       partitionBy = partitionBy,
       mappings = mappings,
       settings = settings
-    )
+    ).update()
 
     lazy val ddlPipeline: DdlPipeline = ddlTable.ddlPipeline
 

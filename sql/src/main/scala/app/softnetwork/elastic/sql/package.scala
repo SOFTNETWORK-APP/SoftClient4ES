@@ -842,7 +842,7 @@ package object sql {
 
     lazy val processParamName: String = {
       if (path.nonEmpty)
-        s"ctx['$path']"
+        s"ctx.$path"
       else ""
     }
 

@@ -13,10 +13,10 @@ Create a new table with explicit column definitions or from a `SELECT` query.
 **Syntax:**
 ```sql
 CREATE [OR REPLACE] TABLE [IF NOT EXISTS] table_name (
-  column_name data_type [NOT NULL] [DEFAULT value] [OPTIONS (...)] [FIELDS (...)],
+  column_name data_type [SCRIPT AS (sql) | FIELDS (...)] [DEFAULT value] [NOT NULL] [COMMENT 'comment'] [OPTIONS (...)],
   [... more columns ...],
   [PRIMARY KEY (column1, column2, ...)]
-) [PARTITION BY column_name]
+) [PARTITION BY column_name] OPTIONS ([mappings = (...)] , [settings = (...)] );
 ```
 
 - `FIELDS (...)` can define **multi‑fields** (alternative analyzers for text) or **STRUCT** (nested objects).
@@ -24,9 +24,13 @@ CREATE [OR REPLACE] TABLE [IF NOT EXISTS] table_name (
 **Examples:**
 ```sql
 CREATE TABLE IF NOT EXISTS users (
-  id INT NOT NULL,
-  name VARCHAR DEFAULT 'anonymous'
-);
+  id INT NOT NULL COMMENT 'user identifier',
+  name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
+  birthdate DATE,
+  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+  ingested_at TIMESTAMP DEFAULT _ingest.timestamp, -- special field
+  PRIMARY KEY (id)
+) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false));
 
 CREATE OR REPLACE TABLE users AS SELECT id, name FROM accounts;
 ```
@@ -36,7 +40,9 @@ CREATE OR REPLACE TABLE users AS SELECT id, name FROM accounts;
 ## 📝 Notes
 - **Types**: Supported SQL types include `INT`, `BIGINT`, `VARCHAR`, `BOOLEAN`, `DATE`, `TIMESTAMP`, etc.
 - **Constraints**: `NOT NULL` and `DEFAULT` are supported. Other relational constraints (e.g., `PRIMARY KEY`) are not enforced by Elasticsearch.
+- **SCRIPT AS (sql)**: Defines a scripted column computed at ingestion time.
 - **FIELDS**: Dual purpose — multi‑fields for text analysis and STRUCT for nested data modeling.
+- **Comments**: Column comments can be added via `COMMENT 'text'`.
 - **Options**: Column options can be specified via `OPTIONS (...)`.
 - The **partition key must be of type `DATE`** and the partition column must be explicitly defined in the table schema.
 
@@ -129,8 +135,8 @@ CREATE TABLE docs (
 
 ---
 
-### FIELDS for STRUCT
-`FIELDS (...)` also enables the definition of **STRUCT** types, which represent nested objects with their own fields. This is how you model hierarchical data.
+### FIELDS for STRUCT or NESTED OBJECTS
+`FIELDS (...)` also enables the definition of **STRUCT** types, which may represent either object or nested objects with their own fields. This is how you model hierarchical data.
 
 **Example:**
 ```sql
@@ -143,7 +149,9 @@ CREATE TABLE users (
       street VARCHAR,
       city VARCHAR,
       zip VARCHAR
-    )
+    ),
+    join_date DATE,
+    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
   )
 )
 ```
@@ -151,9 +159,38 @@ CREATE TABLE users (
 - `profile` is a `STRUCT` column containing multiple fields.
 - `address` is a nested `STRUCT` inside `profile`.
 
-This maps naturally to:
-- **Elasticsearch**: `object` or `nested` type.
-- **Avro**: `record`.
+This maps naturally to **Elasticsearch** `object` type.
+
+**Example:**
+```sql
+CREATE TABLE store (
+  id INT NOT NULL,
+  products ARRAY<STRUCT> FIELDS (
+    name VARCHAR NOT NULL,
+    description VARCHAR NOT NULL,
+    price BIGINT NOT NULL
+  )
+)
+```
+
+- `products` is an `ARRAY<STRUCT>` column containing multiple fields.
+
+This maps naturally to **Elasticsearch** `nested` type.
+
+### 📝 Notes
+- The meaning of `FIELDS (...)` depends on the column type:
+  - On `VARCHAR` types, it defines **multi‑fields**.
+  - On `STRUCT`, it defines the **fields of the struct**.
+  - On `ARRAY<STRUCT>`, it defines the **fields of each element**.
+- Sub‑fields defined inside `FIELDS (...)` support the full DDL syntax:
+	- nested `FIELDS`
+  - `SCRIPT AS (sql)` (for scripted sub‑fields)
+	- `DEFAULT`
+	- `NOT NULL`
+	- `COMMENT`
+	- `OPTIONS`
+- Multi‑level nesting is supported.
+- `SCRIPT AS (sql)` can not be used for `ARRAY<STRUCT>`.
 
 ---
 

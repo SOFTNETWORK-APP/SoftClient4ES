@@ -85,9 +85,7 @@ object Parser
     }
 
   def multiFields: PackratParser[List[DdlColumn]] =
-    "FIELDS" ~ start ~ repsep(column, separator) ~ end ^^ { case _ ~ _ ~ cols ~ _ =>
-      cols
-    } | success(Nil)
+    "FIELDS" ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols) | success(Nil)
 
   def ifExists: PackratParser[Boolean] =
     opt("IF" ~ "EXISTS") ^^ {
