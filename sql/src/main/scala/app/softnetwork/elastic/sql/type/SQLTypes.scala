@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.`type`
 
-import app.softnetwork.elastic.schema.Field
+import app.softnetwork.elastic.schema.EsField
 
 object SQLTypes {
   case object Any extends SQLAny { val typeId = "ANY" }
@@ -57,7 +57,7 @@ object SQLTypes {
   def apply(typeName: String): SQLType = typeName.toLowerCase match {
     case "null"                     => Null
     case "boolean"                  => Boolean
-    case "int"                      => Int
+    case "int" | "integer"          => Int
     case "long" | "bigint"          => BigInt
     case "short" | "smallint"       => SmallInt
     case "byte" | "tinyint"         => TinyInt
@@ -74,7 +74,7 @@ object SQLTypes {
     case _                          => Any
   }
 
-  def apply(field: Field): SQLType = field.`type` match {
+  def apply(field: EsField): SQLType = field.`type` match {
     case "null"    => Null
     case "boolean" => Boolean
     case "integer" => Int

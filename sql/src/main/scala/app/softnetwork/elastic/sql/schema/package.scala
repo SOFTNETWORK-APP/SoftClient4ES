@@ -16,16 +16,14 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.schema.{Field, Index}
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import app.softnetwork.elastic.sql.time.TimeUnit
-import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 
 import scala.language.implicitConversions
-import scala.jdk.CollectionConverters._
 
 package object schema {
   val mapper: ObjectMapper = JacksonConfig.objectMapper
@@ -238,93 +236,6 @@ package object schema {
     }
   }
 
-  object DdlProcessor {
-    private val ScriptDescRegex =
-      """^\s*([a-zA-Z0-9_]+)\s([a-zA-Z]+)\s+SCRIPT\s+AS\s*\((.*)\)\s*$""".r
-
-    def apply(node: JsonNode): Option[DdlProcessor] = {
-      val processorType = node.fieldNames().next() // "set", "script", "date_index_name", etc.
-      val props = node.get(processorType)
-
-      processorType match {
-        case "set" =>
-          val field = props.get("field").asText()
-          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
-          val valueNode = props.get("value")
-          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
-
-          if (field == "_id" && desc.startsWith("PRIMARY KEY")) {
-            // DdlPrimaryKeyProcessor
-            // description: "PRIMARY KEY (id)"
-            val inside = desc.stripPrefix("PRIMARY KEY").trim.stripPrefix("(").stripSuffix(")")
-            val cols = inside.split(",").map(_.trim).filter(_.nonEmpty).toSet
-            Some(
-              DdlPrimaryKeyProcessor(
-                sql = desc,
-                column = "_id",
-                value = cols,
-                ignoreFailure = ignoreFailure
-              )
-            )
-          } else if (desc.startsWith(s"$field DEFAULT")) {
-            Some(
-              DdlDefaultValueProcessor(
-                sql = desc,
-                column = field,
-                value = Value(valueNode.asText()),
-                ignoreFailure = ignoreFailure
-              )
-            )
-          } else {
-            None
-          }
-
-        case "script" =>
-          val desc = props.get("description").asText()
-          val lang = props.get("lang").asText()
-          require(lang == "painless", s"Only painless supported, got $lang")
-          val source = props.get("source").asText()
-          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
-
-          desc match {
-            case ScriptDescRegex(col, dataType, script) =>
-              Some(
-                DdlScriptProcessor(
-                  script = script,
-                  column = col,
-                  dataType = SQLTypes(dataType),
-                  source = source,
-                  ignoreFailure = ignoreFailure
-                )
-              )
-            case _ =>
-              None
-          }
-
-        case "date_index_name" =>
-          val field = props.get("field").asText()
-          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
-          val rounding = props.get("date_rounding").asText()
-          val formats = Option(props.get("date_formats"))
-            .map(_.elements().asScala.toList.map(_.asText()))
-            .getOrElse(Nil)
-          val prefix = props.get("index_name_prefix").asText()
-
-          Some(
-            DdlDateIndexNameProcessor(
-              sql = desc,
-              column = field,
-              dateRounding = rounding,
-              dateFormats = formats,
-              prefix = prefix
-            )
-          )
-
-        case _ => None
-      }
-    }
-  }
-
   sealed trait DdlPipelineType {
     def name: String
   }
@@ -366,15 +277,33 @@ package object schema {
   private[schema] def update(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
     updates.foreach { case (k, v) =>
       v match {
-        case Null            => node.putNull(k)
-        case BooleanValue(b) => node.put(k, b)
-        case StringValue(s)  => node.put(k, s)
-        case ByteValue(b)    => node.put(k, b)
-        case ShortValue(s)   => node.put(k, s)
-        case IntValue(i)     => node.put(k, i)
-        case LongValue(l)    => node.put(k, l)
-        case DoubleValue(d)  => node.put(k, d)
-        case FloatValue(f)   => node.put(k, f)
+        case Null                 => node.putNull(k)
+        case BooleanValue(b)      => node.put(k, b)
+        case StringValue(s)       => node.put(k, s)
+        case ByteValue(b)         => node.put(k, b)
+        case ShortValue(s)        => node.put(k, s)
+        case IntValue(i)          => node.put(k, i)
+        case LongValue(l)         => node.put(k, l)
+        case DoubleValue(d)       => node.put(k, d)
+        case FloatValue(f)        => node.put(k, f)
+        case IdValue              => node.put(k, s"${v.value}")
+        case IngestTimestampValue => node.put(k, s"${v.value}")
+        case v: Values[_, _] =>
+          val arrayNode = mapper.createArrayNode()
+          v.values.foreach {
+            case Null            => arrayNode.addNull()
+            case BooleanValue(b) => arrayNode.add(b)
+            case StringValue(s)  => arrayNode.add(s)
+            case ByteValue(b)    => arrayNode.add(b)
+            case ShortValue(s)   => arrayNode.add(s)
+            case IntValue(i)     => arrayNode.add(i)
+            case LongValue(l)    => arrayNode.add(l)
+            case DoubleValue(d)  => arrayNode.add(d)
+            case FloatValue(f)   => arrayNode.add(f)
+            case ObjectValue(o)  => arrayNode.add(update(mapper.createObjectNode(), o))
+            case _               => // do nothing
+          }
+          node.set(k, arrayNode)
         case ObjectValue(value) =>
           if (value.nonEmpty)
             node.set(k, update(mapper.createObjectNode(), value))
@@ -389,25 +318,27 @@ package object schema {
     dataType: SQLType,
     script: Option[DdlScriptProcessor] = None,
     multiFields: List[DdlColumn] = Nil,
-    notNull: Boolean = false,
     defaultValue: Option[Value[_]] = None,
+    notNull: Boolean = false,
+    comment: Option[String] = None,
     options: Map[String, Value[_]] = Map.empty
   ) extends Token {
     def sql: String = {
       val opts = if (options.nonEmpty) {
-        s" OPTIONS (${options.map { case (k, v) => s"$k = $v" }.mkString(", ")}) "
+        s" OPTIONS (${options.map { case (k, v) => s"$k = ${v.ddl}" }.mkString(", ")}) "
       } else {
         ""
       }
+      val defaultOpt = defaultValue.map(v => s" DEFAULT ${v.ddl}").getOrElse("")
       val notNullOpt = if (notNull) " NOT NULL" else ""
-      val defaultOpt = defaultValue.map(v => s" DEFAULT $v").getOrElse("")
+      val commentOpt = comment.map(c => s" COMMENT '$c'").getOrElse("")
       val fieldsOpt = if (multiFields.nonEmpty) {
         s" FIELDS (${multiFields.mkString(", ")})"
       } else {
         ""
       }
       val scriptOpt = script.map(s => s" SCRIPT AS (${s.script})").getOrElse("")
-      s"$name $dataType$fieldsOpt$scriptOpt$notNullOpt$defaultOpt$opts"
+      s"$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
     def ddlProcessors: Seq[DdlProcessor] = script.toSeq ++
@@ -438,20 +369,35 @@ package object schema {
         }
         root.set(name, fieldsNode)
       }
-      update(root, options)
+      val sql_script =
+        script match {
+          case Some(s) =>
+            Some(
+              ObjectValue(
+                Map(
+                  "sql"      -> StringValue(s.script),
+                  "painless" -> StringValue(s.source)
+                )
+              )
+            )
+          case _ => None
+        }
+      val meta = options.get("meta") match {
+        case Some(ObjectValue(value)) =>
+          ObjectValue(
+            value ++ Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
+              "comment" -> StringValue(ct)
+            ) ++ sql_script.map(st => "script" -> st)
+          )
+        case _ =>
+          ObjectValue(
+            Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
+              "comment" -> StringValue(ct)
+            ) ++ sql_script.map(st => "script" -> st)
+          )
+      }
+      update(root, options ++ Map("meta" -> meta))
       root
-    }
-  }
-
-  object DdlColumn {
-    def apply(field: Field): DdlColumn = {
-      DdlColumn(
-        name = field.name,
-        dataType = SQLTypes(field),
-        multiFields = field.fields.map(apply),
-        defaultValue = field.null_value,
-        options = field.options
-      )
     }
   }
 
@@ -500,13 +446,17 @@ package object schema {
         if (mappings.nonEmpty || settings.nonEmpty) {
           val mappingOpts =
             if (mappings.nonEmpty) {
-              s"mappings = (${mappings.map { case (k, v) => s"$k = $v" }.mkString(", ")})"
+              s"mappings = (${mappings
+                .map { case (k, v) =>
+                  s"$k = ${v.ddl}"
+                }
+                .mkString(", ")})"
             } else {
               ""
             }
           val settingsOpts =
             if (settings.nonEmpty) {
-              s"settings = (${mappings.map { case (k, v) => s"$k = $v" }.mkString(", ")})"
+              s"settings = (${mappings.map { case (k, v) => s"$k = ${v.ddl}" }.mkString(", ")})"
             } else {
               ""
             }
@@ -711,75 +661,4 @@ package object schema {
     }
   }
 
-  object DdlTable {
-    def apply(index: Index): DdlTable = {
-      // 1. Columns from the mapping
-      val initialCols: Map[String, DdlColumn] =
-        index.mappings.fields.map { field =>
-          val name = field.name
-          name -> DdlColumn(
-            name = name,
-            dataType = SQLTypes(field),
-            script = None,
-            multiFields = field.fields.map(DdlColumn(_)),
-            notNull = false, // TODO add required
-            defaultValue = field.null_value,
-            options = field.options
-          )
-        }.toMap
-
-      // 2. PK + partition + pipelines from index mappings and settings
-      var primaryKey: List[String] = index.mappings.primaryKey
-      var partitionBy: Option[DdlPartition] = index.mappings.partitionBy.map { p =>
-        val granularity = TimeUnit(p.granularity)
-        DdlPartition(p.column, granularity)
-      }
-
-      // 3. Enrichment from the pipeline (if provided)
-      val enrichedCols = scala.collection.mutable.Map.from(initialCols)
-
-      index.pipeline.foreach { pipeline =>
-        val processorsNode = pipeline.get("processors")
-        if (processorsNode != null && processorsNode.isArray) {
-          val processors: Seq[DdlProcessor] =
-            processorsNode.elements().asScala.toSeq.flatMap(DdlProcessor(_))
-
-          processors.foreach {
-            case p: DdlScriptProcessor =>
-              val col = p.column
-              enrichedCols.get(col).foreach { c =>
-                enrichedCols.update(col, c.copy(script = Some(p)))
-              }
-
-            case p: DdlDefaultValueProcessor =>
-              val col = p.column
-              enrichedCols.get(col).foreach { c =>
-                enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))
-              }
-
-            case p: DdlDateIndexNameProcessor =>
-              if (partitionBy.isEmpty) {
-                val granularity = TimeUnit(p.dateRounding)
-                partitionBy = Some(DdlPartition(p.column, granularity))
-              }
-
-            case p: DdlPrimaryKeyProcessor =>
-              if (primaryKey.isEmpty) {
-                primaryKey = p.value.toList
-              }
-
-            case _ => // ignore others (rename/remove...) ou gère-les si tu veux les remonter en DDL
-          }
-        }
-      }
-
-      // 4. Final construction of the DdlTable
-      DdlTable(
-        name = index.name,
-        columns = enrichedCols.values.toList.sortBy(_.name),
-        primaryKey = primaryKey,
-        partitionBy = partitionBy
-      )
-    }
-  }
 }

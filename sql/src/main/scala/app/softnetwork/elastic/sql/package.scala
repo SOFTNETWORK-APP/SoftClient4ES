@@ -288,6 +288,7 @@ package object sql {
       )
 
     override def nullable: Boolean = false
+    def ddl: String = sql
   }
 
   object Value {
@@ -298,19 +299,20 @@ package object sql {
         case c: Char    => CharValue(c)
         case s: String =>
           s match {
-            case "null"              => Null
-            case "_id"               => IdValue
-            case "_ingest.timestamp" => IngestTimestampValue
-            case _                   => StringValue(s)
+            case "null"                                        => Null
+            case "_id" | "{{_id]]"                             => IdValue
+            case "_ingest.timestamp" | "{{_ingest.timestamp}}" => IngestTimestampValue
+            case _                                             => StringValue(s)
           }
-        case b: Byte   => ByteValue(b)
-        case s: Short  => ShortValue(s)
-        case i: Int    => IntValue(i)
-        case l: Long   => LongValue(l)
-        case f: Float  => FloatValue(f)
-        case d: Double => DoubleValue(d)
-        case a: Array[T] =>
-          val values = a.toSeq.map(apply)
+        case b: Byte     => ByteValue(b)
+        case s: Short    => ShortValue(s)
+        case i: Int      => IntValue(i)
+        case l: Long     => LongValue(l)
+        case f: Float    => FloatValue(f)
+        case d: Double   => DoubleValue(d)
+        case a: Array[T] => apply(a.toSeq)
+        case a: Seq[T] =>
+          val values = a.map(apply)
           values.headOption match {
             case Some(_: StringValue) =>
               StringValues(values.asInstanceOf[Seq[StringValue]]).asInstanceOf[Values[R, T]]
@@ -381,9 +383,12 @@ package object sql {
   case class ObjectValue(override val value: Map[String, Value[_]])
       extends Value[Map[String, Value[_]]](value) {
     override def sql: String = value
-      .map { case (k, v) => s""""$k" = ${v.sql}""" }
+      .map { case (k, v) => s"""$k = ${v.sql}""" }
       .mkString("(", ", ", ")")
     override def baseType: SQLType = SQLTypes.Struct
+    override def ddl: String = value
+      .map { case (k, v) => s"""$k: ${v.ddl}""" }
+      .mkString("(", ", ", ")")
   }
 
   case object Null extends Value[Null](null) with TokenRegex {
@@ -413,12 +418,15 @@ package object sql {
   case class StringValue(override val value: String) extends Value[String](value) {
     override def sql: String = s"""'$value'"""
     override def baseType: SQLType = SQLTypes.Varchar
+
+    override def ddl: String = value
   }
 
   case object IdValue extends Value[String]("_id") with TokenRegex {
     override def sql: String = value
     override def painless(context: Option[PainlessContext]): String = s"{{$value}}"
     override def baseType: SQLType = SQLTypes.Varchar
+    override def ddl: String = value
   }
 
   case object IngestTimestampValue extends Value[String]("_ingest.timestamp") with TokenRegex {
@@ -426,6 +434,7 @@ package object sql {
     override def painless(context: Option[PainlessContext]): String =
       s"{{$value}}"
     override def baseType: SQLType = SQLTypes.Timestamp
+    override def ddl: String = value
   }
 
   sealed abstract class NumericValue[T: Numeric](override val value: T) extends Value[T](value) {
@@ -553,6 +562,8 @@ package object sql {
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
+
+    override def ddl: String = s"[${values.map(_.ddl).mkString(",")}]"
   }
 
   case class StringValues(override val values: Seq[StringValue])

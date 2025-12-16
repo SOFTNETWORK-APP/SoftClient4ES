@@ -1,9 +1,10 @@
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.schema.EsIndex
 import app.softnetwork.elastic.sql.{ObjectValue, Value}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.DdlPartition
+import app.softnetwork.elastic.sql.schema.{mapper, DdlPartition}
 import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -932,8 +933,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parse CREATE TABLE if not exists" in {
     val sql =
       """CREATE TABLE IF NOT EXISTS users (
-        |  id INT NOT NULL,
-        |  name VARCHAR FIELDS(raw Keyword) DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
+        |  id INT NOT NULL COMMENT 'user identifier',
+        |  name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
         |  birthdate DATE,
         |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
         |  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
@@ -979,13 +980,29 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         json shouldBe """{"description":"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M","description":"PARTITION BY birthdate (MONTH)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
         val indexMappings = ct.ddlTable.indexMappings
         println(indexMappings)
-        indexMappings.toString shouldBe "{\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"text\",\"null_value\":\"anonymous\",\"fields\":{\"raw\":{\"type\":\"keyword\"}},\"analyzer\":\"french\",\"search_analyzer\":\"french\"},\"birthdate\":{\"type\":\"date\"},\"age\":{\"type\":\"integer\"},\"ingested_at\":{\"type\":\"date\"}},\"dynamic\":false,\"_meta\":{\"primary_key\":[\"id\"],\"partition_by\":{\"column\":\"birthdate\",\"granularity\":\"M\"}}}"
+        indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer","meta":{"not_null":true,"comment":"user identifier"}},"name":{"type":"text","null_value":"anonymous","fields":{"raw":{"type":"keyword","meta":{"not_null":false,"comment":"sortable"}}},"analyzer":"french","search_analyzer":"french","meta":{"not_null":false}},"birthdate":{"type":"date","meta":{"not_null":false}},"age":{"type":"integer","meta":{"not_null":false,"script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","painless":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)"}}},"ingested_at":{"type":"date","null_value":"_ingest.timestamp","meta":{"not_null":false}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"}}}"""
         val indexSettings = ct.ddlTable.indexSettings
         println(indexSettings)
         indexSettings.toString shouldBe """{"index":{}}"""
         val pipeline = ct.ddlTable.pipeline
         println(pipeline)
         pipeline.toString shouldBe """{"description":"CREATE OR REPLACE DEFAULT PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx['birthdate']; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M","description":"PARTITION BY birthdate (MONTH)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        // Reconstruct EsIndex
+        val mappings = mapper.createObjectNode()
+        mappings.set("mappings", indexMappings)
+        val settings = mapper.createObjectNode()
+        settings.set("settings", indexSettings)
+        val esIndex = EsIndex(
+          name = "users",
+          mappings = mappings,
+          settings = settings,
+          pipeline = None
+        )
+        val ddlTable = esIndex.ddlTable
+        println(s"""esIndex ddl -> ${ddlTable.sql}""")
+        println(s"""esIndex mappings -> ${ddlTable.indexMappings.toString}""")
+        println(s"""esIndex settings -> ${ddlTable.indexSettings.toString}""")
+        println(s"""esIndex pipeline -> ${ddlTable.pipeline.toString}""")
       case _ => fail("Expected CreateTable")
     }
   }

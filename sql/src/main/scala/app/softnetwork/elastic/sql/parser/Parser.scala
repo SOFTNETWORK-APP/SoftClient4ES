@@ -117,6 +117,12 @@ object Parser
       case None        => None
     }
 
+  def comment: PackratParser[Option[String]] =
+    opt("COMMENT" ~ literal) ^^ {
+      case Some(_ ~ v) => Some(v.value)
+      case None        => None
+    }
+
   def script: PackratParser[PainlessScript] =
     ("SCRIPT" ~ "AS") ~ start ~ (identifierWithArithmeticExpression |
     identifierWithTransformation |
@@ -124,9 +130,9 @@ object Parser
     identifierWithFunction) ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
 
   def column: PackratParser[DdlColumn] =
-    ident ~ extension_type ~ (script | multiFields) ~ notNull ~ defaultVal ~ (options | success(
+    ident ~ extension_type ~ (script | multiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       Map.empty[String, Value[_]]
-    )) ^^ { case name ~ dt ~ mfs ~ nn ~ dv ~ opts =>
+    )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
       mfs match {
         case script: PainlessScript =>
           val ctx = PainlessContext(Processor)
@@ -154,12 +160,13 @@ object Parser
               )
             ),
             Nil,
-            nn,
             dv,
+            nn,
+            ct,
             opts
           )
         case cols: List[DdlColumn] =>
-          DdlColumn(name, dt, None, cols, nn, dv, opts)
+          DdlColumn(name, dt, None, cols, dv, nn, ct, opts)
       }
     }
 
