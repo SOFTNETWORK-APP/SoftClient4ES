@@ -23,6 +23,7 @@ import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 
+import java.util.UUID
 import scala.language.implicitConversions
 
 package object schema {
@@ -48,9 +49,12 @@ package object schema {
     case object DateIndexName extends DdlProcessorType {
       def name: String = "date_index_name"
     }
+    def apply(n: String): DdlProcessorType = new DdlProcessorType {
+      override def name: String = n
+    }
   }
 
-  sealed trait DdlProcessor extends Token {
+  sealed trait DdlProcessor extends DdlToken {
     def column: String
     def ignoreFailure: Boolean
     final def node: ObjectNode = {
@@ -82,11 +86,88 @@ package object schema {
       node.set(processorType.name, props)
       node
     }
-    def json: String = node.toString
+    def json: String = mapper.writeValueAsString(node)
     def processorType: DdlProcessorType
     def description: String = sql.trim
     def name: String = processorType.name
     def properties: Map[String, Any]
+
+    private def normalizeValue(v: Any): Any = v match {
+      case s: String     => s.trim
+      case b: Boolean    => b
+      case i: Int        => i
+      case l: Long       => l
+      case d: Double     => d
+      case o: ObjectNode => mapper.writeValueAsString(o) // canonical JSON
+      case seq: Seq[_]   => seq.map(normalizeValue) // recursive
+      case other         => other
+    }
+
+    private def normalizeProperties(): Map[String, Any] = {
+      properties
+        .filterNot { case (k, _) => k == "description" } // we should not compare description
+        .toSeq
+        .sortBy(_._1) // order properties by key
+        .map { case (k, v) => (k, normalizeValue(v)) }
+        .toMap
+    }
+
+    def diff(to: DdlProcessor): Option[ProcessorDiff] = {
+
+      val from = this
+
+      // 1. Diff of the type
+      val typeChanged: Option[ProcessorTypeChanged] =
+        if (from.processorType != to.processorType)
+          Some(ProcessorTypeChanged(from.processorType, to.processorType))
+        else
+          None
+
+      // 2. Diff of the properties
+      val fromProps = from.normalizeProperties()
+      val toProps = to.normalizeProperties()
+
+      val allKeys = fromProps.keySet ++ toProps.keySet
+
+      val propertyDiffs: List[ProcessorPropertyDiff] =
+        allKeys.toList.flatMap { key =>
+          (fromProps.get(key), toProps.get(key)) match {
+
+            case (None, Some(v)) =>
+              Some(ProcessorPropertyAdded(key, v))
+
+            case (Some(_), None) =>
+              Some(ProcessorPropertyRemoved(key))
+
+            case (Some(v1), Some(v2)) if v1 != v2 =>
+              Some(ProcessorPropertyChanged(key, v1, v2))
+
+            case _ =>
+              None
+          }
+        }
+
+      // 3. If nothing has changed → None
+      if (typeChanged.isEmpty && propertyDiffs.isEmpty)
+        None
+      else
+        Some(ProcessorDiff(typeChanged, propertyDiffs))
+    }
+
+    override def ddl: String = s"$column ${processorType.name.toUpperCase} ${Value(properties).ddl}"
+  }
+
+  case class GenericProcessor(processorType: DdlProcessorType, properties: Map[String, Any])
+      extends DdlProcessor {
+    override def sql: String = ddl
+    override def column: String = properties.get("field") match {
+      case Some(s: String) => s
+      case _               => UUID.randomUUID().toString
+    }
+    override def ignoreFailure: Boolean = properties.get("ignore_failure") match {
+      case Some(b: Boolean) => b
+      case _                => false
+    }
   }
 
   case class DdlScriptProcessor(
@@ -96,13 +177,13 @@ package object schema {
     source: String,
     ignoreFailure: Boolean = true
   ) extends DdlProcessor {
-    override def sql: SQL = s"$column $dataType SCRIPT AS ($script)"
+    override def sql: String = s"$column $dataType SCRIPT AS ($script)"
 
     override def baseType: SQLType = dataType
 
     def processorType: DdlProcessorType = DdlProcessorType.Script
 
-    override def properties: Map[SQL, Any] = Map(
+    override def properties: Map[String, Any] = Map(
       "description"    -> description,
       "lang"           -> "painless",
       "source"         -> source,
@@ -121,7 +202,7 @@ package object schema {
 
     def sql: String = s"$column RENAME TO $newName"
 
-    override def properties: Map[SQL, Any] = Map(
+    override def properties: Map[String, Any] = Map(
       "description"    -> description,
       "field"          -> column,
       "target_field"   -> newName,
@@ -139,7 +220,7 @@ package object schema {
   ) extends DdlProcessor {
     def processorType: DdlProcessorType = DdlProcessorType.Remove
 
-    override def properties: Map[SQL, Any] = Map(
+    override def properties: Map[String, Any] = Map(
       "description"    -> description,
       "field"          -> column,
       "ignore_failure" -> ignoreFailure,
@@ -158,7 +239,7 @@ package object schema {
   ) extends DdlProcessor {
     def processorType: DdlProcessorType = DdlProcessorType.Set
 
-    override def properties: Map[SQL, Any] = Map(
+    override def properties: Map[String, Any] = Map(
       "description"        -> description,
       "field"              -> column,
       "value"              -> value.mkString("{{", separator, "}}"),
@@ -183,7 +264,7 @@ package object schema {
         s"""ctx.$column == null"""
     }
 
-    override def properties: Map[SQL, Any] = Map(
+    override def properties: Map[String, Any] = Map(
       "description" -> description,
       "field"       -> column,
       "value" -> {
@@ -208,7 +289,7 @@ package object schema {
   ) extends DdlProcessor {
     def processorType: DdlProcessorType = DdlProcessorType.DateIndexName
 
-    override def properties: Map[SQL, Any] = Map(
+    override def properties: Map[String, Any] = Map(
       "description"       -> description,
       "field"             -> column,
       "date_rounding"     -> dateRounding,
@@ -256,9 +337,9 @@ package object schema {
     name: String,
     ddlPipelineType: DdlPipelineType,
     ddlProcessors: Seq[DdlProcessor]
-  ) extends Token {
+  ) extends DdlToken {
     def sql: String =
-      s"CREATE OR REPLACE ${ddlPipelineType.name} PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql.trim).mkString(", ")})"
+      s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql.trim).mkString(", ")})"
 
     def node: ObjectNode = {
       val node = mapper.createObjectNode()
@@ -271,7 +352,47 @@ package object schema {
       node
     }
 
-    def json: String = node.toString
+    override def ddl: String =
+      s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.ddl.trim).mkString(", ")})"
+
+    def json: String = mapper.writeValueAsString(node)
+
+    def diff(pipeline: DdlPipeline): List[PipelineDiff] = {
+
+      val actual = this.ddlProcessors
+
+      val desired = pipeline.ddlProcessors
+
+      // 1. Index processors by logical key
+      def key(p: DdlProcessor) = (p.processorType, p.column)
+
+      val desiredMap = desired.map(p => key(p) -> p).toMap
+      val actualMap = actual.map(p => key(p) -> p).toMap
+
+      val diffs = scala.collection.mutable.ListBuffer[PipelineDiff]()
+
+      // 2. Added processors
+      for ((k, p) <- desiredMap if !actualMap.contains(k)) {
+        diffs += ProcessorAdded(p)
+      }
+
+      // 3. Removed processors
+      for ((k, p) <- actualMap if !desiredMap.contains(k)) {
+        diffs += ProcessorRemoved(p)
+      }
+
+      // 4. Modified processors
+      for ((k, from) <- actualMap if desiredMap.contains(k)) {
+        val to = desiredMap(k)
+        from.diff(to) match {
+          case Some(d) => diffs += ProcessorChanged(from, to, d)
+          case None    => // identical → nothing
+        }
+      }
+
+      // 5. Optional: detect reordering for processors where order matters
+      diffs.toList
+    }
   }
 
   private[schema] def updateNode(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
@@ -323,30 +444,60 @@ package object schema {
     comment: Option[String] = None,
     options: Map[String, Value[_]] = Map.empty,
     struct: Option[DdlColumn] = None
-  ) extends Token {
+  ) extends DdlToken {
     def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
-    def level: Int = struct.map(_.level + 1).getOrElse(0)
+    private def level: Int = struct.map(_.level + 1).getOrElse(0)
     def update(struct: Option[DdlColumn] = None): DdlColumn = {
       val updated = this.copy(struct = struct)
-      updated.copy(
-        multiFields = multiFields.map { field =>
-          field.update(Some(updated))
-        },
-        script = script.map { sc =>
+      val updated_script =
+        script.map { sc =>
           sc.copy(
             column = updated.path,
             source = sc.source.replace(s"ctx.$name", s"ctx.${updated.path}")
           )
         }
+      val sql_script: Option[ObjectValue] =
+        updated_script match {
+          case Some(s) =>
+            Some(
+              ObjectValue(
+                Map(
+                  "sql"      -> StringValue(s.script),
+                  "column"   -> StringValue(updated.path),
+                  "painless" -> StringValue(s.source)
+                )
+              )
+            )
+          case _ => None
+        }
+      updated.copy(
+        multiFields = multiFields.map { field =>
+          field.update(Some(updated))
+        },
+        script = updated_script,
+        options = options ++ Map(
+          "meta" -> ObjectValue(
+            options.get("meta") match {
+              case Some(ObjectValue(value)) =>
+                value ++ Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
+                  "comment" -> StringValue(ct)
+                ) ++ sql_script.map(st => "script" -> st)
+              case _ =>
+                Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
+                  "comment" -> StringValue(ct)
+                ) ++ sql_script.map(st => "script" -> st)
+            }
+          )
+        )
       )
     }
     def sql: String = {
       val opts = if (options.nonEmpty) {
-        s" OPTIONS (${options.map { case (k, v) => s"$k = ${v.ddl}" }.mkString(", ")})"
+        s" OPTIONS (${options.map { case (k, v) => s"$k = ${v.sql}" }.mkString(", ")})"
       } else {
         ""
       }
-      val defaultOpt = defaultValue.map(v => s" DEFAULT ${v.ddl}").getOrElse("")
+      val defaultOpt = defaultValue.map(v => s" DEFAULT ${v.sql}").getOrElse("")
       val notNullOpt = if (notNull) " NOT NULL" else ""
       val commentOpt = comment.map(c => s" COMMENT '$c'").getOrElse("")
       val fieldsOpt = if (multiFields.nonEmpty) {
@@ -362,7 +513,7 @@ package object schema {
     def ddlProcessors: Seq[DdlProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
         DdlDefaultValueProcessor(
-          sql = s"$name DEFAULT $dv",
+          sql = s"$path DEFAULT $dv",
           column = path,
           value = dv
         )
@@ -387,36 +538,84 @@ package object schema {
         }
         root.set(name, fieldsNode)
       }
-      val sql_script =
-        script match {
-          case Some(s) =>
-            Some(
-              ObjectValue(
-                Map(
-                  "sql"      -> StringValue(s.script),
-                  "column"   -> StringValue(path),
-                  "painless" -> StringValue(s.source)
-                )
-              )
-            )
-          case _ => None
-        }
-      val meta = options.get("meta") match {
-        case Some(ObjectValue(value)) =>
-          ObjectValue(
-            value ++ Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
-              "comment" -> StringValue(ct)
-            ) ++ sql_script.map(st => "script" -> st)
-          )
-        case _ =>
-          ObjectValue(
-            Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
-              "comment" -> StringValue(ct)
-            ) ++ sql_script.map(st => "script" -> st)
-          )
-      }
-      updateNode(root, options ++ Map("meta" -> meta))
+      updateNode(root, options)
       root
+    }
+
+    def diff(desired: DdlColumn, parent: Option[DdlColumn] = None): List[ColumnDiff] = {
+      val actual = this
+      val diffs = scala.collection.mutable.ListBuffer[ColumnDiff]()
+
+      // 1. Type
+      if (SQLTypeUtils.elasticType(actual.dataType) != SQLTypeUtils.elasticType(desired.dataType))
+        diffs += ColumnTypeChanged(path, actual.dataType, desired.dataType)
+
+      // 2. Default
+      (actual.defaultValue, desired.defaultValue) match {
+        case (None, Some(v)) => diffs += ColumnDefaultSet(path, v)
+        case (Some(_), None) => diffs += ColumnDefaultRemoved(path)
+        case (Some(a), Some(b)) if a != b =>
+          diffs += ColumnDefaultSet(path, b)
+        case _ =>
+      }
+
+      // 3. Script
+      (actual.script, desired.script) match {
+        case (None, Some(s)) => diffs += ColumnScriptSet(path, s)
+        case (Some(_), None) => diffs += ColumnScriptRemoved(path)
+        case (Some(a), Some(b)) if a.sql != b.sql =>
+          diffs += ColumnScriptSet(path, b)
+        case _ =>
+      }
+
+      // 4. Comment
+      (actual.comment, desired.comment) match {
+        case (None, Some(c)) => diffs += ColumnCommentSet(path, c)
+        case (Some(_), None) => diffs += ColumnCommentRemoved(path)
+        case (Some(a), Some(b)) if a != b =>
+          diffs += ColumnCommentSet(path, b)
+        case _ =>
+      }
+
+      // 5. Not Null
+      if (actual.notNull != desired.notNull) {
+        if (desired.notNull) diffs += ColumnNotNullSet(path)
+        else diffs += ColumnNotNullRemoved(path)
+      }
+
+      // 6. Options
+      val allOptions = actual.options.keySet ++ desired.options.keySet
+      for (key <- allOptions) {
+        (actual.options.get(key), desired.options.get(key)) match {
+          case (None, Some(v)) => diffs += ColumnOptionSet(path, key, v)
+          case (Some(_), None) => diffs += ColumnOptionRemoved(path, key)
+          case (Some(a), Some(b)) if a != b =>
+            diffs += ColumnOptionSet(path, key, b)
+          case _ =>
+        }
+      }
+
+      // 7. STRUCT / multi-fields
+      val actualFields = actual.multiFields.map(f => f.name -> f).toMap
+      val desiredFields = desired.multiFields.map(f => f.name -> f).toMap
+
+      // 7.1. Fields added
+      for ((name, f) <- desiredFields if !actualFields.contains(name)) {
+        diffs += FieldAdded(path, f)
+      }
+
+      // 7.2. Fields removed
+      for ((name, f) <- actualFields if !desiredFields.contains(name)) {
+        diffs += FieldRemoved(path, name)
+      }
+
+      // 7.3. Fields modified
+      for ((name, a) <- actualFields if desiredFields.contains(name)) {
+        val d = desiredFields(name)
+        diffs ++= a.diff(d, Some(desired))
+      }
+
+      diffs.toList
     }
   }
 
@@ -456,7 +655,8 @@ package object schema {
     primaryKey: List[String] = Nil,
     partitionBy: Option[DdlPartition] = None,
     mappings: Map[String, Value[_]] = Map.empty,
-    settings: Map[String, Value[_]] = Map.empty
+    settings: Map[String, Value[_]] = Map.empty,
+    processors: Seq[DdlProcessor] = Seq.empty
   ) extends Token {
     private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
 
@@ -744,7 +944,7 @@ package object schema {
 
     }
 
-    override def validate(): Either[SQL, Unit] = {
+    override def validate(): Either[String, Unit] = {
       var errors = Seq[String]()
       // check that primary key columns exist
       primaryKey.foreach { pk =>
@@ -761,11 +961,15 @@ package object schema {
       if (errors.isEmpty) Right(()) else Left(errors.mkString("\n"))
     }
 
-    lazy val ddlPipeline: DdlPipeline = DdlPipeline(
-      name = s"${name}_ddl_default_pipeline",
-      ddlPipelineType = DdlPipelineType.Default,
-      ddlProcessors = ddlProcessors
-    )
+    lazy val ddlPipeline: DdlPipeline = {
+      val processorsFromColumns = ddlProcessors.map(p => p.column -> p).toMap
+      DdlPipeline(
+        name = s"${name}_ddl_default_pipeline",
+        ddlPipelineType = DdlPipelineType.Default,
+        ddlProcessors =
+          ddlProcessors ++ processors.filterNot(p => processorsFromColumns.contains(p.column))
+      )
+    }
 
     lazy val defaultPipeline: String =
       settings
@@ -826,6 +1030,73 @@ package object schema {
 
     lazy val pipeline: ObjectNode = {
       ddlPipeline.node
+    }
+
+    def diff(desired: DdlTable): DdlTableDiff = {
+      val actual = this.update()
+      val desiredUpdated = desired.update()
+
+      val columnDiffs = scala.collection.mutable.ListBuffer[ColumnDiff]()
+
+      // 1. Columns added
+      val actualCols = actual.cols
+      val desiredCols = desiredUpdated.cols
+
+      for ((name, col) <- desiredCols if !actualCols.contains(name)) {
+        columnDiffs += ColumnAdded(col)
+      }
+
+      // 2. Columns removed
+      for ((name, col) <- actualCols if !desiredCols.contains(name)) {
+        columnDiffs += ColumnRemoved(col.name)
+      }
+
+      // 3. Columns modified
+      for ((name, a) <- actualCols if desiredCols.contains(name)) {
+        val d = desiredCols(name)
+        columnDiffs ++= a.diff(d)
+      }
+
+      // 4. Mappings
+      val mappingDiffs = scala.collection.mutable.ListBuffer[MappingDiff]()
+      val allMappings = actual.mappings.keySet ++ desiredUpdated.mappings.keySet
+      for (key <- allMappings.filterNot(_ == "_meta") /*FIXME*/ ) {
+        (actual.mappings.get(key), desiredUpdated.mappings.get(key)) match {
+          case (None, Some(v)) => mappingDiffs += MappingSet(key, v)
+          case (Some(_), None) => mappingDiffs += MappingRemoved(key)
+          case (Some(a), Some(b)) if a != b =>
+            mappingDiffs += MappingSet(key, b)
+          case _ =>
+        }
+      }
+
+      // 5. Settings
+      val settingDiffs = scala.collection.mutable.ListBuffer[SettingDiff]()
+      val allSettings = actual.settings.keySet ++ desiredUpdated.settings.keySet
+      for (key <- allSettings) {
+        (actual.settings.get(key), desiredUpdated.settings.get(key)) match {
+          case (None, Some(v)) => settingDiffs += SettingSet(key, v)
+          case (Some(_), None) => settingDiffs += SettingRemoved(key)
+          case (Some(a), Some(b)) if a != b =>
+            settingDiffs += SettingSet(key, b)
+          case _ =>
+        }
+      }
+
+      // 6. Pipeline
+      val pipelineDiffs = scala.collection.mutable.ListBuffer[PipelineDiff]()
+      val actualPipeline = actual.ddlPipeline
+      val desiredPipeline = desiredUpdated.ddlPipeline
+      actualPipeline.diff(desiredPipeline).foreach { d =>
+        pipelineDiffs += d
+      }
+
+      DdlTableDiff(
+        columns = columnDiffs.toList,
+        mappings = mappingDiffs.toList,
+        settings = settingDiffs.toList,
+        pipeline = pipelineDiffs.toList
+      )
     }
   }
 

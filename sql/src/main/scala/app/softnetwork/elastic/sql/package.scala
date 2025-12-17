@@ -72,6 +72,10 @@ package object sql {
     def shouldBeScripted: Boolean = false
   }
 
+  trait DdlToken extends Token {
+    def ddl: String = sql
+  }
+
   trait TokenValue extends Token {
     def value: Any
   }
@@ -270,7 +274,7 @@ package object sql {
   case object Distinct extends Expr("DISTINCT") with TokenRegex
 
   abstract class Value[+T](val value: T)
-      extends Token
+      extends DdlToken
       with PainlessScript
       with FunctionWithValue[T] {
     override def painless(context: Option[PainlessContext]): String =
@@ -288,7 +292,6 @@ package object sql {
       )
 
     override def nullable: Boolean = false
-    def ddl: String = sql
   }
 
   object Value {
@@ -387,7 +390,7 @@ package object sql {
       .mkString("(", ", ", ")")
     override def baseType: SQLType = SQLTypes.Struct
     override def ddl: String = value
-      .map { case (k, v) => s"""$k: ${v.ddl}""" }
+      .map { case (k, v) => s"""$k = ${v.ddl}""" }
       .mkString("(", ", ", ")")
   }
 
@@ -419,7 +422,7 @@ package object sql {
     override def sql: String = s"""'$value'"""
     override def baseType: SQLType = SQLTypes.Varchar
 
-    override def ddl: String = value
+    override def ddl: String = s""""$value""""
   }
 
   case object IdValue extends Value[String]("_id") with TokenRegex {

@@ -585,6 +585,17 @@ package object query {
     override def sql: String =
       s"DROP SETTING $optionKey"
   }
+  case class AddTableProcessor(processor: DdlProcessor) extends AlterTableStatement {
+    override def sql: String = s"ADD PROCESSOR ${processor.sql}"
+    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
+  }
+  case class DropTableProcessor(column: String) extends AlterTableStatement {
+    override def sql: String = s"DROP PROCESSOR $column"
+  }
+  case class AlterTableProcessor(processor: DdlProcessor) extends AlterTableStatement {
+    override def sql: String = s"ALTER PROCESSOR ${processor.sql}"
+    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
+  }
 
   case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)
       extends DdlStatement {

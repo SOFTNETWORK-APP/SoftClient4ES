@@ -3,14 +3,17 @@ package app.softnetwork.elastic
 import app.softnetwork.elastic.sql.{BooleanValue, ObjectValue, StringValue, StringValues, Value}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.{
+  mapper,
   DdlColumn,
   DdlDateIndexNameProcessor,
   DdlDefaultValueProcessor,
   DdlPartition,
   DdlPrimaryKeyProcessor,
   DdlProcessor,
+  DdlProcessorType,
   DdlScriptProcessor,
-  DdlTable
+  DdlTable,
+  GenericProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.JsonNode
@@ -163,8 +166,8 @@ package object schema {
         .map {
           case m: ObjectValue =>
             m.value.get("primary_key") match {
-              case Some(pk: StringValues) => pk.values.map(_.ddl).toList
-              case Some(pk: StringValue)  => List(pk.ddl)
+              case Some(pk: StringValues) => pk.values.map(_.ddl.replaceAll("\"", "")).toList
+              case Some(pk: StringValue)  => List(pk.ddl.replaceAll("\"", ""))
               case _                      => List.empty
             }
           case _ => List.empty
@@ -226,7 +229,7 @@ package object schema {
     private val ScriptDescRegex =
       """^\s*([a-zA-Z0-9_]+)\s([a-zA-Z]+)\s+SCRIPT\s+AS\s*\((.*)\)\s*$""".r
 
-    lazy val ddlProcesor: Option[DdlProcessor] = {
+    lazy val ddlProcesor: DdlProcessor = {
       val processorType = processor.fieldNames().next() // "set", "script", "date_index_name", etc.
       val props = processor.get(processorType)
 
@@ -241,26 +244,27 @@ package object schema {
             // DdlPrimaryKeyProcessor
             // description: "PRIMARY KEY (id)"
             val inside = desc.stripPrefix("PRIMARY KEY").trim.stripPrefix("(").stripSuffix(")")
-            val cols = inside.split(",").map(_.trim).filter(_.nonEmpty).toSet
-            Some(
-              DdlPrimaryKeyProcessor(
-                sql = desc,
-                column = "_id",
-                value = cols,
-                ignoreFailure = ignoreFailure
-              )
+            val cols =
+              inside.split(",").map(_.replaceAll("\"", "")).map(_.trim).filter(_.nonEmpty).toSet
+            DdlPrimaryKeyProcessor(
+              sql = desc,
+              column = "_id",
+              value = cols,
+              ignoreFailure = ignoreFailure
             )
           } else if (desc.startsWith(s"$field DEFAULT")) {
-            Some(
-              DdlDefaultValueProcessor(
-                sql = desc,
-                column = field,
-                value = Value(valueNode.asText()),
-                ignoreFailure = ignoreFailure
-              )
+            DdlDefaultValueProcessor(
+              sql = desc,
+              column = field,
+              value = Value(valueNode.asText()),
+              ignoreFailure = ignoreFailure
             )
           } else {
-            None
+            GenericProcessor(
+              processorType = DdlProcessorType.Set,
+              properties =
+                mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+            )
           }
 
         case "script" =>
@@ -272,17 +276,19 @@ package object schema {
 
           desc match {
             case ScriptDescRegex(col, dataType, script) =>
-              Some(
-                DdlScriptProcessor(
-                  script = script,
-                  column = col,
-                  dataType = SQLTypes(dataType),
-                  source = source,
-                  ignoreFailure = ignoreFailure
-                )
+              DdlScriptProcessor(
+                script = script,
+                column = col,
+                dataType = SQLTypes(dataType),
+                source = source,
+                ignoreFailure = ignoreFailure
               )
             case _ =>
-              None
+              GenericProcessor(
+                processorType = DdlProcessorType.Script,
+                properties =
+                  mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+              )
           }
 
         case "date_index_name" =>
@@ -294,17 +300,21 @@ package object schema {
             .getOrElse(Nil)
           val prefix = props.get("index_name_prefix").asText()
 
-          Some(
-            DdlDateIndexNameProcessor(
-              sql = desc,
-              column = field,
-              dateRounding = rounding,
-              dateFormats = formats,
-              prefix = prefix
-            )
+          DdlDateIndexNameProcessor(
+            sql = desc,
+            column = field,
+            dateRounding = rounding,
+            dateFormats = formats,
+            prefix = prefix
           )
 
-        case _ => None
+        case other =>
+          GenericProcessor(
+            processorType = DdlProcessorType(other),
+            properties =
+              mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+          )
+
       }
     }
   }
@@ -315,7 +325,7 @@ package object schema {
     lazy val processors: Seq[DdlProcessor] = {
       val processorsNode = pipeline.get("processors")
       if (processorsNode != null && processorsNode.isArray) {
-        processorsNode.elements().asScala.toSeq.flatMap(EsProcessor(_).ddlProcesor)
+        processorsNode.elements().asScala.toSeq.map(EsProcessor(_).ddlProcesor)
       } else {
         Seq.empty
       }

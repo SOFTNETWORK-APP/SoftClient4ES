@@ -1,0 +1,132 @@
+package app.softnetwork.elastic.sql.schema
+
+import app.softnetwork.elastic.sql.Value
+import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.query._
+
+sealed trait AlterTableStatementDiff {
+  def stmt: AlterTableStatement
+}
+
+sealed trait ColumnDiff extends AlterTableStatementDiff
+
+case class ColumnAdded(column: DdlColumn) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AddColumn(column)
+}
+case class ColumnRemoved(name: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumn(name)
+}
+// case class ColumnRenamed(oldName: String, newName: String) extends ColumnDiff
+
+case class ColumnTypeChanged(name: String, from: SQLType, to: SQLType) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnType(name, to)
+}
+
+case class ColumnDefaultSet(name: String, value: Value[_]) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnDefault(name, value)
+}
+case class ColumnDefaultRemoved(name: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumnDefault(name)
+}
+
+case class ColumnScriptSet(name: String, script: DdlScriptProcessor) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnScript(name, script)
+}
+case class ColumnScriptRemoved(name: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumnScript(name)
+}
+
+case class ColumnCommentSet(name: String, comment: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnComment(name, comment)
+}
+case class ColumnCommentRemoved(name: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumnComment(name)
+}
+
+case class ColumnNotNullSet(name: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnNotNull(name)
+}
+case class ColumnNotNullRemoved(name: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumnNotNull(name)
+}
+
+case class ColumnOptionSet(name: String, key: String, value: Value[_]) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnOption(name, key, value)
+}
+case class ColumnOptionRemoved(name: String, key: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumnOption(name, key)
+}
+
+case class FieldAdded(column: String, field: DdlColumn) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnField(column, field)
+}
+case class FieldRemoved(column: String, fieldName: String) extends ColumnDiff {
+  override def stmt: AlterTableStatement = DropColumnField(column, fieldName)
+}
+
+sealed trait MappingDiff extends AlterTableStatementDiff
+
+case class MappingSet(key: String, value: Value[_]) extends MappingDiff {
+  override def stmt: AlterTableStatement = AlterTableMapping(key, value)
+}
+case class MappingRemoved(key: String) extends MappingDiff {
+  override def stmt: AlterTableStatement = DropTableMapping(key)
+}
+
+sealed trait SettingDiff extends AlterTableStatementDiff
+
+case class SettingSet(key: String, value: Value[_]) extends SettingDiff {
+  override def stmt: AlterTableStatement = AlterTableSetting(key, value)
+}
+case class SettingRemoved(key: String) extends SettingDiff {
+  override def stmt: AlterTableStatement = DropTableSetting(key)
+}
+
+sealed trait PipelineDiff
+
+case class ProcessorAdded(processor: DdlProcessor) extends PipelineDiff
+case class ProcessorRemoved(processor: DdlProcessor) extends PipelineDiff
+case class ProcessorTypeChanged(
+  actual: DdlProcessorType,
+  desired: DdlProcessorType
+)
+sealed trait ProcessorPropertyDiff
+case class ProcessorPropertyAdded(key: String, value: Any) extends ProcessorPropertyDiff
+case class ProcessorPropertyRemoved(key: String) extends ProcessorPropertyDiff
+case class ProcessorPropertyChanged(key: String, from: Any, to: Any) extends ProcessorPropertyDiff
+case class ProcessorDiff(
+  typeChanged: Option[ProcessorTypeChanged],
+  propertyDiffs: List[ProcessorPropertyDiff]
+)
+case class ProcessorChanged(
+  from: DdlProcessor,
+  to: DdlProcessor,
+  diff: ProcessorDiff
+) extends PipelineDiff
+
+case class DdlTableDiff(
+  columns: List[ColumnDiff],
+  mappings: List[MappingDiff],
+  settings: List[SettingDiff],
+  pipeline: List[PipelineDiff]
+) {
+  def isEmpty: Boolean =
+    columns.isEmpty && mappings.isEmpty && settings.isEmpty && pipeline.isEmpty
+
+  def alterTable(tableName: String, ifExists: Boolean): Option[AlterTable] = {
+    if (isEmpty) {
+      None
+    } else {
+      val statements = columns.map(_.stmt) ++
+        mappings.map(_.stmt) ++
+        settings.map(_.stmt)
+      Some(
+        AlterTable(
+          tableName,
+          ifExists,
+          statements
+        )
+      )
+    }
+  }
+}

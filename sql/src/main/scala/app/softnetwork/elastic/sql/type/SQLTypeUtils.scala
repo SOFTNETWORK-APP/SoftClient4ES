@@ -93,6 +93,10 @@ object SQLTypeUtils {
     ).contains(
       out.typeId
     )) ||
+    (Set(DateTime.typeId, Timestamp.typeId)
+      .contains(out.typeId) && Set(DateTime.typeId, Timestamp.typeId).contains(
+      in.typeId
+    )) ||
     (out.typeId == Numeric.typeId && Set(
       TinyInt.typeId,
       SmallInt.typeId,
@@ -116,7 +120,10 @@ object SQLTypeUtils {
         out.typeId
       )) ||
     (out.isInstanceOf[SQLNumeric] && in.isInstanceOf[SQLNumeric]) ||
-    (out.typeId == Varchar.typeId && in.typeId == Varchar.typeId) ||
+    (Set(Varchar.typeId, Text.typeId, Keyword.typeId)
+      .contains(out.typeId) && Set(Varchar.typeId, Text.typeId, Keyword.typeId).contains(
+      in.typeId
+    )) ||
     (out.typeId == Boolean.typeId && in.typeId == Boolean.typeId) ||
     out.typeId == Any.typeId || in.typeId == Any.typeId ||
     out.typeId == Null.typeId || in.typeId == Null.typeId
