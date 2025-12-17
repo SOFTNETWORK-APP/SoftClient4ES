@@ -154,7 +154,7 @@ package object schema {
         Some(ProcessorDiff(typeChanged, propertyDiffs))
     }
 
-    override def ddl: String = s"$column ${processorType.name.toUpperCase} ${Value(properties).ddl}"
+    override def ddl: String = s"${processorType.name.toUpperCase}${Value(properties).ddl}"
   }
 
   case class GenericProcessor(processorType: DdlProcessorType, properties: Map[String, Any])
@@ -493,7 +493,7 @@ package object schema {
     }
     def sql: String = {
       val opts = if (options.nonEmpty) {
-        s" OPTIONS (${options.map { case (k, v) => s"$k = ${v.sql}" }.mkString(", ")})"
+        s" OPTIONS ${ObjectValue(options).ddl}"
       } else {
         ""
       }
@@ -619,7 +619,7 @@ package object schema {
     }
   }
 
-  case class DdlPartition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends Token {
+  case class DdlPartition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends DdlToken {
     def sql: String = s" PARTITION BY $column ($granularity)"
 
     val dateRounding: String = granularity.script.get
@@ -657,27 +657,51 @@ package object schema {
     mappings: Map[String, Value[_]] = Map.empty,
     settings: Map[String, Value[_]] = Map.empty,
     processors: Seq[DdlProcessor] = Seq.empty
-  ) extends Token {
+  ) extends DdlToken {
     private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
 
-    def update(): DdlTable = this.copy(columns = columns.map(_.update()))
+    private lazy val _meta: Map[String, Value[_]] = Map.empty ++ {
+      if (primaryKey.nonEmpty)
+        Option("primary_key" -> StringValues(primaryKey.map(StringValue)))
+      else
+        None
+    }.toMap ++ partitionBy
+      .map(pb =>
+        Map(
+          "partition_by" -> ObjectValue(
+            Map(
+              "column"      -> StringValue(pb.column),
+              "granularity" -> StringValue(pb.granularity.script.get)
+            )
+          )
+        )
+      )
+      .getOrElse(Map.empty)
+
+    def update(): DdlTable = this.copy(
+      columns = columns.map(_.update()),
+      mappings = mappings ++ Map(
+        "_meta" ->
+        ObjectValue(mappings.get("_meta") match {
+          case Some(ObjectValue(value)) =>
+            value ++ _meta
+          case _ => _meta
+        })
+      )
+    )
 
     def sql: String = {
       val opts =
         if (mappings.nonEmpty || settings.nonEmpty) {
           val mappingOpts =
             if (mappings.nonEmpty) {
-              s"mappings = (${mappings
-                .map { case (k, v) =>
-                  s"$k = ${v.ddl}"
-                }
-                .mkString(", ")})"
+              s"mappings = ${ObjectValue(mappings).ddl}"
             } else {
               ""
             }
           val settingsOpts =
             if (settings.nonEmpty) {
-              s"settings = (${mappings.map { case (k, v) => s"$k = ${v.ddl}" }.mkString(", ")})"
+              s"settings = ${ObjectValue(settings).ddl}"
             } else {
               ""
             }
@@ -999,24 +1023,6 @@ package object schema {
       }
       node.set("properties", fields)
       updateNode(node, mappings)
-      if (primaryKey.nonEmpty || partitionBy.nonEmpty) {
-        val meta = Option(node.get("_meta")).getOrElse(mapper.createObjectNode())
-        if (meta != null && meta.isObject) {
-          val metaObj = meta.asInstanceOf[ObjectNode]
-          if (primaryKey.nonEmpty) {
-            val pkArray = mapper.createArrayNode()
-            primaryKey.foreach(pk => pkArray.add(pk))
-            metaObj.replace("primary_key", pkArray)
-          }
-          partitionBy.foreach { partition =>
-            val partitionObj = mapper.createObjectNode()
-            partitionObj.put("column", partition.column)
-            partitionObj.put("granularity", partition.granularity.script.get)
-            metaObj.replace("partition_by", partitionObj)
-          }
-          node.replace("_meta", metaObj)
-        }
-      }
       node
     }
 
@@ -1060,7 +1066,7 @@ package object schema {
       // 4. Mappings
       val mappingDiffs = scala.collection.mutable.ListBuffer[MappingDiff]()
       val allMappings = actual.mappings.keySet ++ desiredUpdated.mappings.keySet
-      for (key <- allMappings.filterNot(_ == "_meta") /*FIXME*/ ) {
+      for (key <- allMappings) {
         (actual.mappings.get(key), desiredUpdated.mappings.get(key)) match {
           case (None, Some(v)) => mappingDiffs += MappingSet(key, v)
           case (Some(_), None) => mappingDiffs += MappingRemoved(key)

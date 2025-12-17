@@ -82,10 +82,15 @@ case class SettingRemoved(key: String) extends SettingDiff {
   override def stmt: AlterTableStatement = DropTableSetting(key)
 }
 
-sealed trait PipelineDiff
+sealed trait PipelineDiff extends AlterTableStatementDiff
 
-case class ProcessorAdded(processor: DdlProcessor) extends PipelineDiff
-case class ProcessorRemoved(processor: DdlProcessor) extends PipelineDiff
+case class ProcessorAdded(processor: DdlProcessor) extends PipelineDiff {
+  override def stmt: AlterTableStatement = AddPipelineProcessor(processor)
+}
+case class ProcessorRemoved(processor: DdlProcessor) extends PipelineDiff {
+  override def stmt: AlterTableStatement =
+    DropPipelineProcessor(processor.processorType, processor.column)
+}
 case class ProcessorTypeChanged(
   actual: DdlProcessorType,
   desired: DdlProcessorType
@@ -102,7 +107,9 @@ case class ProcessorChanged(
   from: DdlProcessor,
   to: DdlProcessor,
   diff: ProcessorDiff
-) extends PipelineDiff
+) extends PipelineDiff {
+  override def stmt: AlterTableStatement = AlterPipelineProcessor(to)
+}
 
 case class DdlTableDiff(
   columns: List[ColumnDiff],

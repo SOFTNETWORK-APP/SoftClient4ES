@@ -24,6 +24,7 @@ import app.softnetwork.elastic.sql.schema.{
   DdlPipeline,
   DdlPipelineType,
   DdlProcessor,
+  DdlProcessorType,
   DdlRemoveProcessor,
   DdlRenameProcessor,
   DdlScriptProcessor,
@@ -585,15 +586,19 @@ package object query {
     override def sql: String =
       s"DROP SETTING $optionKey"
   }
-  case class AddTableProcessor(processor: DdlProcessor) extends AlterTableStatement {
-    override def sql: String = s"ADD PROCESSOR ${processor.sql}"
+
+  sealed trait AlterPipelineStatement extends AlterTableStatement
+
+  case class AddPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
+    override def sql: String = s"ADD PROCESSOR ${processor.ddl}"
     override def ddlProcessor: Option[DdlProcessor] = Some(processor)
   }
-  case class DropTableProcessor(column: String) extends AlterTableStatement {
-    override def sql: String = s"DROP PROCESSOR $column"
+  case class DropPipelineProcessor(processorType: DdlProcessorType, column: String)
+      extends AlterPipelineStatement {
+    override def sql: String = s"DROP PROCESSOR ${processorType.name.toUpperCase}($column)"
   }
-  case class AlterTableProcessor(processor: DdlProcessor) extends AlterTableStatement {
-    override def sql: String = s"ALTER PROCESSOR ${processor.sql}"
+  case class AlterPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
+    override def sql: String = s"ALTER PROCESSOR ${processor.ddl}"
     override def ddlProcessor: Option[DdlProcessor] = Some(processor)
   }
 
