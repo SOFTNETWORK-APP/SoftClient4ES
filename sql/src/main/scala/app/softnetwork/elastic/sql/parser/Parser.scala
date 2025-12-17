@@ -271,22 +271,76 @@ object Parser
       ie
     }
 
-  def setColumnOptions: PackratParser[AlterColumnOptions] =
+  def alterColumnOptions: PackratParser[AlterColumnOptions] =
     alterColumnIfExists ~ ident ~ "SET" ~ options ^^ { case ie ~ col ~ _ ~ opts =>
       AlterColumnOptions(col, opts, ifExists = ie)
     }
 
-  def setColumnFields: PackratParser[AlterColumnFields] =
+  def alterColumnOption: PackratParser[AlterColumnOption] =
+    alterColumnIfExists ~ ident ~ (("SET" | "ADD") ~ "OPTION") ~ start ~ option ~ end ^^ {
+      case ie ~ col ~ _ ~ _ ~ opt ~ _ =>
+        AlterColumnOption(col, opt._1, opt._2, ifExists = ie)
+    }
+
+  def dropColumnOption: PackratParser[DropColumnOption] =
+    alterColumnIfExists ~ ident ~ ("DROP" ~ "OPTION") ~ ident ^^ { case ie ~ col ~ _ ~ optionName =>
+      DropColumnOption(col, optionName, ifExists = ie)
+    }
+
+  def alterColumnFields: PackratParser[AlterColumnFields] =
     alterColumnIfExists ~ ident ~ "SET" ~ multiFields ^^ { case ie ~ col ~ _ ~ fields =>
       AlterColumnFields(col, fields, ifExists = ie)
     }
 
-  def setColumnType: PackratParser[AlterColumnType] =
+  def alterColumnField: PackratParser[AlterColumnField] =
+    alterColumnIfExists ~ ident ~ (("SET" | "ADD") ~ "FIELD") ~ column ^^ {
+      case ie ~ col ~ _ ~ field =>
+        AlterColumnField(col, field, ifExists = ie)
+    }
+
+  def dropColumnField: PackratParser[DropColumnField] =
+    alterColumnIfExists ~ ident ~ ("DROP" ~ "FIELD") ~ ident ^^ { case ie ~ col ~ _ ~ fieldName =>
+      DropColumnField(col, fieldName, ifExists = ie)
+    }
+
+  def alterColumnType: PackratParser[AlterColumnType] =
     alterColumnIfExists ~ ident ~ ("SET" ~ "DATA" ~ "TYPE") ~ extension_type ^^ {
       case ie ~ name ~ _ ~ newType => AlterColumnType(name, newType, ifExists = ie)
     }
 
-  def setColumnDefault: PackratParser[AlterColumnDefault] =
+  def alterColumnScript: PackratParser[AlterColumnScript] =
+    alterColumnIfExists ~ ident ~ "SET" ~ script ^^ { case ie ~ name ~ _ ~ ns =>
+      val ctx = PainlessContext(Processor)
+      val scr = ns.painless(Some(ctx))
+      val temp = s"$ctx$scr"
+      val ret =
+        temp.split(";") match {
+          case Array(single) if single.trim.startsWith("return ") =>
+            val stripReturn = single.trim.stripPrefix("return ").trim
+            s"ctx.$name = $stripReturn"
+          case multiple =>
+            val last = multiple.last.trim
+            val temp = multiple.dropRight(1) :+ s" ctx.$name = $last"
+            temp.mkString(";")
+        }
+      AlterColumnScript(
+        name,
+        DdlScriptProcessor(
+          script = ns.sql,
+          column = name,
+          dataType = ns.out,
+          source = ret
+        ),
+        ifExists = ie
+      )
+    }
+
+  def dropColumnScript: PackratParser[DropColumnScript] =
+    alterColumnIfExists ~ ident ~ ("DROP" ~ "SCRIPT") ^^ { case ie ~ name ~ _ =>
+      DropColumnScript(name, ifExists = ie)
+    }
+
+  def alterColumnDefault: PackratParser[AlterColumnDefault] =
     alterColumnIfExists ~ ident ~ ("SET" ~ "DEFAULT") ~ value ^^ { case ie ~ name ~ _ ~ dv =>
       AlterColumnDefault(name, dv, ifExists = ie)
     }
@@ -296,7 +350,7 @@ object Parser
       DropColumnDefault(name, ifExists = ie)
     }
 
-  def setColumnNotNull: PackratParser[AlterColumnNotNull] =
+  def alterColumnNotNull: PackratParser[AlterColumnNotNull] =
     alterColumnIfExists ~ ident ~ ("SET" ~ "NOT" ~ "NULL") ^^ { case ie ~ name ~ _ =>
       AlterColumnNotNull(name, ifExists = ie)
     }
@@ -306,17 +360,55 @@ object Parser
       DropColumnNotNull(name, ifExists = ie)
     }
 
+  def alterColumnComment: PackratParser[AlterColumnComment] =
+    alterColumnIfExists ~ ident ~ ("SET" ~ "COMMENT") ~ literal ^^ { case ie ~ name ~ _ ~ c =>
+      AlterColumnComment(name, c.value, ifExists = ie)
+    }
+
+  def dropColumnComment: PackratParser[DropColumnComment] =
+    alterColumnIfExists ~ ident ~ ("DROP" ~ "COMMENT") ^^ { case ie ~ name ~ _ =>
+      DropColumnComment(name, ifExists = ie)
+    }
+
+  def alterTableMapping: PackratParser[AlterTableMapping] =
+    (("SET" | "ADD") ~ "MAPPING") ~ start ~> option <~ end ^^ { opt =>
+      AlterTableMapping(opt._1, opt._2)
+    }
+
+  def dropTableMapping: PackratParser[DropTableMapping] =
+    ("DROP" ~ "MAPPING") ~> ident ^^ { m => DropTableMapping(m) }
+
+  def alterTableSetting: PackratParser[AlterTableSetting] =
+    (("SET" | "ADD") ~ "SETTING") ~ start ~> option <~ end ^^ { opt =>
+      AlterTableSetting(opt._1, opt._2)
+    }
+
+  def dropTableSetting: PackratParser[DropTableSetting] =
+    ("DROP" ~ "SETTING") ~> ident ^^ { m => DropTableSetting(m) }
+
   def alterTableStatement: PackratParser[AlterTableStatement] =
     addColumn |
     dropColumn |
     renameColumn |
-    setColumnOptions |
-    setColumnType |
-    setColumnDefault |
+    alterColumnOptions |
+    alterColumnOption |
+    dropColumnOption |
+    alterColumnType |
+    alterColumnScript |
+    dropColumnScript |
+    alterColumnDefault |
     dropColumnDefault |
-    setColumnNotNull |
+    alterColumnNotNull |
     dropColumnNotNull |
-    setColumnFields
+    alterColumnComment |
+    dropColumnComment |
+    alterColumnFields |
+    alterColumnField |
+    dropColumnField |
+    alterTableMapping |
+    dropTableMapping |
+    alterTableSetting |
+    dropTableSetting
 
   def alterTable: PackratParser[AlterTable] =
     ("ALTER" ~ "TABLE") ~ ifExists ~ ident ~ start.? ~ repsep(

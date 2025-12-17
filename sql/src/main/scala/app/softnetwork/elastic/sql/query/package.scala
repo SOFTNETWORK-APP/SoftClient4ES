@@ -26,6 +26,7 @@ import app.softnetwork.elastic.sql.schema.{
   DdlProcessor,
   DdlRemoveProcessor,
   DdlRenameProcessor,
+  DdlScriptProcessor,
   DdlTable
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
@@ -434,11 +435,49 @@ package object query {
         .mkString(", ")})"
     }
   }
+  case class AlterColumnOption(
+    columnName: String,
+    optionKey: String,
+    optionValue: Value[_],
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName SET OPTION ($optionKey = $optionValue)"
+    }
+  }
+  case class DropColumnOption(
+    columnName: String,
+    optionKey: String,
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName DROP OPTION $optionKey"
+    }
+  }
   case class AlterColumnType(columnName: String, newType: SQLType, ifExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"ALTER COLUMN$ifExistsClause $columnName SET TYPE $newType"
+    }
+  }
+  case class AlterColumnScript(
+    columnName: String,
+    newScript: DdlScriptProcessor,
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName SET SCRIPT AS (${newScript.script})"
+    }
+  }
+  case class DropColumnScript(columnName: String, ifExists: Boolean = false)
+      extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName DROP SCRIPT"
     }
   }
   case class AlterColumnDefault(
@@ -465,13 +504,23 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"ALTER COLUMN$ifExistsClause $columnName DROP DEFAULT"
     }
-    override def ddlProcessor: Option[DdlProcessor] =
-      Some(
-        DdlRemoveProcessor(
-          sql,
-          columnName
-        )
-      )
+  }
+  case class AlterColumnComment(
+    columnName: String,
+    comment: String,
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName SET COMMENT '$comment'"
+    }
+  }
+  case class DropColumnComment(columnName: String, ifExists: Boolean = false)
+      extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName DROP COMMENT"
+    }
   }
   case class AlterColumnNotNull(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
@@ -497,6 +546,44 @@ package object query {
       val fieldsSql = fields.map(_.sql).mkString("(\n\t\t", ",\n\t\t", "\n\t)")
       s"ALTER COLUMN$ifExistsClause $columnName SET FIELDS $fieldsSql"
     }
+  }
+  case class AlterColumnField(
+    columnName: String,
+    field: DdlColumn,
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName ADD FIELD $field"
+    }
+  }
+  case class DropColumnField(
+    columnName: String,
+    fieldName: String,
+    ifExists: Boolean = false
+  ) extends AlterTableStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
+      s"ALTER COLUMN$ifExistsClause $columnName DROP FIELD $fieldName"
+    }
+  }
+  case class AlterTableMapping(optionKey: String, optionValue: Value[_])
+      extends AlterTableStatement {
+    override def sql: String =
+      s"SET MAPPING ($optionKey = $optionValue)"
+  }
+  case class DropTableMapping(optionKey: String) extends AlterTableStatement {
+    override def sql: String =
+      s"DROP MAPPING $optionKey"
+  }
+  case class AlterTableSetting(optionKey: String, optionValue: Value[_])
+      extends AlterTableStatement {
+    override def sql: String =
+      s"SET SETTING ($optionKey = $optionValue)"
+  }
+  case class DropTableSetting(optionKey: String) extends AlterTableStatement {
+    override def sql: String =
+      s"DROP SETTING $optionKey"
   }
 
   case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)

@@ -529,6 +529,27 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          case AlterColumnScript(columnName, newScript, ifExists) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(script = Some(newScript.copy(dataType = col.dataType)))
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case DropColumnScript(columnName, ifExists) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) col.copy(script = None)
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnDefault(columnName, newDefault, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -580,6 +601,59 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          case AlterColumnOption(
+                columnName,
+                optionKey,
+                optionValue,
+                ifExists
+              ) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(options = col.options ++ Map(optionKey -> optionValue))
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case DropColumnOption(
+                columnName,
+                optionKey,
+                ifExists
+              ) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(options = col.options - optionKey)
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case AlterColumnComment(columnName, newComment, ifExists) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(comment = Some(newComment))
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case DropColumnComment(columnName, ifExists) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(comment = None)
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnFields(columnName, newFields, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -591,6 +665,79 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          case AlterColumnField(
+                columnName,
+                field,
+                ifExists
+              ) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName) {
+                    val updatedFields = if (col.multiFields.exists(_.name == field.name)) {
+                      col.multiFields.map { f =>
+                        if (f.name == field.name) field else f
+                      }
+                    } else {
+                      col.multiFields :+ field
+                    }
+                    col.copy(multiFields = updatedFields)
+                  } else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case DropColumnField(
+                columnName,
+                fieldName,
+                ifExists
+              ) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(
+                      multiFields = col.multiFields.filterNot(_.name == fieldName)
+                    )
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case AlterColumnOption(
+                columnName,
+                optionKey,
+                optionValue,
+                ifExists
+              ) =>
+            if (ifExists && !table.cols.contains(columnName)) table
+            else if (table.cols.contains(columnName))
+              table.copy(
+                columns = table.columns.map { col =>
+                  if (col.name == columnName)
+                    col.copy(
+                      options = col.options ++ Map(optionKey -> optionValue)
+                    )
+                  else col
+                }
+              )
+            else throw DdlColumnNotFound(columnName, table.name)
+          case AlterTableMapping(optionKey, optionValue) =>
+            table.copy(
+              mappings = table.mappings ++ Map(optionKey -> optionValue)
+            )
+          case DropTableMapping(optionKey) =>
+            table.copy(
+              mappings = table.mappings - optionKey
+            )
+          case AlterTableSetting(optionKey, optionValue) =>
+            table.copy(
+              settings = table.settings ++ Map(optionKey -> optionValue)
+            )
+          case DropTableSetting(optionKey) =>
+            table.copy(
+              settings = table.settings - optionKey
+            )
           case _ => table
         }
       }

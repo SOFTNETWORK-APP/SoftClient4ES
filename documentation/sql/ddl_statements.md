@@ -52,17 +52,31 @@ CREATE OR REPLACE TABLE users AS SELECT id, name FROM accounts;
 Modify an existing table. Multiple statements can be grouped inside parentheses.
 
 **Supported statements:**
-- `ADD COLUMN [IF NOT EXISTS] column_definition`
-- `DROP COLUMN [IF EXISTS] column_name`
-- `RENAME COLUMN old_name TO new_name`
-- `ALTER COLUMN [IF EXISTS] column_name SET OPTIONS (...)`
-- `ALTER COLUMN [IF EXISTS] column_name SET DEFAULT value`
-- `ALTER COLUMN [IF EXISTS] column_name DROP DEFAULT`
-- `ALTER COLUMN [IF EXISTS] column_name SET NOT NULL`
-- `ALTER COLUMN [IF EXISTS] column_name DROP NOT NULL`
-- `ALTER COLUMN [IF EXISTS] column_name SET DATA TYPE new_type`
-- `ALTER COLUMN [IF EXISTS] column_name SET FIELDS (...)`  
-	→ Allows defining nested fields (STRUCT) or multi‑fields inside an existing column.
+- `ADD COLUMN [IF NOT EXISTS] column_definition` → Add a new column.
+- `DROP COLUMN [IF EXISTS] column_name` → Remove an existing column.
+- `RENAME COLUMN old_name TO new_name` → Rename an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name SET SCRIPT AS (sql)` → Define or update a scripted column.
+- `ALTER COLUMN [IF EXISTS] column_name DROP SCRIPT` → Remove a scripted column.
+- `ALTER COLUMN [IF EXISTS] column_name SET|ADD OPTION (key = value)` → Set a specific option for an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name DROP OPTION key` → Remove a specific option from an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name SET COMMENT 'comment'` → Set or update the comment for an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name DROP COMMENT` → Remove the comment from an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name SET DEFAULT value` → Set or update the default value for an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name DROP DEFAULT` → Remove the default value from an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name SET NOT NULL` → Make an existing column NOT NULL.
+- `ALTER COLUMN [IF EXISTS] column_name DROP NOT NULL` → Remove the NOT NULL constraint from an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name SET DATA TYPE new_type` → Change the data type of an existing column.
+- `ALTER COLUMN [IF EXISTS] column_name SET|ADD FIELD field_definition` → Add or update a field inside a STRUCT or multi‑field.
+- `ALTER COLUMN [IF EXISTS] column_name DROP FIELD field_name` → Remove a field from a STRUCT or multi‑field.
+- `SET|ADD MAPPING (key = value)`	→ Set table‑level mapping.
+- `DROP MAPPING key` → Remove table‑level mapping.
+- `SET|ADD SETTING (key = value)` → Set table‑level setting.
+- `DROP SETTING key` → Remove table‑level setting.
+
+[//]: # (- `ALTER COLUMN [IF EXISTS] column_name SET OPTIONS &#40;...&#41;`)
+[//]: # (	→ Set multiple options for an existing column.)
+[//]: # (- `ALTER COLUMN [IF EXISTS] column_name SET FIELDS &#40;...&#41;`  )
+[//]: # (	→ Allows defining nested fields &#40;STRUCT&#41; or multi‑fields inside an existing column.)
 
 **Examples:**
 ```sql
