@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -32,53 +32,6 @@ package object schema {
   val mapper: ObjectMapper = JacksonConfig.objectMapper
 
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
-
-  sealed trait Diff
-
-  case class Altered(name: String, value: Value[_]) extends Diff
-
-  case class Removed(name: String) extends Diff
-
-  private def compareOptions(
-    actual: Map[String, Value[_]],
-    desired: Map[String, Value[_]],
-    path: Option[String] = None
-  ): List[Diff] = {
-    val diffs = scala.collection.mutable.ListBuffer[Diff]()
-
-    val allKeys = actual.keySet ++ desired.keySet
-
-    allKeys.foreach { key =>
-      val computedKey = s"${path.map(p => s"$p.").getOrElse("")}$key"
-      (actual.get(key), desired.get(key)) match {
-        case (None, Some(v)) =>
-          diffs += Altered(computedKey, v)
-        case (Some(_), None) =>
-          diffs += Removed(computedKey)
-        case (Some(a), Some(b)) =>
-          b match {
-            case ObjectValue(desiredMap) =>
-              a match {
-                case ObjectValue(actualMap) =>
-                  diffs ++= compareOptions(
-                    actualMap,
-                    desiredMap,
-                    Some(computedKey)
-                  )
-                case _ =>
-                  diffs += Altered(computedKey, b)
-              }
-            case _ =>
-              if (a != b) {
-                diffs += Altered(computedKey, b)
-              }
-          }
-        case _ =>
-      }
-    }
-
-    diffs.toList
-  }
 
   sealed trait DdlProcessorType {
     def name: String
@@ -214,9 +167,7 @@ package object schema {
 
     def apply(processorType: DdlProcessorType, properties: ObjectValue): DdlProcessor = {
       val node = mapper.createObjectNode()
-      val props = mapper.createObjectNode()
-      updateNode(props, properties.value)
-      node.set(processorType.name, props)
+      node.set(processorType.name, properties.toJson)
       apply(node)
     }
 
@@ -546,45 +497,6 @@ package object schema {
     }
   }
 
-  private[schema] def updateNode(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
-    updates.foreach { case (k, v) =>
-      v match {
-        case Null                 => node.putNull(k)
-        case BooleanValue(b)      => node.put(k, b)
-        case StringValue(s)       => node.put(k, s)
-        case ByteValue(b)         => node.put(k, b)
-        case ShortValue(s)        => node.put(k, s)
-        case IntValue(i)          => node.put(k, i)
-        case LongValue(l)         => node.put(k, l)
-        case DoubleValue(d)       => node.put(k, d)
-        case FloatValue(f)        => node.put(k, f)
-        case IdValue              => node.put(k, s"${v.value}")
-        case IngestTimestampValue => node.put(k, s"${v.value}")
-        case v: Values[_, _] =>
-          val arrayNode = mapper.createArrayNode()
-          v.values.foreach {
-            case Null            => arrayNode.addNull()
-            case BooleanValue(b) => arrayNode.add(b)
-            case StringValue(s)  => arrayNode.add(s)
-            case ByteValue(b)    => arrayNode.add(b)
-            case ShortValue(s)   => arrayNode.add(s)
-            case IntValue(i)     => arrayNode.add(i)
-            case LongValue(l)    => arrayNode.add(l)
-            case DoubleValue(d)  => arrayNode.add(d)
-            case FloatValue(f)   => arrayNode.add(f)
-            case ObjectValue(o)  => arrayNode.add(updateNode(mapper.createObjectNode(), o))
-            case _               => // do nothing
-          }
-          node.set(k, arrayNode)
-        case ObjectValue(value) =>
-          if (value.nonEmpty)
-            node.set(k, updateNode(mapper.createObjectNode(), value))
-        case _ => // do nothing
-      }
-    }
-    node
-  }
-
   case class DdlColumn(
     name: String,
     dataType: SQLType,
@@ -840,7 +752,7 @@ package object schema {
       }
 
       // 6. Options
-      val optionDiffs = compareOptions(actual.options, desired.options)
+      val optionDiffs = ObjectValue(actual.options).diff(ObjectValue(desired.options))
       parent match {
         case Some(p) =>
           if (optionDiffs.nonEmpty) {
@@ -1000,6 +912,7 @@ package object schema {
     def merge(statements: Seq[AlterTableStatement]): DdlTable = {
       statements.foldLeft(this) { (table, statement) =>
         statement match {
+          // table columns
           case AddColumn(column, ifNotExists) =>
             if (ifNotExists && table.cols.contains(column.name)) table
             else if (!table.cols.contains(column.name))
@@ -1018,6 +931,7 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(oldName, table.name)
+          // column type
           case AlterColumnType(columnName, newType, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1028,6 +942,7 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          // column script
           case AlterColumnScript(columnName, newScript, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1049,6 +964,7 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          // column default value
           case AlterColumnDefault(columnName, newDefault, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1069,6 +985,7 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          // column not null
           case AlterColumnNotNull(columnName, ifExists) =>
             if (!table.cols.contains(columnName) && ifExists) table
             else if (table.cols.contains(columnName))
@@ -1089,6 +1006,7 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          // column options
           case AlterColumnOptions(columnName, newOptions, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1111,7 +1029,9 @@ package object schema {
               table.copy(
                 columns = table.columns.map { col =>
                   if (col.name == columnName)
-                    col.copy(options = col.options ++ Map(optionKey -> optionValue))
+                    col.copy(
+                      options = ObjectValue(col.options).set(optionKey, optionValue).value
+                    )
                   else col
                 }
               )
@@ -1126,11 +1046,14 @@ package object schema {
               table.copy(
                 columns = table.columns.map { col =>
                   if (col.name == columnName)
-                    col.copy(options = col.options - optionKey)
+                    col.copy(
+                      options = ObjectValue(col.options).remove(optionKey).value
+                    )
                   else col
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          // column comments
           case AlterColumnComment(columnName, newComment, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1153,6 +1076,7 @@ package object schema {
                 }
               )
             else throw DdlColumnNotFound(columnName, table.name)
+          // multi-fields
           case AlterColumnFields(columnName, newFields, ifExists) =>
             val col = find(columnName)
             val exists = col.isDefined
@@ -1202,39 +1126,22 @@ package object schema {
                 case _ => throw DdlColumnNotFound(columnName, table.name)
               }
             }
-          case AlterColumnOption(
-                columnName,
-                optionKey,
-                optionValue,
-                ifExists
-              ) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(
-                      options = col.options ++ Map(optionKey -> optionValue)
-                    )
-                  else col
-                }
-              )
-            else throw DdlColumnNotFound(columnName, table.name)
+          // mappings / settings
           case AlterTableMapping(optionKey, optionValue) =>
             table.copy(
-              mappings = table.mappings ++ Map(optionKey -> optionValue)
+              mappings = ObjectValue(table.mappings).set(optionKey, optionValue).value
             )
           case DropTableMapping(optionKey) =>
             table.copy(
-              mappings = table.mappings - optionKey
+              mappings = ObjectValue(table.mappings).remove(optionKey).value
             )
           case AlterTableSetting(optionKey, optionValue) =>
             table.copy(
-              settings = table.settings ++ Map(optionKey -> optionValue)
+              settings = ObjectValue(table.settings).set(optionKey, optionValue).value
             )
           case DropTableSetting(optionKey) =>
             table.copy(
-              settings = table.settings - optionKey
+              settings = ObjectValue(table.settings).remove(optionKey).value
             )
           case _ => table
         }
@@ -1339,14 +1246,14 @@ package object schema {
 
       // 4. Mappings
       val mappingDiffs = scala.collection.mutable.ListBuffer[MappingDiff]()
-      mappingDiffs ++= compareOptions(actual.mappings, desired.mappings).map {
+      mappingDiffs ++= ObjectValue(actual.mappings).diff(ObjectValue(desired.mappings)).map {
         case Altered(name, value) => MappingSet(name, value)
         case Removed(name)        => MappingRemoved(name)
       }
 
       // 5. Settings
       val settingDiffs = scala.collection.mutable.ListBuffer[SettingDiff]()
-      settingDiffs ++= compareOptions(actual.settings, desiredUpdated.settings).map {
+      settingDiffs ++= ObjectValue(actual.settings).diff(ObjectValue(desired.settings)).map {
         case Altered(name, value) => SettingSet(name, value)
         case Removed(name)        => SettingRemoved(name)
       }

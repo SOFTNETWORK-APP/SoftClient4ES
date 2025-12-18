@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.schema.EsIndex
-import app.softnetwork.elastic.sql.{IngestTimestampValue, ObjectValue, StringValue, Value}
+import app.softnetwork.elastic.sql.{IngestTimestampValue, StringValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
@@ -16,8 +16,6 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-
-import scala.collection.Set
 
 object Queries {
   val numericalEq = "SELECT t.col1, t.col2 FROM Table AS t WHERE t.identifier = 1.0"

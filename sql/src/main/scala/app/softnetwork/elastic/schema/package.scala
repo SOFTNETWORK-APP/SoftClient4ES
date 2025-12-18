@@ -28,32 +28,13 @@ import app.softnetwork.elastic.sql.schema.{
   DdlScriptProcessor,
   DdlTable
 }
+import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.JsonNode
 
 import scala.jdk.CollectionConverters._
 
 package object schema {
-
-  private[schema] def extractOptions(
-    node: JsonNode,
-    ignoredKeys: Set[String] = Set.empty
-  ): Map[String, Value[_]] = {
-    node
-      .properties()
-      .asScala
-      .flatMap { entry =>
-        val key = entry.getKey
-        val value = entry.getValue
-
-        if (ignoredKeys.contains(key)) {
-          None
-        } else {
-          Value(value).map(key -> Value(_))
-        }
-      }
-      .toMap
-  }
 
   final case class EsField(
     name: String,
@@ -97,7 +78,7 @@ package object schema {
           .getOrElse(Nil)
 
       val options =
-        extractOptions(node, ignoredKeys = Set("type", "null_value", "fields", "properties"))
+        extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties"))
 
       val meta = options.get("meta")
       val comment = meta.flatMap {
@@ -173,7 +154,7 @@ package object schema {
         }.toList)
         .getOrElse(Nil)
 
-      val options = extractOptions(mappings, ignoredKeys = Set("properties", "_doc"))
+      val options = extractObject(mappings, ignoredKeys = Set("properties", "_doc"))
       val meta = options.get("_meta")
       val primaryKey: List[String] = meta
         .map {
@@ -228,7 +209,7 @@ package object schema {
     def apply(settings: JsonNode): EsSettings = {
       val index = settings.path("settings").path("index")
 
-      val options = extractOptions(index)
+      val options = extractObject(index)
 
       EsSettings(
         options = options

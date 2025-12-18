@@ -24,6 +24,7 @@ import app.softnetwork.elastic.sql.query._
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.security.MessageDigest
+import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe._
 import scala.util.Try
@@ -383,6 +384,12 @@ package object sql {
     }
   }
 
+  sealed trait Diff
+
+  case class Altered(name: String, value: Value[_]) extends Diff
+
+  case class Removed(name: String) extends Diff
+
   case class ObjectValue(override val value: Map[String, Value[_]])
       extends Value[Map[String, Value[_]]](value) {
     override def sql: String = value
@@ -397,6 +404,115 @@ package object sql {
         }
       }
       .mkString("(", ", ", ")")
+
+    def set(path: String, newValue: Value[_]): ObjectValue = {
+      val keys = path.split("\\.")
+      val updatedValue = {
+        if (keys.length == 1) {
+          value + (keys.head -> newValue)
+        } else {
+          val parentPath = keys.dropRight(1).mkString(".")
+          val parentKey = keys.last
+          val parentObject = find(parentPath) match {
+            case Some(obj: ObjectValue) => obj
+            case _                      => ObjectValue.empty
+          }
+          val updatedParent = parentObject.set(parentKey, newValue)
+          value + (keys.head -> updatedParent)
+        }
+      }
+      ObjectValue(updatedValue)
+    }
+
+    def remove(path: String): ObjectValue = {
+      val keys = path.split("\\.")
+      val updatedValue = {
+        if (keys.length == 1) {
+          value - keys.head
+        } else {
+          val parentPath = keys.dropRight(1).mkString(".")
+          val parentKey = keys.last
+          val parentObject = find(parentPath) match {
+            case Some(obj: ObjectValue) => obj
+            case _                      => ObjectValue.empty
+          }
+          val updatedParent = parentObject.remove(parentKey)
+          value + (keys.head -> updatedParent)
+        }
+      }
+      ObjectValue(updatedValue)
+    }
+
+    def find(path: String): Option[Value[_]] = {
+      val keys = path.split("\\.")
+      @tailrec
+      def loop(current: Map[String, Value[_]], remainingKeys: Seq[String]): Option[Value[_]] = {
+        remainingKeys match {
+          case Seq()  => None
+          case Seq(k) => current.get(k)
+          case k +: ks =>
+            current.get(k) match {
+              case Some(obj: ObjectValue) => loop(obj.value, ks)
+              case _                      => None
+            }
+        }
+      }
+      loop(value, keys.toSeq)
+    }
+
+    def diff(other: ObjectValue, path: Option[String] = None): List[Diff] = {
+      val diffs = scala.collection.mutable.ListBuffer[Diff]()
+
+      val actual = this.value
+      val desired = other.value
+
+      val allKeys = actual.keySet ++ desired.keySet
+
+      allKeys.foreach { key =>
+        val computedKey = s"${path.map(p => s"$p.").getOrElse("")}$key"
+        (actual.get(key), desired.get(key)) match {
+          case (None, Some(v)) =>
+            diffs += Altered(computedKey, v)
+          case (Some(_), None) =>
+            diffs += Removed(computedKey)
+          case (Some(a), Some(b)) =>
+            b match {
+              case ObjectValue(_) =>
+                a match {
+                  case ObjectValue(_) =>
+                    diffs ++= a
+                      .asInstanceOf[ObjectValue]
+                      .diff(
+                        b.asInstanceOf[ObjectValue],
+                        Some(computedKey)
+                      )
+                  case _ =>
+                    diffs += Altered(computedKey, b)
+                }
+              case _ =>
+                if (a != b) {
+                  diffs += Altered(computedKey, b)
+                }
+            }
+          case _ =>
+        }
+      }
+
+      diffs.toList
+    }
+
+    import app.softnetwork.elastic.sql.serialization._
+
+    def toJson: JsonNode = this
+
+  }
+
+  object ObjectValue {
+    import app.softnetwork.elastic.sql.serialization._
+
+    def empty: ObjectValue = ObjectValue(Map.empty)
+
+    def fromJson(jsonNode: JsonNode): ObjectValue = jsonNode
   }
 
   case object Null extends Value[Null](null) with TokenRegex {
