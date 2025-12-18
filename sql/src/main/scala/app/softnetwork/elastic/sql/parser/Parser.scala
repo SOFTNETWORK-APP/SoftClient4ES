@@ -30,7 +30,14 @@ import app.softnetwork.elastic.sql.parser.function.string.StringParser
 import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.{DdlColumn, DdlPartition, DdlScriptProcessor}
+import app.softnetwork.elastic.sql.schema.{
+  DdlColumn,
+  DdlPartition,
+  DdlPipelineType,
+  DdlProcessor,
+  DdlProcessorType,
+  DdlScriptProcessor
+}
 import app.softnetwork.elastic.sql.time.TimeUnit
 
 import scala.language.implicitConversions
@@ -82,6 +89,72 @@ object Parser
   def options: PackratParser[Map[String, Value[_]]] =
     "OPTIONS" ~ start ~ repsep(option, separator) ~ end ^^ { case _ ~ _ ~ opts ~ _ =>
       opts.toMap
+    }
+
+  def processorType: PackratParser[DdlProcessorType] =
+    ident ^^ { name =>
+      name.toLowerCase match {
+        case "set"             => DdlProcessorType.Set
+        case "script"          => DdlProcessorType.Script
+        case "rename"          => DdlProcessorType.Rename
+        case "remove"          => DdlProcessorType.Remove
+        case "date_index_name" => DdlProcessorType.DateIndexName
+        case other             => DdlProcessorType(other)
+      }
+    }
+
+  def processor: PackratParser[DdlProcessor] =
+    processorType ~ objectValue ^^ { case pt ~ opts =>
+      DdlProcessor(pt, opts)
+    }
+
+  def createOrReplacePipeline: PackratParser[CreatePipeline] =
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "PIPELINE") ~ ident ~ ("WITH" ~ "PROCESSORS") ~ start ~ repsep(
+      processor,
+      separator
+    ) ~ end ^^ { case _ ~ name ~ _ ~ _ ~ proc ~ _ =>
+      CreatePipeline(name, DdlPipelineType.Custom, orReplace = true, processors = proc)
+    }
+
+  def createPipeline: PackratParser[CreatePipeline] =
+    ("CREATE" ~ "PIPELINE") ~ ifNotExists ~ ident ~ ("WITH" ~ "PROCESSORS" ~ start) ~ repsep(
+      processor,
+      separator
+    ) <~ end ^^ { case _ ~ ine ~ name ~ _ ~ proc =>
+      CreatePipeline(name, DdlPipelineType.Custom, ifNotExists = ine, processors = proc)
+    }
+
+  def dropPipeline: PackratParser[DropPipeline] =
+    ("DROP" ~ "PIPELINE") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+      DropPipeline(name, ifExists = ie)
+    }
+
+  def addProcessor: PackratParser[AddPipelineProcessor] =
+    ("ADD" ~ "PROCESSOR") ~ processor ^^ { case _ ~ proc =>
+      AddPipelineProcessor(proc)
+    }
+
+  def dropProcessor: PackratParser[DropPipelineProcessor] =
+    ("DROP" ~ "PROCESSOR") ~ processorType ~ start ~ ident ~ end ^^ { case _ ~ pt ~ _ ~ name ~ _ =>
+      DropPipelineProcessor(pt, name)
+    }
+
+  def alterPipelineStatement: PackratParser[AlterPipelineStatement] =
+    addProcessor | dropProcessor
+
+  def alterPipeline: PackratParser[AlterPipeline] =
+    ("ALTER" ~ "PIPELINE") ~ ifExists ~ ident ~ start.? ~ repsep(
+      alterPipelineStatement,
+      separator
+    ) ~ end.? ^^ { case _ ~ ie ~ pipeline ~ s ~ stmts ~ e =>
+      if (s.isDefined && e.isEmpty) {
+        throw new Exception("Mismatched closing parentheses in ALTER PIPELINE statement")
+      } else if (s.isEmpty && e.isDefined) {
+        throw new Exception("Mismatched opening parentheses in ALTER PIPELINE statement")
+      } else if (s.isEmpty && e.isEmpty && stmts.size > 1) {
+        throw new Exception("Multiple ALTER PIPELINE statements require parentheses")
+      } else
+        AlterPipeline(pipeline, ie, stmts)
     }
 
   def multiFields: PackratParser[List[DdlColumn]] =
@@ -426,7 +499,15 @@ object Parser
     }
 
   def ddlStatement: PackratParser[DdlStatement] =
-    createTable | createOrReplaceTable | alterTable | dropTable | truncateTable
+    createTable |
+    createPipeline |
+    createOrReplaceTable |
+    createOrReplacePipeline |
+    alterTable |
+    alterPipeline |
+    dropTable |
+    truncateTable |
+    dropPipeline
 
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
   def insert: PackratParser[Insert] =

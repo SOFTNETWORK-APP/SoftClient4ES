@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.schema
 
 import app.softnetwork.elastic.sql.Value
@@ -82,13 +98,17 @@ case class SettingRemoved(key: String) extends SettingDiff {
   override def stmt: AlterTableStatement = DropTableSetting(key)
 }
 
-sealed trait PipelineDiff extends AlterTableStatementDiff
+sealed trait AlterPipelineStatementDiff {
+  def stmt: AlterPipelineStatement
+}
+
+sealed trait PipelineDiff extends AlterPipelineStatementDiff
 
 case class ProcessorAdded(processor: DdlProcessor) extends PipelineDiff {
-  override def stmt: AlterTableStatement = AddPipelineProcessor(processor)
+  override def stmt: AlterPipelineStatement = AddPipelineProcessor(processor)
 }
 case class ProcessorRemoved(processor: DdlProcessor) extends PipelineDiff {
-  override def stmt: AlterTableStatement =
+  override def stmt: AlterPipelineStatement =
     DropPipelineProcessor(processor.processorType, processor.column)
 }
 case class ProcessorTypeChanged(
@@ -108,7 +128,7 @@ case class ProcessorChanged(
   to: DdlProcessor,
   diff: ProcessorDiff
 ) extends PipelineDiff {
-  override def stmt: AlterTableStatement = AlterPipelineProcessor(to)
+  override def stmt: AlterPipelineStatement = AlterPipelineProcessor(to)
 }
 
 case class DdlTableDiff(
@@ -132,6 +152,21 @@ case class DdlTableDiff(
           tableName,
           ifExists,
           statements
+        )
+      )
+    }
+  }
+
+  def alterPipeline(name: String, ifExists: Boolean): Option[AlterPipeline] = {
+    val pipelineStatements = pipeline.map(_.stmt)
+    if (pipelineStatements.isEmpty) {
+      None
+    } else {
+      Some(
+        AlterPipeline(
+          name,
+          ifExists,
+          pipelineStatements
         )
       )
     }

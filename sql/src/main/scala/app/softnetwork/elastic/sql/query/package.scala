@@ -313,6 +313,53 @@ package object query {
 
   sealed trait DdlStatement extends Statement
 
+  case class CreatePipeline(
+    name: String,
+    pipelineType: DdlPipelineType,
+    ifNotExists: Boolean = false,
+    orReplace: Boolean = false,
+    processors: Seq[DdlProcessor]
+  ) extends DdlStatement {
+    override def sql: String = {
+      val processorsDdl = processors.map(_.ddl).mkString(", ")
+      val replaceClause = if (orReplace) " OR REPLACE" else ""
+      val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
+      s"CREATE$replaceClause PIPELINE$ineClause $name WITH PROCESSORS ($processorsDdl)"
+    }
+
+    lazy val ddlPipeline: DdlPipeline =
+      DdlPipeline(name, pipelineType, processors)
+  }
+
+  case class AlterPipeline(
+    name: String,
+    ifExists: Boolean,
+    statements: List[AlterPipelineStatement]
+  ) extends DdlStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) " IF EXISTS " else ""
+      val parenthesesNeeded = statements.size > 1
+      val statementsSql = if (parenthesesNeeded) {
+        statements.map(_.sql).mkString("(\n\t", ",\n\t", "\n)")
+      } else {
+        statements.map(_.sql).mkString("")
+      }
+      s"ALTER PIPELINE $name$ifExistsClause $statementsSql"
+    }
+
+    lazy val ddlProcessors: Seq[DdlProcessor] = statements.flatMap(_.ddlProcessor)
+
+    lazy val pipeline: DdlPipeline =
+      DdlPipeline(s"alter-pipeline-$name-${Instant.now}", DdlPipelineType.Custom, ddlProcessors)
+  }
+
+  case class DropPipeline(name: String, ifExists: Boolean = false) extends DdlStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      s"DROP PIPELINE $ifExistsClause$name"
+    }
+  }
+
   case class CreateTable(
     table: String,
     ddl: Either[DqlStatement, List[DdlColumn]],
@@ -324,8 +371,8 @@ package object query {
   ) extends DdlStatement {
 
     override def sql: String = {
-      val ineClause = if (ifNotExists) " IF NOT EXISTS" else ""
       val replaceClause = if (orReplace) " OR REPLACE" else ""
+      val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
       ddl match {
         case Left(select) =>
           s"CREATE$replaceClause TABLE$ineClause $table AS ${select.sql}"

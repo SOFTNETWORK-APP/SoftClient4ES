@@ -390,7 +390,12 @@ package object sql {
       .mkString("(", ", ", ")")
     override def baseType: SQLType = SQLTypes.Struct
     override def ddl: String = value
-      .map { case (k, v) => s"""$k = ${v.ddl}""" }
+      .map { case (k, v) =>
+        v match {
+          case IdValue | IngestTimestampValue => s"""$k = "${v.ddl}""""
+          case _                              => s"""$k = ${v.ddl}"""
+        }
+      }
       .mkString("(", ", ", ")")
   }
 
@@ -844,9 +849,12 @@ package object sql {
         s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
 
     lazy val processParamName: String = {
-      if (path.nonEmpty)
-        s"ctx.$path"
-      else ""
+      if (path.nonEmpty) {
+        if (path.contains("."))
+          s"ctx.${path.split("\\.").mkString("?.")}"
+        else
+          s"ctx.$path"
+      } else ""
     }
 
     lazy val processCheckNotNull: Option[String] =

@@ -16,18 +16,22 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.config.ElasticSqlConfig
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import app.softnetwork.elastic.sql.time.TimeUnit
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.fasterxml.jackson.databind.node.ObjectNode
 
 import java.util.UUID
+import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
 
 package object schema {
   val mapper: ObjectMapper = JacksonConfig.objectMapper
+
+  lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
 
   sealed trait DdlProcessorType {
     def name: String
@@ -157,6 +161,106 @@ package object schema {
     override def ddl: String = s"${processorType.name.toUpperCase}${Value(properties).ddl}"
   }
 
+  object DdlProcessor {
+    private val ScriptDescRegex =
+      """^\s*([a-zA-Z0-9_\\.]+)\s([a-zA-Z]+)\s+SCRIPT\s+AS\s*\((.*)\)\s*$""".r
+
+    def apply(processorType: DdlProcessorType, properties: ObjectValue): DdlProcessor = {
+      val node = mapper.createObjectNode()
+      val props = mapper.createObjectNode()
+      updateNode(props, properties.value)
+      node.set(processorType.name, props)
+      apply(node)
+    }
+
+    def apply(processor: JsonNode): DdlProcessor = {
+      val processorType = processor.fieldNames().next() // "set", "script", "date_index_name", etc.
+      val props = processor.get(processorType)
+
+      processorType match {
+        case "set" =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
+          val valueNode = props.get("value")
+          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
+
+          if (field == "_id") {
+            val value =
+              valueNode
+                .asText()
+                .trim
+                .stripPrefix("{{")
+                .stripSuffix("}}")
+                .trim
+            // DdlPrimaryKeyProcessor
+            val cols = value.split(sqlConfig.compositeKeySeparator).toSet
+            DdlPrimaryKeyProcessor(
+              sql = desc,
+              column = "_id",
+              value = cols,
+              ignoreFailure = ignoreFailure
+            )
+          } else {
+            DdlDefaultValueProcessor(
+              sql = desc,
+              column = field,
+              value = Value(valueNode.asText()),
+              ignoreFailure = ignoreFailure
+            )
+          }
+
+        case "script" =>
+          val desc = props.get("description").asText()
+          val lang = props.get("lang").asText()
+          require(lang == "painless", s"Only painless supported, got $lang")
+          val source = props.get("source").asText()
+          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
+
+          desc match {
+            case ScriptDescRegex(col, dataType, script) =>
+              DdlScriptProcessor(
+                script = script,
+                column = col,
+                dataType = SQLTypes(dataType),
+                source = source,
+                ignoreFailure = ignoreFailure
+              )
+            case _ =>
+              GenericProcessor(
+                processorType = DdlProcessorType.Script,
+                properties =
+                  mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+              )
+          }
+
+        case "date_index_name" =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
+          val rounding = props.get("date_rounding").asText()
+          val formats = Option(props.get("date_formats"))
+            .map(_.elements().asScala.toList.map(_.asText()))
+            .getOrElse(Nil)
+          val prefix = props.get("index_name_prefix").asText()
+
+          DdlDateIndexNameProcessor(
+            sql = desc,
+            column = field,
+            dateRounding = rounding,
+            dateFormats = formats,
+            prefix = prefix
+          )
+
+        case other =>
+          GenericProcessor(
+            processorType = DdlProcessorType(other),
+            properties =
+              mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+          )
+
+      }
+    }
+  }
+
   case class GenericProcessor(processorType: DdlProcessorType, properties: Map[String, Any])
       extends DdlProcessor {
     override def sql: String = ddl
@@ -235,7 +339,7 @@ package object schema {
     value: Set[String],
     ignoreFailure: Boolean = false,
     ignoreEmptyValue: Boolean = false,
-    separator: String = "|"
+    separator: String = "\\|\\|"
   ) extends DdlProcessor {
     def processorType: DdlProcessorType = DdlProcessorType.Set
 
@@ -259,7 +363,7 @@ package object schema {
 
     def _if: String = {
       if (column.contains("."))
-        s"""ctx.${column.split(".").mkString("?.")} == null"""
+        s"""ctx.${column.split("\\.").mkString("?.")} == null"""
       else
         s"""ctx.$column == null"""
     }
