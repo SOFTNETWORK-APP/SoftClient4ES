@@ -1,11 +1,11 @@
-# DDL Support
+# Data Definition Language (DDL) Support
 [Back to index](README.md)
 
 This document describes the SQL statements supported by the API, focusing on **Data Definition Language (DDL)**. Each section provides syntax, examples, and notes on behavior.
 
 ---
 
-## 📐 Data Definition Language (DDL)
+## 📐 Table (DDLs)
 
 ### CREATE TABLE
 Create a new table with explicit column definitions or from a `SELECT` query.
@@ -349,7 +349,7 @@ PUT _ingest/pipeline/users-composite-id
     {
       "set": {
         "field": "_id",
-        "value": "{{id}}|{{birthdate}}"
+        "value": "{{id}}||{{birthdate}}"
       }
     }
   ]
@@ -358,7 +358,7 @@ PUT _ingest/pipeline/users-composite-id
 
 - `_id` is built from the values of `id` and `birthdate`.
 - Example: `id = 42`, `birthdate = 2025-12-10` → `_id = "42|2025-12-10"`.
-- The separator (`|`) can be customized to avoid collisions (elastic.composite-key-separator).
+- The separator (`||`) can be customized to avoid collisions (sql.composite-key-separator).
 
 ---
 
@@ -440,6 +440,175 @@ PUT _ingest/pipeline/users-pipeline
 - They are **persisted** in `_source`, unlike runtime fields.
 - SQL expressions are translated into equivalent **Painless** code.
 - This feature allows declarative enrichment directly in the DDL.
+
+---
+
+## 🧩 Pipeline DDLs
+
+Pipelines define ordered ingestion processors that transform documents before they are indexed.  
+The SQL‑ES dialect supports three pipeline‑related statements:
+
+- `CREATE PIPELINE`
+- `DROP PIPELINE`
+- `ALTER PIPELINE`
+
+These statements allow users to declare, replace, remove, or modify ingestion pipelines in a declarative SQL‑style syntax.
+
+---
+
+### 🚀 CREATE PIPELINE
+
+#### **Syntax**
+
+```sql
+CREATE [OR REPLACE] PIPELINE pipeline_name
+[IF NOT EXISTS]
+WITH PROCESSORS (
+    processor_1,
+    processor_2,
+    ...
+);
+```
+
+#### **Description**
+
+- Creates a new ingestion pipeline.
+- `OR REPLACE` overwrites an existing pipeline.
+- `IF NOT EXISTS` prevents an error if the pipeline already exists.
+- Processors are executed **in the order they are declared**.
+
+#### **Supported Processor Types**
+
+| SQL Processor | Elasticsearch Equivalent | Purpose |
+|--------------|---------------------------|---------|
+| `SET` | `set` | Assigns a value to a field in `ctx` |
+| `SCRIPT` | `script` | Executes a Painless script |
+| `REMOVE` | `remove` | Removes a field |
+| `RENAME` | `rename` | Renames a field |
+| `DATE_INDEX_NAME` | `date_index_name` | Generates an index name based on a date field |
+
+#### **Example**
+
+```sql
+CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
+    SET (
+        field = "name",
+        if = "ctx.name == null",
+        description = "DEFAULT 'anonymous'",
+        ignore_failure = true,
+        value = "anonymous"
+    ),
+    SCRIPT (
+        description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))",
+        lang = "painless",
+        source = "...",
+        ignore_failure = true
+    ),
+    DATE_INDEX_NAME (
+        field = "birthdate",
+        index_name_prefix = "users-",
+        date_formats = ["yyyy-MM"],
+        date_rounding = "M",
+        separator = "-",
+        ignore_failure = true
+    )
+);
+```
+
+---
+
+### 🗑️ DROP PIPELINE
+
+#### **Syntax**
+
+```sql
+DROP PIPELINE [IF EXISTS] pipeline_name;
+```
+
+#### **Description**
+
+- Deletes a pipeline.
+- `IF EXISTS` prevents an error if the pipeline does not exist.
+
+#### **Example**
+
+```sql
+DROP PIPELINE IF EXISTS user_pipeline;
+```
+
+---
+
+### 🔧 ALTER PIPELINE
+
+#### **Syntax**
+
+```sql
+ALTER PIPELINE [IF EXISTS] pipeline_name (
+    alter_action_1,
+    alter_action_2,
+    ...
+);
+```
+
+#### **Supported Actions**
+
+| Action | Description |
+|--------|-------------|
+| `ADD PROCESSOR <processor>` | Appends a processor to the pipeline |
+| `DROP PROCESSOR <type> (<field>)` | Removes a processor identified by its type and field |
+| *(Optional future extension)* `ALTER PROCESSOR` | Modify an existing processor |
+
+#### **Example**
+
+```sql
+ALTER PIPELINE IF EXISTS user_pipeline (
+    ADD PROCESSOR SET (
+        field = "status",
+        if = "ctx.status == null",
+        description = "status DEFAULT 'active'",
+        ignore_failure = true,
+        value = "active"
+    ),
+    DROP PROCESSOR SET (_id)
+);
+```
+
+---
+
+### 📐 Semantic Rules
+
+#### **Processor Identity**
+
+A processor is uniquely identified by:
+
+```
+(processor_type, field)
+```
+
+This means:
+
+- Changing the type or field is equivalent to removing the old processor and adding a new one.
+- Property changes are treated as processor modifications.
+
+#### **Processor Ordering**
+
+Ordering matters for certain processors:
+
+- `DATE_INDEX_NAME` must appear last.
+- `SET _id` must appear last.
+- `RENAME` and `REMOVE` should appear before `SCRIPT`.
+
+Other processors may be reordered without semantic impact.
+
+---
+
+### 📦 Summary of Supported Pipeline DDLs
+
+| Statement | Purpose |
+|----------|----------|
+| `CREATE PIPELINE` | Define or replace a pipeline |
+| `DROP PIPELINE` | Remove a pipeline |
+| `ALTER PIPELINE` | Add or remove processors |
 
 ---
 
