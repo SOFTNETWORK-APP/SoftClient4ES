@@ -518,8 +518,7 @@ package object schema {
       if (path.contains(".")) {
         val parts = path.split("\\.")
         cols.get(parts.head).flatMap { col =>
-          col.multiFields
-            .to(LazyList)
+          col.multiFields.toStream
             .flatMap(_.find(parts.tail.mkString(".")))
             .headOption
         }
@@ -837,8 +836,7 @@ package object schema {
       if (path.contains(".")) {
         val parts = path.split("\\.")
         cols.get(parts.head).flatMap { col =>
-          col.multiFields
-            .to(LazyList)
+          col.multiFields.toStream
             .flatMap(_.find(parts.tail.mkString(".")))
             .headOption
         }
@@ -907,7 +905,9 @@ package object schema {
     }
 
     def ddlProcessors: Seq[DdlProcessor] =
-      columns.flatMap(_.ddlProcessors) ++ partitionBy.map(_.ddlProcessor(this)).toSeq ++ primaryKey
+      columns.flatMap(_.ddlProcessors) ++ partitionBy
+        .map(_.ddlProcessor(this))
+        .toSeq ++ implicitly[Seq[DdlProcessor]](primaryKey)
 
     def merge(statements: Seq[AlterTableStatement]): DdlTable = {
       statements.foldLeft(this) { (table, statement) =>

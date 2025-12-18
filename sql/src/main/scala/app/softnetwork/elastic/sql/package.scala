@@ -513,6 +513,8 @@ package object sql {
     def empty: ObjectValue = ObjectValue(Map.empty)
 
     def fromJson(jsonNode: JsonNode): ObjectValue = jsonNode
+
+    def parseJson(jsonString: String): ObjectValue = jsonString
   }
 
   case object Null extends Value[Null](null) with TokenRegex {

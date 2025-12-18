@@ -133,4 +133,26 @@ package object serialization {
       .toMap
   }
 
+  private[elastic] def extractArray(
+    node: JsonNode
+  ): Seq[Value[_]] = {
+    node
+      .elements()
+      .asScala
+      .flatMap { element =>
+        Value(element).map(Value(_))
+      }
+      .toSeq
+  }
+
+  implicit def toJson(json: String): JsonNode = {
+    import JacksonConfig.{objectMapper => mapper}
+    mapper.readTree(json)
+  }
+
+  implicit def stringToObjectValue(json: String): ObjectValue = {
+    import JacksonConfig.{objectMapper => mapper}
+    mapper.readTree(json)
+  }
+
 }

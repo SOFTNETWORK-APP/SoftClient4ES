@@ -265,7 +265,7 @@ package object schema {
       }
 
       // 3. Enrichment from the pipeline (if provided)
-      val enrichedCols = scala.collection.mutable.Map.from(initialCols)
+      val enrichedCols = scala.collection.mutable.Map(initialCols.toSeq: _*)
 
       esPipeline.foreach { pipeline =>
         pipeline.processors.foreach {
