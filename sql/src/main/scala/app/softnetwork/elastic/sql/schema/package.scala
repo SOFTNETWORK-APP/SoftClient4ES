@@ -33,6 +33,53 @@ package object schema {
 
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
 
+  sealed trait Diff
+
+  case class Altered(name: String, value: Value[_]) extends Diff
+
+  case class Removed(name: String) extends Diff
+
+  private def compareOptions(
+    actual: Map[String, Value[_]],
+    desired: Map[String, Value[_]],
+    path: Option[String] = None
+  ): List[Diff] = {
+    val diffs = scala.collection.mutable.ListBuffer[Diff]()
+
+    val allKeys = actual.keySet ++ desired.keySet
+
+    allKeys.foreach { key =>
+      val computedKey = s"${path.map(p => s"$p.").getOrElse("")}$key"
+      (actual.get(key), desired.get(key)) match {
+        case (None, Some(v)) =>
+          diffs += Altered(computedKey, v)
+        case (Some(_), None) =>
+          diffs += Removed(computedKey)
+        case (Some(a), Some(b)) =>
+          b match {
+            case ObjectValue(desiredMap) =>
+              a match {
+                case ObjectValue(actualMap) =>
+                  diffs ++= compareOptions(
+                    actualMap,
+                    desiredMap,
+                    Some(computedKey)
+                  )
+                case _ =>
+                  diffs += Altered(computedKey, b)
+              }
+            case _ =>
+              if (a != b) {
+                diffs += Altered(computedKey, b)
+              }
+          }
+        case _ =>
+      }
+    }
+
+    diffs.toList
+  }
+
   sealed trait DdlProcessorType {
     def name: String
   }
@@ -669,52 +716,144 @@ package object schema {
       val diffs = scala.collection.mutable.ListBuffer[ColumnDiff]()
 
       // 1. Type
-      if (SQLTypeUtils.elasticType(actual.dataType) != SQLTypeUtils.elasticType(desired.dataType))
-        diffs += ColumnTypeChanged(path, actual.dataType, desired.dataType)
+      if (SQLTypeUtils.elasticType(actual.dataType) != SQLTypeUtils.elasticType(desired.dataType)) {
+        parent match {
+          case Some(p) =>
+            diffs += FieldAltered(
+              p.path,
+              desired
+            )
+          case None => diffs += ColumnTypeChanged(path, actual.dataType, desired.dataType)
+        }
+      }
 
       // 2. Default
       (actual.defaultValue, desired.defaultValue) match {
-        case (None, Some(v)) => diffs += ColumnDefaultSet(path, v)
-        case (Some(_), None) => diffs += ColumnDefaultRemoved(path)
+        case (None, Some(v)) =>
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None =>
+              diffs += ColumnDefaultSet(path, v)
+          }
+        case (Some(_), None) =>
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnDefaultRemoved(path)
+          }
         case (Some(a), Some(b)) if a != b =>
-          diffs += ColumnDefaultSet(path, b)
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnDefaultSet(path, b)
+          }
         case _ =>
       }
 
       // 3. Script
       (actual.script, desired.script) match {
-        case (None, Some(s)) => diffs += ColumnScriptSet(path, s)
-        case (Some(_), None) => diffs += ColumnScriptRemoved(path)
+        case (None, Some(s)) =>
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None =>
+              diffs += ColumnScriptSet(path, s)
+          }
+        case (Some(_), None) =>
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnScriptRemoved(path)
+          }
         case (Some(a), Some(b)) if a.sql != b.sql =>
-          diffs += ColumnScriptSet(path, b)
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnScriptSet(path, b)
+          }
         case _ =>
       }
 
       // 4. Comment
       (actual.comment, desired.comment) match {
-        case (None, Some(c)) => diffs += ColumnCommentSet(path, c)
-        case (Some(_), None) => diffs += ColumnCommentRemoved(path)
+        case (None, Some(c)) =>
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnCommentSet(path, c)
+          }
+        case (Some(_), None) =>
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnCommentRemoved(path)
+          }
         case (Some(a), Some(b)) if a != b =>
-          diffs += ColumnCommentSet(path, b)
+          parent match {
+            case Some(p) =>
+              diffs += FieldAltered(
+                p.path,
+                desired
+              )
+            case None => diffs += ColumnCommentSet(path, b)
+          }
         case _ =>
       }
 
       // 5. Not Null
       if (actual.notNull != desired.notNull) {
-        if (desired.notNull) diffs += ColumnNotNullSet(path)
-        else diffs += ColumnNotNullRemoved(path)
+        parent match {
+          case Some(p) =>
+            diffs += FieldAltered(
+              p.path,
+              desired
+            )
+          case None =>
+            if (desired.notNull) diffs += ColumnNotNullSet(path)
+            else diffs += ColumnNotNullRemoved(path)
+        }
       }
 
       // 6. Options
-      val allOptions = actual.options.keySet ++ desired.options.keySet
-      for (key <- allOptions) {
-        (actual.options.get(key), desired.options.get(key)) match {
-          case (None, Some(v)) => diffs += ColumnOptionSet(path, key, v)
-          case (Some(_), None) => diffs += ColumnOptionRemoved(path, key)
-          case (Some(a), Some(b)) if a != b =>
-            diffs += ColumnOptionSet(path, key, b)
-          case _ =>
-        }
+      val optionDiffs = compareOptions(actual.options, desired.options)
+      parent match {
+        case Some(p) =>
+          if (optionDiffs.nonEmpty) {
+            diffs += FieldAltered(
+              p.path,
+              desired
+            )
+          }
+        case None =>
+          diffs ++= optionDiffs.map {
+            case Altered(name, value) => ColumnOptionSet(path, name, value)
+            case Removed(name)        => ColumnOptionRemoved(path, name)
+          }
       }
 
       // 7. STRUCT / multi-fields
@@ -1200,28 +1339,16 @@ package object schema {
 
       // 4. Mappings
       val mappingDiffs = scala.collection.mutable.ListBuffer[MappingDiff]()
-      val allMappings = actual.mappings.keySet ++ desiredUpdated.mappings.keySet
-      for (key <- allMappings) {
-        (actual.mappings.get(key), desiredUpdated.mappings.get(key)) match {
-          case (None, Some(v)) => mappingDiffs += MappingSet(key, v)
-          case (Some(_), None) => mappingDiffs += MappingRemoved(key)
-          case (Some(a), Some(b)) if a != b =>
-            mappingDiffs += MappingSet(key, b)
-          case _ =>
-        }
+      mappingDiffs ++= compareOptions(actual.mappings, desired.mappings).map {
+        case Altered(name, value) => MappingSet(name, value)
+        case Removed(name)        => MappingRemoved(name)
       }
 
       // 5. Settings
       val settingDiffs = scala.collection.mutable.ListBuffer[SettingDiff]()
-      val allSettings = actual.settings.keySet ++ desiredUpdated.settings.keySet
-      for (key <- allSettings) {
-        (actual.settings.get(key), desiredUpdated.settings.get(key)) match {
-          case (None, Some(v)) => settingDiffs += SettingSet(key, v)
-          case (Some(_), None) => settingDiffs += SettingRemoved(key)
-          case (Some(a), Some(b)) if a != b =>
-            settingDiffs += SettingSet(key, b)
-          case _ =>
-        }
+      settingDiffs ++= compareOptions(actual.settings, desiredUpdated.settings).map {
+        case Altered(name, value) => SettingSet(name, value)
+        case Removed(name)        => SettingRemoved(name)
       }
 
       // 6. Pipeline

@@ -79,6 +79,9 @@ case class FieldAdded(column: String, field: DdlColumn) extends ColumnDiff {
 case class FieldRemoved(column: String, fieldName: String) extends ColumnDiff {
   override def stmt: AlterTableStatement = DropColumnField(column, fieldName)
 }
+case class FieldAltered(column: String, field: DdlColumn) extends ColumnDiff {
+  override def stmt: AlterTableStatement = AlterColumnField(column, field)
+}
 
 sealed trait MappingDiff extends AlterTableStatementDiff
 
