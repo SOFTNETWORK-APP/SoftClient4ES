@@ -551,6 +551,24 @@ package object schema {
   ) extends DdlToken {
     def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
     private def level: Int = struct.map(_.level + 1).getOrElse(0)
+
+    private def cols: Map[String, DdlColumn] = multiFields.map(field => field.name -> field).toMap
+
+    /* Recursive find */
+    def find(path: String): Option[DdlColumn] = {
+      if (path.contains(".")) {
+        val parts = path.split("\\.")
+        cols.get(parts.head).flatMap { col =>
+          col.multiFields
+            .to(LazyList)
+            .flatMap(_.find(parts.tail.mkString(".")))
+            .headOption
+        }
+      } else {
+        cols.get(path)
+      }
+    }
+
     def update(struct: Option[DdlColumn] = None): DdlColumn = {
       val updated = this.copy(struct = struct)
       val updated_script =
@@ -763,6 +781,20 @@ package object schema {
     processors: Seq[DdlProcessor] = Seq.empty
   ) extends DdlToken {
     private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
+
+    def find(path: String): Option[DdlColumn] = {
+      if (path.contains(".")) {
+        val parts = path.split("\\.")
+        cols.get(parts.head).flatMap { col =>
+          col.multiFields
+            .to(LazyList)
+            .flatMap(_.find(parts.tail.mkString(".")))
+            .headOption
+        }
+      } else {
+        cols.get(path)
+      }
+    }
 
     private lazy val _meta: Map[String, Value[_]] = Map.empty ++ {
       if (primaryKey.nonEmpty)
@@ -983,55 +1015,54 @@ package object schema {
               )
             else throw DdlColumnNotFound(columnName, table.name)
           case AlterColumnFields(columnName, newFields, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(multiFields = newFields.toList)
-                  else col
-                }
-              )
-            else throw DdlColumnNotFound(columnName, table.name)
+            val col = find(columnName)
+            val exists = col.isDefined
+            if (ifExists && !exists) table
+            else {
+              col match {
+                case Some(c) =>
+                  c.copy(
+                    multiFields = newFields.toList
+                  )
+                  table
+                case _ => throw DdlColumnNotFound(columnName, table.name)
+              }
+            }
           case AlterColumnField(
                 columnName,
                 field,
                 ifExists
               ) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) {
-                    val updatedFields = if (col.multiFields.exists(_.name == field.name)) {
-                      col.multiFields.map { f =>
-                        if (f.name == field.name) field else f
-                      }
-                    } else {
-                      col.multiFields :+ field
-                    }
-                    col.copy(multiFields = updatedFields)
-                  } else col
-                }
-              )
-            else throw DdlColumnNotFound(columnName, table.name)
+            val col = find(columnName)
+            val exists = col.isDefined
+            if (ifExists && !exists) table
+            else {
+              col match {
+                case Some(c) =>
+                  val updatedFields = c.multiFields.filterNot(_.name == field.name) :+ field
+                  c.copy(multiFields = updatedFields)
+                  table
+                case _ => throw DdlColumnNotFound(columnName, table.name)
+              }
+            }
           case DropColumnField(
                 columnName,
                 fieldName,
                 ifExists
               ) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(
-                      multiFields = col.multiFields.filterNot(_.name == fieldName)
-                    )
-                  else col
-                }
-              )
-            else throw DdlColumnNotFound(columnName, table.name)
+            val col = find(columnName)
+            val exists = col.isDefined
+            if (ifExists && !exists) table
+            else {
+              col match {
+                case Some(c) =>
+                  c.copy(
+                    multiFields = c.multiFields.filterNot(_.name == fieldName)
+                  )
+                  table
+                case _ => throw DdlColumnNotFound(columnName, table.name)
+              }
+            }
           case AlterColumnOption(
                 columnName,
                 optionKey,

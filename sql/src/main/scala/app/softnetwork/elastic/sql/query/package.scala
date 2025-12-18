@@ -602,7 +602,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName ADD FIELD $field"
+      s"ALTER COLUMN$ifExistsClause $columnName SET FIELD $field"
     }
   }
   case class DropColumnField(

@@ -1388,7 +1388,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
                 )
               ) =>
             source should include(
-              "def param1 = ctx.profile.join_date; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null  = ChronoUnit.DAYS.between(param1, param2)"
+              "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null  = ChronoUnit.DAYS.between(param1, param2)"
             )
           case other => fail(s"Expected DdlScriptProcessor for profile.seniority, got $other")
         }
