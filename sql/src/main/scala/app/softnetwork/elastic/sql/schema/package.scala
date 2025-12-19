@@ -495,8 +495,52 @@ package object schema {
       // 5. Optional: detect reordering for processors where order matters
       diffs.toList
     }
+
+    def merge(statements: Seq[AlterPipelineStatement]): DdlPipeline = {
+      statements.foldLeft(this) { (current, alter) =>
+        alter match {
+          case AddPipelineProcessor(processor) =>
+            current.copy(ddlProcessors =
+              current.ddlProcessors.filterNot(p =>
+                p.processorType == processor.processorType && p.column == processor.column
+              ) :+ processor
+            )
+          case DropPipelineProcessor(processorType, column) =>
+            current.copy(ddlProcessors =
+              current.ddlProcessors.filterNot(p =>
+                p.processorType == processorType && p.column == column
+              )
+            )
+          case AlterPipelineProcessor(processor) =>
+            current.copy(ddlProcessors = current.ddlProcessors.map { p =>
+              if (p.processorType == processor.processorType && p.column == processor.column) {
+                processor
+              } else {
+                p
+              }
+            })
+        }
+      }
+    }
   }
 
+  object DdlPipeline {
+    def apply(name: String, json: String): DdlPipeline = {
+      val node = mapper.readTree(json)
+      val processorsNode = node.get("processors")
+      val processors = processorsNode.elements().asScala.toSeq.map { p =>
+        DdlProcessor(p)
+      }
+      DdlPipeline(
+        name = name,
+        ddlPipelineType =
+          if (name.startsWith("default-")) DdlPipelineType.Default
+          else if (name.startsWith("final-")) DdlPipelineType.Final
+          else DdlPipelineType.Custom,
+        ddlProcessors = processors
+      )
+    }
+  }
   case class DdlColumn(
     name: String,
     dataType: SQLType,

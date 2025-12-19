@@ -186,6 +186,16 @@ trait ElasticClientHelpers {
     validateJson("validateJsonMappings", mappings)
   }
 
+  /** Validate the JSON pipeline definition.
+    * @param pipelineDefinition
+    *   pipeline definition in JSON format
+    * @return
+    *   Some(ElasticError) if invalid, None if valid
+    */
+  protected def validateJsonPipeline(pipelineDefinition: String): Option[ElasticError] = {
+    validateJson("validateJsonPipeline", pipelineDefinition)
+  }
+
   /** Validate the alias name. Aliases follow the same rules as indexes.
     * @param alias
     *   alias name to validate
@@ -203,6 +213,44 @@ trait ElasticClientHelpers {
         )
       case None => None
     }
+  }
+
+  /** Validate the pipeline name. Pipelines do not follow the same rules as indexes. only
+    * alphanumeric characters, points (.), underscores (_), hyphens (-) and at-signs (@) are allowed
+    * @param pipelineName
+    *   pipeline name to validate
+    * @return
+    *   Some(ElasticError) if invalid, None if valid
+    */
+  protected def validatePipelineName(pipelineName: String): Option[ElasticError] = {
+    if (pipelineName == null || pipelineName.trim.isEmpty) {
+      return Some(
+        ElasticError(
+          message = "Pipeline name cannot be empty",
+          cause = None,
+          statusCode = Some(400),
+          operation = Some("validatePipelineName")
+        )
+      )
+    }
+
+    val trimmed = pipelineName.trim
+
+    val pattern = "^[a-zA-Z0-9._\\-@]+$".r
+
+    if (!pattern.matches(trimmed)) {
+      return Some(
+        ElasticError(
+          message =
+            "Pipeline name contains invalid characters: only alphanumeric characters, points (.), underscores (_), hyphens (-) and at-signs (@) are allowed",
+          cause = None,
+          statusCode = Some(400),
+          operation = Some("validatePipelineName")
+        )
+      )
+    }
+
+    None
   }
 
   /** Logger une erreur avec le niveau approprié selon le status code. */

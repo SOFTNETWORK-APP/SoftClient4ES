@@ -45,6 +45,7 @@ trait JestClientApi
     with JestScrollApi
     with JestBulkApi
     with JestVersionApi
+    with JestPipelineApi
     with JestClientCompanion
 
 object JestClientApi extends SerializationApi {

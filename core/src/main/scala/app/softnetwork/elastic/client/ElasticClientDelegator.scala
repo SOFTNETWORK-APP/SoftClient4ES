@@ -1406,4 +1406,35 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   /** Conversion BulkActionType -> BulkItem */
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     delegate.actionToBulkItem(action.asInstanceOf)
+
+  // ==================== PipelineApi (délégation) ====================
+
+  override def createPipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] = {
+    delegate.createPipeline(pipelineName, pipelineDefinition)
+  }
+
+  override def deletePipeline(pipelineName: String): ElasticResult[Boolean] = {
+    delegate.deletePipeline(pipelineName)
+  }
+
+  override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
+    delegate.getPipeline(pipelineName)
+  }
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.executeCreatePipeline(pipelineName, pipelineDefinition)
+
+  override private[client] def executeDeletePipeline(pipelineName: String): ElasticResult[Boolean] =
+    delegate.executeDeletePipeline(pipelineName)
+
+  override private[client] def executeGetPipeline(
+    pipelineName: String
+  ): ElasticResult[Option[String]] =
+    delegate.executeGetPipeline(pipelineName)
 }

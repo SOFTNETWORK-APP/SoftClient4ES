@@ -1077,4 +1077,21 @@ class MetricsElasticClient(
   override def resetMetrics(): Unit = {
     metricsCollector.resetMetrics()
   }
+
+  // ==================== PipelineApi (délégation) ====================
+
+  override def createPipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] = {
+    delegate.createPipeline(pipelineName, pipelineDefinition)
+  }
+
+  override def deletePipeline(pipelineName: String): ElasticResult[Boolean] = {
+    delegate.deletePipeline(pipelineName)
+  }
+
+  override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
+    delegate.getPipeline(pipelineName)
+  }
 }

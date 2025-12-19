@@ -49,6 +49,11 @@ import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESS
 import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
+import co.elastic.clients.elasticsearch.ingest.{
+  DeletePipelineRequest,
+  GetPipelineRequest,
+  PutPipelineRequest
+}
 import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
@@ -76,6 +81,7 @@ trait JavaClientApi
     with JavaClientScrollApi
     with JavaClientCompanion
     with JavaClientVersionApi
+    with JavaClientPipelineApi
 
 /** Elasticsearch client implementation using the Java Client
   * @see
@@ -1502,6 +1508,68 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
       apply().clearScroll(clearRequest)
     }.recover { case ex: Exception =>
       logger.warn(s"Failed to clear scroll $scrollId: ${ex.getMessage}")
+    }
+  }
+}
+
+trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers {
+  _: JavaClientCompanion with SerializationApi =>
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): result.ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "createPipeline",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .ingest()
+        .putPipeline(
+          new PutPipelineRequest.Builder()
+            .id(pipelineName)
+            .withJson(new StringReader(pipelineDefinition))
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeDeletePipeline(
+    pipelineName: String
+  ): result.ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deletePipeline",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .ingest()
+        .deletePipeline(
+          new DeletePipelineRequest.Builder()
+            .id(pipelineName)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeGetPipeline(
+    pipelineName: String
+  ): ElasticResult[Option[String]] = {
+    executeJavaAction(
+      operation = "getPipeline",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .ingest()
+        .getPipeline(
+          new GetPipelineRequest.Builder()
+            .id(pipelineName)
+            .build()
+        )
+    ) { resp =>
+      resp.pipelines().asScala.get(pipelineName).map { pipeline =>
+        pipeline.toString
+      }
     }
   }
 }

@@ -45,6 +45,7 @@ trait ElasticClientApi
     with FlushApi
     with VersionApi
     with SerializationApi
+    with PipelineApi
     with ClientCompanion {
 
   protected def logger: Logger

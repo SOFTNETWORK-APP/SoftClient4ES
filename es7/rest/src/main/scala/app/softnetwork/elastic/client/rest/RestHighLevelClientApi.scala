@@ -40,6 +40,12 @@ import org.elasticsearch.action.bulk.{BulkRequest, BulkResponse}
 import org.elasticsearch.action.delete.{DeleteRequest, DeleteResponse}
 import org.elasticsearch.action.get.{GetRequest, GetResponse}
 import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
+import org.elasticsearch.action.ingest.{
+  DeletePipelineRequest,
+  GetPipelineRequest,
+  GetPipelineResponse,
+  PutPipelineRequest
+}
 import org.elasticsearch.action.search.{
   ClearScrollRequest,
   ClosePointInTimeRequest,
@@ -64,6 +70,7 @@ import org.elasticsearch.client.indices.{
   PutMappingRequest
 }
 import org.elasticsearch.common.Strings
+import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.core.TimeValue
 import org.elasticsearch.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
@@ -96,6 +103,7 @@ trait RestHighLevelClientApi
     with RestHighLevelClientScrollApi
     with RestHighLevelClientCompanion
     with RestHighLevelClientVersion
+    with RestHighLevelClientPipelineApi
 
 /** Version API implementation for RestHighLevelClient
   * @see
@@ -1563,5 +1571,62 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     }.recover { case ex: Exception =>
       logger.warn(s"Failed to clear scroll $scrollId: ${ex.getMessage}")
     }
+  }
+}
+
+trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion with SerializationApi =>
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): result.ElasticResult[Boolean] =
+    executeRestBooleanAction[PutPipelineRequest, AcknowledgedResponse](
+      operation = "createPipeline",
+      retryable = false
+    )(
+      request = new PutPipelineRequest(
+        pipelineName,
+        new BytesArray(pipelineDefinition),
+        XContentType.JSON
+      )
+    )(
+      executor = req => apply().ingest().putPipeline(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeDeletePipeline(
+    pipelineName: String
+  ): result.ElasticResult[Boolean] = {
+    executeRestBooleanAction[DeletePipelineRequest, AcknowledgedResponse](
+      operation = "deletePipeline",
+      retryable = false
+    )(
+      request = new DeletePipelineRequest(pipelineName)
+    )(
+      executor = req => apply().ingest().deletePipeline(req, RequestOptions.DEFAULT)
+    )
+  }
+
+  override private[client] def executeGetPipeline(
+    pipelineName: JSONQuery
+  ): result.ElasticResult[Option[JSONQuery]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[JSONQuery]](
+      operation = "getPipeline",
+      retryable = true
+    )(
+      request = new GetPipelineRequest(pipelineName)
+    )(
+      executor = req => apply().ingest().getPipeline(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val pipelines = resp.pipelines().asScala
+        if (pipelines.nonEmpty) {
+          val pipeline = pipelines.head
+          Some(pipeline.toString)
+        } else {
+          None
+        }
+      }
+    )
   }
 }

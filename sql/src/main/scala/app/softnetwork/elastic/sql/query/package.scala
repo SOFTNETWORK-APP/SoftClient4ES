@@ -313,13 +313,15 @@ package object query {
 
   sealed trait DdlStatement extends Statement
 
+  sealed trait PipelineDdlStatement extends DdlStatement
+
   case class CreatePipeline(
     name: String,
     pipelineType: DdlPipelineType,
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     processors: Seq[DdlProcessor]
-  ) extends DdlStatement {
+  ) extends PipelineDdlStatement {
     override def sql: String = {
       val processorsDdl = processors.map(_.ddl).mkString(", ")
       val replaceClause = if (orReplace) " OR REPLACE" else ""
@@ -331,11 +333,26 @@ package object query {
       DdlPipeline(name, pipelineType, processors)
   }
 
+  sealed trait AlterPipelineStatement extends AlterTableStatement
+
+  case class AddPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
+    override def sql: String = s"ADD PROCESSOR ${processor.ddl}"
+    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
+  }
+  case class DropPipelineProcessor(processorType: DdlProcessorType, column: String)
+      extends AlterPipelineStatement {
+    override def sql: String = s"DROP PROCESSOR ${processorType.name.toUpperCase}($column)"
+  }
+  case class AlterPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
+    override def sql: String = s"ALTER PROCESSOR ${processor.ddl}"
+    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
+  }
+
   case class AlterPipeline(
     name: String,
     ifExists: Boolean,
     statements: List[AlterPipelineStatement]
-  ) extends DdlStatement {
+  ) extends PipelineDdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS " else ""
       val parenthesesNeeded = statements.size > 1
@@ -353,7 +370,7 @@ package object query {
       DdlPipeline(s"alter-pipeline-$name-${Instant.now}", DdlPipelineType.Custom, ddlProcessors)
   }
 
-  case class DropPipeline(name: String, ifExists: Boolean = false) extends DdlStatement {
+  case class DropPipeline(name: String, ifExists: Boolean = false) extends PipelineDdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP PIPELINE $ifExistsClause$name"
@@ -632,21 +649,6 @@ package object query {
   case class DropTableSetting(optionKey: String) extends AlterTableStatement {
     override def sql: String =
       s"DROP SETTING $optionKey"
-  }
-
-  sealed trait AlterPipelineStatement extends AlterTableStatement
-
-  case class AddPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
-    override def sql: String = s"ADD PROCESSOR ${processor.ddl}"
-    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
-  }
-  case class DropPipelineProcessor(processorType: DdlProcessorType, column: String)
-      extends AlterPipelineStatement {
-    override def sql: String = s"DROP PROCESSOR ${processorType.name.toUpperCase}($column)"
-  }
-  case class AlterPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
-    override def sql: String = s"ALTER PROCESSOR ${processor.ddl}"
-    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
   }
 
   case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)
