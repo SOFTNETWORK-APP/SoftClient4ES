@@ -24,6 +24,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.{Alias, IndicesAliasesRequest}
@@ -751,7 +752,9 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
   _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch): String =
+  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long
+  ): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   override private[client] def executeSingleSearch(
@@ -1400,7 +1403,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   }
 }
 
-trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClientHelpers {
+trait RestHighLevelClientPipelineApi
+    extends PipelineApi
+    with RestHighLevelClientHelpers
+    with RestHighLevelClientVersion {
   _: RestHighLevelClientCompanion with SerializationApi =>
 
   override private[client] def executeCreatePipeline(
@@ -1421,7 +1427,8 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
     )
 
   override private[client] def executeDeletePipeline(
-    pipelineName: String
+    pipelineName: String,
+    ifExists: Boolean
   ): result.ElasticResult[Boolean] = {
     executeRestBooleanAction[DeletePipelineRequest, AcknowledgedResponse](
       operation = "deletePipeline",
@@ -1448,7 +1455,9 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
         val pipelines = resp.pipelines().asScala
         if (pipelines.nonEmpty) {
           val pipeline = pipelines.head
-          Some(pipeline.toString)
+          val config = pipeline.getConfigAsMap
+          val mapper = JacksonConfig.objectMapper
+          Some(mapper.writeValueAsString(config))
         } else {
           None
         }

@@ -21,7 +21,9 @@ import com.sksamuel.elastic4s.requests.searches.queries.Query
 
 case class ElasticCriteria(criteria: Criteria) {
 
-  def asQuery(group: Boolean = true, innerHitsNames: Set[String] = Set.empty): Query = {
+  def asQuery(group: Boolean = true, innerHitsNames: Set[String] = Set.empty)(implicit
+    timestamp: Long
+  ): Query = {
     val query = criteria.boolQuery.copy(group = group)
     query
       .filter(criteria.asFilter(Option(query)))

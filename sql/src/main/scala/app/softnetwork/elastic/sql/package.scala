@@ -153,6 +153,13 @@ package object sql {
 
     def isProcessor: Boolean = context == PainlessContextType.Processor
 
+    lazy val timestamp: String = {
+      context match {
+        case PainlessContextType.Processor => CurrentFunction.processorTimestamp
+        case PainlessContextType.Query     => CurrentFunction.queryTimestamp
+      }
+    }
+
     /** Add a token parameter to the context if not already present
       *
       * @param token

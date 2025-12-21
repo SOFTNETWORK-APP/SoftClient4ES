@@ -1,11 +1,14 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.jest.actions.Pipeline
-import app.softnetwork.elastic.client.{result, PipelineApi}
+import app.softnetwork.elastic.client.{result, PipelineApi, SerializationApi}
+import app.softnetwork.elastic.sql.serialization._
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
 
-trait JestPipelineApi extends PipelineApi with JestClientHelpers {
-  _: JestClientCompanion =>
+trait JestPipelineApi extends PipelineApi with JestClientHelpers with JestVersionApi {
+  _: SerializationApi with JestClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -26,7 +29,8 @@ trait JestPipelineApi extends PipelineApi with JestClientHelpers {
   }
 
   override private[client] def executeDeletePipeline(
-    pipelineName: String
+    pipelineName: String,
+    ifExists: Boolean
   ): result.ElasticResult[Boolean] = {
     // There is no direct API to delete a pipeline in Jest.
     apply().execute(Pipeline.Delete(pipelineName)) match {
@@ -50,7 +54,14 @@ trait JestPipelineApi extends PipelineApi with JestClientHelpers {
       case jestResult: JestResult if jestResult.isSucceeded =>
         val jsonString = jestResult.getJsonString
         if (jsonString != null && jsonString.nonEmpty) {
-          result.ElasticSuccess(Some(jsonString))
+          val node: JsonNode = jsonString
+          node match {
+            case objectNode: ObjectNode if objectNode.has(pipelineName) =>
+              val pipelineNode = objectNode.get(pipelineName)
+              result.ElasticSuccess(Some(pipelineNode))
+            case _ =>
+              result.ElasticSuccess(None)
+          }
         } else {
           result.ElasticSuccess(None)
         }

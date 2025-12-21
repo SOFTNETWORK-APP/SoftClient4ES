@@ -120,6 +120,7 @@ trait ScrollApi extends ElasticClientHelpers {
     sql: SelectStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+    implicit def timestamp: Long = System.currentTimeMillis()
     sql.statement match {
       case Some(single: SingleSearch) =>
         if (single.windowFunctions.nonEmpty)
@@ -379,7 +380,10 @@ trait ScrollApi extends ElasticClientHelpers {
     sql: SelectStatement,
     request: SingleSearch,
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    timestamp: Long
+  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
 

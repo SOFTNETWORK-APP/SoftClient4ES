@@ -292,7 +292,7 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   override private[client] implicit def sqlSearchRequestToJsonQuery(
     sqlSearch: SingleSearch
-  ): String =
+  )(implicit timestamp: Long): String =
     """{
       |  "query": {
       |    "match_all": {}

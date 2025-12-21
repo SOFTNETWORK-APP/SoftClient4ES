@@ -6,11 +6,15 @@ import app.softnetwork.elastic.sql.query.{SelectStatement, SingleSearch}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.time.ZonedDateTime
+
 /** Created by smanciot on 13/04/17.
   */
 class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   import scala.language.implicitConversions
+
+  implicit def timestamp: Long = ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
 
   implicit def sqlQueryToRequest(sqlQuery: SelectStatement): ElasticSearchRequest = {
     sqlQuery.statement match {
@@ -1028,7 +1032,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "lastSeen": "lastSeen"
       |            },
       |            "script": {
-      |              "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+      |              "source": "params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+      |              "params": {
+      |                "__now__": 1767139200000
+      |              }
       |            }
       |          }
       |        }
@@ -1041,6 +1048,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle group by with having and date time functions" in {
@@ -1090,7 +1098,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                  "lastSeen": "lastSeen"
       |                },
       |                "script": {
-      |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+      |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+      |                  "params": {
+      |                    "__now__": 1767139200000
+      |                  }
       |                }
       |              }
       |            }
@@ -1106,6 +1117,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle group by index" in {
@@ -1117,62 +1129,66 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-        |  "query": {
-        |    "match_all": {}
-        |  },
-        |  "size": 0,
-        |  "_source": false,
-        |  "aggs": {
-        |    "Country": {
-        |      "terms": {
-        |        "field": "Country",
-        |        "exclude": "USA",
-        |        "min_doc_count": 1,
-        |        "order": {
-        |          "_key": "asc"
-        |        }
-        |      },
-        |      "aggs": {
-        |        "City": {
-        |          "terms": {
-        |            "field": "City",
-        |            "exclude": "Berlin",
-        |            "min_doc_count": 1
-        |          },
-        |          "aggs": {
-        |            "cnt": {
-        |              "value_count": {
-        |                "field": "CustomerID"
-        |              }
-        |            },
-        |            "lastSeen": {
-        |              "max": {
-        |                "field": "createdAt"
-        |              }
-        |            },
-        |            "having_filter": {
-        |              "bucket_selector": {
-        |                "buckets_path": {
-        |                  "cnt": "cnt",
-        |                  "lastSeen": "lastSeen"
-        |                },
-        |                "script": {
-        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
-        |                }
-        |              }
-        |            }
-        |          }
-        |        }
-        |      }
-        |    }
-        |  }
-        |}""".stripMargin
+      |  "query": {
+      |    "match_all": {}
+      |  },
+      |  "size": 0,
+      |  "_source": false,
+      |  "aggs": {
+      |    "Country": {
+      |      "terms": {
+      |        "field": "Country",
+      |        "exclude": "USA",
+      |        "min_doc_count": 1,
+      |        "order": {
+      |          "_key": "asc"
+      |        }
+      |      },
+      |      "aggs": {
+      |        "City": {
+      |          "terms": {
+      |            "field": "City",
+      |            "exclude": "Berlin",
+      |            "min_doc_count": 1
+      |          },
+      |          "aggs": {
+      |            "cnt": {
+      |              "value_count": {
+      |                "field": "CustomerID"
+      |              }
+      |            },
+      |            "lastSeen": {
+      |              "max": {
+      |                "field": "createdAt"
+      |              }
+      |            },
+      |            "having_filter": {
+      |              "bucket_selector": {
+      |                "buckets_path": {
+      |                  "cnt": "cnt",
+      |                  "lastSeen": "lastSeen"
+      |                },
+      |                "script": {
+      |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+      |                  "params": {
+      |                    "__now__": 1767139200000
+      |                  }
+      |                }
+      |              }
+      |            }
+      |          }
+      |        }
+      |      }
+      |    }
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle date_parse function" in {
@@ -1918,7 +1934,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)"
+      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    }
       |  },
@@ -1953,6 +1972,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
       .replaceAll(";\\(param", "; (param")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle nullif function as script field" in {
@@ -1969,7 +1989,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)"
+      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    }
       |  },
@@ -2012,6 +2035,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
       .replaceAll(";\\(param", "; (param")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle cast function as script field" in {
@@ -2028,19 +2052,28 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }"
+      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    },
       |    "c2": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toInstant().toEpochMilli()"
+      |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toInstant().toEpochMilli()",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    },
       |    "c3": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toLocalDate()"
+      |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toLocalDate()",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    },
       |    "c4": {
@@ -2097,6 +2130,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("try \\{", "try { ")
       .replaceAll("} catch", " } catch")
       .replaceAll(";\\(param", "; (param")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle case function as script field" in { // 40
@@ -2113,7 +2147,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.plus(2, ChronoUnit.DAYS)); def param5 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param4 : param5"
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.plus(2, ChronoUnit.DAYS)); def param5 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param4 : param5",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    }
       |  },
@@ -2150,6 +2187,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll("=p", " = p")
       .replaceAll(":p", " : p")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle case with expression function as script field" in {
@@ -2166,7 +2204,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4"
+      |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4",
+      |        "params": {
+      |          "__now__": 1767139200000
+      |        }
       |      }
       |    }
       |  },
@@ -2205,6 +2246,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll("=p", " = p")
       .replaceAll(":p", " : p")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle extract function as script field" in {
@@ -2345,7 +2387,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "script": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000"
+      |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000",
+      |              "params": {
+      |                "__now__": 1767139200000
+      |              }
       |            }
       |          }
       |        }
@@ -2418,6 +2463,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("-", " - ")
       .replaceAll("==", " == ")
       .replaceAll("\\|\\|", " || ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle mathematic function as script field and condition" in {
@@ -2877,7 +2923,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "script": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toLocalDate().withDayOfMonth(param1.toLocalDate().lengthOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28"
+      |              "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toLocalDate().withDayOfMonth(param1.toLocalDate().lengthOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28",
+      |              "params": {
+      |                "__now__": 1767139200000
+      |              }
       |            }
       |          }
       |        }
@@ -2928,6 +2977,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll("\\|\\|", " || ")
       .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle all extractors" in {
@@ -3509,7 +3559,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                "script": {
       |                  "script": {
       |                    "lang": "painless",
-      |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param1 == null ? false : (param1.isBefore(param2))"
+      |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); param1 == null ? false : (param1.isBefore(param2))",
+      |                    "params": {
+      |                      "__now__": 1767139200000
+      |                    }
       |                  }
       |                }
       |              }
@@ -3594,6 +3647,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("lat,arg", "lat, arg")
       .replaceAll("false:", "false : ")
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "determine the aggregation context" in {

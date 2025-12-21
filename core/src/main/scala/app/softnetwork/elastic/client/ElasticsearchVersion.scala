@@ -67,6 +67,15 @@ object ElasticsearchVersion {
   /** Check if version is ES 8+
     */
   def isEs8OrHigher(version: String): Boolean = {
-    isAtLeast(version, 8, 0)
+    isAtLeast(version, 8)
+  }
+
+  def isEs7OrHigher(version: String): Boolean = {
+    isAtLeast(version, 7)
+  }
+
+  def isEs6(version: String): Boolean = {
+    val (major, _, _) = parse(version)
+    major == 6
   }
 }

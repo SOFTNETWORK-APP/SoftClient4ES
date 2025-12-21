@@ -45,7 +45,7 @@ case class ElasticBridge(filter: ElasticFilter) {
   def query(
     innerHitsNames: Set[String] = Set.empty,
     currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
+  )(implicit timestamp: Long): Query = {
     filter match {
       case boolQuery: ElasticBoolQuery =>
         import boolQuery._

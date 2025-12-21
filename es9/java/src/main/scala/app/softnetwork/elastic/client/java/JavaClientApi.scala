@@ -768,7 +768,9 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   _: JavaClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch): String =
+  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long
+  ): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   override private[client] def executeSingleSearch(
@@ -1512,7 +1514,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
   }
 }
 
-trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers {
+trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers with JavaClientVersionApi {
   _: JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeCreatePipeline(
@@ -1535,7 +1537,8 @@ trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers {
     )(resp => resp.acknowledged())
 
   override private[client] def executeDeletePipeline(
-    pipelineName: String
+    pipelineName: String,
+    ifExists: Boolean
   ): result.ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "deletePipeline",
@@ -1568,7 +1571,7 @@ trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers {
         )
     ) { resp =>
       resp.pipelines().asScala.get(pipelineName).map { pipeline =>
-        pipeline.toString
+        convertToJson(pipeline)
       }
     }
   }

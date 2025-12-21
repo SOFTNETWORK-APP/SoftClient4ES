@@ -41,7 +41,7 @@ import _root_.java.time.format.DateTimeFormatter
 import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
 import java.time.temporal.Temporal
-import java.time.{LocalDate, LocalDateTime, ZoneOffset}
+import java.time.{LocalDate, LocalDateTime, ZoneOffset, ZonedDateTime}
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
@@ -57,6 +57,8 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   implicit val executionContext: ExecutionContextExecutor = system.dispatcher
 
   import ElasticProviders._
+
+  implicit def timestamp: Long = ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
 
   lazy val pClient: ElasticProvider[Person] = new PersonProvider(
     elasticConfig

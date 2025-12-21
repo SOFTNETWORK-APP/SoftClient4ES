@@ -8,6 +8,8 @@ import com.sksamuel.elastic4s.searches.SearchRequest
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.time.ZonedDateTime
+
 /** Created by smanciot on 13/04/17.
   */
 class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
@@ -18,6 +20,8 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
 
   def asQuery(sql: String): String = {
     import SQLImplicits._
+    implicit def timestamp: Long =
+      ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
     val criteria: Option[Criteria] = sql
     val result = SearchBodyBuilderFn(
       SearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())

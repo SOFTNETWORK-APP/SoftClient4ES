@@ -38,6 +38,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTypes,
   SQLVarchar
 }
+import app.softnetwork.elastic.sql.function.time.CurrentFunction.queryTimestamp
 import app.softnetwork.elastic.sql.time.{IsoField, TimeField, TimeInterval, TimeUnit}
 
 package object time {
@@ -116,7 +117,7 @@ package object time {
   }
 
   sealed trait DateTimeFunction extends Function {
-    def now: String = "ZonedDateTime.now(ZoneId.of('Z'))"
+    def now: String = "ZonedDateTime.ofInstant(Instant.ofEpochMilli({{__now__}}), ZoneId.of('Z'))"
     override def baseType: SQLType = SQLTypes.DateTime
   }
 
@@ -140,15 +141,26 @@ package object time {
     override def painless(context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
-          ctx.addParam(LiteralParam(param)) match {
+          ctx.addParam(LiteralParam(param.replaceAll("\\{\\{__now__}}", ctx.timestamp))) match {
             case Some(p) =>
               return SQLTypeUtils.coerce(p, this.baseType, this.out, nullable = false, context)
             case _ =>
           }
         case _ =>
       }
-      SQLTypeUtils.coerce(param, this.baseType, this.out, nullable = false, context)
+      SQLTypeUtils.coerce(
+        param.replaceAll("\\{\\{__now__}}", queryTimestamp),
+        this.baseType,
+        this.out,
+        nullable = false,
+        context
+      )
     }
+  }
+
+  object CurrentFunction {
+    val processorTimestamp: String = "ctx['_ingest']['timestamp']"
+    val queryTimestamp: String = "params.__now__"
   }
 
   sealed trait CurrentDateTimeFunction extends DateTimeFunction with CurrentFunction {

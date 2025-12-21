@@ -63,31 +63,7 @@ package object schema {
     def ignoreFailure: Boolean
     final def node: ObjectNode = {
       val node = mapper.createObjectNode()
-      val props = mapper.createObjectNode()
-      for ((key, value) <- properties) {
-        value match {
-          case v: String     => props.put(key, v)
-          case v: Boolean    => props.put(key, v)
-          case v: Int        => props.put(key, v)
-          case v: Long       => props.put(key, v)
-          case v: Double     => props.put(key, v)
-          case v: ObjectNode => props.set(key, v)
-          case v: Seq[_] =>
-            val arrayNode = mapper.createArrayNode()
-            v.foreach {
-              case s: String     => arrayNode.add(s)
-              case b: Boolean    => arrayNode.add(b)
-              case i: Int        => arrayNode.add(i)
-              case l: Long       => arrayNode.add(l)
-              case d: Double     => arrayNode.add(d)
-              case o: ObjectNode => arrayNode.add(o)
-              case _             =>
-            }
-            props.set(key, arrayNode)
-          case _ =>
-        }
-      }
-      node.set(processorType.name, props)
+      node.set(processorType.name, properties)
       node
     }
     def json: String = mapper.writeValueAsString(node)

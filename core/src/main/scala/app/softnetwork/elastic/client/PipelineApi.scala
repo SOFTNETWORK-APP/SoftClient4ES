@@ -24,10 +24,21 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{AlterPipeline, CreatePipeline, DropPipeline}
-import app.softnetwork.elastic.sql.schema.DdlPipeline
+import app.softnetwork.elastic.sql.schema.{DdlPipeline, GenericProcessor}
 
-trait PipelineApi extends ElasticClientHelpers {
+trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
 
+  // ========================================================================
+  // PIPELINE API
+  // ========================================================================
+
+  /** Execute a pipeline DDL statement
+    *
+    * @param sql
+    *   the pipeline DDL statement
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
   def pipeline(sql: String): ElasticResult[Boolean] = {
     ElasticResult.attempt(Parser(sql)) match {
       case ElasticSuccess(parsedStatement) =>
@@ -36,16 +47,56 @@ trait PipelineApi extends ElasticClientHelpers {
           case Right(statement) =>
             statement match {
               case ddl: CreatePipeline =>
-                createPipeline(ddl.name, ddl.ddlPipeline.json)
+                val elasticVersion = {
+                  this.version match {
+                    case ElasticSuccess(v) => v
+                    case ElasticFailure(error) =>
+                      logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+                      return ElasticResult.failure(error)
+                  }
+                }
+                if (ElasticsearchVersion.isEs6(elasticVersion)) {
+                  val pipeline = ddl.ddlPipeline.copy(
+                    ddlProcessors = ddl.ddlPipeline.ddlProcessors.map { processor =>
+                      GenericProcessor(
+                        processor.processorType,
+                        processor.properties.filterNot(_._1 == "description")
+                      )
+                    }
+                  )
+                  createPipeline(ddl.name, pipeline.json)
+                } else
+                  createPipeline(ddl.name, ddl.ddlPipeline.json)
               case ddl: DropPipeline =>
-                deletePipeline(ddl.name)
+                deletePipeline(ddl.name, ifExists = ddl.ifExists)
               case ddl: AlterPipeline =>
                 getPipeline(ddl.name) match {
                   case ElasticSuccess(Some(existing)) =>
                     val existingPipeline = DdlPipeline(name = ddl.name, json = existing)
                     val updatingPipeline = existingPipeline.merge(ddl.statements)
-                    updatePipeline(ddl.name, updatingPipeline.json)
-                  case ElasticSuccess(None) =>
+                    val elasticVersion = {
+                      this.version match {
+                        case ElasticSuccess(v) => v
+                        case ElasticFailure(error) =>
+                          logger.error(
+                            s"❌ Failed to retrieve Elasticsearch version: ${error.message}"
+                          )
+                          return ElasticResult.failure(error)
+                      }
+                    }
+                    if (ElasticsearchVersion.isEs6(elasticVersion)) {
+                      val pipeline = updatingPipeline.copy(
+                        ddlProcessors = updatingPipeline.ddlProcessors.map { processor =>
+                          GenericProcessor(
+                            processor.processorType,
+                            processor.properties.filterNot(_._1 == "description")
+                          )
+                        }
+                      )
+                      updatePipeline(ddl.name, pipeline.json)
+                    } else
+                      updatePipeline(ddl.name, updatingPipeline.json)
+                  case ElasticSuccess(None) if !ddl.ifExists =>
                     val error =
                       ElasticError(
                         message = s"Pipeline with name '${ddl.name}' not found",
@@ -54,6 +105,11 @@ trait PipelineApi extends ElasticClientHelpers {
                       )
                     logger.error(s"❌ ${error.message}")
                     ElasticResult.failure(error)
+                  case ElasticSuccess(None) if ddl.ifExists =>
+                    logger.info(
+                      s"ℹ️ Pipeline with name '${ddl.name}' not found, skipping update as 'ifExists' is true"
+                    )
+                    ElasticSuccess(false)
                   case failure @ ElasticFailure(error) =>
                     logger.error(
                       s"❌ Failed to retrieve pipeline with name '${ddl.name}': ${error.message}"
@@ -85,6 +141,15 @@ trait PipelineApi extends ElasticClientHelpers {
     }
   }
 
+  /** Create a new ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param pipelineDefinition
+    *   the pipeline definition in JSON format
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
   def createPipeline(pipelineName: String, pipelineDefinition: String): ElasticResult[Boolean] = {
     validatePipelineName(pipelineName) match {
       case Some(error) =>
@@ -124,6 +189,15 @@ trait PipelineApi extends ElasticClientHelpers {
     }
   }
 
+  /** Update an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param pipelineDefinition
+    *   the new pipeline definition in JSON format
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
   def updatePipeline(pipelineName: String, pipelineDefinition: String): ElasticResult[Boolean] = {
     // In Elasticsearch, creating a pipeline with an existing name updates it
     createPipeline(pipelineName, pipelineDefinition) match {
@@ -132,8 +206,30 @@ trait PipelineApi extends ElasticClientHelpers {
     }
   }
 
-  def deletePipeline(pipelineName: String): ElasticResult[Boolean] = {
-    executeDeletePipeline(pipelineName) match {
+  /** Delete an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param ifExists
+    *   flag indicating whether to ignore if the pipeline does not exist
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] = {
+    if (ifExists) {
+      getPipeline(pipelineName) match {
+        case ElasticSuccess(Some(_)) => // Pipeline exists, proceed to delete
+        case ElasticSuccess(None) =>
+          logger.info(
+            s"ℹ️ Pipeline '$pipelineName' does not exist, skipping deletion as 'ifExists' is true"
+          )
+          return ElasticSuccess(false) // Indicate that nothing was deleted
+        case failure @ ElasticFailure(error) =>
+          logger.error(s"❌ Failed to check existence of pipeline '$pipelineName': ${error.message}")
+          return failure
+      }
+    }
+    executeDeletePipeline(pipelineName, ifExists = ifExists) match {
       case success @ ElasticSuccess(deleted) =>
         if (deleted) {
           logger.info(s"✅ Successfully deleted pipeline '$pipelineName'")
@@ -147,6 +243,13 @@ trait PipelineApi extends ElasticClientHelpers {
     }
   }
 
+  /** Retrieve an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @return
+    *   ElasticResult[Option[String]\] containing the pipeline definition in JSON format if found
+    */
   def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
     executeGetPipeline(pipelineName) match {
       case success @ ElasticSuccess(maybePipeline) =>
@@ -172,7 +275,10 @@ trait PipelineApi extends ElasticClientHelpers {
     pipelineDefinition: String
   ): ElasticResult[Boolean]
 
-  private[client] def executeDeletePipeline(pipelineName: String): ElasticResult[Boolean]
+  private[client] def executeDeletePipeline(
+    pipelineName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean]
 
   private[client] def executeGetPipeline(pipelineName: String): ElasticResult[Option[String]]
 

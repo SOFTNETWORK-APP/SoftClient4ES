@@ -31,7 +31,7 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
 
   private[client] implicit def sqlSearchRequestToJsonQuery(
     sqlSearch: SingleSearch
-  ): String =
+  )(implicit timestamp: Long): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   import JestClientApi._

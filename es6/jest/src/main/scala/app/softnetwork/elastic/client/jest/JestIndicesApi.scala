@@ -46,11 +46,15 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
       index = Some(index),
       retryable = false // Creation can not be retried
     ) {
-      new CreateIndex.Builder(index)
+      val builder = new CreateIndex.Builder(index)
         .settings(settings)
-        .aliases(aliases.map(alias => s"""{"$alias":{}}""").mkString(","))
-        .mappings(mappings.getOrElse("{}"))
-        .build()
+      if (aliases.nonEmpty) {
+        builder.aliases(aliases.map(alias => s"""{"$alias":{}}""").mkString(","))
+      }
+      mappings.foreach { mapping =>
+        builder.mappings(mapping)
+      }
+      builder.build()
     }
   }
 

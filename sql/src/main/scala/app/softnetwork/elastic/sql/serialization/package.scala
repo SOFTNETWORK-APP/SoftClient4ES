@@ -59,6 +59,16 @@ package object serialization {
     }
   }
 
+  implicit def mapToJsonNode(value: Map[String, Any]): JsonNode = {
+    import JacksonConfig.{objectMapper => mapper}
+    mapper.valueToTree[JsonNode](value.asJava)
+  }
+
+  implicit def jsonNodeToString(node: JsonNode): String = {
+    import JacksonConfig.{objectMapper => mapper}
+    mapper.writeValueAsString(node)
+  }
+
   implicit def objectValueToObjectNode(value: ObjectValue): ObjectNode = {
     import JacksonConfig.{objectMapper => mapper}
     val node = mapper.createObjectNode()

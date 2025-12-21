@@ -66,6 +66,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   the Elasticsearch response
     */
   def search(sql: SelectStatement): ElasticResult[ElasticResponse] = {
+    implicit def timestamp: Long = System.currentTimeMillis()
     sql.statement match {
       case Some(single: SingleSearch) =>
         val elasticQuery = ElasticQuery(
@@ -304,6 +305,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
+    implicit def timestamp: Long = System.currentTimeMillis()
     sqlQuery.statement match {
       case Some(single: SingleSearch) =>
         val elasticQuery = ElasticQuery(
@@ -749,6 +751,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   )(implicit
     formats: Formats
   ): ElasticResult[Seq[(U, Seq[I])]] = {
+    implicit def timestamp: Long = System.currentTimeMillis()
     sql.statement match {
       case Some(single: SingleSearch) =>
         val elasticQuery = ElasticQuery(
@@ -986,7 +989,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   JSON string representation of the query
     */
-  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch): String
+  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long
+  ): String
 
   private def parseInnerHits[M: Manifest: ClassTag, I: Manifest: ClassTag](
     searchResult: JsonObject,
@@ -1102,7 +1107,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   private def searchWithWindowEnrichment(
     sql: SelectStatement,
     request: SingleSearch
-  ): ElasticResult[ElasticResponse] = {
+  )(implicit timestamp: Long): ElasticResult[ElasticResponse] = {
 
     logger.info(s"🪟 Detected ${request.windowFunctions.size} window functions")
 
@@ -1128,7 +1133,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   protected def executeWindowAggregations(
     request: SingleSearch
-  ): ElasticResult[WindowCache] = {
+  )(implicit timestamp: Long): ElasticResult[WindowCache] = {
 
     // Build aggregation request
     val aggRequest = buildWindowAggregationRequest(request)
@@ -1216,7 +1221,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   private def executeBaseQuery(
     sql: SelectStatement,
     request: SingleSearch
-  ): ElasticResult[ElasticResponse] = {
+  )(implicit timestamp: Long): ElasticResult[ElasticResponse] = {
 
     val baseQuery = createBaseQuery(sql, request)
 

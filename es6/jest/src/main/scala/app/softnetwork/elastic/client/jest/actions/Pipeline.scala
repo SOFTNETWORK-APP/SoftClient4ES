@@ -25,6 +25,7 @@ object Pipeline {
     ): JestResult = {
       val result = new JestResult(gson)
       result.setResponseCode(statusCode)
+      result.setSucceeded(statusCode == 200 || statusCode == 201)
       Option(json).foreach(result.setJsonString)
       Option(reasonPhrase).foreach(result.setErrorMessage)
       result
@@ -46,7 +47,10 @@ object Pipeline {
     ): JestResult = {
       val result = new JestResult(gson)
       result.setResponseCode(statusCode)
-      Option(json).foreach(result.setJsonString)
+      result.setSucceeded(statusCode == 200 || statusCode == 201 || statusCode == 404)
+      if (statusCode != 404) {
+        Option(json).foreach(result.setJsonString)
+      }
       Option(reasonPhrase).foreach(result.setErrorMessage)
       result
     }
@@ -67,6 +71,7 @@ object Pipeline {
     ): JestResult = {
       val result = new JestResult(gson)
       result.setResponseCode(statusCode)
+      result.setSucceeded(statusCode == 200 || statusCode == 201)
       Option(json).foreach(result.setJsonString)
       Option(reasonPhrase).foreach(result.setErrorMessage)
       result

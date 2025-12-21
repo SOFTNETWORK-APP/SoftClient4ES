@@ -209,7 +209,7 @@ trait NopeClientApi extends ElasticClientApi {
     */
   override private[client] implicit def sqlSearchRequestToJsonQuery(
     sqlSearch: query.SingleSearch
-  ): String = "{\"query\": {\"match_all\": {}}}"
+  )(implicit timestamp: Long): String = "{\"query\": {\"match_all\": {}}}"
 
   override private[client] def executeUpdateSettings(
     index: String,

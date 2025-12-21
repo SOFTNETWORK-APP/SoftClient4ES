@@ -1087,8 +1087,8 @@ class MetricsElasticClient(
     delegate.createPipeline(pipelineName, pipelineDefinition)
   }
 
-  override def deletePipeline(pipelineName: String): ElasticResult[Boolean] = {
-    delegate.deletePipeline(pipelineName)
+  override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] = {
+    delegate.deletePipeline(pipelineName, ifExists = ifExists)
   }
 
   override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {

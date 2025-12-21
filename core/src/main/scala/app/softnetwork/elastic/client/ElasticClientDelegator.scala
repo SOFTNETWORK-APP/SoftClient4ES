@@ -1133,7 +1133,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] implicit def sqlSearchRequestToJsonQuery(
     sqlSearch: SingleSearch
-  ): String =
+  )(implicit timestamp: Long): String =
     delegate.sqlSearchRequestToJsonQuery(sqlSearch)
 
   override private[client] def executeSingleSearch(
@@ -1416,8 +1416,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.createPipeline(pipelineName, pipelineDefinition)
   }
 
-  override def deletePipeline(pipelineName: String): ElasticResult[Boolean] = {
-    delegate.deletePipeline(pipelineName)
+  override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] = {
+    delegate.deletePipeline(pipelineName, ifExists = ifExists)
   }
 
   override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
@@ -1430,8 +1430,11 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Boolean] =
     delegate.executeCreatePipeline(pipelineName, pipelineDefinition)
 
-  override private[client] def executeDeletePipeline(pipelineName: String): ElasticResult[Boolean] =
-    delegate.executeDeletePipeline(pipelineName)
+  override private[client] def executeDeletePipeline(
+    pipelineName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeletePipeline(pipelineName, ifExists = ifExists)
 
   override private[client] def executeGetPipeline(
     pipelineName: String
