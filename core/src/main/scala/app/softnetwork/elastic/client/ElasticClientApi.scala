@@ -17,6 +17,8 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.common.ClientCompanion
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.typesafe.config.{Config, ConfigFactory}
 import org.json4s.jackson
 import org.json4s.jackson.Serialization
@@ -46,6 +48,7 @@ trait ElasticClientApi
     with VersionApi
     with SerializationApi
     with PipelineApi
+    with TemplateApi
     with ClientCompanion {
 
   protected def logger: Logger
@@ -57,4 +60,6 @@ trait ElasticClientApi
 
 trait SerializationApi {
   implicit val serialization: Serialization.type = jackson.Serialization
+  val mapper: ObjectMapper = JacksonConfig.objectMapper
+
 }

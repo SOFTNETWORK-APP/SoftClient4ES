@@ -25,7 +25,7 @@ import com.fasterxml.jackson.databind.{
   SerializationFeature
 }
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import com.fasterxml.jackson.module.scala.{ClassTagExtensions, DefaultScalaModule}
 
 import scala.language.implicitConversions
 import scala.jdk.CollectionConverters._
@@ -35,7 +35,7 @@ package object serialization {
   /** Jackson ObjectMapper configuration */
   object JacksonConfig {
     lazy val objectMapper: ObjectMapper = {
-      val mapper = new ObjectMapper()
+      val mapper = new ObjectMapper() with ClassTagExtensions
 
       // Scala module for native support of Scala types
       mapper.registerModule(DefaultScalaModule)

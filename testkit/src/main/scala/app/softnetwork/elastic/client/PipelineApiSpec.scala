@@ -69,7 +69,7 @@ trait PipelineApiSpec
     )
 
     testPipelines.foreach { pipelineName =>
-      client.deletePipeline(pipelineName, ifExists = false) match {
+      client.deletePipeline(pipelineName, ifExists = true) match {
         case _ => // Ignore result, just cleanup
       }
     }

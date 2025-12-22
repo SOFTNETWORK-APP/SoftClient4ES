@@ -16,13 +16,14 @@
 
 package app.softnetwork.elastic.client.java
 
+import app.softnetwork.elastic.client.SerializationApi
 import co.elastic.clients.json.JsonpSerializable
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 
 import java.io.{IOException, StringWriter}
 import scala.util.Try
 
-trait JavaClientConversion { _: JavaClientCompanion =>
+trait JavaClientConversion { _: JavaClientCompanion with SerializationApi =>
   private[this] val jsonpMapper = new JacksonJsonpMapper(mapper)
 
   /** Convert any Elasticsearch response to JSON string */

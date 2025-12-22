@@ -313,7 +313,7 @@ package object query {
 
   sealed trait DdlStatement extends Statement
 
-  sealed trait PipelineDdlStatement extends DdlStatement
+  sealed trait PipelineStatement extends DdlStatement
 
   case class CreatePipeline(
     name: String,
@@ -321,7 +321,7 @@ package object query {
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     processors: Seq[DdlProcessor]
-  ) extends PipelineDdlStatement {
+  ) extends PipelineStatement {
     override def sql: String = {
       val processorsDdl = processors.map(_.ddl).mkString(", ")
       val replaceClause = if (orReplace) " OR REPLACE" else ""
@@ -352,7 +352,7 @@ package object query {
     name: String,
     ifExists: Boolean,
     statements: List[AlterPipelineStatement]
-  ) extends PipelineDdlStatement {
+  ) extends PipelineStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS " else ""
       val parenthesesNeeded = statements.size > 1
@@ -370,7 +370,7 @@ package object query {
       DdlPipeline(s"alter-pipeline-$name-${Instant.now}", DdlPipelineType.Custom, ddlProcessors)
   }
 
-  case class DropPipeline(name: String, ifExists: Boolean = false) extends PipelineDdlStatement {
+  case class DropPipeline(name: String, ifExists: Boolean = false) extends PipelineStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP PIPELINE $ifExistsClause$name"

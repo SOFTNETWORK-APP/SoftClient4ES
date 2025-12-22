@@ -33,6 +33,7 @@ trait ElasticClientHelpers {
     *   - No colon (:) except for system indexes
     *   - Does not start with -, _, +
     *   - Is not . or ..
+    *   - Max length 255 characters
     * @param index
     *   name of the index to validate
     * @return
@@ -208,7 +209,8 @@ trait ElasticClientHelpers {
       case Some(error) =>
         Some(
           error.copy(
-            operation = Some("validateAliasName")
+            operation = Some("validateAliasName"),
+            message = error.message.replaceAll("Index", "Alias")
           )
         )
       case None => None
@@ -251,6 +253,225 @@ trait ElasticClientHelpers {
     }
 
     None
+  }
+
+  /** Validate the template name. Index templates follow the same rules as indexes:
+    *   - Not empty
+    *   - Lowercase only
+    *   - No characters: \, /, *, ?, ", <, >, |, space, comma, #
+    *   - No colon (:)
+    *   - Does not start with -, _, +
+    *   - Is not . or ..
+    *   - Max length 255 characters
+    *   - Can contain wildcards (* and ?) in index_patterns but not in the template name itself
+    *
+    * @param templateName
+    *   name of the template to validate
+    * @return
+    *   Some(ElasticError) if invalid, None if valid
+    */
+  protected def validateTemplateName(templateName: String): Option[ElasticError] = {
+    validateIndexName(templateName) match {
+      case Some(error) =>
+        Some(
+          error.copy(
+            operation = Some("validateTemplateName"),
+            message = error.message.replaceAll("Index", "Template")
+          )
+        )
+      case None => None
+    }
+  }
+
+  /** Validate composable template JSON definition (ES 7.8+) */
+  protected def validateJsonComposableTemplate(
+    templateDefinition: String
+  ): Option[result.ElasticError] = {
+    if (templateDefinition == null || templateDefinition.trim.isEmpty) {
+      return Some(
+        result.ElasticError(
+          message = "Template definition cannot be null or empty",
+          statusCode = Some(400),
+          operation = Some("validateJsonComposableTemplate")
+        )
+      )
+    }
+
+    try {
+      import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+      import com.fasterxml.jackson.databind.node.ObjectNode
+
+      val mapper = new ObjectMapper()
+      val rootNode: JsonNode = mapper.readTree(templateDefinition)
+
+      if (!rootNode.isObject) {
+        return Some(
+          result.ElasticError(
+            message = "Template definition must be a JSON object",
+            statusCode = Some(400),
+            operation = Some("validateJsonComposableTemplate")
+          )
+        )
+      }
+
+      val objectNode = rootNode.asInstanceOf[ObjectNode]
+
+      // Composable templates require 'index_patterns'
+      if (!objectNode.has("index_patterns")) {
+        return Some(
+          result.ElasticError(
+            message = "Composable template must contain 'index_patterns' field",
+            statusCode = Some(400),
+            operation = Some("validateJsonComposableTemplate")
+          )
+        )
+      }
+
+      val indexPatternsNode = objectNode.get("index_patterns")
+      if (!indexPatternsNode.isArray || indexPatternsNode.size() == 0) {
+        return Some(
+          result.ElasticError(
+            message = "'index_patterns' must be a non-empty array",
+            statusCode = Some(400),
+            operation = Some("validateJsonComposableTemplate")
+          )
+        )
+      }
+
+      // Valid fields for composable templates
+      val validFields = Set(
+        "index_patterns",
+        "template", // Contains settings, mappings, aliases
+        "priority", // Replaces 'order'
+        "version",
+        "composed_of", // Component templates
+        "_meta",
+        "data_stream", // For data streams
+        "allow_auto_create"
+      )
+
+      import scala.jdk.CollectionConverters._
+      val templateFields = objectNode.fieldNames().asScala.toSet
+      val invalidFields = templateFields -- validFields
+
+      if (invalidFields.nonEmpty) {
+        logger.warn(
+          s"⚠️ Composable template contains potentially invalid fields: ${invalidFields.mkString(", ")}"
+        )
+      }
+
+      None
+
+    } catch {
+      case e: com.fasterxml.jackson.core.JsonParseException =>
+        Some(
+          result.ElasticError(
+            message = s"Invalid JSON syntax: ${e.getMessage}",
+            statusCode = Some(400),
+            operation = Some("validateJsonComposableTemplate"),
+            cause = Some(e)
+          )
+        )
+      case e: Exception =>
+        Some(
+          result.ElasticError(
+            message = s"Invalid composable template definition: ${e.getMessage}",
+            statusCode = Some(400),
+            operation = Some("validateJsonComposableTemplate"),
+            cause = Some(e)
+          )
+        )
+    }
+  }
+
+  /** Validate legacy template JSON definition (ES < 7.8) */
+  protected def validateJsonLegacyTemplate(
+    templateDefinition: String
+  ): Option[result.ElasticError] = {
+    if (templateDefinition == null || templateDefinition.trim.isEmpty) {
+      return Some(
+        result.ElasticError(
+          message = "Template definition cannot be null or empty",
+          statusCode = Some(400),
+          operation = Some("validateJsonLegacyTemplate")
+        )
+      )
+    }
+
+    try {
+      import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+      import com.fasterxml.jackson.databind.node.ObjectNode
+
+      val mapper = new ObjectMapper()
+      val rootNode: JsonNode = mapper.readTree(templateDefinition)
+
+      if (!rootNode.isObject) {
+        return Some(
+          result.ElasticError(
+            message = "Template definition must be a JSON object",
+            statusCode = Some(400),
+            operation = Some("validateJsonLegacyTemplate")
+          )
+        )
+      }
+
+      val objectNode = rootNode.asInstanceOf[ObjectNode]
+
+      // Legacy templates require 'index_patterns' or 'template'
+      if (!objectNode.has("index_patterns") && !objectNode.has("template")) {
+        return Some(
+          result.ElasticError(
+            message = "Legacy template must contain 'index_patterns' or 'template' field",
+            statusCode = Some(400),
+            operation = Some("validateJsonLegacyTemplate")
+          )
+        )
+      }
+
+      // Valid fields for legacy templates
+      val validFields = Set(
+        "index_patterns",
+        "template", // Old name for index_patterns
+        "settings",
+        "mappings",
+        "aliases",
+        "order",
+        "version",
+        "_meta"
+      )
+
+      import scala.jdk.CollectionConverters._
+      val templateFields = objectNode.fieldNames().asScala.toSet
+      val invalidFields = templateFields -- validFields
+
+      if (invalidFields.nonEmpty) {
+        logger.warn(
+          s"⚠️ Legacy template contains potentially invalid fields: ${invalidFields.mkString(", ")}"
+        )
+      }
+
+      None
+
+    } catch {
+      case e: com.fasterxml.jackson.core.JsonParseException =>
+        Some(
+          result.ElasticError(
+            message = s"Invalid JSON syntax: ${e.getMessage}",
+            statusCode = Some(400),
+            operation = Some("validateJsonLegacyTemplate"),
+            cause = Some(e)
+          )
+        )
+      case e: Exception =>
+        Some(
+          result.ElasticError(
+            message = s"Invalid legacy template definition: ${e.getMessage}",
+            statusCode = Some(400),
+            operation = Some("validateJsonLegacyTemplate"),
+            cause = Some(e)
+          )
+        )
+    }
   }
 
   /** Logger une erreur avec le niveau approprié selon le status code. */

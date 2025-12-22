@@ -21,6 +21,7 @@ package app.softnetwork.elastic.client
 object ElasticsearchVersion {
 
   /** Parse Elasticsearch version string (e.g., "7.10.2", "8.11.0")
+    *
     * @return
     *   (major, minor, patch)
     */
@@ -70,12 +71,35 @@ object ElasticsearchVersion {
     isAtLeast(version, 8)
   }
 
+  /** Check if version is ES 7+
+    */
   def isEs7OrHigher(version: String): Boolean = {
     isAtLeast(version, 7)
   }
 
+  /** Check if version is ES 6
+    */
   def isEs6(version: String): Boolean = {
     val (major, _, _) = parse(version)
     major == 6
   }
+
+  /** Check if Data Streams are supported (ES >= 7.9)
+    */
+  def supportsDataStreams(version: String): Boolean = {
+    isAtLeast(version, 7, 9)
+  }
+
+  /** Check if Composable Templates are supported (ES >= 7.8)
+    */
+  def supportsComposableTemplates(version: String): Boolean = {
+    isAtLeast(version, 7, 8)
+  }
+
+  /** Check if Searchable Snapshots are supported (ES >= 7.10)}
+    */
+  def supportsSearchableSnapshots(version: String): Boolean = {
+    isAtLeast(version, 7, 10)
+  }
+
 }

@@ -1078,20 +1078,103 @@ class MetricsElasticClient(
     metricsCollector.resetMetrics()
   }
 
-  // ==================== PipelineApi (délégation) ====================
+  // ==================== PipelineApi (delegate) ====================
 
   override def createPipeline(
     pipelineName: String,
     pipelineDefinition: String
-  ): ElasticResult[Boolean] = {
-    delegate.createPipeline(pipelineName, pipelineDefinition)
-  }
+  ): ElasticResult[Boolean] =
+    measureResult("createPipeline") {
+      delegate.createPipeline(pipelineName, pipelineDefinition)
+    }
 
-  override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] = {
-    delegate.deletePipeline(pipelineName, ifExists = ifExists)
-  }
+  override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] =
+    measureResult("deletePipeline") {
+      delegate.deletePipeline(pipelineName, ifExists = ifExists)
+    }
 
-  override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
-    delegate.getPipeline(pipelineName)
-  }
+  override def getPipeline(pipelineName: String): ElasticResult[Option[String]] =
+    measureResult("getPipeline") {
+      delegate.getPipeline(pipelineName)
+    }
+
+  // ==================== TemplateApi (delegate) ====================
+
+  /** Create or update an index template.
+    *
+    * Accepts both legacy and composable template formats. Automatically converts to the appropriate
+    * format based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @param templateDefinition
+    *   the JSON definition (legacy or composable format)
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def createTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    measureResult("createTemplate") {
+      delegate.createTemplate(templateName, templateDefinition)
+    }
+
+  /** Delete an index template. Automatically uses composable (ES 7.8+) or legacy templates based on
+    * ES version.
+    *
+    * @param templateName
+    *   the name of the template to delete
+    * @param ifExists
+    *   if true, do not fail if template doesn't exist
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def deleteTemplate(templateName: String, ifExists: Boolean): ElasticResult[Boolean] =
+    measureResult("deleteTemplate") {
+      delegate.deleteTemplate(templateName, ifExists)
+    }
+
+  /** Get an index template definition.
+    *
+    * Returns the template in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with Some(json) if found, None if not found
+    */
+  override def getTemplate(templateName: String): ElasticResult[Option[String]] =
+    measureResult("getTemplate") {
+      delegate.getTemplate(templateName)
+    }
+
+  /** List all index templates.
+    *
+    * Returns templates in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @return
+    *   ElasticResult with Map of template name -> JSON definition
+    */
+  override def listTemplates(): ElasticResult[Map[String, String]] =
+    measureResult("listTemplates") {
+      delegate.listTemplates()
+    }
+
+  /** Check if an index template exists. Automatically uses composable (ES 7.8+) or legacy templates
+    * based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with true if exists, false otherwise
+    */
+  override def templateExists(templateName: String): ElasticResult[Boolean] =
+    measureResult("templateExists") {
+      delegate.templateExists(templateName)
+    }
 }

@@ -1407,7 +1407,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     delegate.actionToBulkItem(action.asInstanceOf)
 
-  // ==================== PipelineApi (délégation) ====================
+  // ==================== PipelineApi (delegate) ====================
 
   override def createPipeline(
     pipelineName: String,
@@ -1440,4 +1440,125 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     pipelineName: String
   ): ElasticResult[Option[String]] =
     delegate.executeGetPipeline(pipelineName)
+
+  // ==================== TemplateApi (delegate) ====================
+
+  /** Create or update an index template.
+    *
+    * Accepts both legacy and composable template formats. Automatically converts to the appropriate
+    * format based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @param templateDefinition
+    *   the JSON definition (legacy or composable format)
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def createTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.createTemplate(templateName, templateDefinition)
+
+  /** Delete an index template. Automatically uses composable (ES 7.8+) or legacy templates based on
+    * ES version.
+    *
+    * @param templateName
+    *   the name of the template to delete
+    * @param ifExists
+    *   if true, do not fail if template doesn't exist
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def deleteTemplate(templateName: String, ifExists: Boolean): ElasticResult[Boolean] =
+    delegate.deleteTemplate(templateName, ifExists)
+
+  /** Get an index template definition.
+    *
+    * Returns the template in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with Some(json) if found, None if not found
+    */
+  override def getTemplate(templateName: String): ElasticResult[Option[String]] =
+    delegate.getTemplate(templateName)
+
+  /** List all index templates.
+    *
+    * Returns templates in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @return
+    *   ElasticResult with Map of template name -> JSON definition
+    */
+  override def listTemplates(): ElasticResult[Map[String, String]] =
+    delegate.listTemplates()
+
+  /** Check if an index template exists. Automatically uses composable (ES 7.8+) or legacy templates
+    * based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with true if exists, false otherwise
+    */
+  override def templateExists(templateName: String): ElasticResult[Boolean] =
+    delegate.templateExists(templateName)
+
+  override private[client] def executeCreateComposableTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateComposableTemplate(templateName, templateDefinition)
+
+  override private[client] def executeDeleteComposableTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeleteComposableTemplate(templateName, ifExists)
+
+  override private[client] def executeGetComposableTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    delegate.executeGetComposableTemplate(templateName)
+
+  override private[client] def executeListComposableTemplates()
+    : ElasticResult[Map[String, String]] =
+    delegate.executeListComposableTemplates()
+
+  override private[client] def executeComposableTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    delegate.executeComposableTemplateExists(templateName)
+
+  override private[client] def executeCreateLegacyTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateLegacyTemplate(templateName, templateDefinition)
+
+  override private[client] def executeDeleteLegacyTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeleteLegacyTemplate(templateName, ifExists)
+
+  override private[client] def executeGetLegacyTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    delegate.executeGetLegacyTemplate(templateName)
+
+  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] =
+    delegate.executeListLegacyTemplates()
+
+  override private[client] def executeLegacyTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    delegate.executeLegacyTemplateExists(templateName)
 }
