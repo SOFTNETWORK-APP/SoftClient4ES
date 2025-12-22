@@ -169,10 +169,20 @@ trait TemplateApi extends ElasticClientHelpers { _: VersionApi =>
           }
         }
 
-        if (ElasticsearchVersion.supportsComposableTemplates(elasticVersion)) {
-          executeGetComposableTemplate(templateName)
-        } else {
-          executeGetLegacyTemplate(templateName)
+        (if (ElasticsearchVersion.supportsComposableTemplates(elasticVersion)) {
+           executeGetComposableTemplate(templateName)
+         } else {
+           executeGetLegacyTemplate(templateName)
+         }) match {
+          case success @ ElasticSuccess(_) => success
+          case failure @ ElasticFailure(error) =>
+            error.statusCode match {
+              case Some(404) =>
+                logger.warn(s"⚠️ Template $templateName not found")
+                return ElasticSuccess(None)
+              case _ =>
+            }
+            failure
         }
     }
   }

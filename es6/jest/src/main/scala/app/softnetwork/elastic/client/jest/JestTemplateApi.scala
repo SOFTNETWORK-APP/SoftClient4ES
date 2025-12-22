@@ -23,23 +23,58 @@ trait JestTemplateApi extends TemplateApi with JestClientHelpers with JestVersio
   override private[client] def executeCreateComposableTemplate(
     templateName: String,
     templateDefinition: String
-  ): ElasticResult[Boolean] = ElasticSuccess(false)
+  ): ElasticResult[Boolean] =
+    ElasticFailure(
+      ElasticError(
+        message = "Composable templates are not supported by Jest client (ES < 7.8 only)",
+        statusCode = Some(501), // Not Implemented
+        operation = Some("createTemplate")
+      )
+    )
 
   override private[client] def executeDeleteComposableTemplate(
     templateName: String,
     ifExists: Boolean
-  ): ElasticResult[Boolean] = ElasticSuccess(false)
+  ): ElasticResult[Boolean] =
+    ElasticFailure(
+      ElasticError(
+        message = "Composable templates are not supported by Jest client (ES < 7.8 only)",
+        statusCode = Some(501), // Not Implemented
+        operation = Some("deleteTemplate")
+      )
+    )
 
   override private[client] def executeGetComposableTemplate(
     templateName: String
-  ): ElasticResult[Option[String]] = ElasticSuccess(None)
+  ): ElasticResult[Option[String]] =
+    ElasticFailure(
+      ElasticError(
+        message = "Composable templates are not supported by Jest client (ES < 7.8 only)",
+        statusCode = Some(501), // Not Implemented
+        operation = Some("getTemplate")
+      )
+    )
 
   override private[client] def executeListComposableTemplates()
-    : ElasticResult[Map[String, String]] = ElasticSuccess(Map.empty[String, String])
+    : ElasticResult[Map[String, String]] =
+    ElasticFailure(
+      ElasticError(
+        message = "Composable templates are not supported by Jest client (ES < 7.8 only)",
+        statusCode = Some(501), // Not Implemented
+        operation = Some("listTemplates")
+      )
+    )
 
   override private[client] def executeComposableTemplateExists(
     templateName: String
-  ): ElasticResult[Boolean] = ElasticSuccess(false)
+  ): ElasticResult[Boolean] =
+    ElasticFailure(
+      ElasticError(
+        message = "Composable templates are not supported by Jest client (ES < 7.8 only)",
+        statusCode = Some(501), // Not Implemented
+        operation = Some("templateExists")
+      )
+    )
 
   // ==================== LEGACY TEMPLATES ====================
 

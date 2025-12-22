@@ -59,6 +59,27 @@ object ElasticsearchVersion {
     }
   }
 
+  /** Check if version is <= target version
+    */
+  def isAtMost(
+    version: String,
+    targetMajor: Int,
+    targetMinor: Int = 0,
+    targetPatch: Int = 0
+  ): Boolean = {
+    val (major, minor, patch) = parse(version)
+
+    if (major < targetMajor) true
+    else if (major > targetMajor) false
+    else { // major == targetMajor
+      if (minor < targetMinor) true
+      else if (minor > targetMinor) false
+      else { // minor == targetMinor
+        patch <= targetPatch
+      }
+    }
+  }
+
   /** Check if PIT is supported (ES >= 7.10)
     */
   def supportsPit(version: String): Boolean = {
@@ -102,4 +123,17 @@ object ElasticsearchVersion {
     isAtLeast(version, 7, 10)
   }
 
+  /** Check if Elasticsearch version requires _doc type wrapper in mappings
+    *
+    * ES 6.x requires mappings to be wrapped in a type name (e.g., "_doc") ES 7.x removed mapping
+    * types
+    *
+    * @param version
+    *   the Elasticsearch version (e.g., "6.8.0")
+    * @return
+    *   true if _doc wrapper is required
+    */
+  def requiresDocTypeWrapper(version: String): Boolean = {
+    !isAtLeast(version, 6, 8)
+  }
 }

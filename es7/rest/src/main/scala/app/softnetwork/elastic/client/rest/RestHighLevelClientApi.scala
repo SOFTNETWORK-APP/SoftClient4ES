@@ -21,16 +21,12 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
-import app.softnetwork.elastic.client.result.{
-  ElasticError,
-  ElasticFailure,
-  ElasticResult,
-  ElasticSuccess
-}
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.Alias
@@ -86,7 +82,7 @@ import org.elasticsearch.client.indices.{
   PutIndexTemplateRequest,
   PutMappingRequest
 }
-import org.elasticsearch.cluster.metadata.ComposableIndexTemplate
+import org.elasticsearch.cluster.metadata.{AliasMetadata, ComposableIndexTemplate}
 import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.core.TimeValue
@@ -1722,61 +1718,51 @@ trait RestHighLevelClientTemplateApi
   override private[client] def executeGetComposableTemplate(
     templateName: String
   ): ElasticResult[Option[String]] = {
-    try {
-      val request = new GetComposableIndexTemplateRequest(templateName)
-      val response = apply().indices().getIndexTemplate(request, RequestOptions.DEFAULT)
-
-      val templates = response.getIndexTemplates
-      if (templates != null && !templates.isEmpty) {
-        val template = templates.get(templateName)
-        if (template != null) {
-          ElasticSuccess(Some(composableTemplateToJson(template)))
+    executeRestAction(
+      operation = "getTemplate",
+      retryable = true
+    )(
+      request = new GetComposableIndexTemplateRequest(templateName)
+    )(
+      executor = req => apply().indices().getIndexTemplate(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val templates = resp.getIndexTemplates
+        if (templates != null && !templates.isEmpty) {
+          val template = templates.get(templateName)
+          if (template != null) {
+            Some(composableTemplateToJson(template))
+          } else {
+            None
+          }
         } else {
-          ElasticSuccess(None)
+          None
         }
-      } else {
-        ElasticSuccess(None)
       }
-    } catch {
-      case _: org.elasticsearch.index.IndexNotFoundException =>
-        ElasticSuccess(None)
-      case e: Exception =>
-        ElasticFailure(
-          ElasticError(
-            message = s"Failed to get composable template: ${e.getMessage}",
-            operation = Some("getTemplate"),
-            cause = Some(e)
-          )
-        )
-    }
+    )
   }
 
   override private[client] def executeListComposableTemplates()
     : ElasticResult[Map[String, String]] = {
-    try {
-      val request = new GetComposableIndexTemplateRequest("*")
-      val response = apply().indices().getIndexTemplate(request, RequestOptions.DEFAULT)
-
-      val templates = response.getIndexTemplates
-      if (templates != null) {
-        ElasticSuccess(
+    executeRestAction(
+      operation = "listTemplates",
+      retryable = true
+    )(
+      request = new GetComposableIndexTemplateRequest("*")
+    )(
+      executor = req => apply().indices().getIndexTemplate(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val templates = resp.getIndexTemplates
+        if (templates != null) {
           templates.asScala.map { case (name, template) =>
             name -> composableTemplateToJson(template)
           }.toMap
-        )
-      } else {
-        ElasticSuccess(Map.empty)
+        } else {
+          Map.empty
+        }
       }
-    } catch {
-      case e: Exception =>
-        ElasticFailure(
-          ElasticError(
-            message = s"Failed to list composable templates: ${e.getMessage}",
-            operation = Some("listTemplates"),
-            cause = Some(e)
-          )
-        )
-    }
+    )
   }
 
   override private[client] def executeComposableTemplateExists(
@@ -1907,9 +1893,7 @@ trait RestHighLevelClientTemplateApi
   }
 
   private def legacyTemplateToJson(template: IndexTemplateMetadata): String = {
-    import com.fasterxml.jackson.databind.ObjectMapper
 
-    val mapper = new ObjectMapper()
     val root = mapper.createObjectNode()
 
     // index_patterns
@@ -1951,20 +1935,76 @@ trait RestHighLevelClientTemplateApi
     // aliases
     if (template.aliases() != null && !template.aliases().isEmpty) {
       val aliasesNode = mapper.createObjectNode()
-      template.aliases().asScala.foreach { alias =>
-        val aliasName = alias.key
-        try {
-          val aliasNode = mapper.readTree(alias.value.toString)
-          aliasesNode.set(alias.key, aliasNode)
-        } catch {
-          case e: Exception =>
-            logger.warn(s"Failed to parse alias '$aliasName': ${e.getMessage}")
-            aliasesNode.set(aliasName, mapper.createObjectNode())
-        }
+
+      template.aliases().keysIt().asScala.foreach { aliasName =>
+        // Type explicite pour éviter l'inférence vers Nothing$
+        val aliasObjectNode: ObjectNode =
+          try {
+            val aliasMetadata = template.aliases().get(aliasName)
+
+            // Convert AliasMetadata to JSON
+            val aliasJson = convertAliasMetadataToJson(aliasMetadata)
+
+            // Parse and validate
+            val parsedAlias = mapper.readTree(aliasJson)
+
+            if (parsedAlias.isInstanceOf[ObjectNode]) {
+              parsedAlias.asInstanceOf[ObjectNode].get(aliasName) match {
+                case objNode: ObjectNode => objNode
+                case _ =>
+                  logger.debug(
+                    s"Alias '$aliasName' does not contain an object node, creating empty object"
+                  )
+                  mapper.createObjectNode()
+              }
+            } else {
+              logger.debug(
+                s"Alias '$aliasName' is not an ObjectNode (type: ${parsedAlias.getClass.getName}), creating empty object"
+              )
+              mapper.createObjectNode()
+            }
+
+          } catch {
+            case e: Exception =>
+              logger.warn(s"Failed to process alias '$aliasName': ${e.getMessage}", e)
+              mapper.createObjectNode()
+          }
+
+        // Set with explicit type
+        aliasesNode.set[ObjectNode](aliasName, aliasObjectNode)
       }
+
       root.set("aliases", aliasesNode)
     }
 
     mapper.writeValueAsString(root)
+  }
+
+  /** Convert AliasMetadata to JSON string
+    *
+    * @param aliasMetadata
+    *   the alias metadata
+    * @return
+    *   JSON string representation
+    */
+  private def convertAliasMetadataToJson(
+    aliasMetadata: AliasMetadata
+  ): String = {
+    try {
+      import org.elasticsearch.xcontent.{ToXContent, XContentFactory}
+
+      val builder = XContentFactory.jsonBuilder()
+      builder.startObject()
+      aliasMetadata.toXContent(builder, ToXContent.EMPTY_PARAMS)
+      builder.endObject()
+      builder.close()
+
+      org.elasticsearch.common.Strings.toString(builder)
+
+    } catch {
+      case e: Exception =>
+        logger.warn(s"Failed to convert AliasMetadata to JSON: ${e.getMessage}", e)
+        "{}"
+    }
   }
 }

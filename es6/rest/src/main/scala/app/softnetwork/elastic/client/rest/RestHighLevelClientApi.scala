@@ -25,6 +25,7 @@ import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, Ela
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.{Alias, IndicesAliasesRequest}
@@ -73,6 +74,7 @@ import org.elasticsearch.client.indices.{
   PutIndexTemplateRequest,
   PutMappingRequest
 }
+import org.elasticsearch.cluster.metadata.AliasMetaData
 import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.common.unit.TimeValue
@@ -1644,21 +1646,76 @@ trait RestHighLevelClientTemplateApi
     // aliases
     if (template.aliases() != null && !template.aliases().isEmpty) {
       val aliasesNode = mapper.createObjectNode()
-      template.aliases().asScala.foreach { alias =>
-        val aliasName = alias.key
-        try {
-          val aliasNode = mapper.readTree(alias.value.toString)
-          aliasesNode.set(alias.key, aliasNode)
-        } catch {
-          case e: Exception =>
-            logger.warn(s"Failed to parse alias '$aliasName': ${e.getMessage}")
-            aliasesNode.set(aliasName, mapper.createObjectNode())
-        }
+
+      template.aliases().keysIt().asScala.foreach { aliasName =>
+        // Type explicite pour éviter l'inférence vers Nothing$
+        val aliasObjectNode: ObjectNode =
+          try {
+            val aliasMetadata = template.aliases().get(aliasName)
+
+            // Convert AliasMetadata to JSON
+            val aliasJson = convertAliasMetadataToJson(aliasMetadata)
+
+            // Parse and validate
+            val parsedAlias = mapper.readTree(aliasJson)
+
+            if (parsedAlias.isInstanceOf[ObjectNode]) {
+              parsedAlias.asInstanceOf[ObjectNode].get(aliasName) match {
+                case objNode: ObjectNode => objNode
+                case _ =>
+                  logger.debug(
+                    s"Alias '$aliasName' does not contain an object node, creating empty object"
+                  )
+                  mapper.createObjectNode()
+              }
+            } else {
+              logger.debug(
+                s"Alias '$aliasName' is not an ObjectNode (type: ${parsedAlias.getClass.getName}), creating empty object"
+              )
+              mapper.createObjectNode()
+            }
+
+          } catch {
+            case e: Exception =>
+              logger.warn(s"Failed to process alias '$aliasName': ${e.getMessage}", e)
+              mapper.createObjectNode()
+          }
+
+        // Set with explicit type
+        aliasesNode.set[ObjectNode](aliasName, aliasObjectNode)
       }
+
       root.set("aliases", aliasesNode)
     }
 
     mapper.writeValueAsString(root)
   }
 
+  /** Convert AliasMetadata to JSON string
+    *
+    * @param aliasMetadata
+    *   the alias metadata
+    * @return
+    *   JSON string representation
+    */
+  private def convertAliasMetadataToJson(
+    aliasMetadata: AliasMetaData
+  ): String = {
+    try {
+      import org.elasticsearch.common.xcontent.{XContentFactory, ToXContent}
+
+      val builder = XContentFactory.jsonBuilder()
+      builder.startObject()
+      aliasMetadata.toXContent(builder, ToXContent.EMPTY_PARAMS)
+      builder.endObject()
+      builder.close()
+
+      org.elasticsearch.common.Strings.toString(builder)
+
+    } catch {
+      case e: Exception =>
+        logger.warn(s"Failed to convert AliasMetadata to JSON: ${e.getMessage}", e)
+        "{}"
+    }
+  }
 }
