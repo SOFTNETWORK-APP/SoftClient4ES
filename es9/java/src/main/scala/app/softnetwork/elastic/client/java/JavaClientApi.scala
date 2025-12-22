@@ -1593,7 +1593,7 @@ trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with Java
     templateDefinition: String
   ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
-      operation = "createComposableTemplate",
+      operation = "createTemplate",
       retryable = false
     )(
       apply()
@@ -1624,7 +1624,7 @@ trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with Java
       }
     }
     executeJavaBooleanAction(
-      operation = "deleteComposableTemplate",
+      operation = "deleteTemplate",
       index = None,
       retryable = false
     )(
@@ -1662,7 +1662,7 @@ trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with Java
   override private[client] def executeListComposableTemplates()
     : ElasticResult[Map[String, String]] =
     executeJavaAction(
-      operation = "getTemplate",
+      operation = "listTemplates",
       index = None,
       retryable = true
     )(

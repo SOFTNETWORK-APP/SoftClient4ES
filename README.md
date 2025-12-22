@@ -45,6 +45,7 @@ SoftClient4ES provides a trait-based interface (`ElasticClientApi`) that aggrega
 | **[SearchApi](documentation/client/search.md)**            | Advanced search with SQL and aggregations support                                   | [📖 Docs](documentation/client/search.md)       |
 | **[ScrollApi](documentation/client/scroll.md)**            | Stream large datasets with automatic strategy detection (PIT, search_after, scroll) | [📖 Docs](documentation/client/scroll.md)       |
 | **[AggregationApi](documentation/client/aggregations.md)** | Type-safe way to execute aggregations using SQL queries                             | [📖 Docs](documentation/client/aggregations.md) |
+| **[TemplateApi](documentation/client/templates.md)**       | Templates management                                                                | [📖 Docs](documentation/client/templates.md)    |
 
 #### **Client Implementations**
 
@@ -212,7 +213,7 @@ SoftClient4ES includes a powerful SQL parser that translates standard SQL `SELEC
 - ✅ Aggregate functions (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `DISTINCT`, `FIRST_VALUE`, `LAST_VALUE`, `ARRAY_AGG`)
 - ✅ [Window functions](#32-window-functions-support) with `OVER` clause
 - ✅ [DML Support](#34-dml-support) (`INSERT`, `UPDATE`, `DELETE`)
-- ✅ [DDL Support](#35-ddl-support) (`CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`)
+- ✅ [DDL Support](#35-ddl-support) (`CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `CREATE PIPELINE`, `ALTER PIPELINE`, `DROP PIPELINE`)
 
 **Example:**
 
@@ -1236,8 +1237,8 @@ The execution path depends on the **number of impacted rows**:
 SoftClient4ES also supports **SQL Data Definition Language (DDL)** statements to manage table schemas mapped to Elasticsearch indices.
 
 #### **Supported DDL Statements**
-- ✅ `CREATE TABLE [IF NOT EXISTS] …` with column definitions, `DEFAULT`, `NOT NULL`, `OPTIONS`, `FIELDS` (multi‑fields or STRUCT) and `PARTITION BY …`
-- ✅ `CREATE OR REPLACE TABLE … AS SELECT …`
+- ✅ `CREATE [OR REPLACE] TABLE [IF NOT EXISTS] …` with column definitions, `DEFAULT`, `NOT NULL`, `OPTIONS`, `FIELDS` (multi‑fields or STRUCT) and `PARTITION BY …`
+- ✅ `CREATE [OR REPLACE] TABLE … AS SELECT …`
 - ✅ `ALTER TABLE …` with multiple sub‑statements:
 	- `ADD COLUMN [IF NOT EXISTS] …`
 	- `DROP COLUMN [IF EXISTS] …`
@@ -1249,6 +1250,9 @@ SoftClient4ES also supports **SQL Data Definition Language (DDL)** statements to
 	- `ALTER COLUMN [IF EXISTS] … SET FIELDS (…)` (define nested STRUCT or multi‑fields)
 - ✅ `DROP TABLE [IF EXISTS] … [CASCADE]`
 - ✅ `TRUNCATE TABLE …`
+- ✅ `CREATE [OR REPLACE] PIPELINE [IF NOT EXISTS]  …  WITH PROCESSORS (…)`
+- ✅ `ALTER PIPELINE … [(]ADD|DROP PROCESSOR …[)]`
+- ✅ `DROP PIPELINE [IF EXISTS] …`
 
 **Examples:**
 ```sql

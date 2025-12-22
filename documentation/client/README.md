@@ -18,3 +18,4 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [Search Documents](search.md)
 - [Scroll Search](scroll.md)
 - [Aggregations](aggregations.md)
+- [Template Management](templates.md)
