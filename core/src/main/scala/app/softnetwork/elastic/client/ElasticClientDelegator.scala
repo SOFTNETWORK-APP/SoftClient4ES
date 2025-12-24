@@ -22,7 +22,9 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement, SingleSearch}
+import app.softnetwork.elastic.sql.schema.TableAlias
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -84,9 +86,19 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] =
     delegate.createIndex(index, settings, mappings, aliases)
+
+  /** Get an index with the provided name.
+    *
+    * @param index
+    *   - the name of the index to get
+    * @return
+    *   the index if it exists, None otherwise
+    */
+  override def getIndex(index: String): ElasticResult[Option[Index]] =
+    delegate.getIndex(index)
 
   /** Delete an index with the provided name.
     *
@@ -145,19 +157,22 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   true if the index exists, false otherwise
     */
-  override def indexExists(index: String): ElasticResult[Boolean] =
-    delegate.indexExists(index)
+  override def indexExists(index: String, pattern: Boolean): ElasticResult[Boolean] =
+    delegate.indexExists(index, pattern)
 
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] =
     delegate.executeCreateIndex(index, settings, None, Nil)
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     delegate.executeDeleteIndex(index)
+
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+    delegate.executeGetIndex(index)
 
   override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
     delegate.executeCloseIndex(index)

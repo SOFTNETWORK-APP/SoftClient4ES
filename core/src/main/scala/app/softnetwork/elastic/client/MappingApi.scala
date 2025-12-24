@@ -155,7 +155,7 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     mapping: String,
     settings: String = defaultSettings
   ): ElasticResult[Boolean] = {
-    indexExists(index).flatMap {
+    indexExists(index, false).flatMap {
       case false =>
         // Scenario 1: Index doesn't exist
         createIndex(index, settings, Some(mapping), Nil).flatMap {
@@ -305,10 +305,10 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
 
     for {
       // Check if temp index exists and has data
-      tempExists <- indexExists(tempIndex)
+      tempExists <- indexExists(tempIndex, false)
 
       // Delete current (potentially corrupted) index if it exists
-      _ <- indexExists(index).flatMap {
+      _ <- indexExists(index, false).flatMap {
         case true  => deleteIndex(index)
         case false => ElasticResult.success(true)
       }

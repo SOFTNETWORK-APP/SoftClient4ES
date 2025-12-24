@@ -115,7 +115,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       )
     }
 
-    indexExists(index) match {
+    indexExists(index, false) match {
       case ElasticSuccess(false) =>
         return ElasticFailure(
           ElasticError(

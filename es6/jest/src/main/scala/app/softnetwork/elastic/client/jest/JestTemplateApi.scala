@@ -15,8 +15,8 @@ import io.searchbox.client.JestResult
 
 import scala.jdk.CollectionConverters._
 
-trait JestTemplateApi extends TemplateApi with JestClientHelpers with JestVersionApi {
-  _: SerializationApi with JestClientCompanion =>
+trait JestTemplateApi extends TemplateApi with JestClientHelpers {
+  _: JestVersionApi with SerializationApi with JestClientCompanion =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 

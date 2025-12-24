@@ -25,12 +25,16 @@ import app.softnetwork.elastic.client.{
   ElasticQueries,
   ElasticQuery,
   ElasticResponse,
+  JSONQuery,
   SingleValueAggregateResult
 }
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.schema
+import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement}
+import app.softnetwork.elastic.sql.schema.TableAlias
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -91,12 +95,24 @@ class MetricsElasticClient(
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] = {
     measureResult("createIndex", Some(index)) {
       delegate.createIndex(index, settings, mappings, aliases)
     }
   }
+
+  /** Get an index with the provided name.
+    *
+    * @param index
+    *   - the name of the index to get
+    * @return
+    *   the index if it exists, None otherwise
+    */
+  override def getIndex(index: String): ElasticResult[Option[Index]] =
+    measureResult("getIndex", Some(index)) {
+      delegate.getIndex(index)
+    }
 
   override def deleteIndex(index: String): ElasticResult[Boolean] = {
     measureResult("deleteIndex", Some(index)) {
@@ -127,9 +143,9 @@ class MetricsElasticClient(
     }
   }
 
-  override def indexExists(index: String): ElasticResult[Boolean] = {
+  override def indexExists(index: String, pattern: Boolean): ElasticResult[Boolean] = {
     measureResult("indexExists", Some(index)) {
-      delegate.indexExists(index)
+      delegate.indexExists(index, pattern)
     }
   }
 

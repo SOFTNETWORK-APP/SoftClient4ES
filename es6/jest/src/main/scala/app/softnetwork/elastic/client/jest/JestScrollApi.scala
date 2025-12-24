@@ -19,15 +19,7 @@ package app.softnetwork.elastic.client.jest
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
-import app.softnetwork.elastic.client.{
-  retryWithBackoff,
-  ClientAggregation,
-  ElasticQuery,
-  ElasticResponse,
-  ScrollApi,
-  SearchApi,
-  VersionApi
-}
+import app.softnetwork.elastic.client.{retryWithBackoff, ClientAggregation, ElasticQuery, ScrollApi}
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
@@ -40,7 +32,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
 trait JestScrollApi extends ScrollApi with JestClientHelpers {
-  _: VersionApi with SearchApi with JestClientCompanion =>
+  _: JestVersionApi with JestSearchApi with JestClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */

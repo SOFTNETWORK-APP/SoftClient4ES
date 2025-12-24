@@ -31,12 +31,12 @@ import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
-  DdlColumn,
-  DdlPartition,
-  DdlPipelineType,
-  DdlProcessor,
-  DdlProcessorType,
-  DdlScriptProcessor
+  Column,
+  IngestPipelineType,
+  IngestProcessor,
+  IngestProcessorType,
+  PartitionDate,
+  ScriptProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 
@@ -91,21 +91,21 @@ object Parser
       opts.toMap
     }
 
-  def processorType: PackratParser[DdlProcessorType] =
+  def processorType: PackratParser[IngestProcessorType] =
     ident ^^ { name =>
       name.toLowerCase match {
-        case "set"             => DdlProcessorType.Set
-        case "script"          => DdlProcessorType.Script
-        case "rename"          => DdlProcessorType.Rename
-        case "remove"          => DdlProcessorType.Remove
-        case "date_index_name" => DdlProcessorType.DateIndexName
-        case other             => DdlProcessorType(other)
+        case "set"             => IngestProcessorType.Set
+        case "script"          => IngestProcessorType.Script
+        case "rename"          => IngestProcessorType.Rename
+        case "remove"          => IngestProcessorType.Remove
+        case "date_index_name" => IngestProcessorType.DateIndexName
+        case other             => IngestProcessorType(other)
       }
     }
 
-  def processor: PackratParser[DdlProcessor] =
+  def processor: PackratParser[IngestProcessor] =
     processorType ~ objectValue ^^ { case pt ~ opts =>
-      DdlProcessor(pt, opts)
+      IngestProcessor(pt, opts)
     }
 
   def createOrReplacePipeline: PackratParser[CreatePipeline] =
@@ -113,7 +113,7 @@ object Parser
       processor,
       separator
     ) ~ end ^^ { case _ ~ name ~ _ ~ _ ~ proc ~ _ =>
-      CreatePipeline(name, DdlPipelineType.Custom, orReplace = true, processors = proc)
+      CreatePipeline(name, IngestPipelineType.Custom, orReplace = true, processors = proc)
     }
 
   def createPipeline: PackratParser[CreatePipeline] =
@@ -121,7 +121,7 @@ object Parser
       processor,
       separator
     ) <~ end ^^ { case _ ~ ine ~ name ~ _ ~ proc =>
-      CreatePipeline(name, DdlPipelineType.Custom, ifNotExists = ine, processors = proc)
+      CreatePipeline(name, IngestPipelineType.Custom, ifNotExists = ine, processors = proc)
     }
 
   def dropPipeline: PackratParser[DropPipeline] =
@@ -157,7 +157,7 @@ object Parser
         AlterPipeline(pipeline, ie, stmts)
     }
 
-  def multiFields: PackratParser[List[DdlColumn]] =
+  def multiFields: PackratParser[List[Column]] =
     "FIELDS" ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols) | success(Nil)
 
   def ifExists: PackratParser[Boolean] =
@@ -200,7 +200,7 @@ object Parser
     identifierWithIntervalFunction |
     identifierWithFunction) ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
 
-  def column: PackratParser[DdlColumn] =
+  def column: PackratParser[Column] =
     ident ~ extension_type ~ (script | multiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       Map.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
@@ -219,11 +219,11 @@ object Parser
                 val temp = multiple.dropRight(1) :+ s" ctx.$name = $last"
                 temp.mkString(";")
             }
-          DdlColumn(
+          Column(
             name,
             dt,
             Some(
-              DdlScriptProcessor(
+              ScriptProcessor(
                 script = script.sql,
                 column = name,
                 dataType = dt,
@@ -236,12 +236,12 @@ object Parser
             ct,
             opts
           )
-        case cols: List[DdlColumn] =>
-          DdlColumn(name, dt, None, cols, dv, nn, ct, opts)
+        case cols: List[Column] =>
+          Column(name, dt, None, cols, dv, nn, ct, opts)
       }
     }
 
-  def columns: PackratParser[List[DdlColumn]] =
+  def columns: PackratParser[List[Column]] =
     start ~ repsep(column, separator) ~ end ^^ { case _ ~ cols ~ _ => cols }
 
   def primaryKey: PackratParser[List[String]] =
@@ -258,14 +258,14 @@ object Parser
     ("MINUTE" ^^^ TimeUnit.MINUTES) |
     ("SECOND" ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
 
-  def partitionBy: PackratParser[Option[DdlPartition]] =
+  def partitionBy: PackratParser[Option[PartitionDate]] =
     opt("PARTITION" ~ "BY" ~ ident ~ opt(granularity)) ^^ {
-      case Some(_ ~ _ ~ pb ~ gf) => Some(DdlPartition(pb, gf.getOrElse(TimeUnit.DAYS)))
+      case Some(_ ~ _ ~ pb ~ gf) => Some(PartitionDate(pb, gf.getOrElse(TimeUnit.DAYS)))
       case None                  => None
     }
 
   def columnsWithPartitionBy
-    : PackratParser[(List[DdlColumn], List[String], Option[DdlPartition], Map[String, Any])] =
+    : PackratParser[(List[Column], List[String], Option[PartitionDate], Map[String, Any])] =
     start ~ repsep(
       column,
       separator
@@ -280,9 +280,9 @@ object Parser
       case _ ~ name ~ lr =>
         lr match {
           case (
-                cols: List[DdlColumn],
+                cols: List[Column],
                 pk: List[String],
-                p: Option[DdlPartition],
+                p: Option[PartitionDate],
                 opts: Map[String, Value[_]]
               ) =>
             CreateTable(
@@ -304,9 +304,9 @@ object Parser
       case _ ~ ine ~ name ~ lr =>
         lr match {
           case (
-                cols: List[DdlColumn],
+                cols: List[Column],
                 pk: List[String],
-                p: Option[DdlPartition],
+                p: Option[PartitionDate],
                 opts: Map[String, Value[_]]
               ) =>
             CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p, options = opts)
@@ -398,7 +398,7 @@ object Parser
         }
       AlterColumnScript(
         name,
-        DdlScriptProcessor(
+        ScriptProcessor(
           script = ns.sql,
           column = name,
           dataType = ns.out,
@@ -459,6 +459,14 @@ object Parser
   def dropTableSetting: PackratParser[DropTableSetting] =
     ("DROP" ~ "SETTING") ~> ident ^^ { m => DropTableSetting(m) }
 
+  def alterTableAlias: PackratParser[AlterTableAlias] =
+    (("SET" | "ADD") ~ "ALIAS") ~ start ~> option <~ end ^^ { opt =>
+      AlterTableAlias(opt._1, opt._2)
+    }
+
+  def dropTableAlias: PackratParser[DropTableAlias] =
+    ("DROP" ~ "ALIAS") ~> ident ^^ { m => DropTableAlias(m) }
+
   def alterTableStatement: PackratParser[AlterTableStatement] =
     addColumn |
     dropColumn |
@@ -481,7 +489,9 @@ object Parser
     alterTableMapping |
     dropTableMapping |
     alterTableSetting |
-    dropTableSetting
+    dropTableSetting |
+    alterTableAlias |
+    dropTableAlias
 
   def alterTable: PackratParser[AlterTable] =
     ("ALTER" ~ "TABLE") ~ ifExists ~ ident ~ start.? ~ repsep(

@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{IndexApi, SerializationApi, SettingsApi}
+import app.softnetwork.elastic.client.{IndexApi, SerializationApi}
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.core.Index
 
@@ -27,7 +27,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   [[IndexApi]] for generic API documentation
   */
 trait JestIndexApi extends IndexApi with JestClientHelpers {
-  _: SettingsApi with JestClientCompanion with SerializationApi =>
+  _: JestSettingsApi with JestClientCompanion with SerializationApi =>
 
   /** Index a document in the given index.
     * @see

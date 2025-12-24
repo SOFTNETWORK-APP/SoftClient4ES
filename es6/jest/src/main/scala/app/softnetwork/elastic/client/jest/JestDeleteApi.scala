@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{DeleteApi, SettingsApi}
+import app.softnetwork.elastic.client.DeleteApi
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.core.Delete
 
@@ -27,7 +27,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   [[DeleteApi]] for generic API documentation
   */
 trait JestDeleteApi extends DeleteApi with JestClientHelpers {
-  _: SettingsApi with JestClientCompanion =>
+  _: JestSettingsApi with JestClientCompanion =>
 
   /** Delete an entity from the given index.
     * @see

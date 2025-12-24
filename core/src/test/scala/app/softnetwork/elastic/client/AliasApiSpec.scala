@@ -7,6 +7,7 @@ import org.mockito.MockitoSugar
 import org.mockito.ArgumentMatchersSugar
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.schema.TableAlias
 
 /** Unit tests for AliasApi
   */
@@ -21,7 +22,13 @@ class AliasApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestAliasApi extends AliasApi with IndicesApi with RefreshApi {
+  class TestAliasApi
+      extends AliasApi
+      with IndicesApi
+      with RefreshApi
+      with PipelineApi
+      with VersionApi
+      with SerializationApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -33,6 +40,7 @@ class AliasApiSpec
     )
     var executeSwapAliasResult: ElasticResult[Boolean] = ElasticSuccess(true)
     var executeIndexExistsResult: ElasticResult[Boolean] = ElasticSuccess(true)
+    var executeGetIndexResult: ElasticResult[Option[String]] = ElasticSuccess(None)
 
     override private[client] def executeAddAlias(
       index: String,
@@ -68,23 +76,43 @@ class AliasApiSpec
       executeIndexExistsResult
     }
 
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+      executeGetIndexResult
+    }
+
     // Other required methods
     override private[client] def executeCreateIndex(
       index: String,
       settings: String,
       mappings: Option[String],
-      aliases: Seq[String]
+      aliases: Seq[TableAlias]
     ): ElasticResult[Boolean] = ???
     override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeReindex(
-      sourceIndex: JSONQuery,
-      targetIndex: JSONQuery,
+      sourceIndex: String,
+      targetIndex: String,
       refresh: Boolean,
-      pipeline: Option[JSONQuery]
+      pipeline: Option[String]
     ): ElasticResult[(Boolean, Option[Long])] = ???
     override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+    override private[client] def executeCreatePipeline(
+      pipelineName: String,
+      pipelineDefinition: String
+    ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeDeletePipeline(
+      pipelineName: String,
+      ifExists: Boolean
+    ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeGetPipeline(
+      pipelineName: String
+    ): ElasticResult[Option[String]] = ???
+
+    override private[client] def executeVersion(): ElasticResult[String] = ???
   }
 
   var aliasApi: TestAliasApi = _
@@ -1629,7 +1657,12 @@ class AliasApiSpec
       "not call execute methods when validation fails" in {
         // Given
         var executeCalled = false
-        val validatingApi = new AliasApi with IndicesApi with RefreshApi {
+        val validatingApi = new AliasApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeAddAlias(
@@ -1658,22 +1691,43 @@ class AliasApiSpec
           ): ElasticResult[Boolean] = ???
           override private[client] def executeCreateIndex(
             index: String,
-            settings: JSONQuery,
-            mappings: Option[JSONQuery],
-            aliases: Seq[JSONQuery]
+            settings: String,
+            mappings: Option[String],
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
           override private[client] def executeReindex(
-            sourceIndex: JSONQuery,
-            targetIndex: JSONQuery,
+            sourceIndex: String,
+            targetIndex: String,
             refresh: Boolean,
-            pipeline: Option[JSONQuery]
+            pipeline: Option[String]
           ): ElasticResult[(Boolean, Option[Long])] = ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When

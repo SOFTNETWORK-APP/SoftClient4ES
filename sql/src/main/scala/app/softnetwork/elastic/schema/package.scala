@@ -19,14 +19,15 @@ package app.softnetwork.elastic
 import app.softnetwork.elastic.sql.{BooleanValue, ObjectValue, StringValue, StringValues, Value}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.{
-  DdlColumn,
-  DdlDateIndexNameProcessor,
-  DdlDefaultValueProcessor,
-  DdlPartition,
-  DdlPrimaryKeyProcessor,
-  DdlProcessor,
-  DdlScriptProcessor,
-  DdlTable
+  Column,
+  DateIndexNameProcessor,
+  DefaultValueProcessor,
+  IngestPipelineType,
+  IngestProcessor,
+  PartitionDate,
+  PrimaryKeyProcessor,
+  ScriptProcessor,
+  Table
 }
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -36,18 +37,18 @@ import scala.jdk.CollectionConverters._
 
 package object schema {
 
-  final case class EsField(
+  final case class IndexField(
     name: String,
     `type`: String,
-    script: Option[DdlScriptProcessor] = None,
+    script: Option[ScriptProcessor] = None,
     null_value: Option[Value[_]] = None,
     not_null: Option[Boolean] = None,
     comment: Option[String] = None,
-    fields: List[EsField] = Nil,
+    fields: List[IndexField] = Nil,
     options: Map[String, Value[_]] = Map.empty
   ) {
-    lazy val ddlColumn: DdlColumn = {
-      DdlColumn(
+    lazy val ddlColumn: Column = {
+      Column(
         name = name,
         dataType = SQLTypes(this),
         script = script,
@@ -60,8 +61,8 @@ package object schema {
     }
   }
 
-  object EsField {
-    def apply(name: String, node: JsonNode): EsField = {
+  object IndexField {
+    def apply(name: String, node: JsonNode): IndexField = {
       val tpe = Option(node.get("type")).map(_.asText()).getOrElse("object")
 
       val nullValue =
@@ -107,7 +108,7 @@ package object schema {
                   map.get("painless") match {
                     case Some(source: StringValue) =>
                       Some(
-                        DdlScriptProcessor(
+                        ScriptProcessor(
                           script = script.value,
                           column = name,
                           dataType = SQLTypes(tpe),
@@ -121,7 +122,7 @@ package object schema {
           }
         case _ => None
       }
-      EsField(
+      IndexField(
         name = name,
         `type` = tpe,
         script = script,
@@ -135,22 +136,22 @@ package object schema {
     }
   }
 
-  final case class EsMappings(
-    fields: List[EsField] = Nil,
+  final case class IndexMappings(
+    fields: List[IndexField] = Nil,
     primaryKey: List[String] = Nil,
-    partitionBy: Option[EsPartitionBy] = None,
+    partitionBy: Option[IndexDatePartition] = None,
     options: Map[String, Value[_]] = Map.empty
   )
 
-  object EsMappings {
-    def apply(root: JsonNode): EsMappings = {
+  object IndexMappings {
+    def apply(root: JsonNode): IndexMappings = {
       val mappings = root.path("mappings")
       val fields = Option(mappings.get("properties"))
         .orElse(Option(mappings.path("_doc").get("properties")))
         .map(_.properties().asScala.map { entry =>
           val name = entry.getKey
           val value = entry.getValue
-          EsField(name, value)
+          IndexField(name, value)
         }.toList)
         .getOrElse(Nil)
 
@@ -168,7 +169,7 @@ package object schema {
         }
         .getOrElse(List.empty)
 
-      val partitionBy: Option[EsPartitionBy] = meta.flatMap {
+      val partitionBy: Option[IndexDatePartition] = meta.flatMap {
         case m: ObjectValue =>
           m.value.get("partition_by") match {
             case Some(pb: ObjectValue) =>
@@ -176,8 +177,8 @@ package object schema {
                 case Some(column: StringValue) => // valid
                   pb.value.get("granularity") match {
                     case Some(granularity: StringValue) =>
-                      Some(EsPartitionBy(column.value, granularity.value))
-                    case _ => Some(EsPartitionBy(column.value, "d"))
+                      Some(IndexDatePartition(column.value, granularity.value))
+                    case _ => Some(IndexDatePartition(column.value, "d"))
                   }
                 case _ => None
               }
@@ -186,7 +187,7 @@ package object schema {
         case _ => None
       }
 
-      EsMappings(
+      IndexMappings(
         fields = fields,
         primaryKey = primaryKey,
         partitionBy = partitionBy,
@@ -196,62 +197,153 @@ package object schema {
 
   }
 
-  final case class EsPartitionBy(
+  final case class IndexDatePartition(
     column: String,
     granularity: String // "d", "M", "y", etc.
   )
 
-  final case class EsSettings(
+  final case class IndexSettings(
     options: Map[String, Value[_]] = Map.empty
   )
 
-  object EsSettings {
-    def apply(settings: JsonNode): EsSettings = {
+  object IndexSettings {
+    def apply(settings: JsonNode): IndexSettings = {
       val index = settings.path("settings").path("index")
 
       val options = extractObject(index)
 
-      EsSettings(
+      IndexSettings(
         options = options
       )
     }
   }
 
-  final case class EsProcessor(
+  final case class IndexIngestProcessor(
+    pipelineType: IngestPipelineType,
     processor: JsonNode
   ) {
-    lazy val ddlProcesor: DdlProcessor = DdlProcessor(processor)
+    lazy val ddlProcesor: IngestProcessor = IngestProcessor(pipelineType, processor)
   }
 
-  final case class EsPipeline(
+  final case class IndexIngestPipeline(
+    pipelineType: IngestPipelineType,
     pipeline: JsonNode
   ) {
-    lazy val processors: Seq[DdlProcessor] = {
+    lazy val processors: Seq[IngestProcessor] = {
       val processorsNode = pipeline.get("processors")
       if (processorsNode != null && processorsNode.isArray) {
-        processorsNode.elements().asScala.toSeq.map(EsProcessor(_).ddlProcesor)
+        processorsNode
+          .elements()
+          .asScala
+          .toSeq
+          .map(IndexIngestProcessor(pipelineType, _).ddlProcesor)
       } else {
         Seq.empty
       }
     }
   }
 
-  final case class EsIndex(
+  final case class IndexAlias(
+    name: String,
+    filter: Map[String, Any] = Map.empty,
+    routing: Option[String] = None,
+    indexRouting: Option[String] = None,
+    searchRouting: Option[String] = None,
+    isWriteIndex: Boolean = false,
+    isHidden: Boolean = false,
+    node: JsonNode
+  )
+
+  object IndexAlias {
+    def apply(name: String, node: JsonNode): IndexAlias = {
+      if (node.has(name)) {
+        val aliasNode = node.path(name)
+        return apply(name, aliasNode)
+      }
+      val filter: Map[String, Any] =
+        if (node.has("filter")) node.path("filter")
+        else Map.empty
+      val routing =
+        Option(node.get("routing")).map(_.asText())
+      val indexRouting =
+        Option(node.get("index_routing")).map(_.asText())
+      val searchRouting =
+        Option(node.get("search_routing")).map(_.asText())
+      val isWriteIndex =
+        Option(node.get("is_write_index")).exists(_.asBoolean())
+      val isHidden =
+        Option(node.get("is_hidden")).exists(_.asBoolean())
+      IndexAlias(
+        name = name,
+        filter = filter,
+        routing = routing,
+        indexRouting = indexRouting,
+        searchRouting = searchRouting,
+        isWriteIndex = isWriteIndex,
+        isHidden = isHidden,
+        node = node
+      )
+    }
+  }
+
+  final case class IndexAliases(
+    aliases: Map[String, IndexAlias] = Map.empty
+  )
+
+  object IndexAliases {
+    def apply(nodes: Seq[(String, JsonNode)]): IndexAliases = {
+      IndexAliases(nodes.map(entry => entry._1 -> IndexAlias(entry._1, entry._2)).toMap)
+    }
+  }
+
+  final case class Index(
     name: String,
     mappings: JsonNode,
     settings: JsonNode,
-    pipeline: Option[JsonNode] = None
+    aliases: Map[String, JsonNode] = Map.empty,
+    defaultPipeline: Option[JsonNode] = None,
+    finalPipeline: Option[JsonNode] = None
   ) {
 
-    lazy val esMappings: EsMappings = EsMappings(mappings)
+    lazy val defaultIngestPipelineName: Option[String] = esSettings.options.get("index") match {
+      case Some(obj: ObjectValue) =>
+        obj.value.get("default_pipeline") match {
+          case Some(s: StringValue) => Some(s.value)
+          case _                    => None
+        }
+      case _ => None
+    }
 
-    lazy val esSettings: EsSettings = EsSettings(settings)
+    lazy val finalIngestPipelineName: Option[String] = esSettings.options.get("index") match {
+      case Some(obj: ObjectValue) =>
+        obj.value.get("final_pipeline") match {
+          case Some(s: StringValue) => Some(s.value)
+          case _                    => None
+        }
+      case _ => None
+    }
 
-    lazy val esPipeline: Option[EsPipeline] = pipeline.map(EsPipeline(_))
+    lazy val esMappings: IndexMappings = IndexMappings(mappings)
 
-    lazy val ddlTable: DdlTable = {
+    lazy val esSettings: IndexSettings = IndexSettings(settings)
+
+    lazy val esAliases: IndexAliases = IndexAliases(aliases.toSeq)
+
+    lazy val esDefaultPipeline: Option[IndexIngestPipeline] =
+      defaultPipeline.map(IndexIngestPipeline(IngestPipelineType.Default, _))
+
+    lazy val esFinalPipeline: Option[IndexIngestPipeline] =
+      finalPipeline.map(IndexIngestPipeline(IngestPipelineType.Final, _))
+
+    lazy val esProcessors: Seq[IngestProcessor] = {
+      val defaultProcessors = esDefaultPipeline.map(_.processors).getOrElse(Seq.empty)
+      val finalProcessors = esFinalPipeline.map(_.processors).getOrElse(Seq.empty)
+      defaultProcessors ++ finalProcessors
+    }
+
+    lazy val ddlTable: Table = {
       // 1. Columns from the mapping
-      val initialCols: Map[String, DdlColumn] =
+      val initialCols: Map[String, Column] =
         esMappings.fields.map { field =>
           val name = field.name
           name -> field.ddlColumn
@@ -259,53 +351,92 @@ package object schema {
 
       // 2. PK + partition + pipelines from index mappings and settings
       var primaryKey: List[String] = esMappings.primaryKey
-      var partitionBy: Option[DdlPartition] = esMappings.partitionBy.map { p =>
+      var partitionBy: Option[PartitionDate] = esMappings.partitionBy.map { p =>
         val granularity = TimeUnit(p.granularity)
-        DdlPartition(p.column, granularity)
+        PartitionDate(p.column, granularity)
       }
 
       // 3. Enrichment from the pipeline (if provided)
       val enrichedCols = scala.collection.mutable.Map(initialCols.toSeq: _*)
 
-      esPipeline.foreach { pipeline =>
-        pipeline.processors.foreach {
-          case p: DdlScriptProcessor =>
-            val col = p.column
-            enrichedCols.get(col).foreach { c =>
-              enrichedCols.update(col, c.copy(script = Some(p)))
-            }
+      var processors: collection.mutable.Seq[IngestProcessor] = collection.mutable.Seq.empty
 
-          case p: DdlDefaultValueProcessor =>
-            val col = p.column
-            enrichedCols.get(col).foreach { c =>
-              enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))
-            }
+      esProcessors.foreach {
+        case p: ScriptProcessor =>
+          val col = p.column
+          enrichedCols.get(col).foreach { c =>
+            enrichedCols.update(col, c.copy(script = Some(p)))
+          }
 
-          case p: DdlDateIndexNameProcessor =>
-            if (partitionBy.isEmpty) {
-              val granularity = TimeUnit(p.dateRounding)
-              partitionBy = Some(DdlPartition(p.column, granularity))
-            }
+        case p: DefaultValueProcessor =>
+          val col = p.column
+          enrichedCols.get(col).foreach { c =>
+            enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))
+          }
 
-          case p: DdlPrimaryKeyProcessor =>
-            if (primaryKey.isEmpty) {
-              primaryKey = p.value.toList
-            }
+        case p: DateIndexNameProcessor =>
+          if (partitionBy.isEmpty) {
+            val granularity = TimeUnit(p.dateRounding)
+            partitionBy = Some(PartitionDate(p.column, granularity))
+          }
 
-          case _ => // ignore others (rename/remove...) ou gère-les si tu veux les remonter en DDL
-        }
+        case p: PrimaryKeyProcessor =>
+          if (primaryKey.isEmpty) {
+            primaryKey = p.value.toList
+          }
+
+        case p: IngestProcessor => processors = processors :+ p
+
       }
 
       // 4. Final construction of the DdlTable
-      DdlTable(
+      Table(
         name = name,
         columns = enrichedCols.values.toList.sortBy(_.name),
         primaryKey = primaryKey,
         partitionBy = partitionBy,
-        esMappings.options,
-        esSettings.options
+        mappings = esMappings.options,
+        settings = esSettings.options,
+        processors = processors.toSeq,
+        aliases = esAliases.aliases.map(entry => entry._1 -> entry._2.node)
       ).update()
     }
   }
 
+  object Index {
+    def apply(name: String, json: String): Index = {
+      val root: JsonNode = json
+      apply(name, root)
+    }
+
+    def apply(name: String, root: JsonNode): Index = {
+      if (root.has(name)) {
+        val indexNode = root.path(name)
+        return apply(name, indexNode)
+      }
+      val mappings = root.path("mappings")
+      val settings = root.path("settings")
+      val aliasesNode = root.path("aliases")
+      val aliases: Map[String, JsonNode] =
+        if (aliasesNode != null && aliasesNode.isObject) {
+          aliasesNode
+            .properties()
+            .asScala
+            .map { entry =>
+              val aliasName = entry.getKey
+              val aliasValue = entry.getValue
+              aliasName -> aliasValue
+            }
+            .toMap
+        } else {
+          Map.empty
+        }
+      Index(
+        name = name,
+        mappings = mappings,
+        settings = settings,
+        aliases = aliases
+      )
+    }
+  }
 }

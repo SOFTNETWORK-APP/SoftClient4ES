@@ -23,6 +23,7 @@ import app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.schema.TableAlias
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
@@ -122,7 +123,7 @@ trait NopeClientApi extends ElasticClientApi {
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] = ElasticResult.success(false)
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
@@ -239,4 +240,75 @@ trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeVersion(): ElasticResult[String] =
     ElasticResult.success("0.0.0")
+
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+    ElasticResult.success(None)
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeDeletePipeline(
+    pipelineName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeGetPipeline(
+    pipelineName: String
+  ): ElasticResult[Option[String]] =
+    ElasticResult.success(None)
+
+  override private[client] def executeCreateComposableTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeDeleteComposableTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeGetComposableTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    ElasticResult.success(None)
+
+  override private[client] def executeListComposableTemplates()
+    : ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
+
+  override private[client] def executeComposableTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeCreateLegacyTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeDeleteLegacyTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
+
+  override private[client] def executeGetLegacyTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    ElasticResult.success(None)
+
+  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
+
+  override private[client] def executeLegacyTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    ElasticResult.success(false)
 }

@@ -6,6 +6,7 @@ import org.scalatest.BeforeAndAfterEach
 import org.mockito.{ArgumentMatchersSugar, MockitoSugar}
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.schema.TableAlias
 
 /** Unit tests for MappingApi
   */
@@ -27,7 +28,14 @@ class MappingApiSpec
     """{"properties":{"name":{"type":"text"},"age":{"type":"integer"}}}"""
 
   // Concrete implementation for testing
-  class TestMappingApi extends MappingApi with SettingsApi with IndicesApi with RefreshApi {
+  class TestMappingApi
+      extends MappingApi
+      with SettingsApi
+      with IndicesApi
+      with RefreshApi
+      with PipelineApi
+      with VersionApi
+      with SerializationApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -35,6 +43,7 @@ class MappingApiSpec
     var executeGetMappingResult: ElasticResult[String] = ElasticSuccess(validMapping)
     var executeIndexExistsResult: ElasticResult[Boolean] = ElasticSuccess(true)
     var executeCreateIndexResult: ElasticResult[Boolean] = ElasticSuccess(true)
+    var executeGetIndexResult: ElasticResult[Option[String]] = ElasticSuccess(None)
     var executeDeleteIndexResult: ElasticResult[Boolean] = ElasticSuccess(true)
     var executeReindexFunction
       : (String, String, Boolean) => ElasticResult[(Boolean, Option[Long])] =
@@ -62,10 +71,13 @@ class MappingApiSpec
       index: String,
       settings: String,
       mappings: Option[String],
-      aliases: Seq[String]
+      aliases: Seq[TableAlias]
     ): ElasticResult[Boolean] = {
       executeCreateIndexResult
     }
+
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+      executeGetIndexResult
 
     override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = {
       executeDeleteIndexResult
@@ -98,6 +110,22 @@ class MappingApiSpec
       index: String,
       settings: String
     ): ElasticResult[Boolean] = ElasticSuccess(true)
+
+    override private[client] def executeCreatePipeline(
+      pipelineName: String,
+      pipelineDefinition: String
+    ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeDeletePipeline(
+      pipelineName: String,
+      ifExists: Boolean
+    ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeGetPipeline(
+      pipelineName: String
+    ): ElasticResult[Option[String]] = ???
+
+    override private[client] def executeVersion(): ElasticResult[String] = ???
   }
 
   var mappingApi: TestMappingApi = _

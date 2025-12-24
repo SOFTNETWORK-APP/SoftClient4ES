@@ -17,7 +17,9 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.IndicesApi
+import app.softnetwork.elastic.client.jest.actions.GetIndex
 import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
 import io.searchbox.client.JestResult
 import io.searchbox.indices.{CloseIndex, CreateIndex, DeleteIndex, IndicesExists, OpenIndex}
 import io.searchbox.indices.reindex.Reindex
@@ -28,8 +30,8 @@ import scala.util.Try
   * @see
   *   [[IndicesApi]] for generic API documentation
   */
-trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpers {
-  _: JestClientCompanion =>
+trait JestIndicesApi extends IndicesApi with JestClientHelpers {
+  _: JestRefreshApi with JestPipelineApi with JestClientCompanion =>
 
   /** Create an index with the given settings.
     * @see
@@ -39,7 +41,7 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
     index: String,
     settings: String = defaultSettings,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] = {
     executeJestBooleanAction(
       operation = "createIndex",
@@ -49,7 +51,13 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
       val builder = new CreateIndex.Builder(index)
         .settings(settings)
       if (aliases.nonEmpty) {
-        builder.aliases(aliases.map(alias => s"""{"$alias":{}}""").mkString(","))
+        val root = mapper.createObjectNode()
+        val as = mapper.createObjectNode()
+        aliases.foreach { alias =>
+          as.set(alias.alias, alias.node)
+        }
+        root.set("aliases", as)
+        builder.aliases(root.toString)
       }
       mappings.foreach { mapping =>
         builder.mappings(mapping)
@@ -58,7 +66,24 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
     }
   }
 
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+    executeJestAction[JestResult, Option[String]](
+      operation = "getIndex",
+      index = Some(index),
+      retryable = true
+    ) {
+      new GetIndex.Builder(index).build()
+    } { result =>
+      if (result.isSucceeded) {
+        Some(result.getJsonString)
+      } else {
+        None
+      }
+    }
+  }
+
   /** Delete an index.
+    *
     * @see
     *   [[IndicesApi.deleteIndex]]
     */

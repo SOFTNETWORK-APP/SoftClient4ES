@@ -17,6 +17,9 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.serialization._
 
 /** Index management API.
   *
@@ -26,7 +29,7 @@ import app.softnetwork.elastic.client.result._
   *   - Parameter validation
   *   - Automatic retry for transient errors
   */
-trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
+trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -95,7 +98,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
     index: String,
     settings: String = defaultSettings,
     mappings: Option[String] = None,
-    aliases: Seq[String] = Nil
+    aliases: Seq[TableAlias] = Nil
   ): ElasticResult[Boolean] = {
     validateIndexName(index) match {
       case Some(error) =>
@@ -134,7 +137,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
       case _ => // OK
     }
 
-    aliases.flatMap(alias => validateAliasName(alias)) match {
+    aliases.flatMap(alias => validateAliasName(alias.alias)) match {
       case error :: _ =>
         return ElasticFailure(
           error.copy(
@@ -157,6 +160,108 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
         success
       case failure @ ElasticFailure(error) =>
         logger.error(s"❌ Failed to create index '$index': ${error.message}")
+        failure
+    }
+  }
+
+  /** Get an index with the provided name.
+    * @param index
+    *   - the name of the index to get
+    * @return
+    *   the index if it exists, None otherwise
+    */
+  def getIndex(index: String): ElasticResult[Option[Index]] = {
+    validateIndexName(index) match {
+      case Some(error) =>
+        return ElasticFailure(
+          error.copy(
+            operation = Some("getIndex"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = s"Invalid index: ${error.message}"
+          )
+        )
+      case None => // OK
+    }
+
+    logger.info(s"Getting index '$index'")
+
+    executeGetIndex(index) match {
+      case ElasticSuccess(Some(json)) =>
+        logger.info(s"✅ Index '$index' retrieved successfully")
+        var tempIndex = Index(index, json)
+        tempIndex.defaultIngestPipelineName match {
+          case Some(pipeline) =>
+            logger.info(
+              s"Index '$index' has default ingest pipeline '$pipeline'"
+            )
+            getPipeline(pipeline) match {
+              case ElasticSuccess(Some(json)) =>
+                logger.info(
+                  s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
+                )
+                tempIndex = tempIndex.copy(defaultPipeline = Some(json))
+              case ElasticSuccess(None) =>
+                logger.warn(
+                  s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
+                )
+                return ElasticFailure(
+                  ElasticError(
+                    message =
+                      s"Default ingest pipeline '$pipeline' for index '$index' does not exist",
+                    cause = None,
+                    statusCode = Some(404),
+                    index = Some(index),
+                    operation = Some("getIndex")
+                  )
+                )
+              case ElasticFailure(error) =>
+                logger.error(
+                  s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
+                )
+                return ElasticFailure(error.copy(operation = Some("getIndex")))
+            }
+          case None => // No default ingest pipeline
+        }
+        tempIndex.finalIngestPipelineName match {
+          case Some(pipeline) =>
+            logger.info(
+              s"Index '$index' has final ingest pipeline '$pipeline'"
+            )
+            getPipeline(pipeline) match {
+              case ElasticSuccess(Some(json)) =>
+                logger.info(
+                  s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
+                )
+                tempIndex = tempIndex.copy(finalPipeline = Some(json))
+              case ElasticSuccess(None) =>
+                logger.warn(
+                  s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
+                )
+                return ElasticFailure(
+                  ElasticError(
+                    message =
+                      s"Final ingest pipeline '$pipeline' for index '$index' does not exist",
+                    cause = None,
+                    statusCode = Some(404),
+                    index = Some(index),
+                    operation = Some("getIndex")
+                  )
+                )
+              case ElasticFailure(error) =>
+                logger.error(
+                  s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
+                )
+                return ElasticFailure(error.copy(operation = Some("getIndex")))
+            }
+          case None => // No default ingest pipeline
+        }
+        ElasticSuccess(Some(tempIndex))
+      case ElasticSuccess(None) =>
+        logger.info(s"✅ Index '$index' not found")
+        ElasticSuccess(None)
+      case failure @ ElasticFailure(error) =>
+        logger.error(s"❌ Failed to get index '$index': ${error.message}")
         failure
     }
   }
@@ -325,7 +430,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
     logger.info(s"Reindexing from '$sourceIndex' to '$targetIndex' (refresh=$refresh)")
 
     // Existence checks...
-    indexExists(sourceIndex) match {
+    indexExists(sourceIndex, pattern = false) match {
       case ElasticSuccess(false) =>
         return ElasticFailure(
           ElasticError(
@@ -340,7 +445,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
       case _                     => // OK
     }
 
-    indexExists(targetIndex) match {
+    indexExists(targetIndex, pattern = false) match {
       case ElasticSuccess(false) =>
         return ElasticFailure(
           ElasticError(
@@ -399,8 +504,8 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
     * @return
     *   true if the index exists, false otherwise
     */
-  def indexExists(index: String): ElasticResult[Boolean] = {
-    validateIndexName(index) match {
+  def indexExists(index: String, pattern: Boolean): ElasticResult[Boolean] = {
+    validateIndexName(index, pattern) match {
       case Some(error) =>
         return ElasticFailure(
           error.copy(
@@ -434,8 +539,10 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi =>
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean]
+
+  private[client] def executeGetIndex(index: String): ElasticResult[Option[String]]
 
   private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean]
 

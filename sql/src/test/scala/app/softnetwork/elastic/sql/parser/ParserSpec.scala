@@ -1,17 +1,17 @@
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.schema.EsIndex
+import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.{IngestTimestampValue, StringValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   mapper,
-  DdlDateIndexNameProcessor,
-  DdlDefaultValueProcessor,
-  DdlPartition,
-  DdlPrimaryKeyProcessor,
-  DdlProcessorType,
-  DdlScriptProcessor
+  DateIndexNameProcessor,
+  DefaultValueProcessor,
+  IngestProcessorType,
+  PartitionDate,
+  PrimaryKeyProcessor,
+  ScriptProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
@@ -964,7 +964,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             true,
             false,
             List("id"),
-            Some(DdlPartition("birthdate", TimeUnit.MONTHS)),
+            Some(PartitionDate("birthdate", TimeUnit.MONTHS)),
             _
           ) =>
         cols.map(_.name) should contain allOf ("id", "name")
@@ -1007,11 +1007,11 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         mappings.set("mappings", indexMappings)
         val settings = mapper.createObjectNode()
         settings.set("settings", indexSettings)
-        val esIndex = EsIndex(
+        val esIndex = Index(
           name = "users",
           mappings = mappings,
           settings = settings,
-          pipeline = Some(pipeline)
+          defaultPipeline = Some(pipeline)
         )
         val ddlTable = esIndex.ddlTable
         println(s"""esIndex ddl -> ${ddlTable.sql}""")
@@ -1340,7 +1340,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         processors.size shouldBe 6
         processors.find(_.column == "name") match {
           case Some(
-                DdlDefaultValueProcessor(
+                DefaultValueProcessor(
                   "DEFAULT 'anonymous'",
                   "name",
                   StringValue("anonymous"),
@@ -1351,7 +1351,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         }
         processors.find(_.column == "age") match {
           case Some(
-                DdlScriptProcessor(
+                ScriptProcessor(
                   "DATE_DIFF(birthdate, CURRENT_DATE, YEAR)",
                   "age",
                   SQLTypes.Int,
@@ -1366,7 +1366,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         }
         processors.find(_.column == "ingested_at") match {
           case Some(
-                DdlDefaultValueProcessor(
+                DefaultValueProcessor(
                   "DEFAULT _ingest.timestamp",
                   "ingested_at",
                   IngestTimestampValue,
@@ -1377,7 +1377,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         }
         processors.find(_.column == "profile.seniority") match {
           case Some(
-                DdlScriptProcessor(
+                ScriptProcessor(
                   "DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)",
                   "profile.seniority",
                   SQLTypes.Int,
@@ -1392,7 +1392,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         }
         processors.find(_.column == "birthdate") match {
           case Some(
-                DdlDateIndexNameProcessor(
+                DateIndexNameProcessor(
                   "PARTITION BY birthdate (MONTH)",
                   "birthdate",
                   "M",
@@ -1406,7 +1406,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         }
         processors.find(_.column == "_id") match {
           case Some(
-                DdlPrimaryKeyProcessor(
+                PrimaryKeyProcessor(
                   "PRIMARY KEY (id)",
                   "_id",
                   cols,
@@ -1446,7 +1446,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           ) if ie =>
         statements.size shouldBe 2
         statements.collect { case AddPipelineProcessor(p) => p } match {
-          case DdlDefaultValueProcessor(
+          case DefaultValueProcessor(
                 "status DEFAULT 'active'",
                 "status",
                 StringValue("active"),
@@ -1454,7 +1454,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
               ) :: Nil =>
           case other => fail(s"Expected AddPipelineProcessor with DdlSetProcessor, got $other")
         }
-        statements.collect { case DropPipelineProcessor(DdlProcessorType.Set, f) =>
+        statements.collect { case DropPipelineProcessor(IngestProcessorType.Set, f) =>
           f
         } should contain("_id")
       case _ => fail("Expected AlterPipeline")

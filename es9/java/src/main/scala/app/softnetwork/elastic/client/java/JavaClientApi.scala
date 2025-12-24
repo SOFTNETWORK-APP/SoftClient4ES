@@ -25,13 +25,13 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
-import app.softnetwork.elastic.client
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.schema.TableAlias
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
   FieldSort,
@@ -111,13 +111,13 @@ trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
   * @see
   *   [[IndicesApi]] for index management operations
   */
-trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHelpers {
-  _: JavaClientCompanion =>
+trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
+  _: JavaClientRefreshApi with JavaClientPipelineApi with JavaClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "createIndex",
@@ -130,7 +130,19 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
           new CreateIndexRequest.Builder()
             .index(index)
             .settings(new IndexSettings.Builder().withJson(new StringReader(settings)).build())
-            .aliases(aliases.map(key => (key, new Alias.Builder().build())).toMap.asJava)
+            .aliases(
+              aliases
+                .map(alias => {
+                  var builder =
+                    new Alias.Builder().isWriteIndex(alias.isWriteIndex).isHidden(alias.isHidden)
+                  alias.routing.foreach(r => builder = builder.routing(r))
+                  alias.indexRouting.foreach(ir => builder = builder.indexRouting(ir))
+                  alias.searchRouting.foreach(sr => builder = builder.searchRouting(sr))
+                  (alias.alias, builder.build())
+                })
+                .toMap
+                .asJava
+            )
             .mappings(
               new TypeMapping.Builder()
                 .withJson(
@@ -141,6 +153,26 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
             .build()
         )
     )(_.acknowledged())
+
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+    executeJavaAction(
+      operation = "getIndex",
+      index = Some(index),
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .get(
+          new GetIndexRequest.Builder().index(index).build()
+        )
+    )(response => {
+      val valueOpt = response.indices().asScala.get(index)
+      valueOpt match {
+        case Some(value) => Some(convertToJson(value))
+        case None        => None
+      }
+    })
+  }
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
@@ -224,7 +256,7 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
   *   [[AliasApi]] for alias management operations
   */
 trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
-  _: IndicesApi with JavaClientCompanion =>
+  _: JavaClientIndicesApi with JavaClientCompanion =>
 
   override private[client] def executeAddAlias(
     index: String,
@@ -331,7 +363,7 @@ trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
   *   [[SettingsApi]] for settings management operations
   */
 trait JavaClientSettingsApi extends SettingsApi with JavaClientHelpers {
-  _: IndicesApi with JavaClientCompanion =>
+  _: JavaClientIndicesApi with JavaClientCompanion =>
 
   override private[client] def executeUpdateSettings(
     index: String,
@@ -372,7 +404,10 @@ trait JavaClientSettingsApi extends SettingsApi with JavaClientHelpers {
   *   [[MappingApi]] for mapping management operations
   */
 trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with JavaClientCompanion =>
+  _: JavaClientSettingsApi
+    with JavaClientIndicesApi
+    with JavaClientRefreshApi
+    with JavaClientCompanion =>
 
   override private[client] def executeSetMapping(
     index: String,
@@ -533,7 +568,7 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
   *   [[IndexApi]] for index operations
   */
 trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
-  _: SettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeIndex(
     index: String,
@@ -596,7 +631,7 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
   *   [[UpdateApi]] for update operations
   */
 trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
-  _: SettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeUpdate(
     index: String,
@@ -663,7 +698,7 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
   *   [[DeleteApi]] for delete operations
   */
 trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
-  _: SettingsApi with JavaClientCompanion =>
+  _: JavaClientSettingsApi with JavaClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
@@ -859,7 +894,10 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   *   [[BulkApi]] for bulk operations
   */
 trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
-  _: RefreshApi with SettingsApi with IndexApi with JavaClientCompanion =>
+  _: JavaClientRefreshApi
+    with JavaClientSettingsApi
+    with JavaClientIndexApi
+    with JavaClientCompanion =>
   override type BulkActionType = BulkOperation
   override type BulkResultType = BulkResponse
 
@@ -1108,7 +1146,7 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
   *   [[ScrollApi]] for scroll operations
   */
 trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
-  _: VersionApi with SearchApi with JavaClientCompanion =>
+  _: JavaClientVersionApi with JavaClientSearchApi with JavaClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */

@@ -7,8 +7,8 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
 
-trait JestPipelineApi extends PipelineApi with JestClientHelpers with JestVersionApi {
-  _: SerializationApi with JestClientCompanion =>
+trait JestPipelineApi extends PipelineApi with JestClientHelpers {
+  _: JestVersionApi with SerializationApi with JestClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,

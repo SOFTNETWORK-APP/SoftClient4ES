@@ -24,7 +24,7 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{AlterPipeline, CreatePipeline, DropPipeline}
-import app.softnetwork.elastic.sql.schema.{DdlPipeline, GenericProcessor}
+import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline}
 
 trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
 
@@ -72,7 +72,7 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
               case ddl: AlterPipeline =>
                 getPipeline(ddl.name) match {
                   case ElasticSuccess(Some(existing)) =>
-                    val existingPipeline = DdlPipeline(name = ddl.name, json = existing)
+                    val existingPipeline = IngestPipeline(name = ddl.name, json = existing)
                     val updatingPipeline = existingPipeline.merge(ddl.statements)
                     val elasticVersion = {
                       this.version match {
@@ -137,7 +137,7 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
             ElasticResult.failure(error)
         }
       case ElasticFailure(elasticError) =>
-        ElasticResult.failure(elasticError)
+        ElasticResult.failure(elasticError.copy(operation = Some("pipeline")))
     }
   }
 

@@ -84,7 +84,7 @@ def createIndex(
   index: String,
   settings: String = defaultSettings,
   mappings: Option[String] = None,
-  aliases: Seq[String] = Seq.empty
+  aliases: Seq[TableAlias] = Seq.empty
 ): ElasticResult[Boolean]
 ```
 
@@ -151,6 +151,25 @@ for {
   indexed <- client.index("users", userData)
 } yield indexed
 ```
+
+---
+
+### getIndex
+
+Gets an existing index.
+
+**Signature:**
+
+```scala
+def getIndex(index: String): ElasticResult[Option[Index]]
+```
+
+**Parameters:**
+- `index` - Name of the index to get
+
+**Returns:**
+- `ElasticSuccess[Option[Index]]` with index configuration if index found, None otherwise
+- `ElasticFailure` with error details
 
 ---
 

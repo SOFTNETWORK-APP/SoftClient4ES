@@ -39,7 +39,7 @@ trait ElasticClientHelpers {
     * @return
     *   Some(ElasticError) if invalid, None if valid
     */
-  protected def validateIndexName(index: String): Option[ElasticError] = {
+  protected def validateIndexName(index: String, pattern: Boolean = false): Option[ElasticError] = {
     if (index == null || index.trim.isEmpty) {
       return Some(
         ElasticError(
@@ -87,12 +87,11 @@ trait ElasticClientHelpers {
       )
     }
 
-    val invalidChars = """[\\/*?"<>| ,#]""".r
+    val invalidChars = if (pattern) """[\\/?"<>| ,#]""".r else """[\\/*?"<>| ,#]""".r
     if (invalidChars.findFirstIn(trimmed).isDefined) {
       return Some(
         ElasticError(
-          message =
-            "Index name contains invalid characters: \\, /, *, ?, \", <, >, |, space, comma, #",
+          message = "Index name contains invalid characters: /, *, ?, \", <, >, |, space, comma, #",
           cause = None,
           statusCode = Some(400),
           operation = Some("validateIndexName")

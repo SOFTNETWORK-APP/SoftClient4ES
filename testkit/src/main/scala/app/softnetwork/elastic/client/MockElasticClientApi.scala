@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.serialization._
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -96,7 +97,7 @@ trait MockElasticClientApi extends ElasticClientApi {
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] =
     ElasticResult.success(true)
 

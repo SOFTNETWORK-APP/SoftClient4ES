@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{IndicesApi, MappingApi, RefreshApi, SettingsApi}
+import app.softnetwork.elastic.client.MappingApi
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
@@ -33,7 +33,7 @@ import scala.util.Try
   *   [[MappingApi]] for generic API documentation
   */
 trait JestMappingApi extends MappingApi with JestClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with JestClientCompanion =>
+  _: JestSettingsApi with JestIndicesApi with JestRefreshApi with JestClientCompanion =>
 
   /** Set the mapping for an index.
     * @see

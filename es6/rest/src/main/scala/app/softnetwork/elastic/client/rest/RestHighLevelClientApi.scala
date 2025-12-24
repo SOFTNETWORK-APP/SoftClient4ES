@@ -23,8 +23,10 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.{ObjectValue, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
+import app.softnetwork.elastic.sql.schema.TableAlias
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
@@ -61,7 +63,7 @@ import org.elasticsearch.action.support.WriteRequest
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
-import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions}
+import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions, Response}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
 import org.elasticsearch.client.indices.{
   CreateIndexRequest,
@@ -69,6 +71,7 @@ import org.elasticsearch.client.indices.{
   GetIndexTemplatesRequest,
   GetIndexTemplatesResponse,
   GetMappingsRequest,
+  GetMappingsResponse,
   IndexTemplateMetaData,
   IndexTemplatesExistRequest,
   PutIndexTemplateRequest,
@@ -108,7 +111,7 @@ trait RestHighLevelClientApi
     with RestHighLevelClientBulkApi
     with RestHighLevelClientScrollApi
     with RestHighLevelClientCompanion
-    with RestHighLevelClientVersion
+    with RestHighLevelClientVersionApi
     with RestHighLevelClientPipelineApi
     with RestHighLevelClientTemplateApi
 
@@ -116,7 +119,7 @@ trait RestHighLevelClientApi
   * @see
   *   [[VersionApi]] for generic API documentation
   */
-trait RestHighLevelClientVersion extends VersionApi with RestHighLevelClientHelpers {
+trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeVersion(): ElasticResult[String] =
     executeRestLowLevelAction[String](
@@ -140,12 +143,14 @@ trait RestHighLevelClientVersion extends VersionApi with RestHighLevelClientHelp
   *   [[IndicesApi]] for generic API documentation
   */
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientHelpers {
-  _: RefreshApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientRefreshApi
+    with RestHighLevelClientPipelineApi
+    with RestHighLevelClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,
     mappings: Option[String],
-    aliases: Seq[String]
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] = {
     executeRestBooleanAction[CreateIndexRequest, AcknowledgedResponse](
       operation = "createIndex",
@@ -154,11 +159,44 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
     )(
       request = new CreateIndexRequest(index)
         .settings(settings, XContentType.JSON)
-        .aliases(aliases.map(alias => new Alias(alias)).asJava)
+        .aliases(
+          aliases
+            .map(alias => {
+              var a = new Alias(alias.alias).writeIndex(alias.isWriteIndex)
+              if (alias.filter.nonEmpty) {
+                val filterNode = Value(alias.filter).asInstanceOf[ObjectValue].toJson
+                a = a.filter(filterNode.toString)
+              }
+              alias.indexRouting.foreach(ir => a = a.indexRouting(ir))
+              alias.searchRouting.foreach(sr => a = a.searchRouting(sr))
+              a
+            })
+            .asJava
+        )
         .mapping(mappings.getOrElse("{}"), XContentType.JSON)
     )(
       executor = req => apply().indices().create(req, RequestOptions.DEFAULT)
     )
+  }
+
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+    executeRestAction[Request, Response, Option[String]](
+      operation = "getIndex",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new Request("GET", s"/$index")
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(resp => {
+      resp.getStatusLine match {
+        case statusLine if statusLine.getStatusCode >= 400 =>
+          None
+        case _ =>
+          val json = scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString
+          Some(json)
+      }
+    })
   }
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
@@ -261,7 +299,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
   *   [[AliasApi]] for generic API documentation
   */
 trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpers {
-  _: IndicesApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeAddAlias(
     index: String,
@@ -355,7 +393,7 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
   *   [[SettingsApi]] for generic API documentation
   */
 trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClientHelpers {
-  _: IndicesApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeUpdateSettings(
     index: String,
@@ -390,7 +428,10 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
   *   [[MappingApi]] for generic API documentation
   */
 trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientSettingsApi
+    with RestHighLevelClientIndicesApi
+    with RestHighLevelClientRefreshApi
+    with RestHighLevelClientCompanion =>
   override private[client] def executeSetMapping(
     index: String,
     mapping: String
@@ -409,7 +450,7 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
   override private[client] def executeGetMapping(index: String): ElasticResult[String] =
     executeRestAction[
       GetMappingsRequest,
-      org.elasticsearch.client.indices.GetMappingsResponse,
+      GetMappingsResponse,
       String
     ](
       operation = "getMapping",
@@ -511,7 +552,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
   *   [[IndexApi]] for generic API documentation
   */
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpers {
-  _: SettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeIndex(
     index: String,
     id: String,
@@ -581,7 +622,7 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
   *   [[UpdateApi]] for generic API documentation
   */
 trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHelpers {
-  _: SettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeUpdate(
     index: String,
     id: String,
@@ -657,7 +698,7 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
   *   [[DeleteApi]] for generic API documentation
   */
 trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHelpers {
-  _: SettingsApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
@@ -905,7 +946,10 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
   *   [[BulkApi]] for generic API documentation
   */
 trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers {
-  _: RefreshApi with SettingsApi with IndexApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientRefreshApi
+    with RestHighLevelClientSettingsApi
+    with RestHighLevelClientIndexApi
+    with RestHighLevelClientCompanion =>
 
   override type BulkActionType = DocWriteRequest[_]
   override type BulkResultType = BulkResponse
@@ -1138,7 +1182,9 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
   *   [[ScrollApi]] for generic API documentation
   */
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
-  _: VersionApi with SearchApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientVersionApi
+    with RestHighLevelClientSearchApi
+    with RestHighLevelClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -1412,11 +1458,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   }
 }
 
-trait RestHighLevelClientPipelineApi
-    extends PipelineApi
-    with RestHighLevelClientHelpers
-    with RestHighLevelClientVersion {
-  _: RestHighLevelClientCompanion with SerializationApi =>
+trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -1450,9 +1493,9 @@ trait RestHighLevelClientPipelineApi
   }
 
   override private[client] def executeGetPipeline(
-    pipelineName: JSONQuery
-  ): ElasticResult[Option[JSONQuery]] = {
-    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[JSONQuery]](
+    pipelineName: String
+  ): ElasticResult[Option[String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[String]](
       operation = "getPipeline",
       retryable = true
     )(
@@ -1474,11 +1517,8 @@ trait RestHighLevelClientPipelineApi
   }
 }
 
-trait RestHighLevelClientTemplateApi
-    extends TemplateApi
-    with RestHighLevelClientHelpers
-    with RestHighLevelClientVersion {
-  _: RestHighLevelClientCompanion with SerializationApi =>
+trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 

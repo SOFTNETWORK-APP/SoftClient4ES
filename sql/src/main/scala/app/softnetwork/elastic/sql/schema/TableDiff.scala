@@ -26,7 +26,7 @@ sealed trait AlterTableStatementDiff {
 
 sealed trait ColumnDiff extends AlterTableStatementDiff
 
-case class ColumnAdded(column: DdlColumn) extends ColumnDiff {
+case class ColumnAdded(column: Column) extends ColumnDiff {
   override def stmt: AlterTableStatement = AddColumn(column)
 }
 case class ColumnRemoved(name: String) extends ColumnDiff {
@@ -45,7 +45,7 @@ case class ColumnDefaultRemoved(name: String) extends ColumnDiff {
   override def stmt: AlterTableStatement = DropColumnDefault(name)
 }
 
-case class ColumnScriptSet(name: String, script: DdlScriptProcessor) extends ColumnDiff {
+case class ColumnScriptSet(name: String, script: ScriptProcessor) extends ColumnDiff {
   override def stmt: AlterTableStatement = AlterColumnScript(name, script)
 }
 case class ColumnScriptRemoved(name: String) extends ColumnDiff {
@@ -73,13 +73,13 @@ case class ColumnOptionRemoved(name: String, key: String) extends ColumnDiff {
   override def stmt: AlterTableStatement = DropColumnOption(name, key)
 }
 
-case class FieldAdded(column: String, field: DdlColumn) extends ColumnDiff {
+case class FieldAdded(column: String, field: Column) extends ColumnDiff {
   override def stmt: AlterTableStatement = AlterColumnField(column, field)
 }
 case class FieldRemoved(column: String, fieldName: String) extends ColumnDiff {
   override def stmt: AlterTableStatement = DropColumnField(column, fieldName)
 }
-case class FieldAltered(column: String, field: DdlColumn) extends ColumnDiff {
+case class FieldAltered(column: String, field: Column) extends ColumnDiff {
   override def stmt: AlterTableStatement = AlterColumnField(column, field)
 }
 
@@ -101,22 +101,31 @@ case class SettingRemoved(key: String) extends SettingDiff {
   override def stmt: AlterTableStatement = DropTableSetting(key)
 }
 
+sealed trait AliasDiff extends AlterTableStatementDiff
+
+case class AliasSet(key: String, value: Value[_]) extends AliasDiff {
+  override def stmt: AlterTableStatement = AlterTableAlias(key, value)
+}
+case class AliasRemoved(key: String) extends AliasDiff {
+  override def stmt: AlterTableStatement = DropTableAlias(key)
+}
+
 sealed trait AlterPipelineStatementDiff {
   def stmt: AlterPipelineStatement
 }
 
 sealed trait PipelineDiff extends AlterPipelineStatementDiff
 
-case class ProcessorAdded(processor: DdlProcessor) extends PipelineDiff {
+case class ProcessorAdded(processor: IngestProcessor) extends PipelineDiff {
   override def stmt: AlterPipelineStatement = AddPipelineProcessor(processor)
 }
-case class ProcessorRemoved(processor: DdlProcessor) extends PipelineDiff {
+case class ProcessorRemoved(processor: IngestProcessor) extends PipelineDiff {
   override def stmt: AlterPipelineStatement =
     DropPipelineProcessor(processor.processorType, processor.column)
 }
 case class ProcessorTypeChanged(
-  actual: DdlProcessorType,
-  desired: DdlProcessorType
+  actual: IngestProcessorType,
+  desired: IngestProcessorType
 )
 sealed trait ProcessorPropertyDiff
 case class ProcessorPropertyAdded(key: String, value: Any) extends ProcessorPropertyDiff
@@ -127,18 +136,19 @@ case class ProcessorDiff(
   propertyDiffs: List[ProcessorPropertyDiff]
 )
 case class ProcessorChanged(
-  from: DdlProcessor,
-  to: DdlProcessor,
+  from: IngestProcessor,
+  to: IngestProcessor,
   diff: ProcessorDiff
 ) extends PipelineDiff {
   override def stmt: AlterPipelineStatement = AlterPipelineProcessor(to)
 }
 
-case class DdlTableDiff(
+case class TableDiff(
   columns: List[ColumnDiff],
   mappings: List[MappingDiff],
   settings: List[SettingDiff],
-  pipeline: List[PipelineDiff]
+  pipeline: List[PipelineDiff],
+  aliases: List[AliasDiff]
 ) {
   def isEmpty: Boolean =
     columns.isEmpty && mappings.isEmpty && settings.isEmpty && pipeline.isEmpty
@@ -149,7 +159,8 @@ case class DdlTableDiff(
     } else {
       val statements = columns.map(_.stmt) ++
         mappings.map(_.stmt) ++
-        settings.map(_.stmt)
+        settings.map(_.stmt) ++
+        aliases.map(_.stmt)
       Some(
         AlterTable(
           tableName,

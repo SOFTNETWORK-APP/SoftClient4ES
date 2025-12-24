@@ -26,7 +26,7 @@ import app.softnetwork.persistence._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.persistence.query.ExternalPersistenceProvider
 import app.softnetwork.serialization.commonFormats
-import app.softnetwork.elastic.persistence.typed.Elastic._
+import app.softnetwork.elastic.persistence.typed.Elastic
 import org.slf4j.Logger
 
 import scala.reflect.ClassTag
@@ -45,11 +45,11 @@ trait ElasticProvider[T <: Timestamped]
 
   implicit def formats: Formats = commonFormats
 
-  protected lazy val index: String = getIndex[T](manifestWrapper.wrapped)
+  protected lazy val index: String = Elastic.getIndex[T](manifestWrapper.wrapped)
 
   protected lazy val _type: String = getType[T](manifestWrapper.wrapped)
 
-  protected lazy val alias: String = getAlias[T](manifestWrapper.wrapped)
+  protected lazy val alias: String = Elastic.getAlias[T](manifestWrapper.wrapped)
 
   protected def mappingPath: Option[String] = None
 

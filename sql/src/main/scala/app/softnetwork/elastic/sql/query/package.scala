@@ -18,17 +18,17 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.schema.{
-  DdlColumn,
-  DdlDefaultValueProcessor,
-  DdlPartition,
-  DdlPipeline,
-  DdlPipelineType,
-  DdlProcessor,
-  DdlProcessorType,
-  DdlRemoveProcessor,
-  DdlRenameProcessor,
-  DdlScriptProcessor,
-  DdlTable
+  Column,
+  DefaultValueProcessor,
+  IngestPipeline,
+  IngestPipelineType,
+  IngestProcessor,
+  IngestProcessorType,
+  PartitionDate,
+  RemoveProcessor,
+  RenameProcessor,
+  ScriptProcessor,
+  Table => DdlTable
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 
@@ -317,10 +317,10 @@ package object query {
 
   case class CreatePipeline(
     name: String,
-    pipelineType: DdlPipelineType,
+    pipelineType: IngestPipelineType,
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
-    processors: Seq[DdlProcessor]
+    processors: Seq[IngestProcessor]
   ) extends PipelineStatement {
     override def sql: String = {
       val processorsDdl = processors.map(_.ddl).mkString(", ")
@@ -329,23 +329,23 @@ package object query {
       s"CREATE$replaceClause PIPELINE$ineClause $name WITH PROCESSORS ($processorsDdl)"
     }
 
-    lazy val ddlPipeline: DdlPipeline =
-      DdlPipeline(name, pipelineType, processors)
+    lazy val ddlPipeline: IngestPipeline =
+      IngestPipeline(name, pipelineType, processors)
   }
 
   sealed trait AlterPipelineStatement extends AlterTableStatement
 
-  case class AddPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
+  case class AddPipelineProcessor(processor: IngestProcessor) extends AlterPipelineStatement {
     override def sql: String = s"ADD PROCESSOR ${processor.ddl}"
-    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
+    override def ddlProcessor: Option[IngestProcessor] = Some(processor)
   }
-  case class DropPipelineProcessor(processorType: DdlProcessorType, column: String)
+  case class DropPipelineProcessor(processorType: IngestProcessorType, column: String)
       extends AlterPipelineStatement {
     override def sql: String = s"DROP PROCESSOR ${processorType.name.toUpperCase}($column)"
   }
-  case class AlterPipelineProcessor(processor: DdlProcessor) extends AlterPipelineStatement {
+  case class AlterPipelineProcessor(processor: IngestProcessor) extends AlterPipelineStatement {
     override def sql: String = s"ALTER PROCESSOR ${processor.ddl}"
-    override def ddlProcessor: Option[DdlProcessor] = Some(processor)
+    override def ddlProcessor: Option[IngestProcessor] = Some(processor)
   }
 
   case class AlterPipeline(
@@ -364,10 +364,14 @@ package object query {
       s"ALTER PIPELINE $name$ifExistsClause $statementsSql"
     }
 
-    lazy val ddlProcessors: Seq[DdlProcessor] = statements.flatMap(_.ddlProcessor)
+    lazy val ddlProcessors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
 
-    lazy val pipeline: DdlPipeline =
-      DdlPipeline(s"alter-pipeline-$name-${Instant.now}", DdlPipelineType.Custom, ddlProcessors)
+    lazy val pipeline: IngestPipeline =
+      IngestPipeline(
+        s"alter-pipeline-$name-${Instant.now}",
+        IngestPipelineType.Custom,
+        ddlProcessors
+      )
   }
 
   case class DropPipeline(name: String, ifExists: Boolean = false) extends PipelineStatement {
@@ -379,13 +383,15 @@ package object query {
 
   case class CreateTable(
     table: String,
-    ddl: Either[DqlStatement, List[DdlColumn]],
+    ddl: Either[DqlStatement, List[Column]],
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     primaryKey: List[String] = Nil,
-    partitionBy: Option[DdlPartition] = None,
+    partitionBy: Option[PartitionDate] = None,
     options: Map[String, Value[_]] = Map.empty
   ) extends DdlStatement {
+
+    lazy val partitioned: Boolean = partitionBy.isDefined
 
     override def sql: String = {
       val replaceClause = if (orReplace) " OR REPLACE" else ""
@@ -399,16 +405,16 @@ package object query {
       }
     }
 
-    lazy val columns: Seq[DdlColumn] = {
+    lazy val columns: Seq[Column] = {
       ddl match {
         case Left(select) =>
           select match {
             case s: SingleSearch =>
-              s.select.fields.map(f => DdlColumn(f.identifier.aliasOrName, f.out))
+              s.select.fields.map(f => Column(f.identifier.aliasOrName, f.out))
             case m: MultiSearch =>
               m.requests.headOption
                 .map { req =>
-                  req.select.fields.map(f => DdlColumn(f.identifier.aliasOrName, f.out))
+                  req.select.fields.map(f => Column(f.identifier.aliasOrName, f.out))
                 }
                 .getOrElse(Nil)
             case _ => Nil
@@ -435,16 +441,26 @@ package object query {
       case None => Map.empty
     }
 
+    lazy val aliases: Map[String, Value[_]] = options.get("aliases") match {
+      case Some(value) =>
+        value match {
+          case o: ObjectValue => o.value
+          case _              => Map.empty
+        }
+      case None => Map.empty
+    }
+
     lazy val ddlTable: DdlTable = DdlTable(
       name = table,
       columns = columns.toList,
       primaryKey = primaryKey,
       partitionBy = partitionBy,
       mappings = mappings,
-      settings = settings
+      settings = settings,
+      aliases = aliases
     ).update()
 
-    lazy val ddlPipeline: DdlPipeline = ddlTable.ddlPipeline
+    lazy val ddlPipeline: IngestPipeline = ddlTable.ddlPipeline
 
   }
 
@@ -461,17 +477,16 @@ package object query {
       s"ALTER TABLE $table$ifExistsClause $statementsSql"
     }
 
-    lazy val ddlProcessors: Seq[DdlProcessor] = statements.flatMap(_.ddlProcessor)
+    lazy val ddlProcessors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
 
-    lazy val pipeline: DdlPipeline =
-      DdlPipeline(s"alter-$table-${Instant.now}", DdlPipelineType.Custom, ddlProcessors)
+    lazy val pipeline: IngestPipeline =
+      IngestPipeline(s"alter-$table-${Instant.now}", IngestPipelineType.Custom, ddlProcessors)
   }
 
   sealed trait AlterTableStatement extends Token {
-    def ddlProcessor: Option[DdlProcessor] = None
+    def ddlProcessor: Option[IngestProcessor] = None
   }
-  case class AddColumn(column: DdlColumn, ifNotExists: Boolean = false)
-      extends AlterTableStatement {
+  case class AddColumn(column: Column, ifNotExists: Boolean = false) extends AlterTableStatement {
     override def sql: String = {
       val ifNotExistsClause = if (ifNotExists) " IF NOT EXISTS" else ""
       s"ADD COLUMN$ifNotExistsClause ${column.sql}"
@@ -482,11 +497,11 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"DROP COLUMN$ifExistsClause $columnName"
     }
-    override def ddlProcessor: Option[DdlProcessor] = Some(DdlRemoveProcessor(sql, columnName))
+    override def ddlProcessor: Option[IngestProcessor] = Some(RemoveProcessor(sql, columnName))
   }
   case class RenameColumn(oldName: String, newName: String) extends AlterTableStatement {
     override def sql: String = s"RENAME COLUMN $oldName TO $newName"
-    override def ddlProcessor: Option[DdlProcessor] = Some(DdlRenameProcessor(oldName, newName))
+    override def ddlProcessor: Option[IngestProcessor] = Some(RenameProcessor(oldName, newName))
   }
   case class AlterColumnOptions(
     columnName: String,
@@ -530,7 +545,7 @@ package object query {
   }
   case class AlterColumnScript(
     columnName: String,
-    newScript: DdlScriptProcessor,
+    newScript: ScriptProcessor,
     ifExists: Boolean = false
   ) extends AlterTableStatement {
     override def sql: String = {
@@ -554,9 +569,9 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"ALTER COLUMN$ifExistsClause $columnName SET DEFAULT $defaultValue"
     }
-    override def ddlProcessor: Option[DdlProcessor] =
+    override def ddlProcessor: Option[IngestProcessor] =
       Some(
-        DdlDefaultValueProcessor(
+        DefaultValueProcessor(
           sql,
           columnName,
           defaultValue
@@ -603,7 +618,7 @@ package object query {
   }
   case class AlterColumnFields(
     columnName: String,
-    fields: Seq[DdlColumn],
+    fields: Seq[Column],
     ifExists: Boolean = false
   ) extends AlterTableStatement {
     override def sql: String = {
@@ -614,7 +629,7 @@ package object query {
   }
   case class AlterColumnField(
     columnName: String,
-    field: DdlColumn,
+    field: Column,
     ifExists: Boolean = false
   ) extends AlterTableStatement {
     override def sql: String = {
@@ -649,6 +664,14 @@ package object query {
   case class DropTableSetting(optionKey: String) extends AlterTableStatement {
     override def sql: String =
       s"DROP SETTING $optionKey"
+  }
+  case class AlterTableAlias(optionKey: String, optionValue: Value[_]) extends AlterTableStatement {
+    override def sql: String =
+      s"SET ALIAS ($optionKey = $optionValue)"
+  }
+  case class DropTableAlias(optionKey: String) extends AlterTableStatement {
+    override def sql: String =
+      s"DROP ALIAS $optionKey"
   }
 
   case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)

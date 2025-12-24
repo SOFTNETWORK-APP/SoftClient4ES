@@ -7,6 +7,7 @@ import org.mockito.MockitoSugar
 import org.mockito.ArgumentMatchersSugar
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.schema.TableAlias
 import com.google.gson.JsonParser
 
 /** Unit tests for SettingsApi Coverage target: 80%+ Using mockito-scala 1.17.12
@@ -22,7 +23,13 @@ class SettingsApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestSettingsApi extends SettingsApi with IndicesApi with RefreshApi {
+  class TestSettingsApi
+      extends SettingsApi
+      with IndicesApi
+      with RefreshApi
+      with PipelineApi
+      with VersionApi
+      with SerializationApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -57,8 +64,11 @@ class SettingsApiSpec
       index: String,
       settings: String,
       mappings: Option[String],
-      aliases: Seq[String]
+      aliases: Seq[TableAlias]
     ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = ???
+
     override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeReindex(
       sourceIndex: String,
@@ -68,6 +78,22 @@ class SettingsApiSpec
     ): ElasticResult[(Boolean, Option[Long])] = ???
     override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] = ???
     override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+    override private[client] def executeCreatePipeline(
+      pipelineName: String,
+      pipelineDefinition: String
+    ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeDeletePipeline(
+      pipelineName: String,
+      ifExists: Boolean
+    ): ElasticResult[Boolean] = ???
+
+    override private[client] def executeGetPipeline(
+      pipelineName: String
+    ): ElasticResult[Option[String]] = ???
+
+    override private[client] def executeVersion(): ElasticResult[String] = ???
   }
 
   var settingsApi: TestSettingsApi = _
@@ -712,7 +738,12 @@ class SettingsApiSpec
         var updateCalled = false
         var openCalled = false
 
-        val workflowApi = new SettingsApi with IndicesApi with RefreshApi {
+        val workflowApi = new SettingsApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -741,8 +772,13 @@ class SettingsApiSpec
             index: String,
             settings: String,
             mappings: Option[String],
-            aliases: Seq[String]
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeReindex(
@@ -754,6 +790,22 @@ class SettingsApiSpec
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When
@@ -770,7 +822,12 @@ class SettingsApiSpec
         var updateCalled = false
         var openCalled = false
 
-        val workflowApi = new SettingsApi with IndicesApi with RefreshApi {
+        val workflowApi = new SettingsApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -796,8 +853,13 @@ class SettingsApiSpec
             index: String,
             settings: String,
             mappings: Option[String],
-            aliases: Seq[String]
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeReindex(
@@ -809,6 +871,22 @@ class SettingsApiSpec
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When
@@ -823,7 +901,12 @@ class SettingsApiSpec
         // Given
         var openCalled = false
 
-        val workflowApi = new SettingsApi with IndicesApi with RefreshApi {
+        val workflowApi = new SettingsApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -848,8 +931,13 @@ class SettingsApiSpec
             index: String,
             settings: String,
             mappings: Option[String],
-            aliases: Seq[String]
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeReindex(
@@ -861,6 +949,22 @@ class SettingsApiSpec
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When
@@ -1397,7 +1501,12 @@ class SettingsApiSpec
       "validate index name before calling executeCloseIndex" in {
         // Given
         var closeCalled = false
-        val validatingApi = new SettingsApi with IndicesApi with RefreshApi {
+        val validatingApi = new SettingsApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1416,8 +1525,13 @@ class SettingsApiSpec
             index: String,
             settings: String,
             mappings: Option[String],
-            aliases: Seq[String]
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeReindex(
@@ -1429,6 +1543,22 @@ class SettingsApiSpec
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When
@@ -1441,7 +1571,12 @@ class SettingsApiSpec
       "validate settings after index name" in {
         // Given
         var closeCalled = false
-        val validatingApi = new SettingsApi with IndicesApi with RefreshApi {
+        val validatingApi = new SettingsApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1460,8 +1595,13 @@ class SettingsApiSpec
             index: String,
             settings: String,
             mappings: Option[String],
-            aliases: Seq[String]
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeReindex(
@@ -1473,6 +1613,22 @@ class SettingsApiSpec
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When
@@ -1485,7 +1641,12 @@ class SettingsApiSpec
       "validate index name before calling executeLoadSettings" in {
         // Given
         var loadCalled = false
-        val validatingApi = new SettingsApi with IndicesApi with RefreshApi {
+        val validatingApi = new SettingsApi
+          with IndicesApi
+          with RefreshApi
+          with PipelineApi
+          with VersionApi
+          with SerializationApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
@@ -1504,8 +1665,13 @@ class SettingsApiSpec
             index: String,
             settings: String,
             mappings: Option[String],
-            aliases: Seq[String]
+            aliases: Seq[TableAlias]
           ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetIndex(
+            index: String
+          ): ElasticResult[Option[String]] = ???
+
           override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeReindex(
@@ -1517,6 +1683,22 @@ class SettingsApiSpec
           override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
             ???
           override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+
+          override private[client] def executeCreatePipeline(
+            pipelineName: String,
+            pipelineDefinition: String
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeDeletePipeline(
+            pipelineName: String,
+            ifExists: Boolean
+          ): ElasticResult[Boolean] = ???
+
+          override private[client] def executeGetPipeline(
+            pipelineName: String
+          ): ElasticResult[Option[String]] = ???
+
+          override private[client] def executeVersion(): ElasticResult[String] = ???
         }
 
         // When

@@ -33,32 +33,32 @@ package object schema {
 
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
 
-  sealed trait DdlProcessorType {
+  sealed trait IngestProcessorType {
     def name: String
   }
 
-  object DdlProcessorType {
-    case object Script extends DdlProcessorType {
+  object IngestProcessorType {
+    case object Script extends IngestProcessorType {
       def name: String = "script"
     }
-    case object Rename extends DdlProcessorType {
+    case object Rename extends IngestProcessorType {
       def name: String = "rename"
     }
-    case object Remove extends DdlProcessorType {
+    case object Remove extends IngestProcessorType {
       def name: String = "remove"
     }
-    case object Set extends DdlProcessorType {
+    case object Set extends IngestProcessorType {
       def name: String = "set"
     }
-    case object DateIndexName extends DdlProcessorType {
+    case object DateIndexName extends IngestProcessorType {
       def name: String = "date_index_name"
     }
-    def apply(n: String): DdlProcessorType = new DdlProcessorType {
+    def apply(n: String): IngestProcessorType = new IngestProcessorType {
       override def name: String = n
     }
   }
 
-  sealed trait DdlProcessor extends DdlToken {
+  sealed trait IngestProcessor extends DdlToken {
     def column: String
     def ignoreFailure: Boolean
     final def node: ObjectNode = {
@@ -67,7 +67,7 @@ package object schema {
       node
     }
     def json: String = mapper.writeValueAsString(node)
-    def processorType: DdlProcessorType
+    def processorType: IngestProcessorType
     def description: String = sql.trim
     def name: String = processorType.name
     def properties: Map[String, Any]
@@ -92,7 +92,7 @@ package object schema {
         .toMap
     }
 
-    def diff(to: DdlProcessor): Option[ProcessorDiff] = {
+    def diff(to: IngestProcessor): Option[ProcessorDiff] = {
 
       val from = this
 
@@ -137,17 +137,17 @@ package object schema {
     override def ddl: String = s"${processorType.name.toUpperCase}${Value(properties).ddl}"
   }
 
-  object DdlProcessor {
+  object IngestProcessor {
     private val ScriptDescRegex =
       """^\s*([a-zA-Z0-9_\\.]+)\s([a-zA-Z]+)\s+SCRIPT\s+AS\s*\((.*)\)\s*$""".r
 
-    def apply(processorType: DdlProcessorType, properties: ObjectValue): DdlProcessor = {
+    def apply(processorType: IngestProcessorType, properties: ObjectValue): IngestProcessor = {
       val node = mapper.createObjectNode()
       node.set(processorType.name, properties.toJson)
-      apply(node)
+      apply(IngestPipelineType.Default, node)
     }
 
-    def apply(processor: JsonNode): DdlProcessor = {
+    def apply(pipelineType: IngestPipelineType, processor: JsonNode): IngestProcessor = {
       val processorType = processor.fieldNames().next() // "set", "script", "date_index_name", etc.
       val props = processor.get(processorType)
 
@@ -168,14 +168,14 @@ package object schema {
                 .trim
             // DdlPrimaryKeyProcessor
             val cols = value.split(sqlConfig.compositeKeySeparator).toSet
-            DdlPrimaryKeyProcessor(
+            PrimaryKeyProcessor(
               sql = desc,
               column = "_id",
               value = cols,
               ignoreFailure = ignoreFailure
             )
           } else {
-            DdlDefaultValueProcessor(
+            DefaultValueProcessor(
               sql = desc,
               column = field,
               value = Value(valueNode.asText()),
@@ -192,7 +192,7 @@ package object schema {
 
           desc match {
             case ScriptDescRegex(col, dataType, script) =>
-              DdlScriptProcessor(
+              ScriptProcessor(
                 script = script,
                 column = col,
                 dataType = SQLTypes(dataType),
@@ -201,7 +201,7 @@ package object schema {
               )
             case _ =>
               GenericProcessor(
-                processorType = DdlProcessorType.Script,
+                processorType = IngestProcessorType.Script,
                 properties =
                   mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
               )
@@ -216,7 +216,7 @@ package object schema {
             .getOrElse(Nil)
           val prefix = props.get("index_name_prefix").asText()
 
-          DdlDateIndexNameProcessor(
+          DateIndexNameProcessor(
             sql = desc,
             column = field,
             dateRounding = rounding,
@@ -226,7 +226,7 @@ package object schema {
 
         case other =>
           GenericProcessor(
-            processorType = DdlProcessorType(other),
+            processorType = IngestProcessorType(other),
             properties =
               mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
           )
@@ -235,8 +235,8 @@ package object schema {
     }
   }
 
-  case class GenericProcessor(processorType: DdlProcessorType, properties: Map[String, Any])
-      extends DdlProcessor {
+  case class GenericProcessor(processorType: IngestProcessorType, properties: Map[String, Any])
+      extends IngestProcessor {
     override def sql: String = ddl
     override def column: String = properties.get("field") match {
       case Some(s: String) => s
@@ -248,18 +248,18 @@ package object schema {
     }
   }
 
-  case class DdlScriptProcessor(
+  case class ScriptProcessor(
     script: String,
     column: String,
     dataType: SQLType,
     source: String,
     ignoreFailure: Boolean = true
-  ) extends DdlProcessor {
+  ) extends IngestProcessor {
     override def sql: String = s"$column $dataType SCRIPT AS ($script)"
 
     override def baseType: SQLType = dataType
 
-    def processorType: DdlProcessorType = DdlProcessorType.Script
+    def processorType: IngestProcessorType = IngestProcessorType.Script
 
     override def properties: Map[String, Any] = Map(
       "description"    -> description,
@@ -270,13 +270,13 @@ package object schema {
 
   }
 
-  case class DdlRenameProcessor(
+  case class RenameProcessor(
     column: String,
     newName: String,
     ignoreFailure: Boolean = true,
     ignoreMissing: Boolean = true
-  ) extends DdlProcessor {
-    def processorType: DdlProcessorType = DdlProcessorType.Rename
+  ) extends IngestProcessor {
+    def processorType: IngestProcessorType = IngestProcessorType.Rename
 
     def sql: String = s"$column RENAME TO $newName"
 
@@ -290,13 +290,13 @@ package object schema {
 
   }
 
-  case class DdlRemoveProcessor(
+  case class RemoveProcessor(
     sql: String,
     column: String,
     ignoreFailure: Boolean = true,
     ignoreMissing: Boolean = true
-  ) extends DdlProcessor {
-    def processorType: DdlProcessorType = DdlProcessorType.Remove
+  ) extends IngestProcessor {
+    def processorType: IngestProcessorType = IngestProcessorType.Remove
 
     override def properties: Map[String, Any] = Map(
       "description"    -> description,
@@ -307,15 +307,15 @@ package object schema {
 
   }
 
-  case class DdlPrimaryKeyProcessor(
+  case class PrimaryKeyProcessor(
     sql: String,
     column: String,
     value: Set[String],
     ignoreFailure: Boolean = false,
     ignoreEmptyValue: Boolean = false,
     separator: String = "\\|\\|"
-  ) extends DdlProcessor {
-    def processorType: DdlProcessorType = DdlProcessorType.Set
+  ) extends IngestProcessor {
+    def processorType: IngestProcessorType = IngestProcessorType.Set
 
     override def properties: Map[String, Any] = Map(
       "description"        -> description,
@@ -327,13 +327,13 @@ package object schema {
 
   }
 
-  case class DdlDefaultValueProcessor(
+  case class DefaultValueProcessor(
     sql: String,
     column: String,
     value: Value[_],
     ignoreFailure: Boolean = true
-  ) extends DdlProcessor {
-    def processorType: DdlProcessorType = DdlProcessorType.Set
+  ) extends IngestProcessor {
+    def processorType: IngestProcessorType = IngestProcessorType.Set
 
     def _if: String = {
       if (column.contains("."))
@@ -356,7 +356,7 @@ package object schema {
     )
   }
 
-  case class DdlDateIndexNameProcessor(
+  case class DateIndexNameProcessor(
     sql: String,
     column: String,
     dateRounding: String,
@@ -364,8 +364,8 @@ package object schema {
     prefix: String,
     separator: String = "-",
     ignoreFailure: Boolean = true
-  ) extends DdlProcessor {
-    def processorType: DdlProcessorType = DdlProcessorType.DateIndexName
+  ) extends IngestProcessor {
+    def processorType: IngestProcessorType = IngestProcessorType.DateIndexName
 
     override def properties: Map[String, Any] = Map(
       "description"       -> description,
@@ -381,10 +381,10 @@ package object schema {
 
   implicit def primaryKeyToDdlProcessor(
     primaryKey: List[String]
-  ): Seq[DdlProcessor] = {
+  ): Seq[IngestProcessor] = {
     if (primaryKey.nonEmpty) {
       Seq(
-        DdlPrimaryKeyProcessor(
+        PrimaryKeyProcessor(
           sql = s"PRIMARY KEY (${primaryKey.mkString(", ")})",
           column = "_id",
           value = primaryKey.toSet
@@ -395,26 +395,26 @@ package object schema {
     }
   }
 
-  sealed trait DdlPipelineType {
+  sealed trait IngestPipelineType {
     def name: String
   }
 
-  object DdlPipelineType {
-    case object Default extends DdlPipelineType {
+  object IngestPipelineType {
+    case object Default extends IngestPipelineType {
       def name: String = "DEFAULT"
     }
-    case object Final extends DdlPipelineType {
+    case object Final extends IngestPipelineType {
       def name: String = "FINAL"
     }
-    case object Custom extends DdlPipelineType {
+    case object Custom extends IngestPipelineType {
       def name: String = "CUSTOM"
     }
   }
 
-  case class DdlPipeline(
+  case class IngestPipeline(
     name: String,
-    ddlPipelineType: DdlPipelineType,
-    ddlProcessors: Seq[DdlProcessor]
+    ddlPipelineType: IngestPipelineType,
+    ddlProcessors: Seq[IngestProcessor]
   ) extends DdlToken {
     def sql: String =
       s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql.trim).mkString(", ")})"
@@ -435,14 +435,14 @@ package object schema {
 
     def json: String = mapper.writeValueAsString(node)
 
-    def diff(pipeline: DdlPipeline): List[PipelineDiff] = {
+    def diff(pipeline: IngestPipeline): List[PipelineDiff] = {
 
       val actual = this.ddlProcessors
 
       val desired = pipeline.ddlProcessors
 
       // 1. Index processors by logical key
-      def key(p: DdlProcessor) = (p.processorType, p.column)
+      def key(p: IngestProcessor) = (p.processorType, p.column)
 
       val desiredMap = desired.map(p => key(p) -> p).toMap
       val actualMap = actual.map(p => key(p) -> p).toMap
@@ -472,7 +472,7 @@ package object schema {
       diffs.toList
     }
 
-    def merge(statements: Seq[AlterPipelineStatement]): DdlPipeline = {
+    def merge(statements: Seq[AlterPipelineStatement]): IngestPipeline = {
       statements.foldLeft(this) { (current, alter) =>
         alter match {
           case AddPipelineProcessor(processor) =>
@@ -500,41 +500,48 @@ package object schema {
     }
   }
 
-  object DdlPipeline {
-    def apply(name: String, json: String): DdlPipeline = {
+  object IngestPipeline {
+    def apply(
+      name: String,
+      json: String,
+      pipelineType: Option[IngestPipelineType] = None
+    ): IngestPipeline = {
+      val ddlPipelineType = pipelineType.getOrElse(
+        if (name.startsWith("default-")) IngestPipelineType.Default
+        else if (name.startsWith("final-")) IngestPipelineType.Final
+        else IngestPipelineType.Custom
+      )
       val node = mapper.readTree(json)
       val processorsNode = node.get("processors")
       val processors = processorsNode.elements().asScala.toSeq.map { p =>
-        DdlProcessor(p)
+        IngestProcessor(ddlPipelineType, p)
       }
-      DdlPipeline(
+      IngestPipeline(
         name = name,
-        ddlPipelineType =
-          if (name.startsWith("default-")) DdlPipelineType.Default
-          else if (name.startsWith("final-")) DdlPipelineType.Final
-          else DdlPipelineType.Custom,
+        ddlPipelineType = ddlPipelineType,
         ddlProcessors = processors
       )
     }
   }
-  case class DdlColumn(
+
+  case class Column(
     name: String,
     dataType: SQLType,
-    script: Option[DdlScriptProcessor] = None,
-    multiFields: List[DdlColumn] = Nil,
+    script: Option[ScriptProcessor] = None,
+    multiFields: List[Column] = Nil,
     defaultValue: Option[Value[_]] = None,
     notNull: Boolean = false,
     comment: Option[String] = None,
     options: Map[String, Value[_]] = Map.empty,
-    struct: Option[DdlColumn] = None
+    struct: Option[Column] = None
   ) extends DdlToken {
     def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
     private def level: Int = struct.map(_.level + 1).getOrElse(0)
 
-    private def cols: Map[String, DdlColumn] = multiFields.map(field => field.name -> field).toMap
+    private def cols: Map[String, Column] = multiFields.map(field => field.name -> field).toMap
 
     /* Recursive find */
-    def find(path: String): Option[DdlColumn] = {
+    def find(path: String): Option[Column] = {
       if (path.contains(".")) {
         val parts = path.split("\\.")
         cols.get(parts.head).flatMap { col =>
@@ -547,7 +554,7 @@ package object schema {
       }
     }
 
-    def update(struct: Option[DdlColumn] = None): DdlColumn = {
+    def update(struct: Option[Column] = None): Column = {
       val updated = this.copy(struct = struct)
       val updated_script =
         script.map { sc =>
@@ -610,9 +617,9 @@ package object schema {
       s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
-    def ddlProcessors: Seq[DdlProcessor] = script.map(st => st.copy(column = path)).toSeq ++
+    def ddlProcessors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
-        DdlDefaultValueProcessor(
+        DefaultValueProcessor(
           sql = s"$path DEFAULT $dv",
           column = path,
           value = dv
@@ -642,7 +649,7 @@ package object schema {
       root
     }
 
-    def diff(desired: DdlColumn, parent: Option[DdlColumn] = None): List[ColumnDiff] = {
+    def diff(desired: Column, parent: Option[Column] = None): List[ColumnDiff] = {
       val actual = this
       val diffs = scala.collection.mutable.ListBuffer[ColumnDiff]()
 
@@ -811,7 +818,7 @@ package object schema {
     }
   }
 
-  case class DdlPartition(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends DdlToken {
+  case class PartitionDate(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends DdlToken {
     def sql: String = s" PARTITION BY $column ($granularity)"
 
     val dateRounding: String = granularity.script.get
@@ -828,8 +835,8 @@ package object schema {
       case _ => List.empty
     }
 
-    def ddlProcessor(table: DdlTable): DdlDateIndexNameProcessor =
-      DdlDateIndexNameProcessor(
+    def ddlProcessor(table: Table): DateIndexNameProcessor =
+      DateIndexNameProcessor(
         sql,
         column,
         dateRounding,
@@ -838,21 +845,112 @@ package object schema {
       )
   }
 
-  case class DdlColumnNotFound(column: String, table: String)
+  case class ColumnNotFound(column: String, table: String)
       extends Exception(s"Column $column  does not exist in table $table")
 
-  case class DdlTable(
+  case class TableAlias(
+    table: String,
+    alias: String,
+    filter: Map[String, Any] = Map.empty,
+    routing: Option[String] = None,
+    indexRouting: Option[String] = None,
+    searchRouting: Option[String] = None,
+    isWriteIndex: Boolean = false,
+    isHidden: Boolean = false
+  ) {
+
+    def node: ObjectNode = {
+      val node = mapper.createObjectNode()
+      if (filter.nonEmpty) {
+        node.set("filter", Value(filter).asInstanceOf[ObjectValue].toJson)
+      }
+      routing.foreach(r => node.put("routing", r))
+      indexRouting.foreach(r => node.put("index_routing", r))
+      searchRouting.foreach(r => node.put("search_routing", r))
+      if (isWriteIndex) {
+        node.put("is_write_index", true)
+      }
+      if (isHidden) {
+        node.put("is_hidden", true)
+      }
+      node
+    }
+
+    def json: String = node
+
+    def ddl: String = {
+      val opts = scala.collection.mutable.ListBuffer[String]()
+      if (filter.nonEmpty) {
+        opts += s"filter = ${Value(filter).ddl}"
+      }
+      routing.foreach(r => opts += s"routing = '$r'")
+      indexRouting.foreach(r => opts += s"index_routing = '$r'")
+      searchRouting.foreach(r => opts += s"search_routing = '$r'")
+      if (isWriteIndex) {
+        opts += s"is_write_index = true"
+      }
+      if (isHidden) {
+        opts += s"is_hidden = true"
+      }
+      s"ALTER TABLE $table SET ALIAS ($alias = ${if (opts.nonEmpty) s"(${opts.mkString(", ")})"
+      else "()"})"
+    }
+  }
+
+  object TableAlias {
+    def apply(table: String, name: String, value: Value[_]): TableAlias = {
+      val obj = value.asInstanceOf[ObjectValue]
+      val filter = obj.value.get("filter") match {
+        case Some(ObjectValue(f)) =>
+          f.map { case (k, v) => k -> v.value }
+        case _ => Map.empty[String, Any]
+      }
+      val routing = obj.value.get("routing") match {
+        case Some(StringValue(r)) => Some(r)
+        case _                    => None
+      }
+      val indexRouting = obj.value.get("index_routing") match {
+        case Some(StringValue(r)) => Some(r)
+        case _                    => None
+      }
+      val searchRouting = obj.value.get("search_routing") match {
+        case Some(StringValue(r)) => Some(r)
+        case _                    => None
+      }
+      val isWriteIndex = obj.value.get("is_write_index") match {
+        case Some(BooleanValue(b)) => b
+        case _                     => false
+      }
+      val isHidden = obj.value.get("is_hidden") match {
+        case Some(BooleanValue(b)) => b
+        case _                     => false
+      }
+      TableAlias(
+        table = table,
+        alias = name,
+        filter = filter,
+        routing = routing,
+        indexRouting = indexRouting,
+        searchRouting = searchRouting,
+        isWriteIndex = isWriteIndex,
+        isHidden = isHidden
+      )
+    }
+  }
+
+  case class Table(
     name: String,
-    columns: List[DdlColumn],
+    columns: List[Column],
     primaryKey: List[String] = Nil,
-    partitionBy: Option[DdlPartition] = None,
+    partitionBy: Option[PartitionDate] = None,
     mappings: Map[String, Value[_]] = Map.empty,
     settings: Map[String, Value[_]] = Map.empty,
-    processors: Seq[DdlProcessor] = Seq.empty
+    processors: Seq[IngestProcessor] = Seq.empty,
+    aliases: Map[String, Value[_]] = Map.empty
   ) extends DdlToken {
-    private[schema] lazy val cols: Map[String, DdlColumn] = columns.map(c => c.name -> c).toMap
+    private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
 
-    def find(path: String): Option[DdlColumn] = {
+    def find(path: String): Option[Column] = {
       if (path.contains(".")) {
         val parts = path.split("\\.")
         cols.get(parts.head).flatMap { col =>
@@ -883,7 +981,7 @@ package object schema {
       )
       .getOrElse(Map.empty)
 
-    def update(): DdlTable = this.copy(
+    def update(): Table = this.copy(
       columns = columns.map(_.update()),
       mappings = mappings ++ Map(
         "_meta" ->
@@ -910,8 +1008,14 @@ package object schema {
             } else {
               ""
             }
+          val aliasesOpts =
+            if (aliases.nonEmpty) {
+              s"aliases = ${ObjectValue(aliases).ddl}"
+            } else {
+              ""
+            }
           val separator = if (partitionBy.nonEmpty) "," else ""
-          s"$separator OPTIONS = (${Seq(mappingOpts, settingsOpts).filter(_.nonEmpty).mkString(", ")})"
+          s"$separator OPTIONS = (${Seq(mappingOpts, settingsOpts, aliasesOpts).filter(_.nonEmpty).mkString(", ")})"
         } else {
           ""
         }
@@ -924,12 +1028,12 @@ package object schema {
       s"CREATE OR REPLACE TABLE $name (\n\t$cols$pkStr)${partitionBy.getOrElse("")}$opts"
     }
 
-    def ddlProcessors: Seq[DdlProcessor] =
+    def ddlProcessors: Seq[IngestProcessor] =
       columns.flatMap(_.ddlProcessors) ++ partitionBy
         .map(_.ddlProcessor(this))
-        .toSeq ++ implicitly[Seq[DdlProcessor]](primaryKey)
+        .toSeq ++ implicitly[Seq[IngestProcessor]](primaryKey)
 
-    def merge(statements: Seq[AlterTableStatement]): DdlTable = {
+    def merge(statements: Seq[AlterTableStatement]): Table = {
       statements.foldLeft(this) { (table, statement) =>
         statement match {
           // table columns
@@ -937,12 +1041,12 @@ package object schema {
             if (ifNotExists && table.cols.contains(column.name)) table
             else if (!table.cols.contains(column.name))
               table.copy(columns = table.columns :+ column)
-            else throw DdlColumnNotFound(column.name, table.name)
+            else throw ColumnNotFound(column.name, table.name)
           case DropColumn(columnName, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
               table.copy(columns = table.columns.filterNot(_.name == columnName))
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case RenameColumn(oldName, newName) =>
             if (cols.contains(oldName))
               table.copy(
@@ -950,7 +1054,7 @@ package object schema {
                   if (col.name == oldName) col.copy(name = newName) else col
                 }
               )
-            else throw DdlColumnNotFound(oldName, table.name)
+            else throw ColumnNotFound(oldName, table.name)
           // column type
           case AlterColumnType(columnName, newType, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
@@ -961,7 +1065,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           // column script
           case AlterColumnScript(columnName, newScript, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
@@ -973,7 +1077,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnScript(columnName, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -983,7 +1087,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           // column default value
           case AlterColumnDefault(columnName, newDefault, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
@@ -994,7 +1098,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnDefault(columnName, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1004,7 +1108,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           // column not null
           case AlterColumnNotNull(columnName, ifExists) =>
             if (!table.cols.contains(columnName) && ifExists) table
@@ -1015,7 +1119,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnNotNull(columnName, ifExists) =>
             if (!table.cols.contains(columnName) && ifExists) table
             else if (table.cols.contains(columnName))
@@ -1025,7 +1129,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           // column options
           case AlterColumnOptions(columnName, newOptions, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
@@ -1037,7 +1141,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case AlterColumnOption(
                 columnName,
                 optionKey,
@@ -1055,7 +1159,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnOption(
                 columnName,
                 optionKey,
@@ -1072,7 +1176,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           // column comments
           case AlterColumnComment(columnName, newComment, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
@@ -1084,7 +1188,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           case DropColumnComment(columnName, ifExists) =>
             if (ifExists && !table.cols.contains(columnName)) table
             else if (table.cols.contains(columnName))
@@ -1095,7 +1199,7 @@ package object schema {
                   else col
                 }
               )
-            else throw DdlColumnNotFound(columnName, table.name)
+            else throw ColumnNotFound(columnName, table.name)
           // multi-fields
           case AlterColumnFields(columnName, newFields, ifExists) =>
             val col = find(columnName)
@@ -1108,7 +1212,7 @@ package object schema {
                     multiFields = newFields.toList
                   )
                   table
-                case _ => throw DdlColumnNotFound(columnName, table.name)
+                case _ => throw ColumnNotFound(columnName, table.name)
               }
             }
           case AlterColumnField(
@@ -1125,7 +1229,7 @@ package object schema {
                   val updatedFields = c.multiFields.filterNot(_.name == field.name) :+ field
                   c.copy(multiFields = updatedFields)
                   table
-                case _ => throw DdlColumnNotFound(columnName, table.name)
+                case _ => throw ColumnNotFound(columnName, table.name)
               }
             }
           case DropColumnField(
@@ -1143,7 +1247,7 @@ package object schema {
                     multiFields = c.multiFields.filterNot(_.name == fieldName)
                   )
                   table
-                case _ => throw DdlColumnNotFound(columnName, table.name)
+                case _ => throw ColumnNotFound(columnName, table.name)
               }
             }
           // mappings / settings
@@ -1162,6 +1266,14 @@ package object schema {
           case DropTableSetting(optionKey) =>
             table.copy(
               settings = ObjectValue(table.settings).remove(optionKey).value
+            )
+          case AlterTableAlias(aliasName, aliasValue) =>
+            table.copy(
+              aliases = table.aliases + (aliasName -> aliasValue)
+            )
+          case DropTableAlias(aliasName) =>
+            table.copy(
+              aliases = table.aliases - aliasName
             )
           case _ => table
         }
@@ -1186,11 +1298,11 @@ package object schema {
       if (errors.isEmpty) Right(()) else Left(errors.mkString("\n"))
     }
 
-    lazy val ddlPipeline: DdlPipeline = {
+    lazy val ddlPipeline: IngestPipeline = {
       val processorsFromColumns = ddlProcessors.map(p => p.column -> p).toMap
-      DdlPipeline(
+      IngestPipeline(
         name = s"${name}_ddl_default_pipeline",
-        ddlPipelineType = DdlPipelineType.Default,
+        ddlPipelineType = IngestPipelineType.Default,
         ddlProcessors =
           ddlProcessors ++ processors.filterNot(p => processorsFromColumns.contains(p.column))
       )
@@ -1235,11 +1347,15 @@ package object schema {
       node
     }
 
+    lazy val indexAliases: Seq[TableAlias] = aliases.map { case (aliasName, value) =>
+      TableAlias(name, aliasName, value)
+    }.toSeq
+
     lazy val pipeline: ObjectNode = {
       ddlPipeline.node
     }
 
-    def diff(desired: DdlTable): DdlTableDiff = {
+    def diff(desired: Table): TableDiff = {
       val actual = this.update()
       val desiredUpdated = desired.update()
 
@@ -1278,7 +1394,14 @@ package object schema {
         case Removed(name)        => SettingRemoved(name)
       }
 
-      // 6. Pipeline
+      // 6. Aliases
+      val aliasDiffs = scala.collection.mutable.ListBuffer[AliasDiff]()
+      aliasDiffs ++= ObjectValue(actual.aliases).diff(ObjectValue(desired.aliases)).map {
+        case Altered(name, value) => AliasSet(name, value)
+        case Removed(name)        => AliasRemoved(name)
+      }
+
+      // 7. Pipeline
       val pipelineDiffs = scala.collection.mutable.ListBuffer[PipelineDiff]()
       val actualPipeline = actual.ddlPipeline
       val desiredPipeline = desiredUpdated.ddlPipeline
@@ -1286,11 +1409,12 @@ package object schema {
         pipelineDiffs += d
       }
 
-      DdlTableDiff(
+      TableDiff(
         columns = columnDiffs.toList,
         mappings = mappingDiffs.toList,
         settings = settingDiffs.toList,
-        pipeline = pipelineDiffs.toList
+        pipeline = pipelineDiffs.toList,
+        aliases = aliasDiffs.toList
       )
     }
   }
