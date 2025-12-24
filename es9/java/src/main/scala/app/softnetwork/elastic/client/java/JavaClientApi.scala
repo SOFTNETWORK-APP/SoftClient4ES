@@ -32,6 +32,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.serialization._
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
   FieldSort,
@@ -59,6 +60,7 @@ import co.elastic.clients.elasticsearch.ingest.{
   GetPipelineRequest,
   PutPipelineRequest
 }
+import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
@@ -126,8 +128,8 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
     )(
       apply()
         .indices()
-        .create(
-          new CreateIndexRequest.Builder()
+        .create {
+          val req = new CreateIndexRequest.Builder()
             .index(index)
             .settings(new IndexSettings.Builder().withJson(new StringReader(settings)).build())
             .aliases(
@@ -143,15 +145,20 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
                 .toMap
                 .asJava
             )
-            .mappings(
-              new TypeMapping.Builder()
-                .withJson(
-                  new StringReader(mappings.getOrElse("{}"))
+          mappings match {
+            case None => req.build()
+            case Some(m) =>
+              req
+                .mappings(
+                  new TypeMapping.Builder()
+                    .withJson(
+                      new StringReader(m)
+                    )
+                    .build()
                 )
                 .build()
-            )
-            .build()
-        )
+          }
+        }
     )(_.acknowledged())
 
   override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
@@ -1072,14 +1079,15 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
 
     action match {
       case BulkAction.UPDATE =>
+        val doc: JsonNode = document
         new BulkOperation.Builder()
           .update(
             new UpdateOperation.Builder()
               .index(bulkItem.index)
               .id(id.orNull)
               .action(
-                new UpdateAction.Builder[JMap[String, Object], JMap[String, Object]]()
-                  .doc(mapper.readValue(document, classOf[JMap[String, Object]]))
+                new UpdateAction.Builder[JsonNode, JsonNode]()
+                  .doc(doc)
                   .docAsUpsert(true)
                   .build()
               )
@@ -1096,12 +1104,13 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
           .build()
 
       case _ =>
+        val doc: JsonNode = document
         new BulkOperation.Builder()
           .index(
-            new IndexOperation.Builder[JMap[String, Object]]()
+            new IndexOperation.Builder[JsonNode]()
               .index(bulkItem.index)
               .id(id.orNull)
-              .document(mapper.readValue(document, classOf[JMap[String, Object]]))
+              .document(doc)
               .build()
           )
           .build()

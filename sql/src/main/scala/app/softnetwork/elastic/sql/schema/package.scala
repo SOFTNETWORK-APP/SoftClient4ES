@@ -862,7 +862,8 @@ package object schema {
     def node: ObjectNode = {
       val node = mapper.createObjectNode()
       if (filter.nonEmpty) {
-        node.set("filter", Value(filter).asInstanceOf[ObjectValue].toJson)
+        val filterNode = mapper.valueToTree[JsonNode](filter.asJava)
+        node.set("filter", filterNode)
       }
       routing.foreach(r => node.put("routing", r))
       indexRouting.foreach(r => node.put("index_routing", r))
@@ -898,7 +899,7 @@ package object schema {
   }
 
   object TableAlias {
-    def apply(table: String, name: String, value: Value[_]): TableAlias = {
+    def apply(table: String, alias: String, value: Value[_]): TableAlias = {
       val obj = value.asInstanceOf[ObjectValue]
       val filter = obj.value.get("filter") match {
         case Some(ObjectValue(f)) =>
@@ -927,7 +928,7 @@ package object schema {
       }
       TableAlias(
         table = table,
-        alias = name,
+        alias = alias,
         filter = filter,
         routing = routing,
         indexRouting = indexRouting,

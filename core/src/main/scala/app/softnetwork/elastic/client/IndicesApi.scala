@@ -20,6 +20,8 @@ import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 
 /** Index management API.
   *
@@ -29,7 +31,7 @@ import app.softnetwork.elastic.sql.serialization._
   *   - Parameter validation
   *   - Automatic retry for transient errors
   */
-trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi =>
+trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi with VersionApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -151,7 +153,40 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi =
 
     logger.info(s"Creating index '$index' with settings: $settings")
 
-    executeCreateIndex(index, settings, mappings, aliases) match {
+    // Get Elasticsearch version
+    val elasticVersion = {
+      this.version match {
+        case ElasticSuccess(v) => v
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+          return ElasticFailure(error)
+      }
+    }
+
+    val updatedMappings =
+      if (ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion)) {
+        mappings match {
+          case Some(m) =>
+            val node: JsonNode = m
+            if (node.has("properties")) {
+              logger.info(s"Wrapping mappings with '_doc' type for ES version $elasticVersion")
+              val doc = mapper.createObjectNode()
+              val properties = node.get("properties")
+              doc.set("properties", properties)
+              val root: ObjectNode = node.asInstanceOf[ObjectNode]
+              root.remove("properties")
+              root.set[ObjectNode]("_doc", doc)
+              Some(root.toString)
+            } else {
+              Some(m)
+            }
+          case None => None
+        }
+      } else {
+        mappings
+      }
+
+    executeCreateIndex(index, settings, updatedMappings, aliases) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Index '$index' created successfully")
         success

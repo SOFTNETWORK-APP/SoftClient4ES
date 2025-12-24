@@ -20,6 +20,7 @@ import app.softnetwork.elastic.client.IndicesApi
 import app.softnetwork.elastic.client.jest.actions.GetIndex
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
+import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
 import io.searchbox.indices.{CloseIndex, CreateIndex, DeleteIndex, IndicesExists, OpenIndex}
 import io.searchbox.indices.reindex.Reindex
@@ -31,7 +32,7 @@ import scala.util.Try
   *   [[IndicesApi]] for generic API documentation
   */
 trait JestIndicesApi extends IndicesApi with JestClientHelpers {
-  _: JestRefreshApi with JestPipelineApi with JestClientCompanion =>
+  _: JestRefreshApi with JestPipelineApi with JestVersionApi with JestClientCompanion =>
 
   /** Create an index with the given settings.
     * @see
@@ -51,13 +52,11 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
       val builder = new CreateIndex.Builder(index)
         .settings(settings)
       if (aliases.nonEmpty) {
-        val root = mapper.createObjectNode()
         val as = mapper.createObjectNode()
         aliases.foreach { alias =>
-          as.set(alias.alias, alias.node)
+          as.set[ObjectNode](alias.alias, alias.node)
         }
-        root.set("aliases", as)
-        builder.aliases(root.toString)
+        builder.aliases(as.toString)
       }
       mappings.foreach { mapping =>
         builder.mappings(mapping)

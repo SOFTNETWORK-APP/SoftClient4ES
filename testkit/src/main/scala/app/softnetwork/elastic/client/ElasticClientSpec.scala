@@ -25,7 +25,9 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
+import app.softnetwork.elastic.schema.{Index, IndexAlias}
 import app.softnetwork.elastic.sql.query.SelectStatement
+import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.persistence._
 import app.softnetwork.persistence.person.model.Person
 import com.fasterxml.jackson.core.JsonParseException
@@ -112,6 +114,61 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     pClient.deleteIndex("create_delete")
     blockUntilIndexNotExists("create_delete")
     "create_delete" should not(beCreated())
+  }
+
+  "Creating an index with mappings and aliases" should "work fine" in {
+    val mappings =
+      """{
+        |    "properties": {
+        |        "birthDate": {
+        |            "type": "date"
+        |        },
+        |        "uuid": {
+        |            "type": "keyword"
+        |        },
+        |        "name": {
+        |            "type": "text",
+        |            "analyzer": "ngram_analyzer",
+        |            "search_analyzer": "search_analyzer",
+        |            "fields": {
+        |                "raw": {
+        |                    "type": "keyword"
+        |                },
+        |                "fr": {
+        |                    "type": "text",
+        |                    "analyzer": "french"
+        |                }
+        |            }
+        |        }
+        |    }
+        |}""".stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    val aliases: Seq[TableAlias] = Seq(
+      TableAlias(table = "create_mappings_aliases", alias = "create_mappings_aliases_alias1"),
+      TableAlias(
+        table = "create_mappings_aliases",
+        alias = "create_mappings_aliases_alias2",
+        filter = Map("term" -> Map("name.raw" -> "Homer Simpson"))
+      )
+    )
+
+    pClient
+      .createIndex("create_mappings_aliases", mappings = Some(mappings), aliases = aliases)
+      .get shouldBe true
+    "create_mappings_aliases" should beCreated()
+
+    val index: Option[Index] = pClient.getIndex("create_mappings_aliases").get
+
+    index match {
+      case Some(idx) =>
+        val indexAliases = idx.aliases.keys
+        indexAliases should contain("create_mappings_aliases_alias1")
+        indexAliases should contain("create_mappings_aliases_alias2")
+      case None => fail("Index not found")
+    }
+
+    pClient.deleteIndex("create_mappings_aliases").get shouldBe true
+    "create_mappings_aliases" should not(beCreated())
   }
 
   "Adding an alias and then removing it" should "work" in {

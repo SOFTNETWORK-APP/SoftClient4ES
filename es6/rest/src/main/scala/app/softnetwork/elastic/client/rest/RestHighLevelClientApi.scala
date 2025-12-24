@@ -145,6 +145,7 @@ trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientH
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientRefreshApi
     with RestHighLevelClientPipelineApi
+    with RestHighLevelClientVersionApi
     with RestHighLevelClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
@@ -156,8 +157,8 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       operation = "createIndex",
       index = Some(index),
       retryable = false
-    )(
-      request = new CreateIndexRequest(index)
+    )(request = {
+      val req = new CreateIndexRequest(index)
         .settings(settings, XContentType.JSON)
         .aliases(
           aliases
@@ -173,8 +174,12 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
             })
             .asJava
         )
-        .mapping(mappings.getOrElse("{}"), XContentType.JSON)
-    )(
+      mappings match {
+        case Some(m) if m.trim.startsWith("{") && m.trim.endsWith("}") =>
+          req.mapping(m, XContentType.JSON)
+        case _ => req
+      }
+    })(
       executor = req => apply().indices().create(req, RequestOptions.DEFAULT)
     )
   }

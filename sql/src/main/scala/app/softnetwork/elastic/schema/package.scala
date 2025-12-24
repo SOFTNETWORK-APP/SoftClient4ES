@@ -341,7 +341,7 @@ package object schema {
       defaultProcessors ++ finalProcessors
     }
 
-    lazy val ddlTable: Table = {
+    lazy val asTable: Table = {
       // 1. Columns from the mapping
       val initialCols: Map[String, Column] =
         esMappings.fields.map { field =>

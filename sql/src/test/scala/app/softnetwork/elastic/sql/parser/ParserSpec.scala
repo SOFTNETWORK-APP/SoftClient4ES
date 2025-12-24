@@ -1013,7 +1013,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           settings = settings,
           defaultPipeline = Some(pipeline)
         )
-        val ddlTable = esIndex.ddlTable
+        val ddlTable = esIndex.asTable
         println(s"""esIndex ddl -> ${ddlTable.sql}""")
         println(s"""esIndex mappings -> ${ddlTable.indexMappings.toString}""")
         println(s"""esIndex settings -> ${ddlTable.indexSettings.toString}""")

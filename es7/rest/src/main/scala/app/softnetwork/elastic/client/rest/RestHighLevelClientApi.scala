@@ -154,6 +154,7 @@ trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientH
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientRefreshApi
     with RestHighLevelClientPipelineApi
+    with RestHighLevelClientVersionApi
     with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateIndex(
@@ -167,23 +168,30 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       index = Some(index),
       retryable = false
     )(
-      request = new CreateIndexRequest(index)
-        .settings(settings, XContentType.JSON)
-        .aliases(
-          aliases
-            .map(alias => {
-              var a = new Alias(alias.alias).writeIndex(alias.isWriteIndex).isHidden(alias.isHidden)
-              if (alias.filter.nonEmpty) {
-                val filterNode = Value(alias.filter).asInstanceOf[ObjectValue].toJson
-                a = a.filter(filterNode.toString)
-              }
-              alias.indexRouting.foreach(ir => a = a.indexRouting(ir))
-              alias.searchRouting.foreach(sr => a = a.searchRouting(sr))
-              a
-            })
-            .asJava
-        )
-        .mapping(mappings.getOrElse("{}"), XContentType.JSON)
+      request = {
+        val req = new CreateIndexRequest(index)
+          .settings(settings, XContentType.JSON)
+          .aliases(
+            aliases
+              .map(alias => {
+                var a =
+                  new Alias(alias.alias).writeIndex(alias.isWriteIndex).isHidden(alias.isHidden)
+                if (alias.filter.nonEmpty) {
+                  val filterNode = Value(alias.filter).asInstanceOf[ObjectValue].toJson
+                  a = a.filter(filterNode.toString)
+                }
+                alias.indexRouting.foreach(ir => a = a.indexRouting(ir))
+                alias.searchRouting.foreach(sr => a = a.searchRouting(sr))
+                a
+              })
+              .asJava
+          )
+        mappings match {
+          case Some(m) if m.trim.startsWith("{") && m.trim.endsWith("}") =>
+            req.mapping(m, XContentType.JSON)
+          case _ => req
+        }
+      }
     )(
       executor = req => apply().indices().create(req, RequestOptions.DEFAULT)
     )
