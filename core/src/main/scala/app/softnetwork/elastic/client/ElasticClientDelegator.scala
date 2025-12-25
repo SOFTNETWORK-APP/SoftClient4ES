@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import com.typesafe.config.Config
@@ -1423,6 +1424,21 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.actionToBulkItem(action.asInstanceOf)
 
   // ==================== PipelineApi (delegate) ====================
+
+  /** Execute a pipeline DDL statement
+    *
+    * @param sql
+    *   the pipeline DDL statement
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def pipeline(sql: String): ElasticResult[Boolean] =
+    delegate.pipeline(sql)
+
+  override private[client] def pipeline(
+    statement: query.PipelineStatement
+  ): ElasticResult[Boolean] =
+    delegate.pipeline(statement)
 
   override def createPipeline(
     pipelineName: String,

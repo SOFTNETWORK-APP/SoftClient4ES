@@ -23,7 +23,12 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{AlterPipeline, CreatePipeline, DropPipeline}
+import app.softnetwork.elastic.sql.query.{
+  AlterPipeline,
+  CreatePipeline,
+  DropPipeline,
+  PipelineStatement
+}
 import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline}
 
 trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
@@ -46,76 +51,8 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
 
           case Right(statement) =>
             statement match {
-              case ddl: CreatePipeline =>
-                val elasticVersion = {
-                  this.version match {
-                    case ElasticSuccess(v) => v
-                    case ElasticFailure(error) =>
-                      logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
-                      return ElasticResult.failure(error)
-                  }
-                }
-                if (ElasticsearchVersion.isEs6(elasticVersion)) {
-                  val pipeline = ddl.ddlPipeline.copy(
-                    processors = ddl.ddlPipeline.processors.map { processor =>
-                      GenericProcessor(
-                        processorType = processor.processorType,
-                        properties = processor.properties.filterNot(_._1 == "description")
-                      )
-                    }
-                  )
-                  createPipeline(ddl.name, pipeline.json)
-                } else
-                  createPipeline(ddl.name, ddl.ddlPipeline.json)
-              case ddl: DropPipeline =>
-                deletePipeline(ddl.name, ifExists = ddl.ifExists)
-              case ddl: AlterPipeline =>
-                getPipeline(ddl.name) match {
-                  case ElasticSuccess(Some(existing)) =>
-                    val existingPipeline = IngestPipeline(name = ddl.name, json = existing)
-                    val updatingPipeline = existingPipeline.merge(ddl.statements)
-                    val elasticVersion = {
-                      this.version match {
-                        case ElasticSuccess(v) => v
-                        case ElasticFailure(error) =>
-                          logger.error(
-                            s"❌ Failed to retrieve Elasticsearch version: ${error.message}"
-                          )
-                          return ElasticResult.failure(error)
-                      }
-                    }
-                    if (ElasticsearchVersion.isEs6(elasticVersion)) {
-                      val pipeline = updatingPipeline.copy(
-                        processors = updatingPipeline.processors.map { processor =>
-                          GenericProcessor(
-                            processorType = processor.processorType,
-                            properties = processor.properties.filterNot(_._1 == "description")
-                          )
-                        }
-                      )
-                      updatePipeline(ddl.name, pipeline.json)
-                    } else
-                      updatePipeline(ddl.name, updatingPipeline.json)
-                  case ElasticSuccess(None) if !ddl.ifExists =>
-                    val error =
-                      ElasticError(
-                        message = s"Pipeline with name '${ddl.name}' not found",
-                        statusCode = Some(404),
-                        operation = Some("pipeline")
-                      )
-                    logger.error(s"❌ ${error.message}")
-                    ElasticResult.failure(error)
-                  case ElasticSuccess(None) if ddl.ifExists =>
-                    logger.info(
-                      s"ℹ️ Pipeline with name '${ddl.name}' not found, skipping update as 'ifExists' is true"
-                    )
-                    ElasticSuccess(false)
-                  case failure @ ElasticFailure(error) =>
-                    logger.error(
-                      s"❌ Failed to retrieve pipeline with name '${ddl.name}': ${error.message}"
-                    )
-                    failure
-                }
+              case ddl: PipelineStatement =>
+                pipeline(ddl)
               case _ =>
                 val error =
                   ElasticError(
@@ -138,6 +75,90 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
         }
       case ElasticFailure(elasticError) =>
         ElasticResult.failure(elasticError.copy(operation = Some("pipeline")))
+    }
+  }
+
+  private[client] def pipeline(statement: PipelineStatement): ElasticResult[Boolean] = {
+    statement match {
+      case ddl: CreatePipeline =>
+        val elasticVersion = {
+          this.version match {
+            case ElasticSuccess(v) => v
+            case ElasticFailure(error) =>
+              logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+              return ElasticResult.failure(error)
+          }
+        }
+        if (ElasticsearchVersion.isEs6(elasticVersion)) {
+          val pipeline = ddl.ddlPipeline.copy(
+            processors = ddl.ddlPipeline.processors.map { processor =>
+              GenericProcessor(
+                processorType = processor.processorType,
+                properties = processor.properties.filterNot(_._1 == "description")
+              )
+            }
+          )
+          createPipeline(ddl.name, pipeline.json)
+        } else
+          createPipeline(ddl.name, ddl.ddlPipeline.json)
+      case ddl: DropPipeline =>
+        deletePipeline(ddl.name, ifExists = ddl.ifExists)
+      case ddl: AlterPipeline =>
+        getPipeline(ddl.name) match {
+          case ElasticSuccess(Some(existing)) =>
+            val existingPipeline = IngestPipeline(name = ddl.name, json = existing)
+            val updatingPipeline = existingPipeline.merge(ddl.statements)
+            val elasticVersion = {
+              this.version match {
+                case ElasticSuccess(v) => v
+                case ElasticFailure(error) =>
+                  logger.error(
+                    s"❌ Failed to retrieve Elasticsearch version: ${error.message}"
+                  )
+                  return ElasticResult.failure(error)
+              }
+            }
+            if (ElasticsearchVersion.isEs6(elasticVersion)) {
+              val pipeline = updatingPipeline.copy(
+                processors = updatingPipeline.processors.map { processor =>
+                  GenericProcessor(
+                    processorType = processor.processorType,
+                    properties = processor.properties.filterNot(_._1 == "description")
+                  )
+                }
+              )
+              updatePipeline(ddl.name, pipeline.json)
+            } else
+              updatePipeline(ddl.name, updatingPipeline.json)
+          case ElasticSuccess(None) if !ddl.ifExists =>
+            val error =
+              ElasticError(
+                message = s"Pipeline with name '${ddl.name}' not found",
+                statusCode = Some(404),
+                operation = Some("pipeline")
+              )
+            logger.error(s"❌ ${error.message}")
+            ElasticResult.failure(error)
+          case ElasticSuccess(None) if ddl.ifExists =>
+            logger.info(
+              s"ℹ️ Pipeline with name '${ddl.name}' not found, skipping update as 'ifExists' is true"
+            )
+            ElasticSuccess(false)
+          case failure @ ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to retrieve pipeline with name '${ddl.name}': ${error.message}"
+            )
+            failure
+        }
+      case _ =>
+        val error =
+          ElasticError(
+            message = s"Unsupported pipeline DDL statement: $statement",
+            statusCode = Some(400),
+            operation = Some("pipeline")
+          )
+        logger.error(s"❌ ${error.message}")
+        ElasticResult.failure(error)
     }
   }
 

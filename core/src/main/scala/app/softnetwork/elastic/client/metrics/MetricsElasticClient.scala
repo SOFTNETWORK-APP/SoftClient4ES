@@ -31,8 +31,8 @@ import app.softnetwork.elastic.client.{
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.schema
 import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import org.json4s.Formats
@@ -1095,6 +1095,25 @@ class MetricsElasticClient(
   }
 
   // ==================== PipelineApi (delegate) ====================
+
+  /** Execute a pipeline DDL statement
+    *
+    * @param sql
+    *   the pipeline DDL statement
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def pipeline(sql: String): ElasticResult[Boolean] =
+    measureResult("pipeline") {
+      delegate.pipeline(sql)
+    }
+
+  override private[client] def pipeline(
+    statement: query.PipelineStatement
+  ): ElasticResult[Boolean] =
+    measureResult("pipeline") {
+      delegate.pipeline(statement)
+    }
 
   override def createPipeline(
     pipelineName: String,
