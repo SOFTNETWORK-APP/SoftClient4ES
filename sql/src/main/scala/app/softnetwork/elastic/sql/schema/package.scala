@@ -67,6 +67,7 @@ package object schema {
       node
     }
     def json: String = mapper.writeValueAsString(node)
+    def pipelineType: IngestPipelineType
     def processorType: IngestProcessorType
     def description: String = sql.trim
     def name: String = processorType.name
@@ -226,6 +227,7 @@ package object schema {
 
         case other =>
           GenericProcessor(
+            pipelineType = pipelineType,
             processorType = IngestProcessorType(other),
             properties =
               mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
@@ -235,8 +237,11 @@ package object schema {
     }
   }
 
-  case class GenericProcessor(processorType: IngestProcessorType, properties: Map[String, Any])
-      extends IngestProcessor {
+  case class GenericProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
+    processorType: IngestProcessorType,
+    properties: Map[String, Any]
+  ) extends IngestProcessor {
     override def sql: String = ddl
     override def column: String = properties.get("field") match {
       case Some(s: String) => s
@@ -249,6 +254,7 @@ package object schema {
   }
 
   case class ScriptProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
     script: String,
     column: String,
     dataType: SQLType,
@@ -271,6 +277,7 @@ package object schema {
   }
 
   case class RenameProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
     column: String,
     newName: String,
     ignoreFailure: Boolean = true,
@@ -291,6 +298,7 @@ package object schema {
   }
 
   case class RemoveProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
     sql: String,
     column: String,
     ignoreFailure: Boolean = true,
@@ -308,6 +316,7 @@ package object schema {
   }
 
   case class PrimaryKeyProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
     sql: String,
     column: String,
     value: Set[String],
@@ -328,6 +337,7 @@ package object schema {
   }
 
   case class DefaultValueProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
     sql: String,
     column: String,
     value: Value[_],
@@ -357,6 +367,7 @@ package object schema {
   }
 
   case class DateIndexNameProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
     sql: String,
     column: String,
     dateRounding: String,
@@ -413,16 +424,16 @@ package object schema {
 
   case class IngestPipeline(
     name: String,
-    ddlPipelineType: IngestPipelineType,
-    ddlProcessors: Seq[IngestProcessor]
+    pipelineType: IngestPipelineType,
+    processors: Seq[IngestProcessor]
   ) extends DdlToken {
     def sql: String =
-      s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.sql.trim).mkString(", ")})"
+      s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${processors.map(_.sql.trim).mkString(", ")})"
 
     def node: ObjectNode = {
       val node = mapper.createObjectNode()
       val processorsNode = mapper.createArrayNode()
-      ddlProcessors.foreach { processor =>
+      processors.foreach { processor =>
         processorsNode.add(processor.node)
       }
       node.put("description", sql)
@@ -431,18 +442,18 @@ package object schema {
     }
 
     override def ddl: String =
-      s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${ddlProcessors.map(_.ddl.trim).mkString(", ")})"
+      s"CREATE OR REPLACE PIPELINE $name WITH PROCESSORS (${processors.map(_.ddl.trim).mkString(", ")})"
 
     def json: String = mapper.writeValueAsString(node)
 
     def diff(pipeline: IngestPipeline): List[PipelineDiff] = {
 
-      val actual = this.ddlProcessors
+      val actual = this.processors
 
-      val desired = pipeline.ddlProcessors
+      val desired = pipeline.processors
 
       // 1. Index processors by logical key
-      def key(p: IngestProcessor) = (p.processorType, p.column)
+      def key(p: IngestProcessor) = s"${p.pipelineType.name}-${p.processorType.name}-${p.column}"
 
       val desiredMap = desired.map(p => key(p) -> p).toMap
       val actualMap = actual.map(p => key(p) -> p).toMap
@@ -476,19 +487,19 @@ package object schema {
       statements.foldLeft(this) { (current, alter) =>
         alter match {
           case AddPipelineProcessor(processor) =>
-            current.copy(ddlProcessors =
-              current.ddlProcessors.filterNot(p =>
+            current.copy(processors =
+              current.processors.filterNot(p =>
                 p.processorType == processor.processorType && p.column == processor.column
               ) :+ processor
             )
           case DropPipelineProcessor(processorType, column) =>
-            current.copy(ddlProcessors =
-              current.ddlProcessors.filterNot(p =>
+            current.copy(processors =
+              current.processors.filterNot(p =>
                 p.processorType == processorType && p.column == column
               )
             )
           case AlterPipelineProcessor(processor) =>
-            current.copy(ddlProcessors = current.ddlProcessors.map { p =>
+            current.copy(processors = current.processors.map { p =>
               if (p.processorType == processor.processorType && p.column == processor.column) {
                 processor
               } else {
@@ -518,8 +529,8 @@ package object schema {
       }
       IngestPipeline(
         name = name,
-        ddlPipelineType = ddlPipelineType,
-        ddlProcessors = processors
+        pipelineType = ddlPipelineType,
+        processors = processors
       )
     }
   }
@@ -617,14 +628,14 @@ package object schema {
       s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
-    def ddlProcessors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
+    def processors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
         DefaultValueProcessor(
           sql = s"$path DEFAULT $dv",
           column = path,
           value = dv
         )
-      }.toSeq ++ multiFields.flatMap(_.ddlProcessors)
+      }.toSeq ++ multiFields.flatMap(_.processors)
 
     def node: ObjectNode = {
       val root = mapper.createObjectNode()
@@ -835,12 +846,12 @@ package object schema {
       case _ => List.empty
     }
 
-    def ddlProcessor(table: Table): DateIndexNameProcessor =
+    def processor(table: Table): DateIndexNameProcessor =
       DateIndexNameProcessor(
-        sql,
-        column,
-        dateRounding,
-        dateFormats,
+        sql = sql,
+        column = column,
+        dateRounding = dateRounding,
+        dateFormats = dateFormats,
         prefix = s"${table.name}-"
       )
   }
@@ -1029,9 +1040,9 @@ package object schema {
       s"CREATE OR REPLACE TABLE $name (\n\t$cols$pkStr)${partitionBy.getOrElse("")}$opts"
     }
 
-    def ddlProcessors: Seq[IngestProcessor] =
-      columns.flatMap(_.ddlProcessors) ++ partitionBy
-        .map(_.ddlProcessor(this))
+    def tableProcessors: Seq[IngestProcessor] =
+      columns.flatMap(_.processors) ++ partitionBy
+        .map(_.processor(this))
         .toSeq ++ implicitly[Seq[IngestProcessor]](primaryKey)
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
@@ -1299,35 +1310,52 @@ package object schema {
       if (errors.isEmpty) Right(()) else Left(errors.mkString("\n"))
     }
 
-    lazy val ddlPipeline: IngestPipeline = {
-      val processorsFromColumns = ddlProcessors.map(p => p.column -> p).toMap
+    private[schema] lazy val diffPipeline: IngestPipeline = {
+      val processorsFromColumns = tableProcessors.map(p => p.column -> p).toMap
       IngestPipeline(
-        name = s"${name}_ddl_default_pipeline",
-        ddlPipelineType = IngestPipelineType.Default,
-        ddlProcessors =
-          ddlProcessors ++ processors.filterNot(p => processorsFromColumns.contains(p.column))
+        name = s"${name}_ddl_diff_pipeline",
+        pipelineType = IngestPipelineType.Custom,
+        processors =
+          tableProcessors ++ processors.filterNot(p => processorsFromColumns.contains(p.column))
       )
     }
 
-    lazy val defaultPipeline: String =
+    lazy val defaultPipeline: IngestPipeline = {
+      val processorsFromColumns = tableProcessors.map(p => p.column -> p).toMap
+      IngestPipeline(
+        name = defaultPipelineName.getOrElse(s"${name}_ddl_default_pipeline"),
+        pipelineType = IngestPipelineType.Default,
+        processors = tableProcessors ++ processors
+          .filter(p => p.pipelineType == IngestPipelineType.Default)
+          .filterNot(p => processorsFromColumns.contains(p.column))
+      )
+    }
+
+    lazy val finalPipeline: IngestPipeline = {
+      IngestPipeline(
+        name = finalPipelineName.getOrElse(s"${name}_ddl_final_pipeline"),
+        pipelineType = IngestPipelineType.Final,
+        processors = processors.filter(p => p.pipelineType == IngestPipelineType.Final)
+      )
+    }
+
+    lazy val defaultPipelineName: Option[String] =
       settings
         .get("default_pipeline")
         .map(_.value)
         .flatMap {
-          case v: String => Some(v)
-          case _         => None
+          case v: String if v != "_none" => Some(v)
+          case _                         => None
         }
-        .getOrElse("_none")
 
-    lazy val finalPipeline: String =
+    lazy val finalPipelineName: Option[String] =
       settings
         .get("final_pipeline")
         .map(_.value)
         .flatMap {
-          case v: String => Some(v)
-          case _         => None
+          case v: String if v != "_none" => Some(v)
+          case _                         => None
         }
-        .getOrElse("_none")
 
     lazy val indexMappings: ObjectNode = {
       val node = mapper.createObjectNode()
@@ -1352,9 +1380,9 @@ package object schema {
       TableAlias(name, aliasName, value)
     }.toSeq
 
-    lazy val pipeline: ObjectNode = {
-      ddlPipeline.node
-    }
+    lazy val defaultPipelineNode: ObjectNode = defaultPipeline.node
+
+    lazy val finalPipelineNode: ObjectNode = finalPipeline.node
 
     def diff(desired: Table): TableDiff = {
       val actual = this.update()
@@ -1402,10 +1430,10 @@ package object schema {
         case Removed(name)        => AliasRemoved(name)
       }
 
-      // 7. Pipeline
+      // 7. Default Pipeline
       val pipelineDiffs = scala.collection.mutable.ListBuffer[PipelineDiff]()
-      val actualPipeline = actual.ddlPipeline
-      val desiredPipeline = desiredUpdated.ddlPipeline
+      val actualPipeline = actual.diffPipeline
+      val desiredPipeline = desiredUpdated.diffPipeline
       actualPipeline.diff(desiredPipeline).foreach { d =>
         pipelineDiffs += d
       }

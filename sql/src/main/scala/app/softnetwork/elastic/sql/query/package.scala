@@ -460,7 +460,7 @@ package object query {
       aliases = aliases
     ).update()
 
-    lazy val ddlPipeline: IngestPipeline = ddlTable.ddlPipeline
+    lazy val defaultPipeline: IngestPipeline = ddlTable.defaultPipeline
 
   }
 
@@ -497,11 +497,15 @@ package object query {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       s"DROP COLUMN$ifExistsClause $columnName"
     }
-    override def ddlProcessor: Option[IngestProcessor] = Some(RemoveProcessor(sql, columnName))
+    override def ddlProcessor: Option[IngestProcessor] = Some(
+      RemoveProcessor(sql = sql, column = columnName)
+    )
   }
   case class RenameColumn(oldName: String, newName: String) extends AlterTableStatement {
     override def sql: String = s"RENAME COLUMN $oldName TO $newName"
-    override def ddlProcessor: Option[IngestProcessor] = Some(RenameProcessor(oldName, newName))
+    override def ddlProcessor: Option[IngestProcessor] = Some(
+      RenameProcessor(column = oldName, newName = newName)
+    )
   }
   case class AlterColumnOptions(
     columnName: String,
@@ -572,9 +576,9 @@ package object query {
     override def ddlProcessor: Option[IngestProcessor] =
       Some(
         DefaultValueProcessor(
-          sql,
-          columnName,
-          defaultValue
+          sql = sql,
+          column = columnName,
+          value = defaultValue
         )
       )
   }

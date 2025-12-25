@@ -57,10 +57,10 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
                 }
                 if (ElasticsearchVersion.isEs6(elasticVersion)) {
                   val pipeline = ddl.ddlPipeline.copy(
-                    ddlProcessors = ddl.ddlPipeline.ddlProcessors.map { processor =>
+                    processors = ddl.ddlPipeline.processors.map { processor =>
                       GenericProcessor(
-                        processor.processorType,
-                        processor.properties.filterNot(_._1 == "description")
+                        processorType = processor.processorType,
+                        properties = processor.properties.filterNot(_._1 == "description")
                       )
                     }
                   )
@@ -86,10 +86,10 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
                     }
                     if (ElasticsearchVersion.isEs6(elasticVersion)) {
                       val pipeline = updatingPipeline.copy(
-                        ddlProcessors = updatingPipeline.ddlProcessors.map { processor =>
+                        processors = updatingPipeline.processors.map { processor =>
                           GenericProcessor(
-                            processor.processorType,
-                            processor.properties.filterNot(_._1 == "description")
+                            processorType = processor.processorType,
+                            properties = processor.properties.filterNot(_._1 == "description")
                           )
                         }
                       )
