@@ -1339,6 +1339,12 @@ package object schema {
       )
     }
 
+    def setDefaultPipelineName(pipelineName: String): Table = {
+      this.copy(
+        settings = this.settings + ("default_pipeline" -> StringValue(pipelineName))
+      )
+    }
+
     lazy val defaultPipelineName: Option[String] =
       settings
         .get("default_pipeline")
@@ -1347,6 +1353,12 @@ package object schema {
           case v: String if v != "_none" => Some(v)
           case _                         => None
         }
+
+    def setFinalPipelineName(pipelineName: String): Table = {
+      this.copy(
+        settings = this.settings + ("final_pipeline" -> StringValue(pipelineName))
+      )
+    }
 
     lazy val finalPipelineName: Option[String] =
       settings
