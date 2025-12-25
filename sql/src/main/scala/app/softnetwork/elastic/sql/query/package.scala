@@ -381,6 +381,8 @@ package object query {
     }
   }
 
+  sealed trait TableStatement extends DdlStatement
+
   case class CreateTable(
     table: String,
     ddl: Either[DqlStatement, List[Column]],
@@ -389,7 +391,7 @@ package object query {
     primaryKey: List[String] = Nil,
     partitionBy: Option[PartitionDate] = None,
     options: Map[String, Value[_]] = Map.empty
-  ) extends DdlStatement {
+  ) extends TableStatement {
 
     lazy val partitioned: Boolean = partitionBy.isDefined
 
@@ -465,7 +467,7 @@ package object query {
   }
 
   case class AlterTable(table: String, ifExists: Boolean, statements: List[AlterTableStatement])
-      extends DdlStatement {
+      extends TableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS " else ""
       val parenthesesNeeded = statements.size > 1
@@ -679,7 +681,7 @@ package object query {
   }
 
   case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)
-      extends DdlStatement {
+      extends TableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       val cascadeClause = if (cascade) " CASCADE" else ""
@@ -687,7 +689,7 @@ package object query {
     }
   }
 
-  case class TruncateTable(table: String) extends DdlStatement {
+  case class TruncateTable(table: String) extends TableStatement {
     override def sql: String = s"TRUNCATE TABLE $table"
   }
 }
