@@ -149,8 +149,11 @@ package object schema {
         val mappingsNode = root.path("mappings")
         return apply(mappingsNode)
       }
+      if (root.has("_doc")) {
+        val docNode = root.path("_doc")
+        return apply(docNode)
+      }
       val fields = Option(root.get("properties"))
-        .orElse(Option(root.path("_doc").get("properties")))
         .map(_.properties().asScala.map { entry =>
           val name = entry.getKey
           val value = entry.getValue
@@ -158,7 +161,7 @@ package object schema {
         }.toList)
         .getOrElse(Nil)
 
-      val options = extractObject(root, ignoredKeys = Set("properties", "_doc"))
+      val options = extractObject(root, ignoredKeys = Set("properties"))
       val meta = options.get("_meta")
       val primaryKey: List[String] = meta
         .map {

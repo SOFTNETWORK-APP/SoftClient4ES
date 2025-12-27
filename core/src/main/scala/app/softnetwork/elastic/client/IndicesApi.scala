@@ -169,19 +169,33 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
       if (ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion)) {
         mappings match {
           case Some(m) =>
-            val node: JsonNode = m
-            if (node.has("properties")) {
+            val root = mapper.readTree(m).asInstanceOf[ObjectNode]
+
+            if (root.has("properties") || root.has("_meta")) {
               logger.info(s"Wrapping mappings with '_doc' type for ES version $elasticVersion")
+
               val doc = mapper.createObjectNode()
-              val properties = node.get("properties")
-              doc.set("properties", properties)
-              val root: ObjectNode = node.asInstanceOf[ObjectNode]
-              root.remove("properties")
-              root.set[ObjectNode]("_doc", doc)
+
+              // Move properties
+              if (root.has("properties")) {
+                doc.set("properties", root.get("properties"))
+                root.remove("properties")
+              }
+
+              // Move _meta
+              if (root.has("_meta")) {
+                doc.set("_meta", root.get("_meta"))
+                root.remove("_meta")
+              }
+
+              // Wrap into _doc
+              root.set("_doc", doc)
+
               Some(root.toString)
             } else {
               Some(m)
             }
+
           case None => None
         }
       } else {
