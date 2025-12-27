@@ -249,6 +249,10 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
         success
 
       case failure @ ElasticFailure(error) =>
+        if (error.statusCode.getOrElse(0) == 404) {
+          logger.info(s"✅ Alias '$alias' does not exist")
+          return ElasticResult.success(false)
+        }
         logger.error(s"❌ Failed to check existence of alias '$alias': ${error.message}")
         failure
     }

@@ -608,7 +608,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
         ElasticSuccess(closed)
       case Left(err) =>
         logger.error(s"❌ Failed to check if index '$index' is closed: ${err.message}")
-        return ElasticFailure(err)
+        ElasticFailure(err)
     }
   }
 
@@ -837,6 +837,7 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
 
       // Open only if needed
       _ <- if (isClosed) openIndex(index).toEither else Right(())
+      _ <- if (isClosed) waitForShards(index).toEither else Right(())
 
     } yield {
       val restore = () =>
@@ -905,4 +906,14 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
   ): ElasticResult[Long]
 
   private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean]
+
+  private[client] def waitForShards(
+    index: String,
+    status: String = "yellow",
+    timeout: Int = 30
+  ): ElasticResult[Unit] = {
+    // Default implementation does nothing
+    ElasticSuccess(())
+  }
+
 }

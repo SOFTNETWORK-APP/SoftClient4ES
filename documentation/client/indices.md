@@ -87,6 +87,129 @@ This mechanism is fully transparent to the user.
 
 ---
 
+## 🔧 Internal Shard Readiness Handling (`waitForShards`)
+
+Some Elasticsearch operations require the index to be **fully operational**, meaning all primary shards must be allocated and the index must reach at least **yellow** cluster health.  
+This is especially important for Elasticsearch **6.x**, where reopening a closed index does **not** guarantee immediate shard availability.
+
+SoftClient4ES includes an internal mechanism called **`waitForShards`**, which ensures that the index is ready before executing operations that depend on shard availability.
+
+This mechanism is:
+
+- **fully automatic**
+- **transparent to the user**
+- **only applied when necessary**
+- **client‑specific** (Jest ES6, REST HL ES6)
+- a **no‑op** for Elasticsearch 7, 8, and 9
+
+---
+
+### When is `waitForShards` used?
+
+`waitForShards` is invoked automatically after reopening an index inside the internal `openIfNeeded` workflow.
+
+It is used by operations that require:
+
+- an **open** index
+- **allocated** shards
+- a **searchable** state
+
+Specifically:
+
+- `deleteByQuery`
+- `truncateIndex`
+
+These operations internally perform:
+
+1. Detect whether the index is closed
+2. Open it if needed
+3. **Wait for shards to reach the required health status**
+4. Execute the operation
+5. Restore the original index state (re‑close if necessary)
+
+This ensures consistent behavior across all Elasticsearch versions.
+
+---
+
+### Why is this needed?
+
+Elasticsearch 6.x has a known behavior:
+
+- After reopening a closed index, shards may remain in `INITIALIZING` state for a short period.
+- Executing `_delete_by_query` during this window results in:
+
+	```
+	503 Service Unavailable
+	search_phase_execution_exception
+	all shards failed
+	```
+
+Elasticsearch 7+ no longer exhibits this issue.
+
+SoftClient4ES abstracts this difference by automatically waiting for shard readiness on ES6.
+
+---
+
+### How does `waitForShards` work?
+
+Internally, the client performs:
+
+```
+GET /_cluster/health/<index>?wait_for_status=yellow&timeout=30s
+```
+
+This ensures:
+
+- primary shards are allocated
+- the index is searchable
+- the cluster is ready to process delete‑by‑query operations
+
+### Client‑specific behavior:
+
+| Client              | ES Version  | Behavior                                                    |
+|---------------------|-------------|-------------------------------------------------------------|
+| **Jest**            | 6.x         | Uses a custom Jest action to call `_cluster/health`         |
+| **REST HL**         | 6.x         | Uses the low‑level client to call `_cluster/health`         |
+| **Java API Client** | 8.x / 9.x   | No‑op (Elasticsearch handles shard readiness automatically) |
+| **REST HL**         | 7.x         | No‑op                                                       |
+| **Jest**            | 7.x         | No‑op                                                       |
+
+---
+
+### Transparency for the user
+
+`waitForShards` is **not part of the public API**.  
+It is an internal mechanism that ensures:
+
+- consistent behavior across ES6, ES7, ES8, ES9
+- predictable delete‑by‑query semantics
+- correct handling of closed indices
+- no need for users to manually manage shard allocation or cluster health
+
+Users do **not** need to call or configure anything.
+
+---
+
+### Example (internal workflow)
+
+When calling:
+
+```scala
+client.deleteByQuery("my_index", """{"query": {"match_all": {}}}""")
+```
+
+SoftClient4ES internally performs:
+
+1. Check if `my_index` is closed
+2. If closed → open it
+3. **Wait for shards to reach yellow** (ES6 only)
+4. Execute `_delete_by_query`
+5. Restore original state (re‑close if needed)
+
+This guarantees reliable behavior even on older Elasticsearch clusters.
+
+---
+
 ## Public Methods
 
 ### createIndex

@@ -359,6 +359,30 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
         }
       }
     )
+
+  override private[client] def waitForShards(
+    index: String,
+    status: String,
+    timeout: Int
+  ): ElasticResult[Unit] = {
+    executeRestAction[Request, Response, Unit](
+      operation = "waitForShards",
+      index = Some(index.toString),
+      retryable = true
+    )(
+      request = {
+        val req = new Request(
+          "GET",
+          s"/_cluster/health/${index}?wait_for_status=${status}&timeout=${timeout}s"
+        )
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = _ => ()
+    )
+  }
 }
 
 /** Alias management API for RestHighLevelClient

@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.IndicesApi
-import app.softnetwork.elastic.client.jest.actions.GetIndex
+import app.softnetwork.elastic.client.jest.actions.{GetIndex, WaitForShards}
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -215,4 +215,18 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
         status == "close"
       }
     }
+
+  override private[client] def waitForShards(
+    index: String,
+    status: String,
+    timeout: Int
+  ): ElasticResult[Unit] = {
+    executeJestBooleanAction(
+      operation = "waitForShards",
+      index = Some(index),
+      retryable = true
+    ) {
+      new WaitForShards.Builder(index = index, status = status, timeout = timeout).build()
+    }.map(_ => ())
+  }
 }
