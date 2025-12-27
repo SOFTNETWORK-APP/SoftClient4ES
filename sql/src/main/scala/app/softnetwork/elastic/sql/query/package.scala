@@ -72,7 +72,9 @@ package object query {
     having: Option[Having] = None,
     orderBy: Option[OrderBy] = None,
     limit: Option[Limit] = None,
-    score: Option[Double] = None
+    score: Option[Double] = None,
+    deleteByQuery: Boolean = false,
+    updateByQuery: Boolean = false
   ) extends DqlStatement {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}"

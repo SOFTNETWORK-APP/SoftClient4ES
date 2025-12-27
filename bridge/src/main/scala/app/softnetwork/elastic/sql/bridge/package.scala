@@ -478,7 +478,11 @@ package object bridge {
         case _ =>
           nestedWithoutCriteriaQuery.getOrElse(matchAllQuery())
       }
-    } sourceFiltering (fields, excludes)
+    }
+
+    if (!request.deleteByQuery && !request.updateByQuery) {
+      _search = _search sourceFiltering (fields, excludes)
+    }
 
     _search = if (allAggregations.nonEmpty) {
       _search aggregations {

@@ -136,4 +136,10 @@ object ElasticsearchVersion {
   def requiresDocTypeWrapper(version: String): Boolean = {
     !isAtLeast(version, 6, 8)
   }
+
+  /** Check if deletion by query on closed indices is supported (ES >= 7.5)
+    */
+  def supportsDeletionByQueryOnClosedIndices(version: String): Boolean = {
+    isAtLeast(version, 7, 5)
+  }
 }

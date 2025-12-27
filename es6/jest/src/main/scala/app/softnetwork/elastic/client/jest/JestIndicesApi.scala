@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
+import io.searchbox.core.{Cat, CatResult, DeleteByQuery}
 import io.searchbox.indices.{CloseIndex, CreateIndex, DeleteIndex, IndicesExists, OpenIndex}
 import io.searchbox.indices.reindex.Reindex
 
@@ -164,4 +165,54 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
       new IndicesExists.Builder(index).build()
     }
   }
+
+  private[client] def executeDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    executeJestAction[JestResult, Long](
+      operation = "deleteByQuery",
+      index = Some(index),
+      retryable = true
+    ) {
+      val builder = new DeleteByQuery.Builder(jsonQuery)
+        .addIndex(index)
+
+      builder.setParameter("conflicts", "proceed")
+
+      if (refresh)
+        builder.setParameter("refresh", true)
+
+      builder.build()
+    } { result =>
+      val deleted = Try {
+        result.getJsonObject.get("deleted").getAsLong
+      }.getOrElse(0L)
+
+      deleted
+    }
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    executeJestAction[CatResult, Boolean](
+      operation = "isIndexClosed",
+      index = Some(index),
+      retryable = true
+    ) {
+      new Cat.IndicesBuilder()
+        .addIndex(index)
+        .setParameter("format", "json")
+        .build()
+    } { result =>
+      val json = result.getJsonObject
+      val arr = json.getAsJsonArray("result")
+
+      if (arr == null || arr.size() == 0)
+        false
+      else {
+        val entry = arr.get(0).getAsJsonObject
+        val status = entry.get("status").getAsString // "open" or "close"
+        status == "close"
+      }
+    }
 }

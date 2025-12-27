@@ -71,6 +71,22 @@ val defaultSettings: String = """
 
 ---
 
+## 🔧 Index State Detection and Automatic State Restoration
+
+SoftClient4ES ensures that operations requiring an **open index** (such as `deleteByQuery` and `truncateIndex`) behave safely and consistently, even when the target index is **closed**.
+
+Elasticsearch does **not** allow `_delete_by_query` on a closed index (including ES 8.x and ES 9.x).  
+To guarantee correct behavior, SoftClient4ES automatically:
+
+1. Detects whether the index is open or closed
+2. Opens the index if needed
+3. Executes the operation
+4. Restores the original state (re‑closes the index if it was closed)
+
+This mechanism is fully transparent to the user.
+
+---
+
 ## Public Methods
 
 ### createIndex
@@ -459,6 +475,175 @@ existenceChecks.foreach {
   case (index, ElasticFailure(e)) => println(s"⚠️ $index check failed: ${e.message}")
 }
 ```
+
+---
+
+### isIndexClosed
+
+Checks whether an index is currently **closed**.
+
+**Signature:**
+
+```scala
+def isIndexClosed(index: String): ElasticResult[Boolean]
+```
+
+**Parameters:**
+- `index` – Name of the index to inspect
+
+**Returns:**
+- `ElasticSuccess(true)` if the index is closed
+- `ElasticSuccess(false)` if the index is open
+- `ElasticFailure` if the index does not exist or the request fails
+
+**Behavior:**
+- Uses the Elasticsearch `_cat/indices` API internally
+- Supported across Jest (ES6), REST HL (ES6/7), Java API Client (ES8/ES9)
+
+**Examples:**
+
+```scala
+client.isIndexClosed("archive-2023") match {
+  case ElasticSuccess(true)  => println("Index is closed")
+  case ElasticSuccess(false) => println("Index is open")
+  case ElasticFailure(err)   => println(s"Error: ${err.message}")
+}
+```
+
+---
+
+### Automatic Index Opening and State Restoration
+
+Some operations require the index to be **open**.  
+SoftClient4ES automatically handles this through an internal helper:
+
+- Detect initial state (`open` or `closed`)
+- Open the index if needed
+- Execute the operation
+- Restore the original state
+
+This ensures:
+
+- **Safety** (no accidental state changes)
+- **Idempotence** (index ends in the same state it started)
+- **Compatibility** with all Elasticsearch versions
+
+This logic is used internally by:
+
+- `deleteByQuery`
+- `truncateIndex`
+
+---
+
+### deleteByQuery
+
+Deletes documents from an index using either a JSON query or a SQL `DELETE`/`SELECT` expression.
+
+If the index is **closed**, SoftClient4ES will:
+
+1. Detect that the index is closed
+2. Open it temporarily
+3. Execute the delete‑by‑query
+4. Re‑close it afterward
+
+**Signature:**
+
+```scala
+def deleteByQuery(
+  index: String,
+  query: String,
+  refresh: Boolean = true
+): ElasticResult[Long]
+```
+
+**Parameters:**
+- `index` – Name of the index
+- `query` – JSON or SQL delete expression
+- `refresh` – Whether to refresh the index after deletion
+
+**Returns:**
+- `ElasticSuccess[Long]` – number of deleted documents
+- `ElasticFailure` – error details
+
+**Behavior:**
+- Validates index name
+- Parses SQL into JSON when needed
+- Ensures index exists
+- Automatically opens closed indices
+- Restores original state after execution
+- Uses `_delete_by_query` internally
+
+**Examples:**
+
+```scala
+// JSON delete
+client.deleteByQuery(
+  "users",
+  """{"query": {"term": {"active": false}}}"""
+)
+
+// SQL delete
+client.deleteByQuery(
+  "orders",
+  "DELETE FROM orders WHERE status = 'cancelled'"
+)
+
+// SQL select (equivalent to delete)
+client.deleteByQuery(
+  "sessions",
+  "SELECT * FROM sessions WHERE expired = true"
+)
+```
+
+---
+
+### truncateIndex
+
+Deletes **all documents** from an index while preserving its mappings, settings, and aliases.
+
+This is implemented as:
+
+```scala
+deleteByQuery(index, """{"query": {"match_all": {}}}""")
+```
+
+If the index is closed, SoftClient4ES will automatically:
+
+- Open it
+- Execute the truncate
+- Restore the closed state
+
+**Signature:**
+
+```scala
+def truncateIndex(index: String): ElasticResult[Long]
+```
+
+**Parameters:**
+- `index` – Name of the index to truncate
+
+**Returns:**
+- `ElasticSuccess[Long]` – number of deleted documents
+- `ElasticFailure` – error details
+
+**Examples:**
+
+```scala
+// Remove all documents
+client.truncateIndex("logs-2024")
+
+// Safe truncate with existence check
+for {
+  exists  <- client.indexExists("cache")
+  deleted <- if (exists) client.truncateIndex("cache")
+             else ElasticResult.success(0L)
+} yield deleted
+```
+
+**Notes:**
+- Index structure is preserved
+- Operation is irreversible
+- Works even if the index is initially closed
 
 ---
 

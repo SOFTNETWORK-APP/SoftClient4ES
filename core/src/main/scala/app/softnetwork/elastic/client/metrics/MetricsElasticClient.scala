@@ -25,7 +25,6 @@ import app.softnetwork.elastic.client.{
   ElasticQueries,
   ElasticQuery,
   ElasticResponse,
-  JSONQuery,
   SingleValueAggregateResult
 }
 import app.softnetwork.elastic.client.bulk._
@@ -148,6 +147,39 @@ class MetricsElasticClient(
       delegate.indexExists(index, pattern)
     }
   }
+
+  /** Truncate an index by deleting all its documents.
+    *
+    * @param index
+    *   - the name of the index to truncate
+    * @return
+    *   the number of documents deleted
+    */
+  override def truncateIndex(index: String): ElasticResult[Long] =
+    measureResult("truncate", Some(index)) {
+      delegate.truncateIndex(index)
+    }
+
+  /** Delete documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the query to delete documents by (can be JSON or SQL)
+    * @param refresh
+    *   - true to refresh the index after deletion, false otherwise
+    * @return
+    *   the number of documents deleted
+    */
+  override def deleteByQuery(index: String, query: String, refresh: Boolean): ElasticResult[Long] =
+    measureResult("deleteByQuery", Some(index)) {
+      delegate.deleteByQuery(index, query, refresh)
+    }
+
+  override def isIndexClosed(index: String): ElasticResult[Boolean] =
+    measureResult("isIndexClosed", Some(index)) {
+      delegate.isIndexClosed(index)
+    }
 
   // ==================== AliasApi ====================
 

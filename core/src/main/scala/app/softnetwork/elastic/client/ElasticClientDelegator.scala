@@ -161,6 +161,33 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def indexExists(index: String, pattern: Boolean): ElasticResult[Boolean] =
     delegate.indexExists(index, pattern)
 
+  /** Truncate an index by deleting all its documents.
+    *
+    * @param index
+    *   - the name of the index to truncate
+    * @return
+    *   the number of documents deleted
+    */
+  override def truncateIndex(index: String): ElasticResult[Long] =
+    delegate.truncateIndex(index)
+
+  /** Delete documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the query to delete documents by (can be JSON or SQL)
+    * @param refresh
+    *   - true to refresh the index after deletion, false otherwise
+    * @return
+    *   the number of documents deleted
+    */
+  override def deleteByQuery(index: String, query: String, refresh: Boolean): ElasticResult[Long] =
+    delegate.deleteByQuery(index, query, refresh)
+
+  override def isIndexClosed(index: String): ElasticResult[Boolean] =
+    delegate.isIndexClosed(index)
+
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,
@@ -191,6 +218,16 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
     delegate.executeIndexExists(index)
+
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    query: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.executeDeleteByQuery(index, query, refresh)
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    delegate.executeIsIndexClosed(index)
 
   // ==================== AliasApi ====================
 

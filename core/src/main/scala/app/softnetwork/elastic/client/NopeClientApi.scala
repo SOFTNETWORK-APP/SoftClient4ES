@@ -311,4 +311,13 @@ trait NopeClientApi extends ElasticClientApi {
     templateName: String
   ): ElasticResult[Boolean] =
     ElasticResult.success(false)
+
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    query: String,
+    refresh: Boolean
+  ): ElasticResult[Long] = ElasticSuccess(0L)
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    ElasticSuccess(false)
 }

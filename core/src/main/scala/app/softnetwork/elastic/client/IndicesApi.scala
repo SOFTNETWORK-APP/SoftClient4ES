@@ -18,6 +18,8 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.query.{Delete, From, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
@@ -566,6 +568,308 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
     }
   }
 
+  def isIndexClosed(index: String): ElasticResult[Boolean] = {
+    val result = for {
+      // 1. Validate index name
+      _ <- validateIndexName(index)
+        .toLeft(())
+        .left
+        .map(err =>
+          err.copy(
+            operation = Some("isIndexClosed"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = s"Invalid index: ${err.message}"
+          )
+        )
+      // 2. Check index exists
+      _ <- indexExists(index, pattern = false) match {
+        case ElasticSuccess(true) => Right(())
+        case ElasticSuccess(false) =>
+          Left(
+            ElasticError(
+              message = s"Index '$index' does not exist",
+              statusCode = Some(404),
+              index = Some(index),
+              operation = Some("isIndexClosed")
+            )
+          )
+        case ElasticFailure(err) => Left(err)
+      }
+      // 3. Retrieve index status
+      closed <- executeIsIndexClosed(index).toEither
+
+    } yield closed
+
+    result match {
+      case Right(closed) =>
+        val statusStr = if (closed) "closed" else "open"
+        logger.info(s"✅ Index '$index' is $statusStr")
+        ElasticSuccess(closed)
+      case Left(err) =>
+        logger.error(s"❌ Failed to check if index '$index' is closed: ${err.message}")
+        return ElasticFailure(err)
+    }
+  }
+
+  /** Truncate an index by deleting all its documents.
+    * @param index
+    *   - the name of the index to truncate
+    * @return
+    *   the number of documents deleted
+    */
+  def truncateIndex(index: String): ElasticResult[Long] =
+    deleteByQuery(index, """{"query": {"match_all": {}}}""")
+
+  /** Delete documents by query from an index.
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the query to delete documents by (can be JSON or SQL)
+    * @param refresh
+    *   - true to refresh the index after deletion, false otherwise
+    * @return
+    *   the number of documents deleted
+    */
+  def deleteByQuery(
+    index: String,
+    query: String,
+    refresh: Boolean = true
+  ): ElasticResult[Long] = {
+
+    val result = for {
+      // 1. Validate index name
+      _ <- validateIndexName(index)
+        .toLeft(())
+        .left
+        .map(err =>
+          err.copy(
+            operation = Some("deleteByQuery"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = s"Invalid index: ${err.message}"
+          )
+        )
+
+      // 2. Parse query (SQL or JSON)
+      jsonQuery <- parseQueryForDeletion(index, query)
+
+      // 3. Check index exists
+      _ <- indexExists(index, pattern = false) match {
+        case ElasticSuccess(true) => Right(())
+        case ElasticSuccess(false) =>
+          Left(
+            ElasticError(
+              message = s"Index '$index' does not exist",
+              statusCode = Some(404),
+              index = Some(index),
+              operation = Some("deleteByQuery")
+            )
+          )
+        case ElasticFailure(err) => Left(err)
+      }
+
+      // 4. Open index if needed
+      tuple <- openIfNeeded(index)
+      (_, restore) = tuple
+
+      // 5. Execute delete-by-query
+      deleted <- executeDeleteByQuery(index, jsonQuery, refresh).toEither
+
+      // 6. Restore state
+      _ <- restore().toEither.left.map { restoreErr =>
+        logger.warn(s"❌ Failed to restore index state for '$index': ${restoreErr.message}")
+        restoreErr
+      }
+
+    } yield deleted
+
+    result match {
+      case Right(count) =>
+        logger.info(s"✅ Deleted $count documents from index '$index'")
+        ElasticSuccess(count)
+      case Left(err) =>
+        logger.error(s"❌ Failed to delete by query on index '$index': ${err.message}")
+        ElasticFailure(err)
+    }
+  }
+
+  /** Parse a query for deletion, determining if it's SQL or JSON.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the query (SQL or JSON)
+    * @return
+    *   the validated JSON query
+    */
+  private def parseQueryForDeletion(index: String, query: String): Either[ElasticError, String] = {
+    val trimmed = query.trim.toUpperCase
+    val isSql = trimmed.startsWith("SELECT") ||
+      trimmed.startsWith("DELETE") ||
+      trimmed.startsWith("WITH")
+    if (isSql) parseSqlQueryForDeletion(index, query)
+    else parseJsonQueryForDeletion(index, query)
+  }
+
+  /** Validate a JSON query for deletion.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the JSON query
+    * @return
+    *   the validated JSON query
+    */
+  private def parseJsonQueryForDeletion(
+    index: String,
+    query: String
+  ): Either[ElasticError, String] = {
+    validateJson("deleteByQuery", query) match {
+      case None =>
+        logger.info(s"Processing JSON query for deleteByQuery on index '$index': $query")
+        Right(query)
+
+      case Some(err) =>
+        Left(
+          err.copy(
+            operation = Some("deleteByQuery"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = s"Invalid JSON query: ${err.message}"
+          )
+        )
+    }
+  }
+
+  /** Parse an SQL query for deletion and convert it to Elasticsearch JSON.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the SQL query
+    * @return
+    *   the Elasticsearch JSON query
+    */
+  private def parseSqlQueryForDeletion(
+    index: String,
+    query: String
+  ): Either[ElasticError, String] = {
+    logger.info(s"Processing SQL query for deleteByQuery on index '$index': $query")
+
+    Parser(query) match {
+      case Left(err) =>
+        Left(
+          ElasticError(
+            operation = Some("deleteByQuery"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = s"Invalid SQL query: ${err.msg}"
+          )
+        )
+
+      case Right(statement) =>
+        statement match {
+
+          case deleteStmt: Delete =>
+            if (deleteStmt.table.name != index)
+              Left(
+                sqlErrorForDeletion(
+                  index = index,
+                  message =
+                    s"SQL query index '${deleteStmt.table.name}' does not match provided index '$index'"
+                )
+              )
+            else
+              deleteStmt.where match {
+                case None =>
+                  logger.info(
+                    s"SQL delete query has no WHERE clause, deleting all documents from index '$index'"
+                  )
+                  Right("""{"query": {"match_all": {}}}""")
+
+                case Some(where) =>
+                  implicit val timestamp: Long = System.currentTimeMillis()
+                  val search: String =
+                    SingleSearch(
+                      from = From(tables = Seq(deleteStmt.table)),
+                      where = Some(where),
+                      deleteByQuery = true
+                    )
+                  logger.info(s"✅ Converted SQL delete query to search for deleteByQuery: $search")
+                  Right(search)
+              }
+
+          case search: SingleSearch =>
+            val tables = search.from.tables
+            if (tables.size != 1 || tables.head.name != index)
+              Left(
+                sqlErrorForDeletion(
+                  index = index,
+                  message =
+                    s"SQL query index '${tables.map(_.name).mkString(",")}' does not match provided index '$index'"
+                )
+              )
+            else {
+              implicit val timestamp: Long = System.currentTimeMillis()
+              val query: String = search.copy(deleteByQuery = true)
+              logger.info(s"✅ Converted SQL search query to search for deleteByQuery: $query")
+              Right(query)
+            }
+
+          case _ =>
+            Left(
+              sqlErrorForDeletion(
+                index = index,
+                message = s"Invalid SQL query for deleteByQuery"
+              )
+            )
+        }
+    }
+  }
+
+  private def openIfNeeded(
+    index: String
+  ): Either[ElasticError, (Boolean, () => ElasticResult[Boolean])] = {
+    for {
+      // Detect initial state
+      isClosed <- isIndexClosed(index).toEither
+
+      // Open only if needed
+      _ <- if (isClosed) openIndex(index).toEither else Right(())
+
+    } yield {
+      val restore = () =>
+        if (isClosed) closeIndex(index)
+        else ElasticSuccess(true)
+
+      (isClosed, restore)
+    }
+  }
+
+  private def sqlErrorForDeletion(index: String, message: String): ElasticError =
+    ElasticError(
+      operation = Some("deleteByQuery"),
+      statusCode = Some(400),
+      index = Some(index),
+      message = message
+    )
+
+  // ================================================================================
+  // IMPLICIT CONVERSIONS
+  // ================================================================================
+
+  /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query serialization.
+    *
+    * @param sqlSearch
+    *   the SQL search request to convert
+    * @return
+    *   JSON string representation of the query
+    */
+  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long
+  ): String
+
   // ========================================================================
   // METHODS TO IMPLEMENT
   // ========================================================================
@@ -593,4 +897,12 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
   ): ElasticResult[(Boolean, Option[Long])]
 
   private[client] def executeIndexExists(index: String): ElasticResult[Boolean]
+
+  private[client] def executeDeleteByQuery(
+    index: String,
+    query: String,
+    refresh: Boolean
+  ): ElasticResult[Long]
+
+  private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean]
 }

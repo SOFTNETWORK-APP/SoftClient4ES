@@ -145,9 +145,12 @@ package object schema {
 
   object IndexMappings {
     def apply(root: JsonNode): IndexMappings = {
-      val mappings = root.path("mappings")
-      val fields = Option(mappings.get("properties"))
-        .orElse(Option(mappings.path("_doc").get("properties")))
+      if (root.has("mappings")) {
+        val mappingsNode = root.path("mappings")
+        return apply(mappingsNode)
+      }
+      val fields = Option(root.get("properties"))
+        .orElse(Option(root.path("_doc").get("properties")))
         .map(_.properties().asScala.map { entry =>
           val name = entry.getKey
           val value = entry.getValue
@@ -155,7 +158,7 @@ package object schema {
         }.toList)
         .getOrElse(Nil)
 
-      val options = extractObject(mappings, ignoredKeys = Set("properties", "_doc"))
+      val options = extractObject(root, ignoredKeys = Set("properties", "_doc"))
       val meta = options.get("_meta")
       val primaryKey: List[String] = meta
         .map {
@@ -208,7 +211,11 @@ package object schema {
 
   object IndexSettings {
     def apply(settings: JsonNode): IndexSettings = {
-      val index = settings.path("settings").path("index")
+      if (settings.has("settings")) {
+        val settingsNode = settings.path("settings")
+        return apply(settingsNode)
+      }
+      val index = settings.path("index")
 
       val options = extractObject(index)
 

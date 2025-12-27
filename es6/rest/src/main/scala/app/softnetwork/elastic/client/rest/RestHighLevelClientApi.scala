@@ -297,6 +297,68 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       identity
     )
 
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    executeRestAction[Request, Response, Long](
+      operation = "deleteByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      request = {
+        val req = new Request(
+          "POST",
+          s"/$index/_delete_by_query?refresh=$refresh&conflicts=proceed"
+        )
+        req.setJsonEntity(jsonQuery)
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp => {
+        val json = JsonParser
+          .parseString(scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString)
+          .getAsJsonObject
+
+        // ES6/ES7 return "deleted"
+        val deleted =
+          if (json.has("deleted")) json.get("deleted").getAsLong
+          else 0L
+
+        deleted
+      }
+    )
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    executeRestAction[Request, Response, Boolean](
+      operation = "isIndexClosed",
+      index = Some(index),
+      retryable = true
+    )(
+      request = {
+        val req = new Request("GET", s"/_cat/indices/$index?format=json")
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp => {
+        val json = JsonParser
+          .parseString(scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString)
+          .getAsJsonArray
+
+        if (json.size() == 0)
+          false
+        else {
+          val entry = json.get(0).getAsJsonObject
+          val status = entry.get("status").getAsString // "open" or "close"
+          status == "close"
+        }
+      }
+    )
 }
 
 /** Alias management API for RestHighLevelClient

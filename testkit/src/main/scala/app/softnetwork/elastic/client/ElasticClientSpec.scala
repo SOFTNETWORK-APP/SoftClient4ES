@@ -27,7 +27,7 @@ import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.schema.{Index, IndexAlias}
 import app.softnetwork.elastic.sql.query.SelectStatement
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.schema.{Table, TableAlias}
 import app.softnetwork.persistence._
 import app.softnetwork.persistence.person.model.Person
 import com.fasterxml.jackson.core.JsonParseException
@@ -140,6 +140,13 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |                }
         |            }
         |        }
+        |    },
+        |    "_meta": {
+        |        "primary_key": ["uuid"],
+        |        "partition_by": {
+        |            "column": "birthDate",
+        |            "granularity": "M"
+        |        }
         |    }
         |}""".stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
 
@@ -161,14 +168,29 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     index match {
       case Some(idx) =>
-        val indexAliases = idx.aliases.keys
-        indexAliases should contain("create_mappings_aliases_alias1")
-        indexAliases should contain("create_mappings_aliases_alias2")
+        val table: Table = idx.asTable
+        log.info(table.sql)
+        table.columns.size shouldBe 3
+        table.columns.map(_.name) should contain allOf ("uuid", "name", "birthDate")
+        table.primaryKey should contain("uuid")
+        table.partitionBy match {
+          case Some(partitionBy) =>
+            partitionBy.column shouldBe "birthDate"
+            partitionBy.granularity.sql shouldBe "MONTH"
+          case None => fail("Partition by not found")
+        }
+        val tableAliases = table.aliases.keys
+        tableAliases should contain("create_mappings_aliases_alias1")
+        tableAliases should contain("create_mappings_aliases_alias2")
       case None => fail("Index not found")
     }
 
     pClient.deleteIndex("create_mappings_aliases").get shouldBe true
     "create_mappings_aliases" should not(beCreated())
+  }
+
+  "Checking for an alias that does not exist" should "return false" in {
+    pClient.aliasExists("person_alias").get shouldBe false
   }
 
   "Adding an alias and then removing it" should "work" in {
@@ -1374,5 +1396,250 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       ) should contain allOf ("1999-05-09", "2002-05-09")
       scrollResult.children.map(_.parentId) should contain only "A16"
     }
+  }
+
+  "Truncate index" should "work" in {
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_truncate")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some("uuid")
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
+
+    indices should contain only "person_to_truncate"
+
+    blockUntilCount(3, "person_to_truncate")
+
+    "person_to_truncate" should haveCount(3)
+
+    val truncateResult = pClient.truncateIndex("person_to_truncate").get
+    truncateResult shouldBe 3L
+
+    "person_to_truncate" should haveCount(0)
+  }
+
+  "Delete by query on closed index" should "work depending on ES version" in {
+    pClient.createIndex("closed_index_test").get shouldBe true
+
+    pClient.closeIndex("closed_index_test").get shouldBe true
+
+    val deleted = pClient
+      .deleteByQuery(
+        "closed_index_test",
+        """{"query": {"match_all": {}}}"""
+      )
+      .get
+
+    deleted shouldBe 0L // index is empty anyway
+  }
+
+  "Delete by query with invalid JSON" should "fail" in {
+    pClient.createIndex("delete_by_query_invalid_json").get shouldBe true
+    val result = pClient.deleteByQuery("idx", "{not valid json}")
+    result.isFailure shouldBe true
+  }
+
+  "Delete by query with invalid SQL" should "fail" in {
+    pClient.createIndex("delete_by_query_invalid_sql").get shouldBe true
+    val result = pClient.deleteByQuery("delete_by_query_invalid_sql", "DELETE FROM")
+    result.isFailure shouldBe true
+  }
+
+  "Delete by query with SQL referencing wrong index" should "fail" in {
+    pClient.createIndex("index_a").get shouldBe true
+    pClient.createIndex("index_b").get shouldBe true
+    val result = pClient.deleteByQuery(
+      "index_a",
+      "DELETE FROM index_b WHERE x = 1"
+    )
+    result.isFailure shouldBe true
+  }
+
+  "Delete by query with valid JSON" should "work" in {
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_delete_by_json_query")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some("uuid")
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
+
+    indices should contain only "person_to_delete_by_json_query"
+
+    blockUntilCount(3, "person_to_delete_by_json_query")
+
+    "person_to_delete_by_json_query" should haveCount(3)
+
+    val deleteByQuery = pClient
+      .deleteByQuery("person_to_delete_by_json_query", """{"query": {"match_all": {}}}""")
+      .get
+    deleteByQuery shouldBe 3L
+
+    "person_to_delete_by_json_query" should haveCount(0)
+  }
+
+  "Delete by query with SQL DELETE" should "work" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "birthDate": {
+        |      "type": "date"
+        |    },
+        |    "uuid": {
+        |      "type": "keyword"
+        |    },
+        |    "name": {
+        |      "type": "keyword"
+        |    },
+        |    "children": {
+        |      "type": "nested",
+        |      "include_in_parent": true,
+        |      "properties": {
+        |        "name": {
+        |          "type": "keyword"
+        |        },
+        |        "birthDate": {
+        |          "type": "date"
+        |        }
+        |      }
+        |    },
+        |    "childrenCount": {
+        |      "type": "integer"
+        |    }
+        |  }
+        |}
+      """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    log.info(s"mapping: $mapping")
+    pClient
+      .createIndex("person_to_delete_by_sql_delete_query", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_delete_by_sql_delete_query")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some("uuid")
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => pClient.refresh(index).get)
+
+    indices should contain only "person_to_delete_by_sql_delete_query"
+
+    blockUntilCount(3, "person_to_delete_by_sql_delete_query")
+
+    "person_to_delete_by_sql_delete_query" should haveCount(3)
+
+    val deleteByQuery = pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_delete_query",
+        """DELETE FROM person_to_delete_by_sql_delete_query WHERE uuid = 'A16'"""
+      )
+      .get
+    deleteByQuery shouldBe 1L
+
+    "person_to_delete_by_sql_delete_query" should haveCount(2)
+
+    pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_delete_query",
+        "DELETE FROM person_to_delete_by_sql_delete_query"
+      )
+      .get shouldBe 2L
+
+    "person_to_delete_by_sql_delete_query" should haveCount(0)
+  }
+
+  "Delete by query with SQL SELECT" should "work" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "birthDate": {
+        |      "type": "date"
+        |    },
+        |    "uuid": {
+        |      "type": "keyword"
+        |    },
+        |    "name": {
+        |      "type": "keyword"
+        |    },
+        |    "children": {
+        |      "type": "nested",
+        |      "include_in_parent": true,
+        |      "properties": {
+        |        "name": {
+        |          "type": "keyword"
+        |        },
+        |        "birthDate": {
+        |          "type": "date"
+        |        }
+        |      }
+        |    },
+        |    "childrenCount": {
+        |      "type": "integer"
+        |    }
+        |  }
+        |}
+      """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    log.info(s"mapping: $mapping")
+    pClient
+      .createIndex("person_to_delete_by_sql_select_query", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_delete_by_sql_select_query")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some("uuid")
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => pClient.refresh(index).get)
+
+    indices should contain only "person_to_delete_by_sql_select_query"
+
+    blockUntilCount(3, "person_to_delete_by_sql_select_query")
+
+    "person_to_delete_by_sql_select_query" should haveCount(3)
+
+    val deleteByQuery = pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_select_query",
+        """SELECT * FROM person_to_delete_by_sql_select_query WHERE uuid = 'A16'"""
+      )
+      .get
+    deleteByQuery shouldBe 1L
+
+    "person_to_delete_by_sql_select_query" should haveCount(2)
+
+    pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_select_query",
+        "SELECT * FROM person_to_delete_by_sql_select_query"
+      )
+      .get shouldBe 2L
+
+    "person_to_delete_by_sql_select_query" should haveCount(0)
   }
 }

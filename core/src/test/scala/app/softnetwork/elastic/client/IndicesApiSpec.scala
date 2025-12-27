@@ -7,6 +7,7 @@ import org.mockito.MockitoSugar
 import org.mockito.ArgumentMatchersSugar
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.schema.TableAlias
 
 /** Unit tests for IndicesApi
@@ -99,6 +100,25 @@ class IndicesApiSpec
     ): ElasticResult[Option[String]] = ???
 
     override private[client] def executeVersion(): ElasticResult[String] = ???
+
+    /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query serialization.
+      *
+      * @param sqlSearch
+      *   the SQL search request to convert
+      * @return
+      *   JSON string representation of the query
+      */
+    override private[client] implicit def sqlSearchRequestToJsonQuery(
+      sqlSearch: query.SingleSearch
+    )(implicit timestamp: Long): String = ???
+
+    override private[client] def executeDeleteByQuery(
+      index: String,
+      query: String,
+      refresh: Boolean
+    ): ElasticResult[Long] = ???
+
+    override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] = ???
   }
 
   var indicesApi: TestIndicesApi = _
@@ -749,6 +769,27 @@ class IndicesApiSpec
           ): ElasticResult[Option[String]] = ???
 
           override private[client] def executeVersion(): ElasticResult[String] = ???
+
+          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
+            * serialization.
+            *
+            * @param sqlSearch
+            *   the SQL search request to convert
+            * @return
+            *   JSON string representation of the query
+            */
+          override private[client] implicit def sqlSearchRequestToJsonQuery(
+            sqlSearch: query.SingleSearch
+          )(implicit timestamp: Long): String = ???
+
+          override private[client] def executeDeleteByQuery(
+            index: String,
+            query: String,
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
+
+          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+            ???
         }
 
         // When
@@ -828,6 +869,27 @@ class IndicesApiSpec
           ): ElasticResult[Option[String]] = ???
 
           override private[client] def executeVersion(): ElasticResult[String] = ???
+
+          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
+            * serialization.
+            *
+            * @param sqlSearch
+            *   the SQL search request to convert
+            * @return
+            *   JSON string representation of the query
+            */
+          override private[client] implicit def sqlSearchRequestToJsonQuery(
+            sqlSearch: query.SingleSearch
+          )(implicit timestamp: Long): String = ???
+
+          override private[client] def executeDeleteByQuery(
+            index: String,
+            query: String,
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
+
+          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+            ???
         }
 
         // When
@@ -1062,6 +1124,27 @@ class IndicesApiSpec
           ): ElasticResult[Option[String]] = ???
 
           override private[client] def executeVersion(): ElasticResult[String] = ???
+
+          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
+            * serialization.
+            *
+            * @param sqlSearch
+            *   the SQL search request to convert
+            * @return
+            *   JSON string representation of the query
+            */
+          override private[client] implicit def sqlSearchRequestToJsonQuery(
+            sqlSearch: query.SingleSearch
+          )(implicit timestamp: Long): String = ???
+
+          override private[client] def executeDeleteByQuery(
+            index: String,
+            query: String,
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
+
+          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+            ???
         }
 
         // When
@@ -1125,6 +1208,27 @@ class IndicesApiSpec
           ): ElasticResult[Option[String]] = ???
 
           override private[client] def executeVersion(): ElasticResult[String] = ???
+
+          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
+            * serialization.
+            *
+            * @param sqlSearch
+            *   the SQL search request to convert
+            * @return
+            *   JSON string representation of the query
+            */
+          override private[client] implicit def sqlSearchRequestToJsonQuery(
+            sqlSearch: query.SingleSearch
+          )(implicit timestamp: Long): String = ???
+
+          override private[client] def executeDeleteByQuery(
+            index: String,
+            query: String,
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
+
+          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+            ???
         }
 
         // When
@@ -1188,6 +1292,27 @@ class IndicesApiSpec
           ): ElasticResult[Option[String]] = ???
 
           override private[client] def executeVersion(): ElasticResult[String] = ???
+
+          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
+            * serialization.
+            *
+            * @param sqlSearch
+            *   the SQL search request to convert
+            * @return
+            *   JSON string representation of the query
+            */
+          override private[client] implicit def sqlSearchRequestToJsonQuery(
+            sqlSearch: query.SingleSearch
+          )(implicit timestamp: Long): String = ???
+
+          override private[client] def executeDeleteByQuery(
+            index: String,
+            query: String,
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
+
+          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+            ???
         }
 
         // When
@@ -1251,6 +1376,27 @@ class IndicesApiSpec
           ): ElasticResult[Option[String]] = ???
 
           override private[client] def executeVersion(): ElasticResult[String] = ???
+
+          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
+            * serialization.
+            *
+            * @param sqlSearch
+            *   the SQL search request to convert
+            * @return
+            *   JSON string representation of the query
+            */
+          override private[client] implicit def sqlSearchRequestToJsonQuery(
+            sqlSearch: query.SingleSearch
+          )(implicit timestamp: Long): String = ???
+
+          override private[client] def executeDeleteByQuery(
+            index: String,
+            query: String,
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
+
+          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+            ???
         }
 
         // When

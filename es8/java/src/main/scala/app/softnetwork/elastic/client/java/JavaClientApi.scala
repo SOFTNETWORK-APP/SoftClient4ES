@@ -35,6 +35,7 @@ import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
+  Conflicts,
   FieldSort,
   FieldValue,
   Refresh,
@@ -43,6 +44,7 @@ import co.elastic.clients.elasticsearch._types.{
   SortOrder,
   Time
 }
+import co.elastic.clients.elasticsearch.cat.IndicesRequest
 import co.elastic.clients.elasticsearch.core.bulk.{
   BulkOperation,
   DeleteOperation,
@@ -264,6 +266,45 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
         )
     )(_.value())
 
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    executeJavaAction(
+      operation = "deleteByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      apply().deleteByQuery(
+        new DeleteByQueryRequest.Builder()
+          .index(index)
+          .withJson(new StringReader(jsonQuery)) // JSON query as raw string
+          .refresh(refresh)
+          .conflicts(Conflicts.Proceed)
+          .build()
+      )
+    )(_.deleted())
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    executeJavaAction(
+      operation = "isIndexClosed",
+      index = Some(index),
+      retryable = true
+    )(
+      apply()
+        .cat()
+        .indices(
+          new IndicesRequest.Builder()
+            .index(index)
+            .build()
+        )
+    ) { response =>
+      response.valueBody().asScala.headOption match {
+        case Some(info) => info.status() == "close"
+        case None       => false
+      }
+    }
 }
 
 /** Elasticsearch client implementation of Alias API using the Java Client
