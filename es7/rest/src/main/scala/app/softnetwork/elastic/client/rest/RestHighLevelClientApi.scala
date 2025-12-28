@@ -372,6 +372,41 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
         }
       }
     )
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    jsonQuery: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+
+    executeRestAction[Request, Response, Long](
+      operation = "updateByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      request = {
+        val req = new Request(
+          "POST",
+          s"/$index/_update_by_query?refresh=$refresh" +
+          pipelineId.map(id => s"&pipeline=$id").getOrElse("")
+        )
+        req.setJsonEntity(jsonQuery)
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp => {
+        val json = JsonParser
+          .parseString(
+            scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString
+          )
+          .getAsJsonObject
+        json.get("updated").getAsLong
+      }
+    )
+  }
 }
 
 /** Alias management API for RestHighLevelClient

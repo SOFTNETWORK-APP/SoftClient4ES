@@ -25,7 +25,7 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
-import app.softnetwork.elastic.schema.{Index, IndexAlias}
+import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.elastic.sql.schema.{Table, TableAlias}
 import app.softnetwork.persistence._
@@ -1539,7 +1539,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
-    indices.forall(index => pClient.refresh(index).get)
+    indices.forall(index => pClient.refresh(index).get) shouldBe true
 
     indices should contain only "person_to_delete_by_sql_delete_query"
 
@@ -1615,7 +1615,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
-    indices.forall(index => pClient.refresh(index).get)
+    indices.forall(index => pClient.refresh(index).get) shouldBe true
 
     indices should contain only "person_to_delete_by_sql_select_query"
 
@@ -1641,5 +1641,289 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       .get shouldBe 2L
 
     "person_to_delete_by_sql_select_query" should haveCount(0)
+  }
+
+  "Update by query with missing index" should "fail with 404" in {
+    val result = pClient.updateByQuery(
+      "person_update_with_missing_index",
+      """{"query": {"match_all": {}}}"""
+    )
+
+    result.isFailure shouldBe true
+    result.toEither.left.get.statusCode shouldBe Some(404)
+  }
+
+  "Update by query with missing pipeline" should "fail with 404" in {
+    pClient.createIndex("person_update_with_missing_pipeline").get shouldBe true
+    val result = pClient.updateByQuery(
+      "person_update_with_missing_pipeline",
+      """{"query": {"match_all": {}}}""",
+      pipelineId = Some("does-not-exist")
+    )
+
+    result.isFailure shouldBe true
+    result.toEither.left.get.statusCode shouldBe Some(404)
+  }
+
+  "Update by query with invalid SQL" should "fail" in {
+    pClient.createIndex("person_update_with_invalid_sql").get shouldBe true
+    val result = pClient.updateByQuery(
+      "person_update_with_invalid_sql",
+      """UPDATE person_update_sql_where WHERE uuid = 'A16'"""
+    )
+
+    result.isFailure shouldBe true
+  }
+
+  "Update by query with invalid JSON" should "fail" in {
+    pClient.createIndex("person_update_with_invalid_json").get shouldBe true
+    val result = pClient.updateByQuery(
+      "person_update_with_invalid_json",
+      """{ invalid json }"""
+    )
+
+    result.isFailure shouldBe true
+  }
+
+  "Update by query with SQL UPDATE and WHERE" should "update only matching documents" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_sql_where", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_sql_where")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some("uuid")
+        )
+        .get
+
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+
+    blockUntilCount(3, "person_update_sql_where")
+    "person_update_sql_where" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_sql_where",
+        """UPDATE person_update_sql_where SET name = 'Another Name' WHERE uuid = 'A16'"""
+      )
+      .get
+
+    updated shouldBe 1L
+
+    pClient.refresh("person_update_sql_where").get shouldBe true
+
+    pClient.getAs[Person]("A16", Some("person_update_sql_where")).get match {
+      case Some(doc) => doc.name shouldBe "Another Name"
+      case None      => fail("Document A16 not found")
+    }
+  }
+
+  "Update by query with SQL UPDATE without WHERE" should "update all documents" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_all_sql", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_all_sql")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some("uuid")
+        )
+        .get
+
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+
+    blockUntilCount(3, "person_update_all_sql")
+    "person_update_all_sql" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_all_sql",
+        """UPDATE person_update_all_sql SET birthDate = '1972-12-26'"""
+      )
+      .get
+
+    updated shouldBe 3L
+
+    pClient.refresh("person_update_all_sql").get shouldBe true
+
+    val updatedPersons = pClient.searchDocuments("SELECT * FROM person_update_all_sql")
+    updatedPersons.size shouldBe 3
+    updatedPersons.forall(person => person.birthDate == "1972-12-26") shouldBe true
+  }
+
+  "Update by query with JSON query and user pipeline" should "apply the pipeline to all documents" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_json", mappings = Some(mapping))
+      .get shouldBe true
+
+    // User Pipeline
+    val userPipelineJson =
+      """{
+        |  "processors": [
+        |    { "set": { "field": "birthDate", "value": "1972-12-26" } }
+        |  ]
+        |}
+    """.stripMargin
+
+    pClient.createPipeline("set-birthdate-1972-12-26", userPipelineJson).get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_json")
+    pClient
+      .bulk[String](persons, identity, idKey = Some("uuid"))
+      .get
+
+    blockUntilCount(3, "person_update_json")
+    "person_update_json" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_json",
+        """{"query": {"match_all": {}}}""",
+        pipelineId = Some("set-birthdate-1972-12-26")
+      )
+      .get
+
+    updated shouldBe 3L
+
+    pClient.refresh("person_update_json").get shouldBe true
+
+    val updatedPersons = pClient.searchDocuments("SELECT * FROM person_update_json")
+    updatedPersons.size shouldBe 3
+    updatedPersons.forall(person => person.birthDate == "1972-12-26") shouldBe true
+  }
+
+  "Update by query with SQL UPDATE and user pipeline" should "merge user and SQL pipelines" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_merge_pipeline", mappings = Some(mapping))
+      .get shouldBe true
+
+    val userPipelineJson =
+      """{
+        |  "processors": [
+        |    { "set": { "field": "name", "value": "UPDATED_NAME" } }
+        |  ]
+        |}
+    """.stripMargin
+
+    pClient.createPipeline("user-update-name", userPipelineJson).get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_merge_pipeline")
+    pClient
+      .bulk[String](persons, identity, idKey = Some("uuid"))
+      .get
+
+    blockUntilCount(3, "person_update_merge_pipeline")
+    "person_update_merge_pipeline" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_merge_pipeline",
+        """UPDATE person_update_merge_pipeline SET birthDate = '1972-12-26' WHERE uuid = 'A16'""",
+        pipelineId = Some("user-update-name")
+      )
+      .get
+
+    updated shouldBe 1L
+
+    pClient.refresh("person_update_merge_pipeline").get shouldBe true
+
+    pClient.getAs[Person]("A16", Some("person_update_merge_pipeline")).get match {
+      case Some(doc) =>
+        doc.name shouldBe "UPDATED_NAME"
+        doc.birthDate shouldBe "1972-12-26"
+      case None => fail("Document A16 not found")
+    }
+  }
+
+  "Update by query on a closed index" should "open, update, and restore closed state" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_closed_index", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_closed_index")
+    pClient
+      .bulk[String](persons, identity, idKey = Some("uuid"))
+      .get
+
+    blockUntilCount(3, "person_update_closed_index")
+    "person_update_closed_index" should haveCount(3)
+
+    pClient.closeIndex("person_update_closed_index").get shouldBe true
+    pClient.isIndexClosed("person_update_closed_index").get shouldBe true
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_closed_index",
+        """UPDATE person_update_closed_index SET birthDate = '1972-12-26' WHERE uuid = 'A16'"""
+      )
+      .get
+
+    updated shouldBe 1L
+
+    pClient.isIndexClosed("person_update_closed_index").get shouldBe true
   }
 }

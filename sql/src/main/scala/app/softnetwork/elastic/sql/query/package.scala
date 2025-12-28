@@ -306,6 +306,19 @@ package object query {
     override def sql: String = s"UPDATE $table SET ${values
       .map { case (k, v) => s"$k = ${v.value}" }
       .mkString(", ")}${where.map(w => s" ${w.sql}").getOrElse("")}"
+
+    lazy val customPipeline: IngestPipeline = IngestPipeline(
+      s"update-$table-${Instant.now}",
+      IngestPipelineType.Custom,
+      values.map { case (k, v) =>
+        DefaultValueProcessor(
+          sql = s"SET DEFAULT $k = ${v.value}",
+          column = k,
+          value = v
+        )
+      }.toSeq
+    )
+
   }
 
   case class Delete(table: Table, where: Option[Where]) extends DmlStatement {

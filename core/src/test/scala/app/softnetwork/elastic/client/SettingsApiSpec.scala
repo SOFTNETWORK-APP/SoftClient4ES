@@ -114,6 +114,13 @@ class SettingsApiSpec
     ): ElasticResult[Long] = ???
 
     override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] = ???
+
+    override private[client] def executeUpdateByQuery(
+      index: String,
+      query: String,
+      pipelineId: Option[String],
+      refresh: Boolean
+    ): ElasticResult[Long] = ???
   }
 
   var settingsApi: TestSettingsApi = _
@@ -847,6 +854,13 @@ class SettingsApiSpec
 
           override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
             ???
+
+          override private[client] def executeUpdateByQuery(
+            index: String,
+            query: String,
+            pipelineId: Option[String],
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -949,6 +963,13 @@ class SettingsApiSpec
 
           override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
             ???
+
+          override private[client] def executeUpdateByQuery(
+            index: String,
+            query: String,
+            pipelineId: Option[String],
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1048,6 +1069,13 @@ class SettingsApiSpec
 
           override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
             ???
+
+          override private[client] def executeUpdateByQuery(
+            index: String,
+            query: String,
+            pipelineId: Option[String],
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1663,6 +1691,13 @@ class SettingsApiSpec
 
           override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
             ???
+
+          override private[client] def executeUpdateByQuery(
+            index: String,
+            query: String,
+            pipelineId: Option[String],
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1754,6 +1789,13 @@ class SettingsApiSpec
 
           override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
             ???
+
+          override private[client] def executeUpdateByQuery(
+            index: String,
+            query: String,
+            pipelineId: Option[String],
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1845,6 +1887,13 @@ class SettingsApiSpec
 
           override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
             ???
+
+          override private[client] def executeUpdateByQuery(
+            index: String,
+            query: String,
+            pipelineId: Option[String],
+            refresh: Boolean
+          ): ElasticResult[Long] = ???
         }
 
         // When

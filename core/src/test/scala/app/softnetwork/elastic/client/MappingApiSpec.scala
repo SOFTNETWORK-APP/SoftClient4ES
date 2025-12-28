@@ -146,6 +146,13 @@ class MappingApiSpec
     ): ElasticResult[Long] = ???
 
     override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] = ???
+
+    override private[client] def executeUpdateByQuery(
+      index: String,
+      query: String,
+      pipelineId: Option[String],
+      refresh: Boolean
+    ): ElasticResult[Long] = ???
   }
 
   var mappingApi: TestMappingApi = _

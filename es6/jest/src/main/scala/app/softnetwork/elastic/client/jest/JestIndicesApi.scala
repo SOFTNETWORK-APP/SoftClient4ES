@@ -22,7 +22,7 @@ import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
-import io.searchbox.core.{Cat, CatResult, DeleteByQuery}
+import io.searchbox.core.{Cat, CatResult, DeleteByQuery, UpdateByQuery, UpdateByQueryResult}
 import io.searchbox.indices.{CloseIndex, CreateIndex, DeleteIndex, IndicesExists, OpenIndex}
 import io.searchbox.indices.reindex.Reindex
 
@@ -228,5 +228,33 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
     ) {
       new WaitForShards.Builder(index = index, status = status, timeout = timeout).build()
     }.map(_ => ())
+  }
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    jsonQuery: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+    executeJestAction[UpdateByQueryResult, Long](
+      operation = "updateByQuery",
+      index = Some(index),
+      retryable = true
+    ) {
+      val builder = new UpdateByQuery.Builder(jsonQuery)
+        .addIndex(index)
+
+      if (refresh)
+        builder.setParameter("refresh", true)
+
+      pipelineId.foreach { id =>
+        builder.setParameter("pipeline", id)
+      }
+
+      builder.build()
+    } { result =>
+      val json = result.getJsonObject
+      json.get("updated").getAsLong
+    }
   }
 }

@@ -31,7 +31,7 @@ import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.language.implicitConversions
+import scala.language.{dynamics, implicitConversions}
 import scala.reflect.ClassTag
 
 trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
@@ -188,6 +188,27 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def isIndexClosed(index: String): ElasticResult[Boolean] =
     delegate.isIndexClosed(index)
 
+  /** Update documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to update
+    * @param query
+    *   - the query to update documents by (can be JSON or SQL)
+    * @param pipelineId
+    *   - optional ingest pipeline id to use for the update
+    * @param refresh
+    *   - true to refresh the index after update, false otherwise
+    * @return
+    *   the number of documents updated
+    */
+  override def updateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.updateByQuery(index, query, pipelineId, refresh)
+
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,
@@ -228,6 +249,21 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
     delegate.executeIsIndexClosed(index)
+
+  override private[client] def waitForShards(
+    index: String,
+    status: String,
+    timeout: Int
+  ): ElasticResult[Unit] =
+    delegate.waitForShards(index, status, timeout)
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.executeUpdateByQuery(index, query, pipelineId, refresh)
 
   // ==================== AliasApi ====================
 
@@ -1483,6 +1519,21 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Boolean] = {
     delegate.createPipeline(pipelineName, pipelineDefinition)
   }
+
+  /** Update an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param pipelineDefinition
+    *   the new pipeline definition in JSON format
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def updatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.updatePipeline(pipelineName, pipelineDefinition)
 
   override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] = {
     delegate.deletePipeline(pipelineName, ifExists = ifExists)

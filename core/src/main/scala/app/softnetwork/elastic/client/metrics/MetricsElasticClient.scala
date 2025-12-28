@@ -181,6 +181,29 @@ class MetricsElasticClient(
       delegate.isIndexClosed(index)
     }
 
+  /** Update documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to update
+    * @param query
+    *   - the query to update documents by (can be JSON or SQL)
+    * @param pipelineId
+    *   - optional ingest pipeline id to use for the update
+    * @param refresh
+    *   - true to refresh the index after update, false otherwise
+    * @return
+    *   the number of documents updated
+    */
+  override def updateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    measureResult("updateByQuery", Some(index)) {
+      delegate.updateByQuery(index, query, pipelineId, refresh)
+    }
+
   // ==================== AliasApi ====================
 
   override def addAlias(index: String, alias: String): ElasticResult[Boolean] = {
@@ -1153,6 +1176,23 @@ class MetricsElasticClient(
   ): ElasticResult[Boolean] =
     measureResult("createPipeline") {
       delegate.createPipeline(pipelineName, pipelineDefinition)
+    }
+
+  /** Update an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param pipelineDefinition
+    *   the new pipeline definition in JSON format
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def updatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    measureResult("updatePipeline") {
+      delegate.updatePipeline(pipelineName, pipelineDefinition)
     }
 
   override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] =

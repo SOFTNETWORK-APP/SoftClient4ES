@@ -302,6 +302,31 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
         }
       }
     }
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    jsonQuery: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+
+    executeJavaAction(
+      operation = "updateByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      apply().updateByQuery(
+        new UpdateByQueryRequest.Builder()
+          .index(index)
+          .refresh(refresh)
+          .pipeline(pipelineId.orNull)
+          .withJson(new StringReader(jsonQuery))
+          .build()
+      )
+    ) { response =>
+      response.updated()
+    }
+  }
 }
 
 /** Elasticsearch client implementation of Alias API using the Java Client

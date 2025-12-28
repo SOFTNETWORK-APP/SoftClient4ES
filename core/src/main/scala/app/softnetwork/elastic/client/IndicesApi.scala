@@ -19,10 +19,9 @@ package app.softnetwork.elastic.client
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{Delete, From, SingleSearch}
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.query.{Delete, From, SingleSearch, Table, Update}
+import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, TableAlias}
 import app.softnetwork.elastic.sql.serialization._
-import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 
 /** Index management API.
@@ -708,6 +707,206 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
     }
   }
 
+  /** Update documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to update
+    * @param query
+    *   - the query to update documents by (can be JSON or SQL)
+    * @param pipelineId
+    *   - optional ingest pipeline id to use for the update
+    * @param refresh
+    *   - true to refresh the index after update, false otherwise
+    * @return
+    *   the number of documents updated
+    */
+  def updateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String] = None,
+    refresh: Boolean = true
+  ): ElasticResult[Long] = {
+
+    val result = for {
+      // 1. Validate index name
+      _ <- validateIndexName(index)
+        .toLeft(())
+        .left
+        .map(err =>
+          err.copy(
+            operation = Some("updateByQuery"),
+            statusCode = Some(400),
+            index = Some(index)
+          )
+        )
+
+      // 2. Parse SQL or JSON
+      parsed <- parseQueryForUpdate(index, query).toEither
+
+      // 3. Extract SQL pipeline (optional)
+      sqlPipeline = parsed match {
+        case Left(u: Update) if u.values.nonEmpty => Some(u.customPipeline)
+        case _                                    => None
+      }
+
+      // 4. Extract SQL WHERE → JSON query
+      jsonQuery = parsed match {
+        case Left(u: Update) =>
+          u.where match {
+            case None =>
+              logger.info(
+                s"SQL update query has no WHERE clause, updating all documents from index '$index'"
+              )
+              """{"query": {"match_all": {}}}"""
+
+            case Some(where) =>
+              implicit val timestamp: Long = System.currentTimeMillis()
+              val search: String =
+                SingleSearch(
+                  from = From(tables = Seq(Table(u.table))),
+                  where = Some(where),
+                  updateByQuery = true
+                )
+              logger.info(s"✅ Converted SQL update query to search for updateByQuery: $search")
+              search
+          }
+
+        case _ => query // JSON passthrough
+      }
+
+      // 5. Load user pipeline if provided
+      userPipeline <- pipelineId match {
+        case Some(id) =>
+          getPipeline(id).toEither.flatMap {
+            case Some(json) => Right(Some(IngestPipeline(id, json)))
+            case None =>
+              Left(
+                ElasticError(
+                  message = s"Pipeline '$id' not found",
+                  index = Some(index),
+                  operation = Some("updateByQuery"),
+                  statusCode = Some(404)
+                )
+              )
+          }
+        case None => Right(None)
+      }
+
+      // 6. Resolve final pipeline (merge if needed)
+      elasticVersion <- this.version.toEither
+
+      resolved <- resolveFinalPipeline(userPipeline, sqlPipeline, elasticVersion).toEither
+      (finalPipelineId, mustDelete) = resolved
+
+      // 7. Ensure index exists
+      _ <- indexExists(index, pattern = false) match {
+        case ElasticSuccess(true) => Right(())
+        case ElasticSuccess(false) =>
+          Left(
+            ElasticError(
+              message = s"Index '$index' does not exist",
+              statusCode = Some(404),
+              index = Some(index),
+              operation = Some("updateByQuery")
+            )
+          )
+        case ElasticFailure(err) => Left(err)
+      }
+
+      // 8. Open index if needed
+      tuple <- openIfNeeded(index)
+      (_, restore) = tuple
+
+      // 9. Execute update-by-query
+      updated <- executeUpdateByQuery(index, jsonQuery, finalPipelineId, refresh).toEither
+
+      // 10. Cleanup temporary pipeline
+      _ <-
+        if (mustDelete && finalPipelineId.isDefined)
+          deletePipeline(finalPipelineId.get, ifExists = true).toEither
+        else Right(())
+
+      // 11. Restore index state
+      _ <- restore().toEither
+
+    } yield updated
+
+    result match {
+      case Right(count) => ElasticSuccess(count)
+      case Left(err)    => ElasticFailure(err)
+    }
+  }
+
+  private def parseQueryForUpdate(
+    index: String,
+    query: String
+  ): ElasticResult[Either[Update, String]] = {
+    val trimmed = query.trim.toUpperCase
+    val isSql = trimmed.startsWith("UPDATE")
+    if (isSql) {
+      logger.info(s"Processing SQL query for updateByQuery on index '$index': $query")
+
+      Parser(query) match {
+        case Left(err) =>
+          ElasticFailure(
+            ElasticError(
+              operation = Some("updateByQuery"),
+              statusCode = Some(400),
+              index = Some(index),
+              message = s"Invalid SQL query: ${err.msg}"
+            )
+          )
+
+        case Right(statement) =>
+          statement match {
+
+            case updateStmt: Update =>
+              if (updateStmt.table != index)
+                ElasticFailure(
+                  sqlErrorFor(
+                    operation = "updateByQuery",
+                    index = index,
+                    message =
+                      s"SQL query index '${updateStmt.table}' does not match provided index '$index'"
+                  )
+                )
+              else
+                ElasticSuccess(Left(updateStmt))
+
+            case search: SingleSearch =>
+              val tables = search.from.tables
+              if (tables.size != 1 || tables.head.name != index)
+                ElasticFailure(
+                  sqlErrorFor(
+                    operation = "updateByQuery",
+                    index = index,
+                    message =
+                      s"SQL query index '${tables.map(_.name).mkString(",")}' does not match provided index '$index'"
+                  )
+                )
+              else {
+                implicit val timestamp: Long = System.currentTimeMillis()
+                val query: String = search.copy(deleteByQuery = false)
+                logger.info(s"✅ Converted SQL search query to JSON for updateByQuery: $query")
+                ElasticSuccess(Right(query))
+              }
+
+            case _ =>
+              ElasticFailure(
+                sqlErrorFor(
+                  operation = "updateByQuery",
+                  index = index,
+                  message = s"Invalid SQL query for updateByQuery"
+                )
+              )
+          }
+      }
+    } else {
+      logger.info(s"Processing JSON query for updateByQuery on index '$index': $query")
+      ElasticSuccess(Right(query))
+    }
+  }
+
   /** Parse a query for deletion, determining if it's SQL or JSON.
     *
     * @param index
@@ -788,7 +987,8 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
           case deleteStmt: Delete =>
             if (deleteStmt.table.name != index)
               Left(
-                sqlErrorForDeletion(
+                sqlErrorFor(
+                  operation = "deleteByQuery",
                   index = index,
                   message =
                     s"SQL query index '${deleteStmt.table.name}' does not match provided index '$index'"
@@ -818,7 +1018,8 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
             val tables = search.from.tables
             if (tables.size != 1 || tables.head.name != index)
               Left(
-                sqlErrorForDeletion(
+                sqlErrorFor(
+                  operation = "deleteByQuery",
                   index = index,
                   message =
                     s"SQL query index '${tables.map(_.name).mkString(",")}' does not match provided index '$index'"
@@ -833,7 +1034,8 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
 
           case _ =>
             Left(
-              sqlErrorForDeletion(
+              sqlErrorFor(
+                operation = "deleteByQuery",
                 index = index,
                 message = s"Invalid SQL query for deleteByQuery"
               )
@@ -862,9 +1064,96 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
     }
   }
 
-  private def sqlErrorForDeletion(index: String, message: String): ElasticError =
+  private def resolveFinalPipeline(
+    user: Option[IngestPipeline],
+    sql: Option[IngestPipeline],
+    elasticVersion: String
+  ): ElasticResult[(Option[String], Boolean)] = {
+
+    (user, sql) match {
+
+      // No pipeline
+      case (None, None) =>
+        ElasticSuccess((None, false))
+
+      // User pipeline only
+      case (Some(u), None) =>
+        ElasticSuccess((Some(u.name), false))
+
+      // Only SQL pipeline → temporary pipeline
+      case (None, Some(sqlPipe)) =>
+        val tmpId = s"_tmp_update_${System.nanoTime()}"
+        val json =
+          if (ElasticsearchVersion.isEs6(elasticVersion)) {
+            sqlPipe
+              .copy(
+                processors = sqlPipe.processors.map { processor =>
+                  GenericProcessor(
+                    processorType = processor.processorType,
+                    properties =
+                      processor.properties.filterNot(_._1 == "description").filterNot(_._1 == "if")
+                  )
+                }
+              )
+              .json
+          } else {
+            sqlPipe
+              .copy(
+                processors = sqlPipe.processors.map { processor =>
+                  GenericProcessor(
+                    processorType = processor.processorType,
+                    properties = processor.properties.filterNot(_._1 == "if")
+                  )
+                }
+              )
+              .json
+          }
+        logger.info(s"Creating temporary pipeline for updateByQuery: $json")
+        createPipeline(tmpId, json) match {
+          case ElasticSuccess(_) => ElasticSuccess((Some(tmpId), true))
+          case ElasticFailure(e) => ElasticFailure(e)
+        }
+
+      // Merge user + SQL pipeline → temporary pipeline
+      case (Some(u), Some(sqlPipe)) =>
+        val merged = u.merge(sqlPipe)
+        val tmpId = s"_tmp_update_${System.nanoTime()}"
+        val json =
+          if (ElasticsearchVersion.isEs6(elasticVersion)) {
+            merged
+              .copy(
+                processors = merged.processors.map { processor =>
+                  GenericProcessor(
+                    processorType = processor.processorType,
+                    properties =
+                      processor.properties.filterNot(_._1 == "description").filterNot(_._1 == "if")
+                  )
+                }
+              )
+              .json
+          } else {
+            merged
+              .copy(
+                processors = merged.processors.map { processor =>
+                  GenericProcessor(
+                    processorType = processor.processorType,
+                    properties = processor.properties.filterNot(_._1 == "if")
+                  )
+                }
+              )
+              .json
+          }
+        logger.info(s"Creating merged temporary pipeline for updateByQuery: $json")
+        createPipeline(tmpId, json) match {
+          case ElasticSuccess(_) => ElasticSuccess((Some(tmpId), true))
+          case ElasticFailure(e) => ElasticFailure(e)
+        }
+    }
+  }
+
+  private def sqlErrorFor(operation: String, index: String, message: String): ElasticError =
     ElasticError(
-      operation = Some("deleteByQuery"),
+      operation = Some(operation),
       statusCode = Some(400),
       index = Some(index),
       message = message
@@ -930,4 +1219,10 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
     ElasticSuccess(())
   }
 
+  private[client] def executeUpdateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long]
 }

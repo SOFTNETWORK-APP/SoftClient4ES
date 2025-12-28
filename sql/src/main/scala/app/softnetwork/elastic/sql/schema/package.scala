@@ -509,6 +509,16 @@ package object schema {
         }
       }
     }
+
+    def merge(other: IngestPipeline): IngestPipeline = {
+      other.processors.foldLeft(this) { (current, processor) =>
+        current.copy(processors =
+          current.processors.filterNot(p =>
+            p.processorType == processor.processorType && p.column == processor.column
+          ) :+ processor
+        )
+      }
+    }
   }
 
   object IngestPipeline {
