@@ -7,8 +7,6 @@ import org.mockito.MockitoSugar
 import org.mockito.ArgumentMatchersSugar
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
-import app.softnetwork.elastic.sql.query
-import app.softnetwork.elastic.sql.schema.TableAlias
 
 /** Unit tests for AliasApi
   */
@@ -23,13 +21,7 @@ class AliasApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestAliasApi
-      extends AliasApi
-      with IndicesApi
-      with RefreshApi
-      with PipelineApi
-      with VersionApi
-      with SerializationApi {
+  class TestAliasApi extends NopeClientApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -81,65 +73,6 @@ class AliasApiSpec
       executeGetIndexResult
     }
 
-    // Other required methods
-    override private[client] def executeCreateIndex(
-      index: String,
-      settings: String,
-      mappings: Option[String],
-      aliases: Seq[TableAlias]
-    ): ElasticResult[Boolean] = ???
-    override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeReindex(
-      sourceIndex: String,
-      targetIndex: String,
-      refresh: Boolean,
-      pipeline: Option[String]
-    ): ElasticResult[(Boolean, Option[Long])] = ???
-    override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-    override private[client] def executeCreatePipeline(
-      pipelineName: String,
-      pipelineDefinition: String
-    ): ElasticResult[Boolean] = ???
-
-    override private[client] def executeDeletePipeline(
-      pipelineName: String,
-      ifExists: Boolean
-    ): ElasticResult[Boolean] = ???
-
-    override private[client] def executeGetPipeline(
-      pipelineName: String
-    ): ElasticResult[Option[String]] = ???
-
-    override private[client] def executeVersion(): ElasticResult[String] = ???
-
-    /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query serialization.
-      *
-      * @param sqlSearch
-      *   the SQL search request to convert
-      * @return
-      *   JSON string representation of the query
-      */
-    override private[client] implicit def sqlSearchRequestToJsonQuery(
-      sqlSearch: query.SingleSearch
-    )(implicit timestamp: Long): String = ???
-
-    override private[client] def executeDeleteByQuery(
-      index: String,
-      query: String,
-      refresh: Boolean
-    ): ElasticResult[Long] = ???
-
-    override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] = ???
-
-    override private[client] def executeUpdateByQuery(
-      index: String,
-      query: String,
-      pipelineId: Option[String],
-      refresh: Boolean
-    ): ElasticResult[Long] = ???
   }
 
   var aliasApi: TestAliasApi = _
@@ -1684,12 +1617,7 @@ class AliasApiSpec
       "not call execute methods when validation fails" in {
         // Given
         var executeCalled = false
-        val validatingApi = new AliasApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeAddAlias(
@@ -1704,85 +1632,6 @@ class AliasApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeRemoveAlias(
-            index: String,
-            alias: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeGetAliases(index: String): ElasticResult[String] = ???
-          override private[client] def executeSwapAlias(
-            oldIndex: String,
-            newIndex: String,
-            alias: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When

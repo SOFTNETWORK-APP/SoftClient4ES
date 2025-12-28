@@ -116,7 +116,11 @@ trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
   *   [[IndicesApi]] for index management operations
   */
 trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
-  _: JavaClientRefreshApi with JavaClientPipelineApi with JavaClientCompanion =>
+  _: JavaClientRefreshApi
+    with JavaClientPipelineApi
+    with JavaClientScrollApi
+    with JavaClientBulkApi
+    with JavaClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,

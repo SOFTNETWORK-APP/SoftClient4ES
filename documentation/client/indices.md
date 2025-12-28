@@ -408,6 +408,279 @@ client.updateByQuery(
 
 ---
 
+### insertByQuery — SQL‑Driven Bulk Insert & Upsert for Elasticsearch
+
+`insertByQuery` executes SQL `INSERT` statements and writes documents into an Elasticsearch index.  
+It supports:
+
+- `INSERT … VALUES`
+- `INSERT … AS SELECT`
+- `ON CONFLICT DO UPDATE`
+- Primary keys (simple or composite)
+- Partitioning (`partition_by`)
+- Column aliasing
+- Automatic mapping between SELECT output and INSERT columns
+- Strict SQL validation before execution
+
+This API is designed for ETL pipelines, migrations, and SQL‑driven ingestion workflows.
+
+---
+
+#### Supported SQL Syntax
+
+**INSERT … VALUES**
+
+```sql
+INSERT INTO index_name (col1, col2)
+VALUES (v1, v2)
+```
+
+**INSERT … AS SELECT**
+
+```sql
+INSERT INTO index_name (col1, col2)
+AS SELECT a AS col1, b AS col2 FROM other_index
+```
+
+**INSERT without column list**
+
+```sql
+INSERT INTO index_name
+SELECT a, b, c FROM other_index
+```
+
+**ON CONFLICT DO UPDATE**
+
+```sql
+INSERT INTO index_name (...)
+VALUES (...)
+ON CONFLICT DO UPDATE
+```
+
+or with explicit conflict target:
+
+```sql
+INSERT INTO index_name (...)
+VALUES (...)
+ON CONFLICT (col1, col2) DO UPDATE
+```
+
+---
+
+#### Primary Key Semantics
+
+Primary keys are defined in the index mapping under `_meta.primary_key`:
+
+```
+"_meta": {
+  "primary_key": ["order_id", "customer_id"]
+}
+```
+
+Rules:
+
+- PK may be simple or composite.
+- PK determines the Elasticsearch `_id`.
+- All PK columns must be present in the INSERT.
+- For `INSERT … AS SELECT`, the SELECT must produce all PK columns.
+
+---
+
+#### Conflict Handling
+
+**ON CONFLICT DO UPDATE**
+
+Triggers an **upsert**.
+
+Rules when PK exists:
+
+- If conflictTarget omitted → PK is used.
+- If conflictTarget provided → must match PK exactly.
+- All PK columns must be present in the INSERT.
+
+Rules when PK does not exist:
+
+- conflictTarget is mandatory.
+- All conflictTarget columns must be present in the INSERT.
+
+---
+
+#### INSERT … VALUES
+
+Direct insertion of literal values.
+
+Validation:
+
+- Column count must match value count.
+- All PK columns must be present if `ON CONFLICT` is used.
+
+---
+
+#### INSERT … AS SELECT
+
+Inserts documents produced by a SELECT query.
+
+Behavior:
+
+- Executes a scroll query.
+- Removes Elasticsearch metadata (`_id`, `_index`, `_score`, `_sort`).
+- Maps SELECT output to INSERT columns **by name**.
+- Supports aliasing.
+- Supports INSERT without column list.
+
+---
+
+#### Column Mapping Rules
+
+**Mapping is always by name, never by position.**
+
+Example:
+
+```sql
+SELECT foo AS bar
+```
+
+→ INSERT column `bar` receives the value of `foo`.
+
+---
+
+#### Validation Rules
+
+**General**
+
+- INSERT column count must match VALUES count.
+- conflictTarget ⊆ INSERT columns.
+- INSERT must include all PK columns if PK exists.
+- If PK does not exist → conflictTarget is mandatory.
+
+**For DO UPDATE**
+
+- conflictTarget must match PK exactly when PK exists.
+
+**For INSERT … AS SELECT**
+
+- All INSERT columns must be present in SELECT output.
+- SELECT metadata fields are ignored.
+- Aliases are resolved correctly.
+
+**For INSERT without column list**
+
+- INSERT columns = SELECT output columns.
+
+---
+
+#### Composite Primary Keys
+
+Composite PKs are fully supported:
+
+```
+"_meta": {
+  "primary_key": ["order_id", "customer_id"]
+}
+```
+
+The Elasticsearch `_id` is constructed from all PK columns, e.g.:
+
+```
+O1001|C001
+```
+
+This ensures deterministic conflict detection.
+
+---
+
+#### Partitioning
+
+If the index defines:
+
+```
+"_meta": {
+  "partition_by": {
+    "column": "order_date",
+    "granularity": "d"
+  }
+}
+```
+
+Then:
+
+- Documents are routed to partitioned indices (e.g., `orders-2024-02-01`).
+- The partition key is extracted from the INSERT or SELECT row.
+
+---
+
+#### Error Handling
+
+`insertByQuery` returns:
+
+- `ElasticSuccess(count)` on success
+- `ElasticFailure(error)` on validation or execution error
+
+Errors include:
+
+- Missing PK columns
+- conflictTarget mismatch
+- Missing SELECT columns
+- Invalid SQL syntax
+- Unsupported INSERT form
+- Elasticsearch bulk failures
+
+`ON CONFLICT DO NOTHING` never raises a conflict error.
+
+---
+
+#### Examples
+
+**Insert with VALUES**
+
+```sql
+INSERT INTO customers (customer_id, name, email)
+VALUES ('C010', 'Bob', 'bob@example.com')
+```
+
+**Upsert with PK**
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('SKU-001', 'Laptop Pro', 1499.99)
+ON CONFLICT DO UPDATE
+```
+
+**Insert‑or‑ignore with DO NOTHING**
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('SKU-001', 'Laptop Pro', 1499.99)
+ON CONFLICT DO NOTHING
+```
+
+**Insert from SELECT with alias mapping**
+
+```sql
+INSERT INTO orders (order_id, customer_id, total)
+AS SELECT id AS order_id, cust AS customer_id, amount AS total
+FROM staging_orders
+```
+
+**Insert from SELECT without column list**
+
+```sql
+INSERT INTO orders
+SELECT id AS order_id, cust AS customer_id, amount AS total
+FROM staging_orders
+```
+
+**Upsert with composite PK**
+
+```sql
+INSERT INTO orders (order_id, customer_id, total)
+AS SELECT id AS order_id, cust AS customer_id, amount AS total
+FROM staging_orders_updates
+ON CONFLICT (order_id, customer_id) DO UPDATE
+```
+
+---
+
 ## Public Methods
 
 ### createIndex

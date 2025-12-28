@@ -29,7 +29,13 @@ import app.softnetwork.elastic.client.scroll.{
   UseSearchAfter
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement, SingleSearch}
+import app.softnetwork.elastic.sql.query.{
+  DqlStatement,
+  MultiSearch,
+  SQLAggregation,
+  SelectStatement,
+  SingleSearch
+}
 import org.json4s.{Formats, JNothing}
 import org.json4s.jackson.JsonMethods.parse
 
@@ -117,34 +123,60 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
-    sql: SelectStatement,
+    statement: DqlStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     implicit def timestamp: Long = System.currentTimeMillis()
-    sql.statement match {
-      case Some(single: SingleSearch) =>
-        if (single.windowFunctions.nonEmpty)
-          return scrollWithWindowEnrichment(sql, single, config)
+    statement match {
+      case select: SelectStatement =>
+        select.statement match {
+          case Some(single: SingleSearch) =>
+            if (single.windowFunctions.nonEmpty)
+              return scrollWithWindowEnrichment(select.score, single, config)
 
-        val sqlRequest = single.copy(score = sql.score)
+            val sqlRequest = single.copy(score = select.score)
+            val elasticQuery =
+              ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+            scrollWithMetrics(
+              elasticQuery,
+              sqlRequest.fieldAliases,
+              sqlRequest.sqlAggregations,
+              config,
+              single.sorts.nonEmpty
+            )
+
+          case Some(_) =>
+            Source.failed(
+              new UnsupportedOperationException(
+                "Scrolling is not supported for multi-search queries"
+              )
+            )
+
+          case None =>
+            Source.failed(
+              new IllegalArgumentException("SQL query does not contain a valid search request")
+            )
+        }
+      case single: SingleSearch =>
+        if (single.windowFunctions.nonEmpty)
+          return scrollWithWindowEnrichment(None, single, config)
+
         val elasticQuery =
-          ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+          ElasticQuery(single, collection.immutable.Seq(single.sources: _*))
         scrollWithMetrics(
           elasticQuery,
-          sqlRequest.fieldAliases,
-          sqlRequest.sqlAggregations,
+          single.fieldAliases,
+          single.sqlAggregations,
           config,
           single.sorts.nonEmpty
         )
-
-      case Some(_) =>
+      case _: MultiSearch =>
         Source.failed(
           new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
         )
-
-      case None =>
+      case _ =>
         Source.failed(
-          new IllegalArgumentException("SQL query does not contain a valid search request")
+          new IllegalArgumentException("Scrolling is only supported for SELECT statements")
         )
     }
   }
@@ -377,7 +409,7 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Scroll with window function enrichment
     */
   private def scrollWithWindowEnrichment(
-    sql: SelectStatement,
+    score: Option[Double],
     request: SingleSearch,
     config: ScrollConfig
   )(implicit
@@ -394,7 +426,7 @@ trait ScrollApi extends ElasticClientHelpers {
       Future(executeWindowAggregations(request))
 
     // Create base query without window functions
-    val baseQuery = createBaseQuery(sql, request)
+    val baseQuery = createBaseQuery(score, request)
 
     // Stream and enrich
     Source

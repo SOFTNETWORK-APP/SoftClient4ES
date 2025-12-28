@@ -75,7 +75,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           sql = Some(sql.query)
         )
         if (single.windowFunctions.exists(_.isWindowing) && single.groupBy.isEmpty)
-          searchWithWindowEnrichment(sql, single)
+          searchWithWindowEnrichment(sql.score, single)
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
@@ -1105,7 +1105,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *      functions) 3. Enrich results with window values
     */
   private def searchWithWindowEnrichment(
-    sql: SelectStatement,
+    score: Option[Double],
     request: SingleSearch
   )(implicit timestamp: Long): ElasticResult[ElasticResponse] = {
 
@@ -1116,7 +1116,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       windowCache <- executeWindowAggregations(request)
 
       // Step 2: Execute base query (without window functions)
-      baseResponse <- executeBaseQuery(sql, request)
+      baseResponse <- executeBaseQuery(score, request)
 
       // Step 3: Enrich results
       enrichedResponse <- enrichResponseWithWindowValues(baseResponse, windowCache, request)
@@ -1219,11 +1219,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Execute base query without window functions
     */
   private def executeBaseQuery(
-    sql: SelectStatement,
+    score: Option[Double],
     request: SingleSearch
   )(implicit timestamp: Long): ElasticResult[ElasticResponse] = {
 
-    val baseQuery = createBaseQuery(sql, request)
+    val baseQuery = createBaseQuery(score, request)
 
     logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
 
@@ -1241,7 +1241,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Create base query by removing window functions from SELECT
     */
   protected def createBaseQuery(
-    sql: SelectStatement,
+    score: Option[Double],
     request: SingleSearch
   ): SingleSearch = {
 
@@ -1253,7 +1253,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       .copy(
         select = request.select.copy(fields = baseFields)
       )
-      .copy(score = sql.score)
+      .copy(score = score)
       .update()
 
     baseRequest

@@ -48,6 +48,13 @@ package object result {
     /** Converts to Either */
     def toEither: Either[ElasticError, T]
 
+    /** Converts to Future */
+    def toFuture(implicit
+      ec: scala.concurrent.ExecutionContext
+    ): scala.concurrent.Future[T] = {
+      scala.concurrent.Future.fromTry(this.toEither.toTry)
+    }
+
     /** Fold pattern matching */
     def fold[U](onFailure: ElasticError => U, onSuccess: T => U): U
 
@@ -116,7 +123,9 @@ package object result {
 
   /** Represents a failed operation.
     */
-  case class ElasticFailure(elasticError: ElasticError) extends ElasticResult[Nothing] {
+  case class ElasticFailure(elasticError: ElasticError)
+      extends Throwable(elasticError.message, elasticError)
+      with ElasticResult[Nothing] {
     override def isSuccess: Boolean = false
 
     override def map[U](f: Nothing => U): ElasticResult[U] = this
@@ -151,7 +160,7 @@ package object result {
     statusCode: Option[Int] = None,
     index: Option[String] = None,
     operation: Option[String] = None
-  ) {
+  ) extends Throwable(message, cause.orNull) {
 
     /** Complete message with context */
     def fullMessage: String = {
@@ -171,6 +180,35 @@ package object result {
         case Some(ex) => logger.error(fullMessage, ex)
         case None     => logger.error(fullMessage)
       }
+    }
+  }
+
+  object ElasticError {
+
+    /** Creates an ElasticError from an exception */
+    def fromThrowable(
+      ex: Throwable,
+      statusCode: Option[Int] = None,
+      index: Option[String] = None,
+      operation: Option[String] = None
+    ): ElasticError = {
+      ElasticError(
+        ex.getMessage,
+        Some(ex),
+        statusCode,
+        index,
+        operation
+      )
+    }
+
+    /** Creates a not found error */
+    def notFound(index: String, operation: String): ElasticError = {
+      ElasticError(
+        s"Resource not found in index '$index' during operation '$operation'",
+        statusCode = Some(404),
+        index = Some(index),
+        operation = Some(operation)
+      )
     }
   }
 

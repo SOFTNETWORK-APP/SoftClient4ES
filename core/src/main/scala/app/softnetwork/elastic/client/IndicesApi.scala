@@ -16,13 +16,19 @@
 
 package app.softnetwork.elastic.client
 
+import akka.actor.ActorSystem
+import akka.stream.scaladsl.Source
+import app.softnetwork.elastic.client.bulk.BulkOptions
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{Delete, From, SingleSearch, Table, Update}
+import app.softnetwork.elastic.sql.query.{Delete, From, Insert, SingleSearch, Table, Update}
 import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, TableAlias}
 import app.softnetwork.elastic.sql.serialization._
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
+
+import scala.concurrent.{ExecutionContext, Future}
 
 /** Index management API.
   *
@@ -32,7 +38,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode
   *   - Parameter validation
   *   - Automatic retry for transient errors
   */
-trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi with VersionApi =>
+trait IndicesApi extends ElasticClientHelpers {
+  _: RefreshApi with PipelineApi with BulkApi with ScrollApi with VersionApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -837,6 +844,258 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
     }
   }
 
+  /** Insert documents by query into an index.
+    * @param index
+    *   - the name of the index to insert into
+    * @param query
+    *   - the query to insert documents from (can be SQL INSERT ... VALUES or INSERT ... AS SELECT)
+    * @param refresh
+    *   - true to refresh the index after insertion, false otherwise
+    * @return
+    *   the number of documents inserted
+    */
+  def insertByQuery(
+    index: String,
+    query: String,
+    refresh: Boolean = true
+  )(implicit system: ActorSystem): Future[ElasticResult[Long]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    val result = for {
+      // 1. Validate index
+      _ <- Future.fromTry(
+        validateIndexName(index)
+          .toLeft(())
+          .left
+          .map(err =>
+            err.copy(
+              operation = Some("insertByQuery"),
+              statusCode = Some(400),
+              index = Some(index)
+            )
+          )
+          .toTry
+      )
+
+      // 2. Parse SQL INSERT
+      parsed <- parseInsertQuery(index, query).toFuture
+
+      // 3. Load index metadata
+      idx <- Future.fromTry(getIndex(index).toEither.flatMap {
+        case Some(i) => Right(i.asTable)
+        case None =>
+          Left(ElasticError.notFound(index, "insertByQuery"))
+      }.toTry)
+
+      // 3.b Compute effective insert columns (handles INSERT ... AS SELECT without column list)
+      val effectiveInsertCols: Seq[String] = parsed.values match {
+        case Left(single: SingleSearch) =>
+          if (parsed.cols.isEmpty)
+            single.select.fields.map { f =>
+              f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+            }
+          else parsed.cols
+
+        case _ =>
+          parsed.cols
+      }
+
+      // 3.c Validate ON CONFLICT rules
+      _ <- Future.fromTry {
+        val pk = idx.primaryKey
+        val doUpdate = parsed.doUpdate
+        val conflictTarget = parsed.conflictTarget
+
+        val validation: Either[ElasticError, Unit] =
+          if (!doUpdate) {
+            Right(())
+          } else if (pk.nonEmpty) {
+            // --- Case 1: PK defined in index
+            val conflictKey = conflictTarget.getOrElse(pk)
+
+            // conflictTarget must match PK exactly
+            if (conflictKey.toSet != pk.toSet)
+              Left(
+                ElasticError(
+                  message = s"Conflict target columns [${conflictKey
+                    .mkString(",")}] must match primary key [${pk.mkString(",")}]",
+                  operation = Some("insertByQuery"),
+                  index = Some(index),
+                  statusCode = Some(400)
+                )
+              )
+            // INSERT must include all PK columns
+            else if (!pk.forall(effectiveInsertCols.contains))
+              Left(
+                ElasticError(
+                  message =
+                    s"INSERT must include all primary key columns [${pk.mkString(",")}] when using ON CONFLICT DO UPDATE",
+                  operation = Some("insertByQuery"),
+                  index = Some(index),
+                  statusCode = Some(400)
+                )
+              )
+            else
+              Right(())
+          } else {
+            // --- Case 2: No PK defined in index
+            conflictTarget match {
+              case None =>
+                Left(
+                  ElasticError(
+                    message =
+                      "ON CONFLICT DO UPDATE requires a conflict target when no primary key is defined in the index",
+                    operation = Some("insertByQuery"),
+                    index = Some(index),
+                    statusCode = Some(400)
+                  )
+                )
+
+              case Some(conflictKey) =>
+                if (!conflictKey.forall(effectiveInsertCols.contains))
+                  Left(
+                    ElasticError(
+                      message =
+                        s"INSERT must include all conflict target columns [${conflictKey.mkString(",")}] when using ON CONFLICT DO UPDATE",
+                      operation = Some("insertByQuery"),
+                      index = Some(index),
+                      statusCode = Some(400)
+                    )
+                  )
+                else
+                  Right(())
+            }
+          }
+
+        validation.toTry
+      }
+
+      // 3.d Validate SELECT columns for INSERT ... AS SELECT
+      _ <- Future.fromTry {
+        parsed.values match {
+
+          // INSERT ... VALUES → rien à valider
+          case Right(_) =>
+            Right(()).toTry
+
+          // INSERT ... AS SELECT
+          case Left(single: SingleSearch) =>
+            val selectCols = single.select.fields.map { f =>
+              f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+            }
+
+            // Vérifier que toutes les colonnes de l'INSERT sont présentes dans le SELECT
+            val missing = effectiveInsertCols.filterNot(selectCols.contains)
+
+            if (missing.nonEmpty)
+              Left(
+                ElasticError(
+                  message =
+                    s"INSERT columns [${effectiveInsertCols.mkString(",")}] must all be present in SELECT output columns [${selectCols
+                      .mkString(",")}]. Missing: ${missing.mkString(",")}",
+                  operation = Some("insertByQuery"),
+                  index = Some(index),
+                  statusCode = Some(400)
+                )
+              ).toTry
+            else
+              Right(()).toTry
+
+          case Left(_) =>
+            Left(
+              ElasticError(
+                message = "INSERT AS SELECT requires a SELECT statement",
+                operation = Some("insertByQuery"),
+                index = Some(index),
+                statusCode = Some(400)
+              )
+            ).toTry
+        }
+      }
+
+      // 4. Derive bulk options
+      idKey = idx.primaryKey match {
+        case Nil => None
+        case pk  => Some(pk.toSet)
+      }
+      suffixKey = idx.partitionBy.map(_.column)
+      suffixPattern = idx.partitionBy.flatMap(_.dateFormats.headOption)
+
+      // 5. Build source of documents
+      source <- Future.fromTry((parsed.values match {
+
+        // INSERT … VALUES
+        case Right(_) =>
+          parsed.toJson match {
+            case Some(jsonNode) =>
+              Right(Source.single(jsonNode.toString))
+            case None =>
+              Left(
+                ElasticError(
+                  message = "Invalid INSERT ... VALUES clause",
+                  operation = Some("insertByQuery"),
+                  index = Some(index),
+                  statusCode = Some(400)
+                )
+              )
+          }
+
+        // INSERT … AS SELECT
+        case Left(single: SingleSearch) =>
+          Right(
+            scroll(single).map { case (row, _) =>
+              val jsonNode: JsonNode = row - "_id" - "_index" - "_score" - "_sort"
+              jsonNode.toString
+            }
+          )
+
+        case Left(_) =>
+          Left(
+            ElasticError(
+              message = "INSERT AS SELECT requires a SELECT statement",
+              operation = Some("insertByQuery"),
+              index = Some(index),
+              statusCode = Some(400)
+            )
+          )
+      }).toTry)
+
+      // 6. Bulk insert
+      bulkResult <- bulkWithResult[String](
+        items = source,
+        toDocument = identity,
+        indexKey = Some(index),
+        idKey = idKey,
+        suffixDateKey = suffixKey,
+        suffixDatePattern = suffixPattern,
+        update = Some(parsed.doUpdate)
+      )(BulkOptions(index), system)
+
+      // 7. Refresh
+      _ <-
+        if (refresh) this.refresh(index).toFuture else Future.successful(true)
+
+    } yield bulkResult.successCount.toLong
+
+    result.map(ElasticSuccess(_)).recover {
+      case e: ElasticError =>
+        ElasticFailure(
+          e.copy(
+            operation = Some("insertByQuery"),
+            index = Some(index)
+          )
+        )
+      case e =>
+        ElasticFailure(
+          ElasticError(
+            message = e.getMessage,
+            operation = Some("insertByQuery"),
+            index = Some(index)
+          )
+        )
+    }
+  }
+
   private def parseQueryForUpdate(
     index: String,
     query: String
@@ -1148,6 +1407,59 @@ trait IndicesApi extends ElasticClientHelpers { _: RefreshApi with PipelineApi w
           case ElasticSuccess(_) => ElasticSuccess((Some(tmpId), true))
           case ElasticFailure(e) => ElasticFailure(e)
         }
+    }
+  }
+
+  def parseInsertQuery(
+    index: String,
+    query: String
+  ): ElasticResult[Insert] = {
+
+    Parser(query) match {
+      case Left(err) =>
+        ElasticFailure(
+          ElasticError(
+            operation = Some("insertByQuery"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = s"Invalid SQL: ${err.msg}"
+          )
+        )
+
+      case Right(insert: Insert) =>
+        if (insert.table != index)
+          ElasticFailure(
+            ElasticError(
+              operation = Some("insertByQuery"),
+              statusCode = Some(400),
+              index = Some(index),
+              message = s"SQL table '${insert.table}' does not match index '$index'"
+            )
+          )
+        else
+          insert.validate() match {
+            case Left(msg) =>
+              ElasticFailure(
+                ElasticError(
+                  operation = Some("insertByQuery"),
+                  statusCode = Some(400),
+                  index = Some(index),
+                  message = msg
+                )
+              )
+            case Right(_) =>
+              ElasticSuccess(insert)
+          }
+
+      case Right(_) =>
+        ElasticFailure(
+          ElasticError(
+            operation = Some("insertByQuery"),
+            statusCode = Some(400),
+            index = Some(index),
+            message = "Only INSERT statements are allowed"
+          )
+        )
     }
   }
 

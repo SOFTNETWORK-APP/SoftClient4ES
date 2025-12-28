@@ -24,13 +24,7 @@ class SettingsApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestSettingsApi
-      extends SettingsApi
-      with IndicesApi
-      with RefreshApi
-      with PipelineApi
-      with VersionApi
-      with SerializationApi {
+  class TestSettingsApi extends NopeClientApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -60,67 +54,6 @@ class SettingsApiSpec
       executeOpenIndexResult
     }
 
-    // Other required methods
-    override private[client] def executeCreateIndex(
-      index: String,
-      settings: String,
-      mappings: Option[String],
-      aliases: Seq[TableAlias]
-    ): ElasticResult[Boolean] = ???
-
-    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = ???
-
-    override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeReindex(
-      sourceIndex: String,
-      targetIndex: String,
-      refresh: Boolean,
-      pipeline: Option[String]
-    ): ElasticResult[(Boolean, Option[Long])] = ???
-    override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-    override private[client] def executeCreatePipeline(
-      pipelineName: String,
-      pipelineDefinition: String
-    ): ElasticResult[Boolean] = ???
-
-    override private[client] def executeDeletePipeline(
-      pipelineName: String,
-      ifExists: Boolean
-    ): ElasticResult[Boolean] = ???
-
-    override private[client] def executeGetPipeline(
-      pipelineName: String
-    ): ElasticResult[Option[String]] = ???
-
-    override private[client] def executeVersion(): ElasticResult[String] = ???
-
-    /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query serialization.
-      *
-      * @param sqlSearch
-      *   the SQL search request to convert
-      * @return
-      *   JSON string representation of the query
-      */
-    override private[client] implicit def sqlSearchRequestToJsonQuery(
-      sqlSearch: query.SingleSearch
-    )(implicit timestamp: Long): String = ???
-
-    override private[client] def executeDeleteByQuery(
-      index: String,
-      query: String,
-      refresh: Boolean
-    ): ElasticResult[Long] = ???
-
-    override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] = ???
-
-    override private[client] def executeUpdateByQuery(
-      index: String,
-      query: String,
-      pipelineId: Option[String],
-      refresh: Boolean
-    ): ElasticResult[Long] = ???
   }
 
   var settingsApi: TestSettingsApi = _
@@ -765,12 +698,7 @@ class SettingsApiSpec
         var updateCalled = false
         var openCalled = false
 
-        val workflowApi = new SettingsApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val workflowApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -793,74 +721,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -877,12 +737,7 @@ class SettingsApiSpec
         var updateCalled = false
         var openCalled = false
 
-        val workflowApi = new SettingsApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val workflowApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -902,74 +757,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -984,12 +771,7 @@ class SettingsApiSpec
         // Given
         var openCalled = false
 
-        val workflowApi = new SettingsApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val workflowApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1008,74 +790,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1612,12 +1326,7 @@ class SettingsApiSpec
       "validate index name before calling executeCloseIndex" in {
         // Given
         var closeCalled = false
-        val validatingApi = new SettingsApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1625,79 +1334,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeUpdateSettings(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1710,12 +1346,7 @@ class SettingsApiSpec
       "validate settings after index name" in {
         // Given
         var closeCalled = false
-        val validatingApi = new SettingsApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1723,79 +1354,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeUpdateSettings(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When
@@ -1808,12 +1366,7 @@ class SettingsApiSpec
       "validate index name before calling executeLoadSettings" in {
         // Given
         var loadCalled = false
-        val validatingApi = new SettingsApi
-          with IndicesApi
-          with RefreshApi
-          with PipelineApi
-          with VersionApi
-          with SerializationApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
@@ -1821,79 +1374,6 @@ class SettingsApiSpec
             ElasticSuccess("{}")
           }
 
-          override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeUpdateSettings(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String,
-            mappings: Option[String],
-            aliases: Seq[TableAlias]
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetIndex(
-            index: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean,
-            pipeline: Option[String]
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
-
-          override private[client] def executeCreatePipeline(
-            pipelineName: String,
-            pipelineDefinition: String
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeDeletePipeline(
-            pipelineName: String,
-            ifExists: Boolean
-          ): ElasticResult[Boolean] = ???
-
-          override private[client] def executeGetPipeline(
-            pipelineName: String
-          ): ElasticResult[Option[String]] = ???
-
-          override private[client] def executeVersion(): ElasticResult[String] = ???
-
-          /** Implicit conversion of an SQL query to Elasticsearch JSON. Used for query
-            * serialization.
-            *
-            * @param sqlSearch
-            *   the SQL search request to convert
-            * @return
-            *   JSON string representation of the query
-            */
-          override private[client] implicit def sqlSearchRequestToJsonQuery(
-            sqlSearch: query.SingleSearch
-          )(implicit timestamp: Long): String = ???
-
-          override private[client] def executeDeleteByQuery(
-            index: String,
-            query: String,
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
-
-          override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
-            ???
-
-          override private[client] def executeUpdateByQuery(
-            index: String,
-            query: String,
-            pipelineId: Option[String],
-            refresh: Boolean
-          ): ElasticResult[Long] = ???
         }
 
         // When

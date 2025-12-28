@@ -33,7 +33,12 @@ import scala.util.Try
   *   [[IndicesApi]] for generic API documentation
   */
 trait JestIndicesApi extends IndicesApi with JestClientHelpers {
-  _: JestRefreshApi with JestPipelineApi with JestVersionApi with JestClientCompanion =>
+  _: JestRefreshApi
+    with JestPipelineApi
+    with JestScrollApi
+    with JestBulkApi
+    with JestVersionApi
+    with JestClientCompanion =>
 
   /** Create an index with the given settings.
     * @see

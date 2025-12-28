@@ -18,7 +18,14 @@ package app.softnetwork.elastic.client
 
 import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Source
+import akka.stream.scaladsl.{Flow, Source}
+import app.softnetwork.elastic.client.bulk.{
+  BulkElasticAction,
+  BulkItem,
+  BulkOptions,
+  FailedDocument,
+  SuccessfulDocument
+}
 import app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
@@ -320,4 +327,54 @@ trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
     ElasticSuccess(false)
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    ElasticSuccess(0L)
+
+  override type BulkActionType = this.type
+
+  override type BulkResultType = this.type
+
+  override private[client] def toBulkAction(bulkItem: BulkItem): BulkActionType =
+    throw new UnsupportedOperationException
+
+  override private[client] implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction =
+    throw new UnsupportedOperationException
+
+  /** Basic flow for executing a bulk action. This method must be implemented by concrete classes
+    * depending on the Elasticsearch version and client used.
+    *
+    * @param bulkOptions
+    *   configuration options
+    * @return
+    *   Flow transforming bulk actions into results
+    */
+  override private[client] def bulkFlow(implicit
+    bulkOptions: BulkOptions,
+    system: ActorSystem
+  ): Flow[Seq[BulkActionType], BulkResultType, NotUsed] =
+    throw new UnsupportedOperationException
+
+  /** Convert a BulkResultType into individual results. This method must extract the successes and
+    * failures from the ES response.
+    *
+    * @param result
+    *   raw result from the bulk
+    * @return
+    *   sequence of Right(id) for success or Left(failed) for failure
+    */
+  override private[client] def extractBulkResults(
+    result: BulkResultType,
+    originalBatch: Seq[BulkItem]
+  ): Seq[Either[FailedDocument, SuccessfulDocument]] =
+    throw new UnsupportedOperationException
+
+  /** Conversion BulkActionType -> BulkItem */
+  override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
+    throw new UnsupportedOperationException
 }

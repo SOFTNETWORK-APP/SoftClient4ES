@@ -294,7 +294,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     ) shouldBe false
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping")
-    val result = pClient.bulk[String](persons, identity, idKey = Some("uuid")).get
+    val result = pClient.bulk[String](persons, identity, idKey = Some(Set("uuid"))).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -376,7 +376,11 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_migration")
     val result = pClient
-      .bulk[String](Source.fromIterator(() => persons.iterator), identity, idKey = Some("uuid"))
+      .bulk[String](
+        Source.fromIterator(() => persons.iterator),
+        identity,
+        idKey = Some(Set("uuid"))
+      )
       .get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
@@ -482,7 +486,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   "Bulk index valid json with an id key but no suffix key" should "work" in {
     implicit val bulkOptions: BulkOptions = BulkOptions("person2")
-    val result = pClient.bulk[String](persons, identity, idKey = Some("uuid")).get
+    val result = pClient.bulk[String](persons, identity, idKey = Some(Set("uuid"))).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -521,7 +525,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           suffixDateKey = Some("birthDate")
         )
         .get
@@ -574,7 +578,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -615,7 +619,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       .bulk[String](
         personsWithUpsert,
         identity,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         suffixDateKey = Some("birthDate"),
         update = Some(true)
       )
@@ -661,7 +665,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -697,7 +701,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -754,7 +758,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -784,7 +788,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -996,7 +1000,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -1265,7 +1269,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -1405,7 +1409,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .get
     result.failedCount shouldBe 0
@@ -1469,7 +1473,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .get
     result.failedCount shouldBe 0
@@ -1533,7 +1537,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .get
     result.failedCount shouldBe 0
@@ -1609,7 +1613,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .get
     result.failedCount shouldBe 0
@@ -1707,7 +1711,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .get
 
@@ -1756,7 +1760,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .get
 
@@ -1811,7 +1815,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_update_json")
     pClient
-      .bulk[String](persons, identity, idKey = Some("uuid"))
+      .bulk[String](persons, identity, idKey = Some(Set("uuid")))
       .get
 
     blockUntilCount(3, "person_update_json")
@@ -1862,7 +1866,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_update_merge_pipeline")
     pClient
-      .bulk[String](persons, identity, idKey = Some("uuid"))
+      .bulk[String](persons, identity, idKey = Some(Set("uuid")))
       .get
 
     blockUntilCount(3, "person_update_merge_pipeline")
@@ -1906,7 +1910,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_update_closed_index")
     pClient
-      .bulk[String](persons, identity, idKey = Some("uuid"))
+      .bulk[String](persons, identity, idKey = Some(Set("uuid")))
       .get
 
     blockUntilCount(3, "person_update_closed_index")

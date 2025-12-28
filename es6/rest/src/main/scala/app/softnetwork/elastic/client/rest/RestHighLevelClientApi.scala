@@ -145,6 +145,8 @@ trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientH
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientRefreshApi
     with RestHighLevelClientPipelineApi
+    with RestHighLevelClientScrollApi
+    with RestHighLevelClientBulkApi
     with RestHighLevelClientVersionApi
     with RestHighLevelClientCompanion =>
   override private[client] def executeCreateIndex(

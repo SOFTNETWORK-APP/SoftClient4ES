@@ -398,7 +398,8 @@ package object schema {
         PrimaryKeyProcessor(
           sql = s"PRIMARY KEY (${primaryKey.mkString(", ")})",
           column = "_id",
-          value = primaryKey.toSet
+          value = primaryKey.toSet,
+          separator = sqlConfig.compositeKeySeparator
         )
       )
     } else {

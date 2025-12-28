@@ -1483,12 +1483,25 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   // --- DML ---
 
   it should "parse INSERT INTO ... VALUES" in {
-    val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice')"
+    val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice') ON CONFLICT DO NOTHING"
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Insert("users", cols, Right(values)) =>
+      case Insert("users", cols, Right(values), Some(OnConflict(None, false))) =>
+        cols should contain inOrder ("id", "name")
+        values.map(_.value) should contain inOrder (1, "Alice")
+      case _ => fail("Expected Insert with values")
+    }
+  }
+
+  it should "parse INSERT INTO ... VALUES with DO UPDATE" in {
+    val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice') ON CONFLICT DO UPDATE"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", cols, Right(values), Some(OnConflict(None, true))) =>
         cols should contain inOrder ("id", "name")
         values.map(_.value) should contain inOrder (1, "Alice")
       case _ => fail("Expected Insert with values")
@@ -1496,13 +1509,25 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "parse INSERT INTO ... SELECT" in {
-    val sql = "INSERT INTO users SELECT id, name FROM old_users"
+    val sql = "INSERT INTO users SELECT id, name FROM old_users ON CONFLICT DO NOTHING"
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Insert("users", Nil, Left(sel: DqlStatement)) =>
-        sel.sql should include("SELECT id, name FROM old_users")
+      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(None, false))) =>
+        sel.sql should include("SELECT id, name FROM old_users ON CONFLICT DO NOTHING")
+      case _ => fail("Expected Insert with select")
+    }
+  }
+
+  it should "parse INSERT INTO ... SELECT with ON CONFLICT" in {
+    val sql = "INSERT INTO users SELECT id, name FROM old_users ON CONFLICT (id) DO UPDATE"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(Some(Seq("id")), true))) =>
+        sel.sql should include("SELECT id, name FROM old_users ON CONFLICT (id) DO UPDATE")
       case _ => fail("Expected Insert with select")
     }
   }

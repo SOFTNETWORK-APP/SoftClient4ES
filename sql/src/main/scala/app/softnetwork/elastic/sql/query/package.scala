@@ -31,6 +31,8 @@ import app.softnetwork.elastic.sql.schema.{
   Table => DdlTable
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
+import app.softnetwork.elastic.sql.serialization._
+import com.fasterxml.jackson.databind.JsonNode
 
 import java.time.Instant
 
@@ -74,10 +76,11 @@ package object query {
     limit: Option[Limit] = None,
     score: Option[Double] = None,
     deleteByQuery: Boolean = false,
-    updateByQuery: Boolean = false
+    updateByQuery: Boolean = false,
+    onConflict: Option[OnConflict] = None
   ) extends DqlStatement {
     override def sql: String =
-      s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}"
+      s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
 
     lazy val fieldAliases: Map[String, String] = select.fieldAliases
     lazy val tableAliases: Map[String, String] = from.tableAliases
@@ -269,17 +272,34 @@ package object query {
 
   sealed trait DmlStatement extends Statement
 
+  case class OnConflict(target: Option[Seq[String]], doUpdate: Boolean) extends Token {
+    override def sql: String = {
+      val targetSql =
+        target match {
+          case Some(t) => if (t.isEmpty) " () " else s" (${t.mkString(", ")}) "
+          case None    => " "
+        }
+      val actionSql = if (doUpdate) "DO UPDATE" else "DO NOTHING"
+      s" ON CONFLICT$targetSql$actionSql"
+    }
+  }
+
   case class Insert(
     table: String,
     cols: Seq[String],
-    values: Either[DqlStatement, Seq[Value[_]]]
+    values: Either[DqlStatement, Seq[Value[_]]],
+    onConflict: Option[OnConflict] = None
   ) extends DmlStatement {
+    lazy val conflictTarget: Option[Seq[String]] = onConflict.flatMap(_.target)
+
+    lazy val doUpdate: Boolean = onConflict.exists(_.doUpdate)
+
     override def sql: String = {
       values match {
         case Left(query) if cols.isEmpty =>
-          s"INSERT INTO $table ${query.sql}"
+          s"INSERT INTO $table ${query.sql}${asString(onConflict)}"
         case Left(query) =>
-          s"INSERT INTO $table (${cols.mkString(",")}) ${query.sql}"
+          s"INSERT INTO $table (${cols.mkString(",")}) ${query.sql}${asString(onConflict)}"
         case Right(vs) =>
           val valuesSql = vs
             .map {
@@ -292,11 +312,53 @@ package object query {
     }
 
     override def validate(): Either[String, Unit] = {
+      for {
+        _ <- values match {
+          case Left(query) => query.validate()
+          case Right(vs) if cols.size != vs.size =>
+            Left(s"Number of columns (${cols.size}) does not match number of values (${vs.size})")
+          case _ =>
+            Right(())
+        }
+        _ <- conflictTarget match {
+          case Some(target) =>
+            values match {
+              case Left(query: SingleSearch) =>
+                val queryFields =
+                  query.select.fields.map(f => f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
+                if (!target.forall(queryFields.contains))
+                  Left(
+                    s"Conflict target columns (${target.mkString(",")}) must be part of the inserted columns from SELECT (${queryFields
+                      .mkString(",")})"
+                  )
+                else Right(())
+              case _ =>
+                if (!target.forall(cols.contains))
+                  Left(
+                    s"Conflict target columns (${target.mkString(",")}) must be part of the inserted columns (${cols
+                      .mkString(",")})"
+                  )
+                else Right(())
+
+            }
+          case _ => Right(())
+        }
+      } yield ()
+    }
+
+    def toJson: Option[JsonNode] = {
       values match {
-        case Right(vs) if cols.size != vs.size =>
-          Left(s"Number of columns (${cols.size}) does not match number of values (${vs.size})")
-        case _ =>
-          Right(())
+        case Right(vs) if cols.size == vs.size =>
+          val map: Map[String, Value[_]] =
+            cols
+              .zip(vs)
+              .map { case (k, v) =>
+                k -> v
+              }
+              .toMap
+          val json: JsonNode = ObjectValue(map)
+          Some(json)
+        case _ => None
       }
     }
   }

@@ -32,7 +32,7 @@ import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.query
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement}
+import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import org.json4s.Formats
 
@@ -203,6 +203,25 @@ class MetricsElasticClient(
     measureResult("updateByQuery", Some(index)) {
       delegate.updateByQuery(index, query, pipelineId, refresh)
     }
+
+  /** Insert documents by query into an index.
+    *
+    * @param index
+    *   - the name of the index to insert into
+    * @param query
+    *   - the query to insert documents from (can be SQL INSERT ... VALUES or INSERT ... AS SELECT)
+    * @param refresh
+    *   - true to refresh the index after insertion, false otherwise
+    * @return
+    *   the number of documents inserted
+    */
+  override def insertByQuery(index: String, query: String, refresh: Boolean)(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[Long]] = {
+    measureAsync("insertByQuery", Some(index)) {
+      delegate.insertByQuery(index, query, refresh)
+    }(system.dispatcher)
+  }
 
   // ==================== AliasApi ====================
 
@@ -958,12 +977,12 @@ class MetricsElasticClient(
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(sql: SelectStatement, config: ScrollConfig)(implicit
+  override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
   ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
-    val source = delegate.scroll(sql, config)
+    val source = delegate.scroll(statement, config)
 
     source.watchTermination() { (_, done) =>
       done.onComplete { result =>
@@ -1028,7 +1047,7 @@ class MetricsElasticClient(
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -1057,7 +1076,7 @@ class MetricsElasticClient(
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -1098,7 +1117,7 @@ class MetricsElasticClient(
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,

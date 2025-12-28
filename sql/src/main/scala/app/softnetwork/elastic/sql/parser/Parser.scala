@@ -61,9 +61,9 @@ object Parser
     with LimitParser {
 
   def single: PackratParser[SingleSearch] = {
-    phrase(select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.?) ^^ {
-      case s ~ f ~ w ~ g ~ h ~ o ~ l =>
-        SingleSearch(s, f, w, g, h, o, l).update()
+    phrase(select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.? ~ onConflict.?) ^^ {
+      case s ~ f ~ w ~ g ~ h ~ o ~ l ~ oc =>
+        SingleSearch(s, f, w, g, h, o, l, onConflict = oc).update()
     }
   }
 
@@ -519,12 +519,30 @@ object Parser
     truncateTable |
     dropPipeline
 
+  def onConflict: PackratParser[OnConflict] =
+    ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {
+      case target ~ action =>
+        OnConflict(target, action == "UPDATE")
+    }
+
+  def conflictTarget: PackratParser[List[String]] =
+    start ~> repsep(ident, separator) <~ end
+
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
   def insert: PackratParser[Insert] =
     ("INSERT" ~ "INTO") ~ ident ~ opt(start ~> repsep(ident, separator) <~ end) ~
     (("VALUES" ~ start ~> repsep(value, separator) <~ end) ^^ { vs => Right(vs) }
-    | dqlStatement ^^ { q => Left(q) }) ^^ { case _ ~ table ~ colsOpt ~ vals =>
-      Insert(table, colsOpt.getOrElse(Nil), vals)
+    | "AS".? ~> dqlStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
+      case _ ~ table ~ colsOpt ~ vals ~ conflict =>
+        conflict match {
+          case Some(c) => Insert(table, colsOpt.getOrElse(Nil), vals, Some(c))
+          case _ =>
+            vals match {
+              case Left(q: SingleSearch) =>
+                Insert(table, colsOpt.getOrElse(Nil), vals, q.onConflict)
+              case _ => Insert(table, colsOpt.getOrElse(Nil), vals)
+            }
+        }
     }
 
   /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...] */
@@ -743,7 +761,10 @@ trait Parser
     "last_value",
     "ltrim",
     "rtrim",
-    "replace"
+    "replace",
+    "on",
+    "conflict",
+    "do"
   )
 
   private val identifierRegexStr =
