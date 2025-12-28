@@ -210,6 +210,204 @@ This guarantees reliable behavior even on older Elasticsearch clusters.
 
 ---
 
+### 🔧 updateByQuery
+
+`updateByQuery` updates documents in an index using either a **JSON query** or a **SQL UPDATE statement**.  
+It supports ingest pipelines, SQL‑driven SET clauses, and automatic pipeline merging.
+
+SoftClient4ES ensures consistent behavior across Elasticsearch 6, 7, 8, and 9, including:
+
+- automatic index opening and state restoration
+- shard readiness handling (ES6 only)
+- temporary pipeline creation and cleanup
+- SQL → JSON query translation
+- SQL → ingest pipeline generation
+
+---
+
+#### SQL UPDATE Support
+
+SoftClient4ES accepts SQL UPDATE statements of the form:
+
+```sql
+UPDATE <index> SET field = value [, field2 = value2 ...] [WHERE <conditions>]
+```
+
+#### ✔️ Supported:
+
+- simple literal values (`string`, `number`, `boolean`, `date`)
+- multiple assignments in the SET clause
+- WHERE clause with any supported SQL predicate
+- UPDATE without WHERE (updates all documents)
+- automatic conversion to:
+	- a JSON query (`WHERE` → `query`)
+	- an ingest pipeline (`SET` → processors)
+
+#### ✖️ Not supported:
+
+- painless scripts
+- complex expressions in SET
+- joins or multi‑table updates
+
+---
+
+#### Automatic Pipeline Generation (SQL SET → Ingest Pipeline)
+
+When using SQL UPDATE, the `SET` clause is automatically converted into an ingest pipeline:
+
+```json
+{
+  "processors": [
+    { "set": { "field": "name", "value": "Homer" } },
+    { "set": { "field": "childrenCount", "value": 3 } }
+  ]
+}
+```
+
+This pipeline is created **only for the duration of the update**, unless the user explicitly provides a pipeline ID.
+
+---
+
+#### Pipeline Resolution and Merging
+
+`updateByQuery` supports three pipeline sources:
+
+| Source            | Description                    |
+|-------------------|--------------------------------|
+| **User pipeline** | Provided via `pipelineId`      |
+| **SQL pipeline**  | Generated from SQL SET clause  |
+| **No pipeline**   | JSON update without processors |
+
+#### Pipeline resolution rules:
+
+| User pipeline  | SQL pipeline  | Result                               |
+|----------------|---------------|--------------------------------------|
+| None           | None          | No pipeline                          |
+| Some           | None          | Use user pipeline                    |
+| None           | Some          | Create temporary pipeline            |
+| Some           | Some          | Merge both into a temporary pipeline |
+
+#### Pipeline merging
+
+Processors are merged deterministically:
+
+- processors with the same `(type, field)` → SQL processor overrides user processor
+- order is preserved
+- merged pipeline is temporary and deleted after execution
+
+---
+
+#### JSON Query Support
+
+If the query is not SQL, it is treated as a raw JSON `_update_by_query` request:
+
+```json
+{
+  "query": {
+    "term": { "uuid": "A16" }
+  }
+}
+```
+
+No pipeline is generated unless the user provides one.
+
+---
+
+#### Index State Handling
+
+`updateByQuery` uses the same robust index‑state workflow as `deleteByQuery`:
+
+1. Detect whether the index is open or closed
+2. Open it if needed
+3. **ES6 only:** wait for shards to reach `yellow`
+4. Execute update‑by‑query
+5. Restore the original state (re‑close if needed)
+
+This ensures safe, predictable behavior across all Elasticsearch versions.
+
+---
+
+#### Signature
+
+```scala
+def updateByQuery(
+  index: String,
+  query: String,
+  pipelineId: Option[String] = None,
+  refresh: Boolean = true
+): ElasticResult[Long]
+```
+
+#### Parameters
+
+| Name         | Type             | Description                               |
+|--------------|------------------|-------------------------------------------|
+| `index`      | `String`         | Target index                              |
+| `query`      | `String`         | SQL UPDATE or JSON query                  |
+| `pipelineId` | `Option[String]` | Optional ingest pipeline to apply         |
+| `refresh`    | `Boolean`        | Whether to refresh the index after update |
+
+#### Returns
+
+- `ElasticSuccess[Long]` → number of updated documents
+- `ElasticFailure` → error details
+
+---
+
+#### Examples
+
+#### SQL UPDATE with WHERE
+
+```scala
+client.updateByQuery(
+  "person",
+  """UPDATE person SET name = 'Another Name' WHERE uuid = 'A16'"""
+)
+```
+
+#### SQL UPDATE without WHERE (update all)
+
+```scala
+client.updateByQuery(
+  "person",
+  """UPDATE person SET birthDate = '1972-12-26'"""
+)
+```
+
+#### JSON query with user pipeline
+
+```scala
+client.updateByQuery(
+  "person",
+  """{"query": {"match_all": {}}}""",
+  pipelineId = Some("set-birthdate-1972-12-26")
+)
+```
+
+#### SQL UPDATE + user pipeline (merged)
+
+```scala
+client.updateByQuery(
+  "person",
+  """UPDATE person SET birthDate = '1972-12-26' WHERE uuid = 'A16'""",
+  pipelineId = Some("user-update-name")
+)
+```
+
+---
+
+#### Behavior Summary
+
+- SQL UPDATE is fully supported
+- SET clause → ingest pipeline
+- WHERE clause → JSON query
+- Pipelines are merged when needed
+- Temporary pipelines are cleaned up automatically
+- Index state is preserved
+- Works consistently across ES6, ES7, ES8, ES9
+
+---
+
 ## Public Methods
 
 ### createIndex
