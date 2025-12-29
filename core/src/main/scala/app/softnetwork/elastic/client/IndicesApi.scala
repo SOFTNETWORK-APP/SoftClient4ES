@@ -1069,11 +1069,7 @@ trait IndicesApi extends ElasticClientHelpers {
         suffixDateKey = suffixKey,
         suffixDatePattern = suffixPattern,
         update = Some(parsed.doUpdate)
-      )(BulkOptions(index), system)
-
-      // 7. Refresh
-      _ <-
-        if (refresh) this.refresh(index).toFuture else Future.successful(true)
+      )(BulkOptions(defaultIndex = index, disableRefresh = !refresh), system)
 
     } yield bulkResult.successCount.toLong
 
