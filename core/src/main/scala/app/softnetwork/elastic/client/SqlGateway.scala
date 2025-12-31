@@ -25,8 +25,10 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess,
   QueryResult,
+  QueryRows,
   QueryStream,
-  QueryStructured
+  QueryStructured,
+  QueryTable
 }
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
@@ -34,6 +36,7 @@ import app.softnetwork.elastic.sql.query.{
   CreateTable,
   DdlStatement,
   Delete,
+  DescribeTable,
   DmlStatement,
   DqlStatement,
   DropTable,
@@ -41,6 +44,7 @@ import app.softnetwork.elastic.sql.query.{
   MultiSearch,
   PipelineStatement,
   SelectStatement,
+  ShowTable,
   SingleSearch,
   Statement,
   TableStatement,
@@ -226,6 +230,32 @@ class TableExecutor(
     implicit val ec: ExecutionContext = system.dispatcher
     // handle TABLE statement
     statement match {
+      // handle SHOW TABLE statement
+      case show: ShowTable =>
+        api.loadSchema(show.table) match {
+          case ElasticSuccess(schema) =>
+            logger.info(s"✅ Retrieved schema for index ${show.table}.")
+            Future.successful(ElasticResult.success(QueryTable(schema)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("schema"))
+              )
+            )
+        }
+      // handle DESCRIBE TABLE statement
+      case describe: DescribeTable =>
+        api.loadSchema(describe.table) match {
+          case ElasticSuccess(schema) =>
+            logger.info(s"✅ Retrieved schema for index ${describe.table}.")
+            Future.successful(ElasticResult.success(QueryRows(schema.columns.flatMap(_.asMap))))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("schema"))
+              )
+            )
+        }
       // handle CREATE TABLE statement
       case create: CreateTable =>
         val ifNotExists = create.ifNotExists

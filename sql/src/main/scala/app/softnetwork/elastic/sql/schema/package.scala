@@ -641,6 +641,18 @@ package object schema {
       s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
+    def asMap: Seq[Map[String, Any]] = Seq(
+      Map(
+        "name"    -> path,
+        "type"    -> dataType.typeId,
+        "script"  -> script.map(_.script),
+        "default" -> defaultValue.map(_.value).getOrElse(""),
+        "notNull" -> notNull,
+        "comment" -> comment.getOrElse(""),
+        "options" -> ObjectValue(options).ddl
+      )
+    ) ++ multiFields.flatMap(_.asMap)
+
     def processors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
         DefaultValueProcessor(

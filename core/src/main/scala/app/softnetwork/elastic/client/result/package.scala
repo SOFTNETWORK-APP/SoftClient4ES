@@ -19,6 +19,7 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
+import app.softnetwork.elastic.sql.schema.Table
 
 import scala.util.control.NonFatal
 
@@ -400,4 +401,6 @@ package object result {
   // DDL (CREATE / ALTER / DROP / TRUNCATE)
   // --------------------
   case class DdlResult(success: Boolean) extends QueryResult
+
+  case class QueryTable(table: Table) extends QueryResult
 }

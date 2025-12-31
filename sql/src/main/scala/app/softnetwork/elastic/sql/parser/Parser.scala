@@ -314,6 +314,16 @@ object Parser
         }
     }
 
+  def showTable: PackratParser[ShowTable] =
+    ("SHOW" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
+      ShowTable(table)
+    }
+
+  def describeTable: PackratParser[DescribeTable] =
+    ("DESCRIBE" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
+      DescribeTable(table)
+    }
+
   def dropTable: PackratParser[DropTable] =
     ("DROP" ~ "TABLE") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropTable(name, ifExists = ie)
@@ -517,6 +527,8 @@ object Parser
     alterPipeline |
     dropTable |
     truncateTable |
+    showTable |
+    describeTable |
     dropPipeline
 
   def onConflict: PackratParser[OnConflict] =
@@ -764,7 +776,9 @@ trait Parser
     "replace",
     "on",
     "conflict",
-    "do"
+    "do",
+    "show",
+    "describe"
   )
 
   private val identifierRegexStr =

@@ -775,4 +775,13 @@ package object query {
   case class TruncateTable(table: String) extends TableStatement {
     override def sql: String = s"TRUNCATE TABLE $table"
   }
+
+  case class ShowTable(table: String) extends TableStatement {
+    override def sql: String = s"SHOW TABLE $table"
+  }
+
+  case class DescribeTable(table: String) extends TableStatement {
+    override def sql: String = s"DESCRIBE TABLE $table"
+  }
+
 }
