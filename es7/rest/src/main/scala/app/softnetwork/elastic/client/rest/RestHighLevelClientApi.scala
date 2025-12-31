@@ -419,20 +419,29 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
   _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] =
     executeRestBooleanAction(
       operation = "addAlias",
-      index = Some(index),
+      index = Some(alias.table),
       retryable = false
     )(
-      request = new IndicesAliasesRequest()
-        .addAliasAction(
-          new AliasActions(AliasActions.Type.ADD)
-            .index(index)
-            .alias(alias)
-        )
+      request = {
+        val aliasAction = new AliasActions(AliasActions.Type.ADD)
+          .index(alias.table)
+          .alias(alias.alias)
+        if (alias.isWriteIndex) {
+          aliasAction.writeIndex(true)
+        }
+        if (alias.filter.nonEmpty) {
+          val filterNode = Value(alias.filter).asInstanceOf[ObjectValue].toJson
+          aliasAction.filter(filterNode.toString)
+        }
+        alias.routing.foreach(aliasAction.routing)
+        alias.indexRouting.foreach(aliasAction.indexRouting)
+        alias.searchRouting.foreach(aliasAction.searchRouting)
+        new IndicesAliasesRequest().addAliasAction(aliasAction)
+      }
     )(
       executor = req => apply().indices().updateAliases(req, RequestOptions.DEFAULT)
     )
@@ -547,6 +556,8 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
   _: RestHighLevelClientSettingsApi
     with RestHighLevelClientIndicesApi
     with RestHighLevelClientRefreshApi
+    with RestHighLevelClientVersionApi
+    with RestHighLevelClientAliasApi
     with RestHighLevelClientCompanion =>
 
   override private[client] def executeSetMapping(

@@ -33,7 +33,7 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -217,11 +217,23 @@ class MetricsElasticClient(
     */
   override def insertByQuery(index: String, query: String, refresh: Boolean)(implicit
     system: ActorSystem
-  ): Future[ElasticResult[Long]] = {
+  ): Future[ElasticResult[DmlResult]] = {
     measureAsync("insertByQuery", Some(index)) {
       delegate.insertByQuery(index, query, refresh)
     }(system.dispatcher)
   }
+
+  /** Load the schema for the provided index.
+    *
+    * @param index
+    *   - the name of the index to load the schema for
+    * @return
+    *   the schema if the index exists, an error otherwise
+    */
+  override def loadSchema(index: String): ElasticResult[Schema] =
+    measureResult("loadSchema", Some(index.indices.mkString(","))) {
+      delegate.loadSchema(index)
+    }
 
   // ==================== AliasApi ====================
 
@@ -267,13 +279,13 @@ class MetricsElasticClient(
     * @example
     * {{{
     * getAliases("my-index") match {
-    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.mkString(", ")}")
+    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.map(_.alias).mkString(", ")}")
     *   case ElasticFailure(error)   => println(s"Error: ${error.message}")
     * }
     *
     * }}}
     */
-  override def getAliases(index: String): ElasticResult[Set[String]] =
+  override def getAliases(index: String): ElasticResult[Seq[TableAlias]] =
     measureResult("getAliases", Some(index)) {
       delegate.getAliases(index)
     }
@@ -310,6 +322,30 @@ class MetricsElasticClient(
   ): ElasticResult[Boolean] =
     measureResult("swapAlias", Some(s"$oldIndex->$newIndex")) {
       delegate.swapAlias(oldIndex, newIndex, alias)
+    }
+
+  /** Set the exact set of aliases for an index.
+    *
+    * This method ensures that the specified index has exactly the provided set of aliases. It adds
+    * any missing aliases and removes any extra aliases that are not in the provided set.
+    *
+    * @param index
+    *   the name of the index
+    * @param aliases
+    *   the desired set of aliases for the index
+    * @return
+    *   ElasticSuccess(true) if the operation was successful, ElasticFailure otherwise
+    * @example
+    * {{{
+    * setAliases("my-index", Set("alias1", "alias2")) match {
+    *   case ElasticSuccess(_)     => println("Aliases set successfully")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    */
+  override def setAliases(index: String, aliases: Seq[TableAlias]): ElasticResult[Boolean] =
+    measureResult("setAliases", Some(index)) {
+      delegate.setAliases(index, aliases)
     }
 
   // ==================== SettingsApi ====================
@@ -731,9 +767,9 @@ class MetricsElasticClient(
     * @return
     *   the Elasticsearch response
     */
-  override def search(sql: SelectStatement): ElasticResult[ElasticResponse] =
+  override def search(statement: DqlStatement): ElasticResult[ElasticResponse] =
     measureResult("search") {
-      delegate.search(sql)
+      delegate.search(statement)
     }
 
   /** Asynchronous search for documents / aggregations matching the SQL query.
@@ -744,10 +780,10 @@ class MetricsElasticClient(
     *   a Future containing the Elasticsearch response
     */
   override def searchAsync(
-    sqlQuery: SelectStatement
+    statement: DqlStatement
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync") {
-      delegate.searchAsync(sqlQuery)
+      delegate.searchAsync(statement)
     }
 
   /** Searches and converts results into typed entities from an SQL query.

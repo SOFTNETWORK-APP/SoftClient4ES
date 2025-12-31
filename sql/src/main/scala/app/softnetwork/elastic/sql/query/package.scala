@@ -27,6 +27,7 @@ import app.softnetwork.elastic.sql.schema.{
   PartitionDate,
   RemoveProcessor,
   RenameProcessor,
+  Schema,
   ScriptProcessor,
   Table => DdlTable
 }
@@ -77,7 +78,8 @@ package object query {
     score: Option[Double] = None,
     deleteByQuery: Boolean = false,
     updateByQuery: Boolean = false,
-    onConflict: Option[OnConflict] = None
+    onConflict: Option[OnConflict] = None,
+    schema: Option[Schema] = None
   ) extends DqlStatement {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
@@ -147,7 +149,11 @@ package object query {
     lazy val sorts: Map[String, SortOrder] =
       orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
 
-    def update(): SingleSearch = {
+    def update(schema: Option[Schema] = None): SingleSearch = {
+      schema match {
+        case Some(s) => return this.copy(schema = Some(s)).update()
+        case None    => // continue
+      }
       (for {
         from <- Option(this.copy(from = from.update(this)))
         select <- Option(
@@ -529,7 +535,7 @@ package object query {
       case None => Map.empty
     }
 
-    lazy val ddlTable: DdlTable = DdlTable(
+    lazy val schema: Schema = DdlTable(
       name = table,
       columns = columns.toList,
       primaryKey = primaryKey,
@@ -539,7 +545,7 @@ package object query {
       aliases = aliases
     ).update()
 
-    lazy val defaultPipeline: IngestPipeline = ddlTable.defaultPipeline
+    lazy val defaultPipeline: IngestPipeline = schema.defaultPipeline
 
   }
 
@@ -556,10 +562,10 @@ package object query {
       s"ALTER TABLE $table$ifExistsClause $statementsSql"
     }
 
-    lazy val ddlProcessors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
+    lazy val processors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
 
     lazy val pipeline: IngestPipeline =
-      IngestPipeline(s"alter-$table-${Instant.now}", IngestPipelineType.Custom, ddlProcessors)
+      IngestPipeline(s"alter-$table-${Instant.now}", IngestPipelineType.Custom, processors)
   }
 
   sealed trait AlterTableStatement extends Token {

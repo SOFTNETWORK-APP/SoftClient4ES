@@ -33,7 +33,12 @@ import scala.util.Try
   *   [[MappingApi]] for generic API documentation
   */
 trait JestMappingApi extends MappingApi with JestClientHelpers {
-  _: JestSettingsApi with JestIndicesApi with JestRefreshApi with JestClientCompanion =>
+  _: JestSettingsApi
+    with JestIndicesApi
+    with JestRefreshApi
+    with JestVersionApi
+    with JestAliasApi
+    with JestClientCompanion =>
 
   /** Set the mapping for an index.
     * @see

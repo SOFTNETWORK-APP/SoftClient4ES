@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.schema.Column
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.security.MessageDigest
@@ -1065,7 +1066,8 @@ package object sql {
     fieldAlias: Option[String] = None,
     bucket: Option[Bucket] = None,
     nestedElement: Option[NestedElement] = None,
-    bucketPath: String = ""
+    bucketPath: String = "",
+    col: Option[Column] = None
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
@@ -1075,6 +1077,8 @@ package object sql {
       id.nullable = b
       id
     }
+
+    override def baseType: SQLType = col.map(_.dataType).getOrElse(super.baseType)
 
     def update(request: SingleSearch): Identifier = {
       val bucketPath: String =
@@ -1100,27 +1104,31 @@ package object sql {
                 case Some(unnest) => Some(request.toNestedElement(unnest))
                 case None         => None
               }
+            val colName = parts.tail.mkString(".")
             this
               .copy(
                 tableAlias = Some(tableAlias),
-                name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+                name = s"${tuple._2._1}.$colName",
                 nested = true,
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 nestedElement = nestedElement,
-                bucketPath = bucketPath
+                bucketPath = bucketPath,
+                col = request.schema.flatMap(schema => schema.find(colName))
               )
               .withFunctions(this.updateFunctions(request))
           case Some(tuple) if nested =>
+            val colName = parts.tail.mkString(".")
             this
               .copy(
                 tableAlias = Some(tableAlias),
-                name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+                name = s"${tuple._2._1}.$colName",
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
-                bucketPath = bucketPath
+                bucketPath = bucketPath,
+                col = request.schema.flatMap(schema => schema.find(colName))
               )
               .withFunctions(this.updateFunctions(request))
           case None if nested =>
@@ -1129,16 +1137,19 @@ package object sql {
                 tableAlias = Some(tableAlias),
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
-                bucketPath = bucketPath
+                bucketPath = bucketPath,
+                col = request.schema.flatMap(schema => schema.find(name))
               )
               .withFunctions(this.updateFunctions(request))
           case _ =>
+            val colName = parts.tail.mkString(".")
             this.copy(
               tableAlias = Some(tableAlias),
-              name = parts.tail.mkString("."),
+              name = colName,
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket),
-              bucketPath = bucketPath
+              bucketPath = bucketPath,
+              col = request.schema.flatMap(schema => schema.find(colName))
             )
         }
       } else {
@@ -1146,7 +1157,8 @@ package object sql {
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
             bucket = request.bucketNames.get(identifierName).orElse(bucket),
-            bucketPath = bucketPath
+            bucketPath = bucketPath,
+            col = request.schema.flatMap(schema => schema.find(name))
           )
           .withFunctions(this.updateFunctions(request))
       }

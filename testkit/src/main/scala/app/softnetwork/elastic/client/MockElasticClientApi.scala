@@ -33,7 +33,7 @@ import scala.language.implicitConversions
 
 /** Created by smanciot on 12/04/2020.
   */
-trait MockElasticClientApi extends ElasticClientApi {
+trait MockElasticClientApi extends NopeClientApi {
 
   def elasticVersion: String
 
@@ -124,8 +124,7 @@ trait MockElasticClientApi extends ElasticClientApi {
   // ==================== AliasApi ====================
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] =
     ElasticResult.success(true)
 

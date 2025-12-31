@@ -168,7 +168,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     index match {
       case Some(idx) =>
-        val table: Table = idx.asTable
+        val table: Table = idx.schema
         log.info(table.sql)
         table.columns.size shouldBe 3
         table.columns.map(_.name) should contain allOf ("uuid", "name", "birthDate")
@@ -200,7 +200,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     pClient.getAliases("person") match {
       case ElasticSuccess(aliases) =>
-        aliases should contain("person_alias")
+        aliases.map(_.alias) should contain("person_alias")
       case ElasticFailure(elasticError) =>
         fail(elasticError.fullMessage)
     }

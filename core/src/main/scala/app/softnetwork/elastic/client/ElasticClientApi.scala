@@ -49,6 +49,7 @@ trait ElasticClientApi
     with SerializationApi
     with PipelineApi
     with TemplateApi
+    with SqlGateway
     with ClientCompanion {
 
   protected def logger: Logger

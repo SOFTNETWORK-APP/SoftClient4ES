@@ -30,7 +30,7 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -226,8 +226,18 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def insertByQuery(index: String, query: String, refresh: Boolean)(implicit
     system: ActorSystem
-  ): Future[ElasticResult[Long]] =
+  ): Future[ElasticResult[DmlResult]] =
     delegate.insertByQuery(index, query, refresh)
+
+  /** Load the schema for the provided index.
+    *
+    * @param index
+    *   - the name of the index to load the schema for
+    * @return
+    *   the schema if the index exists, an error otherwise
+    */
+  override def loadSchema(index: String): ElasticResult[Schema] =
+    delegate.loadSchema(index)
 
   override private[client] def executeCreateIndex(
     index: String,
@@ -313,6 +323,31 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def addAlias(index: String, alias: String): ElasticResult[Boolean] =
     delegate.addAlias(index, alias)
 
+  /** Add an alias to an index.
+    *
+    * This operation:
+    *   1. Validates the index and alias names 2. Checks that the index exists 3. Adds the alias
+    *
+    * @param alias
+    *   the TableAlias to add
+    * @return
+    *   ElasticSuccess(true) if added, ElasticFailure otherwise
+    * @example
+    * {{{
+    * val alias = TableAlias(table = "my-index-2024", alias = "my-index-current")
+    * addAlias(alias) match {
+    *   case ElasticSuccess(_)     => println("Alias added")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    * @note
+    *   An alias can point to multiple indexes (useful for searches)
+    * @note
+    *   An index can have multiple aliases
+    */
+  override def addAlias(alias: TableAlias): ElasticResult[Boolean] =
+    delegate.addAlias(alias)
+
   /** Remove an alias from an index.
     *
     * @param index
@@ -362,13 +397,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @example
     * {{{
     * getAliases("my-index") match {
-    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.mkString(", ")}")
+    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.map(_.alias).mkString(", ")}")
     *   case ElasticFailure(error)   => println(s"Error: ${error.message}")
     * }
     *
     * }}}
     */
-  override def getAliases(index: String): ElasticResult[Set[String]] =
+  override def getAliases(index: String): ElasticResult[Seq[TableAlias]] =
     delegate.getAliases(index)
 
   /** Atomic swap of an alias between two indexes.
@@ -403,11 +438,32 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Boolean] =
     delegate.swapAlias(oldIndex, newIndex, alias)
 
+  /** Set the exact set of aliases for an index.
+    *
+    * This method ensures that the specified index has exactly the provided set of aliases. It adds
+    * any missing aliases and removes any extra aliases that are not in the provided set.
+    *
+    * @param index
+    *   the name of the index
+    * @param aliases
+    *   the desired set of aliases for the index
+    * @return
+    *   ElasticSuccess(true) if the operation was successful, ElasticFailure otherwise
+    * @example
+    * {{{
+    * setAliases("my-index", Set("alias1", "alias2")) match {
+    *   case ElasticSuccess(_)     => println("Aliases set successfully")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    */
+  override def setAliases(index: String, aliases: Seq[TableAlias]): ElasticResult[Boolean] =
+    delegate.setAliases(index, aliases)
+
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] =
-    delegate.executeAddAlias(index, alias)
+    delegate.executeAddAlias(alias)
 
   override private[client] def executeRemoveAlias(
     index: String,
@@ -553,6 +609,31 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     settings: String
   ): ElasticResult[Boolean] =
     delegate.updateMapping(index, mapping, settings)
+
+  /** Migrate an existing index to a new mapping.
+    *
+    * Process:
+    *   1. Create temporary index with new mapping 2. Reindex data from original to temporary 3.
+    *      Delete original index 4. Recreate original index with new mapping 5. Reindex data from
+    *      temporary to original 6. Delete temporary index
+    */
+  override private[client] def performMigration(
+    index: String,
+    tempIndex: String,
+    mapping: String,
+    settings: String,
+    aliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] =
+    delegate.performMigration(index, tempIndex, mapping, settings, aliases)
+
+  override private[client] def rollbackMigration(
+    index: String,
+    tempIndex: String,
+    originalMapping: String,
+    originalSettings: String,
+    originalAliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] =
+    delegate.rollbackMigration(index, tempIndex, originalMapping, originalSettings, originalAliases)
 
   override private[client] def executeSetMapping(
     index: String,
@@ -1014,7 +1095,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   the Elasticsearch response
     */
-  override def search(sql: SelectStatement): ElasticResult[ElasticResponse] = delegate.search(sql)
+  override def search(statement: DqlStatement): ElasticResult[ElasticResponse] =
+    delegate.search(statement)
 
   /** Search for documents / aggregations matching the Elasticsearch query.
     *
@@ -1059,9 +1141,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the Elasticsearch response
     */
-  override def searchAsync(sqlQuery: SelectStatement)(implicit
+  override def searchAsync(statement: DqlStatement)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(sqlQuery)
+  ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(statement)
 
   /** Asynchronous search for documents / aggregations matching the Elasticsearch query.
     *

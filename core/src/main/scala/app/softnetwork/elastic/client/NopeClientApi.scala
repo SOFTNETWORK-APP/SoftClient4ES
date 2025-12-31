@@ -38,8 +38,7 @@ import scala.language.implicitConversions
 trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] = ElasticResult.success(false)
 
   override private[client] def executeRemoveAlias(

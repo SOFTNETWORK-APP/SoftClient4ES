@@ -16,6 +16,10 @@
 
 package app.softnetwork.elastic.client
 
+import akka.NotUsed
+import akka.stream.scaladsl.Source
+import app.softnetwork.elastic.client.scroll.ScrollMetrics
+
 import scala.util.control.NonFatal
 
 package object result {
@@ -368,4 +372,32 @@ package object result {
       }
     }
   }
+
+  sealed trait QueryResult
+
+  // --------------------
+  // DQL (SELECT)
+  // --------------------
+  case class QueryRows(rows: Seq[Map[String, Any]]) extends QueryResult
+
+  case class QueryStream(
+    stream: Source[(Map[String, Any], ScrollMetrics), NotUsed]
+  ) extends QueryResult
+
+  case class QueryStructured(response: ElasticResponse) extends QueryResult
+
+  // --------------------
+  // DML (INSERT / UPDATE / DELETE)
+  // --------------------
+  case class DmlResult(
+    inserted: Long = 0L,
+    updated: Long = 0L,
+    deleted: Long = 0L,
+    rejected: Long = 0L
+  ) extends QueryResult
+
+  // --------------------
+  // DDL (CREATE / ALTER / DROP / TRUNCATE)
+  // --------------------
+  case class DdlResult(success: Boolean) extends QueryResult
 }

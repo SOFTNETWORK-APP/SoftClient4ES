@@ -988,19 +988,19 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           "_ingest.timestamp"
         )
         ct.mappings.get("dynamic").map(_.value) shouldBe Some(false)
-        val sql = ct.ddlTable.sql
+        val sql = ct.schema.sql
         println(sql)
-        println(ct.ddlTable.defaultPipeline.ddl)
-        val json = ct.ddlTable.defaultPipeline.json
+        println(ct.schema.defaultPipeline.ddl)
+        val json = ct.schema.defaultPipeline.json
         println(json)
         json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : ChronoUnit.DAYS.between(param1, param2)","ignore_failure":true}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M","description":"PARTITION BY birthdate (MONTH)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
-        val indexMappings = ct.ddlTable.indexMappings
+        val indexMappings = ct.schema.indexMappings
         println(indexMappings)
         indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer","meta":{"not_null":true,"comment":"user identifier"}},"name":{"type":"text","null_value":"anonymous","fields":{"raw":{"type":"keyword","meta":{"not_null":false,"comment":"sortable"}}},"analyzer":"french","search_analyzer":"french","meta":{"not_null":false}},"birthdate":{"type":"date","meta":{"not_null":false}},"age":{"type":"integer","meta":{"not_null":false,"script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)"}}},"ingested_at":{"type":"date","null_value":"_ingest.timestamp","meta":{"not_null":false}},"profile":{"type":"object","properties":{"bio":{"type":"text","meta":{"not_null":false}},"followers":{"type":"integer","meta":{"not_null":false}},"join_date":{"type":"date","meta":{"not_null":false}},"seniority":{"type":"integer","meta":{"not_null":false,"script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : ChronoUnit.DAYS.between(param1, param2)"}}}},"meta":{"not_null":false,"comment":"user profile"}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"}}}"""
-        val indexSettings = ct.ddlTable.indexSettings
+        val indexSettings = ct.schema.indexSettings
         println(indexSettings)
         indexSettings.toString shouldBe """{"index":{}}"""
-        val pipeline = ct.ddlTable.defaultPipelineNode
+        val pipeline = ct.schema.defaultPipelineNode
         println(pipeline)
         pipeline.toString shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : ChronoUnit.YEARS.between(param1, param2)","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : ChronoUnit.DAYS.between(param1, param2)","ignore_failure":true}},{"date_index_name":{"field":"birthdate","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M","description":"PARTITION BY birthdate (MONTH)","separator":"-"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
         // Reconstruct EsIndex
@@ -1014,13 +1014,13 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           settings = settings,
           defaultPipeline = Some(pipeline)
         )
-        val ddlTable = esIndex.asTable
+        val ddlTable = esIndex.schema
         println(s"""esIndex ddl -> ${ddlTable.sql}""")
         println(s"""esIndex mappings -> ${ddlTable.indexMappings.toString}""")
         println(s"""esIndex settings -> ${ddlTable.indexSettings.toString}""")
         println(s"""esIndex pipeline -> ${ddlTable.defaultPipelineNode.toString}""")
         println(s"""esIndex ddl pipeline -> ${ddlTable.defaultPipeline.ddl}""")
-        val ddlTableDiff = ddlTable.diff(ct.ddlTable)
+        val ddlTableDiff = ddlTable.diff(ct.schema)
         ddlTableDiff.columns.isEmpty shouldBe true
         ddlTableDiff.mappings.isEmpty shouldBe true
         ddlTableDiff.settings.isEmpty shouldBe true

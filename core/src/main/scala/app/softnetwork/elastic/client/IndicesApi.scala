@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{Delete, From, Insert, SingleSearch, Table, Update}
-import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, TableAlias}
+import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, Schema, TableAlias}
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -218,6 +218,30 @@ trait IndicesApi extends ElasticClientHelpers {
       case failure @ ElasticFailure(error) =>
         logger.error(s"❌ Failed to create index '$index': ${error.message}")
         failure
+    }
+  }
+
+  /** Load the schema for the provided index.
+    * @param index
+    *   - the name of the index to load the schema for
+    * @return
+    *   the schema if the index exists, an error otherwise
+    */
+  def loadSchema(index: String): ElasticResult[Schema] = {
+    getIndex(index) match {
+      case ElasticSuccess(Some(idx)) =>
+        ElasticSuccess(idx.schema)
+      case ElasticSuccess(None) =>
+        logger.info(s"Index '$index' not found for schema loading")
+        ElasticFailure(
+          ElasticError.notFound(
+            index = index,
+            operation = "loadSchema"
+          )
+        )
+      case ElasticFailure(error) =>
+        logger.error(s"❌ Failed to load schema for index '$index': ${error.message}")
+        ElasticFailure(error.copy(operation = Some("loadSchema")))
     }
   }
 
@@ -858,7 +882,7 @@ trait IndicesApi extends ElasticClientHelpers {
     index: String,
     query: String,
     refresh: Boolean = true
-  )(implicit system: ActorSystem): Future[ElasticResult[Long]] = {
+  )(implicit system: ActorSystem): Future[ElasticResult[DmlResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
 
     val result = for {
@@ -882,7 +906,7 @@ trait IndicesApi extends ElasticClientHelpers {
 
       // 3. Load index metadata
       idx <- Future.fromTry(getIndex(index).toEither.flatMap {
-        case Some(i) => Right(i.asTable)
+        case Some(i) => Right(i.schema)
         case None =>
           Left(ElasticError.notFound(index, "insertByQuery"))
       }.toTry)
@@ -1071,25 +1095,27 @@ trait IndicesApi extends ElasticClientHelpers {
         update = Some(parsed.doUpdate)
       )(BulkOptions(defaultIndex = index, disableRefresh = !refresh), system)
 
-    } yield bulkResult.successCount.toLong
+    } yield bulkResult
 
-    result.map(ElasticSuccess(_)).recover {
-      case e: ElasticError =>
-        ElasticFailure(
-          e.copy(
-            operation = Some("insertByQuery"),
-            index = Some(index)
+    result
+      .map(r => ElasticSuccess(DmlResult(inserted = r.successCount, rejected = r.failedCount)))
+      .recover {
+        case e: ElasticError =>
+          ElasticFailure(
+            e.copy(
+              operation = Some("insertByQuery"),
+              index = Some(index)
+            )
           )
-        )
-      case e =>
-        ElasticFailure(
-          ElasticError(
-            message = e.getMessage,
-            operation = Some("insertByQuery"),
-            index = Some(index)
+        case e =>
+          ElasticFailure(
+            ElasticError(
+              message = e.getMessage,
+              operation = Some("insertByQuery"),
+              index = Some(index)
+            )
           )
-        )
-    }
+      }
   }
 
   private def parseQueryForUpdate(

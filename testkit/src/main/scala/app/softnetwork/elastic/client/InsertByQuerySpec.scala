@@ -20,7 +20,7 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.bulk.BulkOptions
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{DmlResult, ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
@@ -189,7 +189,7 @@ trait InsertByQuerySpec
         |VALUES ('C010', 'Bob', 'bob@example.com', 'FR')""".stripMargin
 
     val result = client.insertByQuery("customers", sql).futureValue
-    result shouldBe ElasticSuccess(1L)
+    result shouldBe ElasticSuccess(DmlResult(inserted = 1L))
   }
 
   it should "upsert a product with ON CONFLICT DO UPDATE" in {
@@ -199,7 +199,7 @@ trait InsertByQuerySpec
         |ON CONFLICT DO UPDATE""".stripMargin.replaceAll("\\s+", " ")
 
     val result = client.insertByQuery("products", sql).futureValue
-    result shouldBe ElasticSuccess(1L)
+    result shouldBe ElasticSuccess(DmlResult(inserted = 1L))
   }
 
   it should "insert orders from a SELECT with alias mapping" in {
@@ -213,7 +213,7 @@ trait InsertByQuerySpec
         |FROM staging_orders""".stripMargin.replaceAll("\\s+", " ")
 
     val result = client.insertByQuery("orders", sql).futureValue
-    result shouldBe ElasticSuccess(3L)
+    result shouldBe ElasticSuccess(DmlResult(inserted = 3L))
   }
 
   it should "upsert orders with composite PK using ON CONFLICT DO UPDATE" in {
@@ -228,7 +228,7 @@ trait InsertByQuerySpec
         |ON CONFLICT (order_id, customer_id) DO UPDATE""".stripMargin
 
     val result = client.insertByQuery("orders", sql).futureValue
-    result shouldBe ElasticSuccess(2L)
+    result shouldBe ElasticSuccess(DmlResult(inserted = 2L))
   }
 
   it should "fail when conflictTarget does not match PK" in {

@@ -24,6 +24,7 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  DqlStatement,
   MultiSearch,
   SQLAggregation,
   SelectStatement,
@@ -60,26 +61,44 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Search for documents / aggregations matching the SQL query.
     *
-    * @param sql
+    * @param statement
     *   the SQL query to execute
     * @return
     *   the Elasticsearch response
     */
-  def search(sql: SelectStatement): ElasticResult[ElasticResponse] = {
+  def search(statement: DqlStatement): ElasticResult[ElasticResponse] = {
     implicit def timestamp: Long = System.currentTimeMillis()
-    sql.statement match {
-      case Some(single: SingleSearch) =>
+    val query = statement.sql
+    statement match {
+      case select: SelectStatement =>
+        select.statement match {
+          case Some(statement: SingleSearch) =>
+            search(statement.copy(score = select.score))
+          case Some(statement: MultiSearch) =>
+            search(statement)
+          case None =>
+            logger.error(
+              s"❌ Failed to execute search for query \n${statement.sql}"
+            )
+            ElasticResult.failure(
+              ElasticError(
+                message = s"SQL query does not contain a valid search request\n$query",
+                operation = Some("search")
+              )
+            )
+        }
+      case single: SingleSearch =>
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*),
-          sql = Some(sql.query)
+          sql = Some(query)
         )
         if (single.windowFunctions.exists(_.isWindowing) && single.groupBy.isEmpty)
-          searchWithWindowEnrichment(sql.score, single)
+          searchWithWindowEnrichment(single)
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
-      case Some(multiple: MultiSearch) =>
+      case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -87,17 +106,17 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               collection.immutable.Seq(query.sources: _*)
             )
           }.toList,
-          sql = Some(sql.query)
+          sql = Some(query)
         )
         multiSearch(elasticQueries, multiple.fieldAliases, multiple.sqlAggregations)
 
-      case None =>
+      case _ =>
         logger.error(
-          s"❌ Failed to execute search for query \n${sql.query}"
+          s"❌ Failed to execute search for query \n${statement.sql}"
         )
         ElasticResult.failure(
           ElasticError(
-            message = s"SQL query does not contain a valid search request\n${sql.query}",
+            message = s"SQL query does not contain a valid search request\n$query",
             operation = Some("search")
           )
         )
@@ -301,20 +320,40 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   a Future containing the Elasticsearch response
     */
   def searchAsync(
-    sqlQuery: SelectStatement
+    statement: DqlStatement
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
     implicit def timestamp: Long = System.currentTimeMillis()
-    sqlQuery.statement match {
-      case Some(single: SingleSearch) =>
+    statement match {
+      case select: SelectStatement =>
+        select.statement match {
+          case Some(statement: SingleSearch) =>
+            searchAsync(statement.copy(score = select.score))
+          case Some(statement: MultiSearch) =>
+            searchAsync(statement)
+          case None =>
+            logger.error(
+              s"❌ Failed to execute asynchronous search for query '${statement.sql}'"
+            )
+            Future.successful(
+              ElasticResult.failure(
+                ElasticError(
+                  message = s"SQL query does not contain a valid search request: ${statement.sql}",
+                  operation = Some("searchAsync")
+                )
+              )
+            )
+        }
+
+      case single: SingleSearch =>
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*)
         )
         singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
-      case Some(multiple: MultiSearch) =>
+      case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -325,14 +364,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
         multiSearchAsync(elasticQueries, multiple.fieldAliases, multiple.sqlAggregations)
 
-      case None =>
+      case _ =>
+        val query = statement.sql
         logger.error(
-          s"❌ Failed to execute asynchronous search for query '${sqlQuery.query}'"
+          s"❌ Failed to execute asynchronous search for query '$query'"
         )
         Future.successful(
           ElasticResult.failure(
             ElasticError(
-              message = s"SQL query does not contain a valid search request: ${sqlQuery.query}",
+              message = s"SQL query does not contain a valid search request: $query",
               operation = Some("searchAsync")
             )
           )
@@ -1105,7 +1145,6 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *      functions) 3. Enrich results with window values
     */
   private def searchWithWindowEnrichment(
-    score: Option[Double],
     request: SingleSearch
   )(implicit timestamp: Long): ElasticResult[ElasticResponse] = {
 
@@ -1116,7 +1155,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       windowCache <- executeWindowAggregations(request)
 
       // Step 2: Execute base query (without window functions)
-      baseResponse <- executeBaseQuery(score, request)
+      baseResponse <- executeBaseQuery(request)
 
       // Step 3: Enrich results
       enrichedResponse <- enrichResponseWithWindowValues(baseResponse, windowCache, request)
@@ -1219,11 +1258,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Execute base query without window functions
     */
   private def executeBaseQuery(
-    score: Option[Double],
     request: SingleSearch
   )(implicit timestamp: Long): ElasticResult[ElasticResponse] = {
 
-    val baseQuery = createBaseQuery(score, request)
+    val baseQuery = createBaseQuery(request)
 
     logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
 
@@ -1241,7 +1279,6 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Create base query by removing window functions from SELECT
     */
   protected def createBaseQuery(
-    score: Option[Double],
     request: SingleSearch
   ): SingleSearch = {
 
@@ -1253,7 +1290,6 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       .copy(
         select = request.select.copy(fields = baseFields)
       )
-      .copy(score = score)
       .update()
 
     baseRequest

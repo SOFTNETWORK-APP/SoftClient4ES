@@ -22,7 +22,9 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
-import com.google.gson.JsonParser
+import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.serialization._
+import com.fasterxml.jackson.databind.JsonNode
 
 import scala.jdk.CollectionConverters._
 import scala.util.Try
@@ -60,7 +62,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
     * @param index
     *   the index name
     * @param alias
-    *   the alias name to add
+    *   the alias to add
     * @return
     *   ElasticSuccess(true) if added, ElasticFailure otherwise
     *
@@ -78,7 +80,40 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
     *   An index can have multiple aliases
     */
   //format:on
+  @deprecated("Use addAlias(TableAlias) instead", "0.15.0")
   def addAlias(index: String, alias: String): ElasticResult[Boolean] = {
+    addAlias(TableAlias(index, alias))
+  }
+
+  //format:off
+  /** Add an alias to an index.
+    *
+    * This operation:
+    *   1. Validates the index and alias names 2. Checks that the index exists 3. Adds the alias
+    *
+    * @param alias
+    *   the TableAlias to add
+    * @return
+    *   ElasticSuccess(true) if added, ElasticFailure otherwise
+    *
+    * @example
+    * {{{
+    * val alias = TableAlias(table = "my-index-2024", alias = "my-index-current")
+    * addAlias(alias) match {
+    *   case ElasticSuccess(_)     => println("Alias added")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    *
+    * @note
+    *   An alias can point to multiple indexes (useful for searches)
+    * @note
+    *   An index can have multiple aliases
+    */
+  //format:on
+  def addAlias(alias: TableAlias): ElasticResult[Boolean] = {
+    val index = alias.table
+    val aliasName = alias.alias
     // Validation...
     validateIndexName(index) match {
       case Some(error) =>
@@ -92,7 +127,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       case None => // OK
     }
 
-    validateAliasName(alias) match {
+    validateAliasName(aliasName) match {
       case Some(error) =>
         return ElasticFailure(
           error.copy(
@@ -104,7 +139,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       case None => // OK
     }
 
-    if (index == alias) {
+    if (index == aliasName) {
       return ElasticFailure(
         ElasticError(
           message = s"Index and alias cannot have the same name: '$index'",
@@ -115,7 +150,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       )
     }
 
-    indexExists(index, false) match {
+    indexExists(index, pattern = false) match {
       case ElasticSuccess(false) =>
         return ElasticFailure(
           ElasticError(
@@ -129,15 +164,15 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       case _                     => // OK
     }
 
-    logger.debug(s"Adding alias '$alias' to index '$index'")
+    logger.debug(s"Adding alias '$aliasName' to index '$index'")
 
-    executeAddAlias(index, alias) match {
+    executeAddAlias(alias) match {
       case success @ ElasticSuccess(_) =>
-        logger.info(s"✅ Alias '$alias' successfully added to index '$index'")
+        logger.info(s"✅ Alias '$aliasName' successfully added to index '$index'")
         success
 
       case failure @ ElasticFailure(error) =>
-        logger.error(s"❌ Failed to add alias '$alias' to index '$index': ${error.message}")
+        logger.error(s"❌ Failed to add alias '$aliasName' to index '$index': ${error.message}")
         failure
     }
   }
@@ -269,14 +304,14 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
     * @example
     * {{{
     * getAliases("my-index") match {
-    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.mkString(", ")}")
+    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.map(_.alias).mkString(", ")}")
     *   case ElasticFailure(error)   => println(s"Error: ${error.message}")
     * }
     *
     * }}}
     */
   //format:on
-  def getAliases(index: String): ElasticResult[Set[String]] = {
+  def getAliases(index: String): ElasticResult[Seq[TableAlias]] = {
 
     validateIndexName(index) match {
       case Some(error) =>
@@ -296,7 +331,7 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
       // ✅ Extracting aliases from JSON
       ElasticResult.fromTry(
         Try {
-          JsonParser.parseString(jsonString).getAsJsonObject
+          mapper.readTree(jsonString)
         }
       ) match {
         case ElasticFailure(error) =>
@@ -305,32 +340,39 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
         case ElasticSuccess(rootObj) =>
           if (!rootObj.has(index)) {
             logger.warn(s"Index '$index' not found in response")
-            return ElasticResult.success(Set.empty[String])
+            return ElasticResult.success(Seq.empty[TableAlias])
           }
 
-          val indexObj = rootObj.getAsJsonObject(index)
-          if (indexObj == null) {
-            logger.warn(s"Index '$index' is null in response")
-            return ElasticResult.success(Set.empty[String])
-          }
+          val root = rootObj.get(index)
 
-          val aliasesObj = indexObj.getAsJsonObject("aliases")
-          if (aliasesObj == null || aliasesObj.size() == 0) {
+          if (!root.has("aliases")) {
             logger.debug(s"No aliases found for index '$index'")
-            ElasticResult.success(Set.empty[String])
-          } else {
-            val aliases = aliasesObj.entrySet().asScala.map(_.getKey).toSet
-            logger.debug(
-              s"Found ${aliases.size} alias(es) for index '$index': ${aliases.mkString(", ")}"
-            )
-            ElasticResult.success(aliases)
+            return ElasticResult.success(Seq.empty[TableAlias])
           }
+
+          val aliasesNode = root.path("aliases")
+          val aliases: Map[String, JsonNode] =
+            if (aliasesNode != null && aliasesNode.isObject) {
+              aliasesNode
+                .properties()
+                .asScala
+                .map { entry =>
+                  val aliasName = entry.getKey
+                  val aliasValue = entry.getValue
+                  aliasName -> aliasValue
+                }
+                .toMap
+            } else {
+              Map.empty
+            }
+
+          ElasticSuccess(aliases.toSeq.map(alias => TableAlias(index, alias._1, alias._2)))
       }
     } match {
       case success @ ElasticSuccess(aliases) =>
         if (aliases.nonEmpty)
           logger.info(
-            s"✅ Found ${aliases.size} alias(es) for index '$index': ${aliases.mkString(", ")}"
+            s"✅ Found ${aliases.size} alias(es) for index '$index': ${aliases.map(_.alias).sorted.mkString(", ")}"
           )
         else
           logger.info(s"✅ No aliases found for index '$index'")
@@ -441,11 +483,80 @@ trait AliasApi extends ElasticClientHelpers { _: IndicesApi =>
     }
   }
 
+  //format:off
+  /** Set the exact set of aliases for an index.
+    *
+    * This method ensures that the specified index has exactly the provided set of aliases. It adds
+    * any missing aliases and removes any extra aliases that are not in the provided set.
+    *
+    * @param index
+    *   the name of the index
+    * @param aliases
+    *   the desired set of aliases for the index
+    * @return
+    *   ElasticSuccess(true) if the operation was successful, ElasticFailure otherwise
+    *
+    * @example
+    * {{{
+    * setAliases("my-index", Seq(TableAlias("my-index", "alias1"), TableAlias("my-index", "alias2"))) match {
+    *   case ElasticSuccess(_)     => println("Aliases set successfully")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    */
+  //format:on
+  def setAliases(index: String, aliases: Seq[TableAlias]): ElasticResult[Boolean] = {
+    getAliases(index).flatMap { existingAliases =>
+      val notIndexAliases = aliases.filter(_.table != index)
+      if (notIndexAliases.nonEmpty) {
+        return ElasticFailure(
+          ElasticError(
+            message = s"All aliases must belong to the index '$index': ${notIndexAliases
+              .map(_.alias)
+              .mkString(", ")}",
+            cause = None,
+            statusCode = Some(400),
+            operation = Some("setAliases")
+          )
+        )
+      }
+
+      val existingAliasNames = existingAliases.map(_.alias).toSet
+      val aliasesMap = aliases.map(alias => alias.alias -> alias).toMap
+
+      val toSet = aliasesMap.keys.toSet.diff(existingAliasNames) ++ aliasesMap.keys.toSet.intersect(
+        existingAliasNames
+      )
+      val toRemove = existingAliasNames.diff(aliasesMap.keys.toSet)
+
+      val setResults = toSet.map(alias => addAlias(aliasesMap(alias)))
+      val removeResults = toRemove.map(alias => removeAlias(index, alias))
+
+      val allResults = setResults ++ removeResults
+
+      val failures = allResults.collect { case ElasticFailure(error) => error }
+
+      if (failures.nonEmpty) {
+        ElasticFailure(
+          ElasticError(
+            message =
+              s"Failed to set aliases for index '$index': ${failures.map(_.message).mkString(", ")}",
+            cause = None,
+            statusCode = Some(500),
+            operation = Some("setAliases")
+          )
+        )
+      } else {
+        ElasticResult.success(true)
+      }
+    }
+  }
+
   // ========================================================================
   // METHODS TO IMPLEMENT
   // ========================================================================
 
-  private[client] def executeAddAlias(index: String, alias: String): ElasticResult[Boolean]
+  private[client] def executeAddAlias(alias: TableAlias): ElasticResult[Boolean]
 
   private[client] def executeRemoveAlias(index: String, alias: String): ElasticResult[Boolean]
 

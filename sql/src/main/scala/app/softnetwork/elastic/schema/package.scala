@@ -26,6 +26,7 @@ import app.softnetwork.elastic.sql.schema.{
   IngestProcessor,
   PartitionDate,
   PrimaryKeyProcessor,
+  Schema,
   ScriptProcessor,
   Table
 }
@@ -351,7 +352,7 @@ package object schema {
       defaultProcessors ++ finalProcessors
     }
 
-    lazy val asTable: Table = {
+    lazy val schema: Schema = {
       // 1. Columns from the mapping
       val initialCols: Map[String, Column] =
         esMappings.fields.map { field =>
@@ -399,7 +400,7 @@ package object schema {
 
       }
 
-      // 4. Final construction of the DdlTable
+      // 4. Final construction of the Table
       Table(
         name = name,
         columns = enrichedCols.values.toList.sortBy(_.name),

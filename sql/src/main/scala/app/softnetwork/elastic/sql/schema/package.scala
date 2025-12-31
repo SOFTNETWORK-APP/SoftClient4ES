@@ -31,6 +31,8 @@ import scala.language.implicitConversions
 package object schema {
   val mapper: ObjectMapper = JacksonConfig.objectMapper
 
+  type Schema = Table
+
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
 
   sealed trait IngestProcessorType {
@@ -1010,7 +1012,7 @@ package object schema {
         "_meta" ->
         ObjectValue(mappings.get("_meta") match {
           case Some(ObjectValue(value)) =>
-            value ++ _meta
+            (value - "primary_key" - "partition_by") ++ _meta
           case _ => _meta
         })
       )
@@ -1304,6 +1306,35 @@ package object schema {
 
     }
 
+    def mergeWithSearch(search: SingleSearch): Table = {
+      val fields = search.update(Some(this)).select.fields
+      val cols =
+        fields.foldLeft(List.empty[Column]) { (cols, field) =>
+          val colName = field.fieldAlias.map(_.alias).getOrElse(field.sourceField)
+          val col = this.find(colName) match {
+            case Some(c) if field.functions.isEmpty => c
+            case None =>
+              Column(
+                name = colName,
+                dataType = field.out
+              )
+          }
+          cols :+ col
+        }
+      val primaryKey =
+        this.primaryKey.filter(pk => cols.exists(_.name == pk))
+      val partitionBy =
+        this.partitionBy match {
+          case Some(partition) =>
+            if (cols.exists(_.name == partition.column))
+              Some(partition)
+            else
+              None
+          case _ => None
+        }
+      this.copy(columns = cols, primaryKey = primaryKey, partitionBy = partitionBy).update()
+    }
+
     override def validate(): Either[String, Unit] = {
       var errors = Seq[String]()
       // check that primary key columns exist
@@ -1402,6 +1433,24 @@ package object schema {
     lazy val indexAliases: Seq[TableAlias] = aliases.map { case (aliasName, value) =>
       TableAlias(name, aliasName, value)
     }.toSeq
+
+    lazy val indexTemplate: ObjectNode = {
+      val node = mapper.createObjectNode()
+      node.put("index_patterns", s"$name-*")
+      node.put("priority", 1)
+      val template = mapper.createObjectNode()
+      template.set("mappings", indexMappings)
+      template.set("settings", indexSettings)
+      if (aliases.nonEmpty) {
+        val aliasesNode = mapper.createObjectNode()
+        indexAliases.foreach { alias =>
+          aliasesNode.set(alias.alias, alias.node)
+        }
+        template.set("aliases", aliasesNode)
+      }
+      node.set("template", template)
+      node
+    }
 
     lazy val defaultPipelineNode: ObjectNode = defaultPipeline.node
 

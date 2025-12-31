@@ -342,26 +342,31 @@ trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
   _: JavaClientIndicesApi with JavaClientCompanion =>
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "addAlias",
-      index = Some(index),
+      index = Some(alias.table),
       retryable = false
-    )(
+    ) {
+      val node = alias.node
+      node.put("index", alias.table)
+      node.put("alias", alias.alias)
+
+      val action = mapper.createObjectNode()
+      action.set("add", node)
+
+      val addAction = new Action.Builder().withJson(new StringReader(action))
       apply()
         .indices()
         .updateAliases(
           new UpdateAliasesRequest.Builder()
             .actions(
-              new Action.Builder()
-                .add(new AddAction.Builder().index(index).alias(alias).build())
-                .build()
+              addAction.build()
             )
             .build()
         )
-    )(_.acknowledged())
+    }(_.acknowledged())
 
   override private[client] def executeRemoveAlias(
     index: String,
@@ -490,6 +495,8 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
   _: JavaClientSettingsApi
     with JavaClientIndicesApi
     with JavaClientRefreshApi
+    with JavaClientVersionApi
+    with JavaClientAliasApi
     with JavaClientCompanion =>
 
   override private[client] def executeSetMapping(

@@ -321,4 +321,65 @@ object SQLTypeUtils {
     s"($expr != null ? $ret : null)"
   }
 
+  private val numericRank: Map[Class[_], Int] = Map(
+    classOf[SQLTinyInt]  -> 1,
+    classOf[SQLSmallInt] -> 2,
+    classOf[SQLInt]      -> 3,
+    classOf[SQLBigInt]   -> 4,
+    classOf[SQLReal]     -> 5,
+    classOf[SQLDouble]   -> 6
+  )
+
+  private def numericRankOf(t: SQLType): Option[Int] =
+    numericRank.collectFirst { case (cls, rank) if cls.isInstance(t) => rank }
+
+  def canConvert(from: SQLType, to: SQLType): Boolean = {
+
+    // 1. Identity
+    if (from.typeId == to.typeId) return true
+
+    // 2. ANY / NULL
+    if (to.isInstanceOf[SQLAny]) return true
+    if (from.isInstanceOf[SQLNull]) return true
+
+    // 3. Numerics
+    (numericRankOf(from), numericRankOf(to)) match {
+      case (Some(r1), Some(r2)) =>
+        return r1 <= r2 // expansion only
+      case _ =>
+    }
+
+    // 4. Literals (VARCHAR, CHAR, TEXT, KEYWORD)
+    if (from.isInstanceOf[SQLLiteral] && to.isInstanceOf[SQLLiteral])
+      return true
+
+    // 5. Booleans
+    if (from.isInstanceOf[SQLBool] && to.isInstanceOf[SQLBool])
+      return true
+
+    // 6. Temporals
+    if (from.isInstanceOf[SQLTemporal] && to.isInstanceOf[SQLTemporal])
+      return true
+
+    // 7. Arrays
+    (from, to) match {
+      case (f: SQLArray, t: SQLArray) =>
+        canConvert(f.elementType, t.elementType)
+      case _ =>
+    }
+
+    // 8. Structs
+    (from, to) match {
+      case (f: SQLStruct, t: SQLStruct) =>
+        structConvertible(f, t)
+      case _ =>
+    }
+
+    false
+  }
+
+  private def structConvertible(from: SQLStruct, to: SQLStruct): Boolean = {
+    // TODO To be refined according to our definition of SQLStruct
+    true
+  }
 }

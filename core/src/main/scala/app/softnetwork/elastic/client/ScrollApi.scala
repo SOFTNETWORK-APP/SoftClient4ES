@@ -19,7 +19,12 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Sink, Source}
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{
+  ElasticError,
+  ElasticFailure,
+  ElasticResult,
+  ElasticSuccess
+}
 import app.softnetwork.elastic.client.scroll.{
   ScrollConfig,
   ScrollMetrics,
@@ -128,38 +133,25 @@ trait ScrollApi extends ElasticClientHelpers {
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     implicit def timestamp: Long = System.currentTimeMillis()
     statement match {
+      // Select statement
       case select: SelectStatement =>
         select.statement match {
           case Some(single: SingleSearch) =>
-            if (single.windowFunctions.nonEmpty)
-              return scrollWithWindowEnrichment(select.score, single, config)
+            scroll(single.copy(score = select.score), config)
 
-            val sqlRequest = single.copy(score = select.score)
-            val elasticQuery =
-              ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
-            scrollWithMetrics(
-              elasticQuery,
-              sqlRequest.fieldAliases,
-              sqlRequest.sqlAggregations,
-              config,
-              single.sorts.nonEmpty
-            )
-
-          case Some(_) =>
-            Source.failed(
-              new UnsupportedOperationException(
-                "Scrolling is not supported for multi-search queries"
-              )
-            )
+          case Some(multiple: MultiSearch) =>
+            scroll(multiple, config)
 
           case None =>
             Source.failed(
               new IllegalArgumentException("SQL query does not contain a valid search request")
             )
         }
+
+      // Single search
       case single: SingleSearch =>
         if (single.windowFunctions.nonEmpty)
-          return scrollWithWindowEnrichment(None, single, config)
+          return scrollWithWindowEnrichment(single, config)
 
         val elasticQuery =
           ElasticQuery(single, collection.immutable.Seq(single.sources: _*))
@@ -170,10 +162,13 @@ trait ScrollApi extends ElasticClientHelpers {
           config,
           single.sorts.nonEmpty
         )
+
+      // Multi search
       case _: MultiSearch =>
         Source.failed(
           new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
         )
+
       case _ =>
         Source.failed(
           new IllegalArgumentException("Scrolling is only supported for SELECT statements")
@@ -409,7 +404,6 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Scroll with window function enrichment
     */
   private def scrollWithWindowEnrichment(
-    score: Option[Double],
     request: SingleSearch,
     config: ScrollConfig
   )(implicit
@@ -426,7 +420,7 @@ trait ScrollApi extends ElasticClientHelpers {
       Future(executeWindowAggregations(request))
 
     // Create base query without window functions
-    val baseQuery = createBaseQuery(score, request)
+    val baseQuery = createBaseQuery(request)
 
     // Stream and enrich
     Source
