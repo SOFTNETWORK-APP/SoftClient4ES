@@ -22,7 +22,6 @@ import app.softnetwork.elastic.sql.query.{
   Asc,
   BucketIncludesExcludes,
   BucketNode,
-  BucketTree,
   Criteria,
   Desc,
   Field,
@@ -350,10 +349,6 @@ object ElasticAggregation {
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
   )(implicit timestamp: Long): Seq[Aggregation] = {
-    val trees = BucketTree(buckets.flatMap(_.headOption))
-    println(
-      s"[DEBUG] buildBuckets called with buckets: \n$trees"
-    )
     for (tree <- buckets) yield {
       val treeNodes =
         tree.sortBy(_.level).reverse.foldLeft(Seq.empty[NodeAggregation]) { (current, node) =>
