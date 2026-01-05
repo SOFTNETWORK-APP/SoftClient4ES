@@ -988,7 +988,31 @@ package object sql {
       else
         Option(s"(ctx.$path == null ? $nullValue : ctx.$path${painlessMethods.mkString("")})")
 
+    def originalType: SQLType =
+      if (name.trim.nonEmpty) SQLTypes.Any
+      else this.baseType
+
     override def painless(context: Option[PainlessContext]): String = {
+      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
+      var currType = this.originalType
+      currType match {
+        case SQLTypes.Any =>
+          orderedFunctions.headOption match {
+            case Some(f: TransformFunction[_, _]) =>
+              f.in match {
+                case SQLTypes.Temporal => // the first function to apply required a Temporal as input type
+                  context match {
+                    case Some(_) =>
+                      // compatible ES6+
+                      this.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
+                    case _ => // do nothing
+                  }
+                case _ => // do nothing
+              }
+            case _ => // do nothing
+          }
+        case _ => // do nothing
+      }
       val base =
         context match {
           case Some(ctx) =>
@@ -999,7 +1023,6 @@ package object sql {
             else
               paramName
         }
-      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       var expr = base
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
@@ -1007,6 +1030,7 @@ package object sql {
           case f: PainlessScript          => expr = s"$expr${f.painless(context)}"
           case f                          => expr = f.toSQL(expr) // fallback
         }
+        currType = f.out
       }
       expr
     }
