@@ -163,11 +163,11 @@ package object string {
       callArgs match {
         // SUBSTRING(expr, start, length)
         case List(arg0, _, _) =>
-          s"$arg0.substring(${start - 1}, Math.min(${start - 1 + length.get}, $arg0.length()))"
+          s"((String)$arg0).substring(${start - 1}, (int)Math.min(${start - 1 + length.get}, ((String)$arg0).length()))"
 
         // SUBSTRING(expr, start)
         case List(arg0, arg1) =>
-          s"$arg0.substring(Math.min(${start - 1}, $arg0.length() - 1))"
+          s"((String)$arg0).substring((int)Math.min(${start - 1}, ((String)$arg0).length() - 1))"
 
         case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
       }
@@ -244,7 +244,7 @@ package object string {
     ): String = {
       callArgs match {
         case List(arg0, arg1) =>
-          s"$arg0.substring(0, Math.min($arg1, $arg0.length()))"
+          s"((String)$arg0).substring(0, (int)Math.min($arg1, ((String)$arg0).length()))"
         case _ => throw new IllegalArgumentException("LEFT requires 2 arguments")
       }
     }
@@ -273,7 +273,8 @@ package object string {
       callArgs match {
         case List(arg0, arg1) =>
           if (length == 0) ""
-          else s"""$arg0.substring($arg0.length() - Math.min($arg1, $arg0.length()))"""
+          else
+            s"""((String)$arg0).substring(((String)$arg0).length() - (int)Math.min($arg1, ((String)$arg0).length()))"""
         case _ => throw new IllegalArgumentException("RIGHT requires 2 arguments")
       }
     }
