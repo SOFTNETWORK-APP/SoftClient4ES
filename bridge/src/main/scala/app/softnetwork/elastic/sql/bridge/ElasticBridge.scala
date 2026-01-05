@@ -77,13 +77,10 @@ case class ElasticBridge(filter: ElasticFilter) {
                   case _ =>
                 }
                 if (n.sources.nonEmpty) {
-                  inner = inner.fetchSource(
-                    FetchSourceContext(
-                      fetchSource = true,
-                      includes = n.sources.map { source =>
-                        (n.path.split('.').toSeq ++ Seq(source)).mkString(".")
-                      }.toArray
-                    )
+                  inner = inner.docValueFields(
+                    n.sources.map { source =>
+                      (n.path.split('.').toSeq ++ Seq(source)).mkString(".")
+                    }
                   )
                 }
                 inner

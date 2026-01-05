@@ -343,12 +343,7 @@ package object bridge {
             case _ =>
           }
           if (n.sources.nonEmpty) {
-            inner = inner.fetchSource(
-              FetchSourceContext(
-                fetchSource = true,
-                includes = n.sources.toArray
-              )
-            )
+            inner = inner.docValueFields(n.sources)
           }
           inner
         }
