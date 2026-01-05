@@ -184,7 +184,12 @@ trait ElasticConversion {
           val source = extractSource(hit, fieldAliases)
           val metadata = extractHitMetadata(hit)
           val innerHits = extractInnerHits(hit, fieldAliases)
-          globalMetrics ++ allTopHits ++ source ++ metadata ++ innerHits
+          val fieldsNode = Option(hit.path("fields"))
+            .filter(!_.isMissingNode)
+          val fields = fieldsNode
+            .map(jsonNodeToMap(_, fieldAliases))
+            .getOrElse(Map.empty)
+          globalMetrics ++ allTopHits ++ source ++ metadata ++ innerHits ++ fields
         }
 
       case _ =>
@@ -202,7 +207,12 @@ trait ElasticConversion {
       val source = extractSource(hit, fieldAliases)
       val metadata = extractHitMetadata(hit)
       val innerHits = extractInnerHits(hit, fieldAliases)
-      source ++ metadata ++ innerHits
+      val fieldsNode = Option(hit.path("fields"))
+        .filter(!_.isMissingNode)
+      val fields = fieldsNode
+        .map(jsonNodeToMap(_, fieldAliases))
+        .getOrElse(Map.empty)
+      source ++ metadata ++ innerHits ++ fields
     }
   }
 
