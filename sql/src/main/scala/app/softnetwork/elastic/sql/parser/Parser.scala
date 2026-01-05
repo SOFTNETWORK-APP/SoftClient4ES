@@ -61,7 +61,7 @@ object Parser
     with LimitParser {
 
   def single: PackratParser[SingleSearch] = {
-    phrase(select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.? ~ onConflict.?) ^^ {
+    select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.? ~ onConflict.? ^^ {
       case s ~ f ~ w ~ g ~ h ~ o ~ l ~ oc =>
         SingleSearch(s, f, w, g, h, o, l, onConflict = oc).update()
     }

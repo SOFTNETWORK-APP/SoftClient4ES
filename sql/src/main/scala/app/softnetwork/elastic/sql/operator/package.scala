@@ -74,7 +74,7 @@ package object operator {
   case object AND extends Expr("AND") with PredicateOperator
   case object OR extends Expr("OR") with PredicateOperator
 
-  case object UNION extends Expr("UNION") with Operator with TokenRegex
+  case object UNION extends Expr("UNION ALL") with Operator with TokenRegex
 
   sealed trait ElasticOperator extends Operator with TokenRegex
 

@@ -64,7 +64,10 @@ trait ElasticConversion {
     fieldAliases: Map[String, String],
     aggregations: Map[String, ClientAggregation]
   ): Try[Seq[Map[String, Any]]] = {
-    val json = mapper.readTree(results)
+    var json = mapper.readTree(results)
+    if (json.has("responses")) {
+      json = json.get("responses")
+    }
     // Check if it's a multi-search response (array of responses)
     if (json.isArray) {
       parseMultiSearchResponse(json, fieldAliases, aggregations)
