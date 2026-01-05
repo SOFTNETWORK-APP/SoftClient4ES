@@ -285,13 +285,19 @@ package object function {
                         ctx.addParam(LiteralParam(ret))
                       }
                     case identifier: Identifier =>
-                      identifier.baseType match {
-                        case SQLTypes.Any => // in painless context, Any is ZonedDateTime
-                          out match {
+                      identifier.originalType match {
+                        case SQLTypes.Any if !ctx.isProcessor =>
+                          in match {
+                            case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                              identifier.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
                             case SQLTypes.Date =>
-                              identifier.addPainlessMethod(".toLocalDate()")
+                              identifier.addPainlessMethod(
+                                ".toInstant().atZone(ZoneId.of('Z')).toLocalDate()"
+                              )
                             case SQLTypes.Time =>
-                              identifier.addPainlessMethod(".toLocalTime()")
+                              identifier.addPainlessMethod(
+                                ".toInstant().atZone(ZoneId.of('Z')).toLocalTime()"
+                              )
                             case _ =>
                           }
                         case _ =>

@@ -418,8 +418,25 @@ package object time {
 
     override def toSQL(base: String): String = s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
 
-    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
-      s"${unit.painless(context)}${DateDiff.painless(context)}(${callArgs.mkString(", ")})"
+    override def in: SQLType = SQLTypes.Date
+
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      val ret =
+        s"Long.valueOf(${unit.painless(context)}${DateDiff.painless(context)}(${callArgs.mkString(", ")}))"
+      context match {
+        case Some(ctx)
+            if ctx.isProcessor => // to fix bug in painless script processor context with elasticsearch v6
+          ctx.addParam(LiteralParam(ret)) match {
+            case Some(p) => return p
+            case _       =>
+          }
+        case _ =>
+      }
+      ret
+    }
   }
 
   case object DateAdd extends Expr("DATE_ADD") with TokenRegex {

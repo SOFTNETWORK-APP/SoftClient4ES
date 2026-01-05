@@ -1005,6 +1005,7 @@ package object sql {
                     case Some(_) =>
                       // compatible ES6+
                       this.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
+                      currType = SQLTypes.Timestamp
                     case _ => // do nothing
                   }
                 case _ => // do nothing
