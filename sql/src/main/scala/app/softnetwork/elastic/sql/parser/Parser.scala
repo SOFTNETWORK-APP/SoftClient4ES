@@ -817,7 +817,7 @@ trait Parser
               fi.identifier.withFunctions(f ++ fi.identifier.functions)
             case _ => Identifier(f)
           }
-        case Some(id) => id.withFunctions(id.functions ++ f)
+        case Some(id) => id.withFunctions(f ++ id.functions)
       }
     }) >> cast
 

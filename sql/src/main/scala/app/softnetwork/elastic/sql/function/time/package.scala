@@ -129,8 +129,10 @@ package object time {
     override def baseType: SQLType = SQLTypes.Time
   }
 
-  sealed trait SystemFunction extends Function {
+  sealed trait SystemFunction extends FunctionWithIdentifier {
     override def system: Boolean = true
+
+    override def identifier: Identifier = Identifier(this)
   }
 
   sealed trait CurrentFunction extends SystemFunction with PainlessScript with DateMathScript {
