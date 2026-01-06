@@ -1251,6 +1251,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |        },
         |        "birthDate": {
         |          "type": "date"
+        |        },
+        |        "parentId": {
+        |          "type": "keyword"
         |        }
         |      }
         |    },
