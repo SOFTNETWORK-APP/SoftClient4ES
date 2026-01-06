@@ -93,7 +93,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           collection.immutable.Seq(single.sources: _*),
           sql = Some(query)
         )
-        if (single.windowFunctions.exists(_.isWindowing) && single.groupBy.isEmpty)
+        if (
+          single.windowFunctions.exists(
+            _.isWindowing
+          ) && single.groupBy.isEmpty && (!single.select.fields.forall(
+            _.isAggregation
+          ) || single.scriptFields.nonEmpty)
+        )
           searchWithWindowEnrichment(single)
         else
           singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
@@ -1216,7 +1222,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     // - Same WHERE clause (to match base query filtering)
     request
       .copy(
-        select = request.select.copy(fields = request.windowFields),
+        select = request.select.copy(fields = request.windowFields.map(_.update(request))),
         groupBy = None, //request.groupBy.map(_.copy(buckets = request.windowBuckets)),
         orderBy = None, // Not needed for aggregations
         limit = None // Need all buckets

@@ -19,12 +19,7 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Sink, Source}
-import app.softnetwork.elastic.client.result.{
-  ElasticError,
-  ElasticFailure,
-  ElasticResult,
-  ElasticSuccess
-}
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll.{
   ScrollConfig,
   ScrollMetrics,
@@ -150,7 +145,11 @@ trait ScrollApi extends ElasticClientHelpers {
 
       // Single search
       case single: SingleSearch =>
-        if (single.windowFunctions.exists(_.isWindowing))
+        if (
+          single.windowFunctions.exists(_.isWindowing) && (!single.select.fields.forall(
+            _.isAggregation
+          ) || single.scriptFields.nonEmpty)
+        )
           return scrollWithWindowEnrichment(single, config)
 
         val elasticQuery =
@@ -430,7 +429,8 @@ trait ScrollApi extends ElasticClientHelpers {
             scrollWithMetrics(
               ElasticQuery(
                 baseQuery,
-                collection.immutable.Seq(baseQuery.sources: _*)
+                collection.immutable.Seq(baseQuery.sources: _*),
+                sql = Some(baseQuery.sql)
               ),
               baseQuery.fieldAliases,
               baseQuery.sqlAggregations,
