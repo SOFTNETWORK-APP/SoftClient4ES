@@ -400,7 +400,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
           case Some(_) =>
-            identifier.baseType match {
+            identifier.originalType match {
               case SQLTypes.Any => // in painless context, Any is ZonedDateTime
                 maybeValue.map(_.out).getOrElse(SQLTypes.Any) match {
                   case SQLTypes.Date =>

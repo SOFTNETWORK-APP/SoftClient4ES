@@ -105,6 +105,13 @@ object ElasticsearchVersion {
     major == 6
   }
 
+  /** Check if version is ES 7
+    */
+  def isEs7(version: String): Boolean = {
+    val (major, _, _) = parse(version)
+    major == 7
+  }
+
   /** Check if Data Streams are supported (ES >= 7.9)
     */
   def supportsDataStreams(version: String): Boolean = {

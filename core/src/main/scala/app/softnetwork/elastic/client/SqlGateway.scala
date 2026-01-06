@@ -33,6 +33,7 @@ import app.softnetwork.elastic.client.result.{
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
+  CreatePipeline,
   CreateTable,
   DdlStatement,
   Delete,
@@ -52,7 +53,6 @@ import app.softnetwork.elastic.sql.query.{
   Update
 }
 import app.softnetwork.elastic.sql.schema.{
-  ColumnOptionSet,
   Impossible,
   IngestPipeline,
   IngestPipelineType,
@@ -109,10 +109,22 @@ class DqlExecutor(api: ScrollApi with SearchApi, logger: Logger) extends Executo
       // SingleSearch → SCROLL
       // ============================
       case single: SingleSearch =>
-        logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
-        Future.successful(
-          ElasticSuccess(QueryStream(api.scroll(single)))
-        )
+        single.limit match {
+          case Some(l) if l.offset.map(_.offset).getOrElse(0) > 0 =>
+            logger.info(s"▶ Executing classic search on index ${single.from.tables.mkString(",")}")
+            api.searchAsync(single) map {
+              case ElasticSuccess(results) =>
+                logger.info(s"✅ Search returned ${results.results.size} hits.")
+                ElasticSuccess(QueryStructured(results))
+              case ElasticFailure(err) =>
+                ElasticFailure(err.copy(operation = Some("dql")))
+            }
+          case _ =>
+            logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
+            Future.successful(
+              ElasticSuccess(QueryStream(api.scroll(single)))
+            )
+        }
 
       // ============================
       // MultiSearch → searchAsync
@@ -445,7 +457,7 @@ class TableExecutor(
         logger.info(
           s"🔄 Merging existing index $indexName DDL with new DDL."
         )
-        var updatedTable: Table = schema.merge(alter.statements)
+        val updatedTable: Table = schema.merge(alter.statements)
 
         // load default pipeline diff if needed
         val defaultPipelineDiff: Option[List[PipelineDiff]] =
@@ -539,7 +551,20 @@ class TableExecutor(
             // ------------------------------------------------------------
             case UnsafeReindex =>
               logger.warn(s"⚠️ ALTER TABLE requires REINDEX for $indexName.")
-              migrateToNewSchema(indexName, schema, updatedTable, diff) match {
+              migrateToNewSchema(
+                indexName,
+                schema,
+                updatedTable.copy(
+                  settings = schema.settings // remove settings that cannot be copied
+                    - "uuid"
+                    - "creation_date"
+                    - "provided_name"
+                    - "version"
+                    - "default_pipeline"
+                    - "final_pipeline"
+                ),
+                diff
+              ) match {
                 case Right(result) => Future.successful(ElasticSuccess(DdlResult(result)))
                 case Left(error) =>
                   Future.successful(ElasticFailure(error.copy(operation = Some("schema"))))
@@ -613,7 +638,18 @@ class TableExecutor(
               api.loadSchema(from) match {
                 case ElasticSuccess(fromSchema) =>
                   // we update the schema based on the DQL select clause
-                  fromSchema.mergeWithSearch(single)
+                  fromSchema
+                    .mergeWithSearch(single)
+                    .copy(
+                      name = indexName, // set index name
+                      settings = fromSchema.settings // remove settings that cannot be copied
+                        - "uuid"
+                        - "creation_date"
+                        - "provided_name"
+                        - "version"
+                        - "default_pipeline"
+                        - "final_pipeline"
+                    )
                 case ElasticFailure(elasticError) =>
                   val error = ElasticError(
                     message =
@@ -641,7 +677,16 @@ class TableExecutor(
     // create index pipeline(s) if needed
     table.defaultPipeline match {
       case pipeline if pipeline.processors.nonEmpty =>
-        createIndexPipeline(indexName, pipeline) match {
+        createIndexPipeline(
+          indexName,
+          CreatePipeline(
+            pipeline.name,
+            pipeline.pipelineType,
+            ifNotExists = true,
+            orReplace = false,
+            pipeline.processors
+          )
+        ) match {
           case ElasticSuccess(_) =>
             table = table.setDefaultPipelineName(pipelineName = pipeline.name)
           case ElasticFailure(elasticError) =>
@@ -656,7 +701,16 @@ class TableExecutor(
 
     table.finalPipeline match {
       case pipeline if pipeline.processors.nonEmpty =>
-        createIndexPipeline(indexName, pipeline) match {
+        createIndexPipeline(
+          indexName,
+          CreatePipeline(
+            pipeline.name,
+            pipeline.pipelineType,
+            ifNotExists = true,
+            orReplace = false,
+            pipeline.processors
+          )
+        ) match {
           case ElasticSuccess(_) =>
             table = table.setFinalPipelineName(pipelineName = pipeline.name)
           case ElasticFailure(elasticError) =>
@@ -680,7 +734,7 @@ class TableExecutor(
               s"🚚 Populating index $indexName based on DQL."
             )
             val query =
-              s"""INSERT INTO ${create.table} AS ${single.sql} ON DUPLICATE KEY NOTHING"""
+              s"""INSERT INTO ${table.name} AS ${single.sql} ON CONFLICT DO NOTHING"""
             val result = api.insertByQuery(
               index = indexName,
               query = query
@@ -714,20 +768,20 @@ class TableExecutor(
    */
   private def createIndexPipeline(
     indexName: String,
-    pipeline: IngestPipeline
+    statement: CreatePipeline
   ): ElasticResult[Boolean] = {
     logger.info(
-      s"🔧 Creating ${pipeline.pipelineType.name} ingesting pipeline ${pipeline.name} for index $indexName."
+      s"🔧 Creating ${statement.pipelineType.name} ingesting pipeline ${statement.name} for index $indexName."
     )
-    api.createPipeline(pipeline.name, pipeline.json) match {
+    api.pipeline(statement) match {
       case success @ ElasticSuccess(true) =>
-        logger.info(s"✅ Pipeline ${pipeline.name} created successfully.")
+        logger.info(s"✅ Pipeline ${statement.name} created successfully.")
         success
       case ElasticSuccess(_) =>
         // pipeline creation failed
         val error =
           ElasticError(
-            message = s"Failed to create pipeline ${pipeline.name}.",
+            message = s"Failed to create pipeline ${statement.name}.",
             statusCode = Some(500),
             operation = Some("schema")
           )
@@ -745,21 +799,22 @@ class TableExecutor(
     val indexName = table.name
     if (partitioned) {
       // create index template
-      api.createTemplate(s"template_$indexName", table.indexTemplate) match {
+      api.createTemplate(indexName, table.indexTemplate) match {
         case success @ ElasticSuccess(true) =>
-          logger.info(s"✅ Template template_$indexName created successfully.")
+          logger.info(s"✅ Template $indexName created successfully.")
           success
         case ElasticSuccess(_) =>
           // template creation failed
           val error =
             ElasticError(
-              message = s"Failed to create template template_$indexName.",
+              message = s"Failed to create template $indexName.",
               statusCode = Some(500),
               operation = Some("schema")
             )
           logger.error(s"❌ ${error.message}")
           ElasticFailure(error)
-        case failure @ ElasticFailure(_) =>
+        case failure @ ElasticFailure(error) =>
+          logger.error(s"❌ ${error.message}")
           failure
       }
     } else {
@@ -844,7 +899,7 @@ class TableExecutor(
   ): Either[ElasticError, Boolean] = {
 
     val mappingUpdate =
-      if (diff.mappings.nonEmpty || diff.columns.exists(_.isInstanceOf[ColumnOptionSet]))
+      if (diff.mappings.nonEmpty || diff.columns.nonEmpty)
         api.setMapping(indexName, updated.indexMappings)
       else ElasticSuccess(true)
 
@@ -1052,28 +1107,61 @@ trait SqlGateway extends ElasticClientHelpers {
   // ========================================================================
 
   def run(sql: String)(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
-    ElasticResult.attempt(Parser(sql)) match {
-      case ElasticSuccess(parsedStatement) =>
-        parsedStatement match {
-          case Right(statement) =>
-            run(statement)
-          case Left(l) =>
+    val normalizedQuery =
+      sql
+        .split("\n")
+        .map(_.split("--")(0).trim)
+        .filterNot(w => w.isEmpty || w.startsWith("--"))
+        .mkString(" ")
+    normalizedQuery.split(";\\s*$").toList match {
+      case Nil =>
+        val error =
+          ElasticError(
+            message = s"Empty SQL query.",
+            statusCode = Some(400),
+            operation = Some("sql")
+          )
+        logger.error(s"❌ ${error.message}")
+        Future.successful(ElasticFailure(error))
+      case statement :: Nil =>
+        ElasticResult.attempt(Parser(statement)) match {
+          case ElasticSuccess(parsedStatement) =>
+            parsedStatement match {
+              case Right(statement) =>
+                run(statement)
+              case Left(l) =>
+                // parsing error
+                val error =
+                  ElasticError(
+                    message = s"Error parsing schema DDL statement: ${l.msg}",
+                    statusCode = Some(400),
+                    operation = Some("schema")
+                  )
+                logger.error(s"❌ ${error.message}")
+                Future.successful(ElasticFailure(error))
+            }
+
+          case ElasticFailure(elasticError) =>
             // parsing error
-            val error =
-              ElasticError(
-                message = s"Error parsing schema DDL statement: ${l.msg}",
-                statusCode = Some(400),
-                operation = Some("schema")
-              )
-            logger.error(s"❌ ${error.message}")
-            Future.successful(ElasticFailure(error))
+            Future.successful(ElasticFailure(elasticError.copy(operation = Some("schema"))))
         }
 
-      case ElasticFailure(elasticError) =>
-        // parsing error
-        Future.successful(ElasticFailure(elasticError.copy(operation = Some("schema"))))
+      case statements =>
+        implicit val ec: ExecutionContext = system.dispatcher
+        // run each statement sequentially and return the result of the last one
+        val last = statements
+          .foldLeft(
+            Future.successful[ElasticResult[QueryResult]](ElasticSuccess(QueryResult.empty))
+          ) { (acc, statement) =>
+            acc.flatMap {
+              case ElasticSuccess(_) =>
+                run(statement)
+              case failure @ ElasticFailure(_) =>
+                return Future.successful(failure)
+            }
+          }
+        last
     }
-
   }
 
   def run(

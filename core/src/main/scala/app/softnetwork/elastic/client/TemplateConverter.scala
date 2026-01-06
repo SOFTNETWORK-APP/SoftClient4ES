@@ -231,23 +231,8 @@ object TemplateConverter {
         }
 
         if (templateNode.has("mappings")) {
-          val mappingsNode = templateNode.get("mappings")
-
-          // Check if we need to wrap in _doc for ES 6.x
-          if (
-            ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion) && !mappingsNode.has("_doc")
-          ) {
-            val wrappedMappings = mapper.createObjectNode()
-            wrappedMappings.set("_doc", mappingsNode)
-            legacy.set("mappings", wrappedMappings)
-            logger.debug(s"Wrapped mappings in '_doc' for ES $elasticVersion")
-          } else if (
-            !ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion) && mappingsNode.has("_doc")
-          ) {
-            legacy.set("mappings", mappingsNode.get("_doc"))
-          } else {
-            legacy.set("mappings", mappingsNode)
-          }
+          val mappingsNode = templateNode.get("mappings").asInstanceOf[ObjectNode]
+          legacy.set("mappings", MappingConverter.convert(mappingsNode, elasticVersion))
         }
 
         if (templateNode.has("aliases")) {

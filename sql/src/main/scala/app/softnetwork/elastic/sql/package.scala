@@ -763,6 +763,9 @@ package object sql {
   case class ObjectValues(override val values: Seq[ObjectValue])
       extends Values[Map[String, Value[_]], ObjectValue](values) {
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Struct)
+    import app.softnetwork.elastic.sql.serialization._
+
+    def toJson: JsonNode = this
   }
 
   def toRegex(value: String): String = {

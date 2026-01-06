@@ -54,6 +54,8 @@ object SQLTypes {
 
   case object Struct extends SQLStruct { val typeId = "STRUCT" }
 
+  case object GeoPoint extends EsqlGeoPoint { val typeId = "GEO_POINT" }
+
   def apply(typeName: String): SQLType = typeName.toLowerCase match {
     case "null"                     => Null
     case "boolean"                  => Boolean
@@ -64,31 +66,18 @@ object SQLTypes {
     case "keyword"                  => Keyword
     case "text"                     => Text
     case "varchar"                  => Varchar
-    case "datetime" | "timestamp"   => DateTime
+    case "timestamp"                => Timestamp
+    case "datetime"                 => DateTime
     case "date"                     => Date
     case "time"                     => Time
     case "double"                   => Double
     case "float" | "real"           => Real
     case "object" | "struct"        => Struct
     case "nested" | "array<struct>" => Array(Struct)
+    case "geo_point"                => GeoPoint
     case _                          => Any
   }
 
-  def apply(field: IndexField): SQLType = field.`type` match {
-    case "null"    => Null
-    case "boolean" => Boolean
-    case "integer" => Int
-    case "long"    => BigInt
-    case "short"   => SmallInt
-    case "byte"    => TinyInt
-    case "keyword" => Keyword
-    case "text"    => Text
-    case "date"    => DateTime
-    case "double"  => Double
-    case "float"   => Real
-    case "object"  => Struct
-    case "nested"  => Array(Struct)
-    case _         => Any
-  }
+  def apply(field: IndexField): SQLType = apply(field.`type`)
 
 }

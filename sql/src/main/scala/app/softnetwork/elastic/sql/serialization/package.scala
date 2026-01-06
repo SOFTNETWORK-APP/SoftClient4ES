@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql
 
 import com.fasterxml.jackson.annotation.JsonInclude
-import com.fasterxml.jackson.databind.node.ObjectNode
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.fasterxml.jackson.databind.{
   DeserializationFeature,
   JsonNode,
@@ -78,6 +78,15 @@ package object serialization {
     import JacksonConfig.{objectMapper => mapper}
     val node = mapper.createObjectNode()
     updateNode(node, value.value)
+    node
+  }
+
+  implicit def objectValuesToObjectNode(values: ObjectValues): ArrayNode = {
+    import JacksonConfig.{objectMapper => mapper}
+    val node = mapper.createArrayNode()
+    values.values.foreach { value =>
+      node.add(value)
+    }
     node
   }
 

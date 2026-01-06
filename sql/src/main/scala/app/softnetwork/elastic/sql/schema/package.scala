@@ -187,7 +187,10 @@ package object schema {
           }
 
         case "script" =>
-          val desc = props.get("description").asText()
+          val desc = {
+            if (props.has("description")) props.get("description").asText()
+            else ""
+          }
           val lang = props.get("lang").asText()
           require(lang == "painless", s"Only painless supported, got $lang")
           val source = props.get("source").asText()
@@ -375,7 +378,6 @@ package object schema {
     dateRounding: String,
     dateFormats: List[String],
     prefix: String,
-    separator: String = "-",
     ignoreFailure: Boolean = true
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.DateIndexName
@@ -386,7 +388,6 @@ package object schema {
       "date_rounding"     -> dateRounding,
       "date_formats"      -> dateFormats,
       "index_name_prefix" -> prefix,
-      "separator"         -> separator,
       "ignore_failure"    -> ignoreFailure
     )
 
@@ -578,8 +579,42 @@ package object schema {
       }
     }
 
+    def _meta: Map[String, Value[_]] = {
+      Map(
+        "data_type" -> StringValue(dataType.typeId),
+        "not_null"  -> StringValue(s"$notNull")
+      ) ++ defaultValue.map(d => "default_value" -> d) ++ comment.map(ct =>
+        "comment" -> StringValue(ct)
+      ) ++ script
+        .map { sc =>
+          ObjectValue(
+            Map(
+              "sql"      -> StringValue(sc.script),
+              "column"   -> StringValue(path),
+              "painless" -> StringValue(sc.source)
+            )
+          )
+        }
+        .map("script" -> _) ++ Map(
+        "multi_fields" -> ObjectValue(
+          multiFields.map(field => field.name -> ObjectValue(field._meta)).toMap
+        )
+      )
+    }
+
+    def updateStruct(): Column = {
+      struct
+        .map { st =>
+          val updated = st.copy(multiFields = st.multiFields.filterNot(_.name == this.name) :+ this)
+          updated.updateStruct()
+        }
+        .getOrElse(this)
+        .update()
+    }
+
     def update(struct: Option[Column] = None): Column = {
       val updated = this.copy(struct = struct)
+      // update script accordingly with new path
       val updated_script =
         script.map { sc =>
           sc.copy(
@@ -587,41 +622,15 @@ package object schema {
             source = sc.source.replace(s"ctx.$name", s"ctx.${updated.path}")
           )
         }
-      val sql_script: Option[ObjectValue] =
-        updated_script match {
-          case Some(s) =>
-            Some(
-              ObjectValue(
-                Map(
-                  "sql"      -> StringValue(s.script),
-                  "column"   -> StringValue(updated.path),
-                  "painless" -> StringValue(s.source)
-                )
-              )
-            )
-          case _ => None
-        }
       updated.copy(
         multiFields = multiFields.map { field =>
           field.update(Some(updated))
         },
         script = updated_script,
-        options = options ++ Map(
-          "meta" -> ObjectValue(
-            options.get("meta") match {
-              case Some(ObjectValue(value)) =>
-                value ++ Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
-                  "comment" -> StringValue(ct)
-                ) ++ sql_script.map(st => "script" -> st)
-              case _ =>
-                Map("not_null" -> BooleanValue(notNull)) ++ comment.map(ct =>
-                  "comment" -> StringValue(ct)
-                ) ++ sql_script.map(st => "script" -> st)
-            }
-          )
-        )
+        options = options
       )
     }
+
     def sql: String = {
       val opts = if (options.nonEmpty) {
         s" OPTIONS ${ObjectValue(options).ddl}"
@@ -666,8 +675,14 @@ package object schema {
       val root = mapper.createObjectNode()
       val esType = SQLTypeUtils.elasticType(dataType)
       root.put("type", esType)
-      defaultValue.foreach { dv =>
-        updateNode(root, Map("null_value" -> dv))
+      dataType match {
+        case SQLTypes.Varchar | SQLTypes.Text => // do not set null_value for text types
+        case _ =>
+          defaultValue.foreach {
+            case IngestTimestampValue => () // do not set null_value for ingest timestamp
+            case dv => // set null_value for other types
+              updateNode(root, Map("null_value" -> dv))
+          }
       }
       if (multiFields.nonEmpty) {
         val name =
@@ -1016,19 +1031,23 @@ package object schema {
           )
         )
       )
-      .getOrElse(Map.empty)
+      .getOrElse(Map.empty) ++
+      Map("columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) }))
 
-    def update(): Table = this.copy(
-      columns = columns.map(_.update()),
-      mappings = mappings ++ Map(
-        "_meta" ->
-        ObjectValue(mappings.get("_meta") match {
-          case Some(ObjectValue(value)) =>
-            (value - "primary_key" - "partition_by") ++ _meta
-          case _ => _meta
-        })
+    def update(): Table = {
+      val updated =
+        this.copy(columns = columns.map(_.update())) // update columns first with struct info
+      updated.copy(
+        mappings = updated.mappings ++ Map(
+          "_meta" ->
+          ObjectValue(updated.mappings.get("_meta") match {
+            case Some(ObjectValue(value)) =>
+              (value - "primary_key" - "partition_by" - "columns") ++ updated._meta
+            case _ => updated._meta
+          })
+        )
       )
-    )
+    }
 
     def sql: String = {
       val opts =
@@ -1071,250 +1090,258 @@ package object schema {
         .toSeq ++ implicitly[Seq[IngestProcessor]](primaryKey)
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
-      statements.foldLeft(this) { (table, statement) =>
-        statement match {
-          // table columns
-          case AddColumn(column, ifNotExists) =>
-            if (ifNotExists && table.cols.contains(column.name)) table
-            else if (!table.cols.contains(column.name))
-              table.copy(columns = table.columns :+ column)
-            else throw ColumnNotFound(column.name, table.name)
-          case DropColumn(columnName, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(columns = table.columns.filterNot(_.name == columnName))
-            else throw ColumnNotFound(columnName, table.name)
-          case RenameColumn(oldName, newName) =>
-            if (cols.contains(oldName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == oldName) col.copy(name = newName) else col
-                }
-              )
-            else throw ColumnNotFound(oldName, table.name)
-          // column type
-          case AlterColumnType(columnName, newType, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) col.copy(dataType = newType)
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          // column script
-          case AlterColumnScript(columnName, newScript, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(script = Some(newScript.copy(dataType = col.dataType)))
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          case DropColumnScript(columnName, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) col.copy(script = None)
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          // column default value
-          case AlterColumnDefault(columnName, newDefault, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) col.copy(defaultValue = Some(newDefault))
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          case DropColumnDefault(columnName, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) col.copy(defaultValue = None)
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          // column not null
-          case AlterColumnNotNull(columnName, ifExists) =>
-            if (!table.cols.contains(columnName) && ifExists) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) col.copy(notNull = true)
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          case DropColumnNotNull(columnName, ifExists) =>
-            if (!table.cols.contains(columnName) && ifExists) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName) col.copy(notNull = false)
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          // column options
-          case AlterColumnOptions(columnName, newOptions, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(options = col.options ++ newOptions)
-                  else col
-                }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          case AlterColumnOption(
-                columnName,
-                optionKey,
-                optionValue,
-                ifExists
-              ) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(
-                      options = ObjectValue(col.options).set(optionKey, optionValue).value
+      statements
+        .foldLeft(this) { (table, statement) =>
+          statement match {
+            // table columns
+            case AddColumn(column, ifNotExists) =>
+              if (ifNotExists && table.cols.contains(column.name)) table
+              else if (!table.cols.contains(column.name))
+                table.copy(columns = table.columns :+ column)
+              else throw ColumnNotFound(column.name, table.name)
+            case DropColumn(columnName, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(columns = table.columns.filterNot(_.name == columnName))
+              else throw ColumnNotFound(columnName, table.name)
+            case RenameColumn(oldName, newName) =>
+              if (cols.contains(oldName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == oldName) col.copy(name = newName) else col
+                  }
+                )
+              else throw ColumnNotFound(oldName, table.name)
+            // column type
+            case AlterColumnType(columnName, newType, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName) col.copy(dataType = newType)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            // column script
+            case AlterColumnScript(columnName, newScript, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName)
+                      col.copy(script = Some(newScript.copy(dataType = col.dataType)))
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            case DropColumnScript(columnName, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName) col.copy(script = None)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            // column default value
+            case AlterColumnDefault(columnName, newDefault, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName) col.copy(defaultValue = Some(newDefault))
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            case DropColumnDefault(columnName, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName) col.copy(defaultValue = None)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            // column not null
+            case AlterColumnNotNull(columnName, ifExists) =>
+              if (!table.cols.contains(columnName) && ifExists) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName) col.copy(notNull = true)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            case DropColumnNotNull(columnName, ifExists) =>
+              if (!table.cols.contains(columnName) && ifExists) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName) col.copy(notNull = false)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            // column options
+            case AlterColumnOptions(columnName, newOptions, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName)
+                      col.copy(options = col.options ++ newOptions)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            case AlterColumnOption(
+                  columnName,
+                  optionKey,
+                  optionValue,
+                  ifExists
+                ) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName)
+                      col.copy(
+                        options = ObjectValue(col.options).set(optionKey, optionValue).value
+                      )
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            case DropColumnOption(
+                  columnName,
+                  optionKey,
+                  ifExists
+                ) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName)
+                      col.copy(
+                        options = ObjectValue(col.options).remove(optionKey).value
+                      )
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            // column comments
+            case AlterColumnComment(columnName, newComment, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName)
+                      col.copy(comment = Some(newComment))
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            case DropColumnComment(columnName, ifExists) =>
+              if (ifExists && !table.cols.contains(columnName)) table
+              else if (table.cols.contains(columnName))
+                table.copy(
+                  columns = table.columns.map { col =>
+                    if (col.name == columnName)
+                      col.copy(comment = None)
+                    else col
+                  }
+                )
+              else throw ColumnNotFound(columnName, table.name)
+            // multi-fields
+            case AlterColumnFields(columnName, newFields, ifExists) =>
+              val col = find(columnName)
+              val exists = col.isDefined
+              if (ifExists && !exists) table
+              else {
+                col match {
+                  case Some(c) =>
+                    val updated = c
+                      .copy(
+                        multiFields = newFields.toList.map(_.update(Some(c)))
+                      )
+                      .updateStruct()
+                    table.copy(
+                      columns = table.columns.map { col =>
+                        if (col.name == updated.name) updated else col
+                      }
                     )
-                  else col
+                  case _ => throw ColumnNotFound(columnName, table.name)
                 }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          case DropColumnOption(
-                columnName,
-                optionKey,
-                ifExists
-              ) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
-              table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(
-                      options = ObjectValue(col.options).remove(optionKey).value
+              }
+            case AlterColumnField(
+                  columnName,
+                  field,
+                  ifExists
+                ) =>
+              val col = find(columnName)
+              val exists = col.isDefined
+              if (ifExists && !exists) table
+              else {
+                col match {
+                  case Some(c) =>
+                    val updatedFields = c.multiFields.filterNot(_.name == field.name) :+ field
+                    c.copy(multiFields = updatedFields)
+                    table
+                  case _ => throw ColumnNotFound(columnName, table.name)
+                }
+              }
+            case DropColumnField(
+                  columnName,
+                  fieldName,
+                  ifExists
+                ) =>
+              val col = find(columnName)
+              val exists = col.isDefined
+              if (ifExists && !exists) table
+              else {
+                col match {
+                  case Some(c) =>
+                    c.copy(
+                      multiFields = c.multiFields.filterNot(_.name == fieldName)
                     )
-                  else col
+                    table
+                  case _ => throw ColumnNotFound(columnName, table.name)
                 }
-              )
-            else throw ColumnNotFound(columnName, table.name)
-          // column comments
-          case AlterColumnComment(columnName, newComment, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
+              }
+            // mappings / settings
+            case AlterTableMapping(optionKey, optionValue) =>
               table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(comment = Some(newComment))
-                  else col
-                }
+                mappings = ObjectValue(table.mappings).set(optionKey, optionValue).value
               )
-            else throw ColumnNotFound(columnName, table.name)
-          case DropColumnComment(columnName, ifExists) =>
-            if (ifExists && !table.cols.contains(columnName)) table
-            else if (table.cols.contains(columnName))
+            case DropTableMapping(optionKey) =>
               table.copy(
-                columns = table.columns.map { col =>
-                  if (col.name == columnName)
-                    col.copy(comment = None)
-                  else col
-                }
+                mappings = ObjectValue(table.mappings).remove(optionKey).value
               )
-            else throw ColumnNotFound(columnName, table.name)
-          // multi-fields
-          case AlterColumnFields(columnName, newFields, ifExists) =>
-            val col = find(columnName)
-            val exists = col.isDefined
-            if (ifExists && !exists) table
-            else {
-              col match {
-                case Some(c) =>
-                  c.copy(
-                    multiFields = newFields.toList
-                  )
-                  table
-                case _ => throw ColumnNotFound(columnName, table.name)
-              }
-            }
-          case AlterColumnField(
-                columnName,
-                field,
-                ifExists
-              ) =>
-            val col = find(columnName)
-            val exists = col.isDefined
-            if (ifExists && !exists) table
-            else {
-              col match {
-                case Some(c) =>
-                  val updatedFields = c.multiFields.filterNot(_.name == field.name) :+ field
-                  c.copy(multiFields = updatedFields)
-                  table
-                case _ => throw ColumnNotFound(columnName, table.name)
-              }
-            }
-          case DropColumnField(
-                columnName,
-                fieldName,
-                ifExists
-              ) =>
-            val col = find(columnName)
-            val exists = col.isDefined
-            if (ifExists && !exists) table
-            else {
-              col match {
-                case Some(c) =>
-                  c.copy(
-                    multiFields = c.multiFields.filterNot(_.name == fieldName)
-                  )
-                  table
-                case _ => throw ColumnNotFound(columnName, table.name)
-              }
-            }
-          // mappings / settings
-          case AlterTableMapping(optionKey, optionValue) =>
-            table.copy(
-              mappings = ObjectValue(table.mappings).set(optionKey, optionValue).value
-            )
-          case DropTableMapping(optionKey) =>
-            table.copy(
-              mappings = ObjectValue(table.mappings).remove(optionKey).value
-            )
-          case AlterTableSetting(optionKey, optionValue) =>
-            table.copy(
-              settings = ObjectValue(table.settings).set(optionKey, optionValue).value
-            )
-          case DropTableSetting(optionKey) =>
-            table.copy(
-              settings = ObjectValue(table.settings).remove(optionKey).value
-            )
-          case AlterTableAlias(aliasName, aliasValue) =>
-            table.copy(
-              aliases = table.aliases + (aliasName -> aliasValue)
-            )
-          case DropTableAlias(aliasName) =>
-            table.copy(
-              aliases = table.aliases - aliasName
-            )
-          case _ => table
+            case AlterTableSetting(optionKey, optionValue) =>
+              table.copy(
+                settings = ObjectValue(table.settings).set(optionKey, optionValue).value
+              )
+            case DropTableSetting(optionKey) =>
+              table.copy(
+                settings = ObjectValue(table.settings).remove(optionKey).value
+              )
+            case AlterTableAlias(aliasName, aliasValue) =>
+              table.copy(
+                aliases = table.aliases + (aliasName -> aliasValue)
+              )
+            case DropTableAlias(aliasName) =>
+              table.copy(
+                aliases = table.aliases - aliasName
+              )
+            case _ => table
+          }
         }
-      }
+        .update()
 
     }
 
@@ -1448,7 +1475,9 @@ package object schema {
 
     lazy val indexTemplate: ObjectNode = {
       val node = mapper.createObjectNode()
-      node.put("index_patterns", s"$name-*")
+      val patterns = mapper.createArrayNode()
+      patterns.add(s"$name-*")
+      node.set("index_patterns", patterns)
       node.put("priority", 1)
       val template = mapper.createObjectNode()
       template.set("mappings", indexMappings)

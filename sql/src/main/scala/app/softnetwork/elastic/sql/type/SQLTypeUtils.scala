@@ -70,6 +70,7 @@ object SQLTypeUtils {
     case DateTime       => "date"
     case Timestamp      => "date"
     case Temporal       => "date"
+    case GeoPoint       => "geo_point"
     case Array(Struct)  => "nested"
     case Struct         => "object"
     case _              => "object"
@@ -166,16 +167,25 @@ object SQLTypeUtils {
 
   def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
     context match {
-      case Some(_) =>
+      case Some(ctx) =>
         in match {
           case identifier: Identifier =>
-            identifier.baseType match {
-              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+            identifier.originalType match {
+              case SQLTypes.Any if !ctx.isProcessor => // in painless context, Any is ZonedDateTime
                 to match {
                   case SQLTypes.Date =>
                     identifier.addPainlessMethod(".toLocalDate()")
                   case SQLTypes.Time =>
                     identifier.addPainlessMethod(".toLocalTime()")
+                  case _ => // do nothing
+                }
+              case SQLTypes.Any if ctx.isProcessor =>
+                to match {
+                  case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                    val expr = identifier.painless(context)
+                    val from = SQLTypes.BigInt
+                    val ret = coerce(expr, from, to, identifier.nullable, context)
+                    return ret
                   case _ => // do nothing
                 }
               case _ => // do nothing

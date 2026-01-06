@@ -45,8 +45,10 @@ package object function {
     override def shouldBeScripted: Boolean = identifier.shouldBeScripted
   }
 
-  trait FunctionWithValue[+T] extends Function with TokenValue {
+  trait FunctionWithValue[+T] extends FunctionWithIdentifier with TokenValue {
     def value: T
+
+    override def identifier: Identifier = Identifier(this)
   }
 
   object FunctionUtils {
@@ -274,7 +276,7 @@ package object function {
                       val ret = SQLTypeUtils
                         .coerce(
                           a,
-                          argTypes(i),
+                          in,
                           context
                         )
                       if (ret.startsWith(".")) {
@@ -306,9 +308,21 @@ package object function {
                               )
                             case _ =>
                           }
-                        case _ =>
+                          Option(paramName)
+                        case SQLTypes.Any if ctx.isProcessor =>
+                          in match {
+                            case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                              val param = SQLTypeUtils
+                                .coerce(
+                                  a,
+                                  in,
+                                  context
+                                )
+                              ctx.addParam(LiteralParam(param))
+                            case _ => Option(paramName)
+                          }
+                        case _ => Option(paramName)
                       }
-                      Option(paramName)
                     case _ =>
                       Option(paramName)
                   }

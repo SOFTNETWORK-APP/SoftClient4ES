@@ -120,6 +120,7 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
     with JavaClientPipelineApi
     with JavaClientScrollApi
     with JavaClientBulkApi
+    with JavaClientTemplateApi
     with JavaClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,

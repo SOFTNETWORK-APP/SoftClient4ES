@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
+import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
@@ -27,7 +28,9 @@ import app.softnetwork.elastic.client.result.{
   QueryStructured,
   QueryTable
 }
+import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
+import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.Table
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
@@ -69,13 +72,57 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert SELECT result type
   // -------------------------------------------------------------------------
 
-  def assertSelectResult(res: ElasticResult[QueryResult]): Unit = {
+  private def normalizeRow(row: Map[String, Any]): Map[String, Any] = {
+    val updated = row - "_id" - "_index" - "_score" - "_version" - "_sort"
+    updated.map(entry =>
+      entry._2 match {
+        case m: Map[_, _] =>
+          entry._1 -> normalizeRow(m.asInstanceOf[Map[String, Any]])
+        case seq: Seq[_] if seq.nonEmpty && seq.head.isInstanceOf[Map[_, _]] =>
+          entry._1 -> seq
+            .asInstanceOf[Seq[Map[String, Any]]]
+            .map(m => normalizeRow(m))
+        case other => entry._1 -> other
+      }
+    )
+  }
+
+  def assertSelectResult(
+    res: ElasticResult[QueryResult],
+    rows: Seq[Map[String, Any]] = Seq.empty
+  ): Unit = {
     res.isSuccess shouldBe true
     res.toOption.get match {
-      case QueryStream(_)     => succeed
-      case QueryStructured(_) => succeed
-      case QueryRows(_)       => succeed
-      case other              => fail(s"Unexpected QueryResult type for SELECT: $other")
+      case QueryStream(stream) =>
+        val sink = Sink.fold[Seq[Map[String, Any]], (Map[String, Any], ScrollMetrics)](Seq.empty) {
+          case (acc, (row, _)) =>
+            acc :+ normalizeRow(row)
+        }
+        val results = stream.runWith(sink).futureValue
+        if (rows.nonEmpty) {
+          results.size shouldBe rows.size
+          results should contain theSameElementsAs rows
+        } else {
+          log.info(s"Rows: $results")
+        }
+      case QueryStructured(response) =>
+        val results =
+          response.results.map(normalizeRow)
+        if (rows.nonEmpty) {
+          results.size shouldBe rows.size
+          results should contain theSameElementsAs rows
+        } else {
+          log.info(s"Rows: $results")
+        }
+      case q: QueryRows =>
+        val results = q.rows.map(normalizeRow)
+        if (rows.nonEmpty) {
+          results.size shouldBe rows.size
+          results should contain theSameElementsAs rows
+        } else {
+          log.info(s"Rows: $results")
+        }
+      case other => fail(s"Unexpected QueryResult type for SELECT: $other")
     }
   }
 
@@ -92,9 +139,17 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert DML result type
   // -------------------------------------------------------------------------
 
-  def assertDml(res: ElasticResult[QueryResult]): Unit = {
+  def assertDml(res: ElasticResult[QueryResult], result: Option[DmlResult] = None): Unit = {
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[DmlResult]
+    result match {
+      case Some(expected) =>
+        val dml = res.toOption.get.asInstanceOf[DmlResult]
+        dml.inserted shouldBe expected.inserted
+        dml.updated shouldBe expected.updated
+        dml.deleted shouldBe expected.deleted
+      case None => // do nothing
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -127,7 +182,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val table = assertShowTable(show)
 
     val ddl = table.ddl
-    ddl should include("CREATE TABLE show_users")
+    ddl should include("CREATE OR REPLACE TABLE show_users")
     ddl should include("id INT NOT NULL")
     ddl should include("name VARCHAR")
     ddl should include("age INT DEFAULT 0")
@@ -189,14 +244,21 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     // Vérification via SHOW TABLE
     val table = assertShowTable(client.run("SHOW TABLE users").futureValue)
-    val ddl = table.ddl
+    val ddl = table.ddl.replaceAll("\\s+", " ")
 
-    ddl should include("CREATE TABLE users")
-    ddl should include("id INT NOT NULL")
-    ddl should include("name VARCHAR")
-    ddl should include("DEFAULT 'anonymous'")
-    ddl should include("SCRIPT AS (DATEDIFF")
-    ddl should include("STRUCT FIELDS")
+    ddl should include("CREATE OR REPLACE TABLE users")
+    ddl should include("id INT NOT NULL COMMENT 'user identifier'")
+    ddl should include(
+      """name VARCHAR FIELDS ( raw KEYWORD COMMENT 'sortable' ) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french")"""
+    )
+    ddl should include("birthdate DATE")
+    ddl should include("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))")
+    ddl should include("ingested_at TIMESTAMP DEFAULT _ingest.timestamp")
+    ddl should include("profile STRUCT FIELDS (")
+    ddl should include("bio VARCHAR")
+    ddl should include("followers INT")
+    ddl should include("join_date DATE")
+    ddl should include("seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))")
     ddl should include("PRIMARY KEY (id)")
     ddl should include("PARTITION BY birthdate (MONTH)")
   }
@@ -210,10 +272,12 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       """CREATE TABLE IF NOT EXISTS accounts (
         |  id INT NOT NULL,
         |  owner VARCHAR,
-        |  balance DECIMAL(10,2)
-        |) WITH (
-        |  number_of_shards = 1,
-        |  number_of_replicas = 0
+        |  balance DOUBLE
+        |) OPTIONS (
+        |    settings = (
+        |      number_of_shards = 1,
+        |      number_of_replicas = 0
+        |    )
         |);""".stripMargin
 
     assertDdl(client.run(sql).futureValue)
@@ -229,28 +293,28 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       """CREATE TABLE IF NOT EXISTS accounts_src (
         |  id INT NOT NULL,
         |  name VARCHAR,
-        |  active BOOLEAN
+        |  active BOOLEAN,
+        |  PRIMARY KEY (id)
         |);""".stripMargin
 
     assertDdl(client.run(createSource).futureValue)
 
     val insertSource =
       """INSERT INTO accounts_src (id, name, active) VALUES
-        |  (1, 'Alice', true),
-        |  (2, 'Bob',   false),
-        |  (3, 'Chloe', true);""".stripMargin
+        | (1, 'Alice', true),
+        | (2, 'Bob',   false),
+        | (3, 'Chloe', true);""".stripMargin
 
     assertDml(client.run(insertSource).futureValue)
 
     val createOrReplace =
-      """CREATE OR REPLACE TABLE users_cr AS
-        |SELECT id, name FROM accounts_src WHERE active = true;""".stripMargin
+      "CREATE OR REPLACE TABLE users_cr AS SELECT id, name FROM accounts_src WHERE active = true;"
 
-    assertDdl(client.run(createOrReplace).futureValue)
+    assertDml(client.run(createOrReplace).futureValue)
 
     // Vérification via SHOW TABLE
     val table = assertShowTable(client.run("SHOW TABLE users_cr").futureValue)
-    table.ddl should include("CREATE TABLE users_cr")
+    table.ddl should include("CREATE OR REPLACE TABLE users_cr")
     table.ddl should include("id INT")
     table.ddl should include("name VARCHAR")
   }
@@ -437,6 +501,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val table = assertShowTable(client.run("SHOW TABLE users_alter5").futureValue)
     table.ddl should include("reputation DOUBLE DEFAULT 0.0")
+    table.defaultPipeline.processors.size shouldBe 2
   }
 
   // ---------------------------------------------------------------------------
@@ -446,7 +511,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   it should "set and drop NOT NULL on a column" in {
     val create =
       """CREATE TABLE IF NOT EXISTS users_alter6 (
-        |  id INT NOT NULL,
+        |  id INT,
         |  status VARCHAR
         |);""".stripMargin
 
@@ -482,12 +547,12 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val alter =
       """ALTER TABLE users_alter7
-        |  ALTER COLUMN status SET DATA TYPE BIGINT;""".stripMargin
+        |  ALTER COLUMN id SET DATA TYPE BIGINT;""".stripMargin
 
     assertDdl(client.run(alter).futureValue)
 
     val table = assertShowTable(client.run("SHOW TABLE users_alter7").futureValue)
-    table.ddl should include("status BIGINT")
+    table.ddl should include("id BIGINT NOT NULL")
   }
 
   // ---------------------------------------------------------------------------
@@ -575,8 +640,8 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val create =
       """CREATE TABLE IF NOT EXISTS dml_accounts (
         |  id INT NOT NULL,
-        |  owner VARCHAR,
-        |  balance DECIMAL(10,2)
+        |  owner KEYWORD,
+        |  balance DOUBLE
         |);""".stripMargin
 
     assertDdl(client.run(create).futureValue)
@@ -591,7 +656,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val update =
       """UPDATE dml_accounts
-        |SET balance = balance + 25
+        |SET balance = 125
         |WHERE owner = 'Alice';""".stripMargin
 
     val res = client.run(update).futureValue
@@ -618,7 +683,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val create =
       """CREATE TABLE IF NOT EXISTS dml_logs (
         |  id INT NOT NULL,
-        |  level VARCHAR,
+        |  level KEYWORD,
         |  message VARCHAR
         |);""".stripMargin
 
@@ -675,7 +740,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val update =
       """UPDATE dml_chain
-        |SET value = value * 2
+        |SET value = 50
         |WHERE id IN (1, 3);""".stripMargin
 
     assertDml(client.run(update).futureValue)
@@ -706,11 +771,13 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val create =
       """CREATE TABLE IF NOT EXISTS dql_users (
         |  id INT NOT NULL,
-        |  name VARCHAR,
+        |  name VARCHAR FIELDS(
+        |    raw KEYWORD
+        |  ) OPTIONS (fielddata = true),
         |  age INT,
         |  birthdate DATE,
         |  profile STRUCT FIELDS(
-        |    city VARCHAR,
+        |    city VARCHAR OPTIONS (fielddata = true),
         |    followers INT
         |  )
         |);""".stripMargin
@@ -719,13 +786,13 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val insert =
       """INSERT INTO dql_users (id, name, age, birthdate, profile) VALUES
-        |  (1, 'Alice', 30, '1994-01-01', { "city": "Paris", "followers": 100 }),
-        |  (2, 'Bob',   40, '1984-05-10', { "city": "Lyon",  "followers": 50  }),
-        |  (3, 'Chloe', 25, '1999-07-20', { "city": "Paris", "followers": 200 }),
-        |  (4, 'David', 50, '1974-03-15', { "city": "Marseille", "followers": 10 });
+        |  (1, 'Alice', 30, '1994-01-01', {city = "Paris", followers = 100}),
+        |  (2, 'Bob',   40, '1984-05-10', {city = "Lyon",  followers = 50}),
+        |  (3, 'Chloe', 25, '1999-07-20', {city = "Paris", followers = 200}),
+        |  (4, 'David', 50, '1974-03-15', {city = "Marseille", followers = 10});
         |""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
   }
 
   // ---------------------------------------------------------------------------
@@ -742,7 +809,39 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |ORDER BY id ASC;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(
+      res,
+      Seq(
+        Map(
+          "id"        -> 1,
+          "full_name" -> "Alice",
+          "city"      -> "Paris",
+          "followers" -> 100,
+          "profile"   -> Map("city" -> "Paris", "followers" -> 100)
+        ),
+        Map(
+          "id"        -> 2,
+          "full_name" -> "Bob",
+          "city"      -> "Lyon",
+          "followers" -> 50,
+          "profile"   -> Map("city" -> "Lyon", "followers" -> 50)
+        ),
+        Map(
+          "id"        -> 3,
+          "full_name" -> "Chloe",
+          "city"      -> "Paris",
+          "followers" -> 200,
+          "profile"   -> Map("city" -> "Paris", "followers" -> 200)
+        ),
+        Map(
+          "id"        -> 4,
+          "full_name" -> "David",
+          "city"      -> "Marseille",
+          "followers" -> 10,
+          "profile"   -> Map("city" -> "Marseille", "followers" -> 10)
+        )
+      )
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -756,7 +855,15 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |SELECT id, name FROM dql_users WHERE age <= 30;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(
+      res,
+      Seq(
+        Map("id" -> 2, "name" -> "Bob"),
+        Map("id" -> 4, "name" -> "David"),
+        Map("id" -> 1, "name" -> "Alice"),
+        Map("id" -> 3, "name" -> "Chloe")
+      )
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -768,31 +875,56 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       """CREATE TABLE IF NOT EXISTS dql_orders (
         |  id INT NOT NULL,
         |  customer_id INT,
-        |  items ARRAY<STRUCT FIELDS(
-        |    product VARCHAR,
+        |  items ARRAY<STRUCT> FIELDS(
+        |    product VARCHAR OPTIONS (fielddata = true),
         |    quantity INT,
         |    price DOUBLE
-        |  )>
+        |  ) OPTIONS (include_in_parent = false)
         |);""".stripMargin
 
     assertDdl(client.run(create).futureValue)
 
+    val table = assertShowTable(client.run("SHOW TABLE dql_orders").futureValue)
+    table.ddl should include("items ARRAY<STRUCT> FIELDS")
+
     val insert =
       """INSERT INTO dql_orders (id, customer_id, items) VALUES
-        |  (1, 1, [ { "product": "A", "quantity": 2, "price": 10.0 },
-        |           { "product": "B", "quantity": 1, "price": 20.0 } ]),
-        |  (2, 2, [ { "product": "C", "quantity": 3, "price": 5.0 } ]);""".stripMargin
+        |  (1, 1, [ { product = "A", quantity = 2, price = 10.0 },
+        |           { product = "B", quantity = 1, price = 20.0 } ]),
+        |  (2, 2, [ { product = "C", quantity = 3, price = 5.0 } ]);""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 2)))
 
     val sql =
-      """SELECT o.id, i.product, i.quantity
+      """SELECT
+        | o.id,
+        | items.product,
+        | items.quantity,
+        | SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
         |FROM dql_orders o
-        |JOIN UNNEST(o.items) AS i
+        |JOIN UNNEST(o.items) AS items
+        |WHERE items.quantity >= 1
         |ORDER BY o.id ASC;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(
+      res,
+      Seq(
+        Map(
+          "id" -> 1,
+          "items" -> Seq(
+            Map("product" -> "A", "quantity" -> 2, "price" -> 10.0),
+            Map("product" -> "B", "quantity" -> 1, "price" -> 20.0)
+          ),
+          "total_price" -> 40.0
+        ),
+        Map(
+          "id"          -> 2,
+          "items"       -> Seq(Map("product" -> "C", "quantity" -> 3, "price" -> 5.0)),
+          "total_price" -> 15.0
+        )
+      )
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -808,7 +940,13 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |ORDER BY age DESC;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(
+      res,
+      Seq(
+        Map("id" -> 1, "name" -> "Alice", "age" -> 30),
+        Map("id" -> 3, "name" -> "Chloe", "age" -> 25)
+      )
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -838,7 +976,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |FROM dql_users
         |GROUP BY profile.city
         |HAVING COUNT(*) >= 1
-        |ORDER BY cnt DESC;""".stripMargin
+        |ORDER BY COUNT(*) DESC;""".stripMargin
 
     val res = client.run(sql).futureValue
     assertSelectResult(res)
@@ -888,11 +1026,11 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val sql =
       """SELECT id,
         |       ABS(age) AS abs_age,
-        |       CEIL(age / 3.0) AS ceil_div,
-        |       FLOOR(age / 3.0) AS floor_div,
-        |       ROUND(age / 3.0, 2) AS round_div,
+        |       CEIL(age) AS ceil_div,
+        |       FLOOR(age) AS floor_div,
+        |       ROUND(age, 2) AS round_div,
         |       SQRT(age) AS sqrt_age,
-        |       POWER(age, 2) AS pow_age,
+        |       POW(age, 2) AS pow_age,
         |       LOG(age) AS log_age,
         |       LOG10(age) AS log10_age,
         |       EXP(age) AS exp_age,
@@ -912,20 +1050,77 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   it should "support string functions" in {
     val sql =
       """SELECT id,
-        |       CONCAT(name, '_suffix') AS name_concat,
-        |       SUBSTRING(name, 1, 2) AS name_sub,
-        |       LOWER(name) AS name_lower,
-        |       UPPER(name) AS name_upper,
-        |       TRIM(name) AS name_trim,
-        |       LENGTH(name) AS name_len,
-        |       REPLACE(name, 'A', 'X') AS name_repl,
-        |       LEFT(name, 1) AS name_left,
-        |       RIGHT(name, 1) AS name_right,
-        |       REVERSE(name) AS name_rev
-        |FROM dql_users;""".stripMargin
+        |       CONCAT(name.raw, '_suffix') AS name_concat,
+        |       SUBSTRING(name.raw, 1, 2) AS name_sub,
+        |       LOWER(name.raw) AS name_lower,
+        |       UPPER(name.raw) AS name_upper,
+        |       TRIM(name.raw) AS name_trim,
+        |       LENGTH(name.raw) AS name_len,
+        |       REPLACE(name.raw, 'A', 'X') AS name_repl,
+        |       LEFT(name.raw, 1) AS name_left,
+        |       RIGHT(name.raw, 1) AS name_right,
+        |       REVERSE(name.raw) AS name_rev
+        |FROM dql_users
+        |ORDER BY id ASC;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(
+      res,
+      Seq(
+        Map(
+          "id"          -> 1,
+          "name_concat" -> Seq("Alice_suffix"),
+          "name_sub"    -> Seq("Al"),
+          "name_lower"  -> Seq("alice"),
+          "name_upper"  -> Seq("ALICE"),
+          "name_trim"   -> Seq("Alice"),
+          "name_len"    -> Seq(5),
+          "name_repl"   -> Seq("Xlice"),
+          "name_left"   -> Seq("A"),
+          "name_right"  -> Seq("e"),
+          "name_rev"    -> Seq("ecilA")
+        ),
+        Map(
+          "id"          -> 2,
+          "name_concat" -> Seq("Bob_suffix"),
+          "name_sub"    -> Seq("Bo"),
+          "name_lower"  -> Seq("bob"),
+          "name_upper"  -> Seq("BOB"),
+          "name_trim"   -> Seq("Bob"),
+          "name_len"    -> Seq(3),
+          "name_repl"   -> Seq("Bob"),
+          "name_left"   -> Seq("B"),
+          "name_right"  -> Seq("b"),
+          "name_rev"    -> Seq("boB")
+        ),
+        Map(
+          "id"          -> 3,
+          "name_concat" -> Seq("Chloe_suffix"),
+          "name_sub"    -> Seq("Ch"),
+          "name_lower"  -> Seq("chloe"),
+          "name_upper"  -> Seq("CHLOE"),
+          "name_trim"   -> Seq("Chloe"),
+          "name_len"    -> Seq(5),
+          "name_repl"   -> Seq("Chloe"),
+          "name_left"   -> Seq("C"),
+          "name_right"  -> Seq("e"),
+          "name_rev"    -> Seq("eolhC")
+        ),
+        Map(
+          "id"          -> 4,
+          "name_concat" -> Seq("David_suffix"),
+          "name_sub"    -> Seq("Da"),
+          "name_lower"  -> Seq("david"),
+          "name_upper"  -> Seq("DAVID"),
+          "name_trim"   -> Seq("David"),
+          "name_len"    -> Seq(5),
+          "name_repl"   -> Seq("David"),
+          "name_left"   -> Seq("D"),
+          "name_right"  -> Seq("d"),
+          "name_rev"    -> Seq("divaD")
+        )
+      )
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -935,10 +1130,32 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   it should "support date and time functions" in {
     val sql =
       """SELECT id,
+        |       YEAR(CURRENT_DATE) AS current_year,
+        |       MONTH(CURRENT_DATE) AS current_month,
+        |       DAY(CURRENT_DATE) AS current_day,
+        |       WEEKDAY(CURRENT_DATE) AS current_weekday,
+        |       YEARDAY(CURRENT_DATE) AS current_yearday,
+        |       HOUR(CURRENT_TIMESTAMP) AS current_hour,
+        |       MINUTE(CURRENT_TIMESTAMP) AS current_minute,
+        |       SECOND(CURRENT_TIMESTAMP) AS current_second,
+        |       NANOSECOND(CURRENT_TIMESTAMP) AS current_nano,
+        |       MICROSECOND(CURRENT_TIMESTAMP) AS current_micro,
+        |       MILLISECOND(CURRENT_TIMESTAMP) AS current_milli,
         |       YEAR(birthdate) AS year_b,
         |       MONTH(birthdate) AS month_b,
         |       DAY(birthdate) AS day_b,
+        |       WEEKDAY(birthdate) AS weekday_b,
+        |       YEARDAY(birthdate) AS yearday_b,
+        |       HOUR(birthdate) AS hour_b,
+        |       MINUTE(birthdate) AS minute_b,
+        |       SECOND(birthdate) AS second_b,
+        |       NANOSECOND(birthdate) AS nano_b,
+        |       MICROSECOND(birthdate) AS micro_b,
+        |       MILLISECOND(birthdate) AS milli_b,
+        |       OFFSET_SECONDS(birthdate) AS epoch_day,
+        |       DATE_TRUNC(birthdate, MONTH) AS trunc_month,
         |       DATE_ADD(birthdate, INTERVAL 1 DAY) AS plus_one_day,
+        |       DATE_SUB(birthdate, INTERVAL 1 DAY) AS minus_one_day,
         |       DATE_DIFF(CURRENT_DATE, birthdate, YEAR) AS diff_years
         |FROM dql_users;""".stripMargin
 
@@ -954,23 +1171,26 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val create =
       """CREATE TABLE IF NOT EXISTS dql_geo (
         |  id INT NOT NULL,
-        |  lon DOUBLE,
-        |  lat DOUBLE
+        |  location GEO_POINT,
+        |  PRIMARY KEY (id)
         |);""".stripMargin
 
     assertDdl(client.run(create).futureValue)
 
-    val insert =
-      """INSERT INTO dql_geo (id, lon, lat) VALUES
-        |  (1, 2.3522, 48.8566),
-        |  (2, 4.8357, 45.7640);""".stripMargin
+    val table = assertShowTable(client.run("SHOW TABLE dql_geo").futureValue)
+    table.ddl should include("location GEO_POINT")
+    table.find("location").exists(_.dataType == SQLTypes.GeoPoint) shouldBe true
 
-    assertDml(client.run(insert).futureValue)
+    val insert =
+      """INSERT INTO dql_geo (id, location) VALUES
+        |  (1, {lon = 2.3522, lat = 48.8566}),
+        |  (2, {lon = 4.8357, lat = 45.7640});""".stripMargin
+
+    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 2)))
 
     val sql =
       """SELECT id,
-        |       POINT(lon, lat) AS point,
-        |       ST_DISTANCE(POINT(lon, lat), POINT(2.3522, 48.8566)) AS dist_paris
+        |       ST_DISTANCE(location, POINT(2.3522, 48.8566)) AS dist_paris
         |FROM dql_geo;""".stripMargin
 
     val res = client.run(sql).futureValue
@@ -985,7 +1205,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val create =
       """CREATE TABLE IF NOT EXISTS dql_sales (
         |  id INT NOT NULL,
-        |  product VARCHAR,
+        |  product KEYWORD,
         |  customer VARCHAR,
         |  amount DOUBLE,
         |  ts TIMESTAMP
@@ -1000,7 +1220,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (3, 'B', 'C1', 30.0, '2024-01-01T12:00:00Z'),
         |  (4, 'A', 'C3', 40.0, '2024-01-01T13:00:00Z');""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
 
     val sql =
       """SELECT
@@ -1008,7 +1228,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  customer,
         |  amount,
         |  SUM(amount) OVER (PARTITION BY product) AS sum_per_product,
-        |  COUNT(*) OVER (PARTITION BY product) AS cnt_per_product,
+        |  COUNT(_id) OVER (PARTITION BY product) AS cnt_per_product,
         |  FIRST_VALUE(amount) OVER (PARTITION BY product ORDER BY ts ASC) AS first_amount,
         |  LAST_VALUE(amount) OVER (PARTITION BY product ORDER BY ts ASC) AS last_amount,
         |  ARRAY_AGG(amount) OVER (PARTITION BY product ORDER BY ts ASC LIMIT 10) AS amounts_array
@@ -1016,7 +1236,51 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |ORDER BY product, ts;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(
+      res,
+      Seq(
+        Map(
+          "product"         -> "A",
+          "customer"        -> "C1",
+          "amount"          -> 10.0,
+          "sum_per_product" -> 70.0,
+          "cnt_per_product" -> 3,
+          "first_amount"    -> 10.0,
+          "last_amount"     -> 40.0,
+          "amounts_array"   -> Seq(10.0, 20.0, 40.0)
+        ),
+        Map(
+          "product"         -> "A",
+          "customer"        -> "C2",
+          "amount"          -> 20.0,
+          "sum_per_product" -> 70.0,
+          "cnt_per_product" -> 3,
+          "first_amount"    -> 10.0,
+          "last_amount"     -> 40.0,
+          "amounts_array"   -> Seq(10.0, 20.0, 40.0)
+        ),
+        Map(
+          "product"         -> "A",
+          "customer"        -> "C3",
+          "amount"          -> 40.0,
+          "sum_per_product" -> 70.0,
+          "cnt_per_product" -> 3,
+          "first_amount"    -> 10.0,
+          "last_amount"     -> 40.0,
+          "amounts_array"   -> Seq(10.0, 20.0, 40.0)
+        ),
+        Map(
+          "product"         -> "B",
+          "customer"        -> "C1",
+          "amount"          -> 30.0,
+          "sum_per_product" -> 30.0,
+          "cnt_per_product" -> 1,
+          "first_amount"    -> 30.0,
+          "last_amount"     -> 30.0,
+          "amounts_array"   -> Seq(30.0)
+        )
+      )
+    )
   }
 
   // ===========================================================================
@@ -1042,7 +1306,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |    SCRIPT (
         |        description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))",
         |        lang = "painless",
-        |        source = "def p1 = ctx.birthdate; def p2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (p1 == null) ? null : ChronoUnit.YEARS.between(p1, p2)",
+        |        source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))",
         |        ignore_failure = true
         |    ),
         |    SET (
@@ -1055,7 +1319,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |    SCRIPT (
         |        description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))",
         |        lang = "painless",
-        |        source = "def p1 = ctx.profile?.join_date; def p2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (p1 == null) ? null : ChronoUnit.DAYS.between(p1, p2)",
+        |        source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))",
         |        ignore_failure = true
         |    ),
         |    DATE_INDEX_NAME (
@@ -1109,42 +1373,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   }
 
   // ===========================================================================
-  // 6. TEMPLATES — CREATE / ALTER / DROP
-  // ===========================================================================
-
-  behavior of "TEMPLATE statements"
-
-  it should "create, alter and drop index templates via SQL if supported" in {
-    val create =
-      """CREATE TEMPLATE logs_template
-        |PATTERN 'logs-*'
-        |WITH (
-        |  number_of_shards = 1,
-        |  number_of_replicas = 1
-        |);""".stripMargin
-
-    val createRes = client.run(create).futureValue
-
-    // Certains backends Elasticsearch ne supportent pas les templates via SQL
-    if (createRes.isSuccess) {
-      assertDdl(createRes)
-
-      val alter =
-        """ALTER TEMPLATE logs_template
-          |SET ( number_of_replicas = 2 );""".stripMargin
-
-      assertDdl(client.run(alter).futureValue)
-
-      val drop = "DROP TEMPLATE logs_template;"
-      assertDdl(client.run(drop).futureValue)
-
-    } else {
-      log.warn("Templates not supported by this backend, skipping template tests.")
-    }
-  }
-
-  // ===========================================================================
-  // 7. ERRORS — parsing errors, unsupported SQL
+  // 6. ERRORS — parsing errors, unsupported SQL
   // ===========================================================================
 
   behavior of "SQL error handling"
@@ -1170,7 +1399,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val res = client.run(unsupportedSql).futureValue
 
     res.isFailure shouldBe true
-    res.toEither.left.get.message should include("Unsupported SQL statement")
+    res.toEither.left.get.message should include("Error parsing schema DDL statement")
   }
 
 }

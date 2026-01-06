@@ -293,12 +293,38 @@ package object query {
   case class Insert(
     table: String,
     cols: Seq[String],
-    values: Either[DqlStatement, Seq[Value[_]]],
+    values: Either[DqlStatement, Seq[Seq[Value[_]]]],
     onConflict: Option[OnConflict] = None
   ) extends DmlStatement {
     lazy val conflictTarget: Option[Seq[String]] = onConflict.flatMap(_.target)
 
     lazy val doUpdate: Boolean = onConflict.exists(_.doUpdate)
+
+    private def valueToSql(value: Value[_]): String = value match {
+      case v if v.isInstanceOf[ObjectValues] =>
+        v.asInstanceOf[ObjectValues]
+          .values
+          .map(valueToSql)
+          .mkString("[", ", ", "]")
+      case v if v.isInstanceOf[ObjectValue] =>
+        v.asInstanceOf[ObjectValue]
+          .value
+          .map { case (k, v) =>
+            v match {
+              case IdValue | IngestTimestampValue => s"""$k = "${v.ddl}""""
+              case _                              => s"""$k = ${v.ddl}"""
+            }
+          }
+          .mkString("{", ", ", "}")
+      case v => s"${v.ddl}"
+    }
+
+    private def rowToSql(row: Seq[Value[_]]): String = {
+      val rowSql = row
+        .map(valueToSql)
+        .mkString(", ")
+      s"($rowSql)"
+    }
 
     override def sql: String = {
       values match {
@@ -306,14 +332,11 @@ package object query {
           s"INSERT INTO $table ${query.sql}${asString(onConflict)}"
         case Left(query) =>
           s"INSERT INTO $table (${cols.mkString(",")}) ${query.sql}${asString(onConflict)}"
-        case Right(vs) =>
-          val valuesSql = vs
-            .map {
-              case v if v.isInstanceOf[StringValue] => s"'${v.value}'"
-              case v                                => s"${v.value}"
-            }
+        case Right(rows) =>
+          val valuesSql = rows
+            .map(rowToSql)
             .mkString(", ")
-          s"INSERT INTO $table ${cols.mkString(",")} VALUES ($valuesSql)"
+          s"INSERT INTO $table (${cols.mkString(",")}) VALUES $valuesSql${asString(onConflict)}"
       }
     }
 
@@ -321,8 +344,15 @@ package object query {
       for {
         _ <- values match {
           case Left(query) => query.validate()
-          case Right(vs) if cols.size != vs.size =>
-            Left(s"Number of columns (${cols.size}) does not match number of values (${vs.size})")
+          case Right(rows) =>
+            val invalidRows = rows.filter(_.size != cols.size)
+            if (invalidRows.nonEmpty)
+              Left(
+                s"Some rows have invalid number of values: ${invalidRows
+                  .map(r => s"(${r.map(_.value).mkString(",")})")
+                  .mkString("; ")}"
+              )
+            else Right(())
           case _ =>
             Right(())
         }
@@ -354,15 +384,19 @@ package object query {
 
     def toJson: Option[JsonNode] = {
       values match {
-        case Right(vs) if cols.size == vs.size =>
-          val map: Map[String, Value[_]] =
-            cols
-              .zip(vs)
-              .map { case (k, v) =>
-                k -> v
-              }
-              .toMap
-          val json: JsonNode = ObjectValue(map)
+        case Right(rows) =>
+          val maps: Seq[ObjectValue] =
+            for (row <- rows) yield {
+              val map: Map[String, Value[_]] =
+                cols
+                  .zip(row)
+                  .map { case (k, v) =>
+                    k -> v
+                  }
+                  .toMap
+              ObjectValue(map)
+            }
+          val json: JsonNode = ObjectValues(maps)
           Some(json)
         case _ => None
       }

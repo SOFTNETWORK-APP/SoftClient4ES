@@ -38,6 +38,7 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
     with JestScrollApi
     with JestBulkApi
     with JestVersionApi
+    with JestTemplateApi
     with JestClientCompanion =>
 
   /** Create an index with the given settings.

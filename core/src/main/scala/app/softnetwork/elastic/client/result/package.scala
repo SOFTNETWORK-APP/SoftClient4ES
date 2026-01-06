@@ -155,6 +155,8 @@ package object result {
     override def get: Nothing = throw new NoSuchElementException(
       s"ElasticFailure.get: ${elasticError.message}"
     )
+
+    def isNotFound: Boolean = elasticError.statusCode.contains(404)
   }
 
   /** Represents an Elasticsearch error.
@@ -375,6 +377,12 @@ package object result {
   }
 
   sealed trait QueryResult
+
+  case object EmptyResult extends QueryResult
+
+  object QueryResult {
+    def empty: QueryResult = EmptyResult
+  }
 
   // --------------------
   // DQL (SELECT)

@@ -130,6 +130,10 @@ package object `type` {
     def keyword_type: PackratParser[SQLTypes.Keyword.type] =
       "(?i)keyword".r ^^ (_ => SQLTypes.Keyword)
 
-    def extension_type: PackratParser[SQLType] = sql_type | text_type | keyword_type
+    def geo_point_type: PackratParser[SQLTypes.GeoPoint.type] =
+      "(?i)(geo_point|geopoint)".r ^^ (_ => SQLTypes.GeoPoint)
+
+    def extension_type: PackratParser[SQLType] =
+      sql_type | text_type | keyword_type | geo_point_type
   }
 }

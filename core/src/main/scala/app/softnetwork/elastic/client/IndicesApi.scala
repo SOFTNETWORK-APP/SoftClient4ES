@@ -26,9 +26,11 @@ import app.softnetwork.elastic.sql.query.{Delete, From, Insert, SingleSearch, Ta
 import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, Schema, TableAlias}
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.node.ObjectNode
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 
 import scala.concurrent.{ExecutionContext, Future}
+
+import scala.jdk.CollectionConverters._
 
 /** Index management API.
   *
@@ -39,7 +41,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   - Automatic retry for transient errors
   */
 trait IndicesApi extends ElasticClientHelpers {
-  _: RefreshApi with PipelineApi with BulkApi with ScrollApi with VersionApi =>
+  _: RefreshApi with PipelineApi with BulkApi with ScrollApi with VersionApi with TemplateApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -172,41 +174,7 @@ trait IndicesApi extends ElasticClientHelpers {
     }
 
     val updatedMappings =
-      if (ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion)) {
-        mappings match {
-          case Some(m) =>
-            val root = mapper.readTree(m).asInstanceOf[ObjectNode]
-
-            if (root.has("properties") || root.has("_meta")) {
-              logger.info(s"Wrapping mappings with '_doc' type for ES version $elasticVersion")
-
-              val doc = mapper.createObjectNode()
-
-              // Move properties
-              if (root.has("properties")) {
-                doc.set("properties", root.get("properties"))
-                root.remove("properties")
-              }
-
-              // Move _meta
-              if (root.has("_meta")) {
-                doc.set("_meta", root.get("_meta"))
-                root.remove("_meta")
-              }
-
-              // Wrap into _doc
-              root.set("_doc", doc)
-
-              Some(root.toString)
-            } else {
-              Some(m)
-            }
-
-          case None => None
-        }
-      } else {
-        mappings
-      }
+      mappings.map(mapping => MappingConverter.convert(mapping, elasticVersion))
 
     executeCreateIndex(index, settings, updatedMappings, aliases) match {
       case success @ ElasticSuccess(true) =>
@@ -232,13 +200,65 @@ trait IndicesApi extends ElasticClientHelpers {
       case ElasticSuccess(Some(idx)) =>
         ElasticSuccess(idx.schema)
       case ElasticSuccess(None) =>
-        logger.info(s"Index '$index' not found for schema loading")
-        ElasticFailure(
-          ElasticError.notFound(
-            index = index,
-            operation = "loadSchema"
-          )
-        )
+        logger.warn(s"Index '$index' not found for schema loading")
+        getTemplate(index) match {
+          case ElasticSuccess(Some(template)) =>
+            logger.info(s"✅ Template '$index' found for schema loading")
+            var templateNode = mapper.readTree(template).asInstanceOf[ObjectNode]
+            if (templateNode.has("index_template")) {
+              // Index template
+              templateNode = templateNode.get("index_template").asInstanceOf[ObjectNode]
+            }
+            if (templateNode.has("template")) {
+              // Composable template
+              templateNode = templateNode.get("template").asInstanceOf[ObjectNode]
+            }
+            val root = mapper.createObjectNode()
+            if (templateNode.has("mappings")) {
+              root.set("mappings", templateNode.get("mappings"))
+            }
+            if (templateNode.has("settings")) {
+              root.set("settings", templateNode.get("settings"))
+            }
+            if (templateNode.has("aliases")) {
+              root.set("aliases", templateNode.get("aliases"))
+            }
+            loadIndexAsSchema(index, root.toString) match {
+              case ElasticSuccess(Some(idx)) =>
+                ElasticSuccess(idx.schema)
+              case ElasticSuccess(None) =>
+                logger.error(
+                  s"❌ Failed to load schema from template for index '$index'"
+                )
+                ElasticFailure(
+                  ElasticError(
+                    message = s"Failed to load schema from template for index '$index'",
+                    cause = None,
+                    statusCode = Some(404),
+                    index = Some(index),
+                    operation = Some("loadSchema")
+                  )
+                )
+              case ElasticFailure(error) =>
+                logger.error(
+                  s"❌ Failed to load schema from template for index '$index': ${error.message}"
+                )
+                ElasticFailure(error.copy(operation = Some("loadSchema")))
+            }
+          case ElasticSuccess(None) =>
+            logger.warn(s"Template '$index' not found for schema loading")
+            ElasticFailure(
+              ElasticError.notFound(
+                index = index,
+                operation = "loadSchema"
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to load template for schema of index '$index': ${error.message}"
+            )
+            ElasticFailure(error.copy(operation = Some("loadSchema")))
+        }
       case ElasticFailure(error) =>
         logger.error(s"❌ Failed to load schema for index '$index': ${error.message}")
         ElasticFailure(error.copy(operation = Some("loadSchema")))
@@ -270,75 +290,11 @@ trait IndicesApi extends ElasticClientHelpers {
     executeGetIndex(index) match {
       case ElasticSuccess(Some(json)) =>
         logger.info(s"✅ Index '$index' retrieved successfully")
-        var tempIndex = Index(index, json)
-        tempIndex.defaultIngestPipelineName match {
-          case Some(pipeline) =>
-            logger.info(
-              s"Index '$index' has default ingest pipeline '$pipeline'"
-            )
-            getPipeline(pipeline) match {
-              case ElasticSuccess(Some(json)) =>
-                logger.info(
-                  s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
-                )
-                tempIndex = tempIndex.copy(defaultPipeline = Some(json))
-              case ElasticSuccess(None) =>
-                logger.warn(
-                  s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
-                )
-                return ElasticFailure(
-                  ElasticError(
-                    message =
-                      s"Default ingest pipeline '$pipeline' for index '$index' does not exist",
-                    cause = None,
-                    statusCode = Some(404),
-                    index = Some(index),
-                    operation = Some("getIndex")
-                  )
-                )
-              case ElasticFailure(error) =>
-                logger.error(
-                  s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
-                )
-                return ElasticFailure(error.copy(operation = Some("getIndex")))
-            }
-          case None => // No default ingest pipeline
-        }
-        tempIndex.finalIngestPipelineName match {
-          case Some(pipeline) =>
-            logger.info(
-              s"Index '$index' has final ingest pipeline '$pipeline'"
-            )
-            getPipeline(pipeline) match {
-              case ElasticSuccess(Some(json)) =>
-                logger.info(
-                  s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
-                )
-                tempIndex = tempIndex.copy(finalPipeline = Some(json))
-              case ElasticSuccess(None) =>
-                logger.warn(
-                  s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
-                )
-                return ElasticFailure(
-                  ElasticError(
-                    message =
-                      s"Final ingest pipeline '$pipeline' for index '$index' does not exist",
-                    cause = None,
-                    statusCode = Some(404),
-                    index = Some(index),
-                    operation = Some("getIndex")
-                  )
-                )
-              case ElasticFailure(error) =>
-                logger.error(
-                  s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
-                )
-                return ElasticFailure(error.copy(operation = Some("getIndex")))
-            }
-          case None => // No default ingest pipeline
-        }
-        ElasticSuccess(Some(tempIndex))
+        loadIndexAsSchema(index, json)
       case ElasticSuccess(None) =>
+        logger.warn(s"✅ Index '$index' not found")
+        ElasticSuccess(None)
+      case ElasticFailure(error) if error.statusCode.contains(404) =>
         logger.info(s"✅ Index '$index' not found")
         ElasticSuccess(None)
       case failure @ ElasticFailure(error) =>
@@ -347,7 +303,77 @@ trait IndicesApi extends ElasticClientHelpers {
     }
   }
 
+  private def loadIndexAsSchema(index: String, json: String): ElasticResult[Option[Index]] = {
+    var tempIndex = Index(index, json)
+    tempIndex.defaultIngestPipelineName match {
+      case Some(pipeline) =>
+        logger.info(
+          s"Index '$index' has default ingest pipeline '$pipeline'"
+        )
+        getPipeline(pipeline) match {
+          case ElasticSuccess(Some(json)) =>
+            logger.info(
+              s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
+            )
+            tempIndex = tempIndex.copy(defaultPipeline = Some(json))
+          case ElasticSuccess(None) =>
+            logger.warn(
+              s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
+            )
+            return ElasticFailure(
+              ElasticError(
+                message = s"Default ingest pipeline '$pipeline' for index '$index' does not exist",
+                cause = None,
+                statusCode = Some(404),
+                index = Some(index),
+                operation = Some("getIndex")
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
+            )
+            return ElasticFailure(error.copy(operation = Some("getIndex")))
+        }
+      case None => // No default ingest pipeline
+    }
+    tempIndex.finalIngestPipelineName match {
+      case Some(pipeline) =>
+        logger.info(
+          s"Index '$index' has final ingest pipeline '$pipeline'"
+        )
+        getPipeline(pipeline) match {
+          case ElasticSuccess(Some(json)) =>
+            logger.info(
+              s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
+            )
+            tempIndex = tempIndex.copy(finalPipeline = Some(json))
+          case ElasticSuccess(None) =>
+            logger.warn(
+              s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
+            )
+            return ElasticFailure(
+              ElasticError(
+                message = s"Final ingest pipeline '$pipeline' for index '$index' does not exist",
+                cause = None,
+                statusCode = Some(404),
+                index = Some(index),
+                operation = Some("getIndex")
+              )
+            )
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
+            )
+            return ElasticFailure(error.copy(operation = Some("getIndex")))
+        }
+      case None => // No default ingest pipeline
+    }
+    ElasticSuccess(Some(tempIndex))
+  }
+
   /** Delete an index with the provided name.
+    *
     * @param index
     *   - the name of the index to delete
     * @return
@@ -606,6 +632,9 @@ trait IndicesApi extends ElasticClientHelpers {
         val existenceStr = if (exists) "exists" else "does not exist"
         logger.debug(s"✅ Index '$index' $existenceStr")
         success
+      case f: ElasticFailure if f.isNotFound =>
+        logger.debug(s"✅ Index '$index' does not exist")
+        ElasticSuccess(false)
       case failure @ ElasticFailure(error) =>
         logger.error(s"❌ Failed to check existence of index '$index': ${error.message}")
         failure
@@ -1052,7 +1081,9 @@ trait IndicesApi extends ElasticClientHelpers {
         case Right(_) =>
           parsed.toJson match {
             case Some(jsonNode) =>
-              Right(Source.single(jsonNode.toString))
+              val arrayNode = jsonNode.asInstanceOf[ArrayNode]
+              val docs: Seq[JsonNode] = arrayNode.elements().asScala.toSeq
+              Right(Source.fromIterator(() => docs.map(_.toString).toIterator))
             case None =>
               Left(
                 ElasticError(

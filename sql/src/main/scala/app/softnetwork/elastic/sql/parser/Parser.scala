@@ -76,20 +76,54 @@ object Parser
 
   def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_]*""".r
 
+  private val lparen: Parser[String] = "("
+  private val rparen: Parser[String] = ")"
+  private val comma: Parser[String] = ","
+  private val lbracket: Parser[String] = "["
+  private val rbracket: Parser[String] = "]"
+  private val startStruct: Parser[String] = "{"
+  private val endStruct: Parser[String] = "}"
+
   def objectValue: PackratParser[ObjectValue] =
-    start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
+    lparen ~> rep1sep(option, comma) <~ rparen ^^ { opts =>
       ObjectValue(opts.toMap)
     }
 
+  def objectValues: PackratParser[ObjectValues] =
+    lbracket ~> rep1sep(objectValue, comma) <~ rbracket ^^ { ovs =>
+      ObjectValues(ovs)
+    }
+
   def option: PackratParser[(String, Value[_])] =
-    ident ~ "=" ~ (value | objectValue) ^^ { case key ~ _ ~ value =>
+    ident ~ "=" ~ (objectValues | objectValue | value) ^^ { case key ~ _ ~ value =>
       (key, value)
     }
 
   def options: PackratParser[Map[String, Value[_]]] =
-    "OPTIONS" ~ start ~ repsep(option, separator) ~ end ^^ { case _ ~ _ ~ opts ~ _ =>
+    "OPTIONS" ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
       opts.toMap
     }
+
+  def array_of_struct: PackratParser[ObjectValues] =
+    lbracket ~> repsep(struct, comma) <~ rbracket ^^ { ovs =>
+      ObjectValues(ovs)
+    }
+
+  def struct_entry: PackratParser[(String, Value[_])] =
+    ident ~ "=" ~ (array_of_struct | struct | value) ^^ { case key ~ _ ~ v =>
+      key -> v
+    }
+
+  def struct: PackratParser[ObjectValue] =
+    startStruct ~> repsep(struct_entry, comma) <~ endStruct ^^ { entries =>
+      ObjectValue(entries.toMap)
+    }
+
+  def row: PackratParser[List[Value[_]]] =
+    lparen ~> repsep(array_of_struct | struct | value, comma) <~ rparen
+
+  def rows: PackratParser[List[List[Value[_]]]] =
+    repsep(row, comma)
 
   def processorType: PackratParser[IngestProcessorType] =
     ident ^^ { name =>
@@ -542,8 +576,8 @@ object Parser
 
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
   def insert: PackratParser[Insert] =
-    ("INSERT" ~ "INTO") ~ ident ~ opt(start ~> repsep(ident, separator) <~ end) ~
-    (("VALUES" ~ start ~> repsep(value, separator) <~ end) ^^ { vs => Right(vs) }
+    ("INSERT" ~ "INTO") ~ ident ~ opt(lparen ~> repsep(ident, comma) <~ rparen) ~
+    (("VALUES" ~> rows) ^^ { vs => Right(vs) }
     | "AS".? ~> dqlStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
       case _ ~ table ~ colsOpt ~ vals ~ conflict =>
         conflict match {

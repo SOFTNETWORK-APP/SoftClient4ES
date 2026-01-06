@@ -63,11 +63,39 @@ package object schema {
   }
 
   object IndexField {
-    def apply(name: String, node: JsonNode): IndexField = {
-      val tpe = Option(node.get("type")).map(_.asText()).getOrElse("object")
+    def apply(name: String, node: JsonNode, _meta: Option[ObjectValue]): IndexField = {
+      val tpe = _meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("data_type") match {
+              case Some(v: StringValue) => Some(v.value)
+              case _                    => None
+            }
+          case _ => None
+        }
+        .getOrElse(Option(node.get("type")).map(_.asText()).getOrElse("object"))
 
       val nullValue =
-        Option(node.get("null_value")).flatMap(Value(_)).map(Value(_))
+        Option(node.get("null_value"))
+          .flatMap(Value(_))
+          .map(Value(_))
+          .orElse(_meta.flatMap {
+            case m: ObjectValue =>
+              m.value.get("default_value") match {
+                case Some(v: Value[_]) => Some(v)
+                case _                 => None
+              }
+            case _ => None
+          })
+
+      val fields_meta = _meta.flatMap {
+        case m: ObjectValue =>
+          m.value.get("multi_fields") match {
+            case Some(f: ObjectValue) => Some(f)
+            case _                    => None
+          }
+        case _ => None
+      }
 
       val fields =
         Option(node.get("fields")) // multi-fields
@@ -75,15 +103,22 @@ package object schema {
           .map(_.properties().asScala.map { entry =>
             val name = entry.getKey
             val value = entry.getValue
-            apply(name, value)
+            val _meta = fields_meta.flatMap {
+              case m: ObjectValue =>
+                m.value.get(name) match {
+                  case Some(colMeta: ObjectValue) => Some(colMeta)
+                  case _                          => None
+                }
+              case _ => None
+            }
+            apply(name, value, _meta)
           }.toList)
           .getOrElse(Nil)
 
       val options =
         extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties"))
 
-      val meta = options.get("meta")
-      val comment = meta.flatMap {
+      val comment = _meta.flatMap {
         case m: ObjectValue =>
           m.value.get("comment") match {
             case Some(c: StringValue) => Some(c.value)
@@ -91,15 +126,18 @@ package object schema {
           }
         case _ => None
       }
-      val notNull = meta.flatMap {
+
+      val notNull = _meta.flatMap {
         case m: ObjectValue =>
           m.value.get("not_null") match {
             case Some(c: BooleanValue) => Some(c.value)
+            case Some(c: StringValue)  => Some(c.value.toBoolean)
             case _                     => None
           }
         case _ => None
       }
-      val script = meta.flatMap {
+
+      val script = _meta.flatMap {
         case m: ObjectValue =>
           m.value.get("script") match {
             case Some(st: ObjectValue) =>
@@ -154,16 +192,32 @@ package object schema {
         val docNode = root.path("_doc")
         return apply(docNode)
       }
+      val options = extractObject(root, ignoredKeys = Set("properties"))
+      val meta = options.get("_meta")
+      val columns = meta.flatMap {
+        case m: ObjectValue =>
+          m.value.get("columns") match {
+            case Some(cols: ObjectValue) => Some(cols)
+            case _                       => None
+          }
+        case _ => None
+      }
       val fields = Option(root.get("properties"))
         .map(_.properties().asScala.map { entry =>
           val name = entry.getKey
           val value = entry.getValue
-          IndexField(name, value)
+          val _meta = columns.flatMap {
+            case c: ObjectValue =>
+              c.value.get(name) match {
+                case Some(colMeta: ObjectValue) => Some(colMeta)
+                case _                          => None
+              }
+            case _ => None
+          }
+          IndexField(name, value, _meta)
         }.toList)
         .getOrElse(Nil)
 
-      val options = extractObject(root, ignoredKeys = Set("properties"))
-      val meta = options.get("_meta")
       val primaryKey: List[String] = meta
         .map {
           case m: ObjectValue =>

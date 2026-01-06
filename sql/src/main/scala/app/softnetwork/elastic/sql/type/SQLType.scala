@@ -56,3 +56,5 @@ sealed trait EsqlType extends SQLType
 trait EsqlText extends EsqlType with SQLVarchar
 
 trait EsqlKeyword extends EsqlType with SQLVarchar
+
+trait EsqlGeoPoint extends EsqlType

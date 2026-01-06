@@ -94,7 +94,21 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
             processors = ddl.ddlPipeline.processors.map { processor =>
               GenericProcessor(
                 processorType = processor.processorType,
-                properties = processor.properties.filterNot(_._1 == "description")
+                properties = processor.properties
+                  .filterNot(_._1 == "description")
+                  .filterNot(_._1 == "separator")
+                  .filterNot(_._1 == "ignore_empty_value")
+              )
+            }
+          )
+          createPipeline(ddl.name, pipeline.json)
+        } else if (ElasticsearchVersion.isEs7(elasticVersion)) {
+          val pipeline = ddl.ddlPipeline.copy(
+            processors = ddl.ddlPipeline.processors.map { processor =>
+              GenericProcessor(
+                processorType = processor.processorType,
+                properties = processor.properties
+                  .filterNot(_._1 == "separator")
               )
             }
           )
@@ -123,7 +137,21 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
                 processors = updatingPipeline.processors.map { processor =>
                   GenericProcessor(
                     processorType = processor.processorType,
-                    properties = processor.properties.filterNot(_._1 == "description")
+                    properties = processor.properties
+                      .filterNot(_._1 == "description")
+                      .filterNot(_._1 == "separator")
+                      .filterNot(_._1 == "ignore_empty_value")
+                  )
+                }
+              )
+              updatePipeline(ddl.name, pipeline.json)
+            } else if (ElasticsearchVersion.isEs7(elasticVersion)) {
+              val pipeline = updatingPipeline.copy(
+                processors = updatingPipeline.processors.map { processor =>
+                  GenericProcessor(
+                    processorType = processor.processorType,
+                    properties = processor.properties
+                      .filterNot(_._1 == "separator")
                   )
                 }
               )
