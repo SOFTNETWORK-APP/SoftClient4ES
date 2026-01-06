@@ -171,7 +171,7 @@ package object geo {
         }
 
       if (identifiers.nonEmpty)
-        s"($assignments ($nullCheck) ? null : $ret)"
+        s"$assignments ($nullCheck) ? null : $ret"
       else
         ret
     }
