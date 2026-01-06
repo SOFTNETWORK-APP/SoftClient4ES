@@ -150,7 +150,7 @@ trait ScrollApi extends ElasticClientHelpers {
 
       // Single search
       case single: SingleSearch =>
-        if (single.windowFunctions.nonEmpty)
+        if (single.windowFunctions.exists(_.isWindowing))
           return scrollWithWindowEnrichment(single, config)
 
         val elasticQuery =
