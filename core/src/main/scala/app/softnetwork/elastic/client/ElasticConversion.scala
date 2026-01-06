@@ -180,8 +180,20 @@ trait ElasticConversion {
           extractAllTopHits(aggs, fieldAliases, aggregations),
           aggregations
         )
-        hits.map { hit =>
-          val source = extractSource(hit, fieldAliases)
+        parseSimpleHits(hits, fieldAliases).map { row =>
+          globalMetrics ++ allTopHits ++ row
+        }
+      /*hits.map { hit =>
+          var source = extractSource(hit, fieldAliases)
+          fieldAliases.foreach(entry => {
+            val key = entry._1
+            if (!source.contains(key)) {
+              findKeyValue(key, source) match {
+                case Some(value) => source += (entry._2 -> value)
+                case None        =>
+              }
+            }
+          })
           val metadata = extractHitMetadata(hit)
           val innerHits = extractInnerHits(hit, fieldAliases)
           val fieldsNode = Option(hit.path("fields"))
@@ -190,10 +202,19 @@ trait ElasticConversion {
             .map(jsonNodeToMap(_, fieldAliases))
             .getOrElse(Map.empty)
           globalMetrics ++ allTopHits ++ source ++ metadata ++ innerHits ++ fields
-        }
+        }*/
 
       case _ =>
         Seq.empty
+    }
+  }
+
+  def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
+    val keys = path.split("\\.")
+    keys.foldLeft(Option(map): Option[Any]) {
+      case (Some(m: Map[_, _]), key) =>
+        m.asInstanceOf[Map[String, Any]].get(key)
+      case _ => None
     }
   }
 
@@ -204,7 +225,15 @@ trait ElasticConversion {
     fieldAliases: Map[String, String]
   ): Seq[Map[String, Any]] = {
     hits.map { hit =>
-      val source = extractSource(hit, fieldAliases)
+      var source = extractSource(hit, fieldAliases)
+      fieldAliases.foreach(entry => {
+        if (!source.contains(entry._2)) {
+          findKeyValue(entry._1, source) match {
+            case Some(value) => source += (entry._2 -> value)
+            case None        =>
+          }
+        }
+      })
       val metadata = extractHitMetadata(hit)
       val innerHits = extractInnerHits(hit, fieldAliases)
       val fieldsNode = Option(hit.path("fields"))
