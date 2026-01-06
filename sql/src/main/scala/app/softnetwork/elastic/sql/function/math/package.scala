@@ -82,6 +82,13 @@ package object math {
 
     override def identifier: Identifier = Identifier(this)
 
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      val ret = super.toPainlessCall(callArgs, context)
+      s"Double.valueOf($ret)"
+    }
   }
 
   case class MathematicalFunctionWithOp(
@@ -120,7 +127,7 @@ package object math {
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
-        case List(a, p) => s"${mathOp.painless(context)}(($a * $p) / $p)"
+        case List(a, p) => s"Long.valueOf(${mathOp.painless(context)}(($a * $p) / $p))"
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
       }
 
