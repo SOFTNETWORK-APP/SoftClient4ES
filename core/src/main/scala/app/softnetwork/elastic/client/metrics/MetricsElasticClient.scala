@@ -1339,4 +1339,25 @@ class MetricsElasticClient(
     measureResult("templateExists") {
       delegate.templateExists(templateName)
     }
+
+  // ==================== Gateway (delegate) ====================
+
+  override def run(
+    sql: String
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    measureAsync("run") {
+      delegate.run(sql)
+    }
+  }
+
+  override def run(
+    statement: query.Statement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    measureAsync("run") {
+      delegate.run(statement)
+    }
+  }
+
 }

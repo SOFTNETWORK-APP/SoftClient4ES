@@ -1782,4 +1782,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     templateName: String
   ): ElasticResult[Boolean] =
     delegate.executeLegacyTemplateExists(templateName)
+
+  // ==================== Gateway (delegate) ====================
+
+  override def run(sql: String)(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] =
+    delegate.run(sql)
+
+  override def run(statement: query.Statement)(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[QueryResult]] =
+    delegate.run(statement)
 }
