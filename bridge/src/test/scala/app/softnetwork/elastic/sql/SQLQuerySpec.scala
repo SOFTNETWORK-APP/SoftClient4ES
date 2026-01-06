@@ -426,20 +426,20 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "perform nested select" in {
     val select: ElasticSearchRequest =
       SelectStatement("""
-                 |SELECT
-                 |profileId,
-                 |profile_ccm.email as email,
-                 |profile_ccm.city as city,
-                 |profile_ccm.firstName as firstName,
-                 |profile_ccm.lastName as lastName,
-                 |profile_ccm.postalCode as postalCode,
-                 |profile_ccm.birthYear as birthYear
-                 |FROM index join unnest(index.profiles) as profile_ccm
-                 |WHERE
-                 |((profile_ccm.postalCode BETWEEN "10" AND "99999")
-                 |AND
-                 |(profile_ccm.birthYear <= 2000))
-                 |limit 100""".stripMargin)
+                        |SELECT
+                        |profileId,
+                        |profile_ccm.email as email,
+                        |profile_ccm.city as city,
+                        |profile_ccm.firstName as firstName,
+                        |profile_ccm.lastName as lastName,
+                        |profile_ccm.postalCode as postalCode,
+                        |profile_ccm.birthYear as birthYear
+                        |FROM index join unnest(index.profiles) as profile_ccm
+                        |WHERE
+                        |((profile_ccm.postalCode BETWEEN "10" AND "99999")
+                        |AND
+                        |(profile_ccm.birthYear <= 2000))
+                        |limit 100""".stripMargin)
     val query = select.query
     println(query)
     query shouldBe
@@ -474,17 +474,15 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "inner_hits": {
         |              "name": "profile_ccm",
         |              "from": 0,
-        |              "_source": {
-        |                "includes": [
-        |                  "profiles.email",
-        |                  "profiles.postalCode",
-        |                  "profiles.firstName",
-        |                  "profiles.lastName",
-        |                  "profiles.birthYear",
-        |                  "profiles.city"
-        |                ]
-        |              },
-        |              "size": 100
+        |              "size": 100,
+        |              "docvalue_fields": [
+        |                "profiles.email",
+        |                "profiles.city",
+        |                "profiles.firstName",
+        |                "profiles.lastName",
+        |                "profiles.postalCode",
+        |                "profiles.birthYear"
+        |              ]
         |            }
         |          }
         |        }
@@ -855,7 +853,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "ct": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).minus(35, ChronoUnit.MINUTES)); param1"
         |      }
         |    }
         |  },
@@ -1198,47 +1196,47 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-      |  "query": {
-      |    "bool": {
-      |      "filter": [
-      |        {
-      |          "exists": {
-      |            "field": "identifier2"
-      |          }
-      |        }
-      |      ]
-      |    }
-      |  },
-      |  "size": 0,
-      |  "_source": false,
-      |  "aggs": {
-      |    "identifier": {
-      |      "terms": {
-      |        "field": "identifier",
-      |        "min_doc_count": 1,
-      |        "order": {
-      |          "ct": "desc"
-      |        }
-      |      },
-      |      "aggs": {
-      |        "ct": {
-      |          "value_count": {
-      |            "field": "identifier2"
-      |          }
-      |        },
-      |        "lastSeen": {
-      |          "max": {
-      |            "field": "createdAt",
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
-      |            }
-      |          }
-      |        }
-      |      }
-      |    }
-      |  }
-      |}""".stripMargin
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "identifier": {
+        |      "terms": {
+        |        "field": "identifier",
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "ct": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "ct": {
+        |          "value_count": {
+        |            "field": "identifier2"
+        |          }
+        |        },
+        |        "lastSeen": {
+        |          "max": {
+        |            "field": "createdAt",
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
@@ -1282,49 +1280,49 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "d": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "m2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1366,47 +1364,47 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-      |  "query": {
-      |    "bool": {
-      |      "filter": [
-      |        {
-      |          "exists": {
-      |            "field": "identifier2"
-      |          }
-      |        }
-      |      ]
-      |    }
-      |  },
-      |  "size": 0,
-      |  "_source": false,
-      |  "aggs": {
-      |    "identifier": {
-      |      "terms": {
-      |        "field": "identifier",
-      |        "min_doc_count": 1,
-      |        "order": {
-      |          "ct": "desc"
-      |        }
-      |      },
-      |      "aggs": {
-      |        "lastSeen": {
-      |          "max": {
-      |            "field": "createdAt",
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
-      |            }
-      |          }
-      |        },
-      |        "ct": {
-      |          "value_count": {
-      |            "field": "identifier2"
-      |          }
-      |        }
-      |      }
-      |    }
-      |  }
-      |}""".stripMargin
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "identifier": {
+        |      "terms": {
+        |        "field": "identifier",
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "ct": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "lastSeen": {
+        |          "max": {
+        |            "field": "createdAt",
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
+        |            }
+        |          }
+        |        },
+        |        "ct": {
+        |          "value_count": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
@@ -1451,7 +1449,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss XXX\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss XXX\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1497,7 +1495,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "diff": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param2)"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))"
         |      }
         |    }
         |  },
@@ -1548,7 +1546,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); def param3 = (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param3, param2)"
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param3 = ((param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")) != null ? (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).toLocalDate() : null); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param3, param2))"
         |            }
         |          }
         |        }
@@ -1934,7 +1932,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)",
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)",
         |        "params": {
         |          "__now__": 1767139200000
         |        }
@@ -1989,7 +1987,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)",
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)",
         |        "params": {
         |          "__now__": 1767139200000
         |        }
@@ -2052,7 +2050,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }",
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }",
         |        "params": {
         |          "__now__": 1767139200000
         |        }
@@ -2263,91 +2261,91 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "dom": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "dow": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_WEEK)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_WEEK)); param1"
         |      }
         |    },
         |    "doy": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
@@ -2480,7 +2478,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.sqrt(param1) > 100.0"
+        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1)) > 100.0"
         |            }
         |          }
         |        }
@@ -2491,61 +2489,61 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "abs_identifier_plus_1_0_mul_2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); ((param1 == null) ? null : Math.abs(param1) + 1.0) * ((double) 2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); ((param1 == null) ? null : Double.valueOf(Math.abs(param1)) + 1.0) * ((double) 2)"
         |      }
         |    },
         |    "ceil_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.ceil(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.ceil(param1))"
         |      }
         |    },
         |    "floor_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.floor(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.floor(param1))"
         |      }
         |    },
         |    "sqrt_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.sqrt(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1))"
         |      }
         |    },
         |    "exp_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.exp(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.exp(param1))"
         |      }
         |    },
         |    "log_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.log(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log(param1))"
         |      }
         |    },
         |    "log10_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.log10(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log10(param1))"
         |      }
         |    },
         |    "pow_identifier_3": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.pow(param1, 3)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.pow(param1, 3))"
         |      }
         |    },
         |    "round_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
         |      }
         |    },
         |    "round_identifier_2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
         |      }
         |    },
         |    "sign_identifier": {
@@ -2557,43 +2555,43 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "cos_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.cos(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.cos(param1))"
         |      }
         |    },
         |    "acos_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.acos(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.acos(param1))"
         |      }
         |    },
         |    "sin_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.sin(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sin(param1))"
         |      }
         |    },
         |    "asin_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.asin(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.asin(param1))"
         |      }
         |    },
         |    "tan_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.tan(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.tan(param1))"
         |      }
         |    },
         |    "atan_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.atan(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.atan(param1))"
         |      }
         |    },
         |    "atan2_identifier_3_0": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.atan2(param1, 3.0)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.atan2(param1, 3.0))"
         |      }
         |    }
         |  },
@@ -2679,7 +2677,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "sub": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(0, Math.min(3, param1.length()))"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : ((String)param1).substring(0, (int)Math.min(3, ((String)param1).length()))"
         |      }
         |    },
         |    "tr": {
@@ -2709,13 +2707,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "l": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(0, Math.min(5, param1.length()))"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : ((String)param1).substring(0, (int)Math.min(5, ((String)param1).length()))"
         |      }
         |    },
         |    "r": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(param1.length() - Math.min(3, param1.length()))"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : ((String)param1).substring(((String)param1).length() - (int)Math.min(3, ((String)param1).length()))"
         |      }
         |    },
         |    "rep": {
@@ -2757,7 +2755,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("def_", "def _")
       .replaceAll("=_", " = _")
       .replaceAll(",_", ", _")
-      .replaceAll(",\\(", ", (")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll(":\\(", " : (")
@@ -2994,91 +2991,91 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "wd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z'))); (param1 == null) ? null : (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7"
         |      }
         |    },
         |    "yd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "d": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
@@ -3134,7 +3131,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "(def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)) >= 4000000.0",
+        |                    "source": "def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon) >= 4000000.0",
         |                    "params": {
         |                      "lat": -70.0,
         |                      "lon": 40.0
@@ -3158,7 +3155,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); def arg1 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null || arg1 == null) ? null : arg0.arcDistance(arg1.lat, arg1.lon)) < 2000000.0"
+        |              "source": "def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); def arg1 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null || arg1 == null) ? null : arg0.arcDistance(arg1.lat, arg1.lon) < 2000000.0"
         |            }
         |          }
         |        },
@@ -3177,7 +3174,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "d1": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+        |        "source": "def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)",
         |        "params": {
         |          "lat": -70.0,
         |          "lon": 40.0
@@ -3187,7 +3184,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "d2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+        |        "source": "def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)",
         |        "params": {
         |          "lat": -70.0,
         |          "lon": 40.0
@@ -3364,26 +3361,22 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "inner_hits": {
         |                  "name": "matched_replies",
         |                  "from": 0,
-        |                  "_source": {
-        |                    "includes": [
-        |                      "comments.replies.reply_author",
-        |                      "comments.replies.reply_text"
-        |                    ]
-        |                  },
-        |                  "size": 5
+        |                  "size": 5,
+        |                  "docvalue_fields": [
+        |                    "comments.replies.reply_author",
+        |                    "comments.replies.reply_text"
+        |                  ]
         |                }
         |              }
         |            },
         |            "inner_hits": {
         |              "name": "matched_comments",
         |              "from": 0,
-        |              "_source": {
-        |                "includes": [
-        |                  "comments.author",
-        |                  "comments.comments"
-        |                ]
-        |              },
-        |              "size": 5
+        |              "size": 5,
+        |              "docvalue_fields": [
+        |                "comments.author",
+        |                "comments.comments"
+        |              ]
         |            }
         |          }
         |        }
@@ -3459,13 +3452,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "inner_hits": {
         |                    "name": "matched_replies",
         |                    "from": 0,
-        |                    "_source": {
-        |                      "includes": [
-        |                        "replies.reply_author",
-        |                        "replies.reply_text"
-        |                      ]
-        |                    },
-        |                    "size": 5
+        |                    "size": 5,
+        |                    "docvalue_fields": [
+        |                      "replies.reply_author",
+        |                      "replies.reply_text"
+        |                    ]
         |                  }
         |                }
         |              }
@@ -3484,13 +3475,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "inner_hits": {
         |                    "name": "matched_comments",
         |                    "from": 0,
-        |                    "_source": {
-        |                      "includes": [
-        |                        "comments.author",
-        |                        "comments.comments"
-        |                      ]
-        |                    },
-        |                    "size": 5
+        |                    "size": 5,
+        |                    "docvalue_fields": [
+        |                      "comments.author",
+        |                      "comments.comments"
+        |                    ]
         |                  }
         |                }
         |              }
@@ -3581,26 +3570,22 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "inner_hits": {
         |                  "name": "matched_replies",
         |                  "from": 0,
-        |                  "_source": {
-        |                    "includes": [
-        |                      "reply_author",
-        |                      "reply_text"
-        |                    ]
-        |                  },
-        |                  "size": 5
+        |                  "size": 5,
+        |                  "docvalue_fields": [
+        |                    "reply_author",
+        |                    "reply_text"
+        |                  ]
         |                }
         |              }
         |            },
         |            "inner_hits": {
         |              "name": "matched_comments",
         |              "from": 0,
-        |              "_source": {
-        |                "includes": [
-        |                  "author",
-        |                  "comments"
-        |                ]
-        |              },
-        |              "size": 5
+        |              "size": 5,
+        |              "docvalue_fields": [
+        |                "author",
+        |                "comments"
+        |              ]
         |            }
         |          }
         |        }
@@ -3611,8 +3596,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "size": 5,
         |  "_source": true
         |}""".stripMargin
-      .replaceAll("\\s+", "")
-      .replaceAll("\\s+", "")
       .replaceAll("\\s+", "")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
