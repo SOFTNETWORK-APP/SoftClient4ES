@@ -113,7 +113,7 @@ package object aggregate {
     def window: Window
     def limit: Option[Limit]
 
-    override def isWindowing: Boolean = buckets.nonEmpty
+    override def isWindowing: Boolean = buckets.nonEmpty || orderBy.isDefined
 
     lazy val buckets: Seq[Bucket] = partitionBy.map(identifier => Bucket(identifier, None))
 
