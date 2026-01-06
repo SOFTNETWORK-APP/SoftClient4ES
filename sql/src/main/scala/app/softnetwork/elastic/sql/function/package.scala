@@ -20,7 +20,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{NestedElement, SingleSearch}
 
 package object function {
 
@@ -33,10 +33,14 @@ package object function {
     }
     def expr: Token = _expr
     override def nullable: Boolean = expr.nullable
+    def functionNestedElement: Option[NestedElement] = None
   }
 
   trait FunctionWithIdentifier extends Function {
     def identifier: Identifier
+
+    override def functionNestedElement: Option[NestedElement] =
+      identifier.nestedElement.orElse(identifier.functionNestedElement)
 
     override def shouldBeScripted: Boolean = identifier.shouldBeScripted
   }
@@ -199,6 +203,8 @@ package object function {
 
     override def shouldBeScripted: Boolean = functions.exists(_.shouldBeScripted)
 
+    override def functionNestedElement: Option[NestedElement] =
+      functions.flatMap(_.functionNestedElement).headOption
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {

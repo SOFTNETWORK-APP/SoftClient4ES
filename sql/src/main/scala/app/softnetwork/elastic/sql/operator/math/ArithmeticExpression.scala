@@ -20,6 +20,7 @@ import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.`type`._
 import app.softnetwork.elastic.sql.function.{BinaryFunction, TransformFunction}
 import app.softnetwork.elastic.sql.parser.Validator
+import app.softnetwork.elastic.sql.query.NestedElement
 
 case class ArithmeticExpression(
   left: PainlessScript,
@@ -149,4 +150,16 @@ case class ArithmeticExpression(
         this
     }
   }
+
+  override def functionNestedElement: Option[NestedElement] =
+    (left, right) match {
+      case (l: Identifier, r: Identifier) =>
+        l.nestedElement.orElse(r.nestedElement)
+      case (l: Identifier, _) =>
+        l.nestedElement
+      case (_, r: Identifier) =>
+        r.nestedElement
+      case _ =>
+        None
+    }
 }

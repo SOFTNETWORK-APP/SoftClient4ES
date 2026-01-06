@@ -275,7 +275,7 @@ object ElasticAggregation {
           throw new IllegalArgumentException(s"Unsupported aggregation type: $aggType")
       }
 
-    val nestedElement = identifier.nestedElement
+    val nestedElement = sqlAgg.nestedElement
 
     val nestedElements: Seq[NestedElement] =
       nestedElement.map(n => NestedElements.buildNestedTrees(Seq(n))).getOrElse(Nil)
