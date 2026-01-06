@@ -93,7 +93,14 @@ case class Field(
 
   override def validate(): Either[String, Unit] = identifier.validate()
 
-  lazy val nested: Boolean = identifier.nested
+  def nestedElement: Option[NestedElement] =
+    identifier.nestedElement
+      .orElse(
+        identifier.functionNestedElement
+      )
+      .orElse(this.functionNestedElement)
+
+  lazy val nested: Boolean = nestedElement.isDefined
 
   lazy val path: String = identifier.path
 
