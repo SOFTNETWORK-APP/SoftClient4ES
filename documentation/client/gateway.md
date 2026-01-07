@@ -213,6 +213,160 @@ DDL operations return one of the following:
 
 ---
 
+## **Architecture Diagram**
+
+```text
++-------------------------------------------------------------+
+|                         GatewayApi                          |
+|-------------------------------------------------------------|
+| - run(sql: String): Future[ElasticResult[QueryResult]]      |
++-------------------------------+-----------------------------+
+                                |
+                                v
+                 Normalize / strip comments / split on ';'
+                                |
+                                v
+                        +----------------+
+                        |    Parser      |
+                        |  (SQL → AST)   |
+                        +----------------+
+                                |
+                                v
+                    +------------------------+
+                    |       Statement        |
+                    +------------------------+
+                      /          |          \
+                     /           |           \
+                    v            v            v
+          +----------------+  +----------------+  +----------------+
+          |  DqlStatement  |  |  DmlStatement  |  |  DdlStatement  |
+          +----------------+  +----------------+  +----------------+
+                                                       |
+                                                       v
+                                      +-------------------------------+
+                                      |        DdlRouterExecutor      |
+                                      +-------------------------------+
+                                      | - execute(ddl: DdlStatement)  |
+                                      +-------------------------------+
+                                       /                          \
+                                      /                            \
+                                     v                              v
+                      +---------------------------+    +---------------------------+
+                      |      TableStatement       |    |    PipelineStatement      |
+                      +---------------------------+    +---------------------------+
+                      |       TableExecutor       |    |      PipelineExecutor     |
+                      +---------------------------+    +---------------------------+
+                                   |                             |
+                                   v                             v
+                          +----------------+             +----------------+
+                          | Elasticsearch  |             | Elasticsearch  |
+                          +----------------+             +----------------+
+
+DQL path:
+---------
+
+DqlStatement
+    |
+    v
++----------------+
+|  DqlExecutor   |
++----------------+
+        |
+        v
++----------------+
+| Elasticsearch  |
++----------------+
+        |
+        v
++---------------------------------------------+
+| DQL QueryResult:                            |
+|   - QueryRows                               |
+|   - QueryStream                             |
+|   - QueryStructured                         |
++---------------------------------------------+
+
+
+DML path:
+---------
+
+DmlStatement
+    |
+    v
++----------------+
+|  DmlExecutor   |
++----------------+
+        |
+        v
++----------------+
+| Elasticsearch  |
++----------------+
+        |
+        v
++---------------------------------------------+
+| DML QueryResult:                            |
+|   - DmlResult                               |
++---------------------------------------------+
+
+
+DDL (Tables) path:
+------------------
+
+TableStatement
+    |
+    v
++----------------+
+| TableExecutor  |
++----------------+
+        |
+        v
++----------------+
+| Elasticsearch  |
++----------------+
+        |
+        v
++------------------------------------------------------+
+| DDL Table QueryResult:                               |
+|   - DdlResult        (CREATE / ALTER / DROP / TRUNC) |
+|   - TableResult      (SHOW TABLE)                    |
+|   - SQLResult        (SHOW CREATE TABLE)             |
+|   - QueryRows        (DESCRIBE TABLE, etc.)          |
++------------------------------------------------------+
+
+
+DDL (Pipelines) path:
+---------------------
+
+PipelineStatement
+    |
+    v
++--------------------+
+|  PipelineExecutor  |
++--------------------+
+        |
+        v
++----------------+
+| Elasticsearch  |
++----------------+
+        |
+        v
++------------------------------------------------------+
+| DDL Pipeline QueryResult:                            |
+|   - DdlResult        (CREATE / ALTER / DROP)         |
+|   - PipelineResult   (SHOW PIPELINE)                 |
+|   - SQLResult        (SHOW CREATE PIPELINE)          |
+|   - QueryRows        (DESCRIBE PIPELINE, etc.)       |
++------------------------------------------------------+
+
+
+Final API surface:
+------------------
+
+gateway.run(sql: String)
+    → Future[ElasticResult[QueryResult]]
+```
+
+---
+
 ## Examples
 
 ---

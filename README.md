@@ -200,13 +200,61 @@ It automatically:
 - routes statements to the appropriate executor
 - returns a typed `QueryResult` (`QueryRows`, `TableResult`, `PipelineResult`, `DmlResult`, `DdlResult`, `SQLResult`)
 
+#### **Architecture Diagram — SQL Gateway**
+
+```text
+                +----------------------+
+                |     GatewayApi       |
+                |  run(sql: String)    |
+                +----------+-----------+
+                           |
+                           v
+                +----------------------+
+                |       Parser         |
+                |   SQL → Statement    |
+                +----------+-----------+
+                           |
+        ------------------------------------------------
+        |                      |                      |
+        v                      v                      v
++---------------+     +---------------+     +----------------+
+| DqlStatement  |     | DmlStatement  |     | DdlStatement   |
++-------+-------+     +-------+-------+     +--------+-------+
+        |                     |                     |
+        v                     v                     v
++---------------+     +---------------+     +----------------------+
+|  DqlExecutor  |     |  DmlExecutor  |     |  DdlRouterExecutor   |
++-------+-------+     +-------+-------+     +----------+-----------+
+                                                   /        \
+                                                  /          \
+                                                 v            v
+                                   +----------------+   +------------------+
+                                   | TableExecutor  |   | PipelineExecutor |
+                                   +--------+-------+   +--------+---------+
+                                            |                    |
+                                            v                    v
+                                      +-----------+        +-----------+
+                                      |ElasticSearch|      |ElasticSearch|
+                                      +-----------+        +-----------+
+
+                     +-----------------------------------------------+
+                     |               QueryResult                     |
+                     +-----------------------------------------------+
+                     | QueryRows | QueryStream | QueryStructured     |
+                     | DmlResult | DdlResult   | TableResult         |
+                     | PipelineResult | SQLResult (SHOW CREATE)      |
+                     +-----------------------------------------------+
+```
+
+---
+
 #### **Supported SQL Categories**
 
-| Category | Examples |
-|---------|----------|
-| **DQL** | `SELECT`, `JOIN UNNEST`, `GROUP BY`, `HAVING`, window functions |
-| **DML** | `INSERT`, `UPDATE`, `DELETE`, `COPY INTO` |
-| **DDL (Tables)** | `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DESCRIBE TABLE`, `SHOW TABLE`, `SHOW CREATE TABLE` |
+| Category            | Examples                                                                                                           |
+|---------------------|--------------------------------------------------------------------------------------------------------------------|
+| **DQL**             | `SELECT`, `JOIN UNNEST`, `GROUP BY`, `HAVING`, window functions                                                    |
+| **DML**             | `INSERT`, `UPDATE`, `DELETE`, `COPY INTO`                                                                          |
+| **DDL (Tables)**    | `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DESCRIBE TABLE`, `SHOW TABLE`, `SHOW CREATE TABLE` |
 | **DDL (Pipelines)** | `CREATE PIPELINE`, `ALTER PIPELINE`, `DROP PIPELINE`, `DESCRIBE PIPELINE`, `SHOW PIPELINE`, `SHOW CREATE PIPELINE` |
 
 #### **Example**
