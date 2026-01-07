@@ -1,3 +1,5 @@
+[Back to index](README.md)
+
 # 📘 **DDL Statements — SQL Gateway for Elasticsearch**
 
 ---
@@ -563,3 +565,5 @@ Steps:
 | ARRAY<STRUCT>        | ✔    | ✔    | ✔    | ✔    |
 
 ---
+
+[Back to index](README.md)
