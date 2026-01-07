@@ -425,7 +425,7 @@ package object query {
 
   case class Delete(table: Table, where: Option[Where]) extends DmlStatement {
     override def sql: String =
-      s"DELETE FROM ${table.name}${where.map(w => s" ${w.sql}").getOrElse("")}"
+      s"DELETE FROM ${table.name}${asString(where)}"
   }
 
   sealed trait FileFormat extends Token {
