@@ -1378,7 +1378,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   }
 
   // ===========================================================================
-  // 5. PIPELINES — CREATE / ALTER / DROP
+  // 5. PIPELINES — CREATE / ALTER / DROP / SHOW
   // ===========================================================================
 
   behavior of "PIPELINE statements"
