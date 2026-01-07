@@ -90,11 +90,12 @@ WHERE age BETWEEN 20 AND 50
 
 ## ORDER BY
 
-`ORDER BY` supports:
+`ORDER BY` sorts the result set by one or more expressions.
 
-- single or multiple fields
-- `ASC` / `DESC`
-- expressions and nested fields
+- Supports multiple sort keys
+- Supports `ASC` and `DESC`
+- Supports expressions and nested fields (e.g., `profile.city`)
+- When used inside a window function (`OVER`), `ORDER BY` defines the logical ordering of the window
 
 **Example**
 
@@ -192,9 +193,17 @@ WHERE items.quantity >= 1
 ORDER BY o.id ASC;
 ```
 
-- `JOIN UNNEST(o.items)` flattens the `items` array.
-- Each element should become a row with `items.product`, `items.quantity`, `items.price`. (⚠️ not implemented yet)
-- Window function computes per-order totals.
+`JOIN UNNEST` is intended to behave like a standard SQL UNNEST operation, where each element of an `ARRAY<STRUCT>` becomes a logical row that can participate in expressions, filters, and window functions.
+
+⚠️ **Current status:**  
+The SQL Gateway already supports reading and filtering nested array elements through `JOIN UNNEST`, and supports parent-level aggregations using window functions.  
+However, **full row-level expansion (one output row per array element)** is **not implemented yet**.
+
+This means:
+- expressions such as `items.price` and `items.quantity` are fully usable
+- window functions over `PARTITION BY parent_id` work
+- parent-level aggregations can be computed
+- but the final output still returns **one row per parent**, not one row per item
 
 ---
 
@@ -440,7 +449,7 @@ ORDER BY id ASC;
 
 #### Date & Time
 
-##### **Current time:**
+##### **Current :**
 
 | Function                                  | Description                 |
 |-------------------------------------------|-----------------------------|
@@ -523,7 +532,7 @@ SELECT id,
        YEAR(birthdate) AS year_b,
        DATE_DIFF(CURRENT_DATE, birthdate, YEAR) AS diff_years,
        DATE_TRUNC(birthdate, MONTH) AS trunc_month,
-       FORMAT_DATETIME(birthdate, '%Y-%m-%d') AS birth_str
+       DATETIME_FORMAT(birthdate, '%Y-%m-%d') AS birth_str
 FROM dql_users;
 ```
 
@@ -643,10 +652,14 @@ FROM dql_users;
 
 ## Scroll & Pagination
 
-For large result sets, the Gateway uses Elasticsearch scroll or search-after mechanisms ([Scroll Search](../client/scroll.md)).
+For large result sets, the Gateway uses Elasticsearch scroll or search-after mechanisms depending on backend capabilities ([Scroll Search](../client/scroll.md)).
 
-- `ORDER BY` is strongly recommended for deterministic pagination.
-- `LIMIT`/`OFFSET` are translated to `from`/`size` when feasible; deep pagination may rely on scroll.
+Notes:
+
+- `LIMIT` and `OFFSET` are applied by the SQL engine after retrieving documents from Elasticsearch
+- Deep pagination may require scroll
+- When using `search_after`, an explicit `ORDER BY` clause is required for deterministic pagination
+- Without `ORDER BY`, result ordering is not guaranteed
 
 ---
 
