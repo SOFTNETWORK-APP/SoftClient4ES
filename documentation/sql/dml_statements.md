@@ -6,14 +6,13 @@
 
 ## Introduction
 
-The SQL Gateway provides a Data Manipulation Language (DML) layer on top of Elasticsearch.  
-It supports:
+The SQL Gateway supports the following Data Manipulation Language (DML) operations:
 
-- **INSERT**
-- **INSERT ... AS SELECT**
-- **UPDATE**
-- **DELETE**
-- **COPY INTO** (bulk ingestion)
+- **INSERT INTO ... VALUES**
+- **INSERT INTO ... AS SELECT ... [ON CONFLICT ...]**
+- **UPDATE ... SET ... [WHERE]**
+- **DELETE FROM ... [WHERE]**
+- **COPY INTO ...** (bulk ingestion)
 
 The DML engine is:
 
@@ -22,6 +21,16 @@ The DML engine is:
 - **partition-aware** (date-based routing)
 - **primary-key-aware** (upsert semantics)
 - **version-aware** (ES6 → ES9)
+
+All DML operations are translated into Elasticsearch write APIs:
+
+- `INSERT` → index API (bulk)
+- `INSERT ... AS SELECT` → search + bulk index
+- `UPDATE` → update-by-query
+- `DELETE` → delete-by-query
+- `COPY INTO` → bulk from file
+
+`DELETE` without a `WHERE` clause is allowed and behaves like a **TRUNCATE TABLE**, removing all documents from the index.
 
 Each DML statement returns:
 
@@ -38,7 +47,7 @@ Each DML statement returns:
 
 ## INSERT
 
-### Standard Syntax
+### INSERT INTO ... VALUES
 
 ```sql
 INSERT INTO table_name (col1, col2, ...)
@@ -90,7 +99,16 @@ INSERT INTO dql_users (id, name, birthdate, profile) VALUES
 
 ---
 
-### INSERT INTO ... AS SELECT
+### Notes:
+
+- Fields not provided in the `VALUES` clause are simply omitted from the document (Elasticsearch does not store `NULL`).
+- Unknown fields are rejected if the index mapping is strict.
+- All values are validated against the Elasticsearch mapping (type, format, date patterns, etc.).
+- Nested structures (`STRUCT`, `ARRAY<STRUCT>`) must match the expected JSON shape.
+
+---
+
+### INSERT INTO ... AS SELECT ... [ON CONFLICT ...]
 
 ```sql
 INSERT INTO orders (order_id, customer_id, order_date, total)
@@ -111,7 +129,7 @@ FROM staging_orders;
 
 ---
 
-### INSERT INTO ... AS SELECT — Validation Workflow**
+### INSERT INTO ... AS SELECT ... [ON CONFLICT ...] — Validation Workflow**
 
 Before executing an `INSERT ... AS SELECT`, the Gateway performs a full validation pipeline to ensure schema correctness and safe upsert behavior.
 
@@ -146,7 +164,7 @@ If the INSERT column list is omitted, the Gateway derives it from the SELECT out
 	- all conflict target columns must be included in INSERT
 
 ### **3.d Validate SELECT Output Columns**
-Ensures:
+Ensures :
 - every INSERT column exists in the SELECT output
 - aliases are resolved
 - SELECT is valid
@@ -178,7 +196,17 @@ DmlResult(inserted = N, rejected = M)
 
 ---
 
-## UPDATE
+### Notes
+
+- All columns listed in the `INSERT` target must be present in the `SELECT` list.
+- The order of columns does not matter; matching is done by column name.
+- Extra columns in the `SELECT` that are not part of the target table are ignored.
+- Nested structures (`STRUCT`, `ARRAY<STRUCT>`) are supported as long as the selected expressions produce valid JSON structures for the target fields.
+- No type validation is performed at the SQL layer; type errors are reported by Elasticsearch at indexing time.
+
+---
+
+## UPDATE ... SET ... [WHERE]
 
 ### Syntax
 
@@ -190,17 +218,16 @@ WHERE condition;
 
 **Behavior**
 
-- UPDATE uses **update_by_query**
-- Supports:
-	- nested fields
-	- STRUCT fields
-	- ARRAY<STRUCT> (via full replacement)
-	- expressions
-	- PK-based filtering
+- `UPDATE` is implemented using Elasticsearch `update-by-query`.
+- Only top-level scalar fields or entire nested objects can be replaced.
+- Updating a specific element inside an `ARRAY<STRUCT>` is not supported.
+- `SET field = NULL` removes the field from the document (Elasticsearch does not store SQL NULL).
+- Expressions such as `SET x = x + 1` are not supported (no script-based incremental updates).
+- Fields not present in the mapping cannot be added unless dynamic mapping is enabled.
 
 ---
 
-## DELETE
+## DELETE FROM ... [WHERE]
 
 **Syntax**
 
@@ -211,15 +238,15 @@ WHERE condition;
 
 **Behavior**
 
-- DELETE uses **delete_by_query**
-- Supports:
-	- PK-based deletion
-	- nested conditions
-	- date filters
+- `DELETE` is implemented using Elasticsearch `delete-by-query`.
+- `WHERE` is optional.
+	- If provided, only matching documents are deleted.
+	- If omitted, **all documents in the index are deleted** (equivalent to `TRUNCATE TABLE`).
+- Deleting a nested field or an element inside an array is not supported; only whole documents can be removed.
 
 ---
 
-## COPY INTO (Bulk Ingestion)
+## COPY INTO ...
 
 COPY INTO is a **DML operator** that loads documents from external files into an Elasticsearch index.  
 It uses **only the Bulk API**, not the SQL engine.
