@@ -68,6 +68,7 @@ Modify an existing table. Multiple statements can be grouped inside parentheses.
 - `ALTER COLUMN [IF EXISTS] column_name SET DATA TYPE new_type` → Change the data type of an existing column.
 - `ALTER COLUMN [IF EXISTS] column_name SET|ADD FIELD field_definition` → Add or update a field inside a STRUCT or multi‑field.
 - `ALTER COLUMN [IF EXISTS] column_name DROP FIELD field_name` → Remove a field from a STRUCT or multi‑field.
+- `ALTER COLUMN [IF EXISTS] column_name SET FIELDS &#40;...&#41;` → Allows defining nested fields &#40;STRUCT&#41; or multi‑fields inside an existing column.
 - `SET|ADD MAPPING (key = value)`	→ Set table‑level mapping.
 - `DROP MAPPING key` → Remove table‑level mapping.
 - `SET|ADD SETTING (key = value)` → Set table‑level setting.
@@ -75,8 +76,6 @@ Modify an existing table. Multiple statements can be grouped inside parentheses.
 
 [//]: # (- `ALTER COLUMN [IF EXISTS] column_name SET OPTIONS &#40;...&#41;`)
 [//]: # (	→ Set multiple options for an existing column.)
-[//]: # (- `ALTER COLUMN [IF EXISTS] column_name SET FIELDS &#40;...&#41;`  )
-[//]: # (	→ Allows defining nested fields &#40;STRUCT&#41; or multi‑fields inside an existing column.)
 
 **Examples:**
 ```sql
