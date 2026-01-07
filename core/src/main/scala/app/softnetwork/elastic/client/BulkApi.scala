@@ -23,6 +23,7 @@ import akka.stream.scaladsl.{Balance, Flow, GraphDSL, Merge, Sink, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.file._
 import app.softnetwork.elastic.client.result.{ElasticResult, ElasticSuccess}
+import app.softnetwork.elastic.sql.query.{FileFormat, Unknown}
 import app.softnetwork.elastic.sql.schema.sqlConfig
 import org.apache.hadoop.conf.Configuration
 

@@ -2,6 +2,7 @@ package app.softnetwork.elastic.client.file
 
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Sink
+import app.softnetwork.elastic.sql.query.{Delta, Json, JsonArray, Parquet, Unknown}
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures

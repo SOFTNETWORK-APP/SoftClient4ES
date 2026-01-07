@@ -18,8 +18,8 @@ package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.bulk.BulkOptions
-import app.softnetwork.elastic.client.file._
 import app.softnetwork.elastic.scalatest.ElasticTestKit
+import app.softnetwork.elastic.sql.query.JsonArray
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpecLike

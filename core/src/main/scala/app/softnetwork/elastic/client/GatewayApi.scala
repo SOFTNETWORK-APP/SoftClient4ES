@@ -34,6 +34,7 @@ import app.softnetwork.elastic.client.result.{
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
+  CopyInto,
   CreatePipeline,
   CreateTable,
   DdlStatement,
@@ -190,14 +191,33 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
         }
       case insert: Insert =>
         api.insertByQuery(insert.table, insert.sql).map {
-          case ElasticSuccess(res) =>
+          case success @ ElasticSuccess(res) =>
             logger.info(s"✅ Inserted ${res.inserted} documents into ${insert.table}.")
-            ElasticResult.success(res)
+            success
           case ElasticFailure(elasticError) =>
             ElasticFailure(
               elasticError.copy(operation = Some("schema"))
             )
         }
+      case copy: CopyInto =>
+        api
+          .copyInto(
+            copy.source,
+            copy.targetTable,
+            doUpdate = copy.onConflict.exists(_.doUpdate),
+            fileFormat = copy.fileFormat
+          )
+          .map {
+            case success @ ElasticSuccess(res) =>
+              logger.info(
+                s"✅ Copied ${res.inserted} documents into ${copy.targetTable} from ${copy.source}."
+              )
+              success
+            case ElasticFailure(elasticError) =>
+              ElasticFailure(
+                elasticError.copy(operation = Some("schema"))
+              )
+          }
       case _ =>
         // unsupported DML statement
         val error =

@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client
 
 import akka.NotUsed
 import akka.stream.scaladsl.Source
+import app.softnetwork.elastic.sql.query.{Delta, FileFormat, Json, JsonArray, Parquet, Unknown}
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import com.fasterxml.jackson.core.{JsonFactory, JsonParser, JsonToken}
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -43,30 +44,6 @@ import scala.jdk.CollectionConverters._
 package object file {
 
   private val logger: Logger = LoggerFactory.getLogger("FileSource")
-
-  sealed trait FileFormat {
-    def name: String
-  }
-
-  case object Parquet extends FileFormat {
-    override def name: String = "Parquet"
-  }
-
-  case object Json extends FileFormat {
-    override def name: String = "JSON"
-  }
-
-  case object JsonArray extends FileFormat {
-    override def name: String = "JSON Array"
-  }
-
-  case object Delta extends FileFormat {
-    override def name: String = "Delta Lake"
-  }
-
-  case object Unknown extends FileFormat {
-    override def name: String = "Unknown"
-  }
 
   /** Hadoop configuration with optimizations for local file system */
   def hadoopConfiguration: Configuration = {

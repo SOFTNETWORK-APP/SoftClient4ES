@@ -22,14 +22,23 @@ import app.softnetwork.elastic.client.bulk.BulkOptions
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{Delete, From, Insert, SingleSearch, Table, Update}
+import app.softnetwork.elastic.sql.query.{
+  Delete,
+  FileFormat,
+  From,
+  Insert,
+  SingleSearch,
+  Table,
+  Unknown,
+  Update
+}
 import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, Schema, TableAlias}
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
+import org.apache.hadoop.conf.Configuration
 
 import scala.concurrent.{ExecutionContext, Future}
-
 import scala.jdk.CollectionConverters._
 
 /** Index management API.
@@ -1147,6 +1156,105 @@ trait IndicesApi extends ElasticClientHelpers {
       }
   }
 
+  /** Copy documents from files into an index.
+    *
+    * @param source
+    *   - the source file path (can be local or remote)
+    * @param target
+    *   - the target index name
+    * @param doUpdate
+    *   - true to update existing documents, false to insert only
+    * @param fileFormat
+    *   - optional file format (if not provided, will be inferred from file extension)
+    * @return
+    *   the number of documents inserted/updated
+    */
+  def copyInto(
+    source: String,
+    target: String,
+    doUpdate: Boolean,
+    fileFormat: Option[FileFormat] = None,
+    hadoopConf: Option[Configuration] = None
+  )(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[DmlResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    val result = for {
+      // 1. Validate target index
+      _ <- Future.fromTry(
+        validateIndexName(target)
+          .toLeft(())
+          .left
+          .map(err =>
+            err.copy(
+              operation = Some("copyInto"),
+              statusCode = Some(400),
+              index = Some(target)
+            )
+          )
+          .toTry
+      )
+
+      // 2 Load target metadata
+      idx <- Future.fromTry(getIndex(target).toEither.flatMap {
+        case Some(i) => Right(i.schema)
+        case None =>
+          Left(ElasticError.notFound(target, "copyInto"))
+      }.toTry)
+
+      // 3. Derive bulk options
+      idKey = idx.primaryKey match {
+        case Nil => None
+        case pk  => Some(pk.toSet)
+      }
+      suffixKey = idx.partitionBy.map(_.column)
+      suffixPattern = idx.partitionBy.flatMap(_.dateFormats.headOption)
+
+      // 4. Bulk file copy
+      bulkResult <- bulkFromFile(
+        filePath = source,
+        format = fileFormat.getOrElse(Unknown),
+        indexKey = Some(target),
+        idKey = idKey,
+        suffixDateKey = suffixKey,
+        suffixDatePattern = suffixPattern,
+        update = Some(doUpdate),
+        hadoopConf = hadoopConf
+      )(BulkOptions(defaultIndex = target), system)
+
+    } yield bulkResult
+
+    result
+      .map(r => ElasticSuccess(DmlResult(inserted = r.successCount, rejected = r.failedCount)))
+      .recover {
+        case e: ElasticError =>
+          ElasticFailure(
+            e.copy(
+              operation = Some("copyInto"),
+              index = Some(target)
+            )
+          )
+        case e =>
+          ElasticFailure(
+            ElasticError(
+              message = e.getMessage,
+              operation = Some("copyInto"),
+              index = Some(target)
+            )
+          )
+      }
+  }
+
+  /** Parse a query for update, determining if it's SQL or JSON.
+    *
+    * @param index
+    *   - the name of the index to update
+    * @param query
+    *   - the query (SQL or JSON)
+    * @return
+    *   either the parsed SQL Update statement or the validated JSON query
+    */
   private def parseQueryForUpdate(
     index: String,
     query: String
@@ -1354,6 +1462,14 @@ trait IndicesApi extends ElasticClientHelpers {
     }
   }
 
+  /** Open an index if it is closed, returning a function to restore its state.
+    *
+    * @param index
+    *   - the name of the index to open if needed
+    * @return
+    *   a tuple containing a boolean indicating if the index was opened and a function to restore
+    *   its state
+    */
   private def openIfNeeded(
     index: String
   ): Either[ElasticError, (Boolean, () => ElasticResult[Boolean])] = {
@@ -1374,6 +1490,19 @@ trait IndicesApi extends ElasticClientHelpers {
     }
   }
 
+  /** Resolve the final ingest pipeline to use for updateByQuery, merging user and SQL pipelines if
+    * needed.
+    *
+    * @param user
+    *   - optional user-provided ingest pipeline
+    * @param sql
+    *   - optional SQL-derived ingest pipeline
+    * @param elasticVersion
+    *   - Elasticsearch version
+    * @return
+    *   a tuple containing the final pipeline id to use (if any) and a boolean indicating if the
+    *   pipeline is temporary and must be deleted after use
+    */
   private def resolveFinalPipeline(
     user: Option[IngestPipeline],
     sql: Option[IngestPipeline],
@@ -1461,7 +1590,16 @@ trait IndicesApi extends ElasticClientHelpers {
     }
   }
 
-  def parseInsertQuery(
+  /** Parse an SQL INSERT query.
+    *
+    * @param index
+    *   - the name of the index to insert into
+    * @param query
+    *   - the SQL INSERT query
+    * @return
+    *   the parsed Insert statement
+    */
+  private def parseInsertQuery(
     index: String,
     query: String
   ): ElasticResult[Insert] = {

@@ -603,6 +603,21 @@ object Parser
         }
     }
 
+  def fileFormat: PackratParser[FileFormat] =
+    ("FILE_FORMAT" ~> (
+      ("PARQUET" ^^^ Parquet) |
+      ("JSON" ^^^ Json) |
+      ("JSON_ARRAY" ^^^ JsonArray) |
+      ("DELTA_LAKE" ^^^ Delta)
+    )) ^^ { ff => ff }
+
+  /** COPY INTO table FROM source */
+  def copy: PackratParser[CopyInto] =
+    ("COPY" ~ "INTO") ~ ident ~ ("FROM" ~> literal) ~ opt(fileFormat) ~ opt(onConflict) ^^ {
+      case _ ~ table ~ source ~ format ~ conflict =>
+        CopyInto(source.value, table, fileFormat = format, onConflict = conflict)
+    }
+
   /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...] */
   def update: PackratParser[Update] =
     ("UPDATE" ~> ident) ~ ("SET" ~> repsep(ident ~ "=" ~ value, separator)) ~ where.? ^^ {
@@ -617,7 +632,7 @@ object Parser
       Delete(Table(table), w)
     }
 
-  def dmlStatement: PackratParser[DmlStatement] = insert | update | delete
+  def dmlStatement: PackratParser[DmlStatement] = insert | update | delete | copy
 
   def statement: PackratParser[Statement] = ddlStatement | dqlStatement | dmlStatement
 
@@ -692,11 +707,14 @@ trait Parser
     "select",
     "insert",
     "update",
+    "copy",
     "delete",
     "create",
     "alter",
     "drop",
     "truncate",
+    "table",
+    "pipeline",
     "column",
     "from",
     "join",

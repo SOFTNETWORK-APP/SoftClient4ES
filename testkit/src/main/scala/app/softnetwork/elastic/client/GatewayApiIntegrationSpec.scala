@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
   ElasticResult,
+  ElasticSuccess,
   QueryPipeline,
   QueryResult,
   QueryRows,
@@ -40,6 +41,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.time.{Seconds, Span}
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.time.LocalDate
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContextExecutor}
 import java.util.concurrent.TimeUnit
@@ -765,6 +767,87 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     // Vérification finale
     val select = client.run("SELECT * FROM dml_chain ORDER BY id ASC").futureValue
     assertSelectResult(select)
+  }
+
+  // ---------------------------------------------------------------------------
+  // COPY INTO integration test
+  // ---------------------------------------------------------------------------
+
+  it should "support COPY INTO for JSONL and JSON_ARRAY formats" in {
+    // 1. Create table with primary key
+    val create =
+      """CREATE TABLE IF NOT EXISTS copy_into_test (
+        |  uuid KEYWORD NOT NULL,
+        |  name VARCHAR,
+        |  birthDate DATE,
+        |  childrenCount INT,
+        |  PRIMARY KEY (uuid)
+        |);""".stripMargin
+
+    assertDdl(client.run(create).futureValue)
+
+    // 2. Prepare sample documents
+    val persons = List(
+      """{"uuid": "A12", "name": "Homer Simpson", "birthDate": "1967-11-21", "childrenCount": 0}""",
+      """{"uuid": "A14", "name": "Moe Szyslak", "birthDate": "1967-11-21", "childrenCount": 0}""",
+      """{"uuid": "A16", "name": "Barney Gumble", "birthDate": "1969-05-09", "childrenCount": 2}"""
+    )
+
+    // 3. Create a temporary JSONL file
+    val jsonlFile = java.io.File.createTempFile("copy_into_jsonl", ".jsonl")
+    jsonlFile.deleteOnExit()
+    val writer1 = new java.io.PrintWriter(jsonlFile)
+    persons.foreach(writer1.println)
+    writer1.close()
+
+    // 4. COPY INTO using JSONL (format inferred)
+    val copyJsonl =
+      s"""COPY INTO copy_into_test FROM "${jsonlFile.getAbsolutePath}";"""
+
+    val jsonlResult = client.run(copyJsonl).futureValue
+    assertDml(jsonlResult, Some(DmlResult(inserted = persons.size)))
+
+    // 5. Create a temporary JSON_ARRAY file
+    val jsonArrayFile = java.io.File.createTempFile("copy_into_array", ".json")
+    jsonArrayFile.deleteOnExit()
+    val writer2 = new java.io.PrintWriter(jsonArrayFile)
+    writer2.println("[")
+    writer2.println(persons.mkString(",\n"))
+    writer2.println("]")
+    writer2.close()
+
+    // 6. COPY INTO using JSON_ARRAY
+    val copyArray =
+      s"""COPY INTO copy_into_test FROM "${jsonArrayFile.getAbsolutePath}" FILE_FORMAT = JSON_ARRAY ON CONFLICT DO UPDATE;"""
+
+    val arrayResult = client.run(copyArray).futureValue
+    assertDml(arrayResult, Some(DmlResult(inserted = persons.size)))
+
+    // 7. Final verification: SELECT all documents
+    val select = client.run("SELECT * FROM copy_into_test ORDER BY uuid ASC").futureValue
+    assertSelectResult(
+      select,
+      Seq(
+        Map(
+          "uuid"          -> "A12",
+          "name"          -> "Homer Simpson",
+          "birthDate"     -> LocalDate.parse("1967-11-21"),
+          "childrenCount" -> 0
+        ),
+        Map(
+          "uuid"          -> "A14",
+          "name"          -> "Moe Szyslak",
+          "birthDate"     -> LocalDate.parse("1967-11-21"),
+          "childrenCount" -> 0
+        ),
+        Map(
+          "uuid"          -> "A16",
+          "name"          -> "Barney Gumble",
+          "birthDate"     -> LocalDate.parse("1969-05-09"),
+          "childrenCount" -> 2
+        )
+      )
+    )
   }
 
   // ===========================================================================

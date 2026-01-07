@@ -428,6 +428,55 @@ package object query {
       s"DELETE FROM ${table.name}${where.map(w => s" ${w.sql}").getOrElse("")}"
   }
 
+  sealed trait FileFormat extends Token {
+    def name: String
+
+    override def sql: SQL = s" FILE_FORMAT = $name"
+  }
+
+  case object Parquet extends FileFormat {
+    override def name: String = "PARQUET"
+  }
+
+  case object Json extends FileFormat {
+    override def name: String = "JSON"
+  }
+
+  case object JsonArray extends FileFormat {
+    override def name: String = "JSON_ARRAY"
+  }
+
+  case object Delta extends FileFormat {
+    override def name: String = "DELTA_LAKE"
+  }
+
+  case object Unknown extends FileFormat {
+    override def name: String = "UNKNOWN"
+  }
+
+  object FileFormat {
+    def apply(format: String): FileFormat = {
+      format.toUpperCase match {
+        case "PARQUET"    => Parquet
+        case "JSON"       => Json
+        case "JSON_ARRAY" => JsonArray
+        case "DELTA_LAKE" => Delta
+        case _            => Unknown
+      }
+    }
+  }
+
+  case class CopyInto(
+    source: String,
+    targetTable: String,
+    fileFormat: Option[FileFormat] = None,
+    onConflict: Option[OnConflict] = None
+  ) extends DmlStatement {
+    override def sql: String = {
+      s"COPY INTO $targetTable FROM $source${asString(fileFormat)}${asString(onConflict)}"
+    }
+  }
+
   sealed trait DdlStatement extends Statement
 
   sealed trait PipelineStatement extends DdlStatement
