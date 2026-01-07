@@ -399,6 +399,24 @@ PARTITIONED BY (birthdate MONTH);
 - `SET|ADD SETTING (key = value)`
 - `DROP SETTING key`
 
+### Type Changes and Safety
+
+When applying `ALTER COLUMN column_name SET DATA TYPE new_type`, the SQL Gateway computes a structural diff between the current schema and the target schema.
+
+Type changes fall into two categories:
+
+- **Convertible types** (`SQLTypeUtils.canConvert(from, to) = true`)  
+	The change is allowed but requires a full **reindex** of the underlying data.  
+	The Gateway automatically performs the reindex operation and swaps aliases when complete.  
+	These changes are classified as `UnsafeReindex`.
+
+- **Incompatible types** (`SQLTypeUtils.canConvert(from, to) = false`)  
+	The change is **not allowed** and the `ALTER TABLE` statement fails.  
+	These changes are classified as `Impossible`.
+
+This is the only case where an `ALTER TABLE` operation can be rejected for safety reasons.  
+All other ALTER operations (adding/dropping columns, renaming, modifying options, modifying nested fields, etc.) are allowed.
+
 ---
 
 ## DROP TABLE
