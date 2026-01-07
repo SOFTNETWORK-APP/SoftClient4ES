@@ -290,9 +290,10 @@ ElasticSuccess(DmlResult(deleted = 1))
 ```scala
 gateway.run("""
   CREATE TABLE dml_users (
-    id INT PRIMARY KEY,
+    id INT,
     name TEXT,
-    age INT
+    age INT,
+    PRIMARY KEY (id)
   )
 """)
 ```
