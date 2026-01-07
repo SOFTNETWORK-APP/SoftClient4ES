@@ -713,8 +713,6 @@ trait Parser
     "alter",
     "drop",
     "truncate",
-    "table",
-    "pipeline",
     "column",
     "from",
     "join",
