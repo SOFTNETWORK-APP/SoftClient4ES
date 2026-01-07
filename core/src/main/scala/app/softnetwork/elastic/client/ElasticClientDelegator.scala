@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.query
+import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   SQLAggregation,
@@ -1644,6 +1644,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
     delegate.getPipeline(pipelineName)
   }
+
+  override def loadPipeline(pipelineName: String): ElasticResult[schema.IngestPipeline] =
+    delegate.loadPipeline(pipelineName)
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,

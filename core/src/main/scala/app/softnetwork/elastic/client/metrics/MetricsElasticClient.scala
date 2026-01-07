@@ -31,7 +31,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.query
+import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
 import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import org.json4s.Formats
@@ -1258,6 +1258,11 @@ class MetricsElasticClient(
   override def getPipeline(pipelineName: String): ElasticResult[Option[String]] =
     measureResult("getPipeline") {
       delegate.getPipeline(pipelineName)
+    }
+
+  override def loadPipeline(pipelineName: String): ElasticResult[schema.IngestPipeline] =
+    measureResult("loadPipeline") {
+      delegate.loadPipeline(pipelineName)
     }
 
   // ==================== TemplateApi (delegate) ====================

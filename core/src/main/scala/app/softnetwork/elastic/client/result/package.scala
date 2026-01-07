@@ -19,7 +19,7 @@ package app.softnetwork.elastic.client
 import akka.NotUsed
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
-import app.softnetwork.elastic.sql.schema.Table
+import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 
 import scala.util.control.NonFatal
 
@@ -217,6 +217,14 @@ package object result {
         operation = Some(operation)
       )
     }
+
+    def notFound(resource: String, name: String, operation: String): ElasticError = {
+      ElasticError(
+        s"$resource '$name' not found during operation '$operation'",
+        statusCode = Some(404),
+        operation = Some(operation)
+      )
+    }
   }
 
   /** Companion object with utility methods.
@@ -411,4 +419,6 @@ package object result {
   case class DdlResult(success: Boolean) extends QueryResult
 
   case class QueryTable(table: Table) extends QueryResult
+
+  case class QueryPipeline(pipeline: IngestPipeline) extends QueryResult
 }

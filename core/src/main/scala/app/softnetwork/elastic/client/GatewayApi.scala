@@ -24,6 +24,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticFailure,
   ElasticResult,
   ElasticSuccess,
+  QueryPipeline,
   QueryResult,
   QueryRows,
   QueryStream,
@@ -37,6 +38,7 @@ import app.softnetwork.elastic.sql.query.{
   CreateTable,
   DdlStatement,
   Delete,
+  DescribePipeline,
   DescribeTable,
   DmlStatement,
   DqlStatement,
@@ -45,6 +47,7 @@ import app.softnetwork.elastic.sql.query.{
   MultiSearch,
   PipelineStatement,
   SelectStatement,
+  ShowPipeline,
   ShowTable,
   SingleSearch,
   Statement,
@@ -216,18 +219,51 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
     statement: PipelineStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
-    // handle PIPELINE statement
-    api.pipeline(statement) match {
-      case ElasticSuccess(result) =>
-        logger.info(s"✅ Executed pipeline statement: $statement.")
-        Future.successful(ElasticResult.success(DdlResult(result)))
-      case ElasticFailure(elasticError) =>
-        logger.error(s"❌ Error executing pipeline statement: $statement. ${elasticError.message}")
-        Future.successful(
-          ElasticFailure(
-            elasticError.copy(operation = Some("pipeline"))
-          )
-        )
+    statement match {
+      case show: ShowPipeline =>
+        // handle SHOW PIPELINE statement
+        api.loadPipeline(show.name) match {
+          case ElasticSuccess(pipeline) =>
+            logger.info(s"✅ Retrieved pipeline ${show.name}.")
+            Future.successful(ElasticResult.success(QueryPipeline(pipeline)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("pipeline"))
+              )
+            )
+        }
+      case describe: DescribePipeline =>
+        // handle DESCRIBE PIPELINE statement
+        api.loadPipeline(describe.name) match {
+          case ElasticSuccess(pipeline) =>
+            logger.info(s"✅ Retrieved pipeline ${describe.name}.")
+            Future.successful(
+              ElasticResult.success(QueryRows(pipeline.processors.map(_.properties)))
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("pipeline"))
+              )
+            )
+        }
+      case _ =>
+        // handle PIPELINE statement
+        api.pipeline(statement) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Executed pipeline statement: $statement.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            logger.error(
+              s"❌ Error executing pipeline statement: $statement. ${elasticError.message}"
+            )
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("pipeline"))
+              )
+            )
+        }
     }
   }
 }
@@ -1066,7 +1102,7 @@ class DdlRouterExecutor(
   }
 }
 
-trait SqlGateway extends ElasticClientHelpers {
+trait GatewayApi extends ElasticClientHelpers {
   _: IndicesApi
     with PipelineApi
     with MappingApi

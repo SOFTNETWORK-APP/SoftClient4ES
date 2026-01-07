@@ -163,6 +163,16 @@ object Parser
       DropPipeline(name, ifExists = ie)
     }
 
+  def showPipeline: PackratParser[ShowPipeline] =
+    ("SHOW" ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
+      ShowPipeline(pipeline)
+    }
+
+  def describePipeline: PackratParser[DescribePipeline] =
+    ("DESCRIBE" ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
+      DescribePipeline(pipeline)
+    }
+
   def addProcessor: PackratParser[AddPipelineProcessor] =
     ("ADD" ~ "PROCESSOR") ~ processor ^^ { case _ ~ proc =>
       AddPipelineProcessor(proc)
@@ -563,7 +573,9 @@ object Parser
     truncateTable |
     showTable |
     describeTable |
-    dropPipeline
+    dropPipeline |
+    showPipeline |
+    describePipeline
 
   def onConflict: PackratParser[OnConflict] =
     ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {

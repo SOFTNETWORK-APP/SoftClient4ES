@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
   ElasticResult,
+  QueryPipeline,
   QueryResult,
   QueryRows,
   QueryStream,
@@ -31,7 +32,7 @@ import app.softnetwork.elastic.client.result.{
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.`type`.SQLTypes
-import app.softnetwork.elastic.sql.schema.Table
+import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpecLike
@@ -47,7 +48,7 @@ import java.util.concurrent.TimeUnit
 // Base test trait — to be mixed with ElasticDockerTestKit
 // ---------------------------------------------------------------------------
 
-trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
+trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
   self: ElasticTestKit =>
 
   lazy val log: Logger = LoggerFactory getLogger getClass.getName
@@ -57,7 +58,7 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   implicit val patience: PatienceConfig = PatienceConfig(timeout = Span(30, Seconds))
 
   // Provided by concrete test class
-  def client: SqlGateway
+  def client: GatewayApi
 
   override def beforeAll(): Unit = {
     self.beforeAll()
@@ -160,6 +161,16 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[QueryTable]
     res.toOption.get.asInstanceOf[QueryTable].table
+  }
+
+  // -------------------------------------------------------------------------
+  // Helper: assert SHOW PIPELINE result type
+  // -------------------------------------------------------------------------
+
+  def assertShowPipeline(res: ElasticResult[QueryResult]): IngestPipeline = {
+    res.isSuccess shouldBe true
+    res.toOption.get shouldBe a[QueryPipeline]
+    res.toOption.get.asInstanceOf[QueryPipeline].pipeline
   }
 
   // -------------------------------------------------------------------------
@@ -1341,6 +1352,10 @@ trait SqlGatewayIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |);""".stripMargin
 
     assertDdl(client.run(sql).futureValue)
+
+    val pipeline = assertShowPipeline(client.run("SHOW PIPELINE user_pipeline").futureValue)
+    pipeline.name shouldBe "user_pipeline"
+    pipeline.processors.size shouldBe 6
   }
 
   // ---------------------------------------------------------------------------

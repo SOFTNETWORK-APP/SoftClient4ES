@@ -315,6 +315,35 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
     }
   }
 
+  def loadPipeline(pipelineName: String): ElasticResult[IngestPipeline] = {
+    getPipeline(pipelineName) match {
+      case ElasticSuccess(Some(pipelineJson)) =>
+        ElasticResult.attempt {
+          IngestPipeline(name = pipelineName, json = pipelineJson)
+        } match {
+          case success @ ElasticSuccess(_) =>
+            success
+          case ElasticFailure(error) =>
+            logger.error(s"❌ Failed to parse pipeline '$pipelineName': ${error.message}")
+            ElasticResult.failure(
+              error.copy(operation = Some("loadPipeline"))
+            )
+        }
+      case ElasticSuccess(None) =>
+        val error =
+          ElasticError.notFound(
+            resource = "Pipeline",
+            name = pipelineName,
+            operation = "loadPipeline"
+          )
+        logger.error(s"❌ ${error.message}")
+        ElasticResult.failure(error)
+      case failure @ ElasticFailure(error) =>
+        logger.error(s"❌ Failed to load pipeline '$pipelineName': ${error.message}")
+        failure
+    }
+  }
+
   // ========================================================================
   // METHODS TO IMPLEMENT
   // ========================================================================

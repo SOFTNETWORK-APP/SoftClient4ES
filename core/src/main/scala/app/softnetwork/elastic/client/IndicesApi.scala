@@ -227,10 +227,7 @@ trait IndicesApi extends ElasticClientHelpers {
               case ElasticSuccess(Some(idx)) =>
                 ElasticSuccess(idx.schema)
               case ElasticSuccess(None) =>
-                logger.error(
-                  s"❌ Failed to load schema from template for index '$index'"
-                )
-                ElasticFailure(
+                val error =
                   ElasticError(
                     message = s"Failed to load schema from template for index '$index'",
                     cause = None,
@@ -238,7 +235,8 @@ trait IndicesApi extends ElasticClientHelpers {
                     index = Some(index),
                     operation = Some("loadSchema")
                   )
-                )
+                logger.error(s"❌ ${error.message}")
+                ElasticFailure(error)
               case ElasticFailure(error) =>
                 logger.error(
                   s"❌ Failed to load schema from template for index '$index': ${error.message}"

@@ -498,6 +498,14 @@ package object query {
     }
   }
 
+  case class ShowPipeline(name: String) extends PipelineStatement {
+    override def sql: String = s"SHOW PIPELINE $name"
+  }
+
+  case class DescribePipeline(name: String) extends PipelineStatement {
+    override def sql: String = s"DESCRIBE PIPELINE $name"
+  }
+
   sealed trait TableStatement extends DdlStatement
 
   case class CreateTable(
