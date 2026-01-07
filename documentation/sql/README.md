@@ -16,3 +16,4 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [Keywords](keywords.md)
 - [DDL Support](ddl_statements.md)
 - [DML Support](dml_statements.md)
+- [DQL Support](dql_statements.md)

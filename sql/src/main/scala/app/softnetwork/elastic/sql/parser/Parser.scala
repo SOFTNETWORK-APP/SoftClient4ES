@@ -168,6 +168,11 @@ object Parser
       ShowPipeline(pipeline)
     }
 
+  def showCreatePipeline: PackratParser[ShowCreatePipeline] =
+    ("SHOW" ~ "CREATE" ~ "PIPELINE") ~ ident ^^ { case _ ~ _ ~ _ ~ pipeline =>
+      ShowCreatePipeline(pipeline)
+    }
+
   def describePipeline: PackratParser[DescribePipeline] =
     ("DESCRIBE" ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
       DescribePipeline(pipeline)
@@ -361,6 +366,11 @@ object Parser
   def showTable: PackratParser[ShowTable] =
     ("SHOW" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
       ShowTable(table)
+    }
+
+  def showCreateTable: PackratParser[ShowCreateTable] =
+    ("SHOW" ~ "CREATE" ~ "TABLE") ~ ident ^^ { case _ ~ _ ~ _ ~ table =>
+      ShowCreateTable(table)
     }
 
   def describeTable: PackratParser[DescribeTable] =
@@ -572,9 +582,11 @@ object Parser
     dropTable |
     truncateTable |
     showTable |
+    showCreateTable |
     describeTable |
     dropPipeline |
     showPipeline |
+    showCreatePipeline |
     describePipeline
 
   def onConflict: PackratParser[OnConflict] =

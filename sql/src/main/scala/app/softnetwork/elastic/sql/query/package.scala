@@ -551,6 +551,10 @@ package object query {
     override def sql: String = s"SHOW PIPELINE $name"
   }
 
+  case class ShowCreatePipeline(name: String) extends PipelineStatement {
+    override def sql: String = s"SHOW CREATE PIPELINE $name"
+  }
+
   case class DescribePipeline(name: String) extends PipelineStatement {
     override def sql: String = s"DESCRIBE PIPELINE $name"
   }
@@ -869,6 +873,10 @@ package object query {
 
   case class ShowTable(table: String) extends TableStatement {
     override def sql: String = s"SHOW TABLE $table"
+  }
+
+  case class ShowCreateTable(table: String) extends TableStatement {
+    override def sql: String = s"SHOW CREATE TABLE $table"
   }
 
   case class DescribeTable(table: String) extends TableStatement {

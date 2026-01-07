@@ -418,7 +418,10 @@ package object result {
   // --------------------
   case class DdlResult(success: Boolean) extends QueryResult
 
-  case class QueryTable(table: Table) extends QueryResult
+  case class TableResult(table: Table) extends QueryResult
 
-  case class QueryPipeline(pipeline: IngestPipeline) extends QueryResult
+  case class PipelineResult(pipeline: IngestPipeline) extends QueryResult
+
+  case class SQLResult(sql: String) extends QueryResult
+
 }

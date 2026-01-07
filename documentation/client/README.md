@@ -19,3 +19,4 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [Scroll Search](scroll.md)
 - [Aggregations](aggregations.md)
 - [Template Management](templates.md)
+- [SQL Gateway Usage](gateway.md)

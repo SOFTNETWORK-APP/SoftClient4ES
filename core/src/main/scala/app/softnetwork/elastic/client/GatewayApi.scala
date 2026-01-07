@@ -24,12 +24,13 @@ import app.softnetwork.elastic.client.result.{
   ElasticFailure,
   ElasticResult,
   ElasticSuccess,
-  QueryPipeline,
+  PipelineResult,
   QueryResult,
   QueryRows,
   QueryStream,
   QueryStructured,
-  QueryTable
+  SQLResult,
+  TableResult
 }
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
@@ -48,6 +49,8 @@ import app.softnetwork.elastic.sql.query.{
   MultiSearch,
   PipelineStatement,
   SelectStatement,
+  ShowCreatePipeline,
+  ShowCreateTable,
   ShowPipeline,
   ShowTable,
   SingleSearch,
@@ -245,7 +248,22 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
         api.loadPipeline(show.name) match {
           case ElasticSuccess(pipeline) =>
             logger.info(s"✅ Retrieved pipeline ${show.name}.")
-            Future.successful(ElasticResult.success(QueryPipeline(pipeline)))
+            Future.successful(ElasticResult.success(PipelineResult(pipeline)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("pipeline"))
+              )
+            )
+        }
+      case showCreate: ShowCreatePipeline =>
+        // handle SHOW CREATE PIPELINE statement
+        api.loadPipeline(showCreate.name) match {
+          case ElasticSuccess(pipeline) =>
+            logger.info(s"✅ Retrieved pipeline ${showCreate.name}.")
+            Future.successful(
+              ElasticResult.success(SQLResult(pipeline.sql))
+            )
           case ElasticFailure(elasticError) =>
             Future.successful(
               ElasticFailure(
@@ -303,7 +321,21 @@ class TableExecutor(
         api.loadSchema(show.table) match {
           case ElasticSuccess(schema) =>
             logger.info(s"✅ Retrieved schema for index ${show.table}.")
-            Future.successful(ElasticResult.success(QueryTable(schema)))
+            Future.successful(ElasticResult.success(TableResult(schema)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("schema"))
+              )
+            )
+        }
+      case showCreate: ShowCreateTable =>
+        api.loadSchema(showCreate.table) match {
+          case ElasticSuccess(schema) =>
+            logger.info(s"✅ Retrieved schema for index ${showCreate.table}.")
+            Future.successful(
+              ElasticResult.success(SQLResult(schema.sql))
+            )
           case ElasticFailure(elasticError) =>
             Future.successful(
               ElasticFailure(

@@ -22,13 +22,13 @@ import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
   ElasticResult,
-  ElasticSuccess,
-  QueryPipeline,
+  PipelineResult,
   QueryResult,
   QueryRows,
   QueryStream,
   QueryStructured,
-  QueryTable
+  SQLResult,
+  TableResult
 }
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
@@ -161,8 +161,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
   def assertShowTable(res: ElasticResult[QueryResult]): Table = {
     res.isSuccess shouldBe true
-    res.toOption.get shouldBe a[QueryTable]
-    res.toOption.get.asInstanceOf[QueryTable].table
+    res.toOption.get shouldBe a[TableResult]
+    res.toOption.get.asInstanceOf[TableResult].table
   }
 
   // -------------------------------------------------------------------------
@@ -171,8 +171,18 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
   def assertShowPipeline(res: ElasticResult[QueryResult]): IngestPipeline = {
     res.isSuccess shouldBe true
-    res.toOption.get shouldBe a[QueryPipeline]
-    res.toOption.get.asInstanceOf[QueryPipeline].pipeline
+    res.toOption.get shouldBe a[PipelineResult]
+    res.toOption.get.asInstanceOf[PipelineResult].pipeline
+  }
+
+  // -------------------------------------------------------------------------
+  // Helper: assert SHOW CREATE result type
+  // -------------------------------------------------------------------------
+
+  def assertShowCreate(res: ElasticResult[QueryResult]): String = {
+    res.isSuccess shouldBe true
+    res.toOption.get shouldBe a[SQLResult]
+    res.toOption.get.asInstanceOf[SQLResult].sql
   }
 
   // -------------------------------------------------------------------------
@@ -193,6 +203,10 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val show = client.run("SHOW TABLE show_users").futureValue
     val table = assertShowTable(show)
+
+    val showCreate = client.run("SHOW CREATE TABLE show_users").futureValue
+    val sql = assertShowCreate(showCreate)
+    sql should include("CREATE OR REPLACE TABLE show_users")
 
     val ddl = table.ddl
     ddl should include("CREATE OR REPLACE TABLE show_users")
@@ -1439,6 +1453,10 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val pipeline = assertShowPipeline(client.run("SHOW PIPELINE user_pipeline").futureValue)
     pipeline.name shouldBe "user_pipeline"
     pipeline.processors.size shouldBe 6
+
+    val showCreate = client.run("SHOW CREATE PIPELINE user_pipeline").futureValue
+    val ddl = assertShowCreate(showCreate)
+    ddl should include("CREATE OR REPLACE PIPELINE user_pipeline")
   }
 
   // ---------------------------------------------------------------------------
