@@ -54,6 +54,7 @@ package object schema {
     }
     case object DateIndexName extends IngestProcessorType {
       def name: String = "date_index_name"
+      val name: String = "date_index_name"
     }
     def apply(n: String): IngestProcessorType = new IngestProcessorType {
       override val name: String = n
