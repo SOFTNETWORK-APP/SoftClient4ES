@@ -19,7 +19,6 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.schema.{
   Column,
-  DefaultValueProcessor,
   IngestPipeline,
   IngestPipelineType,
   IngestProcessor,
@@ -29,6 +28,7 @@ import app.softnetwork.elastic.sql.schema.{
   RenameProcessor,
   Schema,
   ScriptProcessor,
+  SetProcessor,
   Table => DdlTable
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
@@ -413,8 +413,7 @@ package object query {
       s"update-$table-${Instant.now}",
       IngestPipelineType.Custom,
       values.map { case (k, v) =>
-        DefaultValueProcessor(
-          sql = s"SET DEFAULT $k = ${v.value}",
+        SetProcessor(
           column = k,
           value = v
         )
@@ -678,7 +677,7 @@ package object query {
       s"DROP COLUMN$ifExistsClause $columnName"
     }
     override def ddlProcessor: Option[IngestProcessor] = Some(
-      RemoveProcessor(sql = sql, column = columnName)
+      RemoveProcessor(column = columnName)
     )
   }
   case class RenameColumn(oldName: String, newName: String) extends AlterTableStatement {
@@ -755,8 +754,7 @@ package object query {
     }
     override def ddlProcessor: Option[IngestProcessor] =
       Some(
-        DefaultValueProcessor(
-          sql = sql,
+        SetProcessor(
           column = columnName,
           value = defaultValue
         )

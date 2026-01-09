@@ -7,12 +7,12 @@ import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   mapper,
   DateIndexNameProcessor,
-  DefaultValueProcessor,
   IngestPipelineType,
   IngestProcessorType,
   PartitionDate,
   PrimaryKeyProcessor,
-  ScriptProcessor
+  ScriptProcessor,
+  SetProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
@@ -994,7 +994,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         println(schema.defaultPipeline.ddl)
         val json = schema.defaultPipeline.json
         println(json)
-        json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET VALUE 'anonymous' IF ctx.name == null, age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name SET VALUE 'anonymous' IF ctx.name == null","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
         val indexMappings = schema.indexMappings
         println(indexMappings)
         indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer"},"name":{"type":"text","fields":{"raw":{"type":"keyword"}},"analyzer":"french","search_analyzer":"french"},"birthdate":{"type":"date"},"age":{"type":"integer"},"ingested_at":{"type":"date"},"profile":{"type":"object","properties":{"bio":{"type":"text"},"followers":{"type":"integer"},"join_date":{"type":"date"},"seniority":{"type":"integer"}}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"},"columns":{"age":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3"}},"profile":{"data_type":"STRUCT","not_null":"false","comment":"user profile","multi_fields":{"bio":{"data_type":"VARCHAR","not_null":"false"},"followers":{"data_type":"INT","not_null":"false"},"join_date":{"data_type":"DATE","not_null":"false"},"seniority":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3"}}}},"name":{"data_type":"VARCHAR","not_null":"false","default_value":"anonymous","multi_fields":{"raw":{"data_type":"KEYWORD","not_null":"false","comment":"sortable"}}},"ingested_at":{"data_type":"TIMESTAMP","not_null":"false","default_value":"_ingest.timestamp"},"birthdate":{"data_type":"DATE","not_null":"false"},"id":{"data_type":"INT","not_null":"true","comment":"user identifier"}}}}""".stripMargin
@@ -1003,7 +1003,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         indexSettings.toString shouldBe """{"index":{}}"""
         val pipeline = schema.defaultPipelineNode
         println(pipeline)
-        pipeline.toString shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name DEFAULT 'anonymous'","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at DEFAULT _ingest.timestamp","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        pipeline.toString shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET VALUE 'anonymous' IF ctx.name == null, age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name SET VALUE 'anonymous' IF ctx.name == null","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
         // Reconstruct EsIndex
         val mappings = mapper.createObjectNode()
         mappings.set("mappings", indexMappings)
@@ -1342,20 +1342,25 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         processors.size shouldBe 6
         processors.find(_.column == "name") match {
           case Some(
-                DefaultValueProcessor(
+                SetProcessor(
                   IngestPipelineType.Default,
-                  "DEFAULT 'anonymous'",
+                  Some("DEFAULT 'anonymous'"),
                   "name",
                   StringValue("anonymous"),
+                  None,
+                  None,
+                  None,
+                  Some("ctx.name == null"),
                   true
                 )
               ) =>
-          case other => fail(s"Expected DdlDefaultValueProcessor for name, got $other")
+          case other => fail(s"Expected SetProcessor for name, got $other")
         }
         processors.find(_.column == "age") match {
           case Some(
                 ScriptProcessor(
                   IngestPipelineType.Default,
+                  Some("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))"),
                   "DATE_DIFF(birthdate, CURRENT_DATE, YEAR)",
                   "age",
                   SQLTypes.Int,
@@ -1370,11 +1375,15 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         }
         processors.find(_.column == "ingested_at") match {
           case Some(
-                DefaultValueProcessor(
+                SetProcessor(
                   IngestPipelineType.Default,
-                  "DEFAULT _ingest.timestamp",
+                  Some("DEFAULT _ingest.timestamp"),
                   "ingested_at",
                   IngestTimestampValue,
+                  None,
+                  None,
+                  None,
+                  _,
                   true
                 )
               ) =>
@@ -1384,6 +1393,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           case Some(
                 ScriptProcessor(
                   IngestPipelineType.Default,
+                  Some(
+                    "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))"
+                  ),
                   "DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)",
                   "profile.seniority",
                   SQLTypes.Int,
@@ -1400,7 +1412,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           case Some(
                 DateIndexNameProcessor(
                   IngestPipelineType.Default,
-                  "PARTITION BY birthdate (MONTH)",
+                  Some("PARTITION BY birthdate (MONTH)"),
                   "birthdate",
                   "M",
                   List("yyyy-MM"),
@@ -1414,11 +1426,11 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           case Some(
                 PrimaryKeyProcessor(
                   IngestPipelineType.Default,
-                  "PRIMARY KEY (id)",
+                  Some("PRIMARY KEY (id)"),
                   "_id",
                   cols,
                   false,
-                  false,
+                  Some(false),
                   "\\|\\|"
                 )
               ) =>
@@ -1453,14 +1465,18 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           ) if ie =>
         statements.size shouldBe 2
         statements.collect { case AddPipelineProcessor(p) => p } match {
-          case DefaultValueProcessor(
+          case SetProcessor(
                 IngestPipelineType.Default,
-                "status DEFAULT 'active'",
+                Some("status DEFAULT 'active'"),
                 "status",
                 StringValue("active"),
+                None,
+                None,
+                None,
+                Some("ctx.status == null"),
                 true
               ) :: Nil =>
-          case other => fail(s"Expected AddPipelineProcessor with DdlSetProcessor, got $other")
+          case other => fail(s"Expected AddPipelineProcessor with SetProcessor, got $other")
         }
         statements.collect { case DropPipelineProcessor(IngestProcessorType.Set, f) =>
           f

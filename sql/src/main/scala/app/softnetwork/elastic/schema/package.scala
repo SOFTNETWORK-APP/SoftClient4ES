@@ -21,13 +21,13 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.{
   Column,
   DateIndexNameProcessor,
-  DefaultValueProcessor,
   IngestPipelineType,
   IngestProcessor,
   PartitionDate,
   PrimaryKeyProcessor,
   Schema,
   ScriptProcessor,
+  SetProcessor,
   Table
 }
 import app.softnetwork.elastic.sql.serialization._
@@ -433,7 +433,7 @@ package object schema {
             enrichedCols.update(col, c.copy(script = Some(p)))
           }
 
-        case p: DefaultValueProcessor =>
+        case p: SetProcessor =>
           val col = p.column
           enrichedCols.get(col).foreach { c =>
             enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))

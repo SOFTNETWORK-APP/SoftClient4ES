@@ -41,22 +41,22 @@ package object schema {
 
   object IngestProcessorType {
     case object Script extends IngestProcessorType {
-      def name: String = "script"
+      val name: String = "script"
     }
     case object Rename extends IngestProcessorType {
-      def name: String = "rename"
+      val name: String = "rename"
     }
     case object Remove extends IngestProcessorType {
-      def name: String = "remove"
+      val name: String = "remove"
     }
     case object Set extends IngestProcessorType {
-      def name: String = "set"
+      val name: String = "set"
     }
     case object DateIndexName extends IngestProcessorType {
       def name: String = "date_index_name"
     }
     def apply(n: String): IngestProcessorType = new IngestProcessorType {
-      override def name: String = n
+      override val name: String = n
     }
   }
 
@@ -71,7 +71,8 @@ package object schema {
     def json: String = mapper.writeValueAsString(node)
     def pipelineType: IngestPipelineType
     def processorType: IngestProcessorType
-    def description: String = sql.trim
+    def sql: String // = s"${processorType.name.toUpperCase}${Value(properties).ddl}"
+    def description: Option[String]
     def name: String = processorType.name
     def properties: Map[String, Any]
 
@@ -155,15 +156,15 @@ package object schema {
       val props = processor.get(processorType)
 
       processorType match {
-        case "set" =>
+        case IngestProcessorType.Set.name =>
           val field = props.get("field").asText()
-          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
-          val valueNode = props.get("value")
+          val desc = Option(props.get("description")).map(_.asText())
+          val valueNode = Option(props.get("value"))
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
 
-          if (field == "_id") {
+          if (field == "_id" && valueNode.isDefined) {
             val value =
-              valueNode
+              valueNode.get
                 .asText()
                 .trim
                 .stripPrefix("{{")
@@ -172,33 +173,42 @@ package object schema {
             // DdlPrimaryKeyProcessor
             val cols = value.split(sqlConfig.compositeKeySeparator).toSet
             PrimaryKeyProcessor(
-              sql = desc,
+              pipelineType = pipelineType,
+              description = desc,
               column = "_id",
               value = cols,
               ignoreFailure = ignoreFailure
             )
           } else {
-            DefaultValueProcessor(
-              sql = desc,
+            val copyFrom = Option(props.get("copy_from")).map(_.asText())
+            val doOverride = Option(props.get("override")).map(_.asBoolean())
+            val ignoreEmptyValue = Option(props.get("ignore_empty_value")).map(_.asBoolean())
+            val doIf = Option(props.get("if")).map(_.asText())
+            SetProcessor(
+              pipelineType = pipelineType,
+              description = desc,
               column = field,
-              value = Value(valueNode.asText()),
+              value = valueNode.map(v => Value(v.asText())).getOrElse(Null),
+              copyFrom = copyFrom,
+              doOverride = doOverride,
+              ignoreEmptyValue = ignoreEmptyValue,
+              doIf = doIf,
               ignoreFailure = ignoreFailure
             )
           }
 
-        case "script" =>
-          val desc = {
-            if (props.has("description")) props.get("description").asText()
-            else ""
-          }
+        case IngestProcessorType.Script.name =>
+          val desc = Option(props.get("description")).map(_.asText())
           val lang = props.get("lang").asText()
           require(lang == "painless", s"Only painless supported, got $lang")
           val source = props.get("source").asText()
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
 
           desc match {
-            case ScriptDescRegex(col, dataType, script) =>
+            case Some(ScriptDescRegex(col, dataType, script)) =>
               ScriptProcessor(
+                pipelineType = pipelineType,
+                description = desc,
                 script = script,
                 column = col,
                 dataType = SQLTypes(dataType),
@@ -207,15 +217,16 @@ package object schema {
               )
             case _ =>
               GenericProcessor(
+                pipelineType = pipelineType,
                 processorType = IngestProcessorType.Script,
                 properties =
                   mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
               )
           }
 
-        case "date_index_name" =>
+        case IngestProcessorType.DateIndexName.name =>
           val field = props.get("field").asText()
-          val desc = Option(props.get("description")).map(_.asText()).getOrElse("")
+          val desc = Option(props.get("description")).map(_.asText())
           val rounding = props.get("date_rounding").asText()
           val formats = Option(props.get("date_formats"))
             .map(_.elements().asScala.toList.map(_.asText()))
@@ -223,11 +234,49 @@ package object schema {
           val prefix = props.get("index_name_prefix").asText()
 
           DateIndexNameProcessor(
-            sql = desc,
+            pipelineType = pipelineType,
+            description = desc,
             column = field,
             dateRounding = rounding,
             dateFormats = formats,
             prefix = prefix
+          )
+
+        case IngestProcessorType.Remove.name =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText())
+
+          RemoveProcessor(
+            pipelineType = pipelineType,
+            description = desc,
+            column = field
+          )
+
+        case IngestProcessorType.Rename.name =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText())
+          val targetField = props.get("target_field").asText()
+
+          RenameProcessor(
+            pipelineType = pipelineType,
+            description = desc,
+            column = field,
+            newName = targetField
+          )
+
+        case IngestProcessorType.Enrich.name =>
+          val field = props.get("field").asText()
+          val desc = Option(props.get("description")).map(_.asText())
+          val policyName = props.get("policy_name").asText()
+          val targetField = props.get("target_field").asText()
+          val maxMatches = Option(props.get("max_matches")).map(_.asInt()).getOrElse(1)
+          EnrichProcessor(
+            pipelineType = pipelineType,
+            description = desc,
+            column = targetField,
+            policyName = policyName,
+            field = field,
+            maxMatches = maxMatches
           )
 
         case other =>
@@ -247,6 +296,11 @@ package object schema {
     processorType: IngestProcessorType,
     properties: Map[String, Any]
   ) extends IngestProcessor {
+    override def description: Option[String] = properties.get("description") match {
+      case Some(s: String) => Some(s)
+      case _               => None
+    }
+
     override def sql: String = ddl
     override def column: String = properties.get("field") match {
       case Some(s: String) => s
@@ -260,6 +314,7 @@ package object schema {
 
   case class ScriptProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
+    description: Option[String] = None,
     script: String,
     column: String,
     dataType: SQLType,
@@ -273,7 +328,7 @@ package object schema {
     def processorType: IngestProcessorType = IngestProcessorType.Script
 
     override def properties: Map[String, Any] = Map(
-      "description"    -> description,
+      "description"    -> description.getOrElse(sql),
       "lang"           -> "painless",
       "source"         -> source,
       "ignore_failure" -> ignoreFailure
@@ -283,97 +338,142 @@ package object schema {
 
   case class RenameProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
+    description: Option[String] = None,
     column: String,
     newName: String,
     ignoreFailure: Boolean = true,
-    ignoreMissing: Boolean = true
+    ignoreMissing: Option[Boolean] = None
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Rename
 
-    def sql: String = s"$column RENAME TO $newName"
+    override def sql: String = s"$column RENAME TO $newName"
 
     override def properties: Map[String, Any] = Map(
-      "description"    -> description,
+      "description"    -> description.getOrElse(sql),
       "field"          -> column,
       "target_field"   -> newName,
-      "ignore_failure" -> ignoreFailure,
-      "ignore_missing" -> ignoreMissing
-    )
+      "ignore_failure" -> ignoreFailure
+    ) ++ ignoreMissing
+      .map("ignore_missing" -> _)
+      .toMap
 
   }
 
   case class RemoveProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
-    sql: String,
+    description: Option[String] = None,
     column: String,
     ignoreFailure: Boolean = true,
-    ignoreMissing: Boolean = true
+    ignoreMissing: Option[Boolean] = None
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Remove
 
+    override def sql: String = s"REMOVE $column"
+
     override def properties: Map[String, Any] = Map(
-      "description"    -> description,
+      "description"    -> description.getOrElse(sql),
       "field"          -> column,
-      "ignore_failure" -> ignoreFailure,
-      "ignore_missing" -> ignoreMissing
-    )
+      "ignore_failure" -> ignoreFailure
+    ) ++ ignoreMissing
+      .map("ignore_missing" -> _)
+      .toMap
 
   }
 
   case class PrimaryKeyProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
-    sql: String,
+    description: Option[String] = None,
     column: String,
     value: Set[String],
     ignoreFailure: Boolean = false,
-    ignoreEmptyValue: Boolean = false,
+    ignoreEmptyValue: Option[Boolean] = Some(false),
     separator: String = "\\|\\|"
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Set
 
+    override def sql: String = s"PRIMARY KEY (${value.mkString(", ")})"
+
     override def properties: Map[String, Any] = Map(
-      "description"        -> description,
-      "field"              -> column,
-      "value"              -> value.mkString("{{", separator, "}}"),
-      "ignore_failure"     -> ignoreFailure,
-      "ignore_empty_value" -> ignoreEmptyValue
-    )
+      "description"    -> description.getOrElse(sql),
+      "field"          -> column,
+      "value"          -> value.mkString("{{", separator, "}}"),
+      "ignore_failure" -> ignoreFailure
+    ) ++ ignoreEmptyValue
+      .map("ignore_empty_value" -> _)
+      .toMap
 
   }
 
-  case class DefaultValueProcessor(
+  case class SetProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
-    sql: String,
+    description: Option[String] = None,
     column: String,
     value: Value[_],
+    copyFrom: Option[String] = None,
+    doOverride: Option[Boolean] = None,
+    ignoreEmptyValue: Option[Boolean] = None,
+    doIf: Option[String] = None,
     ignoreFailure: Boolean = true
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Set
 
-    def _if: String = {
-      if (column.contains("."))
-        s"""ctx.${column.split("\\.").mkString("?.")} == null"""
-      else
-        s"""ctx.$column == null"""
+    override def sql: String = {
+      val base = copyFrom match {
+        case Some(source) => s"$column COPY FROM $source"
+        case None         => s"$column SET VALUE ${value.sql}"
+      }
+      val withOverride = doOverride match {
+        case Some(overrideValue) => s"$base OVERRIDE $overrideValue"
+        case None                => base
+      }
+      val withIgnoreEmpty = ignoreEmptyValue match {
+        case Some(ignoreEmpty) => s"$withOverride IGNORE EMPTY VALUE $ignoreEmpty"
+        case None              => withOverride
+      }
+      val withIf = doIf match {
+        case Some(condition) => s"$withIgnoreEmpty IF $condition"
+        case None            => withIgnoreEmpty
+      }
+      withIf
     }
 
-    override def properties: Map[String, Any] = Map(
-      "description" -> description,
-      "field"       -> column,
-      "value" -> {
+    lazy val defaultValue: Option[Any] = {
+      if (copyFrom.isDefined) None
+      else
         value match {
-          case IdValue | IngestTimestampValue => s"{{${value.value}}}"
-          case _                              => value.value
+          case IdValue | IngestTimestampValue => Some(s"{{${value.value}}}")
+          case Null                           => None
+          case _                              => Some(value.value)
         }
-      },
-      "ignore_failure" -> ignoreFailure,
-      "if"             -> _if
-    )
+    }
+
+    override def properties: Map[String, Any] = {
+      Map(
+        "description"               -> description.getOrElse(sql),
+        "field"                     -> column,
+        "ignore_failure"            -> ignoreFailure
+      ) ++ defaultValue.map("value" -> _) ++
+      copyFrom.map("copy_from" -> _) ++
+      doOverride.map("override" -> _) ++
+      doIf.map("if" -> _) ++
+      ignoreEmptyValue.map("ignore_empty_value" -> _)
+    }
+
+    override def validate(): Either[String, Unit] = {
+      for {
+        _ <-
+          if (value != Null && copyFrom.isDefined)
+            Left(
+              s"Only one of value or copy_from should be defined for SET processor on column $column"
+            )
+          else Right(())
+      } yield ()
+    }
   }
 
   case class DateIndexNameProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
-    sql: String,
+    description: Option[String] = None,
     column: String,
     dateRounding: String,
     dateFormats: List[String],
@@ -382,8 +482,10 @@ package object schema {
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.DateIndexName
 
+    override def sql: String = s"PARTITION BY $column (${TimeUnit(dateRounding).sql})"
+
     override def properties: Map[String, Any] = Map(
-      "description"       -> description,
+      "description"       -> description.getOrElse(sql),
       "field"             -> column,
       "date_rounding"     -> dateRounding,
       "date_formats"      -> dateFormats,
@@ -399,7 +501,6 @@ package object schema {
     if (primaryKey.nonEmpty) {
       Seq(
         PrimaryKeyProcessor(
-          sql = s"PRIMARY KEY (${primaryKey.mkString(", ")})",
           column = "_id",
           value = primaryKey.toSet,
           separator = sqlConfig.compositeKeySeparator
@@ -410,19 +511,45 @@ package object schema {
     }
   }
 
+  case class EnrichProcessor(
+    pipelineType: IngestPipelineType = IngestPipelineType.Default,
+    description: Option[String] = None,
+    column: String,
+    policyName: String,
+    field: String,
+    maxMatches: Int = 1,
+    ignoreFailure: Boolean = true
+  ) extends IngestProcessor {
+    def processorType: IngestProcessorType = IngestProcessorType.Enrich
+
+    def targetField: String = column
+
+    override def sql: String = s"ENRICH USING POLICY $policyName FROM $field INTO $targetField"
+
+    override def properties: Map[String, Any] = Map(
+      "description"    -> description.getOrElse(sql),
+      "policy_name"    -> policyName,
+      "field"          -> field,
+      "target_field"   -> targetField,
+      "max_matches"    -> maxMatches,
+      "ignore_failure" -> ignoreFailure
+    )
+
+  }
+
   sealed trait IngestPipelineType {
     def name: String
   }
 
   object IngestPipelineType {
     case object Default extends IngestPipelineType {
-      def name: String = "DEFAULT"
+      val name: String = "DEFAULT"
     }
     case object Final extends IngestPipelineType {
-      def name: String = "FINAL"
+      val name: String = "FINAL"
     }
     case object Custom extends IngestPipelineType {
-      def name: String = "CUSTOM"
+      val name: String = "CUSTOM"
     }
   }
 
@@ -664,10 +791,15 @@ package object schema {
 
     def processors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
-        DefaultValueProcessor(
-          sql = s"$path DEFAULT $dv",
+        SetProcessor(
           column = path,
-          value = dv
+          value = dv,
+          doIf = Some {
+            if (path.contains("."))
+              s"""ctx.${path.split("\\.").mkString("?.")} == null"""
+            else
+              s"""ctx.$path == null"""
+          }
         )
       }.toSeq ++ multiFields.flatMap(_.processors)
 
@@ -888,7 +1020,6 @@ package object schema {
 
     def processor(table: Table): DateIndexNameProcessor =
       DateIndexNameProcessor(
-        sql = sql,
         column = column,
         dateRounding = dateRounding,
         dateFormats = dateFormats,
