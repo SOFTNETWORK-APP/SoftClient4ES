@@ -32,6 +32,7 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
+import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 import app.softnetwork.persistence.generateUUID
@@ -527,8 +528,20 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     assertDdl(client.run(alter).futureValue)
 
     val table = assertShowTable(client.run("SHOW TABLE users_alter5").futureValue)
-    table.ddl should include("reputation DOUBLE DEFAULT 0.0")
-    table.defaultPipeline.processors.size shouldBe 2
+    table.find("profile.reputation") match {
+      case Some(col) =>
+        col.dataType shouldBe SQLTypes.Double
+        col.defaultValue shouldBe Some(DoubleValue(0.0))
+      case _ => fail("Column 'profile.reputation' not found")
+    }
+    table.defaultPipeline.processors.size shouldBe 3 // added processor to create an artificial primary key
+    table.find("users_alter5_id") match {
+      case Some(col) =>
+        col.dataType shouldBe SQLTypes.Keyword
+        col.defaultValue shouldBe Some(IdValue)
+        col.processors.size shouldBe 1
+      case _ => fail("Column 'users_alter5_id' not found")
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -556,7 +569,10 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     assertDdl(client.run(dropNotNull).futureValue)
 
     val table = assertShowTable(client.run("SHOW TABLE users_alter6").futureValue)
-    table.ddl should not include "NOT NULL"
+    table.find("status") match {
+      case Some(col) => col.nullable shouldBe true
+      case _         => fail("Column 'status' not found")
+    }
   }
 
   // ---------------------------------------------------------------------------

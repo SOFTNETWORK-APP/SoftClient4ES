@@ -16,8 +16,9 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.schema.{
+  sqlConfig,
   Column,
   IngestPipeline,
   IngestPipelineType,
@@ -584,8 +585,23 @@ package object query {
       }
     }
 
+    private val artificialPkColumnName: String =
+      s"${table}_${sqlConfig.artificialPrimaryKeyColumnName}"
+
     lazy val columns: Seq[Column] = {
-      ddl match {
+      val artificialPkColumn = if (primaryKey.isEmpty) {
+        Seq(
+          Column(
+            name = artificialPkColumnName,
+            dataType = SQLTypes.Keyword,
+            defaultValue = Some(IdValue),
+            comment = Some("Artificial primary key column")
+          )
+        )
+      } else {
+        Nil
+      }
+      (ddl match {
         case Left(select) =>
           select match {
             case s: SingleSearch =>
@@ -599,7 +615,7 @@ package object query {
             case _ => Nil
           }
         case Right(cols) => cols
-      }
+      }).filterNot(_.name == artificialPkColumnName) ++ artificialPkColumn
     }
 
     lazy val mappings: Map[String, Value[_]] = options.get("mappings") match {

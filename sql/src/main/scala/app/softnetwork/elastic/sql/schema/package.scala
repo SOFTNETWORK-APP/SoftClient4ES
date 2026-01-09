@@ -696,11 +696,7 @@ package object schema {
     def find(path: String): Option[Column] = {
       if (path.contains(".")) {
         val parts = path.split("\\.")
-        cols.get(parts.head).flatMap { col =>
-          col.multiFields.toStream
-            .flatMap(_.find(parts.tail.mkString(".")))
-            .headOption
-        }
+        cols.get(parts.head).flatMap(col => col.find(parts.tail.mkString(".")))
       } else {
         cols.get(path)
       }
@@ -1136,11 +1132,7 @@ package object schema {
     def find(path: String): Option[Column] = {
       if (path.contains(".")) {
         val parts = path.split("\\.")
-        cols.get(parts.head).flatMap { col =>
-          col.multiFields.toStream
-            .flatMap(_.find(parts.tail.mkString(".")))
-            .headOption
-        }
+        cols.get(parts.head).flatMap(col => col.find(parts.tail.mkString(".")))
       } else {
         cols.get(path)
       }

@@ -5,7 +5,8 @@ import com.typesafe.scalalogging.StrictLogging
 import configs.Configs
 
 case class ElasticSqlConfig(
-  compositeKeySeparator: String
+  compositeKeySeparator: String,
+  artificialPrimaryKeyColumnName: String
 )
 
 object ElasticSqlConfig extends StrictLogging {
