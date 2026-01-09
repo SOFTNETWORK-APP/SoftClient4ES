@@ -53,7 +53,6 @@ package object schema {
       val name: String = "set"
     }
     case object DateIndexName extends IngestProcessorType {
-      def name: String = "date_index_name"
       val name: String = "date_index_name"
     }
     def apply(n: String): IngestProcessorType = new IngestProcessorType {
