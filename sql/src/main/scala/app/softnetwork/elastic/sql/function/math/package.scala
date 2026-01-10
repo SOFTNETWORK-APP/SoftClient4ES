@@ -18,7 +18,6 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
   Expr,
-  Identifier,
   IntValue,
   PainlessContext,
   PainlessParam,
