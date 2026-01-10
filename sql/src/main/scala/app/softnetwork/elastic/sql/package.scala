@@ -1124,7 +1124,8 @@ package object sql {
         }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
-      if (request.tableAliases.values.toSeq.contains(tableAlias)) {
+      val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._2)
+      if (table.nonEmpty) {
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>
             val nestedElement =

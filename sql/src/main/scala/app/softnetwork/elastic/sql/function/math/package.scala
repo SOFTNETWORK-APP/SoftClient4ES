@@ -69,9 +69,7 @@ package object math {
   case object Atan extends Expr("ATAN") with Trigonometric
   case object Atan2 extends Expr("ATAN2") with Trigonometric
 
-  sealed trait MathematicalFunction
-      extends TransformFunction[SQLNumeric, SQLNumeric]
-      with FunctionWithIdentifier {
+  sealed trait MathematicalFunction extends TransformFunction[SQLNumeric, SQLNumeric] {
     override def inputType: SQLNumeric = SQLTypes.Numeric
 
     override def outputType: SQLNumeric = mathOp.baseType
@@ -79,8 +77,6 @@ package object math {
     def mathOp: MathOp
 
     override def fun: Option[PainlessScript] = Some(mathOp)
-
-    override def identifier: Identifier = Identifier(this)
 
     override def toPainlessCall(
       callArgs: List[String],

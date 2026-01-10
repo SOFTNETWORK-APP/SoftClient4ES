@@ -18,7 +18,6 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
   Expr,
-  Identifier,
   IntValue,
   PainlessContext,
   PainlessScript,
@@ -108,16 +107,12 @@ package object string {
     override def nullable: Boolean = false
   }
 
-  sealed trait StringFunction[Out <: SQLType]
-      extends TransformFunction[SQLVarchar, Out]
-      with FunctionWithIdentifier {
+  sealed trait StringFunction[Out <: SQLType] extends TransformFunction[SQLVarchar, Out] {
     override def inputType: SQLVarchar = SQLTypes.Varchar
 
     override def outputType: Out
 
     def stringOp: StringOp
-
-    override def identifier: Identifier = Identifier(this)
 
     override def toSQL(base: String): String =
       if (base.nonEmpty) s"$sql($base)"

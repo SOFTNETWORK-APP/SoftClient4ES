@@ -71,8 +71,6 @@ sealed trait Join extends Updateable {
       _ <- this match {
         case j if joinType.isDefined && on.isEmpty && joinType.get != CrossJoin =>
           Left(s"JOIN $j requires an ON clause")
-        case j if joinType.isEmpty && on.isDefined =>
-          Left(s"JOIN $j requires a JOIN type")
         case j if alias.isEmpty =>
           Left(s"JOIN $j requires an alias")
         case _ => Right(())
@@ -186,6 +184,8 @@ case class From(tables: Seq[Table]) extends Updateable {
   override def validate(): Either[String, Unit] = {
     if (tables.isEmpty) {
       Left("At least one table is required in FROM clause")
+    } else if (tables.size > 1) {
+      Left("Only one table is supported in FROM clause")
     } else {
       for {
         _ <- tables.map(_.validate()).filter(_.isLeft) match {
@@ -195,6 +195,8 @@ case class From(tables: Seq[Table]) extends Updateable {
       } yield ()
     }
   }
+
+  lazy val mainTable: Table = tables.head
 }
 
 case class NestedElement(

@@ -45,12 +45,14 @@ case class Field(
     with FunctionChain
     with PainlessScript
     with DateMathScript {
+  def tableAlias: Option[String] = identifier.tableAlias
+  def table: Option[String] = identifier.table
   def isScriptField: Boolean =
     functions.nonEmpty && !hasAggregation && identifier.bucket.isEmpty
   override def sql: String = s"$identifier${asString(fieldAlias)}"
   lazy val sourceField: String = {
     if (identifier.nested) {
-      identifier.tableAlias
+      tableAlias
         .orElse(fieldAlias.map(_.alias))
         .map(a => s"$a.")
         .getOrElse("") + identifier.name

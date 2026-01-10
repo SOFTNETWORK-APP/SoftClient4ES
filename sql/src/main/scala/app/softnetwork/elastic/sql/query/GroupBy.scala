@@ -55,6 +55,8 @@ case class Bucket(
   size: Option[Int] = None
 ) extends Updateable
     with PainlessScript {
+  def tableAlias: Option[String] = identifier.tableAlias
+  def table: Option[String] = identifier.table
   override def sql: String = s"$identifier"
   def update(request: SingleSearch): Bucket = {
     identifier.functions.headOption match {
@@ -76,7 +78,7 @@ case class Bucket(
 
   lazy val sourceBucket: String =
     if (identifier.nested) {
-      identifier.tableAlias
+      tableAlias
         .map(a => s"$a.")
         .getOrElse("") + identifier.name.split("\\.").tail.mkString(".")
     } else {
