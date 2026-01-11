@@ -55,6 +55,9 @@ package object schema {
     case object DateIndexName extends IngestProcessorType {
       val name: String = "date_index_name"
     }
+    case object Enrich extends IngestProcessorType {
+      val name: String = "enrich"
+    }
     def apply(n: String): IngestProcessorType = new IngestProcessorType {
       override val name: String = n
     }
@@ -1117,6 +1120,25 @@ package object schema {
     }
   }
 
+  /** Definition of a table within the schema
+    *
+    * @param name
+    *   the table name
+    * @param columns
+    *   the list of columns within the table
+    * @param primaryKey
+    *   optional list of columns composing the primary key
+    * @param partitionBy
+    *   optional partition by date definition
+    * @param mappings
+    *   optional index mappings
+    * @param settings
+    *   optional index settings
+    * @param processors
+    *   optional list of ingest processors associated to this table (apart from column processors)
+    * @param aliases
+    *   optional map of aliases associated to this table
+    */
   case class Table(
     name: String,
     columns: List[Column],
@@ -1127,6 +1149,7 @@ package object schema {
     processors: Seq[IngestProcessor] = Seq.empty,
     aliases: Map[String, Value[_]] = Map.empty
   ) extends DdlToken {
+    lazy val indexName: String = name.toLowerCase
     private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
 
     def find(path: String): Option[Column] = {
