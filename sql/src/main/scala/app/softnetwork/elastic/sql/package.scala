@@ -835,6 +835,7 @@ package object sql {
     def update(request: SingleSearch): Identifier
 
     def tableAlias: Option[String]
+    def table: Option[String]
     def distinct: Boolean
     def nested: Boolean
     def nestedElement: Option[NestedElement]
@@ -1095,7 +1096,8 @@ package object sql {
     bucket: Option[Bucket] = None,
     nestedElement: Option[NestedElement] = None,
     bucketPath: String = "",
-    col: Option[Column] = None
+    col: Option[Column] = None,
+    table: Option[String] = None
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
@@ -1144,7 +1146,8 @@ package object sql {
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 nestedElement = nestedElement,
                 bucketPath = bucketPath,
-                col = request.schema.flatMap(schema => schema.find(colName))
+                col = request.schema.flatMap(schema => schema.find(colName)),
+                table = table
               )
               .withFunctions(this.updateFunctions(request))
           case Some(tuple) if nested =>
@@ -1157,7 +1160,8 @@ package object sql {
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 bucketPath = bucketPath,
-                col = request.schema.flatMap(schema => schema.find(colName))
+                col = request.schema.flatMap(schema => schema.find(colName)),
+                table = table
               )
               .withFunctions(this.updateFunctions(request))
           case None if nested =>
@@ -1167,7 +1171,8 @@ package object sql {
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 bucketPath = bucketPath,
-                col = request.schema.flatMap(schema => schema.find(name))
+                col = request.schema.flatMap(schema => schema.find(name)),
+                table = table
               )
               .withFunctions(this.updateFunctions(request))
           case _ =>
@@ -1178,7 +1183,8 @@ package object sql {
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket),
               bucketPath = bucketPath,
-              col = request.schema.flatMap(schema => schema.find(colName))
+              col = request.schema.flatMap(schema => schema.find(colName)),
+              table = table
             )
         }
       } else {
