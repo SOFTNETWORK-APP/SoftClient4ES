@@ -184,8 +184,8 @@ case class From(tables: Seq[Table]) extends Updateable {
   override def validate(): Either[String, Unit] = {
     if (tables.isEmpty) {
       Left("At least one table is required in FROM clause")
-    } else if (tables.size > 1) {
-      Left("Only one table is supported in FROM clause")
+    } else if (tables.filter(_.joins.nonEmpty).size > 1) {
+      Left("Only one table with joins is supported in FROM clause")
     } else {
       for {
         _ <- tables.map(_.validate()).filter(_.isLeft) match {
