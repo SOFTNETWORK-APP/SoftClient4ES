@@ -71,6 +71,616 @@ val defaultSettings: String = """
 
 ---
 
+## 🔧 Index State Detection and Automatic State Restoration
+
+SoftClient4ES ensures that operations requiring an **open index** (such as `deleteByQuery` and `truncateIndex`) behave safely and consistently, even when the target index is **closed**.
+
+Elasticsearch does **not** allow `_delete_by_query` on a closed index (including ES 8.x and ES 9.x).  
+To guarantee correct behavior, SoftClient4ES automatically:
+
+1. Detects whether the index is open or closed
+2. Opens the index if needed
+3. Executes the operation
+4. Restores the original state (re‑closes the index if it was closed)
+
+This mechanism is fully transparent to the user.
+
+---
+
+## 🔧 Internal Shard Readiness Handling (`waitForShards`)
+
+Some Elasticsearch operations require the index to be **fully operational**, meaning all primary shards must be allocated and the index must reach at least **yellow** cluster health.  
+This is especially important for Elasticsearch **6.x**, where reopening a closed index does **not** guarantee immediate shard availability.
+
+SoftClient4ES includes an internal mechanism called **`waitForShards`**, which ensures that the index is ready before executing operations that depend on shard availability.
+
+This mechanism is:
+
+- **fully automatic**
+- **transparent to the user**
+- **only applied when necessary**
+- **client‑specific** (Jest ES6, REST HL ES6)
+- a **no‑op** for Elasticsearch 7, 8, and 9
+
+---
+
+### When is `waitForShards` used?
+
+`waitForShards` is invoked automatically after reopening an index inside the internal `openIfNeeded` workflow.
+
+It is used by operations that require:
+
+- an **open** index
+- **allocated** shards
+- a **searchable** state
+
+Specifically:
+
+- `deleteByQuery`
+- `truncateIndex`
+
+These operations internally perform:
+
+1. Detect whether the index is closed
+2. Open it if needed
+3. **Wait for shards to reach the required health status**
+4. Execute the operation
+5. Restore the original index state (re‑close if necessary)
+
+This ensures consistent behavior across all Elasticsearch versions.
+
+---
+
+### Why is this needed?
+
+Elasticsearch 6.x has a known behavior:
+
+- After reopening a closed index, shards may remain in `INITIALIZING` state for a short period.
+- Executing `_delete_by_query` during this window results in:
+
+	```
+	503 Service Unavailable
+	search_phase_execution_exception
+	all shards failed
+	```
+
+Elasticsearch 7+ no longer exhibits this issue.
+
+SoftClient4ES abstracts this difference by automatically waiting for shard readiness on ES6.
+
+---
+
+### How does `waitForShards` work?
+
+Internally, the client performs:
+
+```
+GET /_cluster/health/<index>?wait_for_status=yellow&timeout=30s
+```
+
+This ensures:
+
+- primary shards are allocated
+- the index is searchable
+- the cluster is ready to process delete‑by‑query operations
+
+### Client‑specific behavior:
+
+| Client              | ES Version  | Behavior                                                    |
+|---------------------|-------------|-------------------------------------------------------------|
+| **Jest**            | 6.x         | Uses a custom Jest action to call `_cluster/health`         |
+| **REST HL**         | 6.x         | Uses the low‑level client to call `_cluster/health`         |
+| **Java API Client** | 8.x / 9.x   | No‑op (Elasticsearch handles shard readiness automatically) |
+| **REST HL**         | 7.x         | No‑op                                                       |
+| **Jest**            | 7.x         | No‑op                                                       |
+
+---
+
+### Transparency for the user
+
+`waitForShards` is **not part of the public API**.  
+It is an internal mechanism that ensures:
+
+- consistent behavior across ES6, ES7, ES8, ES9
+- predictable delete‑by‑query semantics
+- correct handling of closed indices
+- no need for users to manually manage shard allocation or cluster health
+
+Users do **not** need to call or configure anything.
+
+---
+
+### Example (internal workflow)
+
+When calling:
+
+```scala
+client.deleteByQuery("my_index", """{"query": {"match_all": {}}}""")
+```
+
+SoftClient4ES internally performs:
+
+1. Check if `my_index` is closed
+2. If closed → open it
+3. **Wait for shards to reach yellow** (ES6 only)
+4. Execute `_delete_by_query`
+5. Restore original state (re‑close if needed)
+
+This guarantees reliable behavior even on older Elasticsearch clusters.
+
+---
+
+### 🔧 updateByQuery
+
+`updateByQuery` updates documents in an index using either a **JSON query** or a **SQL UPDATE statement**.  
+It supports ingest pipelines, SQL‑driven SET clauses, and automatic pipeline merging.
+
+SoftClient4ES ensures consistent behavior across Elasticsearch 6, 7, 8, and 9, including:
+
+- automatic index opening and state restoration
+- shard readiness handling (ES6 only)
+- temporary pipeline creation and cleanup
+- SQL → JSON query translation
+- SQL → ingest pipeline generation
+
+---
+
+#### SQL UPDATE Support
+
+SoftClient4ES accepts SQL UPDATE statements of the form:
+
+```sql
+UPDATE <index> SET field = value [, field2 = value2 ...] [WHERE <conditions>]
+```
+
+#### ✔️ Supported:
+
+- simple literal values (`string`, `number`, `boolean`, `date`)
+- multiple assignments in the SET clause
+- WHERE clause with any supported SQL predicate
+- UPDATE without WHERE (updates all documents)
+- automatic conversion to:
+	- a JSON query (`WHERE` → `query`)
+	- an ingest pipeline (`SET` → processors)
+
+#### ✖️ Not supported:
+
+- painless scripts
+- complex expressions in SET
+- joins or multi‑table updates
+
+---
+
+#### Automatic Pipeline Generation (SQL SET → Ingest Pipeline)
+
+When using SQL UPDATE, the `SET` clause is automatically converted into an ingest pipeline:
+
+```json
+{
+  "processors": [
+    { "set": { "field": "name", "value": "Homer" } },
+    { "set": { "field": "childrenCount", "value": 3 } }
+  ]
+}
+```
+
+This pipeline is created **only for the duration of the update**, unless the user explicitly provides a pipeline ID.
+
+---
+
+#### Pipeline Resolution and Merging
+
+`updateByQuery` supports three pipeline sources:
+
+| Source            | Description                    |
+|-------------------|--------------------------------|
+| **User pipeline** | Provided via `pipelineId`      |
+| **SQL pipeline**  | Generated from SQL SET clause  |
+| **No pipeline**   | JSON update without processors |
+
+#### Pipeline resolution rules:
+
+| User pipeline  | SQL pipeline  | Result                               |
+|----------------|---------------|--------------------------------------|
+| None           | None          | No pipeline                          |
+| Some           | None          | Use user pipeline                    |
+| None           | Some          | Create temporary pipeline            |
+| Some           | Some          | Merge both into a temporary pipeline |
+
+#### Pipeline merging
+
+Processors are merged deterministically:
+
+- processors with the same `(type, field)` → SQL processor overrides user processor
+- order is preserved
+- merged pipeline is temporary and deleted after execution
+
+---
+
+#### JSON Query Support
+
+If the query is not SQL, it is treated as a raw JSON `_update_by_query` request:
+
+```json
+{
+  "query": {
+    "term": { "uuid": "A16" }
+  }
+}
+```
+
+No pipeline is generated unless the user provides one.
+
+---
+
+#### Index State Handling
+
+`updateByQuery` uses the same robust index‑state workflow as `deleteByQuery`:
+
+1. Detect whether the index is open or closed
+2. Open it if needed
+3. **ES6 only:** wait for shards to reach `yellow`
+4. Execute update‑by‑query
+5. Restore the original state (re‑close if needed)
+
+This ensures safe, predictable behavior across all Elasticsearch versions.
+
+---
+
+#### Signature
+
+```scala
+def updateByQuery(
+  index: String,
+  query: String,
+  pipelineId: Option[String] = None,
+  refresh: Boolean = true
+): ElasticResult[Long]
+```
+
+#### Parameters
+
+| Name         | Type             | Description                               |
+|--------------|------------------|-------------------------------------------|
+| `index`      | `String`         | Target index                              |
+| `query`      | `String`         | SQL UPDATE or JSON query                  |
+| `pipelineId` | `Option[String]` | Optional ingest pipeline to apply         |
+| `refresh`    | `Boolean`        | Whether to refresh the index after update |
+
+#### Returns
+
+- `ElasticSuccess[Long]` → number of updated documents
+- `ElasticFailure` → error details
+
+---
+
+#### Examples
+
+#### SQL UPDATE with WHERE
+
+```scala
+client.updateByQuery(
+  "person",
+  """UPDATE person SET name = 'Another Name' WHERE uuid = 'A16'"""
+)
+```
+
+#### SQL UPDATE without WHERE (update all)
+
+```scala
+client.updateByQuery(
+  "person",
+  """UPDATE person SET birthDate = '1972-12-26'"""
+)
+```
+
+#### JSON query with user pipeline
+
+```scala
+client.updateByQuery(
+  "person",
+  """{"query": {"match_all": {}}}""",
+  pipelineId = Some("set-birthdate-1972-12-26")
+)
+```
+
+#### SQL UPDATE + user pipeline (merged)
+
+```scala
+client.updateByQuery(
+  "person",
+  """UPDATE person SET birthDate = '1972-12-26' WHERE uuid = 'A16'""",
+  pipelineId = Some("user-update-name")
+)
+```
+
+---
+
+#### Behavior Summary
+
+- SQL UPDATE is fully supported
+- SET clause → ingest pipeline
+- WHERE clause → JSON query
+- Pipelines are merged when needed
+- Temporary pipelines are cleaned up automatically
+- Index state is preserved
+- Works consistently across ES6, ES7, ES8, ES9
+
+---
+
+### insertByQuery — SQL‑Driven Bulk Insert & Upsert for Elasticsearch
+
+`insertByQuery` executes SQL `INSERT` statements and writes documents into an Elasticsearch index.  
+It supports:
+
+- `INSERT … VALUES`
+- `INSERT … AS SELECT`
+- `ON CONFLICT DO UPDATE`
+- Primary keys (simple or composite)
+- Partitioning (`partition_by`)
+- Column aliasing
+- Automatic mapping between SELECT output and INSERT columns
+- Strict SQL validation before execution
+
+This API is designed for ETL pipelines, migrations, and SQL‑driven ingestion workflows.
+
+---
+
+#### Supported SQL Syntax
+
+**INSERT … VALUES**
+
+```sql
+INSERT INTO index_name (col1, col2)
+VALUES (v1, v2)
+```
+
+**INSERT … AS SELECT**
+
+```sql
+INSERT INTO index_name (col1, col2)
+AS SELECT a AS col1, b AS col2 FROM other_index
+```
+
+**INSERT without column list**
+
+```sql
+INSERT INTO index_name
+SELECT a, b, c FROM other_index
+```
+
+**ON CONFLICT DO UPDATE**
+
+```sql
+INSERT INTO index_name (...)
+VALUES (...)
+ON CONFLICT DO UPDATE
+```
+
+or with explicit conflict target:
+
+```sql
+INSERT INTO index_name (...)
+VALUES (...)
+ON CONFLICT (col1, col2) DO UPDATE
+```
+
+---
+
+#### Primary Key Semantics
+
+Primary keys are defined in the index mapping under `_meta.primary_key`:
+
+```
+"_meta": {
+  "primary_key": ["order_id", "customer_id"]
+}
+```
+
+Rules:
+
+- PK may be simple or composite.
+- PK determines the Elasticsearch `_id`.
+- All PK columns must be present in the INSERT.
+- For `INSERT … AS SELECT`, the SELECT must produce all PK columns.
+
+---
+
+#### Conflict Handling
+
+**ON CONFLICT DO UPDATE**
+
+Triggers an **upsert**.
+
+Rules when PK exists:
+
+- If conflictTarget omitted → PK is used.
+- If conflictTarget provided → must match PK exactly.
+- All PK columns must be present in the INSERT.
+
+Rules when PK does not exist:
+
+- conflictTarget is mandatory.
+- All conflictTarget columns must be present in the INSERT.
+
+---
+
+#### INSERT … VALUES
+
+Direct insertion of literal values.
+
+Validation:
+
+- Column count must match value count.
+- All PK columns must be present if `ON CONFLICT` is used.
+
+---
+
+#### INSERT … AS SELECT
+
+Inserts documents produced by a SELECT query.
+
+Behavior:
+
+- Executes a scroll query.
+- Removes Elasticsearch metadata (`_id`, `_index`, `_score`, `_sort`).
+- Maps SELECT output to INSERT columns **by name**.
+- Supports aliasing.
+- Supports INSERT without column list.
+
+---
+
+#### Column Mapping Rules
+
+**Mapping is always by name, never by position.**
+
+Example:
+
+```sql
+SELECT foo AS bar
+```
+
+→ INSERT column `bar` receives the value of `foo`.
+
+---
+
+#### Validation Rules
+
+**General**
+
+- INSERT column count must match VALUES count.
+- conflictTarget ⊆ INSERT columns.
+- INSERT must include all PK columns if PK exists.
+- If PK does not exist → conflictTarget is mandatory.
+
+**For DO UPDATE**
+
+- conflictTarget must match PK exactly when PK exists.
+
+**For INSERT … AS SELECT**
+
+- All INSERT columns must be present in SELECT output.
+- SELECT metadata fields are ignored.
+- Aliases are resolved correctly.
+
+**For INSERT without column list**
+
+- INSERT columns = SELECT output columns.
+
+---
+
+#### Composite Primary Keys
+
+Composite PKs are fully supported:
+
+```
+"_meta": {
+  "primary_key": ["order_id", "customer_id"]
+}
+```
+
+The Elasticsearch `_id` is constructed from all PK columns, e.g.:
+
+```
+O1001|C001
+```
+
+This ensures deterministic conflict detection.
+
+---
+
+#### Partitioning
+
+If the index defines:
+
+```
+"_meta": {
+  "partition_by": {
+    "column": "order_date",
+    "granularity": "d"
+  }
+}
+```
+
+Then:
+
+- Documents are routed to partitioned indices (e.g., `orders-2024-02-01`).
+- The partition key is extracted from the INSERT or SELECT row.
+
+---
+
+#### Error Handling
+
+`insertByQuery` returns:
+
+- `ElasticSuccess(count)` on success
+- `ElasticFailure(error)` on validation or execution error
+
+Errors include:
+
+- Missing PK columns
+- conflictTarget mismatch
+- Missing SELECT columns
+- Invalid SQL syntax
+- Unsupported INSERT form
+- Elasticsearch bulk failures
+
+`ON CONFLICT DO NOTHING` never raises a conflict error.
+
+---
+
+#### Examples
+
+**Insert with VALUES**
+
+```sql
+INSERT INTO customers (customer_id, name, email)
+VALUES ('C010', 'Bob', 'bob@example.com')
+```
+
+**Upsert with PK**
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('SKU-001', 'Laptop Pro', 1499.99)
+ON CONFLICT DO UPDATE
+```
+
+**Insert‑or‑ignore with DO NOTHING**
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('SKU-001', 'Laptop Pro', 1499.99)
+ON CONFLICT DO NOTHING
+```
+
+**Insert from SELECT with alias mapping**
+
+```sql
+INSERT INTO orders (order_id, customer_id, total)
+AS SELECT id AS order_id, cust AS customer_id, amount AS total
+FROM staging_orders
+```
+
+**Insert from SELECT without column list**
+
+```sql
+INSERT INTO orders
+SELECT id AS order_id, cust AS customer_id, amount AS total
+FROM staging_orders
+```
+
+**Upsert with composite PK**
+
+```sql
+INSERT INTO orders (order_id, customer_id, total)
+AS SELECT id AS order_id, cust AS customer_id, amount AS total
+FROM staging_orders_updates
+ON CONFLICT (order_id, customer_id) DO UPDATE
+```
+
+---
+
 ## Public Methods
 
 ### createIndex
@@ -82,13 +692,17 @@ Creates a new index with specified settings.
 ```scala
 def createIndex(
   index: String,
-  settings: String = defaultSettings
+  settings: String = defaultSettings,
+  mappings: Option[String] = None,
+  aliases: Seq[TableAlias] = Seq.empty
 ): ElasticResult[Boolean]
 ```
 
 **Parameters:**
 - `index` - Name of the index to create
 - `settings` - JSON settings for the index (defaults to `defaultSettings`)
+- `mappings` - Optional JSON mappings for the index
+- `aliases` - Optional list of aliases to assign to the index
 
 **Returns:**
 - `ElasticSuccess[Boolean]` with `true` if created, `false` otherwise
@@ -97,6 +711,8 @@ def createIndex(
 **Validation:**
 - Index name format validation
 - JSON settings syntax validation
+- JSON mappings syntax validation if provided
+- Alias name format validation
 
 **Examples:**
 
@@ -145,6 +761,25 @@ for {
   indexed <- client.index("users", userData)
 } yield indexed
 ```
+
+---
+
+### getIndex
+
+Gets an existing index.
+
+**Signature:**
+
+```scala
+def getIndex(index: String): ElasticResult[Option[Index]]
+```
+
+**Parameters:**
+- `index` - Name of the index to get
+
+**Returns:**
+- `ElasticSuccess[Option[Index]]` with index configuration if index found, None otherwise
+- `ElasticFailure` with error details
 
 ---
 
@@ -434,6 +1069,175 @@ existenceChecks.foreach {
   case (index, ElasticFailure(e)) => println(s"⚠️ $index check failed: ${e.message}")
 }
 ```
+
+---
+
+### isIndexClosed
+
+Checks whether an index is currently **closed**.
+
+**Signature:**
+
+```scala
+def isIndexClosed(index: String): ElasticResult[Boolean]
+```
+
+**Parameters:**
+- `index` – Name of the index to inspect
+
+**Returns:**
+- `ElasticSuccess(true)` if the index is closed
+- `ElasticSuccess(false)` if the index is open
+- `ElasticFailure` if the index does not exist or the request fails
+
+**Behavior:**
+- Uses the Elasticsearch `_cat/indices` API internally
+- Supported across Jest (ES6), REST HL (ES6/7), Java API Client (ES8/ES9)
+
+**Examples:**
+
+```scala
+client.isIndexClosed("archive-2023") match {
+  case ElasticSuccess(true)  => println("Index is closed")
+  case ElasticSuccess(false) => println("Index is open")
+  case ElasticFailure(err)   => println(s"Error: ${err.message}")
+}
+```
+
+---
+
+### Automatic Index Opening and State Restoration
+
+Some operations require the index to be **open**.  
+SoftClient4ES automatically handles this through an internal helper:
+
+- Detect initial state (`open` or `closed`)
+- Open the index if needed
+- Execute the operation
+- Restore the original state
+
+This ensures:
+
+- **Safety** (no accidental state changes)
+- **Idempotence** (index ends in the same state it started)
+- **Compatibility** with all Elasticsearch versions
+
+This logic is used internally by:
+
+- `deleteByQuery`
+- `truncateIndex`
+
+---
+
+### deleteByQuery
+
+Deletes documents from an index using either a JSON query or a SQL `DELETE`/`SELECT` expression.
+
+If the index is **closed**, SoftClient4ES will:
+
+1. Detect that the index is closed
+2. Open it temporarily
+3. Execute the delete‑by‑query
+4. Re‑close it afterward
+
+**Signature:**
+
+```scala
+def deleteByQuery(
+  index: String,
+  query: String,
+  refresh: Boolean = true
+): ElasticResult[Long]
+```
+
+**Parameters:**
+- `index` – Name of the index
+- `query` – JSON or SQL delete expression
+- `refresh` – Whether to refresh the index after deletion
+
+**Returns:**
+- `ElasticSuccess[Long]` – number of deleted documents
+- `ElasticFailure` – error details
+
+**Behavior:**
+- Validates index name
+- Parses SQL into JSON when needed
+- Ensures index exists
+- Automatically opens closed indices
+- Restores original state after execution
+- Uses `_delete_by_query` internally
+
+**Examples:**
+
+```scala
+// JSON delete
+client.deleteByQuery(
+  "users",
+  """{"query": {"term": {"active": false}}}"""
+)
+
+// SQL delete
+client.deleteByQuery(
+  "orders",
+  "DELETE FROM orders WHERE status = 'cancelled'"
+)
+
+// SQL select (equivalent to delete)
+client.deleteByQuery(
+  "sessions",
+  "SELECT * FROM sessions WHERE expired = true"
+)
+```
+
+---
+
+### truncateIndex
+
+Deletes **all documents** from an index while preserving its mappings, settings, and aliases.
+
+This is implemented as:
+
+```scala
+deleteByQuery(index, """{"query": {"match_all": {}}}""")
+```
+
+If the index is closed, SoftClient4ES will automatically:
+
+- Open it
+- Execute the truncate
+- Restore the closed state
+
+**Signature:**
+
+```scala
+def truncateIndex(index: String): ElasticResult[Long]
+```
+
+**Parameters:**
+- `index` – Name of the index to truncate
+
+**Returns:**
+- `ElasticSuccess[Long]` – number of deleted documents
+- `ElasticFailure` – error details
+
+**Examples:**
+
+```scala
+// Remove all documents
+client.truncateIndex("logs-2024")
+
+// Safe truncate with existence check
+for {
+  exists  <- client.indexExists("cache")
+  deleted <- if (exists) client.truncateIndex("cache")
+             else ElasticResult.success(0L)
+} yield deleted
+```
+
+**Notes:**
+- Index structure is preserved
+- Operation is irreversible
+- Works even if the index is initially closed
 
 ---
 

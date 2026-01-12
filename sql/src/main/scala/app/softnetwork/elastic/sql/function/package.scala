@@ -20,7 +20,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
-import app.softnetwork.elastic.sql.query.SQLSearchRequest
+import app.softnetwork.elastic.sql.query.{NestedElement, SingleSearch}
 
 package object function {
 
@@ -33,10 +33,14 @@ package object function {
     }
     def expr: Token = _expr
     override def nullable: Boolean = expr.nullable
+    def functionNestedElement: Option[NestedElement] = None
   }
 
   trait FunctionWithIdentifier extends Function {
     def identifier: Identifier
+
+    override def functionNestedElement: Option[NestedElement] =
+      identifier.nestedElement.orElse(identifier.functionNestedElement)
 
     override def shouldBeScripted: Boolean = identifier.shouldBeScripted
   }
@@ -189,7 +193,7 @@ package object function {
       functions.indexOf(function)
     }
 
-    def updateFunctions(request: SQLSearchRequest): List[Function] = {
+    def updateFunctions(request: SingleSearch): List[Function] = {
       functions.map {
         case f: Updateable =>
           f.update(request).asInstanceOf[Function]
@@ -199,6 +203,8 @@ package object function {
 
     override def shouldBeScripted: Boolean = functions.exists(_.shouldBeScripted)
 
+    override def functionNestedElement: Option[NestedElement] =
+      functions.flatMap(_.functionNestedElement).headOption
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
@@ -268,7 +274,7 @@ package object function {
                       val ret = SQLTypeUtils
                         .coerce(
                           a,
-                          argTypes(i),
+                          in,
                           context
                         )
                       if (ret.startsWith(".")) {
@@ -285,18 +291,36 @@ package object function {
                         ctx.addParam(LiteralParam(ret))
                       }
                     case identifier: Identifier =>
-                      identifier.baseType match {
-                        case SQLTypes.Any => // in painless context, Any is ZonedDateTime
-                          out match {
+                      identifier.originalType match {
+                        case SQLTypes.Any if !ctx.isProcessor =>
+                          in match {
+                            case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                              identifier.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
                             case SQLTypes.Date =>
-                              identifier.addPainlessMethod(".toLocalDate()")
+                              identifier.addPainlessMethod(
+                                ".toInstant().atZone(ZoneId.of('Z')).toLocalDate()"
+                              )
                             case SQLTypes.Time =>
-                              identifier.addPainlessMethod(".toLocalTime()")
+                              identifier.addPainlessMethod(
+                                ".toInstant().atZone(ZoneId.of('Z')).toLocalTime()"
+                              )
                             case _ =>
                           }
-                        case _ =>
+                          Option(paramName)
+                        case SQLTypes.Any if ctx.isProcessor =>
+                          in match {
+                            case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                              val param = SQLTypeUtils
+                                .coerce(
+                                  a,
+                                  in,
+                                  context
+                                )
+                              ctx.addParam(LiteralParam(param))
+                            case _ => Option(paramName)
+                          }
+                        case _ => Option(paramName)
                       }
-                      Option(paramName)
                     case _ =>
                       Option(paramName)
                   }

@@ -16,8 +16,9 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{AliasApi, IndicesApi}
+import app.softnetwork.elastic.client.AliasApi
 import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.sql.schema.TableAlias
 import io.searchbox.client.JestResult
 import io.searchbox.indices.aliases.{AddAliasMapping, GetAliases, ModifyAliases, RemoveAliasMapping}
 
@@ -28,20 +29,26 @@ import scala.jdk.CollectionConverters._
   *   [[AliasApi]] for generic API documentation
   */
 trait JestAliasApi extends AliasApi with JestClientHelpers {
-  _: IndicesApi with JestClientCompanion =>
+  _: JestIndicesApi with JestClientCompanion =>
 
   /** Add an alias to an index.
     * @see
     *   [[AliasApi.addAlias]]
     */
-  private[client] def executeAddAlias(index: String, alias: String): ElasticResult[Boolean] =
+  private[client] def executeAddAlias(alias: TableAlias): ElasticResult[Boolean] =
     executeJestBooleanAction(
       operation = "addAlias",
-      index = Some(s"$index -> $alias"),
+      index = Some(s"${alias.table} -> ${alias.alias}"),
       retryable = false // Aliases operations can not be retried
     ) {
+      val builder = new AddAliasMapping.Builder(alias.table, alias.alias)
+      if (alias.filter.nonEmpty)
+        builder.setFilter(alias.filter.asJava.asInstanceOf[java.util.Map[String, AnyRef]])
+      alias.routing.foreach(builder.addRouting)
+      alias.indexRouting.foreach(builder.addIndexRouting)
+      alias.searchRouting.foreach(builder.addSearchRouting)
       new ModifyAliases.Builder(
-        new AddAliasMapping.Builder(index, alias).build()
+        builder.build()
       ).build()
     }
 

@@ -30,7 +30,10 @@ import app.softnetwork.elastic.client.{
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery}
+import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.{query, schema}
+import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -87,11 +90,28 @@ class MetricsElasticClient(
 
   // ==================== IndicesApi ====================
 
-  override def createIndex(index: String, settings: String): ElasticResult[Boolean] = {
+  override def createIndex(
+    index: String,
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] = {
     measureResult("createIndex", Some(index)) {
-      delegate.createIndex(index, settings)
+      delegate.createIndex(index, settings, mappings, aliases)
     }
   }
+
+  /** Get an index with the provided name.
+    *
+    * @param index
+    *   - the name of the index to get
+    * @return
+    *   the index if it exists, None otherwise
+    */
+  override def getIndex(index: String): ElasticResult[Option[Index]] =
+    measureResult("getIndex", Some(index)) {
+      delegate.getIndex(index)
+    }
 
   override def deleteIndex(index: String): ElasticResult[Boolean] = {
     measureResult("deleteIndex", Some(index)) {
@@ -114,18 +134,106 @@ class MetricsElasticClient(
   override def reindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] = {
     measureResult("reindex", Some(s"$sourceIndex->$targetIndex")) {
-      delegate.reindex(sourceIndex, targetIndex, refresh)
+      delegate.reindex(sourceIndex, targetIndex, refresh, pipeline)
     }
   }
 
-  override def indexExists(index: String): ElasticResult[Boolean] = {
+  override def indexExists(index: String, pattern: Boolean): ElasticResult[Boolean] = {
     measureResult("indexExists", Some(index)) {
-      delegate.indexExists(index)
+      delegate.indexExists(index, pattern)
     }
   }
+
+  /** Truncate an index by deleting all its documents.
+    *
+    * @param index
+    *   - the name of the index to truncate
+    * @return
+    *   the number of documents deleted
+    */
+  override def truncateIndex(index: String): ElasticResult[Long] =
+    measureResult("truncate", Some(index)) {
+      delegate.truncateIndex(index)
+    }
+
+  /** Delete documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the query to delete documents by (can be JSON or SQL)
+    * @param refresh
+    *   - true to refresh the index after deletion, false otherwise
+    * @return
+    *   the number of documents deleted
+    */
+  override def deleteByQuery(index: String, query: String, refresh: Boolean): ElasticResult[Long] =
+    measureResult("deleteByQuery", Some(index)) {
+      delegate.deleteByQuery(index, query, refresh)
+    }
+
+  override def isIndexClosed(index: String): ElasticResult[Boolean] =
+    measureResult("isIndexClosed", Some(index)) {
+      delegate.isIndexClosed(index)
+    }
+
+  /** Update documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to update
+    * @param query
+    *   - the query to update documents by (can be JSON or SQL)
+    * @param pipelineId
+    *   - optional ingest pipeline id to use for the update
+    * @param refresh
+    *   - true to refresh the index after update, false otherwise
+    * @return
+    *   the number of documents updated
+    */
+  override def updateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    measureResult("updateByQuery", Some(index)) {
+      delegate.updateByQuery(index, query, pipelineId, refresh)
+    }
+
+  /** Insert documents by query into an index.
+    *
+    * @param index
+    *   - the name of the index to insert into
+    * @param query
+    *   - the query to insert documents from (can be SQL INSERT ... VALUES or INSERT ... AS SELECT)
+    * @param refresh
+    *   - true to refresh the index after insertion, false otherwise
+    * @return
+    *   the number of documents inserted
+    */
+  override def insertByQuery(index: String, query: String, refresh: Boolean)(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[DmlResult]] = {
+    measureAsync("insertByQuery", Some(index)) {
+      delegate.insertByQuery(index, query, refresh)
+    }(system.dispatcher)
+  }
+
+  /** Load the schema for the provided index.
+    *
+    * @param index
+    *   - the name of the index to load the schema for
+    * @return
+    *   the schema if the index exists, an error otherwise
+    */
+  override def loadSchema(index: String): ElasticResult[Schema] =
+    measureResult("loadSchema", Some(index.indices.mkString(","))) {
+      delegate.loadSchema(index)
+    }
 
   // ==================== AliasApi ====================
 
@@ -171,13 +279,13 @@ class MetricsElasticClient(
     * @example
     * {{{
     * getAliases("my-index") match {
-    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.mkString(", ")}")
+    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.map(_.alias).mkString(", ")}")
     *   case ElasticFailure(error)   => println(s"Error: ${error.message}")
     * }
     *
     * }}}
     */
-  override def getAliases(index: String): ElasticResult[Set[String]] =
+  override def getAliases(index: String): ElasticResult[Seq[TableAlias]] =
     measureResult("getAliases", Some(index)) {
       delegate.getAliases(index)
     }
@@ -214,6 +322,30 @@ class MetricsElasticClient(
   ): ElasticResult[Boolean] =
     measureResult("swapAlias", Some(s"$oldIndex->$newIndex")) {
       delegate.swapAlias(oldIndex, newIndex, alias)
+    }
+
+  /** Set the exact set of aliases for an index.
+    *
+    * This method ensures that the specified index has exactly the provided set of aliases. It adds
+    * any missing aliases and removes any extra aliases that are not in the provided set.
+    *
+    * @param index
+    *   the name of the index
+    * @param aliases
+    *   the desired set of aliases for the index
+    * @return
+    *   ElasticSuccess(true) if the operation was successful, ElasticFailure otherwise
+    * @example
+    * {{{
+    * setAliases("my-index", Set("alias1", "alias2")) match {
+    *   case ElasticSuccess(_)     => println("Aliases set successfully")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    */
+  override def setAliases(index: String, aliases: Seq[TableAlias]): ElasticResult[Boolean] =
+    measureResult("setAliases", Some(index)) {
+      delegate.setAliases(index, aliases)
     }
 
   // ==================== SettingsApi ====================
@@ -619,7 +751,7 @@ class MetricsElasticClient(
     * @return
     *   a sequence of aggregated results
     */
-  override def aggregate(sqlQuery: SQLQuery)(implicit
+  override def aggregate(sqlQuery: SelectStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[collection.Seq[SingleValueAggregateResult]]] =
     measureAsync("aggregate") {
@@ -635,9 +767,9 @@ class MetricsElasticClient(
     * @return
     *   the Elasticsearch response
     */
-  override def search(sql: SQLQuery): ElasticResult[ElasticResponse] =
+  override def search(statement: DqlStatement): ElasticResult[ElasticResponse] =
     measureResult("search") {
-      delegate.search(sql)
+      delegate.search(statement)
     }
 
   /** Asynchronous search for documents / aggregations matching the SQL query.
@@ -648,10 +780,10 @@ class MetricsElasticClient(
     *   a Future containing the Elasticsearch response
     */
   override def searchAsync(
-    sqlQuery: SQLQuery
+    statement: DqlStatement
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync") {
-      delegate.searchAsync(sqlQuery)
+      delegate.searchAsync(statement)
     }
 
   /** Searches and converts results into typed entities from an SQL query.
@@ -664,7 +796,7 @@ class MetricsElasticClient(
     *   the entities matching the query
     */
   override def searchAsUnchecked[U](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("searchAs") {
       delegate.searchAsUnchecked[U](sqlQuery)
@@ -682,7 +814,7 @@ class MetricsElasticClient(
     * @return
     *   a Future containing the entities
     */
-  override def searchAsyncAsUnchecked[U](sqlQuery: SQLQuery)(implicit
+  override def searchAsyncAsUnchecked[U](sqlQuery: SelectStatement)(implicit
     m: Manifest[U],
     ec: ExecutionContext,
     formats: Formats
@@ -848,7 +980,7 @@ class MetricsElasticClient(
     }
 
   override def searchWithInnerHits[U: Manifest: ClassTag, I: Manifest: ClassTag](
-    sql: SQLQuery,
+    sql: SelectStatement,
     innerField: String
   )(implicit
     formats: Formats
@@ -881,12 +1013,12 @@ class MetricsElasticClient(
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
   ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
-    val source = delegate.scroll(sql, config)
+    val source = delegate.scroll(statement, config)
 
     source.watchTermination() { (_, done) =>
       done.onComplete { result =>
@@ -922,7 +1054,7 @@ class MetricsElasticClient(
     * @return
     *   - Source of tuples (T, ScrollMetrics)
     */
-  override def scrollAsUnchecked[T](sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scrollAsUnchecked[T](sql: SelectStatement, config: ScrollConfig)(implicit
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats
@@ -951,7 +1083,7 @@ class MetricsElasticClient(
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -980,7 +1112,7 @@ class MetricsElasticClient(
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -1021,7 +1153,7 @@ class MetricsElasticClient(
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -1071,4 +1203,166 @@ class MetricsElasticClient(
   override def resetMetrics(): Unit = {
     metricsCollector.resetMetrics()
   }
+
+  // ==================== PipelineApi (delegate) ====================
+
+  /** Execute a pipeline DDL statement
+    *
+    * @param sql
+    *   the pipeline DDL statement
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def pipeline(sql: String): ElasticResult[Boolean] =
+    measureResult("pipeline") {
+      delegate.pipeline(sql)
+    }
+
+  override private[client] def pipeline(
+    statement: query.PipelineStatement
+  ): ElasticResult[Boolean] =
+    measureResult("pipeline") {
+      delegate.pipeline(statement)
+    }
+
+  override def createPipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    measureResult("createPipeline") {
+      delegate.createPipeline(pipelineName, pipelineDefinition)
+    }
+
+  /** Update an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param pipelineDefinition
+    *   the new pipeline definition in JSON format
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def updatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    measureResult("updatePipeline") {
+      delegate.updatePipeline(pipelineName, pipelineDefinition)
+    }
+
+  override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] =
+    measureResult("deletePipeline") {
+      delegate.deletePipeline(pipelineName, ifExists = ifExists)
+    }
+
+  override def getPipeline(pipelineName: String): ElasticResult[Option[String]] =
+    measureResult("getPipeline") {
+      delegate.getPipeline(pipelineName)
+    }
+
+  override def loadPipeline(pipelineName: String): ElasticResult[schema.IngestPipeline] =
+    measureResult("loadPipeline") {
+      delegate.loadPipeline(pipelineName)
+    }
+
+  // ==================== TemplateApi (delegate) ====================
+
+  /** Create or update an index template.
+    *
+    * Accepts both legacy and composable template formats. Automatically converts to the appropriate
+    * format based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @param templateDefinition
+    *   the JSON definition (legacy or composable format)
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def createTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    measureResult("createTemplate") {
+      delegate.createTemplate(templateName, templateDefinition)
+    }
+
+  /** Delete an index template. Automatically uses composable (ES 7.8+) or legacy templates based on
+    * ES version.
+    *
+    * @param templateName
+    *   the name of the template to delete
+    * @param ifExists
+    *   if true, do not fail if template doesn't exist
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def deleteTemplate(templateName: String, ifExists: Boolean): ElasticResult[Boolean] =
+    measureResult("deleteTemplate") {
+      delegate.deleteTemplate(templateName, ifExists)
+    }
+
+  /** Get an index template definition.
+    *
+    * Returns the template in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with Some(json) if found, None if not found
+    */
+  override def getTemplate(templateName: String): ElasticResult[Option[String]] =
+    measureResult("getTemplate") {
+      delegate.getTemplate(templateName)
+    }
+
+  /** List all index templates.
+    *
+    * Returns templates in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @return
+    *   ElasticResult with Map of template name -> JSON definition
+    */
+  override def listTemplates(): ElasticResult[Map[String, String]] =
+    measureResult("listTemplates") {
+      delegate.listTemplates()
+    }
+
+  /** Check if an index template exists. Automatically uses composable (ES 7.8+) or legacy templates
+    * based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with true if exists, false otherwise
+    */
+  override def templateExists(templateName: String): ElasticResult[Boolean] =
+    measureResult("templateExists") {
+      delegate.templateExists(templateName)
+    }
+
+  // ==================== Gateway (delegate) ====================
+
+  override def run(
+    sql: String
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    measureAsync("run") {
+      delegate.run(sql)
+    }
+  }
+
+  override def run(
+    statement: query.Statement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    measureAsync("run") {
+      delegate.run(statement)
+    }
+  }
+
 }

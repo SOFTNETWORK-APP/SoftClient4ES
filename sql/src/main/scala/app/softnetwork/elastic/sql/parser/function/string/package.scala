@@ -125,7 +125,7 @@ package object string {
       trim |
       ltrim |
       rtrim) ^^ { sf =>
-        sf.identifier
+        Identifier(sf)
       }
 
   }

@@ -29,7 +29,7 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.operator.Operator
-import app.softnetwork.elastic.sql.query.SQLSearchRequest
+import app.softnetwork.elastic.sql.query.SingleSearch
 
 package object geo {
 
@@ -97,7 +97,7 @@ package object geo {
       with PainlessParams
       with Updateable {
 
-    override def update(request: SQLSearchRequest): Distance = this.copy(
+    override def update(request: SingleSearch): Distance = this.copy(
       from = from.fold(id => Left(id.update(request)), p => Right(p)),
       to = to.fold(id => Left(id.update(request)), p => Right(p))
     )
@@ -171,7 +171,7 @@ package object geo {
         }
 
       if (identifiers.nonEmpty)
-        s"($assignments ($nullCheck) ? null : $ret)"
+        s"$assignments ($nullCheck) ? null : $ret"
       else
         ret
     }

@@ -22,13 +22,16 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.schema.TableAlias
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 
 import java.util.UUID
 
 /** Mapping management API.
   */
-trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi with RefreshApi =>
+trait MappingApi extends ElasticClientHelpers {
+  _: SettingsApi with IndicesApi with RefreshApi with VersionApi with AliasApi =>
 
   // ========================================================================
   // PUBLIC METHODS
@@ -69,9 +72,51 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
       case None => // continue
     }
 
-    logger.debug(s"Setting mapping for index '$index': $mapping")
+    // Get Elasticsearch version
+    val elasticVersion = {
+      this.version match {
+        case ElasticSuccess(v) => v
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+          return ElasticFailure(error)
+      }
+    }
 
-    executeSetMapping(index, mapping) match {
+    val updatedMapping: String =
+      if (ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion)) {
+        val root = mapper.readTree(mapping).asInstanceOf[ObjectNode]
+
+        if (root.has("properties") || root.has("_meta")) {
+          logger.info(s"Wrapping mappings with '_doc' type for ES version $elasticVersion")
+
+          val doc = mapper.createObjectNode()
+
+          // Move properties
+          if (root.has("properties")) {
+            doc.set("properties", root.get("properties"))
+            root.remove("properties")
+          }
+
+          // Move _meta
+          if (root.has("_meta")) {
+            doc.set("_meta", root.get("_meta"))
+            root.remove("_meta")
+          }
+
+          // Wrap into _doc
+          root.set("_doc", doc)
+
+          root.toString
+        } else {
+          mapping
+        }
+      } else {
+        mapping
+      }
+
+    logger.debug(s"Setting mapping for index '$index': $updatedMapping")
+
+    executeSetMapping(index, updatedMapping) match {
       case success @ ElasticSuccess(true) =>
         logger.info(s"✅ Mapping for index '$index' updated successfully")
         success
@@ -155,10 +200,22 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     mapping: String,
     settings: String = defaultSettings
   ): ElasticResult[Boolean] = {
-    indexExists(index).flatMap {
+    indexExists(index, pattern = false).flatMap {
       case false =>
         // Scenario 1: Index doesn't exist
-        createIndexWithMapping(index, mapping, settings)
+        createIndex(index, settings, Some(mapping), Nil).flatMap {
+          case true =>
+            logger.info(s"✅ Index '$index' created with mapping successfully")
+            ElasticResult.success(true)
+          case false =>
+            ElasticResult.failure(
+              ElasticError(
+                message = s"Failed to create index '$index' with mapping",
+                index = Some(index),
+                operation = Some("updateMapping")
+              )
+            )
+        }
 
       case true =>
         // Check if mapping needs update
@@ -177,27 +234,6 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     }
   }
 
-  /** Create a new index with the given mapping.
-    */
-  private def createIndexWithMapping(
-    index: String,
-    mapping: String,
-    settings: String
-  ): ElasticResult[Boolean] = {
-    logger.info(s"Creating new index '$index' with mapping")
-
-    for {
-      _ <- createIndex(index, settings)
-        .filter(_ == true, s"Failed to create index '$index'")
-        .logSuccess(logger, _ => s"✅ Index '$index' created successfully")
-
-      _ <- setMapping(index, mapping)
-        .filter(_ == true, s"Failed to set mapping for index '$index'")
-        .logSuccess(logger, _ => s"✅ Mapping for index '$index' set successfully")
-
-    } yield true
-  }
-
   private def migrateMappingWithRollback(
     index: String,
     newMapping: String,
@@ -210,17 +246,19 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     val backupResult = for {
       originalMapping  <- getMapping(index)
       originalSettings <- loadSettings(index)
-    } yield (originalMapping, originalSettings)
+      originalAliases  <- getAliases(index)
+    } yield (originalMapping, originalSettings, originalAliases)
 
     backupResult match {
-      case ElasticSuccess((origMapping, origSettings)) =>
+      case ElasticSuccess((origMapping, origSettings, origAliases)) =>
         logger.info(s"✅ Backed up original mapping and settings for '$index'")
 
         val migrationResult = performMigration(
           index,
           tempIndex,
           newMapping,
-          settings
+          settings,
+          Nil
         )
 
         migrationResult match {
@@ -255,22 +293,20 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     *      Delete original index 4. Recreate original index with new mapping 5. Reindex data from
     *      temporary to original 6. Delete temporary index
     */
-  private def performMigration(
+  private[client] def performMigration(
     index: String,
     tempIndex: String,
     mapping: String,
-    settings: String
+    settings: String,
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] = {
 
     logger.info(s"Starting migration: $index -> $tempIndex")
 
     for {
       // Create temp index
-      _ <- createIndex(tempIndex, settings)
+      _ <- createIndex(tempIndex, settings, Some(mapping), aliases)
         .filter(_ == true, s"❌ Failed to create temp index '$tempIndex'")
-
-      _ <- setMapping(tempIndex, mapping)
-        .filter(_ == true, s"❌ Failed to set mapping on temp index")
 
       // Reindex to temp
       _ <- reindex(index, tempIndex, refresh = true)
@@ -280,12 +316,9 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
       _ <- deleteIndex(index)
         .filter(_ == true, s"❌ Failed to delete original index")
 
-      // Recreate original with new mapping
-      _ <- createIndex(index, settings)
+      // Recreate original with new settings, mapping and aliases
+      _ <- createIndex(index, settings, Some(mapping), Nil)
         .filter(_ == true, s"❌ Failed to recreate original index")
-
-      _ <- setMapping(index, mapping)
-        .filter(_ == true, s"❌ Failed to set new mapping")
 
       // Reindex back from temp
       _ <- reindex(tempIndex, index, refresh = true)
@@ -303,31 +336,29 @@ trait MappingApi extends ElasticClientHelpers { _: SettingsApi with IndicesApi w
     }
   }
 
-  private def rollbackMigration(
+  private[client] def rollbackMigration(
     index: String,
     tempIndex: String,
     originalMapping: String,
-    originalSettings: String
+    originalSettings: String,
+    originalAliases: Seq[TableAlias] = Nil
   ): ElasticResult[Boolean] = {
 
     logger.warn(s"Rolling back migration for '$index'")
 
     for {
       // Check if temp index exists and has data
-      tempExists <- indexExists(tempIndex)
+      tempExists <- indexExists(tempIndex, pattern = false)
 
       // Delete current (potentially corrupted) index if it exists
-      _ <- indexExists(index).flatMap {
+      _ <- indexExists(index, pattern = false).flatMap {
         case true  => deleteIndex(index)
         case false => ElasticResult.success(true)
       }
 
       // Recreate with original settings and mapping
-      _ <- createIndex(index, originalSettings)
+      _ <- createIndex(index, originalSettings, Some(originalMapping), originalAliases)
         .filter(_ == true, s"❌ Rollback: Failed to recreate index")
-
-      _ <- setMapping(index, originalMapping)
-        .filter(_ == true, s"❌ Rollback: Failed to restore mapping")
 
       // If temp exists, reindex from it
       _ <-

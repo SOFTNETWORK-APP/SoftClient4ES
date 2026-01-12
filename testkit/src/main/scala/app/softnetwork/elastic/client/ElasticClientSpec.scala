@@ -25,7 +25,9 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.model.{Binary, Child, Parent, Sample}
 import app.softnetwork.elastic.persistence.query.ElasticProvider
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.query.SelectStatement
+import app.softnetwork.elastic.sql.schema.{Table, TableAlias}
 import app.softnetwork.persistence._
 import app.softnetwork.persistence.person.model.Person
 import com.fasterxml.jackson.core.JsonParseException
@@ -41,7 +43,7 @@ import _root_.java.time.format.DateTimeFormatter
 import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
 import java.time.temporal.Temporal
-import java.time.{LocalDate, LocalDateTime, ZoneOffset}
+import java.time.{LocalDate, LocalDateTime, ZoneOffset, ZonedDateTime}
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
@@ -58,6 +60,8 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   import ElasticProviders._
 
+  implicit def timestamp: Long = ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
+
   lazy val pClient: ElasticProvider[Person] = new PersonProvider(
     elasticConfig
   )
@@ -73,14 +77,14 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   import scala.language.implicitConversions
 
-  implicit def toSQLQuery(sqlQuery: String): SQLQuery = SQLQuery(sqlQuery)
+  implicit def toSQLQuery(sqlQuery: String): SelectStatement = SelectStatement(sqlQuery)
 
   implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
     Source.fromIterator(() => list.iterator)
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    pClient.createIndex("person")
+    pClient.createIndex("person", mappings = None, aliases = Nil)
   }
 
   override def afterAll(): Unit = {
@@ -103,13 +107,90 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   )
 
   "Creating an index and then delete it" should "work fine" in {
-    pClient.createIndex("create_delete")
+    pClient.createIndex("create_delete", mappings = None, aliases = Nil)
     blockUntilIndexExists("create_delete")
     "create_delete" should beCreated
 
     pClient.deleteIndex("create_delete")
     blockUntilIndexNotExists("create_delete")
     "create_delete" should not(beCreated())
+  }
+
+  "Creating an index with mappings and aliases" should "work fine" in {
+    val mappings =
+      """{
+        |    "properties": {
+        |        "birthDate": {
+        |            "type": "date"
+        |        },
+        |        "uuid": {
+        |            "type": "keyword"
+        |        },
+        |        "name": {
+        |            "type": "text",
+        |            "analyzer": "ngram_analyzer",
+        |            "search_analyzer": "search_analyzer",
+        |            "fields": {
+        |                "raw": {
+        |                    "type": "keyword"
+        |                },
+        |                "fr": {
+        |                    "type": "text",
+        |                    "analyzer": "french"
+        |                }
+        |            }
+        |        }
+        |    },
+        |    "_meta": {
+        |        "primary_key": ["uuid"],
+        |        "partition_by": {
+        |            "column": "birthDate",
+        |            "granularity": "M"
+        |        }
+        |    }
+        |}""".stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    val aliases: Seq[TableAlias] = Seq(
+      TableAlias(table = "create_mappings_aliases", alias = "create_mappings_aliases_alias1"),
+      TableAlias(
+        table = "create_mappings_aliases",
+        alias = "create_mappings_aliases_alias2",
+        filter = Map("term" -> Map("name.raw" -> "Homer Simpson"))
+      )
+    )
+
+    pClient
+      .createIndex("create_mappings_aliases", mappings = Some(mappings), aliases = aliases)
+      .get shouldBe true
+    "create_mappings_aliases" should beCreated()
+
+    val index: Option[Index] = pClient.getIndex("create_mappings_aliases").get
+
+    index match {
+      case Some(idx) =>
+        val table: Table = idx.schema
+        log.info(table.sql)
+        table.columns.size shouldBe 3
+        table.columns.map(_.name) should contain allOf ("uuid", "name", "birthDate")
+        table.primaryKey should contain("uuid")
+        table.partitionBy match {
+          case Some(partitionBy) =>
+            partitionBy.column shouldBe "birthDate"
+            partitionBy.granularity.sql shouldBe "MONTH"
+          case None => fail("Partition by not found")
+        }
+        val tableAliases = table.aliases.keys
+        tableAliases should contain("create_mappings_aliases_alias1")
+        tableAliases should contain("create_mappings_aliases_alias2")
+      case None => fail("Index not found")
+    }
+
+    pClient.deleteIndex("create_mappings_aliases").get shouldBe true
+    "create_mappings_aliases" should not(beCreated())
+  }
+
+  "Checking for an alias that does not exist" should "return false" in {
+    pClient.aliasExists("person_alias").get shouldBe false
   }
 
   "Adding an alias and then removing it" should "work" in {
@@ -119,7 +200,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     pClient.getAliases("person") match {
       case ElasticSuccess(aliases) =>
-        aliases should contain("person_alias")
+        aliases.map(_.alias) should contain("person_alias")
       case ElasticFailure(elasticError) =>
         fail(elasticError.fullMessage)
     }
@@ -174,7 +255,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Setting a mapping" should "work" in {
-    pClient.createIndex("person_mapping")
+    pClient.createIndex("person_mapping", mappings = None, aliases = Nil)
     blockUntilIndexExists("person_mapping")
     "person_mapping" should beCreated()
 
@@ -213,7 +294,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     ) shouldBe false
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_mapping")
-    val result = pClient.bulk[String](persons, identity, idKey = Some("uuid")).get
+    val result = pClient.bulk[String](persons, identity, idKey = Some(Set("uuid"))).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -270,7 +351,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Updating a mapping" should "work" in {
-    pClient.createIndex("person_migration").get shouldBe true
+    pClient.createIndex("person_migration", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -295,7 +376,11 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
     implicit val bulkOptions: BulkOptions = BulkOptions("person_migration")
     val result = pClient
-      .bulk[String](Source.fromIterator(() => persons.iterator), identity, idKey = Some("uuid"))
+      .bulk[String](
+        Source.fromIterator(() => persons.iterator),
+        identity,
+        idKey = Some(Set("uuid"))
+      )
       .get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
@@ -401,7 +486,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   "Bulk index valid json with an id key but no suffix key" should "work" in {
     implicit val bulkOptions: BulkOptions = BulkOptions("person2")
-    val result = pClient.bulk[String](persons, identity, idKey = Some("uuid")).get
+    val result = pClient.bulk[String](persons, identity, idKey = Some(Set("uuid"))).get
     result.failedCount shouldBe 0
     result.successCount shouldBe persons.size
     val indices = result.indices
@@ -440,7 +525,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           persons,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           suffixDateKey = Some("birthDate")
         )
         .get
@@ -493,7 +578,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -528,13 +613,13 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Bulk upsert valid json with an id key and a suffix key" should "work" in {
-    pClient.createIndex("person5").get shouldBe true
+    pClient.createIndex("person5", mappings = None, aliases = Nil).get shouldBe true
     implicit val bulkOptions: BulkOptions = BulkOptions("person5")
     val result = pClient
       .bulk[String](
         personsWithUpsert,
         identity,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         suffixDateKey = Some("birthDate"),
         update = Some(true)
       )
@@ -580,7 +665,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -616,7 +701,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -673,7 +758,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -703,7 +788,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -735,7 +820,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Index" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -758,7 +843,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Update" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.updateAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -781,7 +866,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Delete" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -799,7 +884,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   "Delete asynchronously" should "work" in {
     val uuid = UUID.randomUUID().toString
     val index = s"sample-$uuid"
-    sClient.createIndex(index).get shouldBe true
+    sClient.createIndex(index, mappings = None, aliases = Nil).get shouldBe true
     val sample = Sample(uuid)
     val result = sClient.indexAs(sample, uuid, Some(index)).get
     result shouldBe true
@@ -819,7 +904,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Index binary data" should "work" in {
-    bClient.createIndex("binaries").get shouldBe true
+    bClient.createIndex("binaries", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -875,7 +960,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Aggregations" should "work" in {
-    pClient.createIndex("person10").get shouldBe true
+    pClient.createIndex("person10", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -915,7 +1000,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -1136,7 +1221,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   "Nested queries" should "work" in {
-    parentClient.createIndex("parent").get shouldBe true
+    parentClient.createIndex("parent", mappings = None, aliases = Nil).get shouldBe true
     val mapping =
       """{
         |  "properties": {
@@ -1166,6 +1251,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         |        },
         |        "birthDate": {
         |          "type": "date"
+        |        },
+        |        "parentId": {
+        |          "type": "keyword"
         |        }
         |      }
         |    },
@@ -1184,7 +1272,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         .bulk[String](
           personsWithUpsert,
           identity,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           update = Some(true)
         )
         .get
@@ -1315,5 +1403,534 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       ) should contain allOf ("1999-05-09", "2002-05-09")
       scrollResult.children.map(_.parentId) should contain only "A16"
     }
+  }
+
+  "Truncate index" should "work" in {
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_truncate")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some(Set("uuid"))
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
+
+    indices should contain only "person_to_truncate"
+
+    blockUntilCount(3, "person_to_truncate")
+
+    "person_to_truncate" should haveCount(3)
+
+    val truncateResult = pClient.truncateIndex("person_to_truncate").get
+    truncateResult shouldBe 3L
+
+    "person_to_truncate" should haveCount(0)
+  }
+
+  "Delete by query on closed index" should "work depending on ES version" in {
+    pClient.createIndex("closed_index_test").get shouldBe true
+
+    pClient.closeIndex("closed_index_test").get shouldBe true
+
+    val deleted = pClient
+      .deleteByQuery(
+        "closed_index_test",
+        """{"query": {"match_all": {}}}"""
+      )
+      .get
+
+    deleted shouldBe 0L // index is empty anyway
+  }
+
+  "Delete by query with invalid JSON" should "fail" in {
+    pClient.createIndex("delete_by_query_invalid_json").get shouldBe true
+    val result = pClient.deleteByQuery("idx", "{not valid json}")
+    result.isFailure shouldBe true
+  }
+
+  "Delete by query with invalid SQL" should "fail" in {
+    pClient.createIndex("delete_by_query_invalid_sql").get shouldBe true
+    val result = pClient.deleteByQuery("delete_by_query_invalid_sql", "DELETE FROM")
+    result.isFailure shouldBe true
+  }
+
+  "Delete by query with SQL referencing wrong index" should "fail" in {
+    pClient.createIndex("index_a").get shouldBe true
+    pClient.createIndex("index_b").get shouldBe true
+    val result = pClient.deleteByQuery(
+      "index_a",
+      "DELETE FROM index_b WHERE x = 1"
+    )
+    result.isFailure shouldBe true
+  }
+
+  "Delete by query with valid JSON" should "work" in {
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_delete_by_json_query")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some(Set("uuid"))
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => refresh(index).getStatusLine.getStatusCode < 400) shouldBe true
+
+    indices should contain only "person_to_delete_by_json_query"
+
+    blockUntilCount(3, "person_to_delete_by_json_query")
+
+    "person_to_delete_by_json_query" should haveCount(3)
+
+    val deleteByQuery = pClient
+      .deleteByQuery("person_to_delete_by_json_query", """{"query": {"match_all": {}}}""")
+      .get
+    deleteByQuery shouldBe 3L
+
+    "person_to_delete_by_json_query" should haveCount(0)
+  }
+
+  "Delete by query with SQL DELETE" should "work" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "birthDate": {
+        |      "type": "date"
+        |    },
+        |    "uuid": {
+        |      "type": "keyword"
+        |    },
+        |    "name": {
+        |      "type": "keyword"
+        |    },
+        |    "children": {
+        |      "type": "nested",
+        |      "include_in_parent": true,
+        |      "properties": {
+        |        "name": {
+        |          "type": "keyword"
+        |        },
+        |        "birthDate": {
+        |          "type": "date"
+        |        }
+        |      }
+        |    },
+        |    "childrenCount": {
+        |      "type": "integer"
+        |    }
+        |  }
+        |}
+      """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    log.info(s"mapping: $mapping")
+    pClient
+      .createIndex("person_to_delete_by_sql_delete_query", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_delete_by_sql_delete_query")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some(Set("uuid"))
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => pClient.refresh(index).get) shouldBe true
+
+    indices should contain only "person_to_delete_by_sql_delete_query"
+
+    blockUntilCount(3, "person_to_delete_by_sql_delete_query")
+
+    "person_to_delete_by_sql_delete_query" should haveCount(3)
+
+    val deleteByQuery = pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_delete_query",
+        """DELETE FROM person_to_delete_by_sql_delete_query WHERE uuid = 'A16'"""
+      )
+      .get
+    deleteByQuery shouldBe 1L
+
+    "person_to_delete_by_sql_delete_query" should haveCount(2)
+
+    pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_delete_query",
+        "DELETE FROM person_to_delete_by_sql_delete_query"
+      )
+      .get shouldBe 2L
+
+    "person_to_delete_by_sql_delete_query" should haveCount(0)
+  }
+
+  "Delete by query with SQL SELECT" should "work" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "birthDate": {
+        |      "type": "date"
+        |    },
+        |    "uuid": {
+        |      "type": "keyword"
+        |    },
+        |    "name": {
+        |      "type": "keyword"
+        |    },
+        |    "children": {
+        |      "type": "nested",
+        |      "include_in_parent": true,
+        |      "properties": {
+        |        "name": {
+        |          "type": "keyword"
+        |        },
+        |        "birthDate": {
+        |          "type": "date"
+        |        }
+        |      }
+        |    },
+        |    "childrenCount": {
+        |      "type": "integer"
+        |    }
+        |  }
+        |}
+      """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+    log.info(s"mapping: $mapping")
+    pClient
+      .createIndex("person_to_delete_by_sql_select_query", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_to_delete_by_sql_select_query")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some(Set("uuid"))
+        )
+        .get
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+    val indices = result.indices
+    indices.forall(index => pClient.refresh(index).get) shouldBe true
+
+    indices should contain only "person_to_delete_by_sql_select_query"
+
+    blockUntilCount(3, "person_to_delete_by_sql_select_query")
+
+    "person_to_delete_by_sql_select_query" should haveCount(3)
+
+    val deleteByQuery = pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_select_query",
+        """SELECT * FROM person_to_delete_by_sql_select_query WHERE uuid = 'A16'"""
+      )
+      .get
+    deleteByQuery shouldBe 1L
+
+    "person_to_delete_by_sql_select_query" should haveCount(2)
+
+    pClient
+      .deleteByQuery(
+        "person_to_delete_by_sql_select_query",
+        "SELECT * FROM person_to_delete_by_sql_select_query"
+      )
+      .get shouldBe 2L
+
+    "person_to_delete_by_sql_select_query" should haveCount(0)
+  }
+
+  "Update by query with missing index" should "fail with 404" in {
+    val result = pClient.updateByQuery(
+      "person_update_with_missing_index",
+      """{"query": {"match_all": {}}}"""
+    )
+
+    result.isFailure shouldBe true
+    result.toEither.left.get.statusCode shouldBe Some(404)
+  }
+
+  "Update by query with missing pipeline" should "fail with 404" in {
+    pClient.createIndex("person_update_with_missing_pipeline").get shouldBe true
+    val result = pClient.updateByQuery(
+      "person_update_with_missing_pipeline",
+      """{"query": {"match_all": {}}}""",
+      pipelineId = Some("does-not-exist")
+    )
+
+    result.isFailure shouldBe true
+    result.toEither.left.get.statusCode shouldBe Some(404)
+  }
+
+  "Update by query with invalid SQL" should "fail" in {
+    pClient.createIndex("person_update_with_invalid_sql").get shouldBe true
+    val result = pClient.updateByQuery(
+      "person_update_with_invalid_sql",
+      """UPDATE person_update_sql_where WHERE uuid = 'A16'"""
+    )
+
+    result.isFailure shouldBe true
+  }
+
+  "Update by query with invalid JSON" should "fail" in {
+    pClient.createIndex("person_update_with_invalid_json").get shouldBe true
+    val result = pClient.updateByQuery(
+      "person_update_with_invalid_json",
+      """{ invalid json }"""
+    )
+
+    result.isFailure shouldBe true
+  }
+
+  "Update by query with SQL UPDATE and WHERE" should "update only matching documents" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_sql_where", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_sql_where")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some(Set("uuid"))
+        )
+        .get
+
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+
+    blockUntilCount(3, "person_update_sql_where")
+    "person_update_sql_where" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_sql_where",
+        """UPDATE person_update_sql_where SET name = 'Another Name' WHERE uuid = 'A16'"""
+      )
+      .get
+
+    updated shouldBe 1L
+
+    pClient.refresh("person_update_sql_where").get shouldBe true
+
+    pClient.getAs[Person]("A16", Some("person_update_sql_where")).get match {
+      case Some(doc) => doc.name shouldBe "Another Name"
+      case None      => fail("Document A16 not found")
+    }
+  }
+
+  "Update by query with SQL UPDATE without WHERE" should "update all documents" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_all_sql", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_all_sql")
+    val result =
+      pClient
+        .bulk[String](
+          persons,
+          identity,
+          idKey = Some(Set("uuid"))
+        )
+        .get
+
+    result.failedCount shouldBe 0
+    result.successCount shouldBe persons.size
+
+    blockUntilCount(3, "person_update_all_sql")
+    "person_update_all_sql" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_all_sql",
+        """UPDATE person_update_all_sql SET birthDate = '1972-12-26'"""
+      )
+      .get
+
+    updated shouldBe 3L
+
+    pClient.refresh("person_update_all_sql").get shouldBe true
+
+    val updatedPersons = pClient.searchDocuments("SELECT * FROM person_update_all_sql")
+    updatedPersons.size shouldBe 3
+    updatedPersons.forall(person => person.birthDate == "1972-12-26") shouldBe true
+  }
+
+  "Update by query with JSON query and user pipeline" should "apply the pipeline to all documents" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_json", mappings = Some(mapping))
+      .get shouldBe true
+
+    // User Pipeline
+    val userPipelineJson =
+      """{
+        |  "processors": [
+        |    { "set": { "field": "birthDate", "value": "1972-12-26" } }
+        |  ]
+        |}
+    """.stripMargin
+
+    pClient.createPipeline("set-birthdate-1972-12-26", userPipelineJson).get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_json")
+    pClient
+      .bulk[String](persons, identity, idKey = Some(Set("uuid")))
+      .get
+
+    blockUntilCount(3, "person_update_json")
+    "person_update_json" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_json",
+        """{"query": {"match_all": {}}}""",
+        pipelineId = Some("set-birthdate-1972-12-26")
+      )
+      .get
+
+    updated shouldBe 3L
+
+    pClient.refresh("person_update_json").get shouldBe true
+
+    val updatedPersons = pClient.searchDocuments("SELECT * FROM person_update_json")
+    updatedPersons.size shouldBe 3
+    updatedPersons.forall(person => person.birthDate == "1972-12-26") shouldBe true
+  }
+
+  "Update by query with SQL UPDATE and user pipeline" should "merge user and SQL pipelines" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_merge_pipeline", mappings = Some(mapping))
+      .get shouldBe true
+
+    val userPipelineJson =
+      """{
+        |  "processors": [
+        |    { "set": { "field": "name", "value": "UPDATED_NAME" } }
+        |  ]
+        |}
+    """.stripMargin
+
+    pClient.createPipeline("user-update-name", userPipelineJson).get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_merge_pipeline")
+    pClient
+      .bulk[String](persons, identity, idKey = Some(Set("uuid")))
+      .get
+
+    blockUntilCount(3, "person_update_merge_pipeline")
+    "person_update_merge_pipeline" should haveCount(3)
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_merge_pipeline",
+        """UPDATE person_update_merge_pipeline SET birthDate = '1972-12-26' WHERE uuid = 'A16'""",
+        pipelineId = Some("user-update-name")
+      )
+      .get
+
+    updated shouldBe 1L
+
+    pClient.refresh("person_update_merge_pipeline").get shouldBe true
+
+    pClient.getAs[Person]("A16", Some("person_update_merge_pipeline")).get match {
+      case Some(doc) =>
+        doc.name shouldBe "UPDATED_NAME"
+        doc.birthDate shouldBe "1972-12-26"
+      case None => fail("Document A16 not found")
+    }
+  }
+
+  "Update by query on a closed index" should "open, update, and restore closed state" in {
+    val mapping =
+      """{
+        |  "properties": {
+        |    "uuid": { "type": "keyword" },
+        |    "name": { "type": "keyword" },
+        |    "birthDate": { "type": "date" },
+        |    "childrenCount": { "type": "integer" }
+        |  }
+        |}
+    """.stripMargin.replaceAll("\n", "").replaceAll("\\s+", "")
+
+    pClient
+      .createIndex("person_update_closed_index", mappings = Some(mapping))
+      .get shouldBe true
+
+    implicit val bulkOptions: BulkOptions = BulkOptions("person_update_closed_index")
+    pClient
+      .bulk[String](persons, identity, idKey = Some(Set("uuid")))
+      .get
+
+    blockUntilCount(3, "person_update_closed_index")
+    "person_update_closed_index" should haveCount(3)
+
+    pClient.closeIndex("person_update_closed_index").get shouldBe true
+    pClient.isIndexClosed("person_update_closed_index").get shouldBe true
+
+    val updated = pClient
+      .updateByQuery(
+        "person_update_closed_index",
+        """UPDATE person_update_closed_index SET birthDate = '1972-12-26' WHERE uuid = 'A16'"""
+      )
+      .get
+
+    updated shouldBe 1L
+
+    pClient.isIndexClosed("person_update_closed_index").get shouldBe true
   }
 }

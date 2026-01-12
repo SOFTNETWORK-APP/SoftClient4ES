@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client.macros
 
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.sql.query.SelectStatement
 import org.json4s.{DefaultFormats, Formats}
 
 import scala.language.experimental.macros
@@ -34,7 +34,7 @@ trait TestElasticClientApi {
   /** Search without compile-time validation (runtime).
     */
   def searchAsUnchecked[T](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit m: Manifest[T], formats: Formats): Seq[T] = {
     // Dummy implementation for tests
     Seq.empty[T]

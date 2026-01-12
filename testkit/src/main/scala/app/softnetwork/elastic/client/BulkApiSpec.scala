@@ -18,8 +18,8 @@ package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.bulk.BulkOptions
-import app.softnetwork.elastic.client.file._
 import app.softnetwork.elastic.scalatest.ElasticTestKit
+import app.softnetwork.elastic.sql.query.JsonArray
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpecLike
@@ -74,7 +74,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
       client
         .bulkFromFile(
           tempFile.getAbsolutePath,
-          idKey = Some("uuid")
+          idKey = Some(Set("uuid"))
         )
         .futureValue
 
@@ -100,7 +100,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
       client
         .bulkFromFile(
           tempFile.getAbsolutePath,
-          idKey = Some("uuid"),
+          idKey = Some(Set("uuid")),
           format = JsonArray
         )
         .futureValue
@@ -119,7 +119,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
     val response = client
       .bulkFromFile(
         tempFile.getAbsolutePath,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         format = JsonArray
       )
       .futureValue
@@ -141,7 +141,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
     val response = client
       .bulkFromFile(
         tempFile.getAbsolutePath,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         format = JsonArray
       )
       .futureValue
@@ -162,7 +162,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
     val response = client
       .bulkFromFile(
         tempFile.getAbsolutePath,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         format = JsonArray
       )
       .futureValue
@@ -199,7 +199,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
     val result = client
       .bulkFromFile(
         tempFile.getAbsolutePath,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         format = JsonArray
       )
       .futureValue
@@ -224,7 +224,7 @@ trait BulkApiSpec extends AnyFlatSpecLike with Matchers with ScalaFutures {
     val response = client
       .bulkFromFile(
         tempFile.getAbsolutePath,
-        idKey = Some("uuid"),
+        idKey = Some(Set("uuid")),
         format = JsonArray
       )
       .futureValue

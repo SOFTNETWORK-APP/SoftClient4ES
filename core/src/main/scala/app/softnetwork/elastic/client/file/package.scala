@@ -18,17 +18,11 @@ package app.softnetwork.elastic.client
 
 import akka.NotUsed
 import akka.stream.scaladsl.Source
-import com.fasterxml.jackson.annotation.JsonInclude
+import app.softnetwork.elastic.sql.query.{Delta, FileFormat, Json, JsonArray, Parquet, Unknown}
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import com.fasterxml.jackson.core.{JsonFactory, JsonParser, JsonToken}
 import com.fasterxml.jackson.databind.node.ObjectNode
-import com.fasterxml.jackson.databind.{
-  DeserializationFeature,
-  JsonNode,
-  ObjectMapper,
-  SerializationFeature
-}
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import org.apache.avro.generic.GenericRecord
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
@@ -51,30 +45,6 @@ package object file {
 
   private val logger: Logger = LoggerFactory.getLogger("FileSource")
 
-  sealed trait FileFormat {
-    def name: String
-  }
-
-  case object Parquet extends FileFormat {
-    override def name: String = "Parquet"
-  }
-
-  case object Json extends FileFormat {
-    override def name: String = "JSON"
-  }
-
-  case object JsonArray extends FileFormat {
-    override def name: String = "JSON Array"
-  }
-
-  case object Delta extends FileFormat {
-    override def name: String = "Delta Lake"
-  }
-
-  case object Unknown extends FileFormat {
-    override def name: String = "Unknown"
-  }
-
   /** Hadoop configuration with optimizations for local file system */
   def hadoopConfiguration: Configuration = {
     val conf = new Configuration()
@@ -84,33 +54,6 @@ package object file {
     conf.setInt("io.file.buffer.size", 65536) // 64KB buffer
     conf.setBoolean("fs.automatic.close", true)
     conf
-  }
-
-  /** Jackson ObjectMapper configuration */
-  object JacksonConfig {
-    lazy val objectMapper: ObjectMapper = {
-      val mapper = new ObjectMapper()
-
-      // Scala module for native support of Scala types
-      mapper.registerModule(DefaultScalaModule)
-
-      // Java Time module for java.time.Instant, LocalDateTime, etc.
-      mapper.registerModule(new JavaTimeModule())
-
-      // Setup for performance
-      mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-      mapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-      mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)
-
-      // Ignores null values in serialization
-      mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL)
-
-      // Optimizations
-      mapper.configure(SerializationFeature.INDENT_OUTPUT, false) // No pretty print
-      mapper.configure(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS, false)
-
-      mapper
-    }
   }
 
   /** Base trait for file sources */

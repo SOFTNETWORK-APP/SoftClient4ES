@@ -18,7 +18,6 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
   Expr,
-  Identifier,
   IntValue,
   PainlessContext,
   PainlessParam,
@@ -69,9 +68,7 @@ package object math {
   case object Atan extends Expr("ATAN") with Trigonometric
   case object Atan2 extends Expr("ATAN2") with Trigonometric
 
-  sealed trait MathematicalFunction
-      extends TransformFunction[SQLNumeric, SQLNumeric]
-      with FunctionWithIdentifier {
+  sealed trait MathematicalFunction extends TransformFunction[SQLNumeric, SQLNumeric] {
     override def inputType: SQLNumeric = SQLTypes.Numeric
 
     override def outputType: SQLNumeric = mathOp.baseType
@@ -80,8 +77,13 @@ package object math {
 
     override def fun: Option[PainlessScript] = Some(mathOp)
 
-    override def identifier: Identifier = Identifier(this)
-
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      val ret = super.toPainlessCall(callArgs, context)
+      s"Double.valueOf($ret)"
+    }
   }
 
   case class MathematicalFunctionWithOp(
@@ -120,7 +122,7 @@ package object math {
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
-        case List(a, p) => s"${mathOp.painless(context)}(($a * $p) / $p)"
+        case List(a, p) => s"Long.valueOf(${mathOp.painless(context)}(($a * $p) / $p))"
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
       }
 

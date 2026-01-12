@@ -2,7 +2,7 @@
 
 Welcome to the SQL Engine Documentation. Navigate through the sections below:
 
-- [Query Structure](request_structure.md)
+- [Query Structure](dql_statements.md)
 - [Query Validation](validation.md)
 - [Operators](operators.md)
 - [Operator Precedence](operator_precedence.md)
@@ -14,3 +14,6 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [Conditional Functions](functions_conditional.md)
 - [Geo Functions](functions_geo.md)
 - [Keywords](keywords.md)
+- [DDL Support](ddl_statements.md)
+- [DML Support](dml_statements.md)
+- [DQL Support](dql_statements.md)

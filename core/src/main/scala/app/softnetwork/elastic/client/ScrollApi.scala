@@ -29,7 +29,13 @@ import app.softnetwork.elastic.client.scroll.{
   UseSearchAfter
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{
+  DqlStatement,
+  MultiSearch,
+  SQLAggregation,
+  SelectStatement,
+  SingleSearch
+}
 import org.json4s.{Formats, JNothing}
 import org.json4s.jackson.JsonMethods.parse
 
@@ -117,33 +123,54 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
-    sql: SQLQuery,
+    statement: DqlStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
-    sql.request match {
-      case Some(Left(single)) =>
-        if (single.windowFunctions.nonEmpty)
-          return scrollWithWindowEnrichment(sql, single, config)
+    implicit def timestamp: Long = System.currentTimeMillis()
+    statement match {
+      // Select statement
+      case select: SelectStatement =>
+        select.statement match {
+          case Some(single: SingleSearch) =>
+            scroll(single.copy(score = select.score), config)
 
-        val sqlRequest = single.copy(score = sql.score)
+          case Some(multiple: MultiSearch) =>
+            scroll(multiple, config)
+
+          case None =>
+            Source.failed(
+              new IllegalArgumentException("SQL query does not contain a valid search request")
+            )
+        }
+
+      // Single search
+      case single: SingleSearch =>
+        if (
+          single.windowFunctions.exists(_.isWindowing) && (!single.select.fields.forall(
+            _.isAggregation
+          ) || single.scriptFields.nonEmpty)
+        )
+          return scrollWithWindowEnrichment(single, config)
+
         val elasticQuery =
-          ElasticQuery(sqlRequest, collection.immutable.Seq(sqlRequest.sources: _*))
+          ElasticQuery(single, collection.immutable.Seq(single.sources: _*))
         scrollWithMetrics(
           elasticQuery,
-          sqlRequest.fieldAliases,
-          sqlRequest.sqlAggregations,
+          single.fieldAliases,
+          single.sqlAggregations,
           config,
           single.sorts.nonEmpty
         )
 
-      case Some(Right(_)) =>
+      // Multi search
+      case _: MultiSearch =>
         Source.failed(
           new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
         )
 
-      case None =>
+      case _ =>
         Source.failed(
-          new IllegalArgumentException("SQL query does not contain a valid search request")
+          new IllegalArgumentException("Scrolling is only supported for SELECT statements")
         )
     }
   }
@@ -224,7 +251,7 @@ trait ScrollApi extends ElasticClientHelpers {
     *   - Source of tuples (T, ScrollMetrics)
     */
   def scrollAsUnchecked[T](
-    sql: SQLQuery,
+    sql: SelectStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit
     system: ActorSystem,
@@ -376,10 +403,12 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Scroll with window function enrichment
     */
   private def scrollWithWindowEnrichment(
-    sql: SQLQuery,
-    request: SQLSearchRequest,
+    request: SingleSearch,
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    timestamp: Long
+  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
 
@@ -390,7 +419,7 @@ trait ScrollApi extends ElasticClientHelpers {
       Future(executeWindowAggregations(request))
 
     // Create base query without window functions
-    val baseQuery = createBaseQuery(sql, request)
+    val baseQuery = createBaseQuery(request)
 
     // Stream and enrich
     Source
@@ -400,7 +429,8 @@ trait ScrollApi extends ElasticClientHelpers {
             scrollWithMetrics(
               ElasticQuery(
                 baseQuery,
-                collection.immutable.Seq(baseQuery.sources: _*)
+                collection.immutable.Seq(baseQuery.sources: _*),
+                sql = Some(baseQuery.sql)
               ),
               baseQuery.fieldAliases,
               baseQuery.sqlAggregations,

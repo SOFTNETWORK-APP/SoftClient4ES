@@ -20,8 +20,6 @@ import app.softnetwork.elastic.client.ElasticClientCompanion
 import co.elastic.clients.elasticsearch.{ElasticsearchAsyncClient, ElasticsearchClient}
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import co.elastic.clients.transport.rest_client.RestClientTransport
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.scala.ClassTagExtensions
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
@@ -37,8 +35,6 @@ trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
   val logger: Logger = LoggerFactory getLogger getClass.getName
 
   private val asyncRef = new AtomicReference[Option[ElasticsearchAsyncClient]](None)
-
-  lazy val mapper: ObjectMapper with ClassTagExtensions = new ObjectMapper() with ClassTagExtensions
 
   def async(): ElasticsearchAsyncClient = {
     asyncRef.get() match {

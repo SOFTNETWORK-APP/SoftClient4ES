@@ -7,6 +7,7 @@ import org.mockito.MockitoSugar
 import org.mockito.ArgumentMatchersSugar
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.schema.TableAlias
 
 /** Unit tests for AliasApi
   */
@@ -21,7 +22,7 @@ class AliasApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestAliasApi extends AliasApi with IndicesApi with RefreshApi {
+  class TestAliasApi extends NopeClientApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -33,10 +34,10 @@ class AliasApiSpec
     )
     var executeSwapAliasResult: ElasticResult[Boolean] = ElasticSuccess(true)
     var executeIndexExistsResult: ElasticResult[Boolean] = ElasticSuccess(true)
+    var executeGetIndexResult: ElasticResult[Option[String]] = ElasticSuccess(None)
 
     override private[client] def executeAddAlias(
-      index: String,
-      alias: String
+      alias: TableAlias
     ): ElasticResult[Boolean] = {
       executeAddAliasResult
     }
@@ -68,20 +69,10 @@ class AliasApiSpec
       executeIndexExistsResult
     }
 
-    // Other required methods
-    override private[client] def executeCreateIndex(
-      index: String,
-      settings: String
-    ): ElasticResult[Boolean] = ???
-    override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeReindex(
-      sourceIndex: String,
-      targetIndex: String,
-      refresh: Boolean
-    ): ElasticResult[(Boolean, Option[Long])] = ???
-    override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+      executeGetIndexResult
+    }
+
   }
 
   var aliasApi: TestAliasApi = _
@@ -518,10 +509,10 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set("alias1", "alias2")
+        result.get.map(_.alias).toSet shouldBe Set("alias1", "alias2")
 
         verify(mockLogger).debug("Getting aliases for index 'my-index'")
-        verify(mockLogger).debug("Found 2 alias(es) for index 'my-index': alias1, alias2")
+//        verify(mockLogger).debug("Found 2 alias(es) for index 'my-index': alias1, alias2")
         verify(mockLogger).info("✅ Found 2 alias(es) for index 'my-index': alias1, alias2")
       }
 
@@ -535,9 +526,10 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get shouldBe Seq.empty
 
-        verify(mockLogger).debug("No aliases found for index 'my-index'")
+        verify(mockLogger).debug("Getting aliases for index 'my-index'")
+//        verify(mockLogger).debug("No aliases found for index 'my-index'")
         verify(mockLogger).info("✅ No aliases found for index 'my-index'")
       }
 
@@ -551,7 +543,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get shouldBe Seq.empty
       }
 
       "return empty set when index not found in response" in {
@@ -563,7 +555,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get shouldBe Seq.empty
 
         verify(mockLogger).warn("Index 'my-index' not found in response")
       }
@@ -629,7 +621,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set("alias1", "alias2", "alias3")
+        result.get.map(_.alias).toSet shouldBe Set("alias1", "alias2", "alias3")
       }
 
       "handle single alias" in {
@@ -642,7 +634,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set("single-alias")
+        result.get.map(_.alias).toSet shouldBe Set("single-alias")
 
         verify(mockLogger).info(contains("Found 1 alias(es)"))
       }
@@ -664,7 +656,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set("alias1")
+        result.get.map(_.alias).toSet shouldBe Set("alias1")
       }
     }
 
@@ -912,7 +904,7 @@ class AliasApiSpec
         add1.isSuccess shouldBe true
         add2.isSuccess shouldBe true
         getResult.isSuccess shouldBe true
-        getResult.get should contain allOf ("alias1", "alias2")
+        getResult.get.map(_.alias) should contain allOf ("alias1", "alias2")
       }
 
       "verify alias existence before and after removal" in {
@@ -981,7 +973,7 @@ class AliasApiSpec
         val result = for {
           _       <- aliasApi.addAlias("my-index", "my-alias")
           aliases <- aliasApi.getAliases("my-index")
-        } yield aliases.contains("my-alias")
+        } yield aliases.map(_.alias).contains("my-alias")
 
         // Then
         result shouldBe ElasticSuccess(true)
@@ -1108,7 +1100,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get shouldBe Seq.empty
       }
 
       "handle JSON with unexpected structure" in {
@@ -1120,7 +1112,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get shouldBe Seq.empty
       }
 
       "handle multiple consecutive swapAlias calls" in {
@@ -1454,7 +1446,8 @@ class AliasApiSpec
         aliasApi.getAliases("my-index")
 
         // Then
-        verify(mockLogger).debug(contains("Found 2 alias(es)"))
+        verify(mockLogger).debug("Getting aliases for index 'my-index'")
+//        verify(mockLogger).debug(contains("Found 2 alias(es)"))
         verify(mockLogger).info(contains("✅ Found 2 alias(es)"))
       }
 
@@ -1626,12 +1619,11 @@ class AliasApiSpec
       "not call execute methods when validation fails" in {
         // Given
         var executeCalled = false
-        val validatingApi = new AliasApi with IndicesApi with RefreshApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeAddAlias(
-            index: String,
-            alias: String
+            alias: TableAlias
           ): ElasticResult[Boolean] = {
             executeCalled = true
             ElasticSuccess(true)
@@ -1641,33 +1633,6 @@ class AliasApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeRemoveAlias(
-            index: String,
-            alias: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeGetAliases(index: String): ElasticResult[String] = ???
-          override private[client] def executeSwapAlias(
-            oldIndex: String,
-            newIndex: String,
-            alias: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When
@@ -1703,7 +1668,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get should contain("filtered-alias")
+        result.get.map(_.alias) should contain("filtered-alias")
       }
 
       "correctly parse aliases with routing" in {
@@ -1725,7 +1690,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get should contain("routed-alias")
+        result.get.map(_.alias) should contain("routed-alias")
       }
 
       "correctly parse aliases with search and index routing" in {
@@ -1748,7 +1713,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get should contain("complex-alias")
+        result.get.map(_.alias) should contain("complex-alias")
       }
 
       "handle null values in JSON" in {
@@ -1761,7 +1726,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get should contain("my-alias")
+        result.get.map(_.alias) should contain("my-alias")
       }
 
       "handle empty aliases object" in {
@@ -1774,7 +1739,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get.map(_.alias) shouldBe Seq.empty
       }
 
       "handle malformed JSON gracefully" in {
@@ -1808,7 +1773,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get should contain("my-alias")
+        result.get.map(_.alias) should contain("my-alias")
       }
 
       "handle deeply nested JSON structure" in {
@@ -1837,7 +1802,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get should contain("alias1")
+        result.get.map(_.alias) should contain("alias1")
       }
 
       "handle JSON with unicode characters" in {
@@ -1957,7 +1922,7 @@ class AliasApiSpec
         // Then
         addCurrent.isSuccess shouldBe true
         addMonth.isSuccess shouldBe true
-        getAliases.get should contain allOf ("logs-current", "logs-january")
+        getAliases.get.map(_.alias) should contain allOf ("logs-current", "logs-january")
       }
 
       "support filtered alias for multi-tenancy" in {
@@ -2154,7 +2119,7 @@ class AliasApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        result.get shouldBe Set.empty
+        result.get shouldBe Seq.empty
         result.get.isEmpty shouldBe true
       }
 

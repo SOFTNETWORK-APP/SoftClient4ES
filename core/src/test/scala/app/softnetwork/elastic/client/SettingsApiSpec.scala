@@ -7,6 +7,8 @@ import org.mockito.MockitoSugar
 import org.mockito.ArgumentMatchersSugar
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.query
+import app.softnetwork.elastic.sql.schema.TableAlias
 import com.google.gson.JsonParser
 
 /** Unit tests for SettingsApi Coverage target: 80%+ Using mockito-scala 1.17.12
@@ -22,7 +24,7 @@ class SettingsApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestSettingsApi extends SettingsApi with IndicesApi with RefreshApi {
+  class TestSettingsApi extends NopeClientApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -52,19 +54,6 @@ class SettingsApiSpec
       executeOpenIndexResult
     }
 
-    // Other required methods
-    override private[client] def executeCreateIndex(
-      index: String,
-      settings: String
-    ): ElasticResult[Boolean] = ???
-    override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeReindex(
-      sourceIndex: String,
-      targetIndex: String,
-      refresh: Boolean
-    ): ElasticResult[(Boolean, Option[Long])] = ???
-    override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] = ???
-    override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
   }
 
   var settingsApi: TestSettingsApi = _
@@ -489,7 +478,7 @@ class SettingsApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        val parsedResult = new JsonParser().parse(result.get).getAsJsonObject
+        val parsedResult = JsonParser.parseString(result.get).getAsJsonObject
         parsedResult.has("number_of_shards") shouldBe true
         parsedResult.get("number_of_shards").getAsString shouldBe "3"
       }
@@ -709,7 +698,7 @@ class SettingsApiSpec
         var updateCalled = false
         var openCalled = false
 
-        val workflowApi = new SettingsApi with IndicesApi with RefreshApi {
+        val workflowApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -732,22 +721,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When
@@ -764,7 +737,7 @@ class SettingsApiSpec
         var updateCalled = false
         var openCalled = false
 
-        val workflowApi = new SettingsApi with IndicesApi with RefreshApi {
+        val workflowApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -784,22 +757,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When
@@ -814,7 +771,7 @@ class SettingsApiSpec
         // Given
         var openCalled = false
 
-        val workflowApi = new SettingsApi with IndicesApi with RefreshApi {
+        val workflowApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -833,22 +790,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When
@@ -1385,7 +1326,7 @@ class SettingsApiSpec
       "validate index name before calling executeCloseIndex" in {
         // Given
         var closeCalled = false
-        val validatingApi = new SettingsApi with IndicesApi with RefreshApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1393,27 +1334,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeUpdateSettings(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When
@@ -1426,7 +1346,7 @@ class SettingsApiSpec
       "validate settings after index name" in {
         // Given
         var closeCalled = false
-        val validatingApi = new SettingsApi with IndicesApi with RefreshApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] = {
@@ -1434,27 +1354,6 @@ class SettingsApiSpec
             ElasticSuccess(true)
           }
 
-          override private[client] def executeUpdateSettings(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
-            ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When
@@ -1467,7 +1366,7 @@ class SettingsApiSpec
       "validate index name before calling executeLoadSettings" in {
         // Given
         var loadCalled = false
-        val validatingApi = new SettingsApi with IndicesApi with RefreshApi {
+        val validatingApi = new NopeClientApi {
           override protected def logger: Logger = mockLogger
 
           override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
@@ -1475,27 +1374,6 @@ class SettingsApiSpec
             ElasticSuccess("{}")
           }
 
-          override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeUpdateSettings(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] = ???
-          override private[client] def executeCreateIndex(
-            index: String,
-            settings: String
-          ): ElasticResult[Boolean] = ???
-          override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeReindex(
-            sourceIndex: String,
-            targetIndex: String,
-            refresh: Boolean
-          ): ElasticResult[(Boolean, Option[Long])] = ???
-          override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
-            ???
-          override private[client] def executeRefresh(index: String): ElasticResult[Boolean] = ???
         }
 
         // When

@@ -14,7 +14,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Numbers
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Numbers](
         "SELECT tiny::TINYINT as tiny, small::SMALLINT as small, normal::INT as normal, big::BIGINT as big, huge::BIGINT as huge, decimal::DOUBLE as decimal, r::REAL as r FROM numbers"
@@ -26,7 +26,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Strings
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Strings](
         "SELECT vchar::VARCHAR, c::CHAR, text FROM strings"
@@ -38,7 +38,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Temporal
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Temporal](
         "SELECT d::DATE, t::TIME, dt::DATETIME, ts::TIMESTAMP FROM temporal"
@@ -50,7 +50,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Product](
         "SELECT id, name, price::DOUBLE, stock::INT, active::BOOLEAN, createdAt::DATETIME FROM products"
@@ -62,7 +62,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Product](
         "SELECT product_id AS id, product_name AS name, product_price::DOUBLE AS price, product_stock::INT AS stock, is_active::BOOLEAN AS active, created_at::TIMESTAMP AS createdAt FROM products"
@@ -74,7 +74,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.ProductWithOptional
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[ProductWithOptional](
         "SELECT id, name FROM products"
@@ -87,7 +87,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.ProductWithDefaults
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[ProductWithDefaults](
         "SELECT id, name FROM products"
@@ -100,10 +100,10 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     import app.softnetwork.elastic.client.macros.TestElasticClientApi
     import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
     import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-    import app.softnetwork.elastic.sql.query.SQLQuery
+    import app.softnetwork.elastic.sql.query.SelectStatement
 
     TestElasticClientApi.searchAsUnchecked[Product](
-      SQLQuery("SELECT * FROM products")
+      SelectStatement("SELECT * FROM products")
     )
   """)
   }
@@ -139,7 +139,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Product](
         "SELECT id, name FROM products"
@@ -151,7 +151,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Product](
         "SELECT id, invalid_name, price, stock, active, createdAt FROM products"
@@ -162,7 +162,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       case class WrongTypes(id: Int, name: Int)
 
@@ -176,7 +176,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       TestElasticClientApi.searchAs[Product](
         "SELECT id, nam, price, stock, active, createdAt FROM products"
@@ -188,7 +188,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       import app.softnetwork.elastic.client.macros.TestElasticClientApi
       import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
       import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-      import app.softnetwork.elastic.sql.query.SQLQuery
+      import app.softnetwork.elastic.sql.query.SelectStatement
 
       val dynamicField = "name"
       TestElasticClientApi.searchAs[Product](
@@ -201,7 +201,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     import app.softnetwork.elastic.client.macros.TestElasticClientApi
     import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
     import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-    import app.softnetwork.elastic.sql.query.SQLQuery
+    import app.softnetwork.elastic.sql.query.SelectStatement
 
     TestElasticClientApi.searchAs[Product](
       "SELECT * FROM products"
@@ -214,7 +214,7 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     import app.softnetwork.elastic.client.macros.TestElasticClientApi
     import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
     import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
-    import app.softnetwork.elastic.sql.query.SQLQuery
+    import app.softnetwork.elastic.sql.query.SelectStatement
 
     TestElasticClientApi.searchAs[Product](
       "SELECT * FROM products WHERE active = true"

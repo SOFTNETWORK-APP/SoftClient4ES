@@ -1,12 +1,12 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.function.time
 
-import org.scalatest.funsuite.AnyFunSuite
-import app.softnetwork.elastic.sql.function._
-import app.softnetwork.elastic.sql.function.time._
-import app.softnetwork.elastic.sql.time._
+import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.function._
+import app.softnetwork.elastic.sql.time._
+import org.scalatest.funsuite.AnyFunSuite
 
-class SQLDateTimeFunctionSuite extends AnyFunSuite {
+class DateTimeFunctionSuite extends AnyFunSuite {
 
   // Base d'exemple
   val baseDate = "doc['createdAt'].value"

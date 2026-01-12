@@ -36,7 +36,7 @@ case class FieldSort(
   lazy val direction: SortOrder = order.getOrElse(Asc)
   lazy val name: String = field.identifierName
   override def sql: String = s"$name $direction"
-  override def update(request: SQLSearchRequest): FieldSort = this.copy(
+  override def update(request: SingleSearch): FieldSort = this.copy(
     field = field.update(request)
   )
   def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
@@ -59,5 +59,6 @@ case class OrderBy(sorts: Seq[FieldSort]) extends Updateable {
           }
     } yield ()
 
-  def update(request: SQLSearchRequest): OrderBy = this.copy(sorts = sorts.map(_.update(request)))
+  def update(request: SingleSearch): OrderBy =
+    this.copy(sorts = sorts.map(_.update(request)))
 }

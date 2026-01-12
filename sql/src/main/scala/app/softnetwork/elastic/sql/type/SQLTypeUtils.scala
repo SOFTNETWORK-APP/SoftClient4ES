@@ -21,6 +21,61 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes._
 
 object SQLTypeUtils {
 
+  def painlessType(sqlType: SQLType): String = sqlType match {
+    case TinyInt   => "byte"
+    case SmallInt  => "short"
+    case Int       => "int"
+    case BigInt    => "long"
+    case Double    => "double"
+    case Real      => "float"
+    case Numeric   => "java.math.BigDecimal"
+    case Varchar   => "String"
+    case Boolean   => "boolean"
+    case Date      => "LocalDate"
+    case Time      => "LocalTime"
+    case DateTime  => "LocalDateTime"
+    case Timestamp => "ZonedDateTime"
+    case Temporal  => "ZonedDateTime"
+    case Array(inner) =>
+      inner match {
+        case TinyInt  => "byte[]"
+        case SmallInt => "short[]"
+        case Int      => "int[]"
+        case BigInt   => "long[]"
+        case Double   => "double[]"
+        case Real     => "float[]"
+        case Boolean  => "boolean[]"
+        case _        => s"java.util.List<${painlessType(inner)}>"
+      }
+    case Struct => "Map<String, Object>"
+    case Any    => "Object"
+    case Null   => "Object"
+    case _      => "Object"
+  }
+
+  def elasticType(sqlType: SQLType): String = sqlType match {
+    case Null           => "null"
+    case TinyInt        => "byte"
+    case SmallInt       => "short"
+    case Int            => "integer"
+    case BigInt         => "long"
+    case Double         => "double"
+    case Real           => "float"
+    case Numeric        => "scaled_float"
+    case Varchar | Text => "text"
+    case Keyword        => "keyword"
+    case Boolean        => "boolean"
+    case Date           => "date"
+    case Time           => "date"
+    case DateTime       => "date"
+    case Timestamp      => "date"
+    case Temporal       => "date"
+    case GeoPoint       => "geo_point"
+    case Array(Struct)  => "nested"
+    case Struct         => "object"
+    case _              => "object"
+  }
+
   def matches(out: SQLType, in: SQLType): Boolean =
     out.typeId == in.typeId ||
     (out.typeId == Temporal.typeId && Set(
@@ -38,6 +93,10 @@ object SQLTypeUtils {
       Timestamp.typeId
     ).contains(
       out.typeId
+    )) ||
+    (Set(DateTime.typeId, Timestamp.typeId)
+      .contains(out.typeId) && Set(DateTime.typeId, Timestamp.typeId).contains(
+      in.typeId
     )) ||
     (out.typeId == Numeric.typeId && Set(
       TinyInt.typeId,
@@ -62,7 +121,10 @@ object SQLTypeUtils {
         out.typeId
       )) ||
     (out.isInstanceOf[SQLNumeric] && in.isInstanceOf[SQLNumeric]) ||
-    (out.typeId == Varchar.typeId && in.typeId == Varchar.typeId) ||
+    (Set(Varchar.typeId, Text.typeId, Keyword.typeId)
+      .contains(out.typeId) && Set(Varchar.typeId, Text.typeId, Keyword.typeId).contains(
+      in.typeId
+    )) ||
     (out.typeId == Boolean.typeId && in.typeId == Boolean.typeId) ||
     out.typeId == Any.typeId || in.typeId == Any.typeId ||
     out.typeId == Null.typeId || in.typeId == Null.typeId
@@ -105,16 +167,25 @@ object SQLTypeUtils {
 
   def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
     context match {
-      case Some(_) =>
+      case Some(ctx) =>
         in match {
           case identifier: Identifier =>
-            identifier.baseType match {
-              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
+            identifier.originalType match {
+              case SQLTypes.Any if !ctx.isProcessor => // in painless context, Any is ZonedDateTime
                 to match {
                   case SQLTypes.Date =>
                     identifier.addPainlessMethod(".toLocalDate()")
                   case SQLTypes.Time =>
                     identifier.addPainlessMethod(".toLocalTime()")
+                  case _ => // do nothing
+                }
+              case SQLTypes.Any if ctx.isProcessor =>
+                to match {
+                  case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                    val expr = identifier.painless(context)
+                    val from = SQLTypes.BigInt
+                    val ret = coerce(expr, from, to, identifier.nullable, context)
+                    return ret
                   case _ => // do nothing
                 }
               case _ => // do nothing
@@ -260,4 +331,65 @@ object SQLTypeUtils {
     s"($expr != null ? $ret : null)"
   }
 
+  private val numericRank: Map[Class[_], Int] = Map(
+    classOf[SQLTinyInt]  -> 1,
+    classOf[SQLSmallInt] -> 2,
+    classOf[SQLInt]      -> 3,
+    classOf[SQLBigInt]   -> 4,
+    classOf[SQLReal]     -> 5,
+    classOf[SQLDouble]   -> 6
+  )
+
+  private def numericRankOf(t: SQLType): Option[Int] =
+    numericRank.collectFirst { case (cls, rank) if cls.isInstance(t) => rank }
+
+  def canConvert(from: SQLType, to: SQLType): Boolean = {
+
+    // 1. Identity
+    if (from.typeId == to.typeId) return true
+
+    // 2. ANY / NULL
+    if (to.isInstanceOf[SQLAny]) return true
+    if (from.isInstanceOf[SQLNull]) return true
+
+    // 3. Numerics
+    (numericRankOf(from), numericRankOf(to)) match {
+      case (Some(r1), Some(r2)) =>
+        return r1 <= r2 // expansion only
+      case _ =>
+    }
+
+    // 4. Literals (VARCHAR, CHAR, TEXT, KEYWORD)
+    if (from.isInstanceOf[SQLLiteral] && to.isInstanceOf[SQLLiteral])
+      return true
+
+    // 5. Booleans
+    if (from.isInstanceOf[SQLBool] && to.isInstanceOf[SQLBool])
+      return true
+
+    // 6. Temporals
+    if (from.isInstanceOf[SQLTemporal] && to.isInstanceOf[SQLTemporal])
+      return true
+
+    // 7. Arrays
+    (from, to) match {
+      case (f: SQLArray, t: SQLArray) =>
+        canConvert(f.elementType, t.elementType)
+      case _ =>
+    }
+
+    // 8. Structs
+    (from, to) match {
+      case (f: SQLStruct, t: SQLStruct) =>
+        structConvertible(f, t)
+      case _ =>
+    }
+
+    false
+  }
+
+  private def structConvertible(from: SQLStruct, to: SQLStruct): Boolean = {
+    // TODO To be refined according to our definition of SQLStruct
+    true
+  }
 }

@@ -1,10 +1,12 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.Queries._
+import app.softnetwork.elastic.sql.parser.Queries._
 import app.softnetwork.elastic.sql.query._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import java.time.ZonedDateTime
 
 /** Created by smanciot on 13/04/17.
   */
@@ -12,9 +14,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   import scala.language.implicitConversions
 
-  implicit def sqlQueryToRequest(sqlQuery: SQLQuery): ElasticSearchRequest = {
-    sqlQuery.request match {
-      case Some(Left(value)) =>
+  implicit def timestamp: Long = ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
+
+  implicit def sqlQueryToRequest(sqlQuery: SelectStatement): ElasticSearchRequest = {
+    sqlQuery.statement match {
+      case Some(value: SingleSearch) =>
         value.copy(score = sqlQuery.score)
       case None =>
         throw new IllegalArgumentException(
@@ -23,9 +27,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "SQLQuery" should "perform native count" in {
+  "SelectStatement" should "perform native count" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(t.id) c2 from Table t where t.nom = 'Nom'")
+      SelectStatement("select count(t.id) c2 from Table t where t.nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -61,7 +65,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform count distinct" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery("select count(distinct t.id) as c2 from Table as t where nom = 'Nom'")
+      SelectStatement("select count(distinct t.id) as c2 from Table as t where nom = 'Nom'")
     results.size shouldBe 1
     val result = results.head
     result.nested shouldBe false
@@ -97,7 +101,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(inner_emails.value) as email from index i join unnest(i.emails) as inner_emails where i.nom = 'Nom'"
       )
     results.size shouldBe 1
@@ -142,7 +146,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with nested criteria" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\"))"
       )
     results.size shouldBe 1
@@ -205,7 +209,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with filter" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where nom = \"Nom\" and (inner_profiles.postalCode in (\"75001\",\"75002\")) having inner_emails.context = \"profile\""
       )
     results.size shouldBe 1
@@ -279,7 +283,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with \"and not\" operator" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(distinct inner_emails.value) as count_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where ((inner_profiles.postalCode = \"33600\") and (inner_profiles.postalCode <> \"75001\"))"
       )
     results.size shouldBe 1
@@ -353,7 +357,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested count with date filtering" in {
     val results: Seq[ElasticAggregation] =
-      SQLQuery(
+      SelectStatement(
         "select count(distinct inner_emails.value) as count_distinct_emails from index join unnest(index.emails) as inner_emails join unnest(index.profiles) as inner_profiles where inner_profiles.postalCode = \"33600\" and inner_profiles.createdDate <= \"now-35M/M\""
       )
     results.size shouldBe 1
@@ -421,21 +425,21 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform nested select" in {
     val select: ElasticSearchRequest =
-      SQLQuery("""
-                 |SELECT
-                 |profileId,
-                 |profile_ccm.email as email,
-                 |profile_ccm.city as city,
-                 |profile_ccm.firstName as firstName,
-                 |profile_ccm.lastName as lastName,
-                 |profile_ccm.postalCode as postalCode,
-                 |profile_ccm.birthYear as birthYear
-                 |FROM index join unnest(index.profiles) as profile_ccm
-                 |WHERE
-                 |((profile_ccm.postalCode BETWEEN "10" AND "99999")
-                 |AND
-                 |(profile_ccm.birthYear <= 2000))
-                 |limit 100""".stripMargin)
+      SelectStatement("""
+                        |SELECT
+                        |profileId,
+                        |profile_ccm.email as email,
+                        |profile_ccm.city as city,
+                        |profile_ccm.firstName as firstName,
+                        |profile_ccm.lastName as lastName,
+                        |profile_ccm.postalCode as postalCode,
+                        |profile_ccm.birthYear as birthYear
+                        |FROM index join unnest(index.profiles) as profile_ccm
+                        |WHERE
+                        |((profile_ccm.postalCode BETWEEN "10" AND "99999")
+                        |AND
+                        |(profile_ccm.birthYear <= 2000))
+                        |limit 100""".stripMargin)
     val query = select.query
     println(query)
     query shouldBe
@@ -470,17 +474,15 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "inner_hits": {
         |              "name": "profile_ccm",
         |              "from": 0,
-        |              "_source": {
-        |                "includes": [
-        |                  "profiles.email",
-        |                  "profiles.postalCode",
-        |                  "profiles.firstName",
-        |                  "profiles.lastName",
-        |                  "profiles.birthYear",
-        |                  "profiles.city"
-        |                ]
-        |              },
-        |              "size": 100
+        |              "size": 100,
+        |              "docvalue_fields": [
+        |                "profiles.email",
+        |                "profiles.city",
+        |                "profiles.firstName",
+        |                "profiles.lastName",
+        |                "profiles.postalCode",
+        |                "profiles.birthYear"
+        |              ]
         |            }
         |          }
         |        }
@@ -499,7 +501,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "exclude fields from select" in {
     val select: ElasticSearchRequest =
-      SQLQuery(
+      SelectStatement(
         except
       )
     select.query shouldBe
@@ -517,7 +519,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform query with group by and having" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHaving)
+      SelectStatement(groupByWithHaving)
     val query = select.query
     println(query)
     query shouldBe
@@ -577,7 +579,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "perform complex query" in {
     val select: ElasticSearchRequest =
-      SQLQuery(
+      SelectStatement(
         s"""SELECT
            |  inner_products.category as cat,
            |  min(inner_products.price) as min_price,
@@ -839,7 +841,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "add script fields" in {
     val select: ElasticSearchRequest =
-      SQLQuery(fieldsWithInterval)
+      SelectStatement(fieldsWithInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -851,7 +853,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "ct": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).minus(35, ChronoUnit.MINUTES)); param1"
         |      }
         |    }
         |  },
@@ -879,7 +881,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "filter with date time and interval" in {
     val select: ElasticSearchRequest =
-      SQLQuery(filterWithDateTimeAndInterval)
+      SelectStatement(filterWithDateTimeAndInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -914,7 +916,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "filter with date and interval" in {
     val select: ElasticSearchRequest =
-      SQLQuery(filterWithDateAndInterval)
+      SelectStatement(filterWithDateAndInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -949,7 +951,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "filter with time and interval" in {
     val select: ElasticSearchRequest =
-      SQLQuery(filterWithTimeAndInterval)
+      SelectStatement(filterWithTimeAndInterval)
     val query = select.query
     println(query)
     query shouldBe
@@ -997,10 +999,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle having with date functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery("""SELECT userId, MAX(createdAt) as lastSeen
-                 |FROM table
-                 |GROUP BY userId
-                 |HAVING MAX(createdAt) > now - interval 7 day""".stripMargin)
+      SelectStatement("""SELECT userId, MAX(createdAt) as lastSeen
+                        |FROM table
+                        |GROUP BY userId
+                        |HAVING MAX(createdAt) > now - interval 7 day""".stripMargin)
     val query = select.query
     println(query)
     query shouldBe
@@ -1028,7 +1030,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "lastSeen": "lastSeen"
         |            },
         |            "script": {
-        |              "source": "params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+        |              "source": "params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+        |              "params": {
+        |                "__now__": 1767139200000
+        |              }
         |            }
         |          }
         |        }
@@ -1041,11 +1046,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle group by with having and date time functions" in {
     val select: ElasticSearchRequest =
-      SQLQuery(groupByWithHavingAndDateTimeFunctions)
+      SelectStatement(groupByWithHavingAndDateTimeFunctions)
     val query = select.query
     println(query)
     query shouldBe
@@ -1090,7 +1096,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "lastSeen": "lastSeen"
         |                },
         |                "script": {
-        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+        |                  "params": {
+        |                    "__now__": 1767139200000
+        |                  }
         |                }
         |              }
         |            }
@@ -1106,11 +1115,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle group by index" in {
     val select: ElasticSearchRequest =
-      SQLQuery(
+      SelectStatement(
         groupByWithHavingAndDateTimeFunctions.replace("GROUP BY Country, City", "GROUP BY 3, 2")
       )
     val query = select.query
@@ -1157,7 +1167,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "lastSeen": "lastSeen"
         |                },
         |                "script": {
-        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()"
+        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+        |                  "params": {
+        |                    "__now__": 1767139200000
+        |                  }
         |                }
         |              }
         |            }
@@ -1173,56 +1186,57 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle date_parse function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateParse)
+      SelectStatement(dateParse)
     val query = select.query
     println(query)
     query shouldBe
     """{
-      |  "query": {
-      |    "bool": {
-      |      "filter": [
-      |        {
-      |          "exists": {
-      |            "field": "identifier2"
-      |          }
-      |        }
-      |      ]
-      |    }
-      |  },
-      |  "size": 0,
-      |  "_source": false,
-      |  "aggs": {
-      |    "identifier": {
-      |      "terms": {
-      |        "field": "identifier",
-      |        "min_doc_count": 1,
-      |        "order": {
-      |          "ct": "desc"
-      |        }
-      |      },
-      |      "aggs": {
-      |        "ct": {
-      |          "value_count": {
-      |            "field": "identifier2"
-      |          }
-      |        },
-      |        "lastSeen": {
-      |          "max": {
-      |            "field": "createdAt",
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
-      |            }
-      |          }
-      |        }
-      |      }
-      |    }
-      |  }
-      |}""".stripMargin
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "identifier": {
+        |      "terms": {
+        |        "field": "identifier",
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "ct": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "ct": {
+        |          "value_count": {
+        |            "field": "identifier2"
+        |          }
+        |        },
+        |        "lastSeen": {
+        |          "max": {
+        |            "field": "createdAt",
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : LocalDate.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
@@ -1246,7 +1260,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_format function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateFormat)
+      SelectStatement(dateFormat)
     val query = select.query
     println(query)
     query shouldBe
@@ -1266,49 +1280,49 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "d": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "m2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    },
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1345,52 +1359,52 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_parse function" in { // #25
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeParse)
+      SelectStatement(dateTimeParse)
     val query = select.query
     println(query)
     query shouldBe
     """{
-      |  "query": {
-      |    "bool": {
-      |      "filter": [
-      |        {
-      |          "exists": {
-      |            "field": "identifier2"
-      |          }
-      |        }
-      |      ]
-      |    }
-      |  },
-      |  "size": 0,
-      |  "_source": false,
-      |  "aggs": {
-      |    "identifier": {
-      |      "terms": {
-      |        "field": "identifier",
-      |        "min_doc_count": 1,
-      |        "order": {
-      |          "ct": "desc"
-      |        }
-      |      },
-      |      "aggs": {
-      |        "lastSeen": {
-      |          "max": {
-      |            "field": "createdAt",
-      |            "script": {
-      |              "lang": "painless",
-      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
-      |            }
-      |          }
-      |        },
-      |        "ct": {
-      |          "value_count": {
-      |            "field": "identifier2"
-      |          }
-      |        }
-      |      }
-      |    }
-      |  }
-      |}""".stripMargin
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "exists": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "identifier": {
+        |      "terms": {
+        |        "field": "identifier",
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "ct": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "lastSeen": {
+        |          "max": {
+        |            "field": "createdAt",
+        |            "script": {
+        |              "lang": "painless",
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
+        |            }
+        |          }
+        |        },
+        |        "ct": {
+        |          "value_count": {
+        |            "field": "identifier2"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
@@ -1415,7 +1429,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_format function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeFormat)
+      SelectStatement(dateTimeFormat)
     val query = select.query
     println(query)
     query shouldBe
@@ -1435,7 +1449,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss XXX\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss XXX\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1469,7 +1483,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_diff function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateDiff)
+      SelectStatement(dateDiff)
     val query = select.query
     println(query)
     query shouldBe
@@ -1481,7 +1495,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "diff": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); def param2 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param2)"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))"
         |      }
         |    }
         |  },
@@ -1511,7 +1525,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle aggregation with date_diff function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(aggregationWithDateDiff)
+      SelectStatement(aggregationWithDateDiff)
     val query = select.query
     println(query)
     query shouldBe
@@ -1532,7 +1546,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value); def param2 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param3 = (param2 == null) ? null : ZonedDateTime.parse(param2, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")); (param1 == null || param2 == null) ? null : ChronoUnit.DAYS.between(param1, param3)"
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param3 = ((param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")) != null ? (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).toLocalDate() : null); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param3, param2))"
         |            }
         |          }
         |        }
@@ -1564,7 +1578,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_add function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateAdd)
+      SelectStatement(dateAdd)
     val query = select.query
     println(query)
     query shouldBe
@@ -1615,7 +1629,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle date_sub function as script field" in { // 30
     val select: ElasticSearchRequest =
-      SQLQuery(dateSub)
+      SelectStatement(dateSub)
     val query = select.query
     println(query)
     query shouldBe
@@ -1666,7 +1680,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_add function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeAdd)
+      SelectStatement(dateTimeAdd)
     val query = select.query
     println(query)
     query shouldBe
@@ -1717,7 +1731,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle datetime_sub function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(dateTimeSub)
+      SelectStatement(dateTimeSub)
     val query = select.query
     println(query)
     query shouldBe
@@ -1768,7 +1782,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_null function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isnull)
+      SelectStatement(isnull)
     val query = select.query
     println(query)
     query shouldBe
@@ -1806,7 +1820,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_notnull function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isnotnull)
+      SelectStatement(isnotnull)
     val query = select.query
     println(query)
     query shouldBe
@@ -1848,7 +1862,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_null criteria as must_not exists" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isNullCriteria)
+      SelectStatement(isNullCriteria)
     val query = select.query
     println(query)
     query shouldBe
@@ -1880,7 +1894,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle is_notnull criteria as exists" in {
     val select: ElasticSearchRequest =
-      SQLQuery(isNotNullCriteria)
+      SelectStatement(isNotNullCriteria)
     val query = select.query
     println(query)
     query shouldBe
@@ -1906,7 +1920,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle coalesce function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(coalesce)
+      SelectStatement(coalesce)
     val query = select.query
     println(query)
     query shouldBe
@@ -1918,7 +1932,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).minus(35, ChronoUnit.MINUTES)); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param1 != null ? param1 : param2)",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    }
         |  },
@@ -1953,11 +1970,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
       .replaceAll(";\\(param", "; (param")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle nullif function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(nullif)
+      SelectStatement(nullif)
     val query = select.query
     println(query)
     query shouldBe
@@ -1969,7 +1987,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")).minus(2, ChronoUnit.DAYS); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); (param3 != null ? param3 : param4)",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    }
         |  },
@@ -2012,11 +2033,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll(":ZonedDateTime", " : ZonedDateTime")
       .replaceAll(";\\(param", "; (param")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(conversion)
+      SelectStatement(conversion)
     val query = select.query
     println(query)
     query shouldBe
@@ -2028,19 +2050,28 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    },
         |    "c2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toInstant().toEpochMilli()"
+        |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toInstant().toEpochMilli()",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    },
         |    "c3": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toLocalDate()"
+        |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toLocalDate()",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    },
         |    "c4": {
@@ -2097,11 +2128,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("try \\{", "try { ")
       .replaceAll("} catch", " } catch")
       .replaceAll(";\\(param", "; (param")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle case function as script field" in { // 40
     val select: ElasticSearchRequest =
-      SQLQuery(caseWhen)
+      SelectStatement(caseWhen)
     val query = select.query
     println(query)
     query shouldBe
@@ -2113,7 +2145,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.plus(2, ChronoUnit.DAYS)); def param5 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param4 : param5"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.plus(2, ChronoUnit.DAYS)); def param5 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param4 : param5",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    }
         |  },
@@ -2150,11 +2185,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll("=p", " = p")
       .replaceAll(":p", " : p")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle case with expression function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(caseWhenExpr)
+      SelectStatement(caseWhenExpr)
     val query = select.query
     println(query)
     query shouldBe
@@ -2166,7 +2202,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4"
+        |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4",
+        |        "params": {
+        |          "__now__": 1767139200000
+        |        }
         |      }
         |    }
         |  },
@@ -2205,11 +2244,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("=ZonedDateTime", " = ZonedDateTime")
       .replaceAll("=p", " = p")
       .replaceAll(":p", " : p")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle extract function as script field" in {
     val select: ElasticSearchRequest =
-      SQLQuery(extract)
+      SelectStatement(extract)
     val query = select.query
     println(query)
     query shouldBe
@@ -2221,91 +2261,91 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "dom": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "dow": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_WEEK)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_WEEK)); param1"
         |      }
         |    },
         |    "doy": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
@@ -2333,7 +2373,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle arithmetic function as script field and condition" in {
     val select: ElasticSearchRequest =
-      SQLQuery(arithmetic.replace("as group1", ""))
+      SelectStatement(arithmetic.replace("as group1", ""))
     val query = select.query
     println(query)
     query shouldBe
@@ -2345,7 +2385,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000"
+        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000",
+        |              "params": {
+        |                "__now__": 1767139200000
+        |              }
         |            }
         |          }
         |        }
@@ -2418,11 +2461,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("-", " - ")
       .replaceAll("==", " == ")
       .replaceAll("\\|\\|", " || ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle mathematic function as script field and condition" in {
     val select: ElasticSearchRequest =
-      SQLQuery(mathematical)
+      SelectStatement(mathematical)
     val query = select.query
     println(query)
     query shouldBe
@@ -2434,7 +2478,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.sqrt(param1) > 100.0"
+        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1)) > 100.0"
         |            }
         |          }
         |        }
@@ -2445,61 +2489,61 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "abs_identifier_plus_1_0_mul_2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); ((param1 == null) ? null : Math.abs(param1) + 1.0) * ((double) 2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); ((param1 == null) ? null : Double.valueOf(Math.abs(param1)) + 1.0) * ((double) 2)"
         |      }
         |    },
         |    "ceil_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.ceil(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.ceil(param1))"
         |      }
         |    },
         |    "floor_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.floor(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.floor(param1))"
         |      }
         |    },
         |    "sqrt_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.sqrt(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1))"
         |      }
         |    },
         |    "exp_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.exp(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.exp(param1))"
         |      }
         |    },
         |    "log_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.log(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log(param1))"
         |      }
         |    },
         |    "log10_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.log10(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log10(param1))"
         |      }
         |    },
         |    "pow_identifier_3": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.pow(param1, 3)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.pow(param1, 3))"
         |      }
         |    },
         |    "round_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
         |      }
         |    },
         |    "round_identifier_2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Math.round((param1 * param2) / param2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
         |      }
         |    },
         |    "sign_identifier": {
@@ -2511,43 +2555,43 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "cos_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.cos(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.cos(param1))"
         |      }
         |    },
         |    "acos_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.acos(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.acos(param1))"
         |      }
         |    },
         |    "sin_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.sin(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sin(param1))"
         |      }
         |    },
         |    "asin_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.asin(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.asin(param1))"
         |      }
         |    },
         |    "tan_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.tan(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.tan(param1))"
         |      }
         |    },
         |    "atan_identifier": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.atan(param1)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.atan(param1))"
         |      }
         |    },
         |    "atan2_identifier_3_0": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Math.atan2(param1, 3.0)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.atan2(param1, 3.0))"
         |      }
         |    }
         |  },
@@ -2592,7 +2636,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle string function as script field and condition" in { // 45
     val select: ElasticSearchRequest =
-      SQLQuery(string)
+      SelectStatement(string)
     val query = select.query
     println(query)
     query shouldBe
@@ -2633,7 +2677,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "sub": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(0, Math.min(3, param1.length()))"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : ((String)param1).substring(0, (int)Math.min(3, ((String)param1).length()))"
         |      }
         |    },
         |    "tr": {
@@ -2663,13 +2707,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "l": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(0, Math.min(5, param1.length()))"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : ((String)param1).substring(0, (int)Math.min(5, ((String)param1).length()))"
         |      }
         |    },
         |    "r": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.substring(param1.length() - Math.min(3, param1.length()))"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : ((String)param1).substring(((String)param1).length() - (int)Math.min(3, ((String)param1).length()))"
         |      }
         |    },
         |    "rep": {
@@ -2711,7 +2755,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("def_", "def _")
       .replaceAll("=_", " = _")
       .replaceAll(",_", ", _")
-      .replaceAll(",\\(", ", (")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll(":\\(", " : (")
@@ -2748,7 +2791,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle top hits aggregation" in {
     val select: ElasticSearchRequest =
-      SQLQuery(topHits)
+      SelectStatement(topHits)
     val query = select.query
     println(query)
     query shouldBe
@@ -2865,7 +2908,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle last day function" in {
     val select: ElasticSearchRequest =
-      SQLQuery(lastDay)
+      SelectStatement(lastDay)
     val query = select.query
     println(query)
     query shouldBe
@@ -2877,7 +2920,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = ZonedDateTime.now(ZoneId.of('Z')); param1.toLocalDate().withDayOfMonth(param1.toLocalDate().lengthOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28"
+        |              "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toLocalDate().withDayOfMonth(param1.toLocalDate().lengthOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28",
+        |              "params": {
+        |                "__now__": 1767139200000
+        |              }
         |            }
         |          }
         |        }
@@ -2928,11 +2974,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll("\\|\\|", " || ")
       .replaceAll("(\\d)=", "$1 = ")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "handle all extractors" in {
     val select: ElasticSearchRequest =
-      SQLQuery(extractors)
+      SelectStatement(extractors)
     val query = select.query
     println(query)
     query shouldBe
@@ -2944,91 +2991,91 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "y": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.YEAR)); param1"
         |      }
         |    },
         |    "m": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MONTH_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MONTH_OF_YEAR)); param1"
         |      }
         |    },
         |    "wd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z'))); (param1 == null) ? null : (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7"
         |      }
         |    },
         |    "yd": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_YEAR)); param1"
         |      }
         |    },
         |    "d": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.DAY_OF_MONTH)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.DAY_OF_MONTH)); param1"
         |      }
         |    },
         |    "h": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.HOUR_OF_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.HOUR_OF_DAY)); param1"
         |      }
         |    },
         |    "minutes": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MINUTE_OF_HOUR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MINUTE_OF_HOUR)); param1"
         |      }
         |    },
         |    "s": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.SECOND_OF_MINUTE)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.SECOND_OF_MINUTE)); param1"
         |      }
         |    },
         |    "nano": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.NANO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.NANO_OF_SECOND)); param1"
         |      }
         |    },
         |    "micro": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MICRO_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MICRO_OF_SECOND)); param1"
         |      }
         |    },
         |    "milli": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.MILLI_OF_SECOND)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.MILLI_OF_SECOND)); param1"
         |      }
         |    },
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.EPOCH_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(ChronoField.OFFSET_SECONDS)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.OFFSET_SECONDS)); param1"
         |      }
         |    },
         |    "w": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)); param1"
         |      }
         |    },
         |    "q": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(java.time.temporal.IsoFields.QUARTER_OF_YEAR)); param1"
         |      }
         |    }
         |  },
@@ -3069,7 +3116,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle geo distance as script fields and criteria" in {
     val select: ElasticSearchRequest =
-      SQLQuery(geoDistance)
+      SelectStatement(geoDistance)
     val query = select.query
     println(query)
     query shouldBe
@@ -3084,7 +3131,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "(def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)) >= 4000000.0",
+        |                    "source": "def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon) >= 4000000.0",
         |                    "params": {
         |                      "lat": -70.0,
         |                      "lon": 40.0
@@ -3108,7 +3155,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "(def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); def arg1 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null || arg1 == null) ? null : arg0.arcDistance(arg1.lat, arg1.lon)) < 2000000.0"
+        |              "source": "def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); def arg1 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null || arg1 == null) ? null : arg0.arcDistance(arg1.lat, arg1.lon) < 2000000.0"
         |            }
         |          }
         |        },
@@ -3127,7 +3174,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "d1": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+        |        "source": "def arg0 = (doc['toLocation'].size() == 0 ? null : doc['toLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)",
         |        "params": {
         |          "lat": -70.0,
         |          "lon": 40.0
@@ -3137,7 +3184,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "d2": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "(def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon))",
+        |        "source": "def arg0 = (doc['fromLocation'].size() == 0 ? null : doc['fromLocation']); (arg0 == null) ? null : arg0.arcDistance(params.lat, params.lon)",
         |        "params": {
         |          "lat": -70.0,
         |          "lon": 40.0
@@ -3191,7 +3238,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle between with temporal" in { // 50
     val select: ElasticSearchRequest =
-      SQLQuery(betweenTemporal)
+      SelectStatement(betweenTemporal)
     val query = select.query
     println(query)
     query shouldBe
@@ -3276,7 +3323,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle nested of nested" in {
     val select: ElasticSearchRequest =
-      SQLQuery(nestedOfNested)
+      SelectStatement(nestedOfNested)
     val query = select.query
     println(query)
     query shouldBe
@@ -3314,26 +3361,22 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "inner_hits": {
         |                  "name": "matched_replies",
         |                  "from": 0,
-        |                  "_source": {
-        |                    "includes": [
-        |                      "comments.replies.reply_author",
-        |                      "comments.replies.reply_text"
-        |                    ]
-        |                  },
-        |                  "size": 5
+        |                  "size": 5,
+        |                  "docvalue_fields": [
+        |                    "comments.replies.reply_author",
+        |                    "comments.replies.reply_text"
+        |                  ]
         |                }
         |              }
         |            },
         |            "inner_hits": {
         |              "name": "matched_comments",
         |              "from": 0,
-        |              "_source": {
-        |                "includes": [
-        |                  "comments.author",
-        |                  "comments.comments"
-        |                ]
-        |              },
-        |              "size": 5
+        |              "size": 5,
+        |              "docvalue_fields": [
+        |                "comments.author",
+        |                "comments.comments"
+        |              ]
         |            }
         |          }
         |        }
@@ -3384,7 +3427,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle predicate with distinct nested" in {
     val select: ElasticSearchRequest =
-      SQLQuery(predicateWithDistinctNested)
+      SelectStatement(predicateWithDistinctNested)
     val query = select.query
     println(query)
     query shouldBe
@@ -3409,13 +3452,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "inner_hits": {
         |                    "name": "matched_replies",
         |                    "from": 0,
-        |                    "_source": {
-        |                      "includes": [
-        |                        "replies.reply_author",
-        |                        "replies.reply_text"
-        |                      ]
-        |                    },
-        |                    "size": 5
+        |                    "size": 5,
+        |                    "docvalue_fields": [
+        |                      "replies.reply_author",
+        |                      "replies.reply_text"
+        |                    ]
         |                  }
         |                }
         |              }
@@ -3434,13 +3475,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "inner_hits": {
         |                    "name": "matched_comments",
         |                    "from": 0,
-        |                    "_source": {
-        |                      "includes": [
-        |                        "comments.author",
-        |                        "comments.comments"
-        |                      ]
-        |                    },
-        |                    "size": 5
+        |                    "size": 5,
+        |                    "docvalue_fields": [
+        |                      "comments.author",
+        |                      "comments.comments"
+        |                    ]
         |                  }
         |                }
         |              }
@@ -3494,7 +3533,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle nested without criteria" in {
     val select: ElasticSearchRequest =
-      SQLQuery(nestedWithoutCriteria)
+      SelectStatement(nestedWithoutCriteria)
     val query = select.query
     println(query)
     query shouldBe
@@ -3509,7 +3548,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); param1 == null ? false : (param1.isBefore(param2))"
+        |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); param1 == null ? false : (param1.isBefore(param2))",
+        |                    "params": {
+        |                      "__now__": 1767139200000
+        |                    }
         |                  }
         |                }
         |              }
@@ -3528,26 +3570,22 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "inner_hits": {
         |                  "name": "matched_replies",
         |                  "from": 0,
-        |                  "_source": {
-        |                    "includes": [
-        |                      "reply_author",
-        |                      "reply_text"
-        |                    ]
-        |                  },
-        |                  "size": 5
+        |                  "size": 5,
+        |                  "docvalue_fields": [
+        |                    "reply_author",
+        |                    "reply_text"
+        |                  ]
         |                }
         |              }
         |            },
         |            "inner_hits": {
         |              "name": "matched_comments",
         |              "from": 0,
-        |              "_source": {
-        |                "includes": [
-        |                  "author",
-        |                  "comments"
-        |                ]
-        |              },
-        |              "size": 5
+        |              "size": 5,
+        |              "docvalue_fields": [
+        |                "author",
+        |                "comments"
+        |              ]
         |            }
         |          }
         |        }
@@ -3558,8 +3596,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "size": 5,
         |  "_source": true
         |}""".stripMargin
-      .replaceAll("\\s+", "")
-      .replaceAll("\\s+", "")
       .replaceAll("\\s+", "")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
@@ -3594,11 +3630,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("lat,arg", "lat, arg")
       .replaceAll("false:", "false : ")
       .replaceAll("DateTimeFormatter", " DateTimeFormatter")
+      .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
   it should "determine the aggregation context" in {
     val select: ElasticSearchRequest =
-      SQLQuery(determinationOfTheAggregationContext)
+      SelectStatement(determinationOfTheAggregationContext)
     val query = select.query
     println(query)
     query shouldBe
@@ -3632,7 +3669,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle aggregation with nested of nested context" in {
     val select: ElasticSearchRequest =
-      SQLQuery(aggregationWithNestedOfNestedContext)
+      SelectStatement(aggregationWithNestedOfNestedContext)
     val query = select.query
     println(query)
     query shouldBe
@@ -3668,7 +3705,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
   it should "handle where filters according to scope" in {
     val select: ElasticSearchRequest =
-      SQLQuery(whereFiltersAccordingToScope)
+      SelectStatement(whereFiltersAccordingToScope)
     val query = select.query
     println(query)
     query shouldBe

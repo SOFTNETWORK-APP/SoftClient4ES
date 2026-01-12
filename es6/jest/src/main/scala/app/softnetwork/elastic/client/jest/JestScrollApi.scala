@@ -19,15 +19,7 @@ package app.softnetwork.elastic.client.jest
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
-import app.softnetwork.elastic.client.{
-  retryWithBackoff,
-  ClientAggregation,
-  ElasticQuery,
-  ElasticResponse,
-  ScrollApi,
-  SearchApi,
-  VersionApi
-}
+import app.softnetwork.elastic.client.{retryWithBackoff, ClientAggregation, ElasticQuery, ScrollApi}
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
@@ -40,7 +32,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
 trait JestScrollApi extends ScrollApi with JestClientHelpers {
-  _: VersionApi with SearchApi with JestClientCompanion =>
+  _: JestVersionApi with JestSearchApi with JestClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -145,7 +137,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 logger.debug(s"Fetching next search_after batch (after: ${values.mkString(", ")})")
             }
 
-            val queryJson = new JsonParser().parse(elasticQuery.query).getAsJsonObject
+            val queryJson = JsonParser.parseString(elasticQuery.query).getAsJsonObject
 
             // Check if sorts already exist in the query
             if (!hasSorts && !queryJson.has("sort")) {

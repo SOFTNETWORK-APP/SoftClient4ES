@@ -22,7 +22,8 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.serialization._
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -32,7 +33,7 @@ import scala.language.implicitConversions
 
 /** Created by smanciot on 12/04/2020.
   */
-trait MockElasticClientApi extends ElasticClientApi {
+trait MockElasticClientApi extends NopeClientApi {
 
   def elasticVersion: String
 
@@ -94,7 +95,9 @@ trait MockElasticClientApi extends ElasticClientApi {
 
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] =
     ElasticResult.success(true)
 
@@ -110,7 +113,8 @@ trait MockElasticClientApi extends ElasticClientApi {
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
     ElasticResult.success((true, Some(elasticDocuments.getAll.keys.size)))
 
@@ -120,8 +124,7 @@ trait MockElasticClientApi extends ElasticClientApi {
   // ==================== AliasApi ====================
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] =
     ElasticResult.success(true)
 
@@ -288,8 +291,8 @@ trait MockElasticClientApi extends ElasticClientApi {
   // ==================== SearchApi ====================
 
   override private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SQLSearchRequest
-  ): String =
+    sqlSearch: SingleSearch
+  )(implicit timestamp: Long): String =
     """{
       |  "query": {
       |    "match_all": {}

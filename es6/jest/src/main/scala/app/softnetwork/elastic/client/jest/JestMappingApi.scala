@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{IndicesApi, MappingApi, RefreshApi, SettingsApi}
+import app.softnetwork.elastic.client.MappingApi
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
@@ -33,7 +33,12 @@ import scala.util.Try
   *   [[MappingApi]] for generic API documentation
   */
 trait JestMappingApi extends MappingApi with JestClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with JestClientCompanion =>
+  _: JestSettingsApi
+    with JestIndicesApi
+    with JestRefreshApi
+    with JestVersionApi
+    with JestAliasApi
+    with JestClientCompanion =>
 
   /** Set the mapping for an index.
     * @see
@@ -71,7 +76,7 @@ trait JestMappingApi extends MappingApi with JestClientHelpers {
     getMapping(index).flatMap { jsonString =>
       // ✅ Extracting mapping from JSON
       ElasticResult.attempt(
-        new JsonParser().parse(jsonString).getAsJsonObject
+        JsonParser.parseString(jsonString).getAsJsonObject
       ) match {
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse JSON mapping for index '$index': ${error.message}")

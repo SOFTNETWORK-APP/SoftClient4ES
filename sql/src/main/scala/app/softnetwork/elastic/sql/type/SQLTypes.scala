@@ -16,6 +16,8 @@
 
 package app.softnetwork.elastic.sql.`type`
 
+import app.softnetwork.elastic.schema.IndexField
+
 object SQLTypes {
   case object Any extends SQLAny { val typeId = "ANY" }
 
@@ -41,12 +43,41 @@ object SQLTypes {
 
   case object Char extends SQLChar { val typeId = "CHAR" }
   case object Varchar extends SQLVarchar { val typeId = "VARCHAR" }
+  case object Text extends EsqlText { val typeId = "TEXT" }
+  case object Keyword extends EsqlKeyword { val typeId = "KEYWORD" }
 
   case object Boolean extends SQLBool { val typeId = "BOOLEAN" }
 
   case class Array(elementType: SQLType) extends SQLArray {
-    val typeId = s"array<${elementType.typeId}>"
+    val typeId = s"ARRAY<${elementType.typeId}>"
   }
 
   case object Struct extends SQLStruct { val typeId = "STRUCT" }
+
+  case object GeoPoint extends EsqlGeoPoint { val typeId = "GEO_POINT" }
+
+  def apply(typeName: String): SQLType = typeName.toLowerCase match {
+    case "null"                     => Null
+    case "boolean"                  => Boolean
+    case "int" | "integer"          => Int
+    case "long" | "bigint"          => BigInt
+    case "short" | "smallint"       => SmallInt
+    case "byte" | "tinyint"         => TinyInt
+    case "keyword"                  => Keyword
+    case "text"                     => Text
+    case "varchar"                  => Varchar
+    case "timestamp"                => Timestamp
+    case "datetime"                 => DateTime
+    case "date"                     => Date
+    case "time"                     => Time
+    case "double"                   => Double
+    case "float" | "real"           => Real
+    case "object" | "struct"        => Struct
+    case "nested" | "array<struct>" => Array(Struct)
+    case "geo_point"                => GeoPoint
+    case _                          => Any
+  }
+
+  def apply(field: IndexField): SQLType = apply(field.`type`)
+
 }

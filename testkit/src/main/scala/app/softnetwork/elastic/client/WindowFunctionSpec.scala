@@ -79,7 +79,7 @@ trait WindowFunctionSpec
         |  }
         |}""".stripMargin
 
-    client.createIndex("emp").get shouldBe true
+    client.createIndex("emp", mappings = None, aliases = Nil).get shouldBe true
 
     client.setMapping("emp", mapping).get shouldBe true
 

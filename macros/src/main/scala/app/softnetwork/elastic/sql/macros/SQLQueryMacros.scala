@@ -44,7 +44,7 @@ object SQLQueryMacros extends SQLQueryValidator {
     // 3. Generate the call to searchAsUnchecked
     q"""
       ${c.prefix}.searchAsUnchecked[$tpe](
-        _root_.app.softnetwork.elastic.sql.query.SQLQuery($validatedQuery)
+        _root_.app.softnetwork.elastic.sql.query.SelectStatement($validatedQuery)
       )($m, $formats)
     """
   }
@@ -71,7 +71,7 @@ object SQLQueryMacros extends SQLQueryValidator {
     // 3. Generate the call to searchAsUnchecked
     q"""
       ${c.prefix}.searchAsyncAsUnchecked[$tpe](
-        _root_.app.softnetwork.elastic.sql.query.SQLQuery($validatedQuery)
+        _root_.app.softnetwork.elastic.sql.query.SelectStatement($validatedQuery)
       )($m, $ec, $formats)
     """
   }
@@ -99,7 +99,7 @@ object SQLQueryMacros extends SQLQueryValidator {
     // 3. Generate the call to searchAsUnchecked
     q"""
       ${c.prefix}.scrollAsUnchecked[$tpe](
-        _root_.app.softnetwork.elastic.sql.query.SQLQuery($validatedQuery),
+        _root_.app.softnetwork.elastic.sql.query.SelectStatement($validatedQuery),
         $config
       )($system, $m, $formats)
     """

@@ -52,7 +52,7 @@ trait EmployeeData { _: Suite =>
     implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
       Source.fromIterator(() => list.iterator)
 
-    client.bulk[String](employees, identity, idKey = Some("id")) match {
+    client.bulk[String](employees, identity, idKey = Some(Set("id"))) match {
       case ElasticSuccess(response) =>
         println(s"✅ Bulk indexing completed:")
         println(s"   - Total items: ${response.metrics.totalDocuments}")

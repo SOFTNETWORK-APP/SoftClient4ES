@@ -16,21 +16,17 @@
 
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.function.aggregate.{
-  AggregateFunction,
-  COUNT,
-  MAX,
-  MIN,
-  WindowFunction
-}
+import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
-import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.schema.Column
+import com.fasterxml.jackson.databind.JsonNode
 
 import java.security.MessageDigest
-import java.util.regex.Pattern
+import scala.annotation.tailrec
+import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe._
 import scala.util.Try
 import scala.util.matching.Regex
@@ -78,6 +74,10 @@ package object sql {
     def shouldBeScripted: Boolean = false
   }
 
+  trait DdlToken extends Token {
+    def ddl: String = sql
+  }
+
   trait TokenValue extends Token {
     def value: Any
   }
@@ -110,12 +110,6 @@ package object sql {
       }
     }
 
-    def paramValue: String =
-      if (nullable && checkNotNull.nonEmpty)
-        checkNotNull
-      else
-        s"$param${painlessMethods.mkString("")}"
-
     private[this] var _painlessMethods: collection.mutable.Seq[String] =
       collection.mutable.Seq.empty
 
@@ -129,14 +123,26 @@ package object sql {
 
   }
 
-  case class LiteralParam(param: String) extends PainlessParam {
+  case class LiteralParam(literal: String, maybeCheckNotNull: Option[String] = None)
+      extends PainlessParam {
+    override def param: String = literal
     override def sql: String = ""
-    override def checkNotNull: String = ""
+    override def nullable: Boolean = maybeCheckNotNull.nonEmpty
+    override def checkNotNull: String = maybeCheckNotNull.getOrElse("")
+  }
+
+  sealed trait PainlessContextType
+
+  case object PainlessContextType {
+    case object Processor extends PainlessContextType
+    case object Query extends PainlessContextType
   }
 
   /** Context for painless scripts
+    * @param context
+    *   the context type
     */
-  case class PainlessContext() {
+  case class PainlessContext(context: PainlessContextType = PainlessContextType.Query) {
     // List of parameter keys
     private[this] var _keys: collection.mutable.Seq[PainlessParam] = collection.mutable.Seq.empty
 
@@ -145,6 +151,15 @@ package object sql {
 
     // Last parameter name added
     private[this] var _lastParam: Option[String] = None
+
+    def isProcessor: Boolean = context == PainlessContextType.Processor
+
+    lazy val timestamp: String = {
+      context match {
+        case PainlessContextType.Processor => CurrentFunction.processorTimestamp
+        case PainlessContextType.Query     => CurrentFunction.queryTimestamp
+      }
+    }
 
     /** Add a token parameter to the context if not already present
       *
@@ -155,6 +170,10 @@ package object sql {
       */
     def addParam(token: Token): Option[String] = {
       token match {
+        case identifier: Identifier if isProcessor =>
+          addParam(
+            LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
+          )
         case param: PainlessParam
             if param.param.nonEmpty && (param.isInstanceOf[LiteralParam] || param.nullable) =>
           get(param) match {
@@ -177,6 +196,8 @@ package object sql {
 
     def get(token: Token): Option[String] = {
       token match {
+        case identifier: Identifier if isProcessor =>
+          get(LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ ))
         case param: PainlessParam =>
           if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
           else None
@@ -205,13 +226,19 @@ package object sql {
       else None
     }
 
+    private[this] def paramValue(param: PainlessParam): String =
+      if (param.nullable && param.checkNotNull.nonEmpty)
+        param.checkNotNull
+      else
+        s"${param.param}${param.painlessMethods.mkString("")}"
+
     override def toString: String = {
       if (isEmpty) ""
       else
         _keys
           .flatMap { param =>
             get(param) match {
-              case Some(v) => Some(s"def $v = ${param.paramValue}; ")
+              case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
               case None    => None // should not happen
             }
           }
@@ -248,35 +275,17 @@ package object sql {
   }
 
   trait Updateable extends Token {
-    def update(request: SQLSearchRequest): Updateable
+    def update(request: SingleSearch): Updateable
   }
 
   abstract class Expr(override val sql: String) extends Token
 
   case object Distinct extends Expr("DISTINCT") with TokenRegex
 
-  abstract class Value[+T](val value: T)(implicit ev$1: T => Ordered[T])
-      extends Token
+  abstract class Value[+T](val value: T)
+      extends DdlToken
       with PainlessScript
       with FunctionWithValue[T] {
-    def choose[R >: T](
-      values: Seq[R],
-      operator: Option[ExpressionOperator],
-      separator: String = "|"
-    )(implicit ev: R => Ordered[R]): Option[R] = {
-      if (values.isEmpty)
-        None
-      else
-        operator match {
-          case Some(EQ)        => values.find(_ == value)
-          case Some(NE | DIFF) => values.find(_ != value)
-          case Some(GE)        => values.filter(_ >= value).sorted.reverse.headOption
-          case Some(GT)        => values.filter(_ > value).sorted.reverse.headOption
-          case Some(LE)        => values.filter(_ <= value).sorted.headOption
-          case Some(LT)        => values.filter(_ < value).sorted.headOption
-          case _               => values.headOption
-        }
-    }
     override def painless(context: Option[PainlessContext]): String =
       SQLTypeUtils.coerce(
         value match {
@@ -294,11 +303,240 @@ package object sql {
     override def nullable: Boolean = false
   }
 
+  object Value {
+    def apply[R: TypeTag, T <: Value[R]](value: Any): Value[_] = {
+      value match {
+        case null       => Null
+        case b: Boolean => BooleanValue(b)
+        case c: Char    => CharValue(c)
+        case s: String =>
+          s match {
+            case "null"                                        => Null
+            case "_id" | "{{_id]]"                             => IdValue
+            case "_ingest.timestamp" | "{{_ingest.timestamp}}" => IngestTimestampValue
+            case _                                             => StringValue(s)
+          }
+        case b: Byte     => ByteValue(b)
+        case s: Short    => ShortValue(s)
+        case i: Int      => IntValue(i)
+        case l: Long     => LongValue(l)
+        case f: Float    => FloatValue(f)
+        case d: Double   => DoubleValue(d)
+        case a: Array[T] => apply(a.toSeq)
+        case a: Seq[T] =>
+          val values = a.map(apply)
+          values.headOption match {
+            case Some(_: StringValue) =>
+              StringValues(values.asInstanceOf[Seq[StringValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: ByteValue) =>
+              ByteValues(values.asInstanceOf[Seq[ByteValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: ShortValue) =>
+              ShortValues(values.asInstanceOf[Seq[ShortValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: IntValue) =>
+              IntValues(values.asInstanceOf[Seq[IntValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: LongValue) =>
+              LongValues(values.asInstanceOf[Seq[LongValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: FloatValue) =>
+              FloatValues(values.asInstanceOf[Seq[FloatValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: DoubleValue) =>
+              DoubleValues(values.asInstanceOf[Seq[DoubleValue]]).asInstanceOf[Values[R, T]]
+            case Some(_: BooleanValue) =>
+              BooleanValues(values.asInstanceOf[Seq[BooleanValue]])
+                .asInstanceOf[Values[R, T]]
+            case Some(_: ObjectValue) =>
+              ObjectValues(
+                values
+                  .asInstanceOf[Seq[ObjectValue]]
+              ).asInstanceOf[Values[R, T]]
+            case _ => throw new IllegalArgumentException("Unsupported Values type")
+          }
+        case o: Map[_, _] =>
+          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }
+          ObjectValue(map)
+        case other => StringValue(other.toString)
+      }
+    }
+
+    def apply(node: JsonNode): Option[Any] = {
+      node match {
+        case n if n.isNull    => Some(null)
+        case n if n.isTextual => Some(n.asText())
+        case n if n.isBoolean => Some(n.asBoolean())
+        case n if n.isShort   => Some(node.asInstanceOf[Short])
+        case n if n.isInt     => Some(n.asInt())
+        case n if n.isLong    => Some(n.asLong())
+        case n if n.isDouble  => Some(n.asDouble())
+        case n if n.isFloat   => Some(node.asInstanceOf[Float])
+        case n if n.isArray =>
+          import scala.jdk.CollectionConverters._
+          val arr = n
+            .elements()
+            .asScala
+            .flatMap(apply)
+            .toList
+          Some(arr)
+        case n if n.isObject =>
+          val map = n
+            .properties()
+            .asScala
+            .flatMap { entry =>
+              val key = entry.getKey
+              val valueNode = entry.getValue
+              apply(valueNode).map(value => key -> value)
+            }
+            .toMap
+          Some(map)
+        case _ =>
+          None
+      }
+    }
+  }
+
+  sealed trait Diff
+
+  case class Altered(name: String, value: Value[_]) extends Diff
+
+  case class Removed(name: String) extends Diff
+
+  case class ObjectValue(override val value: Map[String, Value[_]])
+      extends Value[Map[String, Value[_]]](value) {
+    override def sql: String = value
+      .map { case (k, v) => s"""$k = ${v.sql}""" }
+      .mkString("(", ", ", ")")
+    override def baseType: SQLType = SQLTypes.Struct
+    override def ddl: String = value
+      .map { case (k, v) =>
+        v match {
+          case IdValue | IngestTimestampValue => s"""$k = "${v.ddl}""""
+          case _                              => s"""$k = ${v.ddl}"""
+        }
+      }
+      .mkString("(", ", ", ")")
+
+    def set(path: String, newValue: Value[_]): ObjectValue = {
+      val keys = path.split("\\.")
+      val updatedValue = {
+        if (keys.length == 1) {
+          value + (keys.head -> newValue)
+        } else {
+          val parentPath = keys.dropRight(1).mkString(".")
+          val parentKey = keys.last
+          val parentObject = find(parentPath) match {
+            case Some(obj: ObjectValue) => obj
+            case _                      => ObjectValue.empty
+          }
+          val updatedParent = parentObject.set(parentKey, newValue)
+          value + (keys.head -> updatedParent)
+        }
+      }
+      ObjectValue(updatedValue)
+    }
+
+    def remove(path: String): ObjectValue = {
+      val keys = path.split("\\.")
+      val updatedValue = {
+        if (keys.length == 1) {
+          value - keys.head
+        } else {
+          val parentPath = keys.dropRight(1).mkString(".")
+          val parentKey = keys.last
+          val parentObject = find(parentPath) match {
+            case Some(obj: ObjectValue) => obj
+            case _                      => ObjectValue.empty
+          }
+          val updatedParent = parentObject.remove(parentKey)
+          value + (keys.head -> updatedParent)
+        }
+      }
+      ObjectValue(updatedValue)
+    }
+
+    def find(path: String): Option[Value[_]] = {
+      val keys = path.split("\\.")
+      @tailrec
+      def loop(current: Map[String, Value[_]], remainingKeys: Seq[String]): Option[Value[_]] = {
+        remainingKeys match {
+          case Seq()  => None
+          case Seq(k) => current.get(k)
+          case k +: ks =>
+            current.get(k) match {
+              case Some(obj: ObjectValue) => loop(obj.value, ks)
+              case _                      => None
+            }
+        }
+      }
+      loop(value, keys.toSeq)
+    }
+
+    def diff(other: ObjectValue, path: Option[String] = None): List[Diff] = {
+      val diffs = scala.collection.mutable.ListBuffer[Diff]()
+
+      val actual = this.value
+      val desired = other.value
+
+      val allKeys = actual.keySet ++ desired.keySet
+
+      allKeys.foreach { key =>
+        val computedKey = s"${path.map(p => s"$p.").getOrElse("")}$key"
+        (actual.get(key), desired.get(key)) match {
+          case (None, Some(v)) =>
+            diffs += Altered(computedKey, v)
+          case (Some(_), None) =>
+            diffs += Removed(computedKey)
+          case (Some(a), Some(b)) =>
+            b match {
+              case ObjectValue(_) =>
+                a match {
+                  case ObjectValue(_) =>
+                    diffs ++= a
+                      .asInstanceOf[ObjectValue]
+                      .diff(
+                        b.asInstanceOf[ObjectValue],
+                        Some(computedKey)
+                      )
+                  case _ =>
+                    diffs += Altered(computedKey, b)
+                }
+              case _ =>
+                if (a != b) {
+                  diffs += Altered(computedKey, b)
+                }
+            }
+          case _ =>
+        }
+      }
+
+      diffs.toList
+    }
+
+    import app.softnetwork.elastic.sql.serialization._
+
+    def toJson: JsonNode = this
+
+  }
+
+  object ObjectValue {
+    import app.softnetwork.elastic.sql.serialization._
+
+    def empty: ObjectValue = ObjectValue(Map.empty)
+
+    def fromJson(jsonNode: JsonNode): ObjectValue = jsonNode
+
+    def parseJson(jsonString: String): ObjectValue = jsonString
+  }
+
   case object Null extends Value[Null](null) with TokenRegex {
     override def sql: String = "NULL"
     override def painless(context: Option[PainlessContext]): String = "null"
     override def nullable: Boolean = true
     override def baseType: SQLType = SQLTypes.Null
+  }
+
+  case object ParamValue extends Value[String](null) with TokenRegex {
+    override def sql: String = "?"
+    override def painless(context: Option[PainlessContext]): String = "params.paramValue"
+    override def nullable: Boolean = true
+    override def baseType: SQLType = SQLTypes.Any
   }
 
   case class BooleanValue(override val value: Boolean) extends Value[Boolean](value) {
@@ -313,47 +551,28 @@ package object sql {
 
   case class StringValue(override val value: String) extends Value[String](value) {
     override def sql: String = s"""'$value'"""
-    import SQLImplicits._
-    private lazy val pattern: Pattern = value.pattern
-    def like: Seq[String] => Boolean = {
-      _.exists { pattern.matcher(_).matches() }
-    }
-    def eq: Seq[String] => Boolean = {
-      _.exists { _.contentEquals(value) }
-    }
-    def ne: Seq[String] => Boolean = {
-      _.forall { !_.contentEquals(value) }
-    }
-    override def choose[R >: String](
-      values: Seq[R],
-      operator: Option[ExpressionOperator],
-      separator: String = "|"
-    )(implicit ev: R => Ordered[R]): Option[R] = {
-      operator match {
-        case Some(EQ)           => values.find(v => v.toString contentEquals value)
-        case Some(NE | DIFF)    => values.find(v => !(v.toString contentEquals value))
-        case Some(LIKE | RLIKE) => values.find(v => pattern.matcher(v.toString).matches())
-        case None               => Some(values.mkString(separator))
-        case _                  => super.choose(values, operator, separator)
-      }
-    }
     override def baseType: SQLType = SQLTypes.Varchar
+
+    override def ddl: String = s""""$value""""
   }
 
-  sealed abstract class NumericValue[T: Numeric](override val value: T)(implicit
-    ev$1: T => Ordered[T]
-  ) extends Value[T](value) {
+  case object IdValue extends Value[String]("_id") with TokenRegex {
+    override def sql: String = value
+    override def painless(context: Option[PainlessContext]): String = s"{{$value}}"
+    override def baseType: SQLType = SQLTypes.Varchar
+    override def ddl: String = value
+  }
+
+  case object IngestTimestampValue extends Value[String]("_ingest.timestamp") with TokenRegex {
+    override def sql: String = value
+    override def painless(context: Option[PainlessContext]): String =
+      s"{{$value}}"
+    override def baseType: SQLType = SQLTypes.Timestamp
+    override def ddl: String = value
+  }
+
+  sealed abstract class NumericValue[T: Numeric](override val value: T) extends Value[T](value) {
     override def sql: String = value.toString
-    override def choose[R >: T](
-      values: Seq[R],
-      operator: Option[ExpressionOperator],
-      separator: String = "|"
-    )(implicit ev: R => Ordered[R]): Option[R] = {
-      operator match {
-        case None => if (values.isEmpty) None else Some(values.max)
-        case _    => super.choose(values, operator, separator)
-      }
-    }
     private[this] val num: Numeric[T] = implicitly[Numeric[T]]
     def toDouble: Double = num.toDouble(value)
     def toEither: Either[Long, Double] = value match {
@@ -362,14 +581,6 @@ package object sql {
       case d: Double => Right(d)
       case f: Float  => Right(f.toDouble)
       case _         => Right(toDouble)
-    }
-    def max: Seq[T] => T = x => Try(x.max).getOrElse(num.zero)
-    def min: Seq[T] => T = x => Try(x.min).getOrElse(num.zero)
-    def eq: Seq[T] => Boolean = {
-      _.exists { _ == value }
-    }
-    def ne: Seq[T] => Boolean = {
-      _.forall { _ != value }
     }
     override def baseType: SQLNumeric = SQLTypes.Numeric
   }
@@ -478,14 +689,15 @@ package object sql {
       extends FromTo(from, to)
 
   sealed abstract class Values[+R: TypeTag, +T <: Value[R]](val values: Seq[T])
-      extends Token
-      with PainlessScript {
+      extends Value[Seq[T]](values) {
     override def sql = s"(${values.map(_.sql).mkString(",")})"
     override def painless(context: Option[PainlessContext]): String =
       s"[${values.map(_.painless(context)).mkString(",")}]"
     lazy val innerValues: Seq[R] = values.map(_.value)
     override def nullable: Boolean = values.exists(_.nullable)
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Any)
+
+    override def ddl: String = s"[${values.map(_.ddl).mkString(",")}]"
   }
 
   case class StringValues(override val values: Seq[StringValue])
@@ -537,23 +749,23 @@ package object sql {
     override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Double)
   }
 
-  def choose[T](
-    values: Seq[T],
-    criteria: Option[Criteria],
-    function: Option[Function] = None
-  )(implicit ev$1: T => Ordered[T]): Option[T] = {
-    criteria match {
-      case Some(GenericExpression(_, operator, value: Value[T] @unchecked, _)) =>
-        value.choose[T](values, Some(operator))
-      case _ =>
-        function match {
-          case Some(MIN) => Some(values.min)
-          case Some(MAX) => Some(values.max)
-          // FIXME        case Some(SQLSum) => Some(values.sum)
-          // FIXME        case Some(SQLAvg) => Some(values.sum / values.length  )
-          case _ => values.headOption
-        }
+  case class BooleanValues(override val values: Seq[BooleanValue])
+      extends Values[Boolean, Value[Boolean]](values) {
+    def eq: Seq[Boolean] => Boolean = {
+      _.exists { b => innerValues.contains(b) }
     }
+    def ne: Seq[Boolean] => Boolean = {
+      _.forall { b => !innerValues.contains(b) }
+    }
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Boolean)
+  }
+
+  case class ObjectValues(override val values: Seq[ObjectValue])
+      extends Values[Map[String, Value[_]], ObjectValue](values) {
+    override def baseType: SQLArray = SQLTypes.Array(SQLTypes.Struct)
+    import app.softnetwork.elastic.sql.serialization._
+
+    def toJson: JsonNode = this
   }
 
   def toRegex(value: String): String = {
@@ -606,7 +818,7 @@ package object sql {
 
   trait Source extends Updateable {
     def name: String
-    def update(request: SQLSearchRequest): Source
+    def update(request: SingleSearch): Source
   }
 
   sealed trait Identifier
@@ -620,9 +832,10 @@ package object sql {
 
     def withFunctions(functions: List[Function]): Identifier
 
-    def update(request: SQLSearchRequest): Identifier
+    def update(request: SingleSearch): Identifier
 
     def tableAlias: Option[String]
+    def table: Option[String]
     def distinct: Boolean
     def nested: Boolean
     def nestedElement: Option[NestedElement]
@@ -765,7 +978,46 @@ package object sql {
       else
         s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
 
+    lazy val processParamName: String = {
+      if (path.nonEmpty) {
+        if (path.contains("."))
+          s"ctx.${path.split("\\.").mkString("?.")}"
+        else
+          s"ctx.$path"
+      } else ""
+    }
+
+    lazy val processCheckNotNull: Option[String] =
+      if (path.isEmpty || !nullable) None
+      else
+        Option(s"(ctx.$path == null ? $nullValue : ctx.$path${painlessMethods.mkString("")})")
+
+    def originalType: SQLType =
+      if (name.trim.nonEmpty) SQLTypes.Any
+      else this.baseType
+
     override def painless(context: Option[PainlessContext]): String = {
+      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
+      var currType = this.originalType
+      currType match {
+        case SQLTypes.Any =>
+          orderedFunctions.headOption match {
+            case Some(f: TransformFunction[_, _]) =>
+              f.in match {
+                case SQLTypes.Temporal => // the first function to apply required a Temporal as input type
+                  context match {
+                    case Some(_) =>
+                      // compatible ES6+
+                      this.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
+                      currType = SQLTypes.Timestamp
+                    case _ => // do nothing
+                  }
+                case _ => // do nothing
+              }
+            case _ => // do nothing
+          }
+        case _ => // do nothing
+      }
       val base =
         context match {
           case Some(ctx) =>
@@ -776,7 +1028,6 @@ package object sql {
             else
               paramName
         }
-      val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       var expr = base
       orderedFunctions.zipWithIndex.foreach { case (f, idx) =>
         f match {
@@ -784,6 +1035,7 @@ package object sql {
           case f: PainlessScript          => expr = s"$expr${f.painless(context)}"
           case f                          => expr = f.toSQL(expr) // fallback
         }
+        currType = f.out
       }
       expr
     }
@@ -843,7 +1095,9 @@ package object sql {
     fieldAlias: Option[String] = None,
     bucket: Option[Bucket] = None,
     nestedElement: Option[NestedElement] = None,
-    bucketPath: String = ""
+    bucketPath: String = "",
+    col: Option[Column] = None,
+    table: Option[String] = None
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
@@ -854,7 +1108,9 @@ package object sql {
       id
     }
 
-    def update(request: SQLSearchRequest): Identifier = {
+    override def baseType: SQLType = col.map(_.dataType).getOrElse(super.baseType)
+
+    def update(request: SingleSearch): Identifier = {
       val bucketPath: String =
         request.groupBy match {
           case Some(gb) =>
@@ -870,7 +1126,8 @@ package object sql {
         }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
-      if (request.tableAliases.values.toSeq.contains(tableAlias)) {
+      val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._2)
+      if (table.nonEmpty) {
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>
             val nestedElement =
@@ -878,27 +1135,33 @@ package object sql {
                 case Some(unnest) => Some(request.toNestedElement(unnest))
                 case None         => None
               }
+            val colName = parts.tail.mkString(".")
             this
               .copy(
                 tableAlias = Some(tableAlias),
-                name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+                name = s"${tuple._2._1}.$colName",
                 nested = true,
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 nestedElement = nestedElement,
-                bucketPath = bucketPath
+                bucketPath = bucketPath,
+                col = request.schema.flatMap(schema => schema.find(colName)),
+                table = table
               )
               .withFunctions(this.updateFunctions(request))
           case Some(tuple) if nested =>
+            val colName = parts.tail.mkString(".")
             this
               .copy(
                 tableAlias = Some(tableAlias),
-                name = s"${tuple._2._1}.${parts.tail.mkString(".")}",
+                name = s"${tuple._2._1}.$colName",
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
-                bucketPath = bucketPath
+                bucketPath = bucketPath,
+                col = request.schema.flatMap(schema => schema.find(colName)),
+                table = table
               )
               .withFunctions(this.updateFunctions(request))
           case None if nested =>
@@ -907,16 +1170,21 @@ package object sql {
                 tableAlias = Some(tableAlias),
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
-                bucketPath = bucketPath
+                bucketPath = bucketPath,
+                col = request.schema.flatMap(schema => schema.find(name)),
+                table = table
               )
               .withFunctions(this.updateFunctions(request))
           case _ =>
+            val colName = parts.tail.mkString(".")
             this.copy(
               tableAlias = Some(tableAlias),
-              name = parts.tail.mkString("."),
+              name = colName,
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket),
-              bucketPath = bucketPath
+              bucketPath = bucketPath,
+              col = request.schema.flatMap(schema => schema.find(colName)),
+              table = table
             )
         }
       } else {
@@ -924,7 +1192,8 @@ package object sql {
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
             bucket = request.bucketNames.get(identifierName).orElse(bucket),
-            bucketPath = bucketPath
+            bucketPath = bucketPath,
+            col = request.schema.flatMap(schema => schema.find(name))
           )
           .withFunctions(this.updateFunctions(request))
       }

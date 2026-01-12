@@ -7,18 +7,23 @@ elasticSearchVersion := Versions.es9
 
 name := s"softclient4es-sql"
 
+val typesafeConfig = Seq(
+  "com.typesafe" % "config" % Versions.typesafeConfig,
+  "com.github.kxbmap" %% "configs" % Versions.kxbmap
+)
+
 val scalatest = Seq(
   "org.scalatest" %% "scalatest" % Versions.scalatest  % Test
 )
 
 libraryDependencies ++= jacksonDependencies(elasticSearchVersion.value) ++
 //  elastic4sDependencies(elasticSearchVersion.value) ++
+  typesafeConfig ++
   scalatest ++
   Seq(
     "javax.activation" % "activation" % "1.1.1" % Test
   ) :+
+  "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
 //  ("app.softnetwork.persistence" %% "persistence-core" % Versions.genericPersistence excludeAll(jacksonExclusions: _*)) :+
   "org.scala-lang" % "scala-reflect" % scalaVersion.value :+
   "com.google.code.gson" % "gson" % Versions.gson % Test
-
-

@@ -45,7 +45,7 @@ case class ElasticBridge(filter: ElasticFilter) {
   def query(
     innerHitsNames: Set[String] = Set.empty,
     currentQuery: Option[ElasticBoolQuery]
-  ): Query = {
+  )(implicit timestamp: Long): Query = {
     filter match {
       case boolQuery: ElasticBoolQuery =>
         import boolQuery._
@@ -77,13 +77,10 @@ case class ElasticBridge(filter: ElasticFilter) {
                   case _ =>
                 }
                 if (n.sources.nonEmpty) {
-                  inner = inner.fetchSource(
-                    FetchSourceContext(
-                      fetchSource = true,
-                      includes = n.sources.map { source =>
-                        (n.path.split('.').toSeq ++ Seq(source)).mkString(".")
-                      }.toArray
-                    )
+                  inner = inner.docValueFields(
+                    n.sources.map { source =>
+                      (n.path.split('.').toSeq ++ Seq(source)).mkString(".")
+                    }
                   )
                 }
                 inner

@@ -106,6 +106,20 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
             operation = Some(operation)
           )
         )
+      case Failure(ex: org.elasticsearch.client.ResponseException) =>
+        val statusCode = Some(ex.getResponse.getStatusLine.getStatusCode)
+        logger.error(
+          s"Response exception during operation '$operation'$indexStr: ${ex.getMessage}",
+          ex
+        )
+        ElasticResult.failure(
+          ElasticError(
+            message = s"HTTP error during $operation: ${ex.getMessage}",
+            cause = Some(ex),
+            statusCode = statusCode,
+            operation = Some(operation)
+          )
+        )
       case Failure(ex) =>
         logger.error(s"Exception during operation '$operation'$indexStr: ${ex.getMessage}", ex)
         ElasticResult.failure(

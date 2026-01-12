@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{IndicesApi, SettingsApi}
+import app.softnetwork.elastic.client.SettingsApi
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
 
@@ -25,7 +25,7 @@ import io.searchbox.indices.settings.{GetSettings, UpdateSettings}
   *   [[SettingsApi]] for generic API documentation
   */
 trait JestSettingsApi extends SettingsApi with JestClientHelpers {
-  _: IndicesApi with JestClientCompanion =>
+  _: JestIndicesApi with JestClientCompanion =>
 
   /** Update index settings.
     * @see

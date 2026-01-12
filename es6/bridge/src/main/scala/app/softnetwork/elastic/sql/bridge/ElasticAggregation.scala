@@ -22,7 +22,6 @@ import app.softnetwork.elastic.sql.query.{
   Asc,
   BucketIncludesExcludes,
   BucketNode,
-  BucketTree,
   Criteria,
   Desc,
   Field,
@@ -101,7 +100,7 @@ object ElasticAggregation {
     having: Option[Criteria],
     bucketsDirection: Map[String, SortOrder],
     allAggregations: Map[String, SQLAggregation]
-  ): ElasticAggregation = {
+  )(implicit timestamp: Long): ElasticAggregation = {
     import sqlAgg._
     val sourceField = identifier.path
 
@@ -156,14 +155,14 @@ object ElasticAggregation {
       if (transformFuncs.nonEmpty) {
         val context = PainlessContext()
         val scriptSrc = identifier.painless(Some(context))
-        val script = Script(s"$context$scriptSrc").lang("painless")
+        val script = now(Script(s"$context$scriptSrc").lang("painless"))
         buildScript(aggName, script)
       } else {
         aggType match {
           case th: WindowFunction if th.shouldBeScripted =>
             val context = PainlessContext()
             val scriptSrc = th.identifier.painless(Some(context))
-            val script = Script(s"$context$scriptSrc").lang("painless")
+            val script = now(Script(s"$context$scriptSrc").lang("painless"))
             buildScript(aggName, script)
           case _ => buildField(aggName, sourceField)
         }
@@ -231,7 +230,7 @@ object ElasticAggregation {
                       .filter(_.isScriptField)
                       .groupBy(_.sourceField)
                       .map(_._2.head)
-                      .map(f => f.sourceField -> Script(f.painless(None)).lang("painless"))
+                      .map(f => f.sourceField -> now(Script(f.painless(None)).lang("painless")))
                       .toMap,
                     size = limit,
                     sorts = th.orderBy
@@ -269,14 +268,14 @@ object ElasticAggregation {
           val painless = script.identifier.painless(None)
           bucketScriptAggregation(
             aggName,
-            Script(s"$painless").lang("painless"),
+            now(Script(s"$painless").lang("painless")),
             params.toMap
           )
         case _ =>
           throw new IllegalArgumentException(s"Unsupported aggregation type: $aggType")
       }
 
-    val nestedElement = identifier.nestedElement
+    val nestedElement = sqlAgg.nestedElement
 
     val nestedElements: Seq[NestedElement] =
       nestedElement.map(n => NestedElements.buildNestedTrees(Seq(n))).getOrElse(Nil)
@@ -349,11 +348,7 @@ object ElasticAggregation {
     having: Option[Criteria],
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
-  ): Seq[Aggregation] = {
-    val trees = BucketTree(buckets.flatMap(_.headOption))
-    println(
-      s"[DEBUG] buildBuckets called with buckets: \n$trees"
-    )
+  )(implicit timestamp: Long): Seq[Aggregation] = {
     for (tree <- buckets) yield {
       val treeNodes =
         tree.sortBy(_.level).reverse.foldLeft(Seq.empty[NodeAggregation]) { (current, node) =>
@@ -371,7 +366,7 @@ object ElasticAggregation {
             if (!bucket.isBucketScript && bucket.shouldBeScripted) {
               val context = PainlessContext()
               val painless = bucket.painless(Some(context))
-              Some(Script(s"$context$painless").lang("painless"))
+              Some(now(Script(s"$context$painless").lang("painless")))
             } else {
               None
             }
@@ -520,7 +515,7 @@ object ElasticAggregation {
                       val bucketSelector =
                         bucketSelectorAggregation(
                           "having_filter",
-                          Script(script),
+                          now(Script(script)),
                           extractMetricsPathForBucket(
                             criteria,
                             nested,

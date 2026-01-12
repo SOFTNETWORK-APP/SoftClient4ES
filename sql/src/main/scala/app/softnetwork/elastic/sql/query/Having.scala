@@ -25,7 +25,7 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
     case Some(c) => s" $Having $c"
     case _       => ""
   }
-  def update(request: SQLSearchRequest): Having =
+  def update(request: SingleSearch): Having =
     this.copy(criteria = criteria.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = criteria.map(_.validate()).getOrElse(Right(()))

@@ -21,12 +21,16 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
+import app.softnetwork.elastic.sql.{ObjectValue, Value}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
+import app.softnetwork.elastic.sql.schema.TableAlias
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
-import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest
+import org.elasticsearch.action.admin.indices.alias.{Alias, IndicesAliasesRequest}
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest.AliasActions
 import org.elasticsearch.action.admin.indices.alias.get.GetAliasesRequest
 import org.elasticsearch.action.admin.indices.close.CloseIndexRequest
@@ -36,10 +40,17 @@ import org.elasticsearch.action.admin.indices.open.OpenIndexRequest
 import org.elasticsearch.action.admin.indices.refresh.{RefreshRequest, RefreshResponse}
 import org.elasticsearch.action.admin.indices.settings.get.{GetSettingsRequest, GetSettingsResponse}
 import org.elasticsearch.action.admin.indices.settings.put.UpdateSettingsRequest
+import org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest
 import org.elasticsearch.action.bulk.{BulkRequest, BulkResponse}
 import org.elasticsearch.action.delete.{DeleteRequest, DeleteResponse}
 import org.elasticsearch.action.get.{GetRequest, GetResponse}
 import org.elasticsearch.action.index.{IndexRequest, IndexResponse}
+import org.elasticsearch.action.ingest.{
+  DeletePipelineRequest,
+  GetPipelineRequest,
+  GetPipelineResponse,
+  PutPipelineRequest
+}
 import org.elasticsearch.action.search.{
   ClearScrollRequest,
   MultiSearchRequest,
@@ -52,15 +63,23 @@ import org.elasticsearch.action.support.WriteRequest
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
-import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions}
+import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions, Response}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
 import org.elasticsearch.client.indices.{
   CreateIndexRequest,
   GetIndexRequest,
+  GetIndexTemplatesRequest,
+  GetIndexTemplatesResponse,
   GetMappingsRequest,
+  GetMappingsResponse,
+  IndexTemplateMetaData,
+  IndexTemplatesExistRequest,
+  PutIndexTemplateRequest,
   PutMappingRequest
 }
+import org.elasticsearch.cluster.metadata.AliasMetaData
 import org.elasticsearch.common.Strings
+import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.common.unit.TimeValue
 import org.elasticsearch.common.xcontent.{DeprecationHandler, XContentType}
 import org.elasticsearch.rest.RestStatus
@@ -92,15 +111,17 @@ trait RestHighLevelClientApi
     with RestHighLevelClientBulkApi
     with RestHighLevelClientScrollApi
     with RestHighLevelClientCompanion
-    with RestHighLevelClientVersion
+    with RestHighLevelClientVersionApi
+    with RestHighLevelClientPipelineApi
+    with RestHighLevelClientTemplateApi
 
 /** Version API implementation for RestHighLevelClient
   * @see
   *   [[VersionApi]] for generic API documentation
   */
-trait RestHighLevelClientVersion extends VersionApi with RestHighLevelClientHelpers {
+trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientCompanion with SerializationApi =>
-  override private[client] def executeVersion(): result.ElasticResult[String] =
+  override private[client] def executeVersion(): ElasticResult[String] =
     executeRestLowLevelAction[String](
       operation = "version",
       index = None,
@@ -122,23 +143,71 @@ trait RestHighLevelClientVersion extends VersionApi with RestHighLevelClientHelp
   *   [[IndicesApi]] for generic API documentation
   */
 trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientHelpers {
-  _: RefreshApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientRefreshApi
+    with RestHighLevelClientPipelineApi
+    with RestHighLevelClientScrollApi
+    with RestHighLevelClientBulkApi
+    with RestHighLevelClientVersionApi
+    with RestHighLevelClientTemplateApi
+    with RestHighLevelClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
-  ): result.ElasticResult[Boolean] = {
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] = {
     executeRestBooleanAction[CreateIndexRequest, AcknowledgedResponse](
       operation = "createIndex",
       index = Some(index),
       retryable = false
-    )(
-      request = new CreateIndexRequest(index).settings(settings, XContentType.JSON)
-    )(
+    )(request = {
+      val req = new CreateIndexRequest(index)
+        .settings(settings, XContentType.JSON)
+        .aliases(
+          aliases
+            .map(alias => {
+              var a = new Alias(alias.alias).writeIndex(alias.isWriteIndex)
+              if (alias.filter.nonEmpty) {
+                val filterNode = Value(alias.filter).asInstanceOf[ObjectValue].toJson
+                a = a.filter(filterNode.toString)
+              }
+              alias.indexRouting.foreach(ir => a = a.indexRouting(ir))
+              alias.searchRouting.foreach(sr => a = a.searchRouting(sr))
+              a
+            })
+            .asJava
+        )
+      mappings match {
+        case Some(m) if m.trim.startsWith("{") && m.trim.endsWith("}") =>
+          req.mapping(m, XContentType.JSON)
+        case _ => req
+      }
+    })(
       executor = req => apply().indices().create(req, RequestOptions.DEFAULT)
     )
   }
 
-  override private[client] def executeDeleteIndex(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+    executeRestAction[Request, Response, Option[String]](
+      operation = "getIndex",
+      index = Some(index),
+      retryable = true
+    )(
+      request = new Request("GET", s"/$index")
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(resp => {
+      resp.getStatusLine match {
+        case statusLine if statusLine.getStatusCode >= 400 =>
+          None
+        case _ =>
+          val json = scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString
+          Some(json)
+      }
+    })
+  }
+
+  override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     executeRestBooleanAction[DeleteIndexRequest, AcknowledgedResponse](
       operation = "deleteIndex",
       index = Some(index),
@@ -149,7 +218,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       executor = req => apply().indices().delete(req, RequestOptions.DEFAULT)
     )
 
-  override private[client] def executeCloseIndex(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
     executeRestBooleanAction[CloseIndexRequest, AcknowledgedResponse](
       operation = "closeIndex",
       index = Some(index),
@@ -160,7 +229,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       executor = req => apply().indices().close(req, RequestOptions.DEFAULT)
     )
 
-  override private[client] def executeOpenIndex(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] =
     executeRestBooleanAction[OpenIndexRequest, AcknowledgedResponse](
       operation = "openIndex",
       index = Some(index),
@@ -174,8 +243,9 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
-  ): result.ElasticResult[(Boolean, Option[Long])] =
+    refresh: Boolean,
+    pipeline: Option[String]
+  ): ElasticResult[(Boolean, Option[Long])] =
     executeRestAction[Request, org.elasticsearch.client.Response, (Boolean, Option[Long])](
       operation = "reindex",
       index = Some(s"$sourceIndex->$targetIndex"),
@@ -204,8 +274,8 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
         case statusLine if statusLine.getStatusCode >= 400 =>
           (false, None)
         case _ =>
-          val json = new JsonParser()
-            .parse(
+          val json = JsonParser
+            .parseString(
               scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString
             )
             .getAsJsonObject
@@ -217,7 +287,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       }
     })
 
-  override private[client] def executeIndexExists(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
     executeRestAction[GetIndexRequest, Boolean, Boolean](
       operation = "indexExists",
       index = Some(index),
@@ -230,6 +300,127 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
       identity
     )
 
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    executeRestAction[Request, Response, Long](
+      operation = "deleteByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      request = {
+        val req = new Request(
+          "POST",
+          s"/$index/_delete_by_query?refresh=$refresh&conflicts=proceed"
+        )
+        req.setJsonEntity(jsonQuery)
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp => {
+        val json = JsonParser
+          .parseString(scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString)
+          .getAsJsonObject
+
+        // ES6/ES7 return "deleted"
+        val deleted =
+          if (json.has("deleted")) json.get("deleted").getAsLong
+          else 0L
+
+        deleted
+      }
+    )
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    executeRestAction[Request, Response, Boolean](
+      operation = "isIndexClosed",
+      index = Some(index),
+      retryable = true
+    )(
+      request = {
+        val req = new Request("GET", s"/_cat/indices/$index?format=json")
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp => {
+        val json = JsonParser
+          .parseString(scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString)
+          .getAsJsonArray
+
+        if (json.size() == 0)
+          false
+        else {
+          val entry = json.get(0).getAsJsonObject
+          val status = entry.get("status").getAsString // "open" or "close"
+          status == "close"
+        }
+      }
+    )
+
+  override private[client] def waitForShards(
+    index: String,
+    status: String,
+    timeout: Int
+  ): ElasticResult[Unit] = {
+    executeRestAction[Request, Response, Unit](
+      operation = "waitForShards",
+      index = Some(index.toString),
+      retryable = true
+    )(
+      request = {
+        val req = new Request(
+          "GET",
+          s"/_cluster/health/${index}?wait_for_status=${status}&timeout=${timeout}s"
+        )
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = _ => ()
+    )
+  }
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    jsonQuery: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+
+    executeRestAction[Request, Response, Long](
+      operation = "updateByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      request = {
+        val req = new Request(
+          "POST",
+          s"/$index/_update_by_query?refresh=$refresh" +
+          pipelineId.map(id => s"&pipeline=$id").getOrElse("")
+        )
+        req.setJsonEntity(jsonQuery)
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp => {
+        val json = JsonParser
+          .parseString(
+            scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString
+          )
+          .getAsJsonObject
+        json.get("updated").getAsLong
+      }
+    )
+  }
 }
 
 /** Alias management API for RestHighLevelClient
@@ -237,23 +428,32 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
   *   [[AliasApi]] for generic API documentation
   */
 trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpers {
-  _: IndicesApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
-  ): result.ElasticResult[Boolean] =
+    alias: TableAlias
+  ): ElasticResult[Boolean] =
     executeRestBooleanAction(
       operation = "addAlias",
-      index = Some(index),
+      index = Some(alias.table),
       retryable = false
     )(
-      request = new IndicesAliasesRequest()
-        .addAliasAction(
-          new AliasActions(AliasActions.Type.ADD)
-            .index(index)
-            .alias(alias)
-        )
+      request = {
+        val aliasAction = new AliasActions(AliasActions.Type.ADD)
+          .index(alias.table)
+          .alias(alias.alias)
+        if (alias.isWriteIndex) {
+          aliasAction.writeIndex(true)
+        }
+        if (alias.filter.nonEmpty) {
+          val filterNode = Value(alias.filter).asInstanceOf[ObjectValue].toJson
+          aliasAction.filter(filterNode.toString)
+        }
+        alias.routing.foreach(aliasAction.routing)
+        alias.indexRouting.foreach(aliasAction.indexRouting)
+        alias.searchRouting.foreach(aliasAction.searchRouting)
+        new IndicesAliasesRequest().addAliasAction(aliasAction)
+      }
     )(
       executor = req => apply().indices().updateAliases(req, RequestOptions.DEFAULT)
     )
@@ -261,7 +461,7 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
   override private[client] def executeRemoveAlias(
     index: String,
     alias: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestBooleanAction(
       operation = "removeAlias",
       index = Some(index),
@@ -277,7 +477,7 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
       executor = req => apply().indices().updateAliases(req, RequestOptions.DEFAULT)
     )
 
-  override private[client] def executeAliasExists(alias: String): result.ElasticResult[Boolean] =
+  override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
     executeRestAction[GetAliasesRequest, GetAliasesResponse, Boolean](
       operation = "aliasExists",
       index = Some(alias),
@@ -288,7 +488,7 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
       executor = req => apply().indices().getAlias(req, RequestOptions.DEFAULT)
     )(response => !response.getAliases.isEmpty)
 
-  override private[client] def executeGetAliases(index: String): result.ElasticResult[String] =
+  override private[client] def executeGetAliases(index: String): ElasticResult[String] =
     executeRestAction[GetAliasesRequest, GetAliasesResponse, String](
       operation = "getAliases",
       index = Some(index),
@@ -303,7 +503,7 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
     oldIndex: String,
     newIndex: String,
     alias: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestBooleanAction(
       operation = "swapAlias",
       index = Some(s"$oldIndex -> $newIndex"),
@@ -331,12 +531,12 @@ trait RestHighLevelClientAliasApi extends AliasApi with RestHighLevelClientHelpe
   *   [[SettingsApi]] for generic API documentation
   */
 trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClientHelpers {
-  _: IndicesApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientIndicesApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeUpdateSettings(
     index: String,
     settings: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestBooleanAction(
       operation = "updateSettings",
       index = Some(index),
@@ -348,7 +548,7 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
       executor = req => apply().indices().putSettings(req, RequestOptions.DEFAULT)
     )
 
-  override private[client] def executeLoadSettings(index: String): result.ElasticResult[String] =
+  override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
     executeRestAction[GetSettingsRequest, GetSettingsResponse, String](
       operation = "loadSettings",
       index = Some(index),
@@ -366,11 +566,16 @@ trait RestHighLevelClientSettingsApi extends SettingsApi with RestHighLevelClien
   *   [[MappingApi]] for generic API documentation
   */
 trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientSettingsApi
+    with RestHighLevelClientIndicesApi
+    with RestHighLevelClientRefreshApi
+    with RestHighLevelClientVersionApi
+    with RestHighLevelClientAliasApi
+    with RestHighLevelClientCompanion =>
   override private[client] def executeSetMapping(
     index: String,
     mapping: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestBooleanAction(
       operation = "setMapping",
       index = Some(index),
@@ -382,10 +587,10 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
       executor = req => apply().indices().putMapping(req, RequestOptions.DEFAULT)
     )
 
-  override private[client] def executeGetMapping(index: String): result.ElasticResult[String] =
+  override private[client] def executeGetMapping(index: String): ElasticResult[String] =
     executeRestAction[
       GetMappingsRequest,
-      org.elasticsearch.client.indices.GetMappingsResponse,
+      GetMappingsResponse,
       String
     ](
       operation = "getMapping",
@@ -411,7 +616,7 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
   */
 trait RestHighLevelClientRefreshApi extends RefreshApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientCompanion =>
-  override private[client] def executeRefresh(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeRefresh(index: String): ElasticResult[Boolean] =
     executeRestAction[RefreshRequest, RefreshResponse, Boolean](
       operation = "refresh",
       index = Some(index),
@@ -434,7 +639,7 @@ trait RestHighLevelClientFlushApi extends FlushApi with RestHighLevelClientHelpe
     index: String,
     force: Boolean,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestAction[FlushRequest, FlushResponse, Boolean](
       operation = "flush",
       index = Some(index),
@@ -455,7 +660,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
   _: RestHighLevelClientCompanion =>
   override private[client] def executeCount(
     query: ElasticQuery
-  ): result.ElasticResult[Option[Double]] =
+  ): ElasticResult[Option[Double]] =
     executeRestAction[CountRequest, CountResponse, Option[Double]](
       operation = "count",
       index = Some(query.indices.mkString(",")),
@@ -468,7 +673,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
 
   override private[client] def executeCountAsync(
     query: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[Double]]] = {
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[Double]]] = {
     executeAsyncRestAction[CountRequest, CountResponse, Option[Double]](
       operation = "countAsync",
       index = Some(query.indices.mkString(",")),
@@ -487,13 +692,13 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
   *   [[IndexApi]] for generic API documentation
   */
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpers {
-  _: SettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeIndex(
     index: String,
     id: String,
     source: String,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestAction[IndexRequest, IndexResponse, Boolean](
       operation = "index",
       index = Some(index),
@@ -525,7 +730,7 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
     wait: Boolean
   )(implicit
     ec: ExecutionContext
-  ): Future[result.ElasticResult[Boolean]] =
+  ): Future[ElasticResult[Boolean]] =
     executeAsyncRestAction[IndexRequest, IndexResponse, Boolean](
       operation = "indexAsync",
       index = Some(index),
@@ -557,14 +762,14 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
   *   [[UpdateApi]] for generic API documentation
   */
 trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHelpers {
-  _: SettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
   override private[client] def executeUpdate(
     index: String,
     id: String,
     source: String,
     upsert: Boolean,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestAction[UpdateRequest, UpdateResponse, Boolean](
       operation = "update",
       index = Some(index),
@@ -598,7 +803,7 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
     source: String,
     upsert: Boolean,
     wait: Boolean
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Boolean]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
     executeAsyncRestAction[UpdateRequest, UpdateResponse, Boolean](
       operation = "updateAsync",
       index = Some(index),
@@ -633,13 +838,13 @@ trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHel
   *   [[DeleteApi]] for generic API documentation
   */
 trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHelpers {
-  _: SettingsApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
     id: String,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeRestAction[DeleteRequest, DeleteResponse, Boolean](
       operation = "delete",
       index = Some(index),
@@ -661,7 +866,7 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
 
   override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
-  ): Future[result.ElasticResult[Boolean]] =
+  ): Future[ElasticResult[Boolean]] =
     executeAsyncRestAction[DeleteRequest, DeleteResponse, Boolean](
       operation = "deleteAsync",
       index = Some(index),
@@ -692,7 +897,7 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
   override private[client] def executeGet(
     index: String,
     id: String
-  ): result.ElasticResult[Option[String]] =
+  ): ElasticResult[Option[String]] =
     executeRestAction[GetRequest, GetResponse, Option[String]](
       operation = "get",
       index = Some(index),
@@ -711,7 +916,7 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
 
   override private[client] def executeGetAsync(index: String, id: String)(implicit
     ec: ExecutionContext
-  ): Future[result.ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[String]]] =
     executeAsyncRestAction[GetRequest, GetResponse, Option[String]](
       operation = "getAsync",
       index = Some(index),
@@ -737,12 +942,14 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
   _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
+  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long
+  ): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): result.ElasticResult[Option[String]] =
+  ): ElasticResult[Option[String]] =
     executeRestAction[SearchRequest, SearchResponse, Option[String]](
       operation = "singleSearch",
       index = Some(elasticQuery.indices.mkString(",")),
@@ -772,7 +979,7 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): result.ElasticResult[Option[String]] =
+  ): ElasticResult[Option[String]] =
     executeRestAction[MultiSearchRequest, MultiSearchResponse, Option[String]](
       operation = "multiSearch",
       index = Some(
@@ -808,7 +1015,7 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
 
   override private[client] def executeSingleSearchAsync(
     elasticQuery: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
     executeAsyncRestAction[SearchRequest, SearchResponse, Option[String]](
       operation = "executeSingleSearchAsync",
       index = Some(elasticQuery.indices.mkString(",")),
@@ -838,7 +1045,7 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
 
   override private[client] def executeMultiSearchAsync(
     elasticQueries: ElasticQueries
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
     executeAsyncRestAction[MultiSearchRequest, MultiSearchResponse, Option[String]](
       operation = "executeMultiSearchAsync",
       index = Some(
@@ -879,7 +1086,10 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
   *   [[BulkApi]] for generic API documentation
   */
 trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers {
-  _: RefreshApi with SettingsApi with IndexApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientRefreshApi
+    with RestHighLevelClientSettingsApi
+    with RestHighLevelClientIndexApi
+    with RestHighLevelClientCompanion =>
 
   override type BulkActionType = DocWriteRequest[_]
   override type BulkResultType = BulkResponse
@@ -1112,7 +1322,9 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
   *   [[ScrollApi]] for generic API documentation
   */
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
-  _: VersionApi with SearchApi with RestHighLevelClientCompanion =>
+  _: RestHighLevelClientVersionApi
+    with RestHighLevelClientSearchApi
+    with RestHighLevelClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -1382,6 +1594,308 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       apply().clearScroll(clearScrollRequest, RequestOptions.DEFAULT)
     }.recover { case ex: Exception =>
       logger.warn(s"Failed to clear scroll $scrollId: ${ex.getMessage}")
+    }
+  }
+}
+
+trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    executeRestBooleanAction[PutPipelineRequest, AcknowledgedResponse](
+      operation = "createPipeline",
+      retryable = false
+    )(
+      request = new PutPipelineRequest(
+        pipelineName,
+        new BytesArray(pipelineDefinition),
+        XContentType.JSON
+      )
+    )(
+      executor = req => apply().ingest().putPipeline(req, RequestOptions.DEFAULT)
+    )
+
+  override private[client] def executeDeletePipeline(
+    pipelineName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] = {
+    executeRestBooleanAction[DeletePipelineRequest, AcknowledgedResponse](
+      operation = "deletePipeline",
+      retryable = false
+    )(
+      request = new DeletePipelineRequest(pipelineName)
+    )(
+      executor = req => apply().ingest().deletePipeline(req, RequestOptions.DEFAULT)
+    )
+  }
+
+  override private[client] def executeGetPipeline(
+    pipelineName: String
+  ): ElasticResult[Option[String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[String]](
+      operation = "getPipeline",
+      retryable = true
+    )(
+      request = new GetPipelineRequest(pipelineName)
+    )(
+      executor = req => apply().ingest().getPipeline(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val pipelines = resp.pipelines().asScala
+        if (pipelines.nonEmpty) {
+          val pipeline = pipelines.head
+          val config = pipeline.getConfigAsMap
+          Some(mapper.writeValueAsString(config))
+        } else {
+          None
+        }
+      }
+    )
+  }
+}
+
+trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+
+  // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
+
+  override private[client] def executeCreateComposableTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] = ElasticSuccess(false)
+
+  override private[client] def executeDeleteComposableTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] = ElasticSuccess(false)
+
+  override private[client] def executeGetComposableTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] = ElasticSuccess(None)
+
+  override private[client] def executeListComposableTemplates()
+    : ElasticResult[Map[String, String]] = ElasticSuccess(Map.empty[String, String])
+
+  override private[client] def executeComposableTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] = ElasticSuccess(false)
+
+  // ==================== LEGACY TEMPLATES ====================
+
+  override private[client] def executeCreateLegacyTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] = {
+    executeRestBooleanAction[PutIndexTemplateRequest, AcknowledgedResponse](
+      operation = "createTemplate",
+      retryable = false
+    )(
+      request = {
+        val req = new PutIndexTemplateRequest(templateName)
+        req.source(new BytesArray(templateDefinition), XContentType.JSON)
+        req
+      }
+    )(
+      executor = req => apply().indices().putTemplate(req, RequestOptions.DEFAULT)
+    )
+  }
+
+  override private[client] def executeDeleteLegacyTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] = {
+    if (ifExists) {
+      executeLegacyTemplateExists(templateName) match {
+        case ElasticSuccess(exists) =>
+          if (!exists) {
+            logger.debug(s"Legacy template '$templateName' does not exist, skipping deletion")
+            return ElasticSuccess(false)
+          }
+        case failure @ ElasticFailure(_) =>
+          return failure
+      }
+    }
+    executeRestBooleanAction[DeleteIndexTemplateRequest, AcknowledgedResponse](
+      operation = "deleteTemplate",
+      retryable = false
+    )(
+      request = new DeleteIndexTemplateRequest(templateName)
+    )(
+      executor = req => apply().indices().deleteTemplate(req, RequestOptions.DEFAULT)
+    )
+  }
+
+  override private[client] def executeGetLegacyTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] = {
+    executeRestAction[GetIndexTemplatesRequest, GetIndexTemplatesResponse, Option[String]](
+      operation = "getTemplate",
+      retryable = true
+    )(
+      request = new GetIndexTemplatesRequest(templateName)
+    )(
+      executor = req => apply().indices().getIndexTemplate(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val templates = resp.getIndexTemplates.asScala
+        if (templates.nonEmpty) {
+          val template = templates.head
+          Some(legacyTemplateToJson(template))
+        } else {
+          None
+        }
+      }
+    )
+  }
+
+  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] = {
+    executeRestAction[GetIndexTemplatesRequest, GetIndexTemplatesResponse, Map[String, String]](
+      operation = "listTemplates",
+      retryable = true
+    )(
+      request = new GetIndexTemplatesRequest("*")
+    )(
+      executor = req => apply().indices().getIndexTemplate(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        resp.getIndexTemplates.asScala.map { template =>
+          template.name() -> legacyTemplateToJson(template)
+        }.toMap
+      }
+    )
+  }
+
+  override private[client] def executeLegacyTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] = {
+    executeRestAction[IndexTemplatesExistRequest, Boolean, Boolean](
+      operation = "existsTemplate",
+      retryable = false
+    )(
+      request = new IndexTemplatesExistRequest(templateName)
+    )(
+      executor = req => apply().indices().existsTemplate(req, RequestOptions.DEFAULT)
+    )(response => response)
+  }
+
+  // ==================== CONVERSION HELPERS ====================
+
+  private def legacyTemplateToJson(template: IndexTemplateMetaData): String = {
+
+    val root = mapper.createObjectNode()
+
+    // index_patterns
+    val patternsArray = mapper.createArrayNode()
+    template.patterns().asScala.foreach(patternsArray.add)
+    root.set("index_patterns", patternsArray)
+
+    // order
+    root.put("order", template.order())
+
+    // version
+    if (template.version() != null) {
+      root.put("version", template.version())
+    }
+
+    // settings
+    if (template.settings() != null && !template.settings().isEmpty) {
+      val settingsNode = mapper.createObjectNode()
+      template.settings().keySet().asScala.foreach { key =>
+        val value = template.settings().get(key)
+        if (value != null) {
+          settingsNode.put(key, value)
+        }
+      }
+      root.set("settings", settingsNode)
+    }
+
+    // mappings
+    if (template.mappings() != null && template.mappings().source().string().nonEmpty) {
+      try {
+        val mappingsNode = mapper.readTree(template.mappings().source().string())
+        root.set("mappings", mappingsNode)
+      } catch {
+        case e: Exception =>
+          logger.warn(s"Failed to parse mappings: ${e.getMessage}")
+      }
+    }
+
+    // aliases
+    if (template.aliases() != null && !template.aliases().isEmpty) {
+      val aliasesNode = mapper.createObjectNode()
+
+      template.aliases().keysIt().asScala.foreach { aliasName =>
+        // Type explicite pour éviter l'inférence vers Nothing$
+        val aliasObjectNode: ObjectNode =
+          try {
+            val aliasMetadata = template.aliases().get(aliasName)
+
+            // Convert AliasMetadata to JSON
+            val aliasJson = convertAliasMetadataToJson(aliasMetadata)
+
+            // Parse and validate
+            val parsedAlias = mapper.readTree(aliasJson)
+
+            if (parsedAlias.isInstanceOf[ObjectNode]) {
+              parsedAlias.asInstanceOf[ObjectNode].get(aliasName) match {
+                case objNode: ObjectNode => objNode
+                case _ =>
+                  logger.debug(
+                    s"Alias '$aliasName' does not contain an object node, creating empty object"
+                  )
+                  mapper.createObjectNode()
+              }
+            } else {
+              logger.debug(
+                s"Alias '$aliasName' is not an ObjectNode (type: ${parsedAlias.getClass.getName}), creating empty object"
+              )
+              mapper.createObjectNode()
+            }
+
+          } catch {
+            case e: Exception =>
+              logger.warn(s"Failed to process alias '$aliasName': ${e.getMessage}", e)
+              mapper.createObjectNode()
+          }
+
+        // Set with explicit type
+        aliasesNode.set[ObjectNode](aliasName, aliasObjectNode)
+      }
+
+      root.set("aliases", aliasesNode)
+    }
+
+    mapper.writeValueAsString(root)
+  }
+
+  /** Convert AliasMetadata to JSON string
+    *
+    * @param aliasMetadata
+    *   the alias metadata
+    * @return
+    *   JSON string representation
+    */
+  private def convertAliasMetadataToJson(
+    aliasMetadata: AliasMetaData
+  ): String = {
+    try {
+      import org.elasticsearch.common.xcontent.{XContentFactory, ToXContent}
+
+      val builder = XContentFactory.jsonBuilder()
+      builder.startObject()
+      aliasMetadata.toXContent(builder, ToXContent.EMPTY_PARAMS)
+      builder.endObject()
+      builder.close()
+
+      org.elasticsearch.common.Strings.toString(builder)
+
+    } catch {
+      case e: Exception =>
+        logger.warn(s"Failed to convert AliasMetadata to JSON: ${e.getMessage}", e)
+        "{}"
     }
   }
 }

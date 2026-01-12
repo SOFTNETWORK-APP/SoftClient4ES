@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.ElasticClientHelpers
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
-import io.searchbox.action.Action
+import io.searchbox.action.{AbstractAction, Action}
 import io.searchbox.client.JestResult
 
 import scala.concurrent.Promise
@@ -71,7 +71,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     index: Option[String] = None,
     retryable: Boolean = true
   )(
-    action: => Action[R]
+    action: => AbstractAction[R]
   )(
     transformer: R => T
   ): ElasticResult[T] = {
@@ -166,7 +166,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     index: Option[String] = None,
     retryable: Boolean = true
   )(
-    action: => Action[R]
+    action: => AbstractAction[R]
   ): ElasticResult[Boolean] = {
     executeJestAction[R, Boolean](operation, index, retryable)(action)(_.isSucceeded)
   }
@@ -208,7 +208,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     index: Option[String] = None,
     retryable: Boolean = true
   )(
-    action: => Action[R]
+    action: => AbstractAction[R]
   )(
     extractor: com.google.gson.JsonObject => T
   ): ElasticResult[T] = {
@@ -259,7 +259,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     index: Option[String] = None,
     retryable: Boolean = true
   )(
-    action: => Action[R]
+    action: => AbstractAction[R]
   )(
     parser: String => T
   ): ElasticResult[T] = {

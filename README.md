@@ -30,21 +30,23 @@ SoftClient4ES provides a trait-based interface (`ElasticClientApi`) that aggrega
 
 #### **Core APIs**
 
-| API                                                        | Description                                                                         | Documentation                                   |
-|------------------------------------------------------------|-------------------------------------------------------------------------------------|-------------------------------------------------|
-| **[RefreshApi](documentation/client/refresh.md)**          | Control index refresh for real-time search                                          | [📖 Docs](documentation/client/refresh.md)      |
-| **[IndicesApi](documentation/client/indices.md)**          | Create, update, and manage indices with settings and mappings                       | [📖 Docs](documentation/client/indices.md)      |
-| **[SettingsApi](documentation/client/settings.md)**        | Dynamic index settings management                                                   | [📖 Docs](documentation/client/settings.md)     |
-| **[AliasApi](documentation/client/aliases.md)**            | Manage index aliases for zero-downtime deployments                                  | [📖 Docs](documentation/client/aliases.md)      |
-| **[MappingApi](documentation/client/mappings.md)**         | Smart mapping management with automatic migration and rollback                      | [📖 Docs](documentation/client/mappings.md)     |
-| **[IndexApi](documentation/client/index.md)**              | Index documents                                                                     | [📖 Docs](documentation/client/index.md)        |
-| **[UpdateApi](documentation/client/update.md)**            | Partial document updates with script support                                        | [📖 Docs](documentation/client/update.md)       |
-| **[DeleteApi](documentation/client/delete.md)**            | Delete documents by ID or query                                                     | [📖 Docs](documentation/client/delete.md)       |
-| **[BulkApi](documentation/client/bulk.md)**                | High-performance bulk operations with Akka Streams                                  | [📖 Docs](documentation/client/bulk.md)         |
-| **[GetApi](documentation/client/get.md)**                  | Get documents by ID                                                                 | [📖 Docs](documentation/client/get.md)          |
-| **[SearchApi](documentation/client/search.md)**            | Advanced search with SQL and aggregations support                                   | [📖 Docs](documentation/client/search.md)       |
-| **[ScrollApi](documentation/client/scroll.md)**            | Stream large datasets with automatic strategy detection (PIT, search_after, scroll) | [📖 Docs](documentation/client/scroll.md)       |
+| API                                                    | Description                                                                         | Documentation                                   |
+|--------------------------------------------------------|-------------------------------------------------------------------------------------|-------------------------------------------------|
+| **[RefreshApi](documentation/client/refresh.md)**      | Control index refresh for real-time search                                          | [📖 Docs](documentation/client/refresh.md)      |
+| **[IndicesApi](documentation/client/indices.md)**      | Create, update, and manage indices with settings and mappings                       | [📖 Docs](documentation/client/indices.md)      |
+| **[SettingsApi](documentation/client/settings.md)**    | Dynamic index settings management                                                   | [📖 Docs](documentation/client/settings.md)     |
+| **[AliasApi](documentation/client/aliases.md)**        | Manage index aliases for zero-downtime deployments                                  | [📖 Docs](documentation/client/aliases.md)      |
+| **[MappingApi](documentation/client/mappings.md)**     | Smart mapping management with automatic migration and rollback                      | [📖 Docs](documentation/client/mappings.md)     |
+| **[IndexApi](documentation/client/index.md)**          | Index documents                                                                     | [📖 Docs](documentation/client/index.md)        |
+| **[UpdateApi](documentation/client/update.md)**        | Partial document updates with script support                                        | [📖 Docs](documentation/client/update.md)       |
+| **[DeleteApi](documentation/client/delete.md)**        | Delete documents by ID or query                                                     | [📖 Docs](documentation/client/delete.md)       |
+| **[BulkApi](documentation/client/bulk.md)**            | High-performance bulk operations with Akka Streams                                  | [📖 Docs](documentation/client/bulk.md)         |
+| **[GetApi](documentation/client/get.md)**              | Get documents by ID                                                                 | [📖 Docs](documentation/client/get.md)          |
+| **[SearchApi](documentation/client/search.md)**        | Advanced search with SQL and aggregations support                                   | [📖 Docs](documentation/client/search.md)       |
+| **[ScrollApi](documentation/client/scroll.md)**        | Stream large datasets with automatic strategy detection (PIT, search_after, scroll) | [📖 Docs](documentation/client/scroll.md)       |
 | **[AggregationApi](documentation/client/aggregations.md)** | Type-safe way to execute aggregations using SQL queries                             | [📖 Docs](documentation/client/aggregations.md) |
+| **[TemplateApi](documentation/client/templates.md)**   | Templates management                                                                | [📖 Docs](documentation/client/templates.md)    |
+| **[GatewayApi](documentation/client/gateway.md)**     | Unified SQL interface for DQL, DML, and DDL statements                | [📖 Docs](documentation/client/gateway.md)     |
 
 #### **Client Implementations**
 
@@ -181,7 +183,105 @@ result match {
 
 ### **3. SQL compatible**
 
-### **3.1 SQL to Elasticsearch Query DSL**
+### **3.1 SQL Gateway — Unified SQL Interface for Elasticsearch**
+
+SoftClient4ES includes a high‑level SQL Gateway that allows you to execute **DQL, DML, DDL, and Pipeline statements** directly against Elasticsearch using standard SQL syntax.
+
+The Gateway exposes a single entry point:
+
+```scala
+gateway.run(sql: String): Future[ElasticResult[QueryResult]]
+```
+
+It automatically:
+
+- normalizes SQL (removes comments, trims whitespace)
+- parses SQL into AST nodes
+- routes statements to the appropriate executor
+- returns a typed `QueryResult` (`QueryRows`, `TableResult`, `PipelineResult`, `DmlResult`, `DdlResult`, `SQLResult`)
+
+#### **Architecture Diagram — SQL Gateway**
+
+```text
+                +----------------------+
+                |     GatewayApi       |
+                |  run(sql: String)    |
+                +----------+-----------+
+                           |
+                           v
+                +----------------------+
+                |       Parser         |
+                |   SQL → Statement    |
+                +----------+-----------+
+                           |
+        ------------------------------------------------
+        |                      |                      |
+        v                      v                      v
++---------------+     +---------------+     +----------------+
+| DqlStatement  |     | DmlStatement  |     | DdlStatement   |
++-------+-------+     +-------+-------+     +--------+-------+
+        |                     |                     |
+        v                     v                     v
++---------------+     +---------------+     +----------------------+
+|  DqlExecutor  |     |  DmlExecutor  |     |  DdlRouterExecutor   |
++-------+-------+     +-------+-------+     +----------+-----------+
+                                                   /        \
+                                                  /          \
+                                                 v            v
+                                   +----------------+   +------------------+
+                                   | TableExecutor  |   | PipelineExecutor |
+                                   +--------+-------+   +--------+---------+
+                                            |                    |
+                                            v                    v
+                                      +-----------+        +-----------+
+                                      |ElasticSearch|      |ElasticSearch|
+                                      +-----------+        +-----------+
+
+                     +-----------------------------------------------+
+                     |               QueryResult                     |
+                     +-----------------------------------------------+
+                     | QueryRows | QueryStream | QueryStructured     |
+                     | DmlResult | DdlResult   | TableResult         |
+                     | PipelineResult | SQLResult (SHOW CREATE)      |
+                     +-----------------------------------------------+
+```
+
+---
+
+#### **Supported SQL Categories**
+
+| Category            | Examples                                                                                                           |
+|---------------------|--------------------------------------------------------------------------------------------------------------------|
+| **DQL**             | `SELECT`, `JOIN UNNEST`, `GROUP BY`, `HAVING`, window functions                                                    |
+| **DML**             | `INSERT`, `UPDATE`, `DELETE`, `COPY INTO`                                                                          |
+| **DDL (Tables)**    | `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DESCRIBE TABLE`, `SHOW TABLE`, `SHOW CREATE TABLE` |
+| **DDL (Pipelines)** | `CREATE PIPELINE`, `ALTER PIPELINE`, `DROP PIPELINE`, `DESCRIBE PIPELINE`, `SHOW PIPELINE`, `SHOW CREATE PIPELINE` |
+
+#### **Example**
+
+```scala
+gateway.run("""
+  CREATE TABLE users (
+    id INT,
+    name TEXT,
+    age INT,
+    PRIMARY KEY (id)
+  );
+  INSERT INTO users VALUES (1, 'Alice', 30);
+  SELECT * FROM users;
+""")
+```
+
+#### **Documentation**
+
+- 📘 **Gateway API** — `documentation/client/gateway.md`
+- 📘 **DQL** — `documentation/sql/dql_statements.md`
+- 📘 **DML** — `documentation/sql/dml_statements.md`
+- 📘 **DDL** — `documentation/sql/ddl_statements.md`
+
+---
+
+### **3.2 SQL to Elasticsearch Query DSL**
 
 SoftClient4ES includes a powerful SQL parser that translates standard SQL `SELECT` queries into native Elasticsearch queries.
 
@@ -210,6 +310,9 @@ SoftClient4ES includes a powerful SQL parser that translates standard SQL `SELEC
 - ✅ Date / Time functions (`YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `MILLISECOND`, `MICROSECOND`, `NANOSECOND`, `EPOCHDAY`, `OFFSET_SECONDS`, `LAST_DAY`, `WEEKDAY`, `YEARDAY`, `INTERVAL`, `CURRENT_DATE`, `CURDATE`, `TODAY`, `NOW`, `CURRENT_TIME`, `CURTIME`, `CURRENT_DATETIME`, `CURRENT_TIMESTAMP`, `DATE_ADD`, `DATEADD`, `DATE_SUB`, `DATESUB`, `DATETIME_ADD`, `DATETIMEADD`, `DATETIME_SUB`, `DATETIMESUB`, `DATE_DIFF`, `DATEDIFF`, `DATE_FORMAT`, `DATE_PARSE`, `DATETIME_FORMAT`, `DATETIME_PARSE`, `DATE_TRUNC`, `EXTRACT`)
 - ✅ Geospatial functions (`POINT`, `ST_DISTANCE`)
 - ✅ Aggregate functions (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `DISTINCT`, `FIRST_VALUE`, `LAST_VALUE`, `ARRAY_AGG`)
+- ✅ [Window functions](#32-window-functions-support) with `OVER` clause
+- ✅ [DML Support](#34-dml-support) (`INSERT`, `UPDATE`, `DELETE`)
+- ✅ [DDL Support](#35-ddl-support) (`CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `CREATE PIPELINE`, `ALTER PIPELINE`, `DROP PIPELINE`)
 
 **Example:**
 
@@ -1188,6 +1291,8 @@ client.searchAsUnchecked[Product](SQLQuery(dynamicQuery))
 client.scrollAsUnchecked[Product](dynamicQuery)
 ```
 
+---
+
 📖 **[Full SQL Validation Documentation](documentation/sql/validation.md)**
 
 📖 **[Full SQL Documentation](documentation/sql/README.md)**
@@ -1517,18 +1622,18 @@ ThisBuild / resolvers ++= Seq(
 
 // For Elasticsearch 6
 // Using Jest client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-jest-client" % 0.15.0
 // Or using Rest High Level client
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es6-rest-client" % 0.15.0
 
 // For Elasticsearch 7
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es7-rest-client" % 0.15.0
 
 // For Elasticsearch 8
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es8-java-client" % 0.15.0
 
 // For Elasticsearch 9
-libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.14.2
+libraryDependencies += "app.softnetwork.elastic" %% s"softclient4es9-java-client" % 0.15.0
 ```
 
 ### **Quick Example**
@@ -1567,12 +1672,10 @@ client.createIndex("users", mapping) match {
 
 ### **Short-term**
 
-- [ ] Support for `INSERT`, `UPDATE`, `DELETE` SQL operations
-- [ ] Support for `CREATE TABLE`, `ALTER TABLE` SQL operations
+- [ ] Full **JDBC connector for Elasticsearch**
 
 ### **Long-term**
 
-- [ ] Full **JDBC connector for Elasticsearch**
 - [ ] Advanced monitoring and metrics
 
 ---

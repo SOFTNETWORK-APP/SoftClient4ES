@@ -6,6 +6,7 @@ import org.scalatest.BeforeAndAfterEach
 import org.mockito.{ArgumentMatchersSugar, MockitoSugar}
 import org.slf4j.Logger
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.sql.schema.TableAlias
 
 /** Unit tests for MappingApi
   */
@@ -21,13 +22,13 @@ class MappingApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Valid test data
-  val validMapping: String = """{"properties":{"name":{"type":"text"}}}"""
+  val validMapping: String = """{"_doc":{"properties":{"name":{"type":"text"}}}}"""
   val validSettings: String = """{"my-index":{"settings":{"index":{"number_of_shards":"1"}}}}"""
   val updatedMapping: String =
     """{"properties":{"name":{"type":"text"},"age":{"type":"integer"}}}"""
 
   // Concrete implementation for testing
-  class TestMappingApi extends MappingApi with SettingsApi with IndicesApi with RefreshApi {
+  class TestMappingApi extends NopeClientApi {
     override protected def logger: Logger = mockLogger
 
     // Control variables
@@ -35,6 +36,7 @@ class MappingApiSpec
     var executeGetMappingResult: ElasticResult[String] = ElasticSuccess(validMapping)
     var executeIndexExistsResult: ElasticResult[Boolean] = ElasticSuccess(true)
     var executeCreateIndexResult: ElasticResult[Boolean] = ElasticSuccess(true)
+    var executeGetIndexResult: ElasticResult[Option[String]] = ElasticSuccess(None)
     var executeDeleteIndexResult: ElasticResult[Boolean] = ElasticSuccess(true)
     var executeReindexFunction
       : (String, String, Boolean) => ElasticResult[(Boolean, Option[Long])] =
@@ -60,10 +62,15 @@ class MappingApiSpec
 
     override private[client] def executeCreateIndex(
       index: String,
-      settings: String
+      settings: String,
+      mappings: Option[String],
+      aliases: Seq[TableAlias]
     ): ElasticResult[Boolean] = {
       executeCreateIndexResult
     }
+
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+      executeGetIndexResult
 
     override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] = {
       executeDeleteIndexResult
@@ -72,7 +79,8 @@ class MappingApiSpec
     override private[client] def executeReindex(
       sourceIndex: String,
       targetIndex: String,
-      refresh: Boolean
+      refresh: Boolean,
+      pipeline: Option[String]
     ): ElasticResult[(Boolean, Option[Long])] = {
       executeReindexFunction(sourceIndex, targetIndex, refresh)
     }
@@ -95,6 +103,7 @@ class MappingApiSpec
       index: String,
       settings: String
     ): ElasticResult[Boolean] = ElasticSuccess(true)
+
   }
 
   var mappingApi: TestMappingApi = _
@@ -120,6 +129,7 @@ class MappingApiSpec
         result.isSuccess shouldBe true
         result.get shouldBe true
 
+        verify(mockLogger).info("✅ Elasticsearch version: 0.0.0")
         verify(mockLogger).debug(s"Setting mapping for index 'my-index': $validMapping")
         verify(mockLogger).info("✅ Mapping for index 'my-index' updated successfully")
       }
@@ -544,9 +554,12 @@ class MappingApiSpec
         result.isSuccess shouldBe true
         result.get shouldBe true
 
-        verify(mockLogger).info("Creating new index 'my-index' with mapping")
+        verify(mockLogger).debug("Checking if index 'my-index' exists")
+        verify(mockLogger).debug("✅ Index 'my-index' does not exist")
+        verify(mockLogger).info(s"Creating index 'my-index' with settings: $validSettings")
+        verify(mockLogger).info("✅ Elasticsearch version: 0.0.0")
         verify(mockLogger, atLeastOnce).info("✅ Index 'my-index' created successfully")
-        verify(mockLogger, atLeastOnce).info("✅ Mapping for index 'my-index' set successfully")
+        verify(mockLogger, atLeastOnce).info("✅ Index 'my-index' created with mapping successfully")
       }
 
       "do nothing when mapping is up to date" in {
@@ -606,16 +619,15 @@ class MappingApiSpec
       "fail when setMapping fails during creation" in {
         // Given
         mappingApi.executeIndexExistsResult = ElasticSuccess(false)
-        mappingApi.executeCreateIndexResult = ElasticSuccess(true)
-        val error = ElasticError("Mapping invalid", statusCode = Some(400))
-        mappingApi.executeSetMappingResult = ElasticFailure(error)
 
         // When
-        val result = mappingApi.updateMapping("my-index", validMapping)
+        val result = mappingApi.updateMapping("my-index", "invalid mapping")
 
         // Then
         result.isFailure shouldBe true
-        result.error.get.message should include("Mapping invalid")
+        result.error.get.message should include(
+          "Invalid mappings: Invalid JSON: Unrecognized token 'invalid'"
+        )
       }
 
       "rollback when migration fails" in {
@@ -865,9 +877,12 @@ class MappingApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        verify(mockLogger).info("Creating new index 'products' with mapping")
+        verify(mockLogger).debug("Checking if index 'products' exists")
+        verify(mockLogger).debug("✅ Index 'products' does not exist")
+        verify(mockLogger).info(s"Creating index 'products' with settings: $validSettings")
+        verify(mockLogger).info("✅ Elasticsearch version: 0.0.0")
         verify(mockLogger, atLeastOnce).info("✅ Index 'products' created successfully")
-        verify(mockLogger).info("✅ Mapping for index 'products' set successfully")
+        verify(mockLogger).info("✅ Index 'products' created with mapping successfully")
       }
 
       "successfully update existing index with new mapping" in {
@@ -1295,14 +1310,13 @@ class MappingApiSpec
         result.error.get.message shouldBe "Cannot retrieve mapping"
       }
 
-      "handle partial failure in createIndexWithMapping" in {
+      "handle partial failure in createIndex" in {
         // Given
         mappingApi.executeIndexExistsResult = ElasticSuccess(false)
-        mappingApi.executeCreateIndexResult = ElasticSuccess(true)
 
         // setMapping fails
         val error = ElasticError("Invalid mapping structure", statusCode = Some(400))
-        mappingApi.executeSetMappingResult = ElasticFailure(error)
+        mappingApi.executeCreateIndexResult = ElasticFailure(error)
 
         // When
         val result = mappingApi.updateMapping("my-index", validMapping)
@@ -1495,12 +1509,15 @@ class MappingApiSpec
         mappingApi.executeSetMappingResult = ElasticSuccess(true)
 
         // When
-        mappingApi.updateMapping("my-index", validMapping)
+        mappingApi.updateMapping("my-index", validMapping, validSettings)
 
         // Then
-        verify(mockLogger).info("Creating new index 'my-index' with mapping")
+        verify(mockLogger).debug("Checking if index 'my-index' exists")
+        verify(mockLogger).debug("✅ Index 'my-index' does not exist")
+        verify(mockLogger).info(s"Creating index 'my-index' with settings: $validSettings")
+        verify(mockLogger).info("✅ Elasticsearch version: 0.0.0")
         verify(mockLogger, atLeastOnce).info("✅ Index 'my-index' created successfully")
-        verify(mockLogger).info("✅ Mapping for index 'my-index' set successfully")
+        verify(mockLogger).info("✅ Index 'my-index' created with mapping successfully")
       }
 
       /*"log backup failure" in {
@@ -1789,9 +1806,12 @@ class MappingApiSpec
 
         // Then
         result.isSuccess shouldBe true
-        verify(mockLogger).info("Creating new index 'my-index' with mapping")
+        verify(mockLogger).debug("Checking if index 'my-index' exists")
+        verify(mockLogger).debug("✅ Index 'my-index' does not exist")
+        verify(mockLogger).info(s"Creating index 'my-index' with settings: $validSettings")
+        verify(mockLogger).info("✅ Elasticsearch version: 0.0.0")
         verify(mockLogger, atLeastOnce).info("✅ Index 'my-index' created successfully")
-        verify(mockLogger).info("✅ Mapping for index 'my-index' set successfully")
+        verify(mockLogger).info("✅ Index 'my-index' created with mapping successfully")
       }
 
       "handle multi-tenant index mapping update" in {

@@ -32,7 +32,7 @@ case object GroupBy extends Expr("GROUP BY") with TokenRegex
 
 case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
   override def sql: String = s" $GroupBy ${buckets.mkString(", ")}"
-  def update(request: SQLSearchRequest): GroupBy =
+  def update(request: SingleSearch): GroupBy =
     this.copy(buckets = buckets.map(_.update(request)))
   lazy val bucketNames: Map[String, Bucket] = buckets.map { b =>
     b.identifier.identifierName -> b
@@ -55,8 +55,10 @@ case class Bucket(
   size: Option[Int] = None
 ) extends Updateable
     with PainlessScript {
+  def tableAlias: Option[String] = identifier.tableAlias
+  def table: Option[String] = identifier.table
   override def sql: String = s"$identifier"
-  def update(request: SQLSearchRequest): Bucket = {
+  def update(request: SingleSearch): Bucket = {
     identifier.functions.headOption match {
       case Some(func: LongValue) =>
         if (func.value <= 0) {
@@ -76,7 +78,7 @@ case class Bucket(
 
   lazy val sourceBucket: String =
     if (identifier.nested) {
-      identifier.tableAlias
+      tableAlias
         .map(a => s"$a.")
         .getOrElse("") + identifier.name.split("\\.").tail.mkString(".")
     } else {

@@ -1,7 +1,20 @@
-package app.softnetwork.elastic.sql
+package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.parser._
-
+import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.{IngestTimestampValue, StringValue}
+import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.schema.{
+  mapper,
+  DateIndexNameProcessor,
+  IngestPipelineType,
+  IngestProcessorType,
+  PartitionDate,
+  PrimaryKeyProcessor,
+  ScriptProcessor,
+  SetProcessor
+}
+import app.softnetwork.elastic.sql.time.TimeUnit
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -222,14 +235,14 @@ object Queries {
 
 /** Created by smanciot on 15/02/17.
   */
-class SQLParserSpec extends AnyFlatSpec with Matchers {
+class ParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
-  "SQLParser" should "parse numerical EQ" in {
+  "Parser" should "parse numerical EQ" in {
     val result = Parser(numericalEq)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalEq) shouldBe true
   }
@@ -237,7 +250,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical NE" in {
     val result = Parser(numericalNe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalNe) shouldBe true
   }
@@ -245,7 +258,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical LT" in {
     val result = Parser(numericalLt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalLt) shouldBe true
   }
@@ -253,7 +266,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical LE" in {
     val result = Parser(numericalLe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalLe) shouldBe true
   }
@@ -261,7 +274,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical GT" in {
     val result = Parser(numericalGt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalGt) shouldBe true
   }
@@ -269,7 +282,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse numerical GE" in {
     val result = Parser(numericalGe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(numericalGe) shouldBe true
   }
@@ -277,7 +290,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal EQ" in {
     val result = Parser(literalEq)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalEq) shouldBe true
   }
@@ -285,7 +298,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal LIKE" in {
     val result = Parser(literalLike)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalLike) shouldBe true
   }
@@ -293,7 +306,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal RLIKE" in {
     val result = Parser(literalRlike)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalRlike) shouldBe true
   }
@@ -301,7 +314,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal NOT LIKE" in {
     val result = Parser(literalNotLike)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalNotLike) shouldBe true
   }
@@ -309,7 +322,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal NE" in {
     val result = Parser(literalNe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalNe) shouldBe true
   }
@@ -317,7 +330,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal LT" in {
     val result = Parser(literalLt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalLt) shouldBe true
   }
@@ -325,7 +338,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal LE" in {
     val result = Parser(literalLe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalLe) shouldBe true
   }
@@ -333,20 +346,20 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse literal GT" in {
     val result = Parser(literalGt)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(literalGt) shouldBe true
   }
 
   it should "parse literal GE" in {
     val result = Parser(literalGe)
-    result.toOption.flatMap(_.left.toOption.map(_.sql)).getOrElse("") equalsIgnoreCase literalGe
+    result.toOption.map(_.sql).getOrElse("") equalsIgnoreCase literalGe
   }
 
   it should "parse boolean EQ" in {
     val result = Parser(boolEq)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(boolEq) shouldBe true
   }
@@ -354,7 +367,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse boolean NE" in {
     val result = Parser(boolNe)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(boolNe) shouldBe true
   }
@@ -362,7 +375,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse BETWEEN" in {
     val result = Parser(betweenExpression)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(betweenExpression) shouldBe true
   }
@@ -370,7 +383,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse AND predicate" in {
     val result = Parser(andPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(andPredicate) shouldBe true
   }
@@ -378,7 +391,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse OR predicate" in {
     val result = Parser(orPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(orPredicate) shouldBe true
   }
@@ -386,7 +399,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse left predicate with criteria" in {
     val result = Parser(leftPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(leftPredicate) shouldBe true
   }
@@ -394,7 +407,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse right predicate with criteria" in {
     val result = Parser(rightPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(rightPredicate) shouldBe true
   }
@@ -402,7 +415,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse multiple predicates" in {
     val result = Parser(predicates)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(predicates) shouldBe true
   }
@@ -410,14 +423,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse nested predicate" in {
     val result = Parser(nestedPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe nestedPredicate
   }
 
   it should "parse nested criteria" in {
     val result = Parser(nestedCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nestedCriteria) shouldBe true
   }
@@ -425,7 +438,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse child predicate" in {
     val result = Parser(childPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(childPredicate) shouldBe true
   }
@@ -433,7 +446,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse child criteria" in {
     val result = Parser(childCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(childCriteria) shouldBe true
   }
@@ -441,7 +454,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse parent predicate" in {
     val result = Parser(parentPredicate)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(parentPredicate) shouldBe true
   }
@@ -449,7 +462,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse parent criteria" in {
     val result = Parser(parentCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(parentCriteria) shouldBe true
   }
@@ -457,7 +470,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IN literal expression" in {
     val result = Parser(inLiteralExpression)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(inLiteralExpression) shouldBe true
   }
@@ -465,7 +478,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IN numerical expression with Int values" in {
     val result = Parser(inNumericalExpressionWithIntValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(inNumericalExpressionWithIntValues) shouldBe true
   }
@@ -473,7 +486,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IN numerical expression with Double values" in {
     val result = Parser(inNumericalExpressionWithDoubleValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(inNumericalExpressionWithDoubleValues) shouldBe true
   }
@@ -481,7 +494,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NOT IN literal expression" in {
     val result = Parser(notInLiteralExpression)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(notInLiteralExpression) shouldBe true
   }
@@ -489,7 +502,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NOT IN numerical expression with Int values" in {
     val result = Parser(notInNumericalExpressionWithIntValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(notInNumericalExpressionWithIntValues) shouldBe true
   }
@@ -497,7 +510,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NOT IN numerical expression with Double values" in {
     val result = Parser(notInNumericalExpressionWithDoubleValues)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(notInNumericalExpressionWithDoubleValues) shouldBe true
   }
@@ -505,7 +518,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse nested with BETWEEN" in {
     val result = Parser(nestedWithBetween)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nestedWithBetween) shouldBe true
   }
@@ -513,7 +526,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse COUNT" in {
     val result = Parser(COUNT)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(COUNT) shouldBe true
   }
@@ -521,7 +534,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse DISTINCT COUNT" in {
     val result = Parser(countDistinct)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(countDistinct) shouldBe true
   }
@@ -529,7 +542,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse COUNT with nested criteria" in {
     val result = Parser(countNested)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(countNested) shouldBe true
   }
@@ -537,7 +550,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IS NULL" in {
     val result = Parser(isNull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNull) shouldBe true
   }
@@ -545,7 +558,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse IS NOT NULL" in {
     val result = Parser(isNotNull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNotNull) shouldBe true
   }
@@ -553,14 +566,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse geo distance criteria" in {
     val result = Parser(geoDistanceCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe geoDistanceCriteria
   }
 
   it should "parse EXCEPT fields" in {
     val result = Parser(except)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(except) shouldBe true
   }
@@ -568,7 +581,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse MATCH criteria" in {
     val result = Parser(matchCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(matchCriteria) shouldBe true
   }
@@ -576,7 +589,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse GROUP BY" in {
     val result = Parser(groupBy)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(groupBy) shouldBe true
   }
@@ -584,7 +597,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ORDER BY" in {
     val result = Parser(orderBy)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(orderBy) shouldBe true
   }
@@ -592,14 +605,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse LIMIT" in {
     val result = Parser(limit)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe limit
   }
 
   it should "parse GROUP BY with ORDER BY and LIMIT" in {
     val result = Parser(groupByWithOrderByAndLimit)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(groupByWithOrderByAndLimit) shouldBe true
   }
@@ -607,7 +620,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse GROUP BY with HAVING" in {
     val result = Parser(groupByWithHaving)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(groupByWithHaving) shouldBe true
   }
@@ -615,7 +628,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date time fields" in {
     val result = Parser(dateTimeWithIntervalFields)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeWithIntervalFields) shouldBe true
   }
@@ -623,7 +636,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse fields with INTERVAL" in {
     val result = Parser(fieldsWithInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(fieldsWithInterval) shouldBe true
   }
@@ -631,7 +644,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse filter with date time and INTERVAL" in {
     val result = Parser(filterWithDateTimeAndInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(filterWithDateTimeAndInterval) shouldBe true
   }
@@ -639,7 +652,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse filter with date and interval" in {
     val result = Parser(filterWithDateAndInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(filterWithDateAndInterval) shouldBe true
   }
@@ -647,7 +660,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse filter with time and interval" in {
     val result = Parser(filterWithTimeAndInterval)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(filterWithTimeAndInterval) shouldBe true
   }
@@ -655,14 +668,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse GROUP BY with HAVING and date time functions" in {
     val result = Parser(groupByWithHavingAndDateTimeFunctions)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe groupByWithHavingAndDateTimeFunctions
   }
 
   it should "parse date_parse function" in {
     val result = Parser(dateParse)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateParse) shouldBe true
   }
@@ -670,7 +683,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_parse_time function" in {
     val result = Parser(dateTimeParse)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeParse) shouldBe true
   }
@@ -678,7 +691,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_diff function" in {
     val result = Parser(dateDiff)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateDiff) shouldBe true
   }
@@ -686,7 +699,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_diff function with aggregation" in {
     val result = Parser(aggregationWithDateDiff)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(aggregationWithDateDiff) shouldBe true
   }
@@ -694,7 +707,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse format_date function" in {
     val result = Parser(dateFormat)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateFormat) shouldBe true
   }
@@ -702,7 +715,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse format_datetime function" in {
     val result = Parser(dateTimeFormat)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeFormat) shouldBe true
   }
@@ -710,7 +723,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_add function" in {
     val result = Parser(dateAdd)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateAdd) shouldBe true
   }
@@ -718,7 +731,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse date_sub function" in {
     val result = Parser(dateSub)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateSub) shouldBe true
   }
@@ -726,7 +739,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse datetime_add function" in {
     val result = Parser(dateTimeAdd)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeAdd) shouldBe true
   }
@@ -734,7 +747,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse datetime_sub function" in {
     val result = Parser(dateTimeSub)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(dateTimeSub) shouldBe true
   }
@@ -742,7 +755,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNULL function" in {
     val result = Parser(isnull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isnull) shouldBe true
   }
@@ -750,7 +763,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNOTNULL function" in {
     val result = Parser(isnotnull)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isnotnull) shouldBe true
   }
@@ -758,7 +771,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNULL criteria" in {
     val result = Parser(isNullCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNullCriteria) shouldBe true
   }
@@ -766,7 +779,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse ISNOTNULL criteria" in {
     val result = Parser(isNotNullCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(isNotNullCriteria) shouldBe true
   }
@@ -774,7 +787,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse COALESCE function" in {
     val result = Parser(coalesce)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(coalesce) shouldBe true
   }
@@ -782,7 +795,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse NULLIF function" in {
     val result = Parser(nullif)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nullif) shouldBe true
   }
@@ -790,14 +803,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse conversion function" in {
     val result = Parser(conversion)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe conversion
   }
 
   it should "parse all casts function" in {
     val result = Parser(allCasts)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(allCasts) shouldBe true
   }
@@ -805,7 +818,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse CASE WHEN expression" in {
     val result = Parser(caseWhen)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(caseWhen) shouldBe true
   }
@@ -813,7 +826,7 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse CASE WHEN with expression" in {
     val result = Parser(caseWhenExpr)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(caseWhenExpr) shouldBe true
   }
@@ -821,14 +834,14 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse EXTRACT function" in {
     val result = Parser(extract)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe extract
   }
 
   it should "parse arithmetic expressions" in {
     val result = Parser(arithmetic)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(arithmetic) shouldBe true
   }
@@ -836,91 +849,744 @@ class SQLParserSpec extends AnyFlatSpec with Matchers {
   it should "parse mathematical functions" in {
     val result = Parser(mathematical)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe mathematical
   }
 
   it should "parse string functions" in {
     val result = Parser(string)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe string
   }
 
   it should "parse top hits functions" in {
     val result = Parser(topHits)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe topHits
   }
 
   it should "parse last_day function" in {
     val result = Parser(lastDay)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe lastDay
   }
 
   it should "parse all date extractors" in {
     val result = Parser(extractors)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe extractors
   }
 
   it should "parse geo distance field" in {
     val result = Parser(geoDistance)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe geoDistance
   }
 
   it should "parse BETWEEN with temporal fields" in {
     val result = Parser(betweenTemporal)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe betweenTemporal
   }
 
   it should "parse nested of nested" in {
     val result = Parser(nestedOfNested)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe nestedOfNested
   }
 
   it should "parse predicate with distinct nested" in {
     val result = Parser(predicateWithDistinctNested)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe predicateWithDistinctNested
   }
 
   it should "parse nested without criteria" in {
     val result = Parser(nestedWithoutCriteria)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe nestedWithoutCriteria
   }
 
   it should "determine the aggregation context" in {
     val result = Parser(determinationOfTheAggregationContext)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe determinationOfTheAggregationContext
   }
 
   it should "parse aggregation with nested of nested context" in {
     val result = Parser(aggregationWithNestedOfNestedContext)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe aggregationWithNestedOfNestedContext
   }
 
   it should "parse where filters according to scope" in {
     val result = Parser(whereFiltersAccordingToScope)
     result.toOption
-      .flatMap(_.left.toOption.map(_.sql))
+      .map(_.sql)
       .getOrElse("") shouldBe whereFiltersAccordingToScope
+  }
+
+  // --- DDL ---
+
+  it should "parse CREATE TABLE if not exists" in {
+    val sql =
+      """CREATE TABLE IF NOT EXISTS users (
+        |  id INT NOT NULL COMMENT 'user identifier',
+        |  name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
+        |  birthdate DATE,
+        |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+        |  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
+        |  profile STRUCT FIELDS(
+        |    bio VARCHAR,
+        |    followers INT,
+        |    join_date DATE,
+        |    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+        |  ) COMMENT 'user profile',
+        |  PRIMARY KEY (id)
+        |) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false))""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ct @ CreateTable(
+            "users",
+            Right(cols),
+            true,
+            false,
+            List("id"),
+            Some(PartitionDate("birthdate", TimeUnit.MONTHS)),
+            _
+          ) =>
+        cols.map(_.name) should contain allOf ("id", "name")
+        cols.find(_.name == "id").get.notNull shouldBe true
+        cols.find(_.name == "name").get.defaultValue.map(_.value) shouldBe Some("anonymous")
+        cols.find(_.name == "birthdate").get.dataType.typeId should include("DATE")
+        cols.find(_.name == "age").get.script.nonEmpty shouldBe true
+        cols
+          .find(_.name == "age")
+          .get
+          .script
+          .map(p => p.source)
+          .getOrElse("") should include(
+          """def param1 = ctx.birthdate;
+            |def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate();
+            |def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2));
+            |ctx.age = (param1 == null) ? null : param3""".stripMargin.replaceAll("\n", " ")
+        )
+        cols.find(_.name == "ingested_at").get.defaultValue.map(_.value) shouldBe Some(
+          "_ingest.timestamp"
+        )
+        ct.mappings.get("dynamic").map(_.value) shouldBe Some(false)
+        val schema = ct.schema
+        val sql = schema.sql
+        println(sql)
+        println(schema.defaultPipeline.ddl)
+        val json = schema.defaultPipeline.json
+        println(json)
+        json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET VALUE 'anonymous' IF ctx.name == null, age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name SET VALUE 'anonymous' IF ctx.name == null","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        val indexMappings = schema.indexMappings
+        println(indexMappings)
+        indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer"},"name":{"type":"text","fields":{"raw":{"type":"keyword"}},"analyzer":"french","search_analyzer":"french"},"birthdate":{"type":"date"},"age":{"type":"integer"},"ingested_at":{"type":"date"},"profile":{"type":"object","properties":{"bio":{"type":"text"},"followers":{"type":"integer"},"join_date":{"type":"date"},"seniority":{"type":"integer"}}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"},"columns":{"age":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3"}},"profile":{"data_type":"STRUCT","not_null":"false","comment":"user profile","multi_fields":{"bio":{"data_type":"VARCHAR","not_null":"false"},"followers":{"data_type":"INT","not_null":"false"},"join_date":{"data_type":"DATE","not_null":"false"},"seniority":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3"}}}},"name":{"data_type":"VARCHAR","not_null":"false","default_value":"anonymous","multi_fields":{"raw":{"data_type":"KEYWORD","not_null":"false","comment":"sortable"}}},"ingested_at":{"data_type":"TIMESTAMP","not_null":"false","default_value":"_ingest.timestamp"},"birthdate":{"data_type":"DATE","not_null":"false"},"id":{"data_type":"INT","not_null":"true","comment":"user identifier"}}}}""".stripMargin
+        val indexSettings = schema.indexSettings
+        println(indexSettings)
+        indexSettings.toString shouldBe """{"index":{}}"""
+        val pipeline = schema.defaultPipelineNode
+        println(pipeline)
+        pipeline.toString shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET VALUE 'anonymous' IF ctx.name == null, age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name SET VALUE 'anonymous' IF ctx.name == null","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        // Reconstruct EsIndex
+        val mappings = mapper.createObjectNode()
+        mappings.set("mappings", indexMappings)
+        val settings = mapper.createObjectNode()
+        settings.set("settings", indexSettings)
+        val esIndex = Index(
+          name = "users",
+          mappings = mappings,
+          settings = settings,
+          defaultPipeline = Some(pipeline)
+        )
+        val ddlTable = esIndex.schema
+        println(s"""esIndex ddl -> ${ddlTable.sql}""")
+        println(s"""esIndex mappings -> ${ddlTable.indexMappings.toString}""")
+        println(s"""esIndex settings -> ${ddlTable.indexSettings.toString}""")
+        println(s"""esIndex pipeline -> ${ddlTable.defaultPipelineNode.toString}""")
+        println(s"""esIndex ddl pipeline -> ${ddlTable.defaultPipeline.ddl}""")
+        val ddlTableDiff = ddlTable.diff(ct.schema)
+        ddlTableDiff.columns.isEmpty shouldBe true
+        ddlTableDiff.mappings.isEmpty shouldBe true
+        ddlTableDiff.settings.isEmpty shouldBe true
+        ddlTableDiff.pipeline.isEmpty shouldBe true
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "parse CREATE OR REPLACE TABLE as select" in {
+    val sql = "CREATE OR REPLACE TABLE users AS SELECT id, name FROM accounts WHERE active = true"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case table: CreateTable =>
+        println(table.sql)
+        table.table shouldBe "users"
+        table.ifNotExists shouldBe false
+        table.orReplace shouldBe true
+        table.columns.map(_.name) should contain allOf ("id", "name")
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "parse DROP TABLE if exists" in {
+    val sql = "DROP TABLE IF EXISTS users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DropTable("users", ie, _) if ie =>
+      case _                               => fail("Expected DropTable")
+    }
+  }
+
+  it should "parse TRUNCATE TABLE" in {
+    val sql = "TRUNCATE TABLE users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case TruncateTable("users") =>
+      case _                      => fail("Expected TruncateTable")
+    }
+  }
+
+  it should "parse ALTER TABLE add column if not exists" in {
+    val sql =
+      """ALTER TABLE users
+        |  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AddColumn(c, ine)) if ine =>
+            c.name shouldBe "age"
+            c.dataType.typeId should include("INT")
+            c.defaultValue.map(_.value) shouldBe Some(0L)
+          case _ => fail("Expected AddColumn")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE rename column" in {
+    val sql =
+      """ALTER TABLE users
+        |  RENAME COLUMN name TO full_name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(RenameColumn(o, n)) =>
+            o shouldBe "name"
+            n shouldBe "full_name"
+          case _ => fail("Expected RenameColumn")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column options if exists" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN IF EXISTS status SET OPTIONS (description = 'a description')
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnOptions(c, d, ie)) if ie =>
+            c shouldBe "status"
+            d.get("description").map(_.value) shouldBe Some("a description")
+          case _ => fail("Expected AlterColumnDefault")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column default" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status SET DEFAULT 'active'
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnDefault(c, d, _)) =>
+            c shouldBe "status"
+            d.value shouldBe "active"
+          case other => fail(s"Expected AlterColumnDefault, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE drop column default" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status DROP DEFAULT
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(DropColumnDefault(c, _)) =>
+            c shouldBe "status"
+          case other => fail(s"Expected DropColumnDefault, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column not null" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status SET NOT NULL
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnNotNull(c, _)) =>
+            c shouldBe "status"
+          case other => fail(s"Expected AlterColumnNotNull, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE drop column not null" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status DROP NOT NULL
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(DropColumnNotNull(c, _)) =>
+            c shouldBe "status"
+          case other => fail(s"Expected DropColumnNotNull, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE set column type" in {
+    val sql =
+      """ALTER TABLE users
+        |  ALTER COLUMN status SET DATA TYPE BIGINT
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts match {
+          case List(AlterColumnType(c, d, _)) =>
+            c shouldBe "status"
+            d shouldBe SQLTypes.BigInt
+          case other => fail(s"Expected AlterColumnType, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE if exists" in {
+    val sql =
+      """ALTER TABLE IF EXISTS users
+        |  ALTER COLUMN status SET DEFAULT 'active'
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterTable("users", ifExists, stmts) if ifExists =>
+        stmts match {
+          case List(AlterColumnDefault(c, d, _)) =>
+            c shouldBe "status"
+            d.value shouldBe "active"
+          case other => fail(s"Expected AlterColumnDefault, got $other")
+        }
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE with multiple statements" in {
+    val sql =
+      """ALTER TABLE users (
+        |  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0,
+        |  RENAME COLUMN name TO full_name,
+        |  ALTER COLUMN IF EXISTS status SET DEFAULT 'active',
+        |  ALTER COLUMN IF EXISTS profile SET FIELDS (
+        |    description VARCHAR DEFAULT 'N/A',
+        |    visibility BOOLEAN DEFAULT true
+        |  )
+        |)""".stripMargin
+
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    println(stmt.sql)
+    stmt.sql.replaceAll("\t", "  ") shouldBe sql
+    stmt match {
+      case AlterTable("users", _, stmts) =>
+        stmts.length shouldBe 4
+        stmts.collect { case AddColumn(c, true) => c.name } should contain("age")
+        stmts.collect { case RenameColumn(o, n) => (o, n) } should contain(("name", "full_name"))
+        stmts.collect { case AlterColumnDefault(c, d, true) =>
+          List(c, d.value)
+        }.flatten should contain allOf ("status", "active")
+        stmts.collect { case AlterColumnFields("profile", fields, true) =>
+          fields.map(f => (f.name, f.dataType.typeId, f.defaultValue.map(_.value)))
+        }.flatten should contain allOf (("description", "VARCHAR", Some("N/A")), (
+          "visibility",
+          "BOOLEAN",
+          Some(true)
+        ))
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse CREATE OR REPLACE PIPELINE" in {
+    val sql =
+      """CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
+        |    SET (
+        |        field = "name",
+        |        if = "ctx.name == null",
+        |        description = "DEFAULT 'anonymous'",
+        |        ignore_failure = true,
+        |        value = "anonymous"
+        |    ),
+        |    SCRIPT (
+        |        description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))",
+        |        lang = "painless",
+        |        source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))",
+        |        ignore_failure = true
+        |    ),
+        |    SET (
+        |        field = "ingested_at",
+        |        if = "ctx.ingested_at == null",
+        |        description = "DEFAULT _ingest.timestamp",
+        |        ignore_failure = true,
+        |        value = "_ingest.timestamp"
+        |    ),
+        |    SCRIPT (
+        |        description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))",
+        |        lang = "painless",
+        |        source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))",
+        |        ignore_failure = true
+        |    ),
+        |    DATE_INDEX_NAME (
+        |        field = "birthdate",
+        |        index_name_prefix = "users-",
+        |        date_formats = ["yyyy-MM"],
+        |        ignore_failure = true,
+        |        date_rounding = "M",
+        |        description = "PARTITION BY birthdate (MONTH)",
+        |        separator = "-"
+        |    ),
+        |    SET (
+        |        field = "_id",
+        |        description = "PRIMARY KEY (id)",
+        |        ignore_failure = false,
+        |        ignore_empty_value = false,
+        |        value = "{{id}}"
+        |    )
+        |)""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreatePipeline(
+            "user_pipeline",
+            _,
+            false,
+            true,
+            processors
+          ) =>
+        processors.size shouldBe 6
+        processors.find(_.column == "name") match {
+          case Some(
+                SetProcessor(
+                  IngestPipelineType.Default,
+                  Some("DEFAULT 'anonymous'"),
+                  "name",
+                  StringValue("anonymous"),
+                  None,
+                  None,
+                  None,
+                  Some("ctx.name == null"),
+                  true
+                )
+              ) =>
+          case other => fail(s"Expected SetProcessor for name, got $other")
+        }
+        processors.find(_.column == "age") match {
+          case Some(
+                ScriptProcessor(
+                  IngestPipelineType.Default,
+                  Some("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))"),
+                  "DATE_DIFF(birthdate, CURRENT_DATE, YEAR)",
+                  "age",
+                  SQLTypes.Int,
+                  source,
+                  true
+                )
+              ) =>
+            source should include(
+              "def param1 = ctx.birthdate; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))"
+            )
+          case other => fail(s"Expected DdlScriptProcessor for age, got $other")
+        }
+        processors.find(_.column == "ingested_at") match {
+          case Some(
+                SetProcessor(
+                  IngestPipelineType.Default,
+                  Some("DEFAULT _ingest.timestamp"),
+                  "ingested_at",
+                  IngestTimestampValue,
+                  None,
+                  None,
+                  None,
+                  _,
+                  true
+                )
+              ) =>
+          case other => fail(s"Expected DdlDefaultValueProcessor for ingested_at, got $other")
+        }
+        processors.find(_.column == "profile.seniority") match {
+          case Some(
+                ScriptProcessor(
+                  IngestPipelineType.Default,
+                  Some(
+                    "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))"
+                  ),
+                  "DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)",
+                  "profile.seniority",
+                  SQLTypes.Int,
+                  source,
+                  true
+                )
+              ) =>
+            source should include(
+              "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.now(ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))"
+            )
+          case other => fail(s"Expected DdlScriptProcessor for profile.seniority, got $other")
+        }
+        processors.find(_.column == "birthdate") match {
+          case Some(
+                DateIndexNameProcessor(
+                  IngestPipelineType.Default,
+                  Some("PARTITION BY birthdate (MONTH)"),
+                  "birthdate",
+                  "M",
+                  List("yyyy-MM"),
+                  "users-",
+                  true
+                )
+              ) =>
+          case other => fail(s"Expected DdlDateIndexNameProcessor for birthdate, got $other")
+        }
+        processors.find(_.column == "_id") match {
+          case Some(
+                PrimaryKeyProcessor(
+                  IngestPipelineType.Default,
+                  Some("PRIMARY KEY (id)"),
+                  "_id",
+                  cols,
+                  false,
+                  Some(false),
+                  "\\|\\|"
+                )
+              ) =>
+            cols should contain("id")
+          case other => fail(s"Expected DdlPrimaryKeyProcessor for _id, got $other")
+        }
+
+      case _ => fail("Expected CreatePipeline")
+    }
+  }
+
+  it should "parse ALTER PIPELINE IF EXISTS" in {
+    val sql =
+      """ALTER PIPELINE IF EXISTS user_pipeline (
+        |    ADD PROCESSOR SET (
+        |        field = "status",
+        |        if = "ctx.status == null",
+        |        description = "status DEFAULT 'active'",
+        |        ignore_failure = true,
+        |        value = "active"
+        |    ),
+        |    DROP PROCESSOR SET (_id)
+        |)""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case AlterPipeline(
+            "user_pipeline",
+            ie,
+            statements
+          ) if ie =>
+        statements.size shouldBe 2
+        statements.collect { case AddPipelineProcessor(p) => p } match {
+          case SetProcessor(
+                IngestPipelineType.Default,
+                Some("status DEFAULT 'active'"),
+                "status",
+                StringValue("active"),
+                None,
+                None,
+                None,
+                Some("ctx.status == null"),
+                true
+              ) :: Nil =>
+          case other => fail(s"Expected AddPipelineProcessor with SetProcessor, got $other")
+        }
+        statements.collect { case DropPipelineProcessor(IngestProcessorType.Set, f) =>
+          f
+        } should contain("_id")
+      case _ => fail("Expected AlterPipeline")
+    }
+  }
+
+  it should "parse DROP PIPELINE if exists" in {
+    val sql = "DROP PIPELINE IF EXISTS user_pipeline"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DropPipeline("user_pipeline", ie) if ie =>
+      case _                                       => fail("Expected DropPipeline")
+    }
+  }
+
+  // --- DML ---
+
+  it should "parse INSERT INTO ... VALUES" in {
+    val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice') ON CONFLICT DO NOTHING"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", cols, Right(values), Some(OnConflict(None, false))) =>
+        cols should contain inOrder ("id", "name")
+        values.head.map(_.value) should contain inOrder (1, "Alice")
+      case _ => fail("Expected Insert with values")
+    }
+  }
+
+  it should "parse INSERT INTO ... VALUES with DO UPDATE" in {
+    val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'BOB') ON CONFLICT DO UPDATE"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", cols, Right(values), Some(OnConflict(None, true))) =>
+        cols should contain inOrder ("id", "name")
+        values.head.map(_.value) should contain inOrder (1, "Alice")
+        values.last.map(_.value) should contain inOrder (2, "BOB")
+      case _ => fail("Expected Insert with values")
+    }
+  }
+
+  it should "parse INSERT INTO ... SELECT" in {
+    val sql = "INSERT INTO users AS SELECT id, name FROM old_users ON CONFLICT DO NOTHING"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(None, false))) =>
+        sel.sql should include("SELECT id, name FROM old_users ON CONFLICT DO NOTHING")
+      case _ => fail("Expected Insert with select")
+    }
+  }
+
+  it should "parse INSERT INTO ... SELECT with ON CONFLICT" in {
+    val sql = "INSERT INTO users SELECT id, name FROM old_users ON CONFLICT (id) DO UPDATE"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(Some(Seq("id")), true))) =>
+        sel.sql should include("SELECT id, name FROM old_users ON CONFLICT (id) DO UPDATE")
+      case _ => fail("Expected Insert with select")
+    }
+  }
+
+  it should "parse UPDATE" in {
+    val sql = "UPDATE users SET name = 'Bob', age = 42 WHERE id = 1"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Update("users", values, Some(where)) =>
+        values("name").value shouldBe "Bob"
+        values("age").value shouldBe 42
+        where.sql should include("id = 1")
+      case _ => fail("Expected Update")
+    }
+  }
+
+  it should "parse DELETE" in {
+    val sql = "DELETE FROM users WHERE age > 30"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Delete(table, Some(where)) =>
+        table.name shouldBe "users"
+        where.sql should include("age > 30")
+      case _ => fail("Expected Delete")
+    }
+  }
+
+  it should "parse UNION ALL" in {
+    val sql =
+      "SELECT id, name FROM dql_users WHERE age > 30 UNION ALL SELECT id, name FROM dql_users WHERE age <= 30"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case MultiSearch(Seq(left: DqlStatement, right: DqlStatement)) =>
+        left.sql should include("SELECT id, name FROM dql_users WHERE age > 30")
+        right.sql should include("SELECT id, name FROM dql_users WHERE age <= 30")
+      case _ => fail("Expected Union")
+    }
   }
 }

@@ -16,6 +16,11 @@
 
 package app.softnetwork.elastic.client
 
+import akka.NotUsed
+import akka.stream.scaladsl.Source
+import app.softnetwork.elastic.client.scroll.ScrollMetrics
+import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
+
 import scala.util.control.NonFatal
 
 package object result {
@@ -47,6 +52,13 @@ package object result {
 
     /** Converts to Either */
     def toEither: Either[ElasticError, T]
+
+    /** Converts to Future */
+    def toFuture(implicit
+      ec: scala.concurrent.ExecutionContext
+    ): scala.concurrent.Future[T] = {
+      scala.concurrent.Future.fromTry(this.toEither.toTry)
+    }
 
     /** Fold pattern matching */
     def fold[U](onFailure: ElasticError => U, onSuccess: T => U): U
@@ -116,7 +128,9 @@ package object result {
 
   /** Represents a failed operation.
     */
-  case class ElasticFailure(elasticError: ElasticError) extends ElasticResult[Nothing] {
+  case class ElasticFailure(elasticError: ElasticError)
+      extends Throwable(elasticError.message, elasticError)
+      with ElasticResult[Nothing] {
     override def isSuccess: Boolean = false
 
     override def map[U](f: Nothing => U): ElasticResult[U] = this
@@ -141,6 +155,8 @@ package object result {
     override def get: Nothing = throw new NoSuchElementException(
       s"ElasticFailure.get: ${elasticError.message}"
     )
+
+    def isNotFound: Boolean = elasticError.statusCode.contains(404)
   }
 
   /** Represents an Elasticsearch error.
@@ -151,7 +167,7 @@ package object result {
     statusCode: Option[Int] = None,
     index: Option[String] = None,
     operation: Option[String] = None
-  ) {
+  ) extends Throwable(message, cause.orNull) {
 
     /** Complete message with context */
     def fullMessage: String = {
@@ -171,6 +187,43 @@ package object result {
         case Some(ex) => logger.error(fullMessage, ex)
         case None     => logger.error(fullMessage)
       }
+    }
+  }
+
+  object ElasticError {
+
+    /** Creates an ElasticError from an exception */
+    def fromThrowable(
+      ex: Throwable,
+      statusCode: Option[Int] = None,
+      index: Option[String] = None,
+      operation: Option[String] = None
+    ): ElasticError = {
+      ElasticError(
+        ex.getMessage,
+        Some(ex),
+        statusCode,
+        index,
+        operation
+      )
+    }
+
+    /** Creates a not found error */
+    def notFound(index: String, operation: String): ElasticError = {
+      ElasticError(
+        s"Resource not found in index '$index' during operation '$operation'",
+        statusCode = Some(404),
+        index = Some(index),
+        operation = Some(operation)
+      )
+    }
+
+    def notFound(resource: String, name: String, operation: String): ElasticError = {
+      ElasticError(
+        s"$resource '$name' not found during operation '$operation'",
+        statusCode = Some(404),
+        operation = Some(operation)
+      )
     }
   }
 
@@ -330,4 +383,45 @@ package object result {
       }
     }
   }
+
+  sealed trait QueryResult
+
+  case object EmptyResult extends QueryResult
+
+  object QueryResult {
+    def empty: QueryResult = EmptyResult
+  }
+
+  // --------------------
+  // DQL (SELECT)
+  // --------------------
+  case class QueryRows(rows: Seq[Map[String, Any]]) extends QueryResult
+
+  case class QueryStream(
+    stream: Source[(Map[String, Any], ScrollMetrics), NotUsed]
+  ) extends QueryResult
+
+  case class QueryStructured(response: ElasticResponse) extends QueryResult
+
+  // --------------------
+  // DML (INSERT / UPDATE / DELETE)
+  // --------------------
+  case class DmlResult(
+    inserted: Long = 0L,
+    updated: Long = 0L,
+    deleted: Long = 0L,
+    rejected: Long = 0L
+  ) extends QueryResult
+
+  // --------------------
+  // DDL (CREATE / ALTER / DROP / TRUNCATE)
+  // --------------------
+  case class DdlResult(success: Boolean) extends QueryResult
+
+  case class TableResult(table: Table) extends QueryResult
+
+  case class PipelineResult(pipeline: IngestPipeline) extends QueryResult
+
+  case class SQLResult(sql: String) extends QueryResult
+
 }

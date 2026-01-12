@@ -14,21 +14,8 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.sql.query
+package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.SQL
+import app.softnetwork.elastic.sql.query.{Delete, Insert, Update}
 
-/** SQL Query wrapper
-  * @param query
-  *   - the SQL query
-  * @param score
-  *   - optional minimum score for the elasticsearch query
-  */
-case class SQLQuery(query: SQL, score: Option[Double] = None) {
-  import app.softnetwork.elastic.sql.SQLImplicits._
-  lazy val request: Option[Either[SQLSearchRequest, SQLMultiSearchRequest]] = {
-    query
-  }
-
-  def minScore(score: Double): SQLQuery = this.copy(score = Some(score))
-}
+trait DmlParser { self: Parser with WhereParser => }

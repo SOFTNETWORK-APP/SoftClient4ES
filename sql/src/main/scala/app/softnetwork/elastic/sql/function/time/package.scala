@@ -38,6 +38,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTypes,
   SQLVarchar
 }
+import app.softnetwork.elastic.sql.function.time.CurrentFunction.queryTimestamp
 import app.softnetwork.elastic.sql.time.{IsoField, TimeField, TimeInterval, TimeUnit}
 
 package object time {
@@ -116,7 +117,7 @@ package object time {
   }
 
   sealed trait DateTimeFunction extends Function {
-    def now: String = "ZonedDateTime.now(ZoneId.of('Z'))"
+    def now: String = "ZonedDateTime.ofInstant(Instant.ofEpochMilli({{__now__}}), ZoneId.of('Z'))"
     override def baseType: SQLType = SQLTypes.DateTime
   }
 
@@ -140,15 +141,26 @@ package object time {
     override def painless(context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
-          ctx.addParam(LiteralParam(param)) match {
+          ctx.addParam(LiteralParam(param.replaceAll("\\{\\{__now__}}", ctx.timestamp))) match {
             case Some(p) =>
               return SQLTypeUtils.coerce(p, this.baseType, this.out, nullable = false, context)
             case _ =>
           }
         case _ =>
       }
-      SQLTypeUtils.coerce(param, this.baseType, this.out, nullable = false, context)
+      SQLTypeUtils.coerce(
+        param.replaceAll("\\{\\{__now__}}", queryTimestamp),
+        this.baseType,
+        this.out,
+        nullable = false,
+        context
+      )
     }
+  }
+
+  object CurrentFunction {
+    val processorTimestamp: String = "ctx['_ingest']['timestamp']"
+    val queryTimestamp: String = "params.__now__"
   }
 
   sealed trait CurrentDateTimeFunction extends DateTimeFunction with CurrentFunction {
@@ -388,7 +400,7 @@ package object time {
     override lazy val words: List[String] = List(sql, "DATEDIFF")
   }
 
-  case class DateDiff(end: PainlessScript, start: PainlessScript, unit: TimeUnit)
+  case class DateDiff(start: PainlessScript, end: PainlessScript, unit: TimeUnit)
       extends DateTimeFunction
       with BinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
       with PainlessScript {
@@ -402,10 +414,27 @@ package object time {
 
     override def sql: String = DateDiff.sql
 
-    override def toSQL(base: String): String = s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
+    override def toSQL(base: String): String = s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
 
-    override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
-      s"${unit.painless(context)}${DateDiff.painless(context)}(${callArgs.mkString(", ")})"
+    override def in: SQLType = SQLTypes.Date
+
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      val ret =
+        s"Long.valueOf(${unit.painless(context)}${DateDiff.painless(context)}(${callArgs.mkString(", ")}))"
+      context match {
+        case Some(ctx)
+            if ctx.isProcessor => // to fix bug in painless script processor context with elasticsearch v6
+          ctx.addParam(LiteralParam(ret)) match {
+            case Some(p) => return p
+            case _       =>
+          }
+        case _ =>
+      }
+      ret
+    }
   }
 
   case object DateAdd extends Expr("DATE_ADD") with TokenRegex {

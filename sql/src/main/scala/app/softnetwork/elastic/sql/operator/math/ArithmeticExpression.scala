@@ -20,6 +20,7 @@ import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.`type`._
 import app.softnetwork.elastic.sql.function.{BinaryFunction, TransformFunction}
 import app.softnetwork.elastic.sql.parser.Validator
+import app.softnetwork.elastic.sql.query.NestedElement
 
 case class ArithmeticExpression(
   left: PainlessScript,
@@ -27,7 +28,8 @@ case class ArithmeticExpression(
   right: PainlessScript,
   group: Boolean = false
 ) extends TransformFunction[SQLNumeric, SQLNumeric]
-    with BinaryFunction[SQLNumeric, SQLNumeric, SQLNumeric] {
+    with BinaryFunction[SQLNumeric, SQLNumeric, SQLNumeric]
+    with Updateable {
 
   override def fun: Option[ArithmeticOperator] = Some(operator)
 
@@ -129,4 +131,35 @@ case class ArithmeticExpression(
       expr
   }
 
+  override def update(request: query.SingleSearch): ArithmeticExpression = {
+    (left, right) match {
+      case (l: Updateable, r: Updateable) =>
+        this.copy(
+          left = l.update(request).asInstanceOf[PainlessScript],
+          right = r.update(request).asInstanceOf[PainlessScript]
+        )
+      case (l: Updateable, _) =>
+        this.copy(
+          left = l.update(request).asInstanceOf[PainlessScript]
+        )
+      case (_, r: Updateable) =>
+        this.copy(
+          right = r.update(request).asInstanceOf[PainlessScript]
+        )
+      case _ =>
+        this
+    }
+  }
+
+  override def functionNestedElement: Option[NestedElement] =
+    (left, right) match {
+      case (l: Identifier, r: Identifier) =>
+        l.nestedElement.orElse(r.nestedElement)
+      case (l: Identifier, _) =>
+        l.nestedElement
+      case (_, r: Identifier) =>
+        r.nestedElement
+      case _ =>
+        None
+    }
 }

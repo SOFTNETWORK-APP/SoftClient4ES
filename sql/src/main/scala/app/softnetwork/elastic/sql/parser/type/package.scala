@@ -18,11 +18,16 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.{
   BooleanValue,
+  BooleanValues,
   DoubleValue,
+  DoubleValues,
   Identifier,
   LongValue,
+  LongValues,
+  ParamValue,
   PiValue,
   StringValue,
+  StringValues,
   Value
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
@@ -48,8 +53,29 @@ package object `type` {
     def boolean: PackratParser[BooleanValue] =
       """(?i)(true|false)\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
+    def param: PackratParser[ParamValue.type] =
+      "?" ^^ (_ => ParamValue)
+
+    def literals: PackratParser[Value[_]] = "[" ~> repsep(literal, ",") <~ "]" ^^ { list =>
+      StringValues(list)
+    }
+
+    def longs: PackratParser[Value[_]] = "[" ~> repsep(long, ",") <~ "]" ^^ { list =>
+      LongValues(list)
+    }
+
+    def doubles: PackratParser[Value[_]] = "[" ~> repsep(double, ",") <~ "]" ^^ { list =>
+      DoubleValues(list)
+    }
+
+    def booleans: PackratParser[BooleanValues] = "[" ~> repsep(boolean, ",") <~ "]" ^^ { list =>
+      BooleanValues(list)
+    }
+
+    def array: PackratParser[Value[_]] = literals | longs | doubles | booleans
+
     def value: PackratParser[Value[_]] =
-      literal | pi | double | long | boolean
+      literal | pi | double | long | boolean | param | array
 
     def identifierWithValue: Parser[Identifier] = (value ^^ functionAsIdentifier) >> cast
 
@@ -87,8 +113,27 @@ package object `type` {
 
     def float_type: PackratParser[SQLTypes.Real.type] = "(?i)float|real".r ^^ (_ => SQLTypes.Real)
 
-    def sql_type: PackratParser[SQLType] =
-      char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type
+    def struct_type: PackratParser[SQLTypes.Struct.type] =
+      "(?i)struct".r ^^ (_ => SQLTypes.Struct)
 
+    def array_type: PackratParser[SQLTypes.Array] =
+      "(?i)array<".r ~> sql_type <~ ">" ^^ { elementType =>
+        SQLTypes.Array(elementType)
+      }
+
+    def sql_type: PackratParser[SQLType] =
+      char_type | string_type | datetime_type | timestamp_type | date_type | time_type | boolean_type | long_type | double_type | float_type | int_type | short_type | byte_type | struct_type | array_type
+
+    def text_type: PackratParser[SQLTypes.Text.type] =
+      "(?i)text".r ^^ (_ => SQLTypes.Text)
+
+    def keyword_type: PackratParser[SQLTypes.Keyword.type] =
+      "(?i)keyword".r ^^ (_ => SQLTypes.Keyword)
+
+    def geo_point_type: PackratParser[SQLTypes.GeoPoint.type] =
+      "(?i)(geo_point|geopoint)".r ^^ (_ => SQLTypes.GeoPoint)
+
+    def extension_type: PackratParser[SQLType] =
+      sql_type | text_type | keyword_type | geo_point_type
   }
 }

@@ -129,7 +129,7 @@ trait SettingsApi { _: IndicesApi =>
   def getRefreshInterval(index: String): ElasticResult[String] = {
     loadSettings(index).flatMap { settingsJson =>
       ElasticResult.attempt(
-        new JsonParser().parse(settingsJson).getAsJsonObject
+        JsonParser.parseString(settingsJson).getAsJsonObject
       ) match {
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse JSON settings for index '$index': ${error.message}")
@@ -192,7 +192,7 @@ trait SettingsApi { _: IndicesApi =>
     executeLoadSettings(index).flatMap { jsonString =>
       // ✅ Extracting settings from JSON
       ElasticResult.attempt(
-        new JsonParser().parse(jsonString).getAsJsonObject
+        JsonParser.parseString(jsonString).getAsJsonObject
       ) match {
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse JSON settings for index '$index': ${error.message}")

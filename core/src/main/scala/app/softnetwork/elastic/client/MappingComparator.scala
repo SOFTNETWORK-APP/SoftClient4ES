@@ -26,8 +26,8 @@ object MappingComparator extends StrictLogging {
 
   private def parseJsonToMap(jsonString: String): Map[String, JsonElement] = {
     Try(
-      new JsonParser()
-        .parse(jsonString)
+      JsonParser
+        .parseString(jsonString)
         .getAsJsonObject
         .get("properties")
         .getAsJsonObject

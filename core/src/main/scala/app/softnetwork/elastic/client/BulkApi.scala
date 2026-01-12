@@ -23,11 +23,9 @@ import akka.stream.scaladsl.{Balance, Flow, GraphDSL, Merge, Sink, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.file._
 import app.softnetwork.elastic.client.result.{ElasticResult, ElasticSuccess}
-
+import app.softnetwork.elastic.sql.query.{FileFormat, Unknown}
+import app.softnetwork.elastic.sql.schema.sqlConfig
 import org.apache.hadoop.conf.Configuration
-
-import org.json4s.DefaultFormats
-import org.json4s.jackson.JsonMethods.parse
 
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -83,7 +81,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   def bulkFromFile(
     filePath: String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -128,7 +126,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   def bulkFromParquet(
     filePath: String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     callbacks: BulkCallbacks = BulkCallbacks.default,
     bufferSize: Int = 500,
     hadoopConf: Option[Configuration] = None
@@ -153,7 +151,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   def bulkFromJson(
     filePath: String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     callbacks: BulkCallbacks = BulkCallbacks.default,
     bufferSize: Int = 500,
     validateJson: Boolean = true,
@@ -219,7 +217,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -324,7 +322,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -407,7 +405,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String] = None,
-    idKey: Option[String] = None,
+    idKey: Option[Set[String]] = None,
     suffixDateKey: Option[String] = None,
     suffixDatePattern: Option[String] = None,
     update: Option[Boolean] = None,
@@ -602,7 +600,7 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
   private def toBulkItem[D](
     toDocument: D => String,
     indexKey: Option[String],
-    idKey: Option[String],
+    idKey: Option[Set[String]],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
     update: Option[Boolean],
@@ -610,13 +608,13 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     parentIdKey: Option[String],
     item: D
   )(implicit bulkOptions: BulkOptions): BulkItem = {
-    implicit val formats: DefaultFormats = org.json4s.DefaultFormats
     val document = toDocument(item)
-    val jsonMap = parse(document, useBigDecimalForDouble = false).extract[Map[String, Any]]
+    val jsonNode = mapper.readTree(document)
+    val jsonMap = mapper.convertValue(jsonNode, classOf[Map[String, Any]])
 
     // extract id
-    val id = idKey.flatMap { i =>
-      jsonMap.get(i).map(_.toString)
+    val id = idKey.map { keys =>
+      keys.map(i => jsonMap.getOrElse(i, "").toString).mkString(sqlConfig.compositeKeySeparator)
     }
 
     // extract final index name
@@ -628,8 +626,9 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     val index = suffixDateKey
       .flatMap { s =>
         jsonMap.get(s).map { d =>
-          val strDate = d.toString.substring(0, 10)
-          val date = LocalDate.parse(strDate, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+          val pattern = suffixDatePattern.getOrElse("yyyy-MM-dd")
+          val strDate = d.toString.substring(0, pattern.length)
+          val date = LocalDate.parse(strDate, DateTimeFormatter.ofPattern(pattern))
           date.format(
             suffixDatePattern
               .map(DateTimeFormatter.ofPattern)

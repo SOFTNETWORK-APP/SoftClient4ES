@@ -24,10 +24,18 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLSearchRequest}
-import app.softnetwork.elastic.client
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.client.result.{
+  ElasticError,
+  ElasticFailure,
+  ElasticResult,
+  ElasticSuccess
+}
+import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.serialization._
+import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
+  Conflicts,
   FieldSort,
   FieldValue,
   Refresh,
@@ -35,6 +43,7 @@ import co.elastic.clients.elasticsearch._types.{
   SortOrder,
   Time
 }
+import co.elastic.clients.elasticsearch.cat.IndicesRequest
 import co.elastic.clients.elasticsearch.core.bulk.{
   BulkOperation,
   DeleteOperation,
@@ -48,6 +57,12 @@ import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESS
 import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
+import co.elastic.clients.elasticsearch.ingest.{
+  DeletePipelineRequest,
+  GetPipelineRequest,
+  PutPipelineRequest
+}
+import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
@@ -75,6 +90,8 @@ trait JavaClientApi
     with JavaClientScrollApi
     with JavaClientCompanion
     with JavaClientVersionApi
+    with JavaClientPipelineApi
+    with JavaClientTemplateApi
 
 /** Elasticsearch client implementation using the Java Client
   * @see
@@ -82,7 +99,7 @@ trait JavaClientApi
   */
 trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
   _: SerializationApi with JavaClientCompanion =>
-  override private[client] def executeVersion(): result.ElasticResult[String] =
+  override private[client] def executeVersion(): ElasticResult[String] =
     executeJavaAction(
       operation = "version",
       index = None,
@@ -98,12 +115,19 @@ trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
   * @see
   *   [[IndicesApi]] for index management operations
   */
-trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHelpers {
-  _: JavaClientCompanion =>
+trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
+  _: JavaClientRefreshApi
+    with JavaClientPipelineApi
+    with JavaClientScrollApi
+    with JavaClientBulkApi
+    with JavaClientTemplateApi
+    with JavaClientCompanion =>
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
-  ): result.ElasticResult[Boolean] =
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "createIndex",
       index = Some(index),
@@ -111,15 +135,60 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
     )(
       apply()
         .indices()
-        .create(
-          new CreateIndexRequest.Builder()
+        .create {
+          val req = new CreateIndexRequest.Builder()
             .index(index)
             .settings(new IndexSettings.Builder().withJson(new StringReader(settings)).build())
-            .build()
-        )
+            .aliases(
+              aliases
+                .map(alias => {
+                  var builder =
+                    new Alias.Builder().isWriteIndex(alias.isWriteIndex).isHidden(alias.isHidden)
+                  alias.routing.foreach(r => builder = builder.routing(r))
+                  alias.indexRouting.foreach(ir => builder = builder.indexRouting(ir))
+                  alias.searchRouting.foreach(sr => builder = builder.searchRouting(sr))
+                  (alias.alias, builder.build())
+                })
+                .toMap
+                .asJava
+            )
+          mappings match {
+            case None => req.build()
+            case Some(m) =>
+              req
+                .mappings(
+                  new TypeMapping.Builder()
+                    .withJson(
+                      new StringReader(m)
+                    )
+                    .build()
+                )
+                .build()
+          }
+        }
     )(_.acknowledged())
 
-  override private[client] def executeDeleteIndex(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+    executeJavaAction(
+      operation = "getIndex",
+      index = Some(index),
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .get(
+          new GetIndexRequest.Builder().index(index).build()
+        )
+    )(response => {
+      val valueOpt = response.indices().asScala.get(index)
+      valueOpt match {
+        case Some(value) => Some(convertToJson(value))
+        case None        => None
+      }
+    })
+  }
+
+  override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "deleteIndex",
       index = Some(index),
@@ -130,7 +199,7 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
         .delete(new DeleteIndexRequest.Builder().index(index).build())
     )(_.acknowledged())
 
-  override private[client] def executeCloseIndex(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "closeIndex",
       index = Some(index),
@@ -141,7 +210,7 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
         .close(new CloseIndexRequest.Builder().index(index).build())
     )(_.acknowledged())
 
-  override private[client] def executeOpenIndex(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeOpenIndex(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "openIndex",
       index = Some(index),
@@ -155,8 +224,9 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
-  ): result.ElasticResult[(Boolean, Option[Long])] =
+    refresh: Boolean,
+    pipeline: Option[String]
+  ): ElasticResult[(Boolean, Option[Long])] =
     executeJavaAction(
       operation = "reindex",
       index = Some(s"$sourceIndex -> $targetIndex"),
@@ -180,7 +250,7 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
       (failures.isEmpty, Option(response.total()))
     }
 
-  override private[client] def executeIndexExists(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "indexExists",
       index = Some(index),
@@ -193,6 +263,75 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
         )
     )(_.value())
 
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    executeJavaAction(
+      operation = "deleteByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      apply().deleteByQuery(
+        new DeleteByQueryRequest.Builder()
+          .index(index)
+          .withJson(new StringReader(jsonQuery)) // JSON query as raw string
+          .refresh(refresh)
+          .conflicts(Conflicts.Proceed)
+          .build()
+      )
+    )(_.deleted())
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    executeJavaAction(
+      operation = "isIndexClosed",
+      index = Some(index),
+      retryable = true
+    )(
+      apply()
+        .cat()
+        .indices(
+          new IndicesRequest.Builder()
+            .index(index)
+            .build()
+        )
+    ) { response =>
+      val entries = response.indices().asScala.headOption
+      if (entries.isEmpty) false
+      else {
+        val entry = entries.head
+        entry.status() match {
+          case "close" => true
+          case _       => false
+        }
+      }
+    }
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    jsonQuery: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+
+    executeJavaAction(
+      operation = "updateByQuery",
+      index = Some(index),
+      retryable = true
+    )(
+      apply().updateByQuery(
+        new UpdateByQueryRequest.Builder()
+          .index(index)
+          .refresh(refresh)
+          .pipeline(pipelineId.orNull)
+          .withJson(new StringReader(jsonQuery))
+          .build()
+      )
+    ) { response =>
+      response.updated()
+    }
+  }
 }
 
 /** Elasticsearch client implementation of Alias API using the Java Client
@@ -200,34 +339,39 @@ trait JavaClientIndicesApi extends IndicesApi with RefreshApi with JavaClientHel
   *   [[AliasApi]] for alias management operations
   */
 trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
-  _: IndicesApi with JavaClientCompanion =>
+  _: JavaClientIndicesApi with JavaClientCompanion =>
 
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
-  ): result.ElasticResult[Boolean] =
+    alias: TableAlias
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "addAlias",
-      index = Some(index),
+      index = Some(alias.table),
       retryable = false
-    )(
+    ) {
+      val node = alias.node
+      node.put("index", alias.table)
+      node.put("alias", alias.alias)
+
+      val action = mapper.createObjectNode()
+      action.set("add", node)
+
+      val addAction = new Action.Builder().withJson(new StringReader(action))
       apply()
         .indices()
         .updateAliases(
           new UpdateAliasesRequest.Builder()
             .actions(
-              new Action.Builder()
-                .add(new AddAction.Builder().index(index).alias(alias).build())
-                .build()
+              addAction.build()
             )
             .build()
         )
-    )(_.acknowledged())
+    }(_.acknowledged())
 
   override private[client] def executeRemoveAlias(
     index: String,
     alias: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "removeAlias",
       index = Some(index),
@@ -246,7 +390,7 @@ trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
         )
     )(_.acknowledged())
 
-  override private[client] def executeAliasExists(alias: String): result.ElasticResult[Boolean] =
+  override private[client] def executeAliasExists(alias: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "aliasExists",
       index = None,
@@ -259,7 +403,7 @@ trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
         )
     )(_.value())
 
-  override private[client] def executeGetAliases(index: String): result.ElasticResult[String] =
+  override private[client] def executeGetAliases(index: String): ElasticResult[String] =
     executeJavaAction(
       operation = "getAliases",
       index = Some(index),
@@ -276,7 +420,7 @@ trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
     oldIndex: String,
     newIndex: String,
     alias: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "swapAlias",
       index = Some(s"$oldIndex <-> $newIndex"),
@@ -307,12 +451,12 @@ trait JavaClientAliasApi extends AliasApi with JavaClientHelpers {
   *   [[SettingsApi]] for settings management operations
   */
 trait JavaClientSettingsApi extends SettingsApi with JavaClientHelpers {
-  _: IndicesApi with JavaClientCompanion =>
+  _: JavaClientIndicesApi with JavaClientCompanion =>
 
   override private[client] def executeUpdateSettings(
     index: String,
     settings: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "updateSettings",
       index = Some(index),
@@ -328,7 +472,7 @@ trait JavaClientSettingsApi extends SettingsApi with JavaClientHelpers {
         )
     )(_.acknowledged())
 
-  override private[client] def executeLoadSettings(index: String): result.ElasticResult[String] =
+  override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
     executeJavaAction(
       operation = "loadSettings",
       index = Some(index),
@@ -348,12 +492,17 @@ trait JavaClientSettingsApi extends SettingsApi with JavaClientHelpers {
   *   [[MappingApi]] for mapping management operations
   */
 trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
-  _: SettingsApi with IndicesApi with RefreshApi with JavaClientCompanion =>
+  _: JavaClientSettingsApi
+    with JavaClientIndicesApi
+    with JavaClientRefreshApi
+    with JavaClientVersionApi
+    with JavaClientAliasApi
+    with JavaClientCompanion =>
 
   override private[client] def executeSetMapping(
     index: String,
     mapping: String
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "setMapping",
       index = Some(index),
@@ -366,7 +515,7 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
         )
     )(_.acknowledged())
 
-  override private[client] def executeGetMapping(index: String): result.ElasticResult[String] =
+  override private[client] def executeGetMapping(index: String): ElasticResult[String] =
     executeJavaAction(
       operation = "getMapping",
       index = Some(index),
@@ -396,7 +545,7 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
     getMapping(index).flatMap { jsonString =>
       // ✅ Extracting mapping from JSON
       ElasticResult.attempt(
-        new JsonParser().parse(jsonString).getAsJsonObject
+        JsonParser.parseString(jsonString).getAsJsonObject
       ) match {
         case ElasticFailure(error) =>
           logger.error(s"❌ Failed to parse JSON mapping for index '$index': ${error.message}")
@@ -418,7 +567,7 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
 trait JavaClientRefreshApi extends RefreshApi with JavaClientHelpers {
   _: JavaClientCompanion =>
 
-  override private[client] def executeRefresh(index: String): result.ElasticResult[Boolean] =
+  override private[client] def executeRefresh(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "refresh",
       index = Some(index),
@@ -448,7 +597,7 @@ trait JavaClientFlushApi extends FlushApi with JavaClientHelpers {
     index: String,
     force: Boolean,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "flush",
       index = Some(index),
@@ -476,7 +625,7 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
 
   override private[client] def executeCount(
     query: ElasticQuery
-  ): result.ElasticResult[Option[Double]] =
+  ): ElasticResult[Option[Double]] =
     executeJavaAction(
       operation = "count",
       index = Some(query.indices.mkString(",")),
@@ -492,14 +641,14 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
 
   override private[client] def executeCountAsync(
     query: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[Double]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[Double]]] =
     fromCompletableFuture(
       async()
         .count(
           new CountRequest.Builder().index(query.indices.asJava).build()
         )
     ).map { response =>
-      result.ElasticSuccess(Option(response.count().toDouble))
+      ElasticSuccess(Option(response.count().toDouble))
     }
 
 }
@@ -509,14 +658,14 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
   *   [[IndexApi]] for index operations
   */
 trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
-  _: SettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeIndex(
     index: String,
     id: String,
     source: String,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "index",
       index = Some(index),
@@ -544,7 +693,7 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
     wait: Boolean
   )(implicit
     ec: ExecutionContext
-  ): Future[result.ElasticResult[Boolean]] =
+  ): Future[ElasticResult[Boolean]] =
     fromCompletableFuture(
       async()
         .index(
@@ -557,10 +706,10 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
         )
     ).map { response =>
       if (response.shards().failed().intValue() == 0) {
-        result.ElasticSuccess(true)
+        ElasticSuccess(true)
       } else {
-        result.ElasticFailure(
-          client.result.ElasticError(s"Failed to index document with id: $id in index: $index")
+        ElasticFailure(
+          ElasticError(s"Failed to index document with id: $id in index: $index")
         )
       }
     }
@@ -572,7 +721,7 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
   *   [[UpdateApi]] for update operations
   */
 trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
-  _: SettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
 
   override private[client] def executeUpdate(
     index: String,
@@ -580,7 +729,7 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
     source: String,
     upsert: Boolean,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "update",
       index = Some(index),
@@ -609,7 +758,7 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
     source: String,
     upsert: Boolean,
     wait: Boolean
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Boolean]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Boolean]] =
     fromCompletableFuture(
       async()
         .update(
@@ -624,10 +773,10 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
         )
     ).map { response =>
       if (response.shards().failed().intValue() == 0) {
-        result.ElasticSuccess(true)
+        ElasticSuccess(true)
       } else {
-        result.ElasticFailure(
-          client.result.ElasticError(s"Failed to update document with id: $id in index: $index")
+        ElasticFailure(
+          ElasticError(s"Failed to update document with id: $id in index: $index")
         )
       }
     }
@@ -639,13 +788,13 @@ trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
   *   [[DeleteApi]] for delete operations
   */
 trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
-  _: SettingsApi with JavaClientCompanion =>
+  _: JavaClientSettingsApi with JavaClientCompanion =>
 
   override private[client] def executeDelete(
     index: String,
     id: String,
     wait: Boolean
-  ): result.ElasticResult[Boolean] =
+  ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "delete",
       index = Some(index),
@@ -667,7 +816,7 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
 
   override private[client] def executeDeleteAsync(index: String, id: String, wait: Boolean)(implicit
     ec: ExecutionContext
-  ): Future[result.ElasticResult[Boolean]] =
+  ): Future[ElasticResult[Boolean]] =
     fromCompletableFuture(
       async()
         .delete(
@@ -679,10 +828,10 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
         )
     ).map { response =>
       if (response.shards().failed().intValue() == 0) {
-        result.ElasticSuccess(true)
+        ElasticSuccess(true)
       } else {
-        result.ElasticFailure(
-          client.result.ElasticError(s"Failed to delete document with id: $id in index: $index")
+        ElasticFailure(
+          ElasticError(s"Failed to delete document with id: $id in index: $index")
         )
       }
     }
@@ -699,7 +848,7 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
   override private[client] def executeGet(
     index: String,
     id: String
-  ): result.ElasticResult[Option[String]] =
+  ): ElasticResult[Option[String]] =
     executeJavaAction(
       operation = "get",
       index = Some(index),
@@ -723,7 +872,7 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
 
   override private[client] def executeGetAsync(index: String, id: String)(implicit
     ec: ExecutionContext
-  ): Future[result.ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[String]]] =
     fromCompletableFuture(
       async()
         .get(
@@ -735,9 +884,9 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
         )
     ).map { response =>
       if (response.found()) {
-        result.ElasticSuccess(Some(mapper.writeValueAsString(response.source())))
+        ElasticSuccess(Some(mapper.writeValueAsString(response.source())))
       } else {
-        result.ElasticSuccess(None)
+        ElasticSuccess(None)
       }
     }
 
@@ -750,12 +899,14 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   _: JavaClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SQLSearchRequest): String =
+  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long
+  ): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): result.ElasticResult[Option[String]] =
+  ): ElasticResult[Option[String]] =
     executeJavaAction(
       operation = "singleSearch",
       index = Some(elasticQuery.indices.mkString(",")),
@@ -775,7 +926,7 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): result.ElasticResult[Option[String]] =
+  ): ElasticResult[Option[String]] =
     executeJavaAction(
       operation = "multiSearch",
       index = Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(",")),
@@ -794,7 +945,7 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
 
   override private[client] def executeSingleSearchAsync(
     elasticQuery: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
     fromCompletableFuture(
       async()
         .search(
@@ -805,12 +956,12 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
           classOf[JMap[String, Object]]
         )
     ).map { response =>
-      result.ElasticSuccess(Some(convertToJson(response)))
+      ElasticSuccess(Some(convertToJson(response)))
     }
 
   override private[client] def executeMultiSearchAsync(
     elasticQueries: ElasticQueries
-  )(implicit ec: ExecutionContext): Future[result.ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
     fromCompletableFuture {
       val items = elasticQueries.queries.map { q =>
         new RequestItem.Builder()
@@ -823,7 +974,7 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
       async().msearch(request, classOf[JMap[String, Object]])
     }
       .map { response =>
-        result.ElasticSuccess(Some(convertToJson(response)))
+        ElasticSuccess(Some(convertToJson(response)))
       }
 
 }
@@ -833,7 +984,10 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   *   [[BulkApi]] for bulk operations
   */
 trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
-  _: RefreshApi with SettingsApi with IndexApi with JavaClientCompanion =>
+  _: JavaClientRefreshApi
+    with JavaClientSettingsApi
+    with JavaClientIndexApi
+    with JavaClientCompanion =>
   override type BulkActionType = BulkOperation
   override type BulkResultType = BulkResponse
 
@@ -1008,14 +1162,15 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
 
     action match {
       case BulkAction.UPDATE =>
+        val doc: JsonNode = document
         new BulkOperation.Builder()
           .update(
             new UpdateOperation.Builder()
               .index(bulkItem.index)
               .id(id.orNull)
               .action(
-                new UpdateAction.Builder[JMap[String, Object], JMap[String, Object]]()
-                  .doc(mapper.readValue(document, classOf[JMap[String, Object]]))
+                new UpdateAction.Builder[JsonNode, JsonNode]()
+                  .doc(doc)
                   .docAsUpsert(true)
                   .build()
               )
@@ -1032,12 +1187,13 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
           .build()
 
       case _ =>
+        val doc: JsonNode = document
         new BulkOperation.Builder()
           .index(
-            new IndexOperation.Builder[JMap[String, Object]]()
+            new IndexOperation.Builder[JsonNode]()
               .index(bulkItem.index)
               .id(id.orNull)
-              .document(mapper.readValue(document, classOf[JMap[String, Object]]))
+              .document(doc)
               .build()
           )
           .build()
@@ -1082,7 +1238,7 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
   *   [[ScrollApi]] for scroll operations
   */
 trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
-  _: VersionApi with SearchApi with JavaClientCompanion =>
+  _: JavaClientVersionApi with JavaClientSearchApi with JavaClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -1246,7 +1402,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                     )
 
                   // Parse query to add query clause (not indices, they're in PIT)
-                  val queryJson = new JsonParser().parse(elasticQuery.query).getAsJsonObject
+                  val queryJson = JsonParser.parseString(elasticQuery.query).getAsJsonObject
 
                   // Extract query clause if present
                   if (queryJson.has("query")) {
@@ -1492,4 +1648,302 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
       logger.warn(s"Failed to clear scroll $scrollId: ${ex.getMessage}")
     }
   }
+}
+
+trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers with JavaClientVersionApi {
+  _: JavaClientCompanion with SerializationApi =>
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "createPipeline",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .ingest()
+        .putPipeline(
+          new PutPipelineRequest.Builder()
+            .id(pipelineName)
+            .withJson(new StringReader(pipelineDefinition))
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeDeletePipeline(
+    pipelineName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deletePipeline",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .ingest()
+        .deletePipeline(
+          new DeletePipelineRequest.Builder()
+            .id(pipelineName)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeGetPipeline(
+    pipelineName: String
+  ): ElasticResult[Option[String]] = {
+    executeJavaAction(
+      operation = "getPipeline",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .ingest()
+        .getPipeline(
+          new GetPipelineRequest.Builder()
+            .id(pipelineName)
+            .build()
+        )
+    ) { resp =>
+      resp.pipelines().asScala.get(pipelineName).map { pipeline =>
+        convertToJson(pipeline)
+      }
+    }
+  }
+}
+
+trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with JavaClientVersionApi {
+  _: JavaClientCompanion with SerializationApi =>
+
+  // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
+
+  override private[client] def executeCreateComposableTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "createTemplate",
+      retryable = false
+    )(
+      apply()
+        .indices()
+        .putIndexTemplate(
+          PutIndexTemplateRequest.of { builder =>
+            builder
+              .name(templateName)
+              .withJson(new StringReader(templateDefinition))
+          }
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeDeleteComposableTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] = {
+    if (ifExists) {
+      // Check existence first
+      executeComposableTemplateExists(templateName) match {
+        case ElasticSuccess(exists) =>
+          if (!exists) {
+            logger.debug(s"Composable template '$templateName' does not exist, skipping deletion")
+            return ElasticSuccess(false)
+          }
+        case failure @ ElasticFailure(_) =>
+          return failure
+      }
+    }
+    executeJavaBooleanAction(
+      operation = "deleteTemplate",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .indices()
+        .deleteIndexTemplate(
+          DeleteIndexTemplateRequest.of { builder =>
+            builder.name(templateName)
+          }
+        )
+    )(resp => resp.acknowledged())
+  }
+
+  override private[client] def executeGetComposableTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    executeJavaAction(
+      operation = "getTemplate",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .getIndexTemplate(
+          GetIndexTemplateRequest.of { builder =>
+            builder.name(templateName)
+          }
+        )
+    ) { resp =>
+      resp.indexTemplates().asScala.headOption.map { template =>
+        convertToJson(template)
+      }
+    }
+
+  override private[client] def executeListComposableTemplates()
+    : ElasticResult[Map[String, String]] =
+    executeJavaAction(
+      operation = "listTemplates",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .getIndexTemplate(
+          GetIndexTemplateRequest.of { builder =>
+            builder.name("*")
+          }
+        )
+    ) { resp =>
+      resp
+        .indexTemplates()
+        .asScala
+        .map { template =>
+          template.name -> convertToJson(template)
+        }
+        .toMap
+    }
+
+  override private[client] def executeComposableTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "templateExists",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .existsIndexTemplate(
+          ExistsIndexTemplateRequest.of { builder =>
+            builder.name(templateName)
+          }
+        )
+    )(resp => resp.value())
+
+  // ==================== LEGACY TEMPLATES ====================
+
+  override private[client] def executeCreateLegacyTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "createTemplate",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .indices()
+        .putTemplate(
+          new PutTemplateRequest.Builder()
+            .name(templateName)
+            .withJson(new StringReader(templateDefinition))
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeDeleteLegacyTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] = {
+    if (ifExists) {
+      // Check existence first
+      executeLegacyTemplateExists(templateName) match {
+        case ElasticSuccess(exists) =>
+          if (!exists) {
+            logger.debug(s"Legacy template '$templateName' does not exist, skipping deletion")
+            return ElasticSuccess(false)
+          }
+        case failure @ ElasticFailure(_) =>
+          return failure
+      }
+    }
+    executeJavaBooleanAction(
+      operation = "deleteTemplate",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .indices()
+        .deleteTemplate(
+          new DeleteTemplateRequest.Builder()
+            .name(templateName)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+  }
+
+  override private[client] def executeGetLegacyTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] = {
+    executeJavaAction(
+      operation = "getTemplate",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .getTemplate(
+          new GetTemplateRequest.Builder()
+            .name(templateName)
+            .build()
+        )
+    ) { resp =>
+      resp.templates().asScala.get(templateName).map { template =>
+        convertToJson(template)
+      }
+    }
+  }
+
+  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] = {
+    executeJavaAction(
+      operation = "listTemplates",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .getTemplate(
+          new GetTemplateRequest.Builder()
+            .name("*")
+            .build()
+        )
+    ) { resp =>
+      resp
+        .templates()
+        .asScala
+        .map { case (name, template) =>
+          name -> convertToJson(template)
+        }
+        .toMap
+    }
+  }
+
+  override private[client] def executeLegacyTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] = {
+    executeJavaBooleanAction(
+      operation = "templateExists",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .existsTemplate(
+          new ExistsTemplateRequest.Builder()
+            .name(templateName)
+            .build()
+        )
+    )(resp => resp.value())
+  }
+
 }

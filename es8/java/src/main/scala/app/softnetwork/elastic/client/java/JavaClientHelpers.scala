@@ -16,12 +16,15 @@
 
 package app.softnetwork.elastic.client.java
 
-import app.softnetwork.elastic.client.ElasticClientHelpers
+import app.softnetwork.elastic.client.{ElasticClientHelpers, SerializationApi}
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
 
 import scala.util.{Failure, Success, Try}
 
-trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
+trait JavaClientHelpers
+    extends ElasticClientHelpers
+    with JavaClientConversion
+    with SerializationApi {
   _: JavaClientCompanion =>
 
   // ========================================================================

@@ -22,13 +22,21 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SQLQuery, SQLSearchRequest}
+import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.{query, schema}
+import app.softnetwork.elastic.sql.query.{
+  DqlStatement,
+  SQLAggregation,
+  SelectStatement,
+  SingleSearch
+}
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.language.implicitConversions
+import scala.language.{dynamics, implicitConversions}
 import scala.reflect.ClassTag
 
 trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
@@ -80,8 +88,23 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   true if the index was created successfully, false otherwise
     */
-  override def createIndex(index: String, settings: String): ElasticResult[Boolean] =
-    delegate.createIndex(index, settings)
+  override def createIndex(
+    index: String,
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] =
+    delegate.createIndex(index, settings, mappings, aliases)
+
+  /** Get an index with the provided name.
+    *
+    * @param index
+    *   - the name of the index to get
+    * @return
+    *   the index if it exists, None otherwise
+    */
+  override def getIndex(index: String): ElasticResult[Option[Index]] =
+    delegate.getIndex(index)
 
   /** Delete an index with the provided name.
     *
@@ -128,9 +151,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def reindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
-    delegate.reindex(sourceIndex, targetIndex, refresh)
+    delegate.reindex(sourceIndex, targetIndex, refresh, pipeline)
 
   /** Check if an index exists.
     *
@@ -139,17 +163,95 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   true if the index exists, false otherwise
     */
-  override def indexExists(index: String): ElasticResult[Boolean] =
-    delegate.indexExists(index)
+  override def indexExists(index: String, pattern: Boolean): ElasticResult[Boolean] =
+    delegate.indexExists(index, pattern)
+
+  /** Truncate an index by deleting all its documents.
+    *
+    * @param index
+    *   - the name of the index to truncate
+    * @return
+    *   the number of documents deleted
+    */
+  override def truncateIndex(index: String): ElasticResult[Long] =
+    delegate.truncateIndex(index)
+
+  /** Delete documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to delete from
+    * @param query
+    *   - the query to delete documents by (can be JSON or SQL)
+    * @param refresh
+    *   - true to refresh the index after deletion, false otherwise
+    * @return
+    *   the number of documents deleted
+    */
+  override def deleteByQuery(index: String, query: String, refresh: Boolean): ElasticResult[Long] =
+    delegate.deleteByQuery(index, query, refresh)
+
+  override def isIndexClosed(index: String): ElasticResult[Boolean] =
+    delegate.isIndexClosed(index)
+
+  /** Update documents by query from an index.
+    *
+    * @param index
+    *   - the name of the index to update
+    * @param query
+    *   - the query to update documents by (can be JSON or SQL)
+    * @param pipelineId
+    *   - optional ingest pipeline id to use for the update
+    * @param refresh
+    *   - true to refresh the index after update, false otherwise
+    * @return
+    *   the number of documents updated
+    */
+  override def updateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.updateByQuery(index, query, pipelineId, refresh)
+
+  /** Insert documents by query into an index.
+    * @param index
+    *   - the name of the index to insert into
+    * @param query
+    *   - the query to insert documents from (can be SQL INSERT ... VALUES or INSERT ... AS SELECT)
+    * @param refresh
+    *   - true to refresh the index after insertion, false otherwise
+    * @return
+    *   the number of documents inserted
+    */
+  override def insertByQuery(index: String, query: String, refresh: Boolean)(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[DmlResult]] =
+    delegate.insertByQuery(index, query, refresh)
+
+  /** Load the schema for the provided index.
+    *
+    * @param index
+    *   - the name of the index to load the schema for
+    * @return
+    *   the schema if the index exists, an error otherwise
+    */
+  override def loadSchema(index: String): ElasticResult[Schema] =
+    delegate.loadSchema(index)
 
   override private[client] def executeCreateIndex(
     index: String,
-    settings: String
+    settings: String,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] =
-    delegate.executeCreateIndex(index, settings)
+    delegate.executeCreateIndex(index, settings, None, Nil)
 
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     delegate.executeDeleteIndex(index)
+
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+    delegate.executeGetIndex(index)
 
   override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
     delegate.executeCloseIndex(index)
@@ -160,12 +262,38 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
-    delegate.executeReindex(sourceIndex, targetIndex, refresh)
+    delegate.executeReindex(sourceIndex, targetIndex, refresh, pipeline)
 
   override private[client] def executeIndexExists(index: String): ElasticResult[Boolean] =
     delegate.executeIndexExists(index)
+
+  override private[client] def executeDeleteByQuery(
+    index: String,
+    query: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.executeDeleteByQuery(index, query, refresh)
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    delegate.executeIsIndexClosed(index)
+
+  override private[client] def waitForShards(
+    index: String,
+    status: String,
+    timeout: Int
+  ): ElasticResult[Unit] =
+    delegate.waitForShards(index, status, timeout)
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    query: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.executeUpdateByQuery(index, query, pipelineId, refresh)
 
   // ==================== AliasApi ====================
 
@@ -194,6 +322,31 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def addAlias(index: String, alias: String): ElasticResult[Boolean] =
     delegate.addAlias(index, alias)
+
+  /** Add an alias to an index.
+    *
+    * This operation:
+    *   1. Validates the index and alias names 2. Checks that the index exists 3. Adds the alias
+    *
+    * @param alias
+    *   the TableAlias to add
+    * @return
+    *   ElasticSuccess(true) if added, ElasticFailure otherwise
+    * @example
+    * {{{
+    * val alias = TableAlias(table = "my-index-2024", alias = "my-index-current")
+    * addAlias(alias) match {
+    *   case ElasticSuccess(_)     => println("Alias added")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    * @note
+    *   An alias can point to multiple indexes (useful for searches)
+    * @note
+    *   An index can have multiple aliases
+    */
+  override def addAlias(alias: TableAlias): ElasticResult[Boolean] =
+    delegate.addAlias(alias)
 
   /** Remove an alias from an index.
     *
@@ -244,13 +397,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @example
     * {{{
     * getAliases("my-index") match {
-    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.mkString(", ")}")
+    *   case ElasticSuccess(aliases) => println(s"Aliases: ${aliases.map(_.alias).mkString(", ")}")
     *   case ElasticFailure(error)   => println(s"Error: ${error.message}")
     * }
     *
     * }}}
     */
-  override def getAliases(index: String): ElasticResult[Set[String]] =
+  override def getAliases(index: String): ElasticResult[Seq[TableAlias]] =
     delegate.getAliases(index)
 
   /** Atomic swap of an alias between two indexes.
@@ -285,11 +438,32 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Boolean] =
     delegate.swapAlias(oldIndex, newIndex, alias)
 
+  /** Set the exact set of aliases for an index.
+    *
+    * This method ensures that the specified index has exactly the provided set of aliases. It adds
+    * any missing aliases and removes any extra aliases that are not in the provided set.
+    *
+    * @param index
+    *   the name of the index
+    * @param aliases
+    *   the desired set of aliases for the index
+    * @return
+    *   ElasticSuccess(true) if the operation was successful, ElasticFailure otherwise
+    * @example
+    * {{{
+    * setAliases("my-index", Set("alias1", "alias2")) match {
+    *   case ElasticSuccess(_)     => println("Aliases set successfully")
+    *   case ElasticFailure(error) => println(s"Error: ${error.message}")
+    * }
+    * }}}
+    */
+  override def setAliases(index: String, aliases: Seq[TableAlias]): ElasticResult[Boolean] =
+    delegate.setAliases(index, aliases)
+
   override private[client] def executeAddAlias(
-    index: String,
-    alias: String
+    alias: TableAlias
   ): ElasticResult[Boolean] =
-    delegate.executeAddAlias(index, alias)
+    delegate.executeAddAlias(alias)
 
   override private[client] def executeRemoveAlias(
     index: String,
@@ -435,6 +609,31 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     settings: String
   ): ElasticResult[Boolean] =
     delegate.updateMapping(index, mapping, settings)
+
+  /** Migrate an existing index to a new mapping.
+    *
+    * Process:
+    *   1. Create temporary index with new mapping 2. Reindex data from original to temporary 3.
+    *      Delete original index 4. Recreate original index with new mapping 5. Reindex data from
+    *      temporary to original 6. Delete temporary index
+    */
+  override private[client] def performMigration(
+    index: String,
+    tempIndex: String,
+    mapping: String,
+    settings: String,
+    aliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] =
+    delegate.performMigration(index, tempIndex, mapping, settings, aliases)
+
+  override private[client] def rollbackMigration(
+    index: String,
+    tempIndex: String,
+    originalMapping: String,
+    originalSettings: String,
+    originalAliases: Seq[TableAlias]
+  ): ElasticResult[Boolean] =
+    delegate.rollbackMigration(index, tempIndex, originalMapping, originalSettings, originalAliases)
 
   override private[client] def executeSetMapping(
     index: String,
@@ -882,7 +1081,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a sequence of aggregated results
     */
-  override def aggregate(sqlQuery: SQLQuery)(implicit
+  override def aggregate(sqlQuery: SelectStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[collection.Seq[SingleValueAggregateResult]]] =
     delegate.aggregate(sqlQuery)
@@ -896,7 +1095,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   the Elasticsearch response
     */
-  override def search(sql: SQLQuery): ElasticResult[ElasticResponse] = delegate.search(sql)
+  override def search(statement: DqlStatement): ElasticResult[ElasticResponse] =
+    delegate.search(statement)
 
   /** Search for documents / aggregations matching the Elasticsearch query.
     *
@@ -941,9 +1141,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the Elasticsearch response
     */
-  override def searchAsync(sqlQuery: SQLQuery)(implicit
+  override def searchAsync(statement: DqlStatement)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(sqlQuery)
+  ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(statement)
 
   /** Asynchronous search for documents / aggregations matching the Elasticsearch query.
     *
@@ -991,7 +1191,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   the entities matching the query
     */
   override def searchAsUnchecked[U](
-    sqlQuery: SQLQuery
+    sqlQuery: SelectStatement
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     delegate.searchAsUnchecked(sqlQuery)
 
@@ -1047,7 +1247,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the entities
     */
-  override def searchAsyncAsUnchecked[U](sqlQuery: SQLQuery)(implicit
+  override def searchAsyncAsUnchecked[U](sqlQuery: SelectStatement)(implicit
     m: Manifest[U],
     ec: ExecutionContext,
     formats: Formats
@@ -1103,7 +1303,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.multiSearchAsyncAs(elasticQueries, fieldAliases, aggregations)
 
   override def searchWithInnerHits[U: Manifest: ClassTag, I: Manifest: ClassTag](
-    sql: SQLQuery,
+    sql: SelectStatement,
     innerField: String
   )(implicit
     formats: Formats
@@ -1123,8 +1323,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.multisearchWithInnerHits[U, I](elasticQueries, innerField)
 
   override private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SQLSearchRequest
-  ): String =
+    sqlSearch: SingleSearch
+  )(implicit timestamp: Long): String =
     delegate.sqlSearchRequestToJsonQuery(sqlSearch)
 
   override private[client] def executeSingleSearch(
@@ -1151,9 +1351,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
-  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(sql, config)
+  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
 
   /** Scroll and convert results into typed entities from an SQL query.
     *
@@ -1175,7 +1375,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   - Source of tuples (T, ScrollMetrics)
     */
-  override def scrollAsUnchecked[T](sql: SQLQuery, config: ScrollConfig)(implicit
+  override def scrollAsUnchecked[T](sql: SelectStatement, config: ScrollConfig)(implicit
     system: ActorSystem,
     m: Manifest[T],
     formats: Formats
@@ -1249,7 +1449,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String],
-    idKey: Option[String],
+    idKey: Option[Set[String]],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
     update: Option[Boolean],
@@ -1311,7 +1511,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String],
-    idKey: Option[String],
+    idKey: Option[Set[String]],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
     update: Option[Boolean],
@@ -1341,7 +1541,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     items: Source[D, NotUsed],
     toDocument: D => String,
     indexKey: Option[String],
-    idKey: Option[String],
+    idKey: Option[Set[String]],
     suffixDateKey: Option[String],
     suffixDatePattern: Option[String],
     update: Option[Boolean],
@@ -1397,4 +1597,202 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   /** Conversion BulkActionType -> BulkItem */
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     delegate.actionToBulkItem(action.asInstanceOf)
+
+  // ==================== PipelineApi (delegate) ====================
+
+  /** Execute a pipeline DDL statement
+    *
+    * @param sql
+    *   the pipeline DDL statement
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def pipeline(sql: String): ElasticResult[Boolean] =
+    delegate.pipeline(sql)
+
+  override private[client] def pipeline(
+    statement: query.PipelineStatement
+  ): ElasticResult[Boolean] =
+    delegate.pipeline(statement)
+
+  override def createPipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] = {
+    delegate.createPipeline(pipelineName, pipelineDefinition)
+  }
+
+  /** Update an existing ingest pipeline
+    *
+    * @param pipelineName
+    *   the name of the pipeline
+    * @param pipelineDefinition
+    *   the new pipeline definition in JSON format
+    * @return
+    *   ElasticResult[Boolean] indicating success or failure
+    */
+  override def updatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.updatePipeline(pipelineName, pipelineDefinition)
+
+  override def deletePipeline(pipelineName: String, ifExists: Boolean): ElasticResult[Boolean] = {
+    delegate.deletePipeline(pipelineName, ifExists = ifExists)
+  }
+
+  override def getPipeline(pipelineName: String): ElasticResult[Option[String]] = {
+    delegate.getPipeline(pipelineName)
+  }
+
+  override def loadPipeline(pipelineName: String): ElasticResult[schema.IngestPipeline] =
+    delegate.loadPipeline(pipelineName)
+
+  override private[client] def executeCreatePipeline(
+    pipelineName: String,
+    pipelineDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.executeCreatePipeline(pipelineName, pipelineDefinition)
+
+  override private[client] def executeDeletePipeline(
+    pipelineName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeletePipeline(pipelineName, ifExists = ifExists)
+
+  override private[client] def executeGetPipeline(
+    pipelineName: String
+  ): ElasticResult[Option[String]] =
+    delegate.executeGetPipeline(pipelineName)
+
+  // ==================== TemplateApi (delegate) ====================
+
+  /** Create or update an index template.
+    *
+    * Accepts both legacy and composable template formats. Automatically converts to the appropriate
+    * format based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @param templateDefinition
+    *   the JSON definition (legacy or composable format)
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def createTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.createTemplate(templateName, templateDefinition)
+
+  /** Delete an index template. Automatically uses composable (ES 7.8+) or legacy templates based on
+    * ES version.
+    *
+    * @param templateName
+    *   the name of the template to delete
+    * @param ifExists
+    *   if true, do not fail if template doesn't exist
+    * @return
+    *   ElasticResult with true if successful
+    */
+  override def deleteTemplate(templateName: String, ifExists: Boolean): ElasticResult[Boolean] =
+    delegate.deleteTemplate(templateName, ifExists)
+
+  /** Get an index template definition.
+    *
+    * Returns the template in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with Some(json) if found, None if not found
+    */
+  override def getTemplate(templateName: String): ElasticResult[Option[String]] =
+    delegate.getTemplate(templateName)
+
+  /** List all index templates.
+    *
+    * Returns templates in the format used by the current ES version:
+    *   - Composable format for ES 7.8+
+    *   - Legacy format for ES < 7.8
+    *
+    * @return
+    *   ElasticResult with Map of template name -> JSON definition
+    */
+  override def listTemplates(): ElasticResult[Map[String, String]] =
+    delegate.listTemplates()
+
+  /** Check if an index template exists. Automatically uses composable (ES 7.8+) or legacy templates
+    * based on ES version.
+    *
+    * @param templateName
+    *   the name of the template
+    * @return
+    *   ElasticResult with true if exists, false otherwise
+    */
+  override def templateExists(templateName: String): ElasticResult[Boolean] =
+    delegate.templateExists(templateName)
+
+  override private[client] def executeCreateComposableTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateComposableTemplate(templateName, templateDefinition)
+
+  override private[client] def executeDeleteComposableTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeleteComposableTemplate(templateName, ifExists)
+
+  override private[client] def executeGetComposableTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    delegate.executeGetComposableTemplate(templateName)
+
+  override private[client] def executeListComposableTemplates()
+    : ElasticResult[Map[String, String]] =
+    delegate.executeListComposableTemplates()
+
+  override private[client] def executeComposableTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    delegate.executeComposableTemplateExists(templateName)
+
+  override private[client] def executeCreateLegacyTemplate(
+    templateName: String,
+    templateDefinition: String
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateLegacyTemplate(templateName, templateDefinition)
+
+  override private[client] def executeDeleteLegacyTemplate(
+    templateName: String,
+    ifExists: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeleteLegacyTemplate(templateName, ifExists)
+
+  override private[client] def executeGetLegacyTemplate(
+    templateName: String
+  ): ElasticResult[Option[String]] =
+    delegate.executeGetLegacyTemplate(templateName)
+
+  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] =
+    delegate.executeListLegacyTemplates()
+
+  override private[client] def executeLegacyTemplateExists(
+    templateName: String
+  ): ElasticResult[Boolean] =
+    delegate.executeLegacyTemplateExists(templateName)
+
+  // ==================== Gateway (delegate) ====================
+
+  override def run(sql: String)(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] =
+    delegate.run(sql)
+
+  override def run(statement: query.Statement)(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[QueryResult]] =
+    delegate.run(statement)
 }

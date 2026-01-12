@@ -17,8 +17,12 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.IndicesApi
+import app.softnetwork.elastic.client.jest.actions.{GetIndex, WaitForShards}
 import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
+import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
+import io.searchbox.core.{Cat, CatResult, DeleteByQuery, UpdateByQuery, UpdateByQueryResult}
 import io.searchbox.indices.{CloseIndex, CreateIndex, DeleteIndex, IndicesExists, OpenIndex}
 import io.searchbox.indices.reindex.Reindex
 
@@ -28,8 +32,14 @@ import scala.util.Try
   * @see
   *   [[IndicesApi]] for generic API documentation
   */
-trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpers {
-  _: JestClientCompanion =>
+trait JestIndicesApi extends IndicesApi with JestClientHelpers {
+  _: JestRefreshApi
+    with JestPipelineApi
+    with JestScrollApi
+    with JestBulkApi
+    with JestVersionApi
+    with JestTemplateApi
+    with JestClientCompanion =>
 
   /** Create an index with the given settings.
     * @see
@@ -37,20 +47,49 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
     */
   private[client] def executeCreateIndex(
     index: String,
-    settings: String = defaultSettings
+    settings: String = defaultSettings,
+    mappings: Option[String],
+    aliases: Seq[TableAlias]
   ): ElasticResult[Boolean] = {
     executeJestBooleanAction(
       operation = "createIndex",
       index = Some(index),
       retryable = false // Creation can not be retried
     ) {
-      new CreateIndex.Builder(index)
+      val builder = new CreateIndex.Builder(index)
         .settings(settings)
-        .build()
+      if (aliases.nonEmpty) {
+        val as = mapper.createObjectNode()
+        aliases.foreach { alias =>
+          as.set[ObjectNode](alias.alias, alias.node)
+        }
+        builder.aliases(as.toString)
+      }
+      mappings.foreach { mapping =>
+        builder.mappings(mapping)
+      }
+      builder.build()
+    }
+  }
+
+  override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+    executeJestAction[JestResult, Option[String]](
+      operation = "getIndex",
+      index = Some(index),
+      retryable = true
+    ) {
+      new GetIndex.Builder(index).build()
+    } { result =>
+      if (result.isSucceeded) {
+        Some(result.getJsonString)
+      } else {
+        None
+      }
     }
   }
 
   /** Delete an index.
+    *
     * @see
     *   [[IndicesApi.deleteIndex]]
     */
@@ -99,7 +138,8 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
   private[client] def executeReindex(
     sourceIndex: String,
     targetIndex: String,
-    refresh: Boolean
+    refresh: Boolean,
+    pipeline: Option[String]
   ): ElasticResult[(Boolean, Option[Long])] =
     executeJestAction[JestResult, (Boolean, Option[Long])](
       operation = "reindex",
@@ -129,6 +169,98 @@ trait JestIndicesApi extends IndicesApi with JestRefreshApi with JestClientHelpe
       retryable = true
     ) {
       new IndicesExists.Builder(index).build()
+    }
+  }
+
+  private[client] def executeDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    executeJestAction[JestResult, Long](
+      operation = "deleteByQuery",
+      index = Some(index),
+      retryable = true
+    ) {
+      val builder = new DeleteByQuery.Builder(jsonQuery)
+        .addIndex(index)
+
+      builder.setParameter("conflicts", "proceed")
+
+      if (refresh)
+        builder.setParameter("refresh", true)
+
+      builder.build()
+    } { result =>
+      val deleted = Try {
+        result.getJsonObject.get("deleted").getAsLong
+      }.getOrElse(0L)
+
+      deleted
+    }
+
+  override private[client] def executeIsIndexClosed(index: String): ElasticResult[Boolean] =
+    executeJestAction[CatResult, Boolean](
+      operation = "isIndexClosed",
+      index = Some(index),
+      retryable = true
+    ) {
+      new Cat.IndicesBuilder()
+        .addIndex(index)
+        .setParameter("format", "json")
+        .build()
+    } { result =>
+      val json = result.getJsonObject
+      val arr = json.getAsJsonArray("result")
+
+      if (arr == null || arr.size() == 0)
+        false
+      else {
+        val entry = arr.get(0).getAsJsonObject
+        val status = entry.get("status").getAsString // "open" or "close"
+        status == "close"
+      }
+    }
+
+  override private[client] def waitForShards(
+    index: String,
+    status: String,
+    timeout: Int
+  ): ElasticResult[Unit] = {
+    executeJestBooleanAction(
+      operation = "waitForShards",
+      index = Some(index),
+      retryable = true
+    ) {
+      new WaitForShards.Builder(index = index, status = status, timeout = timeout).build()
+    }.map(_ => ())
+  }
+
+  override private[client] def executeUpdateByQuery(
+    index: String,
+    jsonQuery: String,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+    executeJestAction[UpdateByQueryResult, Long](
+      operation = "updateByQuery",
+      index = Some(index),
+      retryable = true
+    ) {
+      val builder = new UpdateByQuery.Builder(jsonQuery)
+        .addIndex(index)
+
+      if (refresh)
+        builder.setParameter("refresh", true)
+
+      pipelineId.foreach { id =>
+        builder.setParameter("pipeline", id)
+      }
+
+      builder.build()
+    } { result =>
+      val json = result.getJsonObject
+      json.get("updated").getAsLong
     }
   }
 }

@@ -17,7 +17,6 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client._
-import app.softnetwork.elastic.sql.query.SQLQuery
 import app.softnetwork.elastic.sql.bridge._
 import io.searchbox.action.BulkableAction
 import io.searchbox.core._
@@ -45,6 +44,8 @@ trait JestClientApi
     with JestScrollApi
     with JestBulkApi
     with JestVersionApi
+    with JestPipelineApi
+    with JestTemplateApi
     with JestClientCompanion
 
 object JestClientApi extends SerializationApi {
@@ -56,19 +57,8 @@ object JestClientApi extends SerializationApi {
     search.build()
   }
 
-  implicit class SearchSQLQuery(sqlQuery: SQLQuery) {
-    def jestSearch: Option[Search] = {
-      sqlQuery.request match {
-        case Some(Left(value)) =>
-          val request: ElasticSearchRequest = value
-          Some(request)
-        case _ => None
-      }
-    }
-  }
-
   implicit class SearchElasticQuery(elasticQuery: ElasticQuery) {
-    def search: (Search, JSONQuery) = {
+    def search: (Search, String) = {
       import elasticQuery._
       val _search = new Search.Builder(query)
       for (indice <- indices) _search.addIndex(indice)

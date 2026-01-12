@@ -19,14 +19,14 @@ package app.softnetwork.elastic.persistence.query
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.client.{ElasticClientApi, ElasticClientDelegator}
-import app.softnetwork.elastic.sql.query.SQLQuery
+import app.softnetwork.elastic.sql.query.SelectStatement
 import mustache.Mustache
 import org.json4s.Formats
 import app.softnetwork.persistence._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.persistence.query.ExternalPersistenceProvider
 import app.softnetwork.serialization.commonFormats
-import app.softnetwork.elastic.persistence.typed.Elastic._
+import app.softnetwork.elastic.persistence.typed.Elastic
 import org.slf4j.Logger
 
 import scala.reflect.ClassTag
@@ -45,11 +45,11 @@ trait ElasticProvider[T <: Timestamped]
 
   implicit def formats: Formats = commonFormats
 
-  protected lazy val index: String = getIndex[T](manifestWrapper.wrapped)
+  protected lazy val index: String = Elastic.getIndex[T](manifestWrapper.wrapped)
 
   protected lazy val _type: String = getType[T](manifestWrapper.wrapped)
 
-  protected lazy val alias: String = getAlias[T](manifestWrapper.wrapped)
+  protected lazy val alias: String = Elastic.getAlias[T](manifestWrapper.wrapped)
 
   protected def mappingPath: Option[String] = None
 
@@ -188,7 +188,7 @@ trait ElasticProvider[T <: Timestamped]
   override def searchDocuments(
     query: String
   )(implicit m: Manifest[T], formats: Formats): List[T] = {
-    searchAsUnchecked[T](SQLQuery(query)) match {
+    searchAsUnchecked[T](SelectStatement(query)) match {
       case ElasticSuccess(results) => results.toList
       case ElasticFailure(elasticError) =>
         logger.error(s"searchDocuments failed -> ${elasticError.message}")

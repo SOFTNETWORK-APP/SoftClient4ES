@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{SerializationApi, SettingsApi, UpdateApi}
+import app.softnetwork.elastic.client.{SerializationApi, UpdateApi}
 import app.softnetwork.elastic.client.bulk.docAsUpsert
 import app.softnetwork.elastic.client.result.ElasticResult
 import io.searchbox.core.Update
@@ -28,7 +28,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   [[UpdateApi]] for generic API documentation
   */
 trait JestUpdateApi extends UpdateApi with JestClientHelpers {
-  _: SettingsApi with JestClientCompanion with SerializationApi =>
+  _: JestSettingsApi with JestClientCompanion with SerializationApi =>
 
   /** Update an entity in the given index.
     * @see

@@ -2,7 +2,7 @@ package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.rest.RestHighLevelClientCompanion
-import app.softnetwork.elastic.scalatest.EmbeddedElasticTestKit
+import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.matchers.should.Matchers
@@ -16,7 +16,7 @@ import scala.util.Try
 
 class RestHighLevelClientCompanionSpec
     extends AnyWordSpec
-    with EmbeddedElasticTestKit
+    with ElasticDockerTestKit
     with Matchers
     with ScalaFutures {
 
