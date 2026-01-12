@@ -186,7 +186,13 @@ package object schema {
             val copyFrom = Option(props.get("copy_from")).map(_.asText())
             val doOverride = Option(props.get("override")).map(_.asBoolean())
             val ignoreEmptyValue = Option(props.get("ignore_empty_value")).map(_.asBoolean())
-            val doIf = Option(props.get("if")).map(_.asText())
+            val doIf =
+              if (props.has("if")) {
+                val cond = props.get("if")
+                if (cond.has("source")) {
+                  Option(cond.get("source")).map(_.asText())
+                } else Option(cond).map(_.asText())
+              } else None
             SetProcessor(
               pipelineType = pipelineType,
               description = desc,
@@ -195,7 +201,10 @@ package object schema {
               copyFrom = copyFrom,
               doOverride = doOverride,
               ignoreEmptyValue = ignoreEmptyValue,
-              doIf = doIf,
+              doIf = doIf match {
+                case Some(condition) if condition.nonEmpty => Some(condition)
+                case _                                     => None
+              },
               ignoreFailure = ignoreFailure
             )
           }
