@@ -454,6 +454,8 @@ package object schema {
 
       }
 
+      val aliases = esAliases.aliases.map(entry => entry._1 -> implicitly[Value[_]](entry._2.node))
+
       // 4. Final construction of the Table
       Table(
         name = name,
@@ -463,7 +465,7 @@ package object schema {
         mappings = esMappings.options,
         settings = esSettings.options,
         processors = processors.toSeq,
-        aliases = esAliases.aliases.map(entry => entry._1 -> entry._2.node)
+        aliases = aliases
       ).update()
     }
   }
