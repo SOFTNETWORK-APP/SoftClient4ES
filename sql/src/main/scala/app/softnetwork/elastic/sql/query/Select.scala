@@ -47,9 +47,11 @@ case class Field(
     with DateMathScript {
   def tableAlias: Option[String] = identifier.tableAlias
   def table: Option[String] = identifier.table
-  def isScriptField: Boolean =
-    functions.nonEmpty && !hasAggregation && identifier.bucket.isEmpty
+  def isScriptField: Boolean = identifier.painlessScriptRequired
   override def sql: String = s"$identifier${asString(fieldAlias)}"
+
+  override def dependencies: Seq[Identifier] = identifier.dependencies
+
   lazy val sourceField: String = {
     if (identifier.nested) {
       tableAlias
@@ -126,6 +128,7 @@ case class Select(
   lazy val fieldAliases: Map[String, String] = fields.flatMap { field =>
     field.fieldAlias.map(a => field.identifier.identifierName -> a.alias)
   }.toMap
+  lazy val aliasesToMap: Map[String, String] = fieldAliases.map(_.swap)
   def update(request: SingleSearch): Select =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))
 

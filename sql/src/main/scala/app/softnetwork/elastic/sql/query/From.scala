@@ -275,6 +275,13 @@ case class Table(name: String, tableAlias: Option[Alias] = None, joins: Seq[Join
         case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
       }
     } yield ()
+
+  lazy val joinedTables: Seq[String] = joins.collect { case sj: StandardJoin =>
+    sj.source.name
+  }
+
+  lazy val enrichmentRequired: Boolean = joinedTables.nonEmpty
+
 }
 
 case class From(tables: Seq[Table]) extends Updateable {
@@ -312,6 +319,7 @@ case class From(tables: Seq[Table]) extends Updateable {
       (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
     )
     .toMap
+
   def update(request: SingleSearch): From =
     this.copy(tables = tables.map(_.update(request)))
 
@@ -331,6 +339,10 @@ case class From(tables: Seq[Table]) extends Updateable {
   }
 
   lazy val mainTable: Table = tables.head
+
+  lazy val joinedTables: Seq[String] = tables.flatMap(_.joinedTables)
+
+  lazy val enrichmentRequired: Boolean = joinedTables.nonEmpty
 }
 
 case class NestedElement(

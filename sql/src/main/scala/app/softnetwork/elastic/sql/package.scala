@@ -805,8 +805,9 @@ package object sql {
       // Tronquer si nécessaire
       if (normalized.length > MaxAliasLength) {
         val digest = MessageDigest.getInstance("MD5").digest(normalized.getBytes("UTF-8"))
-        val hash = digest.map("%02x".format(_)).mkString.take(8) // suffix court
-        normalized.take(MaxAliasLength - hash.length - 1) + "_" + hash
+        val hash = digest.map("%02x".format(_)).mkString.take(MaxAliasLength)
+        //normalized.take(MaxAliasLength - hash.length - 1) + "_" + hash
+        hash
       } else {
         normalized
       }
@@ -1076,6 +1077,7 @@ package object sql {
 
     def isWindowing: Boolean = windows.exists(_.partitionBy.nonEmpty)
 
+    def painlessScriptRequired: Boolean = functions.nonEmpty && !hasAggregation && bucket.isEmpty
   }
 
   object Identifier {
@@ -1099,7 +1101,8 @@ package object sql {
     nestedElement: Option[NestedElement] = None,
     bucketPath: String = "",
     col: Option[Column] = None,
-    table: Option[String] = None
+    table: Option[String] = None,
+    override val dependencies: Seq[Identifier] = Seq.empty
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)
@@ -1129,6 +1132,11 @@ package object sql {
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
       val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._2)
+      val dependencies = functions
+        .foldLeft(Seq.empty[Identifier]) { case (acc, fun) =>
+          acc ++ FunctionUtils.funIdentifiers(fun)
+        }
+        .filterNot(_.name.isEmpty)
       if (table.nonEmpty) {
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>
@@ -1149,7 +1157,8 @@ package object sql {
                 nestedElement = nestedElement,
                 bucketPath = bucketPath,
                 col = request.schema.flatMap(schema => schema.find(colName)),
-                table = table
+                table = table,
+                dependencies = dependencies.map(_.update(request))
               )
               .withFunctions(this.updateFunctions(request))
           case Some(tuple) if nested =>
@@ -1163,7 +1172,8 @@ package object sql {
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 bucketPath = bucketPath,
                 col = request.schema.flatMap(schema => schema.find(colName)),
-                table = table
+                table = table,
+                dependencies = dependencies.map(_.update(request))
               )
               .withFunctions(this.updateFunctions(request))
           case None if nested =>
@@ -1174,7 +1184,8 @@ package object sql {
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 bucketPath = bucketPath,
                 col = request.schema.flatMap(schema => schema.find(name)),
-                table = table
+                table = table,
+                dependencies = dependencies.map(_.update(request))
               )
               .withFunctions(this.updateFunctions(request))
           case _ =>
@@ -1186,7 +1197,8 @@ package object sql {
               bucket = request.bucketNames.get(identifierName).orElse(bucket),
               bucketPath = bucketPath,
               col = request.schema.flatMap(schema => schema.find(colName)),
-              table = table
+              table = table,
+              dependencies = dependencies.map(_.update(request))
             )
         }
       } else {
@@ -1195,7 +1207,8 @@ package object sql {
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
             bucket = request.bucketNames.get(identifierName).orElse(bucket),
             bucketPath = bucketPath,
-            col = request.schema.flatMap(schema => schema.find(name))
+            col = request.schema.flatMap(schema => schema.find(name)),
+            dependencies = dependencies.map(_.update(request))
           )
           .withFunctions(this.updateFunctions(request))
       }

@@ -88,7 +88,7 @@ package object aggregate {
       aggregations.map(_.bucketPath).distinct.sortBy(_.length).reverse.headOption.getOrElse("")
 
     override def update(request: SingleSearch): BucketScriptAggregation = {
-      val identifiers = FunctionUtils.aggregateIdentifiers(identifier)
+      val identifiers = FunctionUtils.funIdentifiers(identifier)
       val params = identifiers.flatMap {
         case identifier: Identifier =>
           val name = identifier.metricName.getOrElse(identifier.aliasOrName)

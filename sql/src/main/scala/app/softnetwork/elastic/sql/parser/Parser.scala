@@ -133,6 +133,7 @@ object Parser
         case "rename"          => IngestProcessorType.Rename
         case "remove"          => IngestProcessorType.Remove
         case "date_index_name" => IngestProcessorType.DateIndexName
+        case "enrich"          => IngestProcessorType.Enrich
         case other             => IngestProcessorType(other)
       }
     }

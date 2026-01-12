@@ -688,6 +688,270 @@ package object schema {
     }
   }
 
+  sealed trait EnrichPolicyType {
+    def name: String
+    override def toString: String = name
+  }
+
+  object EnrichPolicyType {
+    case object Match extends EnrichPolicyType {
+      val name: String = "MATCH"
+    }
+    case object GeoMatch extends EnrichPolicyType {
+      val name: String = "GEO_MATCH"
+    }
+    case object Range extends EnrichPolicyType {
+      val name: String = "RANGE"
+    }
+  }
+
+  case class EnrichPolicy(
+    name: String,
+    policyType: EnrichPolicyType = EnrichPolicyType.Match,
+    indices: Seq[String],
+    matchField: String,
+    enrichFields: List[String],
+    criteria: Option[Criteria] = None
+  ) extends DdlToken {
+    def sql: String =
+      s"CREATE OR REPLACE ENRICH POLICY $name TYPE $policyType WITH SOURCE INDICES ${indices
+        .mkString(",")} MATCH FIELD $matchField ENRICH FIELDS (${enrichFields.mkString(", ")})${Where(criteria)}"
+  }
+
+  case class Pivot(
+    fields: Seq[Column], // simple columns to add to the destination index (within aggregations)
+    aggregations: Seq[SQLAggregation], // aggregations to apply
+    groupBy: Option[GroupBy] // group by clause
+  ) extends DdlToken {
+    def sql: String = {
+      val groupByStr = if (groupBy.nonEmpty) {
+        s"GROUP BY (${groupBy.mkString(", ")})"
+      } else {
+        ""
+      }
+      val aggregationsStr = if (aggregations.nonEmpty) {
+        s"AGGREGATIONS (${aggregations.mkString(", ")})"
+      } else {
+        ""
+      }
+      s"$groupByStr $aggregationsStr".trim
+    }
+  }
+
+  sealed trait TransformTimeUnit extends DdlToken {
+    def name: String
+  }
+
+  object TransformTimeUnit {
+    case object Milliseconds extends TransformTimeUnit {
+      val name: String = "MILLISECONDS"
+      override def sql: String = "ms"
+    }
+
+    case object Seconds extends TransformTimeUnit {
+      val name: String = "SECONDS"
+      override def sql: String = "s"
+    }
+
+    case object Minutes extends TransformTimeUnit {
+      val name: String = "MINUTES"
+      override def sql: String = "m"
+    }
+
+    case object Hours extends TransformTimeUnit {
+      val name: String = "HOURS"
+      override def sql: String = "h"
+    }
+
+    case object Days extends TransformTimeUnit {
+      val name: String = "DAYS"
+      override def sql: String = "d"
+    }
+
+    case object Weeks extends TransformTimeUnit {
+      val name: String = "WEEKS"
+      override def sql: String = "w"
+    }
+
+    def apply(name: String): TransformTimeUnit = name.toUpperCase() match {
+      case "MILLISECONDS" => Milliseconds
+      case "SECONDS"      => Seconds
+      case "MINUTES"      => Minutes
+      case "HOURS"        => Hours
+      case "DAYS"         => Days
+      case "WEEKS"        => Weeks
+      case other          => throw new IllegalArgumentException(s"Invalid delay unit: $other")
+    }
+  }
+
+  sealed trait TransformTimeInterval extends DdlToken {
+    def interval: Int
+    def timeUnit: TransformTimeUnit
+    def toSeconds: Int = timeUnit match {
+      case TransformTimeUnit.Milliseconds => interval / 1000
+      case TransformTimeUnit.Seconds      => interval
+      case TransformTimeUnit.Minutes      => interval * 60
+      case TransformTimeUnit.Hours        => interval * 3600
+      case TransformTimeUnit.Days         => interval * 86400
+      case TransformTimeUnit.Weeks        => interval * 604800
+    }
+    def toTransformFormat: String = s"$interval$timeUnit"
+
+  }
+
+  object TransformTimeInterval {
+
+    /** Creates a time interval from seconds */
+    def fromSeconds(seconds: Int): (TransformTimeUnit, Int) = {
+      if (seconds >= 86400 && seconds % 86400 == 0) {
+        (TransformTimeUnit.Days, seconds / 86400)
+      } else if (seconds >= 3600 && seconds % 3600 == 0) {
+        (TransformTimeUnit.Hours, seconds / 3600)
+      } else if (seconds >= 60 && seconds % 60 == 0) {
+        (TransformTimeUnit.Minutes, seconds / 60)
+      } else {
+        (TransformTimeUnit.Seconds, seconds)
+      }
+    }
+  }
+
+  case class Delay(
+    timeUnit: TransformTimeUnit,
+    interval: Int
+  ) extends TransformTimeInterval {
+    def sql: String = s"WITH DELAY $interval $timeUnit"
+  }
+
+  object Delay {
+    val Default: Delay = Delay(TransformTimeUnit.Minutes, 1)
+
+    def fromSeconds(seconds: Int): Delay = {
+      val timeInterval = TransformTimeInterval.fromSeconds(seconds)
+      Delay(timeInterval._1, timeInterval._2)
+    }
+
+    /** Calculates optimal delay based on frequency and number of stages
+      *
+      * Formula: delay = frequency / (nb_stages * buffer_factor)
+      *
+      * This ensures the complete chain can refresh within the specified frequency. The buffer
+      * factor adds safety margin for processing time.
+      *
+      * @param frequency
+      *   Desired refresh frequency
+      * @param nbStages
+      *   Total number of stages (changelog + enrichment + aggregate)
+      * @param bufferFactor
+      *   Safety factor (default 1.5)
+      * @return
+      *   Optimal delay for each Transform, or error if constraints cannot be met
+      */
+    def calculateOptimal(
+      frequency: Frequency,
+      nbStages: Int,
+      bufferFactor: Double = 1.5
+    ): Either[String, Delay] = {
+      if (nbStages <= 0) {
+        return Left("Number of stages must be positive")
+      }
+
+      val frequencySeconds = frequency.toSeconds
+      val optimalDelaySeconds = (frequencySeconds / (nbStages * bufferFactor)).toInt
+
+      // Validate constraints
+      if (optimalDelaySeconds < 10) {
+        Left(
+          s"Calculated delay ($optimalDelaySeconds seconds) is too small. " +
+          s"Consider increasing frequency or reducing number of stages. " +
+          s"Minimum required frequency: ${nbStages * bufferFactor * 10} seconds"
+        )
+      } else if (optimalDelaySeconds > frequencySeconds / 2) {
+        Left(
+          s"Calculated delay ($optimalDelaySeconds seconds) is too large. " +
+          s"Each stage needs at least delay × 2 = frequency."
+        )
+      } else {
+        Right(Delay.fromSeconds(optimalDelaySeconds))
+      }
+    }
+
+    /** Validates that a chain of transforms can refresh within the given frequency
+      *
+      * Requirements:
+      *   - Total latency (delay × nbStages) must be less than frequency
+      *   - Each transform runs every (delay × 2), so: delay × 2 × nbStages ≤ frequency
+      *
+      * @param delay
+      *   Delay for each transform
+      * @param frequency
+      *   Target refresh frequency
+      * @param nbStages
+      *   Number of stages in the chain
+      * @return
+      *   Success or error message
+      */
+    def validate(
+      delay: Delay,
+      frequency: Frequency,
+      nbStages: Int
+    ): Either[String, Unit] = {
+      val totalLatency = delay.toSeconds * nbStages
+      val frequencySeconds = frequency.toSeconds
+      val requiredFrequency = delay.toSeconds * 2 * nbStages
+
+      if (totalLatency > frequencySeconds) {
+        Left(
+          s"Total latency ($totalLatency seconds) exceeds frequency ($frequencySeconds seconds). " +
+          s"Minimum required frequency: $requiredFrequency seconds"
+        )
+      } else if (requiredFrequency > frequencySeconds) {
+        Left(
+          s"Frequency ($frequencySeconds seconds) is too low for $nbStages stages with delay ${delay.toSeconds} seconds. " +
+          s"Minimum required frequency: $requiredFrequency seconds"
+        )
+      } else {
+        Right(())
+      }
+    }
+  }
+
+  case class Frequency(
+    timeUnit: TransformTimeUnit,
+    interval: Int
+  ) extends TransformTimeInterval {
+    def sql: String = s"REFRESH EVERY $interval $timeUnit"
+  }
+
+  case object Frequency {
+    val Default: Frequency = apply(Delay.Default)
+    def apply(delay: Delay): Frequency = Frequency(delay.timeUnit, delay.interval * 2)
+    def fromSeconds(seconds: Int): Frequency = {
+      val timeInterval = TransformTimeInterval.fromSeconds(seconds)
+      Frequency(timeInterval._1, timeInterval._2)
+    }
+  }
+
+  /** Definition of a column within a table
+    *
+    * @param name
+    *   the column name
+    * @param dataType
+    *   the column SQL type
+    * @param script
+    *   optional script processor associated to this column
+    * @param multiFields
+    *   optional multi fields associated to this column
+    * @param defaultValue
+    *   optional default value for this column
+    * @param notNull
+    *   whether this column is not null
+    * @param comment
+    *   optional comment for this column
+    * @param options
+    *   optional options for this column (search analyzer, ...)
+    * @param struct
+    *   optional parent struct column
+    */
   case class Column(
     name: String,
     dataType: SQLType,

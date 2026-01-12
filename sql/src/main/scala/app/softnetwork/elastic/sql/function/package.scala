@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
+import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.query.{NestedElement, SingleSearch}
@@ -34,6 +35,11 @@ package object function {
     def expr: Token = _expr
     override def nullable: Boolean = expr.nullable
     def functionNestedElement: Option[NestedElement] = None
+    def dependencies: Seq[Identifier] = FunctionUtils.funIdentifiers(this).filterNot(_.name.isEmpty)
+    def usesCurrentTimeFunction: Boolean = this match {
+      case _: CurrentFunction => true
+      case _                  => false
+    }
   }
 
   trait FunctionWithIdentifier extends Function {
@@ -91,31 +97,29 @@ package object function {
       }
     }
 
-    def aggregateIdentifiers(
+    def funIdentifiers(
       fun: Function,
-      acc: Seq[FunctionChain] = Seq.empty
-    ): Seq[FunctionChain] = {
+      acc: Seq[Identifier] = Seq.empty
+    ): Seq[Identifier] = {
       fun match {
-        case fwi: FunctionWithIdentifier => aggregateIdentifiers(fwi.identifier, acc)
+        case id: Identifier =>
+          id.functions.foldLeft(acc :+ id) { case (innerAcc, fun: Function) =>
+            funIdentifiers(fun, innerAcc)
+          }
+        case fn: FunctionN[_, _] =>
+          fn.args
+            .collect { case f: Function =>
+              f
+            }
+            .foldLeft(acc) { (innerAcc, f) =>
+              funIdentifiers(f, innerAcc)
+            }
         case fc: FunctionChain =>
-          fc.functions.foldLeft(acc) {
-            case (innerAcc, _: AggregateFunction) => innerAcc :+ fc
-            case (innerAcc, i: FunctionWithIdentifier) =>
-              aggregateIdentifiers(i.identifier, innerAcc)
-            case (innerAcc, fc: FunctionChain)          => aggregateIdentifiers(fc, innerAcc)
-            case (innerAcc, b: BinaryFunction[_, _, _]) => aggregateIdentifiers(b, innerAcc)
-            case (innerAcc, _)                          => innerAcc
+          fc.functions.foldLeft(acc) { case (innerAcc, fun: Function) =>
+            funIdentifiers(fun, innerAcc)
           }
-        case b: BinaryFunction[_, _, _] =>
-          val leftAcc = b.left match {
-            case f: Function => aggregateIdentifiers(f, acc)
-            case _           => acc
-          }
-          b.right match {
-            case f: Function => aggregateIdentifiers(f, leftAcc)
-            case _           => leftAcc
-          }
-        case _ => acc
+        case fwi: FunctionWithIdentifier => funIdentifiers(fwi.identifier, acc :+ fwi.identifier)
+        case _                           => acc
       }
     }
   }
@@ -205,6 +209,10 @@ package object function {
 
     override def functionNestedElement: Option[NestedElement] =
       functions.flatMap(_.functionNestedElement).headOption
+
+    override def usesCurrentTimeFunction: Boolean = {
+      functions.exists { _.usesCurrentTimeFunction }
+    }
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
@@ -350,6 +358,11 @@ package object function {
         s"${fun.map(_.painless(context)).getOrElse("")}(${callArgs.mkString(argsSeparator)})"
       else
         fun.map(_.painless(context)).getOrElse("")
+
+    override def usesCurrentTimeFunction: Boolean = this.args.exists {
+      case f: Function => f.usesCurrentTimeFunction
+      case _           => false
+    }
   }
 
   trait BinaryFunction[In1 <: SQLType, In2 <: SQLType, Out <: SQLType] extends FunctionN[In2, Out] {
