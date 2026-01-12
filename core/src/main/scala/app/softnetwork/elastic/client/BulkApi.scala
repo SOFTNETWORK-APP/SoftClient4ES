@@ -31,6 +31,8 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import scala.concurrent.{ExecutionContext, Future}
 
+import scala.language.implicitConversions
+
 /** Bulk API for Elasticsearch clients.
   */
 trait BulkApi extends BulkTypes with ElasticClientHelpers {
