@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.{ObjectValue, Value}
+import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.schema.TableAlias
@@ -942,8 +942,9 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
   _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  override implicit def singleSearchToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 

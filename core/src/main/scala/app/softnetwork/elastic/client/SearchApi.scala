@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
   DqlStatement,
@@ -1035,8 +1036,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   JSON string representation of the query
     */
-  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  private[client] implicit def singleSearchToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String
 
   private def parseInnerHits[M: Manifest: ClassTag, I: Manifest: ClassTag](

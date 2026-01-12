@@ -22,6 +22,7 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.serialization._
@@ -290,9 +291,10 @@ trait MockElasticClientApi extends NopeClientApi {
 
   // ==================== SearchApi ====================
 
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SingleSearch
-  )(implicit timestamp: Long): String =
+  override private[client] implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String =
     """{
       |  "query": {
       |    "match_all": {}

@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.{query, schema}
+import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   SQLAggregation,
@@ -1322,10 +1322,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   )(implicit formats: Formats): ElasticResult[Seq[(U, Seq[I])]] =
     delegate.multisearchWithInnerHits[U, I](elasticQueries, innerField)
 
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
+  override private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: SingleSearch
-  )(implicit timestamp: Long): String =
-    delegate.sqlSearchRequestToJsonQuery(sqlSearch)
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String =
+    delegate.singleSearchToJsonQuery(sqlSearch)
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery

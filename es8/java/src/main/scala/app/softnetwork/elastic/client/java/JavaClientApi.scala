@@ -31,6 +31,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
@@ -902,10 +903,11 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   _: JavaClientCompanion with SerializationApi =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String =
-    implicitly[ElasticSearchRequest](sqlSearch).query
+    implicitly[ElasticSearchRequest](singleSearch).query
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery

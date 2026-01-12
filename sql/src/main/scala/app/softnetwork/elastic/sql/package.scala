@@ -136,6 +136,7 @@ package object sql {
   case object PainlessContextType {
     case object Processor extends PainlessContextType
     case object Query extends PainlessContextType
+    case object Transform extends PainlessContextType
   }
 
   /** Context for painless scripts
@@ -157,7 +158,8 @@ package object sql {
     lazy val timestamp: String = {
       context match {
         case PainlessContextType.Processor => CurrentFunction.processorTimestamp
-        case PainlessContextType.Query     => CurrentFunction.queryTimestamp
+        case PainlessContextType.Query | PainlessContextType.Transform =>
+          CurrentFunction.queryTimestamp
       }
     }
 

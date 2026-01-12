@@ -26,7 +26,7 @@ import app.softnetwork.elastic.client.bulk.{
   FailedDocument,
   SuccessfulDocument
 }
-import app.softnetwork.elastic.sql.query
+import app.softnetwork.elastic.sql.{query, PainlessContextType}
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
@@ -214,9 +214,12 @@ trait NopeClientApi extends ElasticClientApi {
     * @return
     *   JSON string representation of the query
     */
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
+  override private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: query.SingleSearch
-  )(implicit timestamp: Long): String = "{\"query\": {\"match_all\": {}}}"
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String = "{\"query\": {\"match_all\": {}}}"
 
   override private[client] def executeUpdateSettings(
     index: String,

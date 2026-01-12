@@ -16,13 +16,15 @@
 
 package app.softnetwork.elastic.sql.bridge
 
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.query.Criteria
 import com.sksamuel.elastic4s.requests.searches.queries.Query
 
 case class ElasticCriteria(criteria: Criteria) {
 
   def asQuery(group: Boolean = true, innerHitsNames: Set[String] = Set.empty)(implicit
-    timestamp: Long
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): Query = {
     val query = criteria.boolQuery.copy(group = group)
     query

@@ -21,6 +21,7 @@ import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.bulk.BulkOptions
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   Delete,
@@ -1671,8 +1672,9 @@ trait IndicesApi extends ElasticClientHelpers {
     * @return
     *   JSON string representation of the query
     */
-  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  private[client] implicit def singleSearchToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String
 
   // ========================================================================

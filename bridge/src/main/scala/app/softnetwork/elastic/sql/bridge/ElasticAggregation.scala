@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.PainlessContext
+import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import app.softnetwork.elastic.sql.`type`.SQLTemporal
 import app.softnetwork.elastic.sql.query.{
   Asc,
@@ -100,7 +100,10 @@ object ElasticAggregation {
     having: Option[Criteria],
     bucketsDirection: Map[String, SortOrder],
     allAggregations: Map[String, SQLAggregation]
-  )(implicit timestamp: Long): ElasticAggregation = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType
+  ): ElasticAggregation = {
     import sqlAgg._
     val sourceField = identifier.path
 
@@ -348,7 +351,10 @@ object ElasticAggregation {
     having: Option[Criteria],
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
-  )(implicit timestamp: Long): Seq[Aggregation] = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Seq[Aggregation] = {
     for (tree <- buckets) yield {
       val treeNodes =
         tree.sortBy(_.level).reverse.foldLeft(Seq.empty[NodeAggregation]) { (current, node) =>
