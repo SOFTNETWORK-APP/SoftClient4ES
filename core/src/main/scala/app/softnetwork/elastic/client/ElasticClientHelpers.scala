@@ -239,7 +239,7 @@ trait ElasticClientHelpers {
 
     val pattern = "^[a-zA-Z0-9._\\-@]+$".r
 
-    if (!pattern.matches(trimmed)) {
+    if (!pattern.pattern.matcher(trimmed).matches()) {
       return Some(
         ElasticError(
           message =
