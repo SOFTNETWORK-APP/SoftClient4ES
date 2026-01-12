@@ -18,6 +18,14 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
+import app.softnetwork.elastic.sql.function.aggregate.{
+  AggregateFunction,
+  AvgAgg,
+  CountAgg,
+  MaxAgg,
+  MinAgg,
+  SumAgg
+}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -718,25 +726,7 @@ package object schema {
         .mkString(",")} MATCH FIELD $matchField ENRICH FIELDS (${enrichFields.mkString(", ")})${Where(criteria)}"
   }
 
-  case class Pivot(
-    fields: Seq[Column], // simple columns to add to the destination index (within aggregations)
-    aggregations: Seq[SQLAggregation], // aggregations to apply
-    groupBy: Option[GroupBy] // group by clause
-  ) extends DdlToken {
-    def sql: String = {
-      val groupByStr = if (groupBy.nonEmpty) {
-        s"GROUP BY (${groupBy.mkString(", ")})"
-      } else {
-        ""
-      }
-      val aggregationsStr = if (aggregations.nonEmpty) {
-        s"AGGREGATIONS (${aggregations.mkString(", ")})"
-      } else {
-        ""
-      }
-      s"$groupByStr $aggregationsStr".trim
-    }
-  }
+  // ==================== Transform ====================
 
   sealed trait TransformTimeUnit extends DdlToken {
     def name: String
@@ -930,6 +920,269 @@ package object schema {
       Frequency(timeInterval._1, timeInterval._2)
     }
   }
+
+  case class TransformSource(
+    index: Seq[String],
+    query: Option[Criteria]
+  ) extends DdlToken {
+    override def sql: String = {
+      val queryStr = query.map(q => s" WHERE ${q.sql}").getOrElse("")
+      s"INDEX (${index.mkString(", ")})$queryStr"
+    }
+
+    /** Converts to JSON for Elasticsearch
+      */
+    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
+      Map(
+        "index" -> index
+      ) ++ query.map(q => "query" -> implicitly[Map[String, Any]](q))
+    }
+  }
+
+  case class TransformDest(
+    index: String,
+    pipeline: Option[String] = None
+  ) extends DdlToken {
+    override def sql: String = {
+      val pipelineStr = pipeline.map(p => s" PIPELINE $p").getOrElse("")
+      s"INDEX $index$pipelineStr"
+    }
+    def toJson: Map[String, Any] = Map(
+      "index" -> index
+    ) ++ pipeline.map(p => "pipeline" -> p)
+  }
+
+  /** Configuration for bucket selector (HAVING clause)
+    */
+  case class TransformBucketSelectorConfig(
+    name: String = "having_filter",
+    bucketsPath: Map[String, String],
+    having: Criteria
+  ) {
+    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
+
+      Map(
+        "bucket_selector" -> Map(
+          "buckets_path" -> bucketsPath,
+          "script"       -> implicitly[Map[String, Any]](having)
+        )
+      )
+    }
+  }
+
+  case class TransformPivot(
+    groupBy: Map[String, TransformGroupBy],
+    aggregations: Map[String, TransformAggregation],
+    bucketSelector: Option[TransformBucketSelectorConfig] = None
+  ) extends DdlToken {
+    override def sql: String = {
+      val groupByStr = groupBy
+        .map { case (name, gb) =>
+          s"$name BY ${gb.sql}"
+        }
+        .mkString(", ")
+
+      val aggStr = aggregations
+        .map { case (name, agg) =>
+          s"$name AS ${agg.sql}"
+        }
+        .mkString(", ")
+
+      val havingStr = bucketSelector.map(bs => s" HAVING ${bs.having}").getOrElse("")
+
+      s"PIVOT ($groupByStr) AGGREGATE ($aggStr)$havingStr"
+    }
+
+    /** Converts to JSON for Elasticsearch
+      */
+    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
+      Map(
+        "group_by" -> groupBy.map { case (name, gb) =>
+          name -> gb.toJson
+        },
+        "aggregations" -> (aggregations.map { case (name, agg) =>
+          name -> agg.toJson
+        } ++ bucketSelector.map(bs => bs.name -> bs.toJson))
+      )
+    }
+  }
+
+  sealed trait TransformGroupBy extends DdlToken {
+    def toJson: Map[String, Any]
+  }
+
+  case class TermsGroupBy(field: String) extends TransformGroupBy {
+    override def sql: String = s"TERMS($field)"
+    override def toJson: Map[String, Any] = Map("terms" -> Map("field" -> field))
+  }
+
+  sealed trait TransformAggregation extends DdlToken {
+    def toJson: Map[String, Any]
+  }
+
+  case class MaxTransformAggregation(field: String) extends TransformAggregation {
+    override def sql: String = s"MAX($field)"
+
+    override def toJson: Map[String, Any] = Map(
+      "max" -> Map("field" -> field)
+    )
+  }
+
+  case class MinTransformAggregation(field: String) extends TransformAggregation {
+    override def sql: String = s"MIN($field)"
+
+    override def toJson: Map[String, Any] = Map(
+      "min" -> Map("field" -> field)
+    )
+  }
+
+  case class SumTransformAggregation(field: String) extends TransformAggregation {
+    override def sql: String = s"SUM($field)"
+
+    override def toJson: Map[String, Any] = Map(
+      "sum" -> Map("field" -> field)
+    )
+  }
+
+  case class AvgTransformAggregation(field: String) extends TransformAggregation {
+    override def sql: String = s"AVG($field)"
+
+    override def toJson: Map[String, Any] = Map(
+      "avg" -> Map("field" -> field)
+    )
+  }
+
+  case class CountTransformAggregation(field: String) extends TransformAggregation {
+    override def sql: String = if (field == "_id") "COUNT(*)" else s"COUNT($field)"
+
+    override def toJson: Map[String, Any] = Map(
+      "value_count" -> Map("field" -> field)
+    )
+  }
+
+  case class CardinalityTransformAggregation(field: String) extends TransformAggregation {
+    override def sql: String = s"COUNT(DISTINCT $field)"
+
+    override def toJson: Map[String, Any] = Map(
+      "cardinality" -> Map("field" -> field)
+    )
+  }
+
+  /** Extension methods for AggregateFunction
+    */
+  implicit class AggregateConversion(agg: AggregateFunction) {
+
+    /** Converts SQL aggregate function to Elasticsearch aggregation
+      */
+    def toTransformAggregation: Option[TransformAggregation] = agg match {
+      case ma: MaxAgg =>
+        Some(MaxTransformAggregation(ma.identifier.name))
+
+      case ma: MinAgg =>
+        Some(MinTransformAggregation(ma.identifier.name))
+
+      case sa: SumAgg =>
+        Some(SumTransformAggregation(sa.identifier.name))
+
+      case aa: AvgAgg =>
+        Some(AvgTransformAggregation(aa.identifier.name))
+
+      case ca: CountAgg =>
+        val field = ca.identifier.name
+        Some(
+          if (field == "*" || field.isEmpty)
+            if (ca.isCardinality) CardinalityTransformAggregation("_id")
+            else CountTransformAggregation("_id")
+          else if (ca.isCardinality) CardinalityTransformAggregation(field)
+          else CountTransformAggregation(field)
+        )
+
+      case _ =>
+        // For other aggregate functions, default to none
+        None
+    }
+  }
+
+  case class TransformSync(time: TransformTimeSync) extends DdlToken {
+    override def sql: String = s"SYNC ${time.sql}"
+    def toJson: Map[String, Any] = {
+      Map(
+        "time" -> time.toJson
+      )
+    }
+  }
+
+  case class TransformTimeSync(field: String, delay: Delay) extends DdlToken {
+    override def sql: String = s"TIME FIELD $field ${delay.sql}"
+    def toJson: Map[String, Any] = {
+      Map(
+        "field" -> field,
+        "delay" -> delay.toTransformFormat
+      )
+    }
+  }
+
+  /** Transform configuration models with built-in JSON serialization
+    */
+  case class TransformConfig(
+    id: String,
+    source: TransformSource,
+    dest: TransformDest,
+    pivot: Option[TransformPivot] = None,
+    sync: Option[TransformSync] = None,
+    delay: Delay,
+    frequency: Frequency
+  ) extends DdlToken {
+
+    /** Delay in seconds for display */
+    lazy val delaySeconds: Int = delay.toSeconds
+
+    /** Frequency in seconds for display */
+    lazy val frequencySeconds: Int = frequency.toSeconds
+
+    /** Converts to Elasticsearch JSON format
+      */
+    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
+      Map(
+        "source"    -> source.toJson,
+        "dest"      -> dest.toJson,
+        "frequency" -> frequency.toTransformFormat,
+        "sync"      -> sync.map(_.toJson)
+      ) ++ pivot.map(p => "pivot" -> p.toJson)
+    }
+
+    /** SQL DDL representation
+      */
+    override def sql: String = {
+      val sb = new StringBuilder()
+
+      sb.append(s"CREATE TRANSFORM $id\n")
+      sb.append(s"  SOURCE ${source.sql}\n")
+      sb.append(s"  DEST ${dest.sql}\n")
+
+      pivot.foreach { p =>
+        sb.append(s"  ${p.sql}\n")
+      }
+
+      sync.foreach { s =>
+        sb.append(s"  ${s.sql}\n")
+      }
+
+      sb.append(s"  ${frequency.sql}\n")
+      sb.append(s"  ${delay.sql}")
+
+      sb.toString()
+    }
+
+    /** Human-readable summary
+      */
+    def summary: String = {
+      s"Transform $id: ${source.index.mkString(", ")} → ${dest.index} " +
+      s"(every ${frequencySeconds}s, delay ${delaySeconds}s)"
+    }
+  }
+
+  // ==================== Schema ====================
 
   /** Definition of a column within a table
     *
