@@ -433,7 +433,7 @@ package object schema {
             enrichedCols.update(col, c.copy(script = Some(p)))
           }
 
-        case p: SetProcessor =>
+        case p: SetProcessor if p.isDefault =>
           val col = p.column
           enrichedCols.get(col).foreach { c =>
             enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))

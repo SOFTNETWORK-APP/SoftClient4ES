@@ -226,6 +226,8 @@ package object aggregate {
     partitionBy: Seq[Identifier] = Seq.empty,
     fields: Seq[Field] = Seq.empty
   ) extends WindowFunction {
+    def isCardinality: Boolean = identifier.distinct
+
     override def limit: Option[Limit] = None
 
     override def orderBy: Option[OrderBy] = None

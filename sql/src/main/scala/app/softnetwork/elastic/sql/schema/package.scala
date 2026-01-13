@@ -437,7 +437,14 @@ package object schema {
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Set
 
+    def isDefault: Boolean = copyFrom.isEmpty && value != Null && (doIf match {
+      case Some(i) if i.contains(s"ctx.$column == null") => true
+      case _                                             => false
+    })
+
     override def sql: String = {
+      if (isDefault)
+        return s"$column SET DEFAULT ${value.sql}"
       val base = copyFrom match {
         case Some(source) => s"$column COPY FROM $source"
         case None         => s"$column SET VALUE ${value.sql}"
@@ -586,6 +593,7 @@ package object schema {
       val processorsNode = mapper.createArrayNode()
       processors.foreach { processor =>
         processorsNode.add(processor.node)
+        ()
       }
       node.put("description", sql)
       node.set("processors", processorsNode)
@@ -932,10 +940,16 @@ package object schema {
 
     /** Converts to JSON for Elasticsearch
       */
-    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
-      Map(
-        "index" -> index
-      ) ++ query.map(q => "query" -> implicitly[Map[String, Any]](q))
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      val indicesNode = mapper.createArrayNode()
+      index.foreach(indicesNode.add)
+      node.set("index", indicesNode)
+      query.foreach { q =>
+        node.set("query", implicitly[JsonNode](q))
+        ()
+      }
+      node
     }
   }
 
@@ -947,9 +961,12 @@ package object schema {
       val pipelineStr = pipeline.map(p => s" PIPELINE $p").getOrElse("")
       s"INDEX $index$pipelineStr"
     }
-    def toJson: Map[String, Any] = Map(
-      "index" -> index
-    ) ++ pipeline.map(p => "pipeline" -> p)
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("index", index)
+      pipeline.foreach(p => node.put("pipeline", p))
+      node
+    }
   }
 
   /** Configuration for bucket selector (HAVING clause)
@@ -959,14 +976,18 @@ package object schema {
     bucketsPath: Map[String, String],
     having: Criteria
   ) {
-    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
-
-      Map(
-        "bucket_selector" -> Map(
-          "buckets_path" -> bucketsPath,
-          "script"       -> implicitly[Map[String, Any]](having)
-        )
-      )
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      val bucketSelectorNode = mapper.createObjectNode()
+      val bucketsPathNode = mapper.createObjectNode()
+      bucketsPath.foreach { case (k, v) =>
+        bucketsPathNode.put(k, v)
+        ()
+      }
+      bucketSelectorNode.set("buckets_path", bucketsPathNode)
+      bucketSelectorNode.set("script", implicitly[JsonNode](having))
+      node.set("bucket_selector", bucketSelectorNode)
+      node
     }
   }
 
@@ -995,77 +1016,89 @@ package object schema {
 
     /** Converts to JSON for Elasticsearch
       */
-    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
-      Map(
-        "group_by" -> groupBy.map { case (name, gb) =>
-          name -> gb.toJson
-        },
-        "aggregations" -> (aggregations.map { case (name, agg) =>
-          name -> agg.toJson
-        } ++ bucketSelector.map(bs => bs.name -> bs.toJson))
-      )
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+
+      val groupByNode = mapper.createObjectNode()
+      groupBy.foreach { case (name, gb) =>
+        groupByNode.set(name, gb.node)
+        ()
+      }
+      node.set("group_by", groupByNode)
+
+      val aggsNode = mapper.createObjectNode()
+      aggregations.foreach { case (name, agg) =>
+        aggsNode.set(name, agg.node)
+        ()
+      }
+      bucketSelector.foreach { bs =>
+        aggsNode.set(bs.name, bs.node)
+        ()
+      }
+      node.set("aggregations", aggsNode)
+
+      node
     }
   }
 
   sealed trait TransformGroupBy extends DdlToken {
-    def toJson: Map[String, Any]
+    def node: JsonNode
   }
 
   case class TermsGroupBy(field: String) extends TransformGroupBy {
     override def sql: String = s"TERMS($field)"
-    override def toJson: Map[String, Any] = Map("terms" -> Map("field" -> field))
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val termsNode = mapper.createObjectNode()
+      termsNode.put("field", field)
+      node.set("terms", termsNode)
+      node
+    }
   }
 
   sealed trait TransformAggregation extends DdlToken {
-    def toJson: Map[String, Any]
+    def name: String
+
+    def field: String
+
+    override def sql: String = s"${name.toUpperCase}($field)"
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val fieldNode = mapper.createObjectNode()
+      fieldNode.put("field", field)
+      node.set(name.toLowerCase(), fieldNode)
+      node
+    }
   }
 
   case class MaxTransformAggregation(field: String) extends TransformAggregation {
-    override def sql: String = s"MAX($field)"
-
-    override def toJson: Map[String, Any] = Map(
-      "max" -> Map("field" -> field)
-    )
+    override def name: String = "max"
   }
 
   case class MinTransformAggregation(field: String) extends TransformAggregation {
-    override def sql: String = s"MIN($field)"
-
-    override def toJson: Map[String, Any] = Map(
-      "min" -> Map("field" -> field)
-    )
+    override def name: String = "min"
   }
 
   case class SumTransformAggregation(field: String) extends TransformAggregation {
-    override def sql: String = s"SUM($field)"
-
-    override def toJson: Map[String, Any] = Map(
-      "sum" -> Map("field" -> field)
-    )
+    override def name: String = "sum"
   }
 
   case class AvgTransformAggregation(field: String) extends TransformAggregation {
-    override def sql: String = s"AVG($field)"
-
-    override def toJson: Map[String, Any] = Map(
-      "avg" -> Map("field" -> field)
-    )
+    override def name: String = "avg"
   }
 
   case class CountTransformAggregation(field: String) extends TransformAggregation {
-    override def sql: String = if (field == "_id") "COUNT(*)" else s"COUNT($field)"
+    override def name: String = "value_count"
 
-    override def toJson: Map[String, Any] = Map(
-      "value_count" -> Map("field" -> field)
-    )
+    override def sql: String = if (field == "_id") "COUNT(*)" else s"COUNT($field)"
   }
 
   case class CardinalityTransformAggregation(field: String) extends TransformAggregation {
-    override def sql: String = s"COUNT(DISTINCT $field)"
+    override def name: String = "cardinality"
 
-    override def toJson: Map[String, Any] = Map(
-      "cardinality" -> Map("field" -> field)
-    )
+    override def sql: String = s"COUNT(DISTINCT $field)"
   }
 
   /** Extension methods for AggregateFunction
@@ -1105,20 +1138,22 @@ package object schema {
 
   case class TransformSync(time: TransformTimeSync) extends DdlToken {
     override def sql: String = s"SYNC ${time.sql}"
-    def toJson: Map[String, Any] = {
-      Map(
-        "time" -> time.toJson
-      )
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.set("time", time.node)
+      node
     }
   }
 
   case class TransformTimeSync(field: String, delay: Delay) extends DdlToken {
     override def sql: String = s"TIME FIELD $field ${delay.sql}"
-    def toJson: Map[String, Any] = {
-      Map(
-        "field" -> field,
-        "delay" -> delay.toTransformFormat
-      )
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("field", field)
+      node.put("delay", delay.toTransformFormat)
+      node
     }
   }
 
@@ -1142,13 +1177,20 @@ package object schema {
 
     /** Converts to Elasticsearch JSON format
       */
-    def toJson(implicit criteriaToMap: Criteria => Map[String, Any]): Map[String, Any] = {
-      Map(
-        "source"    -> source.toJson,
-        "dest"      -> dest.toJson,
-        "frequency" -> frequency.toTransformFormat,
-        "sync"      -> sync.map(_.toJson)
-      ) ++ pivot.map(p => "pivot" -> p.toJson)
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      node.set("source", source.node)
+      node.set("dest", dest.node)
+      node.put("frequency", frequency.toTransformFormat)
+      sync.foreach { s =>
+        node.set("sync", s.node)
+        ()
+      }
+      pivot.foreach { p =>
+        node.set("pivot", p.node)
+        ()
+      }
+      node
     }
 
     /** SQL DDL representation
