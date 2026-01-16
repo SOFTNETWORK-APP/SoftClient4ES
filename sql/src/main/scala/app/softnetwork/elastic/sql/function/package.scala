@@ -42,7 +42,7 @@ package object function {
     }
   }
 
-  trait FunctionWithIdentifier extends Function {
+  trait FunctionWithIdentifier extends Function with Updateable {
     def identifier: Identifier
 
     override def functionNestedElement: Option[NestedElement] =
@@ -213,9 +213,18 @@ package object function {
     override def usesCurrentTimeFunction: Boolean = {
       functions.exists { _.usesCurrentTimeFunction }
     }
+
+    override lazy val dependencies: Seq[Identifier] = functions
+      .foldLeft(Seq.empty[Identifier]) { case (acc, fun) =>
+        acc ++ FunctionUtils.funIdentifiers(fun)
+      }
+      .filterNot(_.name.isEmpty)
   }
 
-  trait FunctionN[In <: SQLType, Out <: SQLType] extends Function with PainlessScript {
+  trait FunctionN[In <: SQLType, Out <: SQLType]
+      extends Function
+      with PainlessScript
+      with Updateable {
     def fun: Option[PainlessScript] = None
 
     def args: List[PainlessScript]

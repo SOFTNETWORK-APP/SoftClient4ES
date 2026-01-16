@@ -17,13 +17,15 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
+  query,
   Alias,
   DateMathRounding,
   Expr,
   Identifier,
   PainlessContext,
   PainlessScript,
-  TokenRegex
+  TokenRegex,
+  Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 
@@ -100,6 +102,14 @@ package object convert {
       else s"$Cast($ret)"
     }
     value.cast(targetType)
+
+    override def update(request: query.SingleSearch): Conversion = {
+      value match {
+        case updatable: Updateable =>
+          this.copy(value = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 
   case object CastOperator extends Expr("\\:\\:") with TokenRegex
@@ -110,6 +120,14 @@ package object convert {
     override def safe: Boolean = false
 
     value.cast(targetType)
+
+    override def update(request: query.SingleSearch): CastOperator = {
+      value match {
+        case updatable: Updateable =>
+          this.copy(value = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 
   case object Convert extends Expr("CONVERT") with TokenRegex
@@ -120,5 +138,13 @@ package object convert {
     override def safe: Boolean = false
 
     value.cast(targetType)
+
+    override def update(request: query.SingleSearch): Convert = {
+      value match {
+        case updatable: Updateable =>
+          this.copy(value = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 }

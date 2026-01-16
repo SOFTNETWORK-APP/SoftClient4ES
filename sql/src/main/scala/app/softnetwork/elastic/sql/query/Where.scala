@@ -31,11 +31,11 @@ case object Where extends Expr("WHERE") with TokenRegex
 sealed trait Criteria extends Updateable with PainlessScript {
   def operator: Operator
 
-  def identifiers: Seq[Identifier] = this match {
-    case Predicate(left, _, right, _, _) => left.identifiers ++ right.identifiers
-    case c: Expression                   => c.identifiers
-    case relation: ElasticRelation       => relation.criteria.identifiers
-    case m: MultiMatchCriteria           => m.identifiers
+  def dependencies: Seq[Identifier] = this match {
+    case Predicate(left, _, right, _, _) => left.dependencies ++ right.dependencies
+    case c: Expression                   => c.dependencies
+    case relation: ElasticRelation       => relation.criteria.dependencies
+    case m: MultiMatchCriteria           => m.dependencies
     case _                               => Nil
   }
 
@@ -285,10 +285,10 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   def valueAsString: String = maybeValue.map(v => s" $v").getOrElse("")
   override def sql = s"$identifier $notAsString$operator$valueAsString"
 
-  override def identifiers: Seq[Identifier] =
+  override lazy val dependencies: Seq[Identifier] =
     maybeValue match {
-      case Some(id: Identifier) => Seq(identifier, id)
-      case _                    => Seq(identifier)
+      case Some(id: Identifier) => identifier.dependencies ++ id.dependencies
+      case _                    => identifier.dependencies
     }
 
   override def extractAllMetricsPath: Map[String, String] =
@@ -768,7 +768,7 @@ case class DistanceCriteria(
 }
 
 case class MultiMatchCriteria(
-  override val identifiers: Seq[Identifier],
+  identifiers: Seq[Identifier],
   value: StringValue,
   nestedElement: Option[NestedElement] = None
 ) extends Criteria { // FIXME map to multi_match
@@ -777,6 +777,8 @@ case class MultiMatchCriteria(
   override def operator: Operator = MATCH
   override def update(request: SingleSearch): Criteria =
     this.copy(identifiers = identifiers.map(_.update(request)))
+
+  override def dependencies: Seq[Identifier] = identifiers.flatMap(_.dependencies)
 
   override lazy val nested: Boolean = identifiers.forall(_.nested)
 

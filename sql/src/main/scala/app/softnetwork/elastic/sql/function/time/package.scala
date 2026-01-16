@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
+  query,
   DateMathRounding,
   DateMathScript,
   Expr,
@@ -25,7 +26,8 @@ import app.softnetwork.elastic.sql.{
   PainlessContext,
   PainlessScript,
   StringValue,
-  TokenRegex
+  TokenRegex,
+  Updateable
 }
 import app.softnetwork.elastic.sql.operator.time._
 import app.softnetwork.elastic.sql.`type`.{
@@ -109,11 +111,13 @@ package object time {
   case class SQLAddInterval(interval: TimeInterval) extends AddInterval[SQLTemporal] {
     override def inputType: SQLTemporal = SQLTypes.Temporal
     override def outputType: SQLTemporal = SQLTypes.Temporal
+    override def update(request: query.SingleSearch): SQLAddInterval = this
   }
 
   case class SQLSubtractInterval(interval: TimeInterval) extends SubtractInterval[SQLTemporal] {
     override def inputType: SQLTemporal = SQLTypes.Temporal
     override def outputType: SQLTemporal = SQLTypes.Temporal
+    override def update(request: query.SingleSearch): SQLSubtractInterval = this
   }
 
   sealed trait DateTimeFunction extends Function {
@@ -283,6 +287,9 @@ package object time {
 
     override def shouldBeScripted: Boolean = false
 
+    override def update(request: query.SingleSearch): DateTrunc = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
@@ -304,6 +311,7 @@ package object time {
 
     override def toSQL(base: String): String = s"$sql(${field.sql} FROM $base)"
 
+    override def update(request: query.SingleSearch): Extract = this
   }
 
   import TimeField._
@@ -393,6 +401,9 @@ package object time {
       }
     }
 
+    override def update(request: query.SingleSearch): LastDayOfMonth = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {
@@ -435,6 +446,21 @@ package object time {
       }
       ret
     }
+
+    override def update(request: query.SingleSearch): DateDiff = {
+      this.copy(
+        start = start match {
+          case updatable: Updateable =>
+            updatable.update(request).asInstanceOf[PainlessScript]
+          case _ => start
+        },
+        end = end match {
+          case updatable: Updateable =>
+            updatable.update(request).asInstanceOf[PainlessScript]
+          case _ => end
+        }
+      )
+    }
   }
 
   case object DateAdd extends Expr("DATE_ADD") with TokenRegex {
@@ -453,6 +479,9 @@ package object time {
       s"$sql($base, ${interval.sql})"
     }
     override def dateMathScript: Boolean = identifier.dateMathScript
+    override def update(request: query.SingleSearch): DateAdd = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateSub extends Expr("DATE_SUB") with TokenRegex {
@@ -471,6 +500,9 @@ package object time {
       s"$sql($base, ${interval.sql})"
     }
     override def dateMathScript: Boolean = identifier.dateMathScript
+    override def update(request: query.SingleSearch): DateSub = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   sealed trait FunctionWithDateTimeFormat {
@@ -579,6 +611,10 @@ package object time {
     override def formatScript: Option[String] = Some(format)
 
     override def shouldBeScripted: Boolean = true // FIXME
+
+    override def update(request: query.SingleSearch): DateParse = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
@@ -625,6 +661,10 @@ package object time {
           s"$param.format($arg)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
+
+    override def update(request: query.SingleSearch): DateFormat = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateTimeAdd extends Expr("DATETIME_ADD") with TokenRegex {
@@ -643,6 +683,10 @@ package object time {
       s"$sql($base, ${interval.sql})"
     }
     override def dateMathScript: Boolean = identifier.dateMathScript
+
+    override def update(request: query.SingleSearch): DateTimeAdd = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateTimeSub extends Expr("DATETIME_SUB") with TokenRegex {
@@ -661,6 +705,10 @@ package object time {
       s"$sql($base, ${interval.sql})"
     }
     override def dateMathScript: Boolean = identifier.dateMathScript
+
+    override def update(request: query.SingleSearch): DateTimeSub = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateTimeParse extends Expr("DATETIME_PARSE") with TokenRegex with PainlessScript {
@@ -720,6 +768,10 @@ package object time {
     }
 
     override def formatScript: Option[String] = Some(format)
+
+    override def update(request: query.SingleSearch): DateTimeParse = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case object DateTimeFormat extends Expr("DATETIME_FORMAT") with TokenRegex with PainlessScript {
@@ -769,6 +821,9 @@ package object time {
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 
+    override def update(request: query.SingleSearch): DateTimeFormat = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
 }
