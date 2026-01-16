@@ -55,7 +55,8 @@ package object schema {
     not_null: Option[Boolean] = None,
     comment: Option[String] = None,
     fields: List[IndexField] = Nil,
-    options: Map[String, Value[_]] = Map.empty
+    options: Map[String, Value[_]] = Map.empty,
+    lineage: Map[String, Seq[(String, String)]] = Map.empty // ✅ Added
   ) {
     lazy val ddlColumn: Column = {
       Column(
@@ -66,7 +67,8 @@ package object schema {
         defaultValue = null_value,
         notNull = not_null.getOrElse(false),
         comment = comment,
-        options = options
+        options = options,
+        lineage = lineage // ✅ Added
       )
     }
   }
@@ -170,6 +172,46 @@ package object schema {
           }
         case _ => None
       }
+
+      // ✅ Extract lineage from _meta
+      val lineage = _meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("lineage") match {
+              case Some(lin: ObjectValue) =>
+                Some(
+                  lin.value.flatMap {
+                    case (pathId, pathValue: ObjectValues) =>
+                      // Parse the chain of (table, column) pairs
+                      val chain = pathValue.values.flatMap {
+                        case obj: ObjectValue =>
+                          val tableOpt = obj.value.get("table") match {
+                            case Some(StringValue(t)) => Some(t)
+                            case _                    => None
+                          }
+                          val columnOpt = obj.value.get("column") match {
+                            case Some(StringValue(c)) => Some(c)
+                            case _                    => None
+                          }
+                          for {
+                            table  <- tableOpt
+                            column <- columnOpt
+                          } yield (table, column)
+                        case _ => None
+                      }
+
+                      if (chain.nonEmpty) Some(pathId -> chain)
+                      else None
+
+                    case _ => None
+                  }
+                )
+              case _ => None
+            }
+          case _ => None
+        }
+        .getOrElse(Map.empty)
+
       IndexField(
         name = name,
         `type` = tpe,
@@ -178,7 +220,8 @@ package object schema {
         not_null = notNull,
         comment = comment,
         fields = fields,
-        options = options
+        options = options,
+        lineage = lineage
       )
 
     }

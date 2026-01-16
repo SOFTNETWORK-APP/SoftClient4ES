@@ -1391,6 +1391,8 @@ package object schema {
     *   optional options for this column (search analyzer, ...)
     * @param struct
     *   optional parent struct column
+    * @param lineage
+    *   sequence of (table, column) pairs indicating the lineage of this column
     */
   case class Column(
     name: String,
@@ -1401,7 +1403,8 @@ package object schema {
     notNull: Boolean = false,
     comment: Option[String] = None,
     options: Map[String, Value[_]] = Map.empty,
-    struct: Option[Column] = None
+    struct: Option[Column] = None,
+    lineage: Map[String, Seq[(String, String)]] = Map.empty // ✅ Key = path ID, Value = chain
   ) extends DdlToken {
     def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
     private def level: Int = struct.map(_.level + 1).getOrElse(0)
@@ -1417,6 +1420,18 @@ package object schema {
         cols.get(path)
       }
     }
+
+    /** Flattens all lineage paths into a set of (table, column) pairs */
+    def allLineageSources: Set[(String, String)] =
+      lineage.values.flatten.toSet
+
+    /** Gets the immediate sources (last element of each path) */
+    def immediateSources: Set[(String, String)] =
+      lineage.values.flatMap(_.lastOption).toSet
+
+    /** Gets the original sources (first element of each path) */
+    def originalSources: Set[(String, String)] =
+      lineage.values.flatMap(_.headOption).toSet
 
     def _meta: Map[String, Value[_]] = {
       Map(
@@ -1438,7 +1453,25 @@ package object schema {
         "multi_fields" -> ObjectValue(
           multiFields.map(field => field.name -> ObjectValue(field._meta)).toMap
         )
-      )
+      ) ++ (if (lineage.nonEmpty) {
+              // ✅ Lineage as map of paths
+              Map(
+                "lineage" -> ObjectValue(
+                  lineage.map { case (pathId, chain) =>
+                    pathId -> ObjectValues(
+                      chain.map { case (table, column) =>
+                        ObjectValue(
+                          Map(
+                            "table"  -> StringValue(table),
+                            "column" -> StringValue(column)
+                          )
+                        )
+                      }
+                    )
+                  }
+                )
+              )
+            } else Map.empty)
     }
 
     def updateStruct(): Column = {
