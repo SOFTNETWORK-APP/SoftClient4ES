@@ -1004,12 +1004,11 @@ package object sql {
           s"($processParamName == null ? $nullValue : $processParamName${painlessMethods.mkString("")})"
         )
 
-    lazy val transformParamName: String = {
-      fieldAlias match {
-        case Some(a) => s"doc['$a'].value"
-        case None    => paramName
-      }
-    }
+    lazy val transformParamName: String =
+      if (isAggregation && functions.size == 1) s"params.${metricName.getOrElse(aliasOrName)}"
+      else if (aliasOrName.nonEmpty)
+        s"doc['$aliasOrName'].value"
+      else ""
 
     lazy val transformCheckNotNull: Option[String] =
       if (path.isEmpty || !nullable) None
