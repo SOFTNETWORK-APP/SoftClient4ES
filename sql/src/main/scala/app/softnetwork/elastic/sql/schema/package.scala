@@ -732,6 +732,29 @@ package object schema {
     def sql: String =
       s"CREATE OR REPLACE ENRICH POLICY $name TYPE $policyType WITH SOURCE INDICES ${indices
         .mkString(",")} MATCH FIELD $matchField ENRICH FIELDS (${enrichFields.mkString(", ")})${Where(criteria)}"
+
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("name", name)
+      node.put("type", policyType.name)
+      val indicesNode = mapper.createArrayNode()
+      indices.foreach { index =>
+        indicesNode.add(index)
+        ()
+      }
+      node.set("indices", indicesNode)
+      node.put("match_field", matchField)
+      val enrichFieldsNode = mapper.createArrayNode()
+      enrichFields.foreach { field =>
+        enrichFieldsNode.add(field)
+        ()
+      }
+      node.set("enrich_fields", enrichFieldsNode)
+      criteria.foreach { c =>
+        node.set("query", implicitly[JsonNode](c))
+      }
+      node
+    }
   }
 
   // ==================== Transform ====================
@@ -974,9 +997,9 @@ package object schema {
   case class TransformBucketSelectorConfig(
     name: String = "having_filter",
     bucketsPath: Map[String, String],
-    having: Criteria
+    script: String
   ) {
-    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+    def node: JsonNode = {
       val node = mapper.createObjectNode()
       val bucketSelectorNode = mapper.createObjectNode()
       val bucketsPathNode = mapper.createObjectNode()
@@ -985,7 +1008,9 @@ package object schema {
         ()
       }
       bucketSelectorNode.set("buckets_path", bucketsPathNode)
-      bucketSelectorNode.set("script", implicitly[JsonNode](having))
+      if (script.nonEmpty) {
+        bucketSelectorNode.put("script", script)
+      }
       node.set("bucket_selector", bucketSelectorNode)
       node
     }
@@ -994,7 +1019,8 @@ package object schema {
   case class TransformPivot(
     groupBy: Map[String, TransformGroupBy],
     aggregations: Map[String, TransformAggregation],
-    bucketSelector: Option[TransformBucketSelectorConfig] = None
+    bucketSelector: Option[TransformBucketSelectorConfig] = None,
+    script: Option[String] = None
   ) extends DdlToken {
     override def sql: String = {
       val groupByStr = groupBy
@@ -1009,14 +1035,14 @@ package object schema {
         }
         .mkString(", ")
 
-      val havingStr = bucketSelector.map(bs => s" HAVING ${bs.having}").getOrElse("")
+      val havingStr = bucketSelector.map(bs => s" HAVING ${bs.script}").getOrElse("")
 
       s"PIVOT ($groupByStr) AGGREGATE ($aggStr)$havingStr"
     }
 
     /** Converts to JSON for Elasticsearch
       */
-    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+    def node: JsonNode = {
       val node = mapper.createObjectNode()
 
       val groupByNode = mapper.createObjectNode()
@@ -1133,6 +1159,125 @@ package object schema {
       case _ =>
         // For other aggregate functions, default to none
         None
+    }
+  }
+
+  /** Captures the latest value for a field (for changelog snapshots)
+    *
+    * Uses top_hits with size=1 sorted by a timestamp field This works for ANY field type (text,
+    * numeric, date, etc.)
+    */
+  case class LatestValueTransformAggregation(
+    field: String,
+    sortBy: String = "_ingest.timestamp" // Default sort by ingest timestamp
+  ) extends TransformAggregation {
+
+    override def name: String = "latest_value"
+
+    override def sql: String = s"LAST_VALUE($field)"
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val topHitsNode = mapper.createObjectNode()
+
+      // Configure top_hits to get the latest value
+      topHitsNode.put("size", 1)
+
+      // Sort by timestamp descending to get latest
+      val sortArray = mapper.createArrayNode()
+      val sortObj = mapper.createObjectNode()
+      val sortFieldObj = mapper.createObjectNode()
+      sortFieldObj.put("order", "desc")
+      sortObj.set(sortBy, sortFieldObj)
+      sortArray.add(sortObj)
+      topHitsNode.set("sort", sortArray)
+
+      // Only retrieve the field we need
+      val sourceObj = mapper.createObjectNode()
+      val includesArray = mapper.createArrayNode()
+      includesArray.add(field)
+      sourceObj.set("includes", includesArray)
+      topHitsNode.set("_source", sourceObj)
+
+      node.set("top_hits", topHitsNode)
+      node
+    }
+  }
+
+  /** Alternative: Use MAX aggregation for compatible types
+    *
+    * This is simpler but only works for:
+    *   - Numeric fields (int, long, double, float)
+    *   - Date fields
+    *   - Keyword fields (lexicographic max)
+    */
+  case class MaxValueTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "max"
+
+    override def sql: String = s"MAX($field)"
+  }
+
+  /** Alternative: Use MIN aggregation (for specific use cases)
+    */
+  case class MinValueTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "min"
+
+    override def sql: String = s"MIN($field)"
+  }
+
+  object ChangelogAggregationStrategy {
+
+    /** Selects the appropriate aggregation for a field in a changelog based on its data type
+      *
+      * @param field
+      *   The field to aggregate
+      * @param dataType
+      *   The SQL data type of the field
+      * @return
+      *   The transform aggregation to use
+      */
+    def selectAggregation(field: String, dataType: SQLType): TransformAggregation = {
+      dataType match {
+        // Numeric types: Use MAX directly
+        case SQLTypes.Int | SQLTypes.BigInt | SQLTypes.Double | SQLTypes.Real =>
+          MaxValueTransformAggregation(field)
+
+        // Date/Timestamp: Use MAX directly
+        case SQLTypes.Date | SQLTypes.Timestamp =>
+          MaxValueTransformAggregation(field)
+
+        // Boolean: Use MAX directly (1=true, 0=false)
+        case SQLTypes.Boolean =>
+          MaxValueTransformAggregation(field)
+
+        // Keyword: Already a keyword type, use MAX directly
+        case SQLTypes.Keyword =>
+          MaxValueTransformAggregation(field) // ✅ NO .keyword suffix
+
+        // Text/Varchar: Analyzed field, must use .keyword multi-field
+        case SQLTypes.Text | SQLTypes.Varchar =>
+          MaxValueTransformAggregation(s"$field.keyword") // ✅ Use .keyword multi-field
+
+        // For complex types, use top_hits as fallback
+        case _ =>
+          LatestValueTransformAggregation(field)
+      }
+    }
+
+    /** Determines if a field can use simple MAX aggregation (without needing a multi-field)
+      */
+    def canUseMaxDirectly(dataType: SQLType): Boolean = dataType match {
+      case SQLTypes.Int | SQLTypes.BigInt | SQLTypes.Double | SQLTypes.Real | SQLTypes.Date |
+          SQLTypes.Timestamp | SQLTypes.Keyword | SQLTypes.Boolean =>
+        true
+      case _ => false
+    }
+
+    /** Determines if a field needs a .keyword multi-field for aggregation
+      */
+    def needsKeywordMultiField(dataType: SQLType): Boolean = dataType match {
+      case SQLTypes.Text | SQLTypes.Varchar => true
+      case _                                => false
     }
   }
 
