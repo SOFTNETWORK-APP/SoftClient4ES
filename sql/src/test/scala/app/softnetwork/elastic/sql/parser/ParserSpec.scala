@@ -239,7 +239,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
-  "Parser" should "parse numerical EQ" in {
+  behavior of "Parser DQL"
+
+  it should "parse numerical EQ" in {
     val result = Parser(numericalEq)
     result.toOption
       .map(_.sql)
@@ -939,6 +941,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   // --- DDL ---
 
+  behavior of "Parser DDL"
+
   it should "parse CREATE TABLE if not exists" in {
     val sql =
       """CREATE TABLE IF NOT EXISTS users (
@@ -1498,6 +1502,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   // --- DML ---
 
+  behavior of "Parser DML"
+
   it should "parse INSERT INTO ... VALUES" in {
     val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice') ON CONFLICT DO NOTHING"
     val result = Parser(sql)
@@ -1533,6 +1539,32 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     stmt match {
       case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(None, false))) =>
         sel.sql should include("SELECT id, name FROM old_users ON CONFLICT DO NOTHING")
+      case _ => fail("Expected Insert with select")
+    }
+  }
+
+  it should "parse INSERT INTO ... SELECT with alias" in {
+    val sql = """INSERT INTO orders_with_customers_mv_customers_changelog AS
+                |SELECT
+                |  id,
+                |  name,
+                |  email,
+                |  department.zipcode AS department.zip_code
+                |FROM customers;
+                |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert(
+            "orders_with_customers_mv_customers_changelog",
+            Nil,
+            Left(sel: DqlStatement),
+            None
+          ) =>
+        sel.sql should include(
+          "SELECT id, name, email, department.zipcode AS department.zip_code FROM customers"
+        )
       case _ => fail("Expected Insert with select")
     }
   }
@@ -1589,4 +1621,5 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       case _ => fail("Expected Union")
     }
   }
+
 }

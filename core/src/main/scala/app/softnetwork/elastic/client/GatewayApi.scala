@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
+import app.softnetwork.elastic.client.licensing.{DdlLicenseChecker, DqlLicenseChecker}
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
@@ -32,6 +33,7 @@ import app.softnetwork.elastic.client.result.{
   SQLResult,
   TableResult
 }
+import app.softnetwork.elastic.licensing.{DefaultLicenseManager, LicenseChecker, LicenseManager}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
@@ -1165,6 +1167,24 @@ trait GatewayApi extends ElasticClientHelpers {
     with ScrollApi
     with VersionApi =>
 
+  // ✅ Inject license manager (overridable)
+  def licenseManager: LicenseManager = new DefaultLicenseManager()
+
+  // ✅ Create checkers (depend on licenseManager)
+  def dqlChecker(implicit
+    system: ActorSystem
+  ): LicenseChecker[DqlStatement, ElasticResult[QueryResult]] =
+    new DqlLicenseChecker(licenseManager, logger)
+
+  def ddlChecker(implicit
+    system: ActorSystem
+  ): LicenseChecker[DdlStatement, ElasticResult[QueryResult]] =
+    new DdlLicenseChecker(
+      licenseManager,
+      logger,
+      () => countMaterializedViews()
+    )
+
   lazy val dqlExecutor = new DqlExecutor(
     api = this,
     logger = logger
@@ -1189,6 +1209,13 @@ trait GatewayApi extends ElasticClientHelpers {
     pipelineExec = pipelineExecutor,
     tableExec = tableExecutor
   )
+
+  // ✅ Helper to count materialized views
+  private[client] def countMaterializedViews()(implicit system: ActorSystem): Future[Int] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // Query Elasticsearch for indices with _meta.type = "materialized_view"
+    Future.successful(0) // TODO: Implement
+  }
 
   // ========================================================================
   // SQL GATEWAY API
@@ -1255,18 +1282,41 @@ trait GatewayApi extends ElasticClientHelpers {
   def run(
     statement: Statement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+
     statement match {
 
+      // ✅ DQL with license check
       case dql: DqlStatement =>
-        dqlExecutor.execute(dql)
+        dqlChecker.check(dql, dqlExecutor.execute).map {
+          case Right(result) => result
+          case Left(licenseError) =>
+            ElasticFailure(
+              ElasticError(
+                message = licenseError.message,
+                statusCode = Some(licenseError.statusCode),
+                operation = Some("license")
+              )
+            )
+        }
 
-      // handle DML statements
+      // ✅ DML (no license check for now)
       case dml: DmlStatement =>
         dmlExecutor.execute(dml)
 
-      // handle DDL statements
+      // ✅ DDL with license check
       case ddl: DdlStatement =>
-        ddlExecutor.execute(ddl)
+        ddlChecker.check(ddl, ddlExecutor.execute).map {
+          case Right(result) => result
+          case Left(licenseError) =>
+            ElasticFailure(
+              ElasticError(
+                message = licenseError.message,
+                statusCode = Some(licenseError.statusCode),
+                operation = Some("license")
+              )
+            )
+        }
 
       case _ =>
         // unsupported SQL statement

@@ -16,7 +16,14 @@
 
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.{BooleanValue, ObjectValue, StringValue, StringValues, Value}
+import app.softnetwork.elastic.sql.{
+  BooleanValue,
+  ObjectValue,
+  ObjectValues,
+  StringValue,
+  StringValues,
+  Value
+}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.{
   Column,
@@ -28,12 +35,14 @@ import app.softnetwork.elastic.sql.schema.{
   Schema,
   ScriptProcessor,
   SetProcessor,
-  Table
+  Table,
+  TableType
 }
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.JsonNode
 
+import java.security.MessageDigest
 import scala.jdk.CollectionConverters._
 
 package object schema {
@@ -179,7 +188,9 @@ package object schema {
     fields: List[IndexField] = Nil,
     primaryKey: List[String] = Nil,
     partitionBy: Option[IndexDatePartition] = None,
-    options: Map[String, Value[_]] = Map.empty
+    options: Map[String, Value[_]] = Map.empty,
+    materializedViews: Option[List[String]] = None,
+    tableType: TableType = TableType.Regular
   )
 
   object IndexMappings {
@@ -248,11 +259,36 @@ package object schema {
         case _ => None
       }
 
+      val materializedViews: Option[List[String]] = meta
+        .map {
+          case m: ObjectValue =>
+            m.value.get("materialized_views") match {
+              case Some(mvs: StringValues) => mvs.values.map(_.ddl.replaceAll("\"", "")).toList
+              case Some(mv: StringValue)   => List(mv.ddl.replaceAll("\"", ""))
+              case _                       => List.empty
+            }
+          case _ => List.empty
+        }
+        .filter(_.nonEmpty)
+
+      val tableType: TableType = meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("type") match {
+              case Some(mv: StringValue) => Some(TableType(mv.value))
+              case _                     => None
+            }
+          case _ => None
+        }
+        .getOrElse(TableType.Regular)
+
       IndexMappings(
         fields = fields,
         primaryKey = primaryKey,
         partitionBy = partitionBy,
-        options = options
+        options = options,
+        materializedViews = materializedViews,
+        tableType = tableType
       )
     }
 
@@ -465,7 +501,9 @@ package object schema {
         mappings = esMappings.options,
         settings = esSettings.options,
         processors = processors.toSeq,
-        aliases = aliases
+        aliases = aliases,
+        materializedViews = esMappings.materializedViews.getOrElse(Nil),
+        tableType = esMappings.tableType
       ).update()
     }
   }

@@ -1833,6 +1833,42 @@ package object schema {
     }
   }
 
+  sealed trait TableType {
+    def name: String
+  }
+
+  object TableType {
+    case object Regular extends TableType {
+      override def name: String = "regular"
+    }
+    case object External extends TableType {
+      override def name: String = "external"
+    }
+    case object Changelog extends TableType {
+      override def name: String = "changelog"
+    }
+    case object Enrichment extends TableType {
+      override def name: String = "enrichment"
+    }
+    case object View extends TableType {
+      override def name: String = "view"
+    }
+    case object MaterializedView extends TableType {
+      override def name: String = "materialized_view"
+    }
+
+    def apply(name: String): TableType =
+      name.toLowerCase match {
+        case "regular"           => Regular
+        case "external"          => External
+        case "changelog"         => Changelog
+        case "enrichment"        => Enrichment
+        case "view"              => View
+        case "materialized_view" => MaterializedView
+        case other               => throw new Exception(s"Unknown table type: $other")
+      }
+  }
+
   /** Definition of a table within the schema
     *
     * @param name
@@ -1851,6 +1887,10 @@ package object schema {
     *   optional list of ingest processors associated to this table (apart from column processors)
     * @param aliases
     *   optional map of aliases associated to this table
+    * @param materializedViews
+    *   optional list of materialized views associated to this table
+    * @param materializedView
+    *   whether this table is a materialized view
     */
   case class Table(
     name: String,
@@ -1860,8 +1900,14 @@ package object schema {
     mappings: Map[String, Value[_]] = Map.empty,
     settings: Map[String, Value[_]] = Map.empty,
     processors: Seq[IngestProcessor] = Seq.empty,
-    aliases: Map[String, Value[_]] = Map.empty
+    aliases: Map[String, Value[_]] = Map.empty,
+    materializedViews: List[String] = Nil,
+    tableType: TableType = TableType.Regular
   ) extends DdlToken {
+    lazy val isRegular: Boolean = tableType == TableType.Regular
+
+    lazy val isPartitioned: Boolean = partitionBy.isDefined
+
     lazy val indexName: String = name.toLowerCase
     private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
 
@@ -1891,7 +1937,13 @@ package object schema {
         )
       )
       .getOrElse(Map.empty) ++
-      Map("columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) }))
+      Map(
+        "columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) })
+      ) ++ Map(
+        "type" -> StringValue(tableType.name)
+      ) ++ Map(
+        "materialized_views" -> StringValues(materializedViews.map(StringValue))
+      )
 
     def update(): Table = {
       val updated =
@@ -1901,7 +1953,7 @@ package object schema {
           "_meta" ->
           ObjectValue(updated.mappings.get("_meta") match {
             case Some(ObjectValue(value)) =>
-              (value - "primary_key" - "partition_by" - "columns") ++ updated._meta
+              (value - "primary_key" - "partition_by" - "columns" - "materialized_views" - "type") ++ updated._meta
             case _ => updated._meta
           })
         )
@@ -1949,6 +2001,8 @@ package object schema {
         .toSeq ++ implicitly[Seq[IngestProcessor]](primaryKey)
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
+      if (!isRegular)
+        throw new Exception(s"Cannot alter table $name of type ${tableType.name}")
       statements
         .foldLeft(this) { (table, statement) =>
           statement match {
@@ -2341,7 +2395,7 @@ package object schema {
       val template = mapper.createObjectNode()
       template.set("mappings", indexMappings)
       template.set("settings", indexSettings)
-      if (aliases.nonEmpty) {
+      if (indexAliases.nonEmpty) {
         val aliasesNode = mapper.createObjectNode()
         indexAliases.foreach { alias =>
           aliasesNode.set(alias.alias, alias.node)

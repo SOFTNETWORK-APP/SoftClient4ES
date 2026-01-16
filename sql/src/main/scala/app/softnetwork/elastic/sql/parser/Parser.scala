@@ -389,6 +389,18 @@ object Parser
       TruncateTable(name)
     }
 
+  def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ~ ("AS" ~> dqlStatement) ^^ {
+      case _ ~ view ~ dql =>
+        CreateMaterializedView(view, dql, ifNotExists = false, orReplace = true)
+    }
+
+  def createMaterializedView: PackratParser[CreateMaterializedView] =
+    ("CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ifNotExists ~ ident ~ ("AS" ~> dqlStatement) ^^ {
+      case _ ~ ine ~ view ~ dql =>
+        CreateMaterializedView(view, dql, ifNotExists = ine, orReplace = false)
+    }
+
   def addColumn: PackratParser[AddColumn] =
     ("ADD" ~ "COLUMN") ~ ifNotExists ~ column ^^ { case _ ~ ine ~ col =>
       AddColumn(col, ifNotExists = ine)
@@ -588,7 +600,9 @@ object Parser
     dropPipeline |
     showPipeline |
     showCreatePipeline |
-    describePipeline
+    describePipeline |
+    createMaterializedView |
+    createOrReplaceMaterializedView
 
   def onConflict: PackratParser[OnConflict] =
     ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {
@@ -897,7 +911,7 @@ trait Parser
     }) >> cast
 
   private val regexAlias =
-    s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_]*""".stripMargin
+    s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_.]*""".stripMargin
 
   def alias: PackratParser[Alias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => Alias(b) }
 

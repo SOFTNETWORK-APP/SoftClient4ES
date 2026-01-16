@@ -27,10 +27,10 @@ import app.softnetwork.elastic.sql.schema.{
   PartitionDate,
   RemoveProcessor,
   RenameProcessor,
-  Schema,
   ScriptProcessor,
   SetProcessor,
-  Table => DdlTable
+  Table => Schema,
+  TableType
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.serialization._
@@ -561,6 +561,26 @@ package object query {
 
   sealed trait TableStatement extends DdlStatement
 
+  case class CreateMaterializedView(
+    view: String,
+    ddl: DqlStatement,
+    ifNotExists: Boolean = false,
+    orReplace: Boolean = false,
+    options: Map[String, Value[_]] = Map.empty
+  ) extends TableStatement {
+    override def sql: String = {
+      val replaceClause = if (orReplace) " OR REPLACE" else ""
+      val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
+      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view AS ${ddl.sql}"
+    }
+
+    lazy val search: SingleSearch = ddl match {
+      case s: SingleSearch => s
+      case _ => throw new IllegalArgumentException("Materialized view must be a single search")
+    }
+
+  }
+
   case class CreateTable(
     table: String,
     ddl: Either[DqlStatement, List[Column]],
@@ -645,14 +665,39 @@ package object query {
       case None => Map.empty
     }
 
-    lazy val schema: Schema = DdlTable(
+    lazy val materializedViews: List[String] = options.get("materialized_views") match {
+      case Some(value) =>
+        value match {
+          case ov: StringValues =>
+            ov.values.flatMap {
+              case o: StringValue =>
+                Some(o.value)
+              case _ => None
+            }.toList
+          case _ => Nil
+        }
+      case None => Nil
+    }
+
+    lazy val tableType: TableType = (options.get("type") match {
+      case Some(value) =>
+        value match {
+          case s: StringValue => Some(TableType(s.value))
+          case _              => None
+        }
+      case None => None
+    }).getOrElse(TableType.Regular)
+
+    lazy val schema: Schema = Schema(
       name = table,
       columns = columns.toList,
       primaryKey = primaryKey,
       partitionBy = partitionBy,
       mappings = mappings,
       settings = settings,
-      aliases = aliases
+      aliases = aliases,
+      materializedViews = materializedViews,
+      tableType = tableType
     ).update()
 
     lazy val defaultPipeline: IngestPipeline = schema.defaultPipeline
