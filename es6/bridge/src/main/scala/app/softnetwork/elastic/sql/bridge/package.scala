@@ -28,6 +28,9 @@ import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.schema.mapper
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.NullNode
 import com.sksamuel.elastic4s.{ElasticApi, FetchSourceContext}
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.http.ElasticDsl.BuildableTermsNoOp
@@ -45,6 +48,7 @@ import com.sksamuel.elastic4s.searches.{MultiSearchRequest, SearchRequest}
 import com.sksamuel.elastic4s.searches.sort.{FieldSort, ScriptSort, ScriptSortType}
 
 import scala.language.implicitConversions
+import scala.util.{Failure, Success, Try}
 
 package object bridge {
 
@@ -1039,6 +1043,44 @@ package object bridge {
     ElasticCriteria(
       criteria
     )
+  }
+
+  implicit def queryToString(
+    query: Query
+  ): String = {
+    SearchBodyBuilderFn(
+      ElasticApi.search("") query {
+        query
+      }
+    ).string()
+  }
+
+  implicit def queryToJson(
+    query: Query
+  ): JsonNode = {
+    Try(mapper.readTree(queryToString(query))) match {
+      case Success(node) =>
+        if (node.has("query")) {
+          node.get("query")
+        } else {
+          node
+        }
+      case Failure(_) => NullNode.instance
+    }
+  }
+
+  implicit def criteriaToQuery(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
+    ElasticCriteria(criteria).asQuery()
+  }
+
+  implicit def criteriaToNode(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): JsonNode = {
+    queryToJson(criteriaToQuery(criteria))
   }
 
   implicit def filterToQuery(

@@ -28,8 +28,11 @@ import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.NullNode
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
+import com.sksamuel.elastic4s.json.JacksonBuilder
 import com.sksamuel.elastic4s.requests.script.Script
 import com.sksamuel.elastic4s.requests.script.ScriptType.Source
 import com.sksamuel.elastic4s.requests.searches.aggs.{
@@ -1040,6 +1043,40 @@ package object bridge {
     ElasticCriteria(
       criteria
     )
+  }
+
+  implicit def queryToJson(
+    query: Query
+  ): JsonNode = {
+    JacksonBuilder.toNode(
+      SearchBodyBuilderFn(
+        ElasticApi.search("") query {
+          query
+        }
+      ).value
+    ) match {
+      case Left(node: JsonNode) =>
+        if (node.has("query")) {
+          node.get("query")
+        } else {
+          node
+        }
+      case Right(_) => NullNode.instance
+    }
+  }
+
+  implicit def criteriaToQuery(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
+    ElasticCriteria(criteria).asQuery()
+  }
+
+  implicit def criteriaToNode(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): JsonNode = {
+    queryToJson(criteriaToQuery(criteria))
   }
 
   implicit def filterToQuery(
