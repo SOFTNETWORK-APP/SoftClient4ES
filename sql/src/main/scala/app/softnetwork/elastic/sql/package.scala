@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic
 
+import app.softnetwork.elastic.schema.NamingUtils
 import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
@@ -325,7 +326,7 @@ package object sql {
         case f: Float    => FloatValue(f)
         case d: Double   => DoubleValue(d)
         case a: Array[T] => apply(a.toSeq)
-        case a: Seq[T] =>
+        case a: Seq[T] if a.nonEmpty =>
           val values = a.map(apply)
           values.headOption match {
             case Some(_: StringValue) =>
@@ -352,6 +353,7 @@ package object sql {
               ).asInstanceOf[Values[R, T]]
             case _ => throw new IllegalArgumentException("Unsupported Values type")
           }
+        case _: Seq[T] => EmptyValues().asInstanceOf[Values[R, T]]
         case o: Map[_, _] =>
           val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }
           ObjectValue(map)
@@ -770,6 +772,11 @@ package object sql {
     def toJson: JsonNode = this
   }
 
+  case class EmptyValues() extends Values[Any, Null](Seq.empty) {
+    override def sql: String = "()"
+    override def nullable: Boolean = true
+  }
+
   def toRegex(value: String): String = {
     value.replaceAll("%", ".*").replaceAll("_", ".")
   }
@@ -795,22 +802,7 @@ package object sql {
         acc.replace(k, s"_${v}_")
       }
       // Nettoyer pour obtenir un identifiant valide
-      val normalized = replaced
-        .replaceAll("[^a-zA-Z0-9_]", "_") // caractères invalides -> "_"
-        .replaceAll("_+", "_") // compacter plusieurs "_"
-        .stripPrefix("_")
-        .stripSuffix("_")
-        .toLowerCase
-
-      // Tronquer si nécessaire
-      if (normalized.length > MaxAliasLength) {
-        val digest = MessageDigest.getInstance("MD5").digest(normalized.getBytes("UTF-8"))
-        val hash = digest.map("%02x".format(_)).mkString.take(MaxAliasLength)
-        //normalized.take(MaxAliasLength - hash.length - 1) + "_" + hash
-        hash
-      } else {
-        normalized
-      }
+      NamingUtils.normalizeObjectName(replaced, MaxAliasLength).replaceAll("\\.", "_")
     }
   }
 
@@ -1078,6 +1070,13 @@ package object sql {
     def isWindowing: Boolean = windows.exists(_.partitionBy.nonEmpty)
 
     def painlessScriptRequired: Boolean = functions.nonEmpty && !hasAggregation && bucket.isEmpty
+
+    def isObject: Boolean = {
+      out match {
+        case SQLTypes.Struct => true
+        case _               => name.contains(".")
+      }
+    }
   }
 
   object Identifier {

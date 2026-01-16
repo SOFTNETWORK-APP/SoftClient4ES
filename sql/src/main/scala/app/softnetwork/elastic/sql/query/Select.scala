@@ -50,7 +50,7 @@ case class Field(
   def isScriptField: Boolean = identifier.painlessScriptRequired
   override def sql: String = s"$identifier${asString(fieldAlias)}"
 
-  override def dependencies: Seq[Identifier] = identifier.dependencies
+  override lazy val dependencies: Seq[Identifier] = identifier.dependencies
 
   lazy val sourceField: String = {
     if (identifier.nested) {
@@ -109,6 +109,8 @@ case class Field(
   lazy val path: String = identifier.path
 
   def isBucketScript: Boolean = !isAggregation && hasAggregation
+
+  def isObject: Boolean = identifier.isObject
 }
 
 case object Except extends Expr("except") with TokenRegex

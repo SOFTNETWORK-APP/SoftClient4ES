@@ -506,4 +506,76 @@ package object schema {
       )
     }
   }
+
+  object NamingUtils {
+
+    /** Normalizes Elasticsearch object names (indices, pipelines, transforms, policies)
+      *
+      * Rules:
+      *   - Only lowercase alphanumeric + underscore + dot
+      *   - Max 255 characters
+      *   - If too long, truncates with readable prefix + hash suffix
+      */
+    def normalizeObjectName(name: String, maxLength: Int = 255): String = {
+      require(maxLength > 10, "maxLength must be > 10 to allow prefix + hash")
+
+      // Step 1: Normalize to Elasticsearch-safe characters
+      // Keep: a-z, 0-9, underscore, dot
+      val normalized = name.toLowerCase
+        .replaceAll("[^a-zA-Z0-9_.]", "_") // caractères invalides -> "_"
+        .replaceAll("_+", "_") // compacter plusieurs "_"
+        .stripPrefix("_")
+        .stripSuffix("_")
+
+      // Step 2: If within limit, return as-is
+      if (normalized.length <= maxLength) {
+        return normalized
+      }
+
+      // Step 3: Generate readable truncated name with hash
+      // Format: <prefix>_<hash8>
+      // Example: orders_with_customers_mv_orders_enri_a1b2c3d4
+
+      val hashLength = 8 // Short hash for readability
+      val prefixLength = maxLength - hashLength - 1 // -1 for underscore
+
+      val prefix = normalized.take(prefixLength)
+      val hash = generateShortHash(normalized, hashLength)
+
+      s"${prefix}_${hash}"
+    }
+
+    /** Generates a short deterministic hash from a string
+      *
+      * Uses MD5 for consistency, takes first N hex chars
+      */
+    private def generateShortHash(input: String, length: Int = 8): String = {
+      val digest = MessageDigest.getInstance("MD5")
+      val hashBytes = digest.digest(input.getBytes("UTF-8"))
+      hashBytes.map("%02x".format(_)).mkString.take(length)
+    }
+
+    /** Validates an Elasticsearch object name
+      *
+      * @return
+      *   Right(name) if valid, Left(error) otherwise
+      */
+    def validateObjectName(name: String): Either[String, String] = {
+      if (name.isEmpty) {
+        Left("Name cannot be empty")
+      } else if (name.length > 255) {
+        Left(s"Name exceeds 255 characters: ${name.length}")
+      } else if (!name.matches("^[a-z0-9_.]+$")) {
+        Left(
+          s"Name contains invalid characters. Only lowercase alphanumeric, underscore and dot allowed: $name"
+        )
+      } else if (name.startsWith("_") || name.startsWith("-") || name.startsWith("+")) {
+        Left(s"Name cannot start with _, - or +: $name")
+      } else if (name == "." || name == "..") {
+        Left("Name cannot be . or ..")
+      } else {
+        Right(name)
+      }
+    }
+  }
 }
