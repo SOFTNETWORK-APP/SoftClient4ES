@@ -1011,10 +1011,10 @@ package object sql {
       else ""
 
     lazy val transformCheckNotNull: Option[String] =
-      if (path.isEmpty || !nullable) None
+      if (aliasOrName.isEmpty || !nullable) None
       else
         Option(
-          s"(doc['$transformParamName'].size() == 0 ? $nullValue : doc['$transformParamName'].value${painlessMethods
+          s"(doc['$aliasOrName'].size() == 0 ? $nullValue : doc['$aliasOrName'].value${painlessMethods
             .mkString("")})"
         )
 
