@@ -517,7 +517,7 @@ package object bridge {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
-          val context = PainlessContext()
+          val context = PainlessContext(context = contextType)
           val script = field.painless(Some(context))
           scriptField(
             field.scriptName,
@@ -538,7 +538,7 @@ package object bridge {
       case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
         _search sortBy o.sorts.map { sort =>
           if (sort.isScriptSort) {
-            val context = PainlessContext()
+            val context = PainlessContext(context = contextType)
             val painless = sort.field.painless(Some(context))
             val painlessScript = s"$context$painless"
             val script =
@@ -624,7 +624,7 @@ package object bridge {
         case _           => true
       }))
     ) {
-      val context = PainlessContext()
+      val context = PainlessContext(context = contextType)
       val script = painless(Some(context))
       return scriptQuery(
         now(Script(script = s"$context$script").lang("painless").scriptType("source"))
@@ -842,7 +842,7 @@ package object bridge {
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
-                val context = PainlessContext()
+                val context = PainlessContext(context = contextType)
                 val script = painless(Some(context))
                 scriptQuery(
                   now(
@@ -853,7 +853,7 @@ package object bridge {
                 )
             }
           case _ =>
-            val context = PainlessContext()
+            val context = PainlessContext(context = contextType)
             val script = painless(Some(context))
             scriptQuery(
               now(

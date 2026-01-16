@@ -184,7 +184,7 @@ package object sql {
         case identifier: Identifier if isTransform =>
           if (identifier.name.nonEmpty)
             addParam(
-              LiteralParam(identifier.transformParamName, None /*identifier.processCheckNotNull*/ )
+              LiteralParam(identifier.transformParamName, identifier.transformCheckNotNull)
             )
           else
             None
@@ -212,6 +212,10 @@ package object sql {
       token match {
         case identifier: Identifier if isProcessor =>
           get(LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ ))
+        case identifier: Identifier if isTransform =>
+          get(
+            LiteralParam(identifier.transformParamName, None /*identifier.transformCheckNotNull*/ )
+          )
         case param: PainlessParam =>
           if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
           else None
@@ -1002,8 +1006,8 @@ package object sql {
 
     lazy val transformParamName: String = {
       fieldAlias match {
-        case Some(a) => s"ctx.$a"
-        case None    => processParamName
+        case Some(a) => s"doc['$a'].value"
+        case None    => paramName
       }
     }
 
@@ -1011,7 +1015,8 @@ package object sql {
       if (path.isEmpty || !nullable) None
       else
         Option(
-          s"($transformParamName == null ? $nullValue : $transformParamName${painlessMethods.mkString("")})"
+          s"(doc['$transformParamName'].size() == 0 ? $nullValue : doc['$transformParamName'].value${painlessMethods
+            .mkString("")})"
         )
 
     def originalType: SQLType =

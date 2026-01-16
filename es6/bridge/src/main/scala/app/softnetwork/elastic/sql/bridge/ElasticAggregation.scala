@@ -156,14 +156,14 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val context = PainlessContext()
+        val context = PainlessContext(context = contextType)
         val scriptSrc = identifier.painless(Some(context))
         val script = now(Script(s"$context$scriptSrc").lang("painless"))
         buildScript(aggName, script)
       } else {
         aggType match {
           case th: WindowFunction if th.shouldBeScripted =>
-            val context = PainlessContext()
+            val context = PainlessContext(context = contextType)
             val scriptSrc = th.identifier.painless(Some(context))
             val script = now(Script(s"$context$scriptSrc").lang("painless"))
             buildScript(aggName, script)
@@ -370,7 +370,7 @@ object ElasticAggregation {
 
           val aggScript =
             if (!bucket.isBucketScript && bucket.shouldBeScripted) {
-              val context = PainlessContext()
+              val context = PainlessContext(context = contextType)
               val painless = bucket.painless(Some(context))
               Some(now(Script(s"$context$painless").lang("painless")))
             } else {
