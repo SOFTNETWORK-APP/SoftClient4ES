@@ -25,7 +25,6 @@ import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.Column
 import com.fasterxml.jackson.databind.JsonNode
 
-import java.security.MessageDigest
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe._
@@ -156,6 +155,8 @@ package object sql {
 
     def isProcessor: Boolean = context == PainlessContextType.Processor
 
+    def isTransform: Boolean = context == PainlessContextType.Transform
+
     lazy val timestamp: String = {
       context match {
         case PainlessContextType.Processor => CurrentFunction.processorTimestamp
@@ -174,9 +175,19 @@ package object sql {
     def addParam(token: Token): Option[String] = {
       token match {
         case identifier: Identifier if isProcessor =>
-          addParam(
-            LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
-          )
+          if (identifier.name.nonEmpty)
+            addParam(
+              LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
+            )
+          else
+            None
+        case identifier: Identifier if isTransform =>
+          if (identifier.name.nonEmpty)
+            addParam(
+              LiteralParam(identifier.transformParamName, None /*identifier.processCheckNotNull*/ )
+            )
+          else
+            None
         case param: PainlessParam
             if param.param.nonEmpty && (param.isInstanceOf[LiteralParam] || param.nullable) =>
           get(param) match {
@@ -985,7 +996,23 @@ package object sql {
     lazy val processCheckNotNull: Option[String] =
       if (path.isEmpty || !nullable) None
       else
-        Option(s"(ctx.$path == null ? $nullValue : ctx.$path${painlessMethods.mkString("")})")
+        Option(
+          s"($processParamName == null ? $nullValue : $processParamName${painlessMethods.mkString("")})"
+        )
+
+    lazy val transformParamName: String = {
+      fieldAlias match {
+        case Some(a) => s"ctx.$a"
+        case None    => processParamName
+      }
+    }
+
+    lazy val transformCheckNotNull: Option[String] =
+      if (path.isEmpty || !nullable) None
+      else
+        Option(
+          s"($transformParamName == null ? $nullValue : $transformParamName${painlessMethods.mkString("")})"
+        )
 
     def originalType: SQLType =
       if (name.trim.nonEmpty) SQLTypes.Any
