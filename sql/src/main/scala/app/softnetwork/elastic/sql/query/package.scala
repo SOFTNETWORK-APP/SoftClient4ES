@@ -561,13 +561,15 @@ package object query {
 
   sealed trait TableStatement extends DdlStatement
 
+  sealed trait MaterializedViewStatement extends TableStatement
+
   case class CreateMaterializedView(
     view: String,
     ddl: DqlStatement,
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     options: Map[String, Value[_]] = Map.empty
-  ) extends TableStatement {
+  ) extends MaterializedViewStatement {
     override def sql: String = {
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""

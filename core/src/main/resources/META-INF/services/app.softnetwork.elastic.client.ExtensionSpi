@@ -1,0 +1,2 @@
+app.softnetwork.elastic.client.extensions.CoreDdlExtension
+app.softnetwork.elastic.client.extensions.CoreDqlExtension

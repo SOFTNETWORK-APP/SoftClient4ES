@@ -17,7 +17,6 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
-import app.softnetwork.elastic.client.licensing.{DdlLicenseChecker, DqlLicenseChecker}
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
@@ -33,7 +32,6 @@ import app.softnetwork.elastic.client.result.{
   SQLResult,
   TableResult
 }
-import app.softnetwork.elastic.licensing.{DefaultLicenseManager, LicenseChecker, LicenseManager}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
@@ -1157,33 +1155,7 @@ class DdlRouterExecutor(
 }
 
 trait GatewayApi extends ElasticClientHelpers {
-  _: IndicesApi
-    with PipelineApi
-    with MappingApi
-    with SettingsApi
-    with AliasApi
-    with TemplateApi
-    with SearchApi
-    with ScrollApi
-    with VersionApi =>
-
-  // ✅ Inject license manager (overridable)
-  def licenseManager: LicenseManager = new DefaultLicenseManager()
-
-  // ✅ Create checkers (depend on licenseManager)
-  def dqlChecker(implicit
-    system: ActorSystem
-  ): LicenseChecker[DqlStatement, ElasticResult[QueryResult]] =
-    new DqlLicenseChecker(licenseManager, logger)
-
-  def ddlChecker(implicit
-    system: ActorSystem
-  ): LicenseChecker[DdlStatement, ElasticResult[QueryResult]] =
-    new DdlLicenseChecker(
-      licenseManager,
-      logger,
-      () => countMaterializedViews()
-    )
+  self: ElasticClientApi =>
 
   lazy val dqlExecutor = new DqlExecutor(
     api = this,
@@ -1209,13 +1181,6 @@ trait GatewayApi extends ElasticClientHelpers {
     pipelineExec = pipelineExecutor,
     tableExec = tableExecutor
   )
-
-  // ✅ Helper to count materialized views
-  private[client] def countMaterializedViews()(implicit system: ActorSystem): Future[Int] = {
-    implicit val ec: ExecutionContext = system.dispatcher
-    // Query Elasticsearch for indices with _meta.type = "materialized_view"
-    Future.successful(0) // TODO: Implement
-  }
 
   // ========================================================================
   // SQL GATEWAY API
@@ -1284,50 +1249,36 @@ trait GatewayApi extends ElasticClientHelpers {
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
 
-    statement match {
+    // ✅ TRY EXTENSIONS FIRST
+    extensionRegistry.findHandler(statement) match {
+      case Some(extension) =>
+        logger.info(s"🔌 Routing to extension: ${extension.extensionName}")
+        extension.execute(statement, self) // ✅ Pass full client API
 
-      // ✅ DQL with license check
-      case dql: DqlStatement =>
-        dqlChecker.check(dql, dqlExecutor.execute).map {
-          case Right(result) => result
-          case Left(licenseError) =>
-            ElasticFailure(
-              ElasticError(
-                message = licenseError.message,
-                statusCode = Some(licenseError.statusCode),
-                operation = Some("license")
-              )
+      case None =>
+        // ✅ FALLBACK TO STANDARD EXECUTORS
+        statement match {
+          case dql: DqlStatement =>
+            logger.debug("🔧 Executing DQL with base executor")
+            dqlExecutor.execute(dql)
+
+          case dml: DmlStatement =>
+            logger.debug("🔧 Executing DML with base executor")
+            dmlExecutor.execute(dml)
+
+          case ddl: DdlStatement =>
+            logger.debug("🔧 Executing DDL with base executor")
+            ddlExecutor.execute(ddl)
+
+          case _ =>
+            val error = ElasticError(
+              message = s"Unsupported SQL statement: $statement",
+              statusCode = Some(400),
+              operation = Some("schema")
             )
+            logger.error(s"❌ ${error.message}")
+            Future.successful(ElasticFailure(error))
         }
-
-      // ✅ DML (no license check for now)
-      case dml: DmlStatement =>
-        dmlExecutor.execute(dml)
-
-      // ✅ DDL with license check
-      case ddl: DdlStatement =>
-        ddlChecker.check(ddl, ddlExecutor.execute).map {
-          case Right(result) => result
-          case Left(licenseError) =>
-            ElasticFailure(
-              ElasticError(
-                message = licenseError.message,
-                statusCode = Some(licenseError.statusCode),
-                operation = Some("license")
-              )
-            )
-        }
-
-      case _ =>
-        // unsupported SQL statement
-        val error =
-          ElasticError(
-            message = s"Unsupported SQL statement: $statement",
-            statusCode = Some(400),
-            operation = Some("schema")
-          )
-        logger.error(s"❌ ${error.message}")
-        Future.successful(ElasticFailure(error))
     }
   }
 
