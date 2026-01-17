@@ -117,6 +117,8 @@ case class Bucket(
     */
   override def painless(context: Option[PainlessContext]): String =
     identifier.painless(context)
+
+  def isObject: Boolean = identifier.isObject
 }
 
 case class BucketPath(buckets: Seq[Bucket]) {

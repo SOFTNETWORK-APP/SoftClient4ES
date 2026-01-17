@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.{ElasticQueries, ElasticQuery, SearchApi, SerializationApi}
 import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.bridge.ElasticSearchRequest
 import app.softnetwork.elastic.sql.query.SingleSearch
 import io.searchbox.core.MultiSearch
@@ -29,9 +30,12 @@ import scala.language.implicitConversions
 trait JestSearchApi extends SearchApi with JestClientHelpers {
   _: JestClientCompanion with SerializationApi =>
 
-  private[client] implicit def sqlSearchRequestToJsonQuery(
+  private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: SingleSearch
-  )(implicit timestamp: Long): String =
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String =
     implicitly[ElasticSearchRequest](sqlSearch).query
 
   import JestClientApi._

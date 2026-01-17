@@ -1155,15 +1155,7 @@ class DdlRouterExecutor(
 }
 
 trait GatewayApi extends ElasticClientHelpers {
-  _: IndicesApi
-    with PipelineApi
-    with MappingApi
-    with SettingsApi
-    with AliasApi
-    with TemplateApi
-    with SearchApi
-    with ScrollApi
-    with VersionApi =>
+  self: ElasticClientApi =>
 
   lazy val dqlExecutor = new DqlExecutor(
     api = this,
@@ -1255,29 +1247,38 @@ trait GatewayApi extends ElasticClientHelpers {
   def run(
     statement: Statement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
-    statement match {
+    implicit val ec: ExecutionContext = system.dispatcher
 
-      case dql: DqlStatement =>
-        dqlExecutor.execute(dql)
+    // ✅ TRY EXTENSIONS FIRST
+    extensionRegistry.findHandler(statement) match {
+      case Some(extension) =>
+        logger.info(s"🔌 Routing to extension: ${extension.extensionName}")
+        extension.execute(statement, self) // ✅ Pass full client API
 
-      // handle DML statements
-      case dml: DmlStatement =>
-        dmlExecutor.execute(dml)
+      case None =>
+        // ✅ FALLBACK TO STANDARD EXECUTORS
+        statement match {
+          case dql: DqlStatement =>
+            logger.debug("🔧 Executing DQL with base executor")
+            dqlExecutor.execute(dql)
 
-      // handle DDL statements
-      case ddl: DdlStatement =>
-        ddlExecutor.execute(ddl)
+          case dml: DmlStatement =>
+            logger.debug("🔧 Executing DML with base executor")
+            dmlExecutor.execute(dml)
 
-      case _ =>
-        // unsupported SQL statement
-        val error =
-          ElasticError(
-            message = s"Unsupported SQL statement: $statement",
-            statusCode = Some(400),
-            operation = Some("schema")
-          )
-        logger.error(s"❌ ${error.message}")
-        Future.successful(ElasticFailure(error))
+          case ddl: DdlStatement =>
+            logger.debug("🔧 Executing DDL with base executor")
+            ddlExecutor.execute(ddl)
+
+          case _ =>
+            val error = ElasticError(
+              message = s"Unsupported SQL statement: $statement",
+              statusCode = Some(400),
+              operation = Some("schema")
+            )
+            logger.error(s"❌ ${error.message}")
+            Future.successful(ElasticFailure(error))
+        }
     }
   }
 
