@@ -26,7 +26,7 @@ import app.softnetwork.elastic.client.bulk.{
   FailedDocument,
   SuccessfulDocument
 }
-import app.softnetwork.elastic.sql.{query, PainlessContextType}
+import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
@@ -379,4 +379,49 @@ trait NopeClientApi extends ElasticClientApi {
   /** Conversion BulkActionType -> BulkItem */
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     throw new UnsupportedOperationException
+
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: schema.EnrichPolicy
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[String] =
+    ElasticSuccess("")
+
+  override private[client] def executeCreateTransform(
+    config: schema.TransformConfig,
+    start: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeStartTransform(transformId: String): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): ElasticResult[Option[schema.TransformStats]] =
+    ElasticSuccess(None)
 }

@@ -90,6 +90,12 @@ package object serialization {
     node
   }
 
+  implicit def objectValueToMap(value: ObjectValue): Map[String, Any] = {
+    import JacksonConfig.{objectMapper => mapper}
+    val node: ObjectNode = value
+    mapper.convertValue(node, classOf[Map[String, Any]])
+  }
+
   private[sql] def updateNode(node: ObjectNode, updates: Map[String, Value[_]]): ObjectNode = {
     import JacksonConfig.{objectMapper => mapper}
 

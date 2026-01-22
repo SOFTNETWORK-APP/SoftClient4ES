@@ -24,15 +24,15 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.query.{Criteria, SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
   ElasticResult,
   ElasticSuccess
 }
-import app.softnetwork.elastic.sql.PainlessContextType
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.{schema, PainlessContextType}
+import app.softnetwork.elastic.sql.schema.{EnrichPolicy, TableAlias, TransformState}
 import app.softnetwork.elastic.sql.serialization._
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
@@ -56,12 +56,24 @@ import co.elastic.clients.elasticsearch.core.msearch.{MultisearchHeader, Request
 import co.elastic.clients.elasticsearch.core._
 import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESSource}
 import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
+import co.elastic.clients.elasticsearch.enrich.{
+  DeletePolicyRequest,
+  ExecutePolicyRequest,
+  PutPolicyRequest
+}
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
 import co.elastic.clients.elasticsearch.ingest.{
   DeletePipelineRequest,
   GetPipelineRequest,
   PutPipelineRequest
+}
+import co.elastic.clients.elasticsearch.transform.{
+  DeleteTransformRequest,
+  GetTransformStatsRequest,
+  PutTransformRequest,
+  StartTransformRequest,
+  StopTransformRequest
 }
 import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.JsonParser
@@ -93,6 +105,8 @@ trait JavaClientApi
     with JavaClientVersionApi
     with JavaClientPipelineApi
     with JavaClientTemplateApi
+    with JavaClientEnrichPolicyApi
+    with JavaClientTransformApi
 
 /** Elasticsearch client implementation using the Java Client
   * @see
@@ -559,6 +573,26 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
     }
   }
 
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+    executeJavaAction(
+      operation = "getAllMappings",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .getMapping(
+          new GetMappingRequest.Builder().build()
+        )
+    ) { response =>
+      response
+        .mappings()
+        .asScala
+        .map { case (index, mapping) =>
+          (index, convertToJson(mapping))
+        }
+        .toMap
+    }
 }
 
 /** Elasticsearch client implementation of Refresh API using the Java Client
@@ -1948,4 +1982,189 @@ trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with Java
     )(resp => resp.value())
   }
 
+}
+
+// ==================== ENRICH POLICY API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientEnrichPolicyApi extends EnrichPolicyApi with JavaClientHelpers {
+  _: JavaClientVersionApi with JavaClientCompanion =>
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): ElasticResult[Boolean] = {
+    implicit val timestamp: Long = System.currentTimeMillis()
+    executeJavaBooleanAction(
+      operation = "createEnrichPolicy",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .enrich()
+        .putPolicy(
+          new PutPolicyRequest.Builder()
+            .name(policy.name)
+            .withJson(new StringReader(policy.node))
+            .build()
+        )
+    )(resp => resp.acknowledged())
+  }
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deleteEnrichPolicy",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .enrich()
+        .deletePolicy(
+          new DeletePolicyRequest.Builder()
+            .name(policyName)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[String] =
+    executeJavaAction(
+      operation = "executeEnrichPolicy",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .enrich()
+        .executePolicy(
+          new ExecutePolicyRequest.Builder()
+            .name(policyName)
+            .waitForCompletion(true)
+            .build()
+        )
+    )(resp => resp.task())
+}
+
+// ==================== TRANSFORM API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
+  _: JavaClientVersionApi with JavaClientCompanion =>
+
+  override private[client] def executeCreateTransform(
+    config: schema.TransformConfig,
+    start: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "createTransform",
+      index = None,
+      retryable = false
+    ) {
+      implicit val timestamp: Long = System.currentTimeMillis()
+      implicit val context: PainlessContextType = PainlessContextType.Transform
+      apply()
+        .transform()
+        .putTransform(
+          new PutTransformRequest.Builder()
+            .transformId(config.id)
+            .withJson(new StringReader(convertToElasticTransformConfig(config)))
+            .build()
+        )
+    }(resp => resp.acknowledged())
+
+  private def convertToElasticTransformConfig(
+    config: schema.TransformConfig
+  )(implicit criteriaToNode: Criteria => JsonNode): String = {
+    config.node
+  }
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deleteTransform",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .deleteTransform(
+          new DeleteTransformRequest.Builder()
+            .transformId(transformId)
+            .force(force)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeStartTransform(transformId: String): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "startTransform",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .startTransform(
+          new StartTransformRequest.Builder()
+            .transformId(transformId)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "stopTransform",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .stopTransform(
+          new StopTransformRequest.Builder()
+            .transformId(transformId)
+            .force(force)
+            .waitForCompletion(waitForCompletion)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): ElasticResult[Option[schema.TransformStats]] =
+    executeJavaAction(
+      operation = "getTransformStats",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .transform()
+        .getTransformStats(
+          new GetTransformStatsRequest.Builder()
+            .transformId(transformId)
+            .build()
+        )
+    ) { resp =>
+      val statsOpt = resp.transforms().asScala.headOption.map { stats =>
+        schema.TransformStats(
+          id = stats.id(),
+          state = TransformState(stats.state()),
+          documentsProcessed = stats.stats().documentsProcessed(),
+          documentsIndexed = stats.stats().documentsIndexed(),
+          indexFailures = stats.stats().indexFailures(),
+          searchFailures = stats.stats().searchFailures(),
+          lastCheckpoint = Option(stats.checkpointing())
+            .flatMap(c => Option(c.last()))
+            .map(_.checkpoint()),
+          operationsBehind = Option(stats.checkpointing())
+            .flatMap(info => Option(info.operationsBehind().longValue()))
+            .getOrElse(0L),
+          processingTimeMs = stats.stats().processingTimeInMs()
+        )
+      }
+      statsOpt
+    }
 }

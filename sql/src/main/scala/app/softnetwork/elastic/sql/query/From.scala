@@ -149,7 +149,7 @@ sealed trait Join extends Updateable {
   def on: Option[On]
   def alias: Option[Alias]
   override def sql: String =
-    s" ${asString(joinType)} $Join $source${asString(on)}${asString(alias)}"
+    s" ${asString(joinType)} $Join $source${asString(alias)}${asString(on)}"
 
   override def update(request: SingleSearch): Join
 

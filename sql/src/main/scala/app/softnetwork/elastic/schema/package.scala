@@ -237,6 +237,11 @@ package object schema {
   )
 
   object IndexMappings {
+    def apply(json: String): IndexMappings = {
+      val root: JsonNode = json
+      apply(root)
+    }
+
     def apply(root: JsonNode): IndexMappings = {
       if (root.has("mappings")) {
         val mappingsNode = root.path("mappings")

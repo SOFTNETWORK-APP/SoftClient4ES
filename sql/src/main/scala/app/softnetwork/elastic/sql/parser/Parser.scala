@@ -175,7 +175,7 @@ object Parser
     }
 
   def describePipeline: PackratParser[DescribePipeline] =
-    ("DESCRIBE" ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
+    (("DESCRIBE" | "DESC") ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
       DescribePipeline(pipeline)
     }
 
@@ -364,6 +364,11 @@ object Parser
         }
     }
 
+  def showTables: PackratParser[ShowTables.type] =
+    ("SHOW" ~ "TABLES") ^^ { _ =>
+      ShowTables
+    }
+
   def showTable: PackratParser[ShowTable] =
     ("SHOW" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
       ShowTable(table)
@@ -375,7 +380,7 @@ object Parser
     }
 
   def describeTable: PackratParser[DescribeTable] =
-    ("DESCRIBE" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
+    (("DESCRIBE" | "DESC") ~ "TABLE") ~ ident ^^ { case _ ~ table =>
       DescribeTable(table)
     }
 
@@ -399,6 +404,31 @@ object Parser
     ("CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ifNotExists ~ ident ~ ("AS" ~> dqlStatement) ^^ {
       case _ ~ ine ~ view ~ dql =>
         CreateMaterializedView(view, dql, ifNotExists = ine, orReplace = false)
+    }
+
+  def dropMaterializedView: PackratParser[DropMaterializedView] =
+    ("DROP" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+      DropMaterializedView(name, ifExists = ie)
+    }
+
+  def showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
+    ("SHOW" ~ "CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
+      ShowCreateMaterializedView(view)
+    }
+
+  def showMaterializedView: PackratParser[ShowMaterializedView] =
+    ("SHOW" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ view =>
+      ShowMaterializedView(view)
+    }
+
+  def showMaterializedViews: PackratParser[ShowMaterializedViews.type] =
+    ("SHOW" ~ "MATERIALIZED" ~ "VIEWS") ^^ { _ =>
+      ShowMaterializedViews
+    }
+
+  def describeMaterializedView: PackratParser[DescribeMaterializedView] =
+    (("DESCRIBE" | "DESC") ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ _ ~ view =>
+      DescribeMaterializedView(view)
     }
 
   def addColumn: PackratParser[AddColumn] =
@@ -594,6 +624,7 @@ object Parser
     alterPipeline |
     dropTable |
     truncateTable |
+    showTables |
     showTable |
     showCreateTable |
     describeTable |
@@ -602,7 +633,12 @@ object Parser
     showCreatePipeline |
     describePipeline |
     createMaterializedView |
-    createOrReplaceMaterializedView
+    createOrReplaceMaterializedView |
+    dropMaterializedView |
+    showMaterializedViews |
+    showMaterializedView |
+    showCreateMaterializedView |
+    describeMaterializedView
 
   def onConflict: PackratParser[OnConflict] =
     ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {

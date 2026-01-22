@@ -30,7 +30,7 @@ import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
-import com.fasterxml.jackson.databind.node.ObjectNode
+import com.fasterxml.jackson.databind.node.{NullNode, ObjectNode}
 
 import java.util.UUID
 import scala.jdk.CollectionConverters._
@@ -678,6 +678,8 @@ package object schema {
         )
       }
     }
+
+    def describe: Seq[Map[String, Any]] = processors.map(_.properties)
   }
 
   object IngestPipeline {
@@ -1127,6 +1129,58 @@ package object schema {
     override def sql: String = s"COUNT(DISTINCT $field)"
   }
 
+  case class TopHitsTransformAggregation(
+    fields: Seq[String],
+    size: Int = 1,
+    sort: Seq[FieldSort] = Seq(
+      FieldSort(Identifier(sqlConfig.transformLastUpdatedColumnName), Some(Desc))
+    )
+  ) extends TransformAggregation {
+    override def field: String = fields.mkString(", ")
+
+    override def name: String = "top_hits"
+
+    override def sql: String = {
+      val fieldsStr = fields.mkString(", ")
+      val sortStr = sort
+        .map { s =>
+          s.sql
+        }
+        .mkString(", ")
+      s"TOP_HITS($fieldsStr) SIZE $size SORT BY ($sortStr)"
+    }
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val topHitsNode = mapper.createObjectNode()
+      topHitsNode.put("size", size)
+
+      // Sort configuration
+      val sortArray = mapper.createArrayNode()
+      sort.foreach { sortField =>
+        val sortObj = mapper.createObjectNode()
+        val sortFieldObj = mapper.createObjectNode()
+        sortFieldObj.put("order", sortField.order.getOrElse(Desc).sql)
+        sortObj.set(sortField.name, sortFieldObj)
+        sortArray.add(sortObj)
+      }
+      topHitsNode.set("sort", sortArray)
+
+      // Source filtering to include only the desired field
+      val sourceObj = mapper.createObjectNode()
+      val includesArray = mapper.createArrayNode()
+      fields.foreach { field =>
+        includesArray.add(field)
+        ()
+      }
+      sourceObj.set("includes", includesArray)
+      topHitsNode.set("_source", sourceObj)
+
+      node.set("top_hits", topHitsNode)
+      node
+    }
+  }
+
   /** Extension methods for AggregateFunction
     */
   implicit class AggregateConversion(agg: AggregateFunction) {
@@ -1162,69 +1216,6 @@ package object schema {
     }
   }
 
-  /** Captures the latest value for a field (for changelog snapshots)
-    *
-    * Uses top_hits with size=1 sorted by a timestamp field This works for ANY field type (text,
-    * numeric, date, etc.)
-    */
-  case class LatestValueTransformAggregation(
-    field: String,
-    sortBy: String = "_ingest.timestamp" // Default sort by ingest timestamp
-  ) extends TransformAggregation {
-
-    override def name: String = "latest_value"
-
-    override def sql: String = s"LAST_VALUE($field)"
-
-    override def node: JsonNode = {
-      val node = mapper.createObjectNode()
-      val topHitsNode = mapper.createObjectNode()
-
-      // Configure top_hits to get the latest value
-      topHitsNode.put("size", 1)
-
-      // Sort by timestamp descending to get latest
-      val sortArray = mapper.createArrayNode()
-      val sortObj = mapper.createObjectNode()
-      val sortFieldObj = mapper.createObjectNode()
-      sortFieldObj.put("order", "desc")
-      sortObj.set(sortBy, sortFieldObj)
-      sortArray.add(sortObj)
-      topHitsNode.set("sort", sortArray)
-
-      // Only retrieve the field we need
-      val sourceObj = mapper.createObjectNode()
-      val includesArray = mapper.createArrayNode()
-      includesArray.add(field)
-      sourceObj.set("includes", includesArray)
-      topHitsNode.set("_source", sourceObj)
-
-      node.set("top_hits", topHitsNode)
-      node
-    }
-  }
-
-  /** Alternative: Use MAX aggregation for compatible types
-    *
-    * This is simpler but only works for:
-    *   - Numeric fields (int, long, double, float)
-    *   - Date fields
-    *   - Keyword fields (lexicographic max)
-    */
-  case class MaxValueTransformAggregation(field: String) extends TransformAggregation {
-    override def name: String = "max"
-
-    override def sql: String = s"MAX($field)"
-  }
-
-  /** Alternative: Use MIN aggregation (for specific use cases)
-    */
-  case class MinValueTransformAggregation(field: String) extends TransformAggregation {
-    override def name: String = "min"
-
-    override def sql: String = s"MIN($field)"
-  }
-
   object ChangelogAggregationStrategy {
 
     /** Selects the appropriate aggregation for a field in a changelog based on its data type
@@ -1240,27 +1231,27 @@ package object schema {
       dataType match {
         // Numeric types: Use MAX directly
         case SQLTypes.Int | SQLTypes.BigInt | SQLTypes.Double | SQLTypes.Real =>
-          MaxValueTransformAggregation(field)
+          MaxTransformAggregation(field)
 
         // Date/Timestamp: Use MAX directly
         case SQLTypes.Date | SQLTypes.Timestamp =>
-          MaxValueTransformAggregation(field)
+          MaxTransformAggregation(field)
 
-        // Boolean: Use MAX directly (1=true, 0=false)
+        // Boolean: Use Top Hits
         case SQLTypes.Boolean =>
-          MaxValueTransformAggregation(field)
+          TopHitsTransformAggregation(Seq(field))
 
         // Keyword: Already a keyword type, use MAX directly
         case SQLTypes.Keyword =>
-          MaxValueTransformAggregation(field) // ✅ NO .keyword suffix
+          TopHitsTransformAggregation(Seq(field))
 
         // Text/Varchar: Analyzed field, must use .keyword multi-field
         case SQLTypes.Text | SQLTypes.Varchar =>
-          MaxValueTransformAggregation(s"$field.keyword") // ✅ Use .keyword multi-field
+          TopHitsTransformAggregation(Seq(s"$field.keyword")) // ✅ Use .keyword multi-field
 
         // For complex types, use top_hits as fallback
         case _ =>
-          LatestValueTransformAggregation(field)
+          TopHitsTransformAggregation(Seq(field))
       }
     }
 
@@ -1302,16 +1293,46 @@ package object schema {
     }
   }
 
+  case class TransformCreationStatus(
+    created: Boolean,
+    started: Option[Boolean] = None // None = not asked, Some(true/false) = result of start request
+  )
+
+  case class TransformLatest(
+    uniqueKey: Seq[String],
+    sort: String
+  ) extends DdlToken {
+    override def sql: String = {
+      val uniqueKeyStr = uniqueKey.mkString(", ")
+      s"LATEST UNIQUE KEY ($uniqueKeyStr) SORT BY $sort"
+    }
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val uniqueKeyNode = mapper.createArrayNode()
+      uniqueKey.foreach { key =>
+        uniqueKeyNode.add(key)
+        ()
+      }
+      node.set("unique_key", uniqueKeyNode)
+      node.put("sort", sort)
+      node
+    }
+  }
+
   /** Transform configuration models with built-in JSON serialization
     */
   case class TransformConfig(
     id: String,
+    viewName: String,
     source: TransformSource,
     dest: TransformDest,
     pivot: Option[TransformPivot] = None,
+    latest: Option[TransformLatest] = None,
     sync: Option[TransformSync] = None,
     delay: Delay,
-    frequency: Frequency
+    frequency: Frequency,
+    metadata: Map[String, AnyRef] = Map.empty
   ) extends DdlToken {
 
     /** Delay in seconds for display */
@@ -1333,6 +1354,10 @@ package object schema {
       }
       pivot.foreach { p =>
         node.set("pivot", p.node)
+        ()
+      }
+      latest.foreach { l =>
+        node.set("latest", l.node)
         ()
       }
       node
@@ -1361,14 +1386,115 @@ package object schema {
       sb.toString()
     }
 
-    /** Human-readable summary
+    /** Human-readable description
       */
-    def summary: String = {
+    def description: String = {
       s"Transform $id: ${source.index.mkString(", ")} → ${dest.index} " +
-      s"(every ${frequencySeconds}s, delay ${delaySeconds}s)"
+      s"(every ${frequencySeconds}s, delay ${delaySeconds}s) for view $viewName"
     }
   }
 
+  /** Health status
+    */
+  sealed trait HealthStatus extends DdlToken {
+    def name: String
+    def sql: String = name
+  }
+
+  object HealthStatus {
+    case object Green extends HealthStatus {
+      val name: String = "GREEN"
+    }
+    case object Yellow extends HealthStatus {
+      val name: String = "YELLOW"
+    }
+    case object Red extends HealthStatus {
+      val name: String = "RED"
+    }
+
+    def apply(name: String): HealthStatus = name.toUpperCase() match {
+      case "GREEN"  => Green
+      case "YELLOW" => Yellow
+      case "RED"    => Red
+      case other    => throw new IllegalArgumentException(s"Invalid health status: $other")
+    }
+  }
+
+  /** Transform state
+    */
+  sealed trait TransformState extends DdlToken {
+    def name: String
+    def sql: String = name
+  }
+
+  object TransformState {
+    case object Started extends TransformState {
+      val name: String = "STARTED"
+    }
+    case object Indexing extends TransformState {
+      val name: String = "INDEXING"
+    }
+    case object Aborting extends TransformState {
+      val name: String = "ABORTING"
+    }
+    case object Stopping extends TransformState {
+      val name: String = "STOPPING"
+    }
+    case object Stopped extends TransformState {
+      val name: String = "STOPPED"
+    }
+    case object Failed extends TransformState {
+      val name: String = "FAILED"
+    }
+    case object Waiting extends TransformState {
+      val name: String = "WAITING"
+    }
+    case class Other(name: String) extends TransformState
+
+    def apply(name: String): TransformState = name.toUpperCase() match {
+      case "STARTED"  => Started
+      case "INDEXING" => Indexing
+      case "ABORTING" => Aborting
+      case "STOPPING" => Stopping
+      case "STOPPED"  => Stopped
+      case "FAILED"   => Failed
+      case "WAITING"  => Waiting
+      case other      => Other(other)
+    }
+  }
+
+  /** Statistics for a Transform
+    *
+    * @param id
+    *   Transform ID
+    * @param state
+    *   Current state of the Transform
+    * @param documentsProcessed
+    *   Total number of documents processed
+    * @param documentsIndexed
+    *   Total number of documents indexed
+    * @param indexFailures
+    *   Total number of indexing failures
+    * @param searchFailures
+    *   Total number of search failures
+    * @param lastCheckpoint
+    *   Last checkpoint number (if any)
+    * @param operationsBehind
+    *   Number of operations behind source index
+    * @param processingTimeMs
+    *   Total processing time in milliseconds
+    */
+  case class TransformStats(
+    id: String,
+    state: TransformState, // "started", "stopped", "failed"
+    documentsProcessed: Long,
+    documentsIndexed: Long,
+    indexFailures: Long,
+    searchFailures: Long,
+    lastCheckpoint: Option[Long],
+    operationsBehind: Long,
+    processingTimeMs: Long
+  )
   // ==================== Schema ====================
 
   /** Definition of a column within a table
@@ -1993,6 +2119,12 @@ package object schema {
       )
     }
 
+    lazy val metadata: Map[String, Any] =
+      mappings.get("_meta") match {
+        case Some(ObjectValue(value)) => ObjectValue(value)
+        case _                        => Map.empty
+      }
+
     def sql: String = {
       val opts =
         if (mappings.nonEmpty || settings.nonEmpty) {
@@ -2505,6 +2637,8 @@ package object schema {
         aliases = aliasDiffs.toList
       )
     }
+
+    def describe: Seq[Map[String, Any]] = columns.flatMap(_.asMap)
   }
 
 }

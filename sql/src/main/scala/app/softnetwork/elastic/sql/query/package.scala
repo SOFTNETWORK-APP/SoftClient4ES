@@ -565,7 +565,7 @@ package object query {
 
   case class CreateMaterializedView(
     view: String,
-    ddl: DqlStatement,
+    dql: DqlStatement,
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     options: Map[String, Value[_]] = Map.empty
@@ -573,14 +573,46 @@ package object query {
     override def sql: String = {
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
-      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view AS ${ddl.sql}"
+      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view AS ${dql.sql}"
     }
 
-    lazy val search: SingleSearch = ddl match {
+    lazy val search: SingleSearch = dql match {
       case s: SingleSearch => s
       case _ => throw new IllegalArgumentException("Materialized view must be a single search")
     }
 
+  }
+
+  case class DropMaterializedView(name: String, ifExists: Boolean = false)
+      extends MaterializedViewStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      s"DROP MATERIALIZED VIEW $ifExistsClause$name"
+    }
+  }
+
+  case class RefreshMaterializedView(name: String, ifExists: Boolean = false)
+      extends MaterializedViewStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      s"REFRESH MATERIALIZED VIEW $ifExistsClause$name"
+    }
+  }
+
+  case class ShowMaterializedView(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"SHOW MATERIALIZED VIEW $name"
+  }
+
+  case object ShowMaterializedViews extends MaterializedViewStatement {
+    override def sql: String = s"SHOW MATERIALIZED VIEWS"
+  }
+
+  case class ShowCreateMaterializedView(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"SHOW CREATE MATERIALIZED VIEW $name"
+  }
+
+  case class DescribeMaterializedView(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"DESCRIBE MATERIALIZED VIEW $name"
   }
 
   case class CreateTable(
@@ -934,6 +966,10 @@ package object query {
 
   case class ShowTable(table: String) extends TableStatement {
     override def sql: String = s"SHOW TABLE $table"
+  }
+
+  case object ShowTables extends TableStatement {
+    override def sql: String = s"SHOW TABLES"
   }
 
   case class ShowCreateTable(table: String) extends TableStatement {

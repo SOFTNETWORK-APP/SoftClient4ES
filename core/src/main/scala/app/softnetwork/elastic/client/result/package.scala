@@ -401,7 +401,9 @@ package object result {
     stream: Source[(Map[String, Any], ScrollMetrics), NotUsed]
   ) extends QueryResult
 
-  case class QueryStructured(response: ElasticResponse) extends QueryResult
+  case class QueryStructured(response: ElasticResponse) extends QueryResult {
+    def asQueryRows: QueryRows = QueryRows(response.results)
+  }
 
   // --------------------
   // DML (INSERT / UPDATE / DELETE)

@@ -53,6 +53,7 @@ import app.softnetwork.elastic.sql.query.{
   ShowCreateTable,
   ShowPipeline,
   ShowTable,
+  ShowTables,
   SingleSearch,
   Statement,
   TableStatement,
@@ -277,7 +278,7 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
           case ElasticSuccess(pipeline) =>
             logger.info(s"✅ Retrieved pipeline ${describe.name}.")
             Future.successful(
-              ElasticResult.success(QueryRows(pipeline.processors.map(_.properties)))
+              ElasticResult.success(QueryRows(pipeline.describe))
             )
           case ElasticFailure(elasticError) =>
             Future.successful(
@@ -317,6 +318,26 @@ class TableExecutor(
     // handle TABLE statement
     statement match {
       // handle SHOW TABLE statement
+      case ShowTables =>
+        api.allMappings match {
+          case ElasticSuccess(mappings) =>
+            logger.info("✅ Retrieved all tables.")
+            Future.successful(
+              ElasticResult.success(
+                QueryRows(
+                  mappings.map { case (index, mappings) =>
+                    Map("name" -> index, "type" -> mappings.tableType.name.toUpperCase)
+                  }.toSeq
+                )
+              )
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("tables"))
+              )
+            )
+        }
       case show: ShowTable =>
         api.loadSchema(show.table) match {
           case ElasticSuccess(schema) =>
@@ -348,7 +369,7 @@ class TableExecutor(
         api.loadSchema(describe.table) match {
           case ElasticSuccess(schema) =>
             logger.info(s"✅ Retrieved schema for index ${describe.table}.")
-            Future.successful(ElasticResult.success(QueryRows(schema.columns.flatMap(_.asMap))))
+            Future.successful(ElasticResult.success(QueryRows(schema.describe)))
           case ElasticFailure(elasticError) =>
             Future.successful(
               ElasticFailure(
@@ -408,7 +429,6 @@ class TableExecutor(
           // 4) Index not exists → creation
           case ElasticSuccess(false) =>
             // proceed with creation
-            logger.info(s"✅ Creating index $indexName.")
             createNonExistentIndex(indexName, create, partitioned, single)
 
           // 5) Error on indexExists
@@ -915,7 +935,6 @@ class TableExecutor(
       ) match {
         case success @ ElasticSuccess(true) =>
           // index created successfully
-          logger.info(s"✅ Index $indexName created successfully.")
           success
         case ElasticSuccess(_) =>
           // index creation failed

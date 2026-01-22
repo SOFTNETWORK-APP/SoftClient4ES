@@ -48,6 +48,8 @@ trait ElasticClientApi
     with SerializationApi
     with PipelineApi
     with TemplateApi
+    with EnrichPolicyApi
+    with TransformApi
     with ExtensionApi
     with GatewayApi
     with ClientCompanion {

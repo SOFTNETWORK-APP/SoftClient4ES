@@ -149,4 +149,22 @@ object ElasticsearchVersion {
   def supportsDeletionByQueryOnClosedIndices(version: String): Boolean = {
     isAtLeast(version, 7, 5)
   }
+
+  /** Check if enrich processor is supported (ES >= 7.5)
+    */
+  def supportsEnrich(version: String): Boolean = {
+    isAtLeast(version, 7, 5)
+  }
+
+  /** Check if latest transform features are supported (ES >= 7.8)
+    */
+  def supportsLatestTransform(version: String): Boolean = {
+    isAtLeast(version, 7, 8)
+  }
+
+  /** Check if materialized views are supported (enrich + latest transform)
+    */
+  def supportsMaterializedView(version: String): Boolean = {
+    supportsEnrich(version) && supportsLatestTransform(version)
+  }
 }

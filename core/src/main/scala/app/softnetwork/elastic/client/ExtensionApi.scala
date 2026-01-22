@@ -18,12 +18,11 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.licensing.{DefaultLicenseManager, LicenseManager}
 
-trait ExtensionApi { _: ElasticClientApi =>
+trait ExtensionApi { self: ElasticClientApi =>
 
   // ✅ Inject license manager (overridable)
   def licenseManager: LicenseManager = new DefaultLicenseManager()
 
   /** Extension registry (lazy loaded) */
-  lazy val extensionRegistry: ExtensionRegistry =
-    new ExtensionRegistry(config, licenseManager)
+  lazy val extensionRegistry: ExtensionRegistry = new ExtensionRegistry(config, licenseManager)
 }

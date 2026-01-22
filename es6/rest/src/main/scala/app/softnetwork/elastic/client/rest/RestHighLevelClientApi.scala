@@ -21,12 +21,17 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{
+  ElasticError,
+  ElasticFailure,
+  ElasticResult,
+  ElasticSuccess
+}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
+import app.softnetwork.elastic.sql.{schema, ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.schema.{EnrichPolicy, TableAlias}
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
@@ -114,6 +119,8 @@ trait RestHighLevelClientApi
     with RestHighLevelClientVersionApi
     with RestHighLevelClientPipelineApi
     with RestHighLevelClientTemplateApi
+    with RestHighLevelClientEnrichPolicyApi
+    with RestHighLevelClientTransformApi
 
 /** Version API implementation for RestHighLevelClient
   * @see
@@ -608,6 +615,28 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
       }
     })
 
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+    executeRestAction[
+      GetMappingsRequest,
+      GetMappingsResponse,
+      Map[String, String]
+    ](
+      operation = "getAllMappings",
+      index = None,
+      retryable = true
+    )(
+      request = new GetMappingsRequest().indices()
+    )(
+      executor = req => apply().indices().getMapping(req, RequestOptions.DEFAULT)
+    )(response => {
+      response
+        .mappings()
+        .asScala
+        .map { case (index, metadata) =>
+          (index, metadata.source().toString)
+        }
+        .toMap
+    })
 }
 
 /** Refresh API implementation for RestHighLevelClient
@@ -1899,4 +1928,107 @@ trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClien
         "{}"
     }
   }
+}
+
+// ==================== ENRICH POLICY API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): result.ElasticResult[Boolean] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Enrich policy creation not implemented for Rest client",
+        operation = Some("CreateEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): result.ElasticResult[Boolean] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Enrich policy deletion not implemented for Rest client",
+        operation = Some("CreateEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[String] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Enrich policy execution not implemented for Rest client",
+        operation = Some("ExecuteEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+}
+
+// ==================== TRANSFORM API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+
+  override private[client] def executeCreateTransform(
+    config: schema.TransformConfig,
+    start: Boolean
+  ): result.ElasticResult[Boolean] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Transform creation not implemented for Rest client",
+        operation = Some("CreateTransform"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): result.ElasticResult[Boolean] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Transform deletion not implemented for Rest client",
+        operation = Some("DeleteTransform"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeStartTransform(
+    transformId: String
+  ): result.ElasticResult[Boolean] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Transform start not implemented for Rest client",
+        operation = Some("StartTransform"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): result.ElasticResult[Boolean] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Transform stop not implemented for Rest client",
+        operation = Some("StopTransform"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): result.ElasticResult[Option[schema.TransformStats]] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Get Transform stats not implemented for Rest client",
+        operation = Some("GetTransformStats"),
+        statusCode = Some(501)
+      )
+    )
 }

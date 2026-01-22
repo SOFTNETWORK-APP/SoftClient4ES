@@ -1,5 +1,6 @@
+import app.softnetwork.Publish
+import scala.collection.Seq
 import SoftClient4es.*
-import app.softnetwork.*
 import sbt.Def
 import sbtbuildinfo.BuildInfoKeys.buildInfoObject
 
@@ -19,7 +20,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.16.0"
+ThisBuild / version := "0.16-SNAPSHOT"
 
 ThisBuild / scalaVersion := scala213
 

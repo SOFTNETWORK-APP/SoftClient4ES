@@ -18,12 +18,21 @@ package app.softnetwork.elastic
 
 package object licensing {
 
-  sealed trait LicenseType
+  sealed trait LicenseType {
+    def isPaid: Boolean = this != LicenseType.Community
+    def isEnterprise: Boolean = this == LicenseType.Enterprise
+    def isPro: Boolean = this == LicenseType.Pro
+  }
 
   object LicenseType {
     case object Community extends LicenseType // Gratuit
     case object Pro extends LicenseType // Payant
     case object Enterprise extends LicenseType // Payant + support
+    def upgradeTo(licenseType: LicenseType): LicenseType = licenseType match {
+      case Community  => Pro
+      case Pro        => Enterprise
+      case Enterprise => Enterprise
+    }
   }
 
   sealed trait Feature

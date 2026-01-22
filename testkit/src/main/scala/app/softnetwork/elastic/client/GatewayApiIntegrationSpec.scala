@@ -93,7 +93,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
   def assertSelectResult(
     res: ElasticResult[QueryResult],
-    rows: Seq[Map[String, Any]] = Seq.empty
+    rows: Seq[Map[String, Any]] = Seq.empty,
+    nbResults: Option[Int] = None
   ): Unit = {
     res.isSuccess shouldBe true
     res.toOption.get match {
@@ -106,6 +107,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
+        } else if (nbResults.isDefined) {
+          results.size shouldBe nbResults.get
         } else {
           log.info(s"Rows: $results")
         }
@@ -115,6 +118,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
+        } else if (nbResults.isDefined) {
+          results.size shouldBe nbResults.get
         } else {
           log.info(s"Rows: $results")
         }
@@ -123,6 +128,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
+        } else if (nbResults.isDefined) {
+          results.size shouldBe nbResults.get
         } else {
           log.info(s"Rows: $results")
         }
@@ -154,6 +161,16 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         dml.deleted shouldBe expected.deleted
       case None => // do nothing
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Helper: assert SHOW TABLES result type
+  // -------------------------------------------------------------------------
+
+  def assertShowTables(res: ElasticResult[QueryResult]): Seq[Map[String, Any]] = {
+    res.isSuccess shouldBe true
+    res.toOption.get shouldBe a[QueryRows]
+    res.toOption.get.asInstanceOf[QueryRows].rows
   }
 
   // -------------------------------------------------------------------------
@@ -636,6 +653,17 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     table.ddl should include("status VARCHAR DEFAULT 'active'")
     table.ddl should include("description VARCHAR DEFAULT 'N/A'")
     table.ddl should include("visibility BOOLEAN DEFAULT true")
+  }
+
+  it should "list all tables" in {
+    val tables = assertShowTables(client.run("SHOW TABLES").futureValue)
+    tables should not be empty
+    for {
+      table <- tables
+    } {
+      table should contain key "name"
+      table should contain key "type"
+    }
   }
 
   // ===========================================================================

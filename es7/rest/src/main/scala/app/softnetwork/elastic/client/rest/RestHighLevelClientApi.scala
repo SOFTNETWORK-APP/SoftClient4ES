@@ -23,11 +23,24 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
+import app.softnetwork.elastic.sql.{schema, ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.query.{Asc, Criteria, Desc, SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.schema.{
+  AvgTransformAggregation,
+  CardinalityTransformAggregation,
+  CountTransformAggregation,
+  EnrichPolicy,
+  MaxTransformAggregation,
+  MinTransformAggregation,
+  SumTransformAggregation,
+  TableAlias,
+  TermsGroupBy,
+  TopHitsTransformAggregation,
+  TransformState
+}
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
@@ -68,6 +81,7 @@ import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
 import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions, Response}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
+import org.elasticsearch.client.enrich.{DeletePolicyRequest, ExecutePolicyRequest, PutPolicyRequest}
 import org.elasticsearch.client.indices.{
   CloseIndexRequest,
   ComposableIndexTemplateExistRequest,
@@ -84,12 +98,45 @@ import org.elasticsearch.client.indices.{
   PutIndexTemplateRequest,
   PutMappingRequest
 }
+import org.elasticsearch.client.transform.transforms.latest.LatestConfig
+import org.elasticsearch.client.transform.{
+  DeleteTransformRequest,
+  GetTransformStatsRequest,
+  PutTransformRequest,
+  StartTransformRequest,
+  StopTransformRequest
+}
+import org.elasticsearch.client.transform.transforms.pivot.{
+  AggregationConfig,
+  GroupConfig,
+  PivotConfig,
+  TermsGroupSource
+}
+import org.elasticsearch.client.transform.transforms.{
+  DestConfig,
+  QueryConfig,
+  SourceConfig,
+  TimeSyncConfig,
+  TransformConfig
+}
 import org.elasticsearch.cluster.metadata.{AliasMetadata, ComposableIndexTemplate}
 import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.core.TimeValue
+import org.elasticsearch.index.query.QueryBuilders
 import org.elasticsearch.xcontent.{DeprecationHandler, ToXContent, XContentFactory, XContentType}
 import org.elasticsearch.rest.RestStatus
+import org.elasticsearch.search.aggregations.AggregatorFactories
+import org.elasticsearch.search.aggregations.metrics.{
+  AvgAggregationBuilder,
+  CardinalityAggregationBuilder,
+  MaxAggregationBuilder,
+  MinAggregationBuilder,
+  SumAggregationBuilder,
+  TopHitsAggregationBuilder,
+  ValueCountAggregationBuilder
+}
+import org.elasticsearch.search.aggregations.pipeline.BucketSelectorPipelineAggregationBuilder
 import org.elasticsearch.search.builder.{PointInTimeBuilder, SearchSourceBuilder}
 import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.jackson.JsonMethods
@@ -121,6 +168,8 @@ trait RestHighLevelClientApi
     with RestHighLevelClientVersionApi
     with RestHighLevelClientPipelineApi
     with RestHighLevelClientTemplateApi
+    with RestHighLevelClientEnrichPolicyApi
+    with RestHighLevelClientTransformApi
 
 /** Version API implementation for RestHighLevelClient
   * @see
@@ -597,6 +646,28 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
       }
     })
 
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+    executeRestAction[
+      GetMappingsRequest,
+      org.elasticsearch.client.indices.GetMappingsResponse,
+      Map[String, String]
+    ](
+      operation = "getAllMappings",
+      index = None,
+      retryable = true
+    )(
+      request = new GetMappingsRequest().indices()
+    )(
+      executor = req => apply().indices().getMapping(req, RequestOptions.DEFAULT)
+    )(response => {
+      response
+        .mappings()
+        .asScala
+        .map { case (index, mappings) =>
+          (index, mappings.source().toString)
+        }
+        .toMap
+    })
 }
 
 /** Refresh API implementation for RestHighLevelClient
@@ -2165,5 +2236,316 @@ trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClien
         logger.warn(s"Failed to convert AliasMetadata to JSON: ${e.getMessage}", e)
         "{}"
     }
+  }
+}
+
+// ==================== ENRICH POLICY API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): result.ElasticResult[Boolean] =
+    executeRestAction(
+      operation = "CreateEnrichPolicy",
+      retryable = false
+    )(
+      request = {
+        new PutPolicyRequest(
+          policy.name,
+          policy.policyType.name.toLowerCase,
+          policy.indices.asJava,
+          policy.matchField,
+          policy.enrichFields.asJava
+        )
+      }
+    )(
+      executor = req => apply().enrich().putPolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): result.ElasticResult[Boolean] =
+    executeRestAction(
+      operation = "DeleteEnrichPolicy",
+      retryable = false
+    )(
+      request = new DeletePolicyRequest(policyName)
+    )(
+      executor = req => apply().enrich().deletePolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[String] =
+    executeRestAction(
+      operation = "ExecuteEnrichPolicy",
+      retryable = false
+    )(
+      request = {
+        val req = new ExecutePolicyRequest(policyName)
+        req.setWaitForCompletion(true)
+        req
+      }
+    )(
+      executor = req => apply().enrich().executePolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.getTaskId
+    )
+}
+
+// ==================== TRANSFORM API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+
+  override private[client] def executeCreateTransform(
+    config: schema.TransformConfig,
+    start: Boolean
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "createTransform",
+      retryable = false
+    )(
+      request = {
+        implicit val timestamp: Long = System.currentTimeMillis()
+        implicit val context: PainlessContextType = PainlessContextType.Transform
+        val conf = convertToElasticTransformConfig(config)
+        val req = new PutTransformRequest(conf)
+        req.setDeferValidation(false)
+        req
+      }
+    )(
+      executor = req => apply().transform().putTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  private def convertToElasticTransformConfig(
+    config: schema.TransformConfig
+  )(implicit criteriaToNode: Criteria => JsonNode): TransformConfig = {
+    val builder = TransformConfig.builder()
+
+    // Set ID
+    builder.setId(config.id)
+
+    // Set description
+    builder.setDescription(config.description)
+
+    // Set source
+    val sourceConfig = SourceConfig
+      .builder()
+      .setIndex(config.source.index: _*)
+
+    config.source.query.foreach { criteria =>
+      // Convert Criteria to QueryBuilder
+      val node: JsonNode = criteria
+      val queryJson = mapper.writeValueAsString(node)
+      sourceConfig.setQueryConfig(
+        new QueryConfig(QueryBuilders.wrapperQuery(queryJson))
+      )
+    }
+    builder.setSource(sourceConfig.build())
+
+    // Set destination
+    val destConfig = DestConfig
+      .builder()
+      .setIndex(config.dest.index)
+    config.dest.pipeline.foreach(destConfig.setPipeline)
+    builder.setDest(destConfig.build())
+
+    // Set frequency
+    builder.setFrequency(
+      org.elasticsearch.core.TimeValue.parseTimeValue(
+        config.frequency.toTransformFormat,
+        "frequency"
+      )
+    )
+
+    // Set sync (if present)
+    config.sync.foreach { sync =>
+      val syncConfig = TimeSyncConfig
+        .builder()
+        .setField(sync.time.field)
+        .setDelay(
+          org.elasticsearch.core.TimeValue.parseTimeValue(
+            sync.time.delay.toTransformFormat,
+            "delay"
+          )
+        )
+        .build()
+      builder.setSyncConfig(syncConfig)
+    }
+
+    // Set pivot (if present)
+    config.pivot.foreach { pivot =>
+      val pivotConfig = PivotConfig.builder()
+
+      // Group by
+      val groupConfig = GroupConfig.builder()
+      pivot.groupBy.foreach { case (name, gb) =>
+        gb match {
+          case TermsGroupBy(field) =>
+            groupConfig
+              .groupBy(name, TermsGroupSource.builder().setField(field).build())
+        }
+      }
+      pivotConfig.setGroups(groupConfig.build())
+
+      // Aggregations
+      val aggBuilder = AggregatorFactories.builder()
+      pivot.aggregations.foreach { case (name, agg) =>
+        agg match {
+          case MaxTransformAggregation(field) =>
+            aggBuilder.addAggregator(new MaxAggregationBuilder(name).field(field))
+          case MinTransformAggregation(field) =>
+            aggBuilder.addAggregator(new MinAggregationBuilder(name).field(field))
+          case SumTransformAggregation(field) =>
+            aggBuilder.addAggregator(new SumAggregationBuilder(name).field(field))
+          case AvgTransformAggregation(field) =>
+            aggBuilder.addAggregator(new AvgAggregationBuilder(name).field(field))
+          case CountTransformAggregation(field) =>
+            aggBuilder.addAggregator(new ValueCountAggregationBuilder(name).field(field))
+          case CardinalityTransformAggregation(field) =>
+            aggBuilder.addAggregator(new CardinalityAggregationBuilder(name).field(field))
+          case TopHitsTransformAggregation(fields, size, sortFields) =>
+            val topHitsBuilder = new TopHitsAggregationBuilder(name)
+              .size(size)
+              .fetchSource(fields.toArray, Array.empty[String])
+            sortFields.foreach { sortField =>
+              val sortOrder = sortField.order.getOrElse(Desc) match {
+                case Asc  => SortOrder.ASC
+                case Desc => SortOrder.DESC
+                case _    => SortOrder.DESC
+              }
+              topHitsBuilder.sort(sortField.name, sortOrder)
+            }
+            aggBuilder.addAggregator(topHitsBuilder)
+          case _ =>
+            throw new UnsupportedOperationException(s"Unsupported aggregation: $agg")
+        }
+      }
+      pivot.bucketSelector foreach { bs =>
+        val bucketSelector = new BucketSelectorPipelineAggregationBuilder(
+          bs.name,
+          bs.bucketsPath.asJava,
+          new org.elasticsearch.script.Script(bs.script)
+        )
+        aggBuilder.addPipelineAggregator(bucketSelector)
+      }
+      pivotConfig.setAggregationConfig(new AggregationConfig(aggBuilder))
+      builder.setPivotConfig(pivotConfig.build())
+    }
+
+    config.latest.foreach { latest =>
+      val latestConfig = LatestConfig
+        .builder()
+        .setUniqueKey(latest.uniqueKey.asJava)
+        .setSort(latest.sort)
+        .build()
+
+      builder.setLatestConfig(latestConfig)
+    }
+
+    builder.setMetadata(config.metadata.asJava)
+
+    builder.build()
+  }
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "deleteTransform",
+      retryable = false
+    )(
+      request = {
+        val req = new DeleteTransformRequest(transformId)
+        req.setForce(force)
+        req
+      }
+    )(
+      executor = req => apply().transform().deleteTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeStartTransform(
+    transformId: String
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "startTransform",
+      retryable = false
+    )(
+      request = new StartTransformRequest(transformId)
+    )(
+      executor = req => apply().transform().startTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "stopTransform",
+      retryable = false
+    )(
+      request = {
+        val req = new StopTransformRequest(transformId)
+        req.setWaitForCheckpoint(!force)
+        req.setWaitForCompletion(waitForCompletion)
+        req
+      }
+    )(
+      executor = req => apply().transform().stopTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): result.ElasticResult[Option[schema.TransformStats]] = {
+    executeRestAction(
+      operation = "getTransformStats",
+      retryable = true
+    )(
+      request = new GetTransformStatsRequest(transformId)
+    )(
+      executor = req => apply().transform().getTransformStats(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val statsArray = resp.getTransformsStats.asScala
+        statsArray.headOption.map { stats =>
+          schema.TransformStats(
+            id = stats.getId,
+            state = TransformState(stats.getState.value()),
+            documentsProcessed = stats.getIndexerStats.getDocumentsProcessed,
+            documentsIndexed = stats.getIndexerStats.getDocumentsIndexed,
+            indexFailures = stats.getIndexerStats.getIndexFailures,
+            searchFailures = stats.getIndexerStats.getSearchFailures,
+            lastCheckpoint = Option(stats.getCheckpointingInfo)
+              .flatMap(c => Option(c.getLast))
+              .map(_.getCheckpoint),
+            operationsBehind = Option(stats.getCheckpointingInfo)
+              .flatMap(info => Option(info.getOperationsBehind))
+              .getOrElse(0L),
+            processingTimeMs = stats.getIndexerStats.getProcessingTime
+          )
+        }
+      }
+    )
   }
 }

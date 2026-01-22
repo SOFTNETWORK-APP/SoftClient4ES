@@ -30,10 +30,10 @@ import app.softnetwork.elastic.client.{
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.schema.{Index, IndexMappings}
 import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
-import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias, TransformCreationStatus}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -452,6 +452,11 @@ class MetricsElasticClient(
   ): ElasticResult[Boolean] =
     measureResult("updateMapping", Some(index)) {
       delegate.updateMapping(index, mapping, settings)
+    }
+
+  override def allMappings: ElasticResult[Map[String, IndexMappings]] =
+    measureResult("allMappings") {
+      delegate.allMappings
     }
 
   // ==================== RefreshApi ====================
@@ -1364,5 +1369,59 @@ class MetricsElasticClient(
       delegate.run(statement)
     }
   }
+
+  // ==================== Transform (delegate) ====================
+
+  override def createTransform(
+    config: schema.TransformConfig,
+    start: Boolean
+  ): ElasticResult[TransformCreationStatus] =
+    measureResult("createTransform") {
+      delegate.createTransform(config, start)
+    }
+
+  override def deleteTransform(transformId: String, force: Boolean): ElasticResult[Boolean] =
+    measureResult("deleteTransform") {
+      delegate.deleteTransform(transformId, force)
+    }
+
+  override def startTransform(transformId: String): ElasticResult[Boolean] = {
+    measureResult("startTransform") {
+      delegate.startTransform(transformId)
+    }
+  }
+
+  override def stopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    measureResult("stopTransform") {
+      delegate.stopTransform(transformId, force, waitForCompletion)
+    }
+
+  override def getTransformStats(
+    transformId: String
+  ): ElasticResult[Option[schema.TransformStats]] =
+    measureResult("getTransformStats") {
+      delegate.getTransformStats(transformId)
+    }
+
+  // ==================== Enrich policy (delegate) ====================
+
+  override def createEnrichPolicy(policy: schema.EnrichPolicy): ElasticResult[Boolean] =
+    measureResult("createEnrichPolicy") {
+      delegate.createEnrichPolicy(policy)
+    }
+
+  override def deleteEnrichPolicy(policyName: String): ElasticResult[Boolean] =
+    measureResult("deleteEnrichPolicy") {
+      delegate.deleteEnrichPolicy(policyName)
+    }
+
+  override def executeEnrichPolicy(policyName: String): ElasticResult[String] =
+    measureResult("executeEnrichPolicy") {
+      delegate.executeEnrichPolicy(policyName)
+    }
 
 }
