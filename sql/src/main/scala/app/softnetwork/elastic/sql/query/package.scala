@@ -20,6 +20,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   Column,
+  Frequency,
   IngestPipeline,
   IngestPipelineType,
   IngestProcessor,
@@ -30,13 +31,14 @@ import app.softnetwork.elastic.sql.schema.{
   ScriptProcessor,
   SetProcessor,
   Table => Schema,
-  TableType
+  TableType,
+  TransformTimeUnit
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 
-import java.time.Instant
+import java.time.{Duration, Instant}
 
 package object query {
   sealed trait Statement extends Token
@@ -568,12 +570,24 @@ package object query {
     dql: DqlStatement,
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
+    frequency: Option[Frequency] = None,
     options: Map[String, Value[_]] = Map.empty
   ) extends MaterializedViewStatement {
     override def sql: String = {
+      val frequencySql = frequency match {
+        case Some(freq) => freq.sql
+        case None       => ""
+      }
+      val optionsSql = if (options.nonEmpty) {
+        s" WITH (${options
+          .map { case (k, v) => s"$k = $v" }
+          .mkString(", ")})"
+      } else {
+        ""
+      }
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
-      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view AS ${dql.sql}"
+      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view$frequencySql$optionsSql AS ${dql.sql}"
     }
 
     lazy val search: SingleSearch = dql match {
@@ -581,6 +595,33 @@ package object query {
       case _ => throw new IllegalArgumentException("Materialized view must be a single search")
     }
 
+    lazy val userLatency: Duration = options.get("user_latency") match {
+      case Some(value) =>
+        value match {
+          case s: StringValue =>
+            val regex = """\d+\s+(ms|s|m|h|d|w|M|y)""".r
+            regex.findFirstIn(s.value) match {
+              case Some(str) =>
+                val parts = str.trim.split("\\s+")
+                val unit = parts(1) match {
+                  case "ms" => TransformTimeUnit.Milliseconds
+                  case "s"  => TransformTimeUnit.Seconds
+                  case "m"  => TransformTimeUnit.Minutes
+                  case "h"  => TransformTimeUnit.Hours
+                  case "d"  => TransformTimeUnit.Days
+                  case "w"  => TransformTimeUnit.Weeks
+                  case "M"  => TransformTimeUnit.Months
+                  case "y"  => TransformTimeUnit.Years
+                  case _    => TransformTimeUnit.Seconds
+                }
+                Duration.ofSeconds(Frequency(unit, parts(0).toInt).toSeconds)
+              case None => Duration.ofSeconds(5)
+            }
+          case i: LongValue => Duration.ofSeconds(i.value)
+          case _            => Duration.ofSeconds(5)
+        }
+      case None => Duration.ofSeconds(5)
+    }
   }
 
   case class DropMaterializedView(name: String, ifExists: Boolean = false)
@@ -597,6 +638,10 @@ package object query {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"REFRESH MATERIALIZED VIEW $ifExistsClause$name"
     }
+  }
+
+  case class ShowMaterializedViewStatus(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"SHOW MATERIALIZED VIEW STATUS $name"
   }
 
   case class ShowMaterializedView(name: String) extends MaterializedViewStatement {

@@ -32,11 +32,13 @@ import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   Column,
+  Frequency,
   IngestPipelineType,
   IngestProcessor,
   IngestProcessorType,
   PartitionDate,
-  ScriptProcessor
+  ScriptProcessor,
+  TransformTimeUnit
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 
@@ -394,21 +396,61 @@ object Parser
       TruncateTable(name)
     }
 
+  def frequency: PackratParser[Frequency] =
+    ("REFRESH" ~ "EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
+      str =>
+        val parts = str.trim.split("\\s+")
+        Frequency(TransformTimeUnit(parts(1)), parts(0).toInt)
+    }
+
+  def withOptions: PackratParser[Map[String, Value[_]]] =
+    ("WITH" ~ lparen) ~> repsep(option, separator) <~ rparen ^^ { opts =>
+      opts.toMap
+    }
+
   def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ~ ("AS" ~> dqlStatement) ^^ {
-      case _ ~ view ~ dql =>
-        CreateMaterializedView(view, dql, ifNotExists = false, orReplace = true)
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ~ opt(frequency) ~ opt(
+      withOptions
+    ) ~ ("AS" ~> dqlStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
+      CreateMaterializedView(
+        view,
+        dql,
+        ifNotExists = false,
+        orReplace = true,
+        frequency = freq,
+        options = opts.getOrElse(Map.empty)
+      )
     }
 
   def createMaterializedView: PackratParser[CreateMaterializedView] =
-    ("CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ifNotExists ~ ident ~ ("AS" ~> dqlStatement) ^^ {
-      case _ ~ ine ~ view ~ dql =>
-        CreateMaterializedView(view, dql, ifNotExists = ine, orReplace = false)
+    ("CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ifNotExists ~ ident ~ opt(
+      frequency
+    ) ~ opt(
+      withOptions
+    ) ~ ("AS" ~> dqlStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
+      CreateMaterializedView(
+        view,
+        dql,
+        ifNotExists = ine,
+        orReplace = false,
+        frequency = freq,
+        options = opts.getOrElse(Map.empty)
+      )
     }
 
   def dropMaterializedView: PackratParser[DropMaterializedView] =
     ("DROP" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropMaterializedView(name, ifExists = ie)
+    }
+
+  def refreshMaterializedView: PackratParser[RefreshMaterializedView] =
+    ("REFRESH" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ view =>
+      RefreshMaterializedView(view)
+    }
+
+  def showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
+    ("SHOW" ~ "MATERIALIZED" ~ "VIEW" ~ "STATUS") ~ ident ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
+      ShowMaterializedViewStatus(view)
     }
 
   def showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
@@ -635,6 +677,8 @@ object Parser
     createMaterializedView |
     createOrReplaceMaterializedView |
     dropMaterializedView |
+    refreshMaterializedView |
+    showMaterializedViewStatus |
     showMaterializedViews |
     showMaterializedView |
     showCreateMaterializedView |

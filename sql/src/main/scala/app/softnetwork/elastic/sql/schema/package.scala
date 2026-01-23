@@ -763,47 +763,61 @@ package object schema {
 
   sealed trait TransformTimeUnit extends DdlToken {
     def name: String
+    def sql: String = name
+    def format: String
   }
 
   object TransformTimeUnit {
     case object Milliseconds extends TransformTimeUnit {
       val name: String = "MILLISECONDS"
-      override def sql: String = "ms"
+      override def format: String = "ms"
     }
 
     case object Seconds extends TransformTimeUnit {
       val name: String = "SECONDS"
-      override def sql: String = "s"
+      override def format: String = "s"
     }
 
     case object Minutes extends TransformTimeUnit {
       val name: String = "MINUTES"
-      override def sql: String = "m"
+      override def format: String = "m"
     }
 
     case object Hours extends TransformTimeUnit {
       val name: String = "HOURS"
-      override def sql: String = "h"
+      override def format: String = "h"
     }
 
     case object Days extends TransformTimeUnit {
       val name: String = "DAYS"
-      override def sql: String = "d"
+      override def format: String = "d"
     }
 
     case object Weeks extends TransformTimeUnit {
       val name: String = "WEEKS"
-      override def sql: String = "w"
+      override def format: String = "w"
+    }
+
+    case object Months extends TransformTimeUnit {
+      val name: String = "MONTHS"
+      override def format: String = "M"
+    }
+
+    case object Years extends TransformTimeUnit {
+      val name: String = "YEARS"
+      override def format: String = "y"
     }
 
     def apply(name: String): TransformTimeUnit = name.toUpperCase() match {
-      case "MILLISECONDS" => Milliseconds
-      case "SECONDS"      => Seconds
-      case "MINUTES"      => Minutes
-      case "HOURS"        => Hours
-      case "DAYS"         => Days
-      case "WEEKS"        => Weeks
-      case other          => throw new IllegalArgumentException(s"Invalid delay unit: $other")
+      case "MILLISECOND" | "MILLISECONDS" => Milliseconds
+      case "SECOND" | "SECONDS"           => Seconds
+      case "MINUTE" | "MINUTES"           => Minutes
+      case "HOUR" | "HOURS"               => Hours
+      case "DAY" | "DAYS"                 => Days
+      case "WEEK" | "WEEKS"               => Weeks
+      case "MONTH" | "MONTHS"             => Months
+      case "YEAR" | "YEARS"               => Years
+      case other => throw new IllegalArgumentException(s"Invalid delay unit: $other")
     }
   }
 
@@ -817,8 +831,10 @@ package object schema {
       case TransformTimeUnit.Hours        => interval * 3600
       case TransformTimeUnit.Days         => interval * 86400
       case TransformTimeUnit.Weeks        => interval * 604800
+      case TransformTimeUnit.Months       => interval * 2592000
+      case TransformTimeUnit.Years        => interval * 31536000
     }
-    def toTransformFormat: String = s"$interval$timeUnit"
+    def toTransformFormat: String = s"$interval${timeUnit.format}"
 
   }
 
@@ -826,7 +842,13 @@ package object schema {
 
     /** Creates a time interval from seconds */
     def fromSeconds(seconds: Int): (TransformTimeUnit, Int) = {
-      if (seconds >= 86400 && seconds % 86400 == 0) {
+      if (seconds >= 31536000 && seconds % 31536000 == 0) {
+        (TransformTimeUnit.Years, seconds / 31536000)
+      } else if (seconds >= 2592000 && seconds % 2592000 == 0) {
+        (TransformTimeUnit.Months, seconds / 2592000)
+      } else if (seconds >= 604800 && seconds % 604800 == 0) {
+        (TransformTimeUnit.Weeks, seconds / 604800)
+      } else if (seconds >= 86400 && seconds % 86400 == 0) {
         (TransformTimeUnit.Days, seconds / 86400)
       } else if (seconds >= 3600 && seconds % 3600 == 0) {
         (TransformTimeUnit.Hours, seconds / 3600)
