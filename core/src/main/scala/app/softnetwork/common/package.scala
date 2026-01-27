@@ -19,10 +19,12 @@ package app.softnetwork
 import org.slf4j.Logger
 
 import java.io.Closeable
+import java.net.URI
+import scala.util.Try
 
 package object common {
 
-  trait ClientCompanion extends Closeable { _: { def logger: Logger } =>
+  trait ClientCompanion extends Closeable with UrlValidator { _: { def logger: Logger } =>
 
     /** Check if client is initialized and connected
       */
@@ -35,4 +37,50 @@ package object common {
     def testConnection(): Boolean
   }
 
+  trait UrlValidator {
+
+    /** Validate URL format using java.net.URI
+      */
+    def validateUrl(url: String): Try[URI] = {
+      Try {
+        if (url == null || url.trim.isEmpty) {
+          throw new IllegalArgumentException("URL cannot be null or empty")
+        }
+
+        val uri = new URI(url)
+
+        // Vérifier le schéma
+        if (uri.getScheme == null) {
+          throw new IllegalArgumentException(
+            s"URL must have a scheme (http:// or https://): $url"
+          )
+        }
+
+        val scheme = uri.getScheme.toLowerCase
+        if (scheme != "http" && scheme != "https") {
+          throw new IllegalArgumentException(
+            s"URL scheme must be http or https, got: $scheme"
+          )
+        }
+
+        // Vérifier l'hôte
+        if (uri.getHost == null || uri.getHost.trim.isEmpty) {
+          throw new IllegalArgumentException(
+            s"URL must have a valid hostname: $url"
+          )
+        }
+
+        // Vérifier le port si présent
+        if (uri.getPort != -1) {
+          if (uri.getPort < 0 || uri.getPort > 65535) {
+            throw new IllegalArgumentException(
+              s"Invalid port number: ${uri.getPort} (must be between 0 and 65535)"
+            )
+          }
+        }
+
+        uri
+      }
+    }
+  }
 }

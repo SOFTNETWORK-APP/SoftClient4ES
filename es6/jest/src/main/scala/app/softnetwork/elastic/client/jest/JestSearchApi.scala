@@ -18,9 +18,11 @@ package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.{ElasticQueries, ElasticQuery, SearchApi, SerializationApi}
 import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.bridge.ElasticSearchRequest
 import app.softnetwork.elastic.sql.query.SingleSearch
-import io.searchbox.core.MultiSearch
+import io.searchbox.core.{MultiSearch, Search, SearchResult}
+import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
@@ -29,12 +31,36 @@ import scala.language.implicitConversions
 trait JestSearchApi extends SearchApi with JestClientHelpers {
   _: JestClientCompanion with SerializationApi =>
 
-  private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SingleSearch
-  )(implicit timestamp: Long): String =
-    implicitly[ElasticSearchRequest](sqlSearch).query
+  implicit def requestToSearch(elasticSelect: ElasticSearchRequest): Search = {
+    import elasticSelect._
+    val search = new Search.Builder(query)
+    for (source <- sources) search.addIndex(source)
+    search.build()
+  }
 
-  import JestClientApi._
+  implicit class SearchElasticQuery(elasticQuery: ElasticQuery) {
+    def search: (Search, String) = {
+      import elasticQuery._
+      val _search = new Search.Builder(query)
+      for (indice <- indices) _search.addIndex(indice)
+      for (t      <- types) _search.addType(t)
+      (_search.build(), query)
+    }
+  }
+
+  implicit class SearchResults(searchResult: SearchResult) {
+    def apply[M: Manifest]()(implicit formats: Formats): List[M] = {
+      searchResult.getSourceAsStringList.asScala.map(source => serialization.read[M](source)).toList
+    }
+  }
+
+  private[client] implicit def singleSearchToJsonQuery(
+    sqlSearch: SingleSearch
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String =
+    implicitly[ElasticSearchRequest](sqlSearch).query
 
   override def executeSingleSearch(
     elasticQuery: ElasticQuery

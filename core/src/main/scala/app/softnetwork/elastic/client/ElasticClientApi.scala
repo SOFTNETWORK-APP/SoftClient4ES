@@ -24,7 +24,6 @@ import org.json4s.jackson
 import org.json4s.jackson.Serialization
 import org.slf4j.Logger
 
-import java.io.Closeable
 import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
 
 /** Created by smanciot on 28/06/2018.
@@ -49,6 +48,9 @@ trait ElasticClientApi
     with SerializationApi
     with PipelineApi
     with TemplateApi
+    with EnrichPolicyApi
+    with TransformApi
+    with ExtensionApi
     with GatewayApi
     with ClientCompanion {
 

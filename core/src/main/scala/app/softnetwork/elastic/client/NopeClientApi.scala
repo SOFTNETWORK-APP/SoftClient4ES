@@ -26,7 +26,7 @@ import app.softnetwork.elastic.client.bulk.{
   FailedDocument,
   SuccessfulDocument
 }
-import app.softnetwork.elastic.sql.query
+import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
@@ -214,9 +214,12 @@ trait NopeClientApi extends ElasticClientApi {
     * @return
     *   JSON string representation of the query
     */
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
+  override private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: query.SingleSearch
-  )(implicit timestamp: Long): String = "{\"query\": {\"match_all\": {}}}"
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String = "{\"query\": {\"match_all\": {}}}"
 
   override private[client] def executeUpdateSettings(
     index: String,
@@ -376,4 +379,54 @@ trait NopeClientApi extends ElasticClientApi {
   /** Conversion BulkActionType -> BulkItem */
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     throw new UnsupportedOperationException
+
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: schema.EnrichPolicy
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[String] =
+    ElasticSuccess("")
+
+  override private[client] def executeCreateTransform(
+    config: schema.TransformConfig,
+    start: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeStartTransform(transformId: String): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): ElasticResult[Option[schema.TransformStats]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
 }

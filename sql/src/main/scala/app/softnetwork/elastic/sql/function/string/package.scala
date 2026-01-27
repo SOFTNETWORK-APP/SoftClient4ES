@@ -16,7 +16,15 @@
 
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.{Expr, IntValue, PainlessContext, PainlessScript, TokenRegex}
+import app.softnetwork.elastic.sql.{
+  query,
+  Expr,
+  IntValue,
+  PainlessContext,
+  PainlessScript,
+  TokenRegex,
+  Updateable
+}
 import app.softnetwork.elastic.sql.`type`.{
   SQLBigInt,
   SQLBool,
@@ -133,6 +141,12 @@ package object string {
       extends StringFunction[SQLVarchar] {
     override def outputType: SQLVarchar = SQLTypes.Varchar
     override def args: List[PainlessScript] = List(str)
+    override def update(request: query.SingleSearch): StringFunctionWithOp = {
+      str match {
+        case u: Updateable => this.copy(str = u.update(request).asInstanceOf[PainlessScript])
+        case _             => this
+      }
+    }
   }
 
   case class Substring(str: PainlessScript, start: Int, length: Option[Int])
@@ -172,6 +186,12 @@ package object string {
 
     override def toSQL(base: String): String = sql
 
+    override def update(request: query.SingleSearch): Substring = {
+      str match {
+        case u: Updateable => this.copy(str = u.update(request).asInstanceOf[PainlessScript])
+        case _             => this
+      }
+    }
   }
 
   case class Concat(values: List[PainlessScript]) extends StringFunction[SQLVarchar] {
@@ -181,6 +201,16 @@ package object string {
     override def args: List[PainlessScript] = values
 
     override def nullable: Boolean = values.exists(_.nullable)
+
+    override def update(request: query.SingleSearch): Concat = {
+      values.map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case v             => v
+      } match {
+        case updatedValues => this.copy(values = updatedValues)
+        case _             => this
+      }
+    }
 
     override def toPainlessCall(
       callArgs: List[String],
@@ -217,6 +247,12 @@ package object string {
     override def outputType: SQLBigInt = SQLTypes.BigInt
     override def stringOp: StringOp = Length
     override def args: List[PainlessScript] = List(str)
+    override def update(request: query.SingleSearch): Length = {
+      str match {
+        case u: Updateable => this.copy(str = u.update(request).asInstanceOf[PainlessScript])
+        case _             => this
+      }
+    }
   }
 
   case class LeftFunction(str: PainlessScript, length: Int) extends StringFunction[SQLVarchar] {
@@ -245,6 +281,13 @@ package object string {
         str.validate()
 
     override def toSQL(base: String): String = sql
+
+    override def update(request: query.SingleSearch): LeftFunction = {
+      str match {
+        case u: Updateable => this.copy(str = u.update(request).asInstanceOf[PainlessScript])
+        case _             => this
+      }
+    }
   }
 
   case class RightFunction(str: PainlessScript, length: Int) extends StringFunction[SQLVarchar] {
@@ -275,6 +318,13 @@ package object string {
         str.validate()
 
     override def toSQL(base: String): String = sql
+
+    override def update(request: query.SingleSearch): RightFunction = {
+      str match {
+        case u: Updateable => this.copy(str = u.update(request).asInstanceOf[PainlessScript])
+        case _             => this
+      }
+    }
   }
 
   case class Replace(str: PainlessScript, search: PainlessScript, replace: PainlessScript)
@@ -304,6 +354,21 @@ package object string {
       }
 
     override def toSQL(base: String): String = sql
+
+    override def update(request: query.SingleSearch): Replace = {
+      List(str, search, replace).map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case v             => v
+      } match {
+        case List(updatedStr, updatedSearch, updatedReplace) =>
+          this.copy(
+            str = updatedStr,
+            search = updatedSearch,
+            replace = updatedReplace
+          )
+        case _ => this
+      }
+    }
   }
 
   case class Reverse(str: PainlessScript) extends StringFunction[SQLVarchar] {
@@ -328,6 +393,13 @@ package object string {
       str.validate()
 
     override def toSQL(base: String): String = sql
+
+    override def update(request: query.SingleSearch): Reverse = {
+      str match {
+        case u: Updateable => this.copy(str = u.update(request).asInstanceOf[PainlessScript])
+        case _             => this
+      }
+    }
   }
 
   case class Position(substr: PainlessScript, str: PainlessScript, start: Int)
@@ -360,6 +432,20 @@ package object string {
       }
 
     override def toSQL(base: String): String = sql
+
+    override def update(request: query.SingleSearch): Position = {
+      List(substr, str).map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case v             => v
+      } match {
+        case List(updatedSubstr, updatedStr) =>
+          this.copy(
+            substr = updatedSubstr,
+            str = updatedStr
+          )
+        case _ => this
+      }
+    }
   }
 
   case class RegexpLike(
@@ -394,5 +480,20 @@ package object string {
       }
 
     override def toSQL(base: String): String = sql
+
+    override def update(request: query.SingleSearch): RegexpLike = {
+      List(str, pattern).map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case v             => v
+      } match {
+        case List(updatedStr, updatedPattern) =>
+          this.copy(
+            str = updatedStr,
+            pattern = updatedPattern,
+            matchFlags = matchFlags
+          )
+        case _ => this
+      }
+    }
   }
 }

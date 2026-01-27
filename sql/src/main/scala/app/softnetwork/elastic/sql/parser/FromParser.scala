@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.{Alias, Identifier}
 import app.softnetwork.elastic.sql.query.{
   CrossJoin,
   From,
@@ -26,6 +27,7 @@ import app.softnetwork.elastic.sql.query.{
   LeftJoin,
   On,
   RightJoin,
+  StandardJoin,
   Table,
   Unnest
 }
@@ -33,7 +35,7 @@ import app.softnetwork.elastic.sql.query.{
 trait FromParser {
   self: Parser with WhereParser with LimitParser =>
 
-  def unnest: PackratParser[Unnest] =
+  def unnest: PackratParser[Join] =
     Unnest.regex ~ start ~ identifier ~ end ~ alias.? ^^ { case _ ~ i ~ _ ~ a =>
       Unnest(i, None, a)
     }
@@ -52,8 +54,23 @@ trait FromParser {
     )
   }
 
-  def join: PackratParser[Join] = opt(join_type) ~ Join.regex ~ unnest ~ opt(on) ^^ {
-    case jt ~ _ ~ t ~ o => t // Unnest cannot have a join type or an ON clause
+  def source: PackratParser[(Identifier, Option[Alias])] = identifier ~ alias.? ^^ { case i ~ a =>
+    (i, a)
+  }
+
+  def join: PackratParser[Join] = opt(join_type) ~ Join.regex ~ (unnest | source) ~ opt(on) ^^ {
+    case jt ~ _ ~ t ~ o =>
+      t match {
+        case u: Unnest =>
+          u // Unnest cannot have a join type or an ON clause
+        case (i: Identifier, a: Option[Alias]) =>
+          StandardJoin(
+            source = i,
+            joinType = jt,
+            on = o,
+            alias = a
+          )
+      }
   }
 
   def table: PackratParser[Table] = identifierRegex ~ alias.? ~ rep(join) ^^ { case i ~ a ~ js =>

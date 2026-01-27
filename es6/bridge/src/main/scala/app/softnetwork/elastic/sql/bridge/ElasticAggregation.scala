@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.PainlessContext
+import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import app.softnetwork.elastic.sql.`type`.SQLTemporal
 import app.softnetwork.elastic.sql.query.{
   Asc,
@@ -100,7 +100,10 @@ object ElasticAggregation {
     having: Option[Criteria],
     bucketsDirection: Map[String, SortOrder],
     allAggregations: Map[String, SQLAggregation]
-  )(implicit timestamp: Long): ElasticAggregation = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType
+  ): ElasticAggregation = {
     import sqlAgg._
     val sourceField = identifier.path
 
@@ -153,14 +156,14 @@ object ElasticAggregation {
       buildScript: (String, Script) => Aggregation
     ): Aggregation = {
       if (transformFuncs.nonEmpty) {
-        val context = PainlessContext()
+        val context = PainlessContext(context = contextType)
         val scriptSrc = identifier.painless(Some(context))
         val script = now(Script(s"$context$scriptSrc").lang("painless"))
         buildScript(aggName, script)
       } else {
         aggType match {
           case th: WindowFunction if th.shouldBeScripted =>
-            val context = PainlessContext()
+            val context = PainlessContext(context = contextType)
             val scriptSrc = th.identifier.painless(Some(context))
             val script = now(Script(s"$context$scriptSrc").lang("painless"))
             buildScript(aggName, script)
@@ -348,7 +351,10 @@ object ElasticAggregation {
     having: Option[Criteria],
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation]
-  )(implicit timestamp: Long): Seq[Aggregation] = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Seq[Aggregation] = {
     for (tree <- buckets) yield {
       val treeNodes =
         tree.sortBy(_.level).reverse.foldLeft(Seq.empty[NodeAggregation]) { (current, node) =>
@@ -364,7 +370,7 @@ object ElasticAggregation {
 
           val aggScript =
             if (!bucket.isBucketScript && bucket.shouldBeScripted) {
-              val context = PainlessContext()
+              val context = PainlessContext(context = contextType)
               val painless = bucket.painless(Some(context))
               Some(now(Script(s"$context$painless").lang("painless")))
             } else {

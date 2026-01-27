@@ -18,11 +18,19 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
+import app.softnetwork.elastic.sql.function.aggregate.{
+  AggregateFunction,
+  AvgAgg,
+  CountAgg,
+  MaxAgg,
+  MinAgg,
+  SumAgg
+}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
-import com.fasterxml.jackson.databind.node.ObjectNode
+import com.fasterxml.jackson.databind.node.{NullNode, ObjectNode}
 
 import java.util.UUID
 import scala.jdk.CollectionConverters._
@@ -429,7 +437,14 @@ package object schema {
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Set
 
+    def isDefault: Boolean = copyFrom.isEmpty && value != Null && (doIf match {
+      case Some(i) if i.contains(s"ctx.$column == null") => true
+      case _                                             => false
+    })
+
     override def sql: String = {
+      if (isDefault)
+        return s"$column SET DEFAULT ${value.sql}"
       val base = copyFrom match {
         case Some(source) => s"$column COPY FROM $source"
         case None         => s"$column SET VALUE ${value.sql}"
@@ -578,6 +593,7 @@ package object schema {
       val processorsNode = mapper.createArrayNode()
       processors.foreach { processor =>
         processorsNode.add(processor.node)
+        ()
       }
       node.put("description", sql)
       node.set("processors", processorsNode)
@@ -662,6 +678,8 @@ package object schema {
         )
       }
     }
+
+    def describe: Seq[Map[String, Any]] = processors.map(_.properties)
   }
 
   object IngestPipeline {
@@ -688,6 +706,842 @@ package object schema {
     }
   }
 
+  sealed trait EnrichPolicyType {
+    def name: String
+    override def toString: String = name
+  }
+
+  object EnrichPolicyType {
+    case object Match extends EnrichPolicyType {
+      val name: String = "MATCH"
+    }
+    case object GeoMatch extends EnrichPolicyType {
+      val name: String = "GEO_MATCH"
+    }
+    case object Range extends EnrichPolicyType {
+      val name: String = "RANGE"
+    }
+  }
+
+  case class EnrichPolicy(
+    name: String,
+    policyType: EnrichPolicyType = EnrichPolicyType.Match,
+    indices: Seq[String],
+    matchField: String,
+    enrichFields: List[String],
+    criteria: Option[Criteria] = None
+  ) extends DdlToken {
+    def sql: String =
+      s"CREATE OR REPLACE ENRICH POLICY $name TYPE $policyType WITH SOURCE INDICES ${indices
+        .mkString(",")} MATCH FIELD $matchField ENRICH FIELDS (${enrichFields.mkString(", ")})${Where(criteria)}"
+
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      val policy = mapper.createObjectNode()
+      val indicesNode = mapper.createArrayNode()
+      indices.foreach { index =>
+        indicesNode.add(index)
+        ()
+      }
+      policy.set("indices", indicesNode)
+      policy.put("match_field", matchField)
+      val enrichFieldsNode = mapper.createArrayNode()
+      enrichFields.foreach { field =>
+        enrichFieldsNode.add(field)
+        ()
+      }
+      policy.set("enrich_fields", enrichFieldsNode)
+      criteria.foreach { c =>
+        policy.set("query", implicitly[JsonNode](c))
+      }
+      node.set(policyType.name.toLowerCase, policy)
+      node
+    }
+  }
+
+  // ==================== Transform ====================
+
+  sealed trait TransformTimeUnit extends DdlToken {
+    def name: String
+    def sql: String = name
+    def format: String
+  }
+
+  object TransformTimeUnit {
+    case object Milliseconds extends TransformTimeUnit {
+      val name: String = "MILLISECONDS"
+      override def format: String = "ms"
+    }
+
+    case object Seconds extends TransformTimeUnit {
+      val name: String = "SECONDS"
+      override def format: String = "s"
+    }
+
+    case object Minutes extends TransformTimeUnit {
+      val name: String = "MINUTES"
+      override def format: String = "m"
+    }
+
+    case object Hours extends TransformTimeUnit {
+      val name: String = "HOURS"
+      override def format: String = "h"
+    }
+
+    case object Days extends TransformTimeUnit {
+      val name: String = "DAYS"
+      override def format: String = "d"
+    }
+
+    case object Weeks extends TransformTimeUnit {
+      val name: String = "WEEKS"
+      override def format: String = "w"
+    }
+
+    case object Months extends TransformTimeUnit {
+      val name: String = "MONTHS"
+      override def format: String = "M"
+    }
+
+    case object Years extends TransformTimeUnit {
+      val name: String = "YEARS"
+      override def format: String = "y"
+    }
+
+    def apply(name: String): TransformTimeUnit = name.toUpperCase() match {
+      case "MILLISECOND" | "MILLISECONDS" => Milliseconds
+      case "SECOND" | "SECONDS"           => Seconds
+      case "MINUTE" | "MINUTES"           => Minutes
+      case "HOUR" | "HOURS"               => Hours
+      case "DAY" | "DAYS"                 => Days
+      case "WEEK" | "WEEKS"               => Weeks
+      case "MONTH" | "MONTHS"             => Months
+      case "YEAR" | "YEARS"               => Years
+      case other => throw new IllegalArgumentException(s"Invalid delay unit: $other")
+    }
+  }
+
+  sealed trait TransformTimeInterval extends DdlToken {
+    def interval: Int
+    def timeUnit: TransformTimeUnit
+    def toSeconds: Int = timeUnit match {
+      case TransformTimeUnit.Milliseconds => interval / 1000
+      case TransformTimeUnit.Seconds      => interval
+      case TransformTimeUnit.Minutes      => interval * 60
+      case TransformTimeUnit.Hours        => interval * 3600
+      case TransformTimeUnit.Days         => interval * 86400
+      case TransformTimeUnit.Weeks        => interval * 604800
+      case TransformTimeUnit.Months       => interval * 2592000
+      case TransformTimeUnit.Years        => interval * 31536000
+    }
+    def toTransformFormat: String = s"$interval${timeUnit.format}"
+
+  }
+
+  object TransformTimeInterval {
+
+    /** Creates a time interval from seconds */
+    def fromSeconds(seconds: Int): (TransformTimeUnit, Int) = {
+      if (seconds >= 31536000 && seconds % 31536000 == 0) {
+        (TransformTimeUnit.Years, seconds / 31536000)
+      } else if (seconds >= 2592000 && seconds % 2592000 == 0) {
+        (TransformTimeUnit.Months, seconds / 2592000)
+      } else if (seconds >= 604800 && seconds % 604800 == 0) {
+        (TransformTimeUnit.Weeks, seconds / 604800)
+      } else if (seconds >= 86400 && seconds % 86400 == 0) {
+        (TransformTimeUnit.Days, seconds / 86400)
+      } else if (seconds >= 3600 && seconds % 3600 == 0) {
+        (TransformTimeUnit.Hours, seconds / 3600)
+      } else if (seconds >= 60 && seconds % 60 == 0) {
+        (TransformTimeUnit.Minutes, seconds / 60)
+      } else {
+        (TransformTimeUnit.Seconds, seconds)
+      }
+    }
+  }
+
+  case class Delay(
+    timeUnit: TransformTimeUnit,
+    interval: Int
+  ) extends TransformTimeInterval {
+    def sql: String = s"WITH DELAY $interval $timeUnit"
+  }
+
+  object Delay {
+    val Default: Delay = Delay(TransformTimeUnit.Minutes, 1)
+
+    def fromSeconds(seconds: Int): Delay = {
+      val timeInterval = TransformTimeInterval.fromSeconds(seconds)
+      Delay(timeInterval._1, timeInterval._2)
+    }
+
+    /** Calculates optimal delay based on frequency and number of stages
+      *
+      * Formula: delay = frequency / (nb_stages * buffer_factor)
+      *
+      * This ensures the complete chain can refresh within the specified frequency. The buffer
+      * factor adds safety margin for processing time.
+      *
+      * @param frequency
+      *   Desired refresh frequency
+      * @param nbStages
+      *   Total number of stages (changelog + enrichment + aggregate)
+      * @param bufferFactor
+      *   Safety factor (default 1.5)
+      * @return
+      *   Optimal delay for each Transform, or error if constraints cannot be met
+      */
+    def calculateOptimal(
+      frequency: Frequency,
+      nbStages: Int,
+      bufferFactor: Double = 1.5
+    ): Either[String, Delay] = {
+      if (nbStages <= 0) {
+        return Left("Number of stages must be positive")
+      }
+
+      val frequencySeconds = frequency.toSeconds
+      val optimalDelaySeconds = (frequencySeconds / (nbStages * bufferFactor)).toInt
+
+      // Validate constraints
+      if (optimalDelaySeconds < 10) {
+        Left(
+          s"Calculated delay ($optimalDelaySeconds seconds) is too small. " +
+          s"Consider increasing frequency or reducing number of stages. " +
+          s"Minimum required frequency: ${nbStages * bufferFactor * 10} seconds"
+        )
+      } else if (optimalDelaySeconds > frequencySeconds / 2) {
+        Left(
+          s"Calculated delay ($optimalDelaySeconds seconds) is too large. " +
+          s"Each stage needs at least delay × 2 = frequency."
+        )
+      } else {
+        Right(Delay.fromSeconds(optimalDelaySeconds))
+      }
+    }
+
+    /** Validates that a chain of transforms can refresh within the given frequency
+      *
+      * Requirements:
+      *   - Total latency (delay × nbStages) must be less than frequency
+      *   - Each transform runs every (delay × 2), so: delay × 2 × nbStages ≤ frequency
+      *
+      * @param delay
+      *   Delay for each transform
+      * @param frequency
+      *   Target refresh frequency
+      * @param nbStages
+      *   Number of stages in the chain
+      * @return
+      *   Success or error message
+      */
+    def validate(
+      delay: Delay,
+      frequency: Frequency,
+      nbStages: Int
+    ): Either[String, Unit] = {
+      val totalLatency = delay.toSeconds * nbStages
+      val frequencySeconds = frequency.toSeconds
+      val requiredFrequency = delay.toSeconds * 2 * nbStages
+
+      if (totalLatency > frequencySeconds) {
+        Left(
+          s"Total latency ($totalLatency seconds) exceeds frequency ($frequencySeconds seconds). " +
+          s"Minimum required frequency: $requiredFrequency seconds"
+        )
+      } else if (requiredFrequency > frequencySeconds) {
+        Left(
+          s"Frequency ($frequencySeconds seconds) is too low for $nbStages stages with delay ${delay.toSeconds} seconds. " +
+          s"Minimum required frequency: $requiredFrequency seconds"
+        )
+      } else {
+        Right(())
+      }
+    }
+  }
+
+  case class Frequency(
+    timeUnit: TransformTimeUnit,
+    interval: Int
+  ) extends TransformTimeInterval {
+    def sql: String = s"REFRESH EVERY $interval $timeUnit"
+  }
+
+  case object Frequency {
+    val Default: Frequency = apply(Delay.Default)
+    def apply(delay: Delay): Frequency = Frequency(delay.timeUnit, delay.interval * 2)
+    def fromSeconds(seconds: Int): Frequency = {
+      val timeInterval = TransformTimeInterval.fromSeconds(seconds)
+      Frequency(timeInterval._1, timeInterval._2)
+    }
+  }
+
+  case class TransformSource(
+    index: Seq[String],
+    query: Option[Criteria]
+  ) extends DdlToken {
+    override def sql: String = {
+      val queryStr = query.map(q => s" WHERE ${q.sql}").getOrElse("")
+      s"INDEX (${index.mkString(", ")})$queryStr"
+    }
+
+    /** Converts to JSON for Elasticsearch
+      */
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      val indicesNode = mapper.createArrayNode()
+      index.foreach(indicesNode.add)
+      node.set("index", indicesNode)
+      query.foreach { q =>
+        node.set("query", implicitly[JsonNode](q))
+        ()
+      }
+      node
+    }
+  }
+
+  case class TransformDest(
+    index: String,
+    pipeline: Option[String] = None
+  ) extends DdlToken {
+    override def sql: String = {
+      val pipelineStr = pipeline.map(p => s" PIPELINE $p").getOrElse("")
+      s"INDEX $index$pipelineStr"
+    }
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("index", index)
+      pipeline.foreach(p => node.put("pipeline", p))
+      node
+    }
+  }
+
+  /** Configuration for bucket selector (HAVING clause)
+    */
+  case class TransformBucketSelectorConfig(
+    name: String = "having_filter",
+    bucketsPath: Map[String, String],
+    script: String
+  ) {
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val bucketSelectorNode = mapper.createObjectNode()
+      val bucketsPathNode = mapper.createObjectNode()
+      bucketsPath.foreach { case (k, v) =>
+        bucketsPathNode.put(k, v)
+        ()
+      }
+      bucketSelectorNode.set("buckets_path", bucketsPathNode)
+      if (script.nonEmpty) {
+        bucketSelectorNode.put("script", script)
+      }
+      node.set("bucket_selector", bucketSelectorNode)
+      node
+    }
+  }
+
+  case class TransformPivot(
+    groupBy: Map[String, TransformGroupBy],
+    aggregations: Map[String, TransformAggregation],
+    bucketSelector: Option[TransformBucketSelectorConfig] = None,
+    script: Option[String] = None
+  ) extends DdlToken {
+    override def sql: String = {
+      val groupByStr = groupBy
+        .map { case (name, gb) =>
+          s"$name BY ${gb.sql}"
+        }
+        .mkString(", ")
+
+      val aggStr = aggregations
+        .map { case (name, agg) =>
+          s"$name AS ${agg.sql}"
+        }
+        .mkString(", ")
+
+      val havingStr = bucketSelector.map(bs => s" HAVING ${bs.script}").getOrElse("")
+
+      s"PIVOT ($groupByStr) AGGREGATE ($aggStr)$havingStr"
+    }
+
+    /** Converts to JSON for Elasticsearch
+      */
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+
+      val groupByNode = mapper.createObjectNode()
+      groupBy.foreach { case (name, gb) =>
+        groupByNode.set(name, gb.node)
+        ()
+      }
+      node.set("group_by", groupByNode)
+
+      val aggsNode = mapper.createObjectNode()
+      aggregations.foreach { case (name, agg) =>
+        aggsNode.set(name, agg.node)
+        ()
+      }
+      bucketSelector.foreach { bs =>
+        aggsNode.set(bs.name, bs.node)
+        ()
+      }
+      node.set("aggregations", aggsNode)
+
+      node
+    }
+  }
+
+  sealed trait TransformGroupBy extends DdlToken {
+    def node: JsonNode
+  }
+
+  case class TermsGroupBy(field: String) extends TransformGroupBy {
+    override def sql: String = s"TERMS($field)"
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val termsNode = mapper.createObjectNode()
+      termsNode.put("field", field)
+      node.set("terms", termsNode)
+      node
+    }
+  }
+
+  sealed trait TransformAggregation extends DdlToken {
+    def name: String
+
+    def field: String
+
+    override def sql: String = s"${name.toUpperCase}($field)"
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val fieldNode = mapper.createObjectNode()
+      fieldNode.put("field", field)
+      node.set(name.toLowerCase(), fieldNode)
+      node
+    }
+  }
+
+  case class MaxTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "max"
+  }
+
+  case class MinTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "min"
+  }
+
+  case class SumTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "sum"
+  }
+
+  case class AvgTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "avg"
+  }
+
+  case class CountTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "value_count"
+
+    override def sql: String = if (field == "_id") "COUNT(*)" else s"COUNT($field)"
+  }
+
+  case class CardinalityTransformAggregation(field: String) extends TransformAggregation {
+    override def name: String = "cardinality"
+
+    override def sql: String = s"COUNT(DISTINCT $field)"
+  }
+
+  case class TopHitsTransformAggregation(
+    fields: Seq[String],
+    size: Int = 1,
+    sort: Seq[FieldSort] = Seq(
+      FieldSort(Identifier(sqlConfig.transformLastUpdatedColumnName), Some(Desc))
+    )
+  ) extends TransformAggregation {
+    override def field: String = fields.mkString(", ")
+
+    override def name: String = "top_hits"
+
+    override def sql: String = {
+      val fieldsStr = fields.mkString(", ")
+      val sortStr = sort
+        .map { s =>
+          s.sql
+        }
+        .mkString(", ")
+      s"TOP_HITS($fieldsStr) SIZE $size SORT BY ($sortStr)"
+    }
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val topHitsNode = mapper.createObjectNode()
+      topHitsNode.put("size", size)
+
+      // Sort configuration
+      val sortArray = mapper.createArrayNode()
+      sort.foreach { sortField =>
+        val sortObj = mapper.createObjectNode()
+        val sortFieldObj = mapper.createObjectNode()
+        sortFieldObj.put("order", sortField.order.getOrElse(Desc).sql)
+        sortObj.set(sortField.name, sortFieldObj)
+        sortArray.add(sortObj)
+      }
+      topHitsNode.set("sort", sortArray)
+
+      // Source filtering to include only the desired field
+      val sourceObj = mapper.createObjectNode()
+      val includesArray = mapper.createArrayNode()
+      fields.foreach { field =>
+        includesArray.add(field)
+        ()
+      }
+      sourceObj.set("includes", includesArray)
+      topHitsNode.set("_source", sourceObj)
+
+      node.set("top_hits", topHitsNode)
+      node
+    }
+  }
+
+  /** Extension methods for AggregateFunction
+    */
+  implicit class AggregateConversion(agg: AggregateFunction) {
+
+    /** Converts SQL aggregate function to Elasticsearch aggregation
+      */
+    def toTransformAggregation: Option[TransformAggregation] = agg match {
+      case ma: MaxAgg =>
+        Some(MaxTransformAggregation(ma.identifier.name))
+
+      case ma: MinAgg =>
+        Some(MinTransformAggregation(ma.identifier.name))
+
+      case sa: SumAgg =>
+        Some(SumTransformAggregation(sa.identifier.name))
+
+      case aa: AvgAgg =>
+        Some(AvgTransformAggregation(aa.identifier.name))
+
+      case ca: CountAgg =>
+        val field = ca.identifier.name
+        Some(
+          if (field == "*" || field.isEmpty)
+            if (ca.isCardinality) CardinalityTransformAggregation("_id")
+            else CountTransformAggregation("_id")
+          else if (ca.isCardinality) CardinalityTransformAggregation(field)
+          else CountTransformAggregation(field)
+        )
+
+      case _ =>
+        // For other aggregate functions, default to none
+        None
+    }
+  }
+
+  object ChangelogAggregationStrategy {
+
+    /** Selects the appropriate aggregation for a field in a changelog based on its data type
+      *
+      * @param field
+      *   The field to aggregate
+      * @param dataType
+      *   The SQL data type of the field
+      * @return
+      *   The transform aggregation to use
+      */
+    def selectAggregation(field: String, dataType: SQLType): TransformAggregation = {
+      dataType match {
+        // Numeric types: Use MAX directly
+        case SQLTypes.Int | SQLTypes.BigInt | SQLTypes.Double | SQLTypes.Real =>
+          MaxTransformAggregation(field)
+
+        // Date/Timestamp: Use MAX directly
+        case SQLTypes.Date | SQLTypes.Timestamp =>
+          MaxTransformAggregation(field)
+
+        // Boolean: Use Top Hits
+        case SQLTypes.Boolean =>
+          TopHitsTransformAggregation(Seq(field))
+
+        // Keyword: Already a keyword type, use MAX directly
+        case SQLTypes.Keyword =>
+          TopHitsTransformAggregation(Seq(field))
+
+        // Text/Varchar: Analyzed field, must use .keyword multi-field
+        case SQLTypes.Text | SQLTypes.Varchar =>
+          TopHitsTransformAggregation(Seq(s"$field.keyword")) // ✅ Use .keyword multi-field
+
+        // For complex types, use top_hits as fallback
+        case _ =>
+          TopHitsTransformAggregation(Seq(field))
+      }
+    }
+
+    /** Determines if a field can use simple MAX aggregation (without needing a multi-field)
+      */
+    def canUseMaxDirectly(dataType: SQLType): Boolean = dataType match {
+      case SQLTypes.Int | SQLTypes.BigInt | SQLTypes.Double | SQLTypes.Real | SQLTypes.Date |
+          SQLTypes.Timestamp | SQLTypes.Keyword | SQLTypes.Boolean =>
+        true
+      case _ => false
+    }
+
+    /** Determines if a field needs a .keyword multi-field for aggregation
+      */
+    def needsKeywordMultiField(dataType: SQLType): Boolean = dataType match {
+      case SQLTypes.Text | SQLTypes.Varchar => true
+      case _                                => false
+    }
+  }
+
+  case class TransformSync(time: TransformTimeSync) extends DdlToken {
+    override def sql: String = s"SYNC ${time.sql}"
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.set("time", time.node)
+      node
+    }
+  }
+
+  case class TransformTimeSync(field: String, delay: Delay) extends DdlToken {
+    override def sql: String = s"TIME FIELD $field ${delay.sql}"
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("field", field)
+      node.put("delay", delay.toTransformFormat)
+      node
+    }
+  }
+
+  case class TransformCreationStatus(
+    created: Boolean,
+    started: Option[Boolean] = None // None = not asked, Some(true/false) = result of start request
+  )
+
+  case class TransformLatest(
+    uniqueKey: Seq[String],
+    sort: String
+  ) extends DdlToken {
+    override def sql: String = {
+      val uniqueKeyStr = uniqueKey.mkString(", ")
+      s"LATEST UNIQUE KEY ($uniqueKeyStr) SORT BY $sort"
+    }
+
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val uniqueKeyNode = mapper.createArrayNode()
+      uniqueKey.foreach { key =>
+        uniqueKeyNode.add(key)
+        ()
+      }
+      node.set("unique_key", uniqueKeyNode)
+      node.put("sort", sort)
+      node
+    }
+  }
+
+  /** Transform configuration models with built-in JSON serialization
+    */
+  case class TransformConfig(
+    id: String,
+    viewName: String,
+    source: TransformSource,
+    dest: TransformDest,
+    pivot: Option[TransformPivot] = None,
+    latest: Option[TransformLatest] = None,
+    sync: Option[TransformSync] = None,
+    delay: Delay,
+    frequency: Frequency,
+    metadata: Map[String, AnyRef] = Map.empty
+  ) extends DdlToken {
+
+    /** Delay in seconds for display */
+    lazy val delaySeconds: Int = delay.toSeconds
+
+    /** Frequency in seconds for display */
+    lazy val frequencySeconds: Int = frequency.toSeconds
+
+    /** Converts to Elasticsearch JSON format
+      */
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      node.set("source", source.node)
+      node.set("dest", dest.node)
+      node.put("frequency", frequency.toTransformFormat)
+      sync.foreach { s =>
+        node.set("sync", s.node)
+        ()
+      }
+      pivot.foreach { p =>
+        node.set("pivot", p.node)
+        ()
+      }
+      latest.foreach { l =>
+        node.set("latest", l.node)
+        ()
+      }
+      node
+    }
+
+    /** SQL DDL representation
+      */
+    override def sql: String = {
+      val sb = new StringBuilder()
+
+      sb.append(s"CREATE TRANSFORM $id\n")
+      sb.append(s"  SOURCE ${source.sql}\n")
+      sb.append(s"  DEST ${dest.sql}\n")
+
+      pivot.foreach { p =>
+        sb.append(s"  ${p.sql}\n")
+      }
+
+      sync.foreach { s =>
+        sb.append(s"  ${s.sql}\n")
+      }
+
+      sb.append(s"  ${frequency.sql}\n")
+      sb.append(s"  ${delay.sql}")
+
+      sb.toString()
+    }
+
+    /** Human-readable description
+      */
+    def description: String = {
+      s"Transform $id: ${source.index.mkString(", ")} → ${dest.index} " +
+      s"(every ${frequencySeconds}s, delay ${delaySeconds}s) for view $viewName"
+    }
+  }
+
+  /** Health status
+    */
+  sealed trait HealthStatus extends DdlToken {
+    def name: String
+    def sql: String = name
+  }
+
+  object HealthStatus {
+    case object Green extends HealthStatus {
+      val name: String = "GREEN"
+    }
+    case object Yellow extends HealthStatus {
+      val name: String = "YELLOW"
+    }
+    case object Red extends HealthStatus {
+      val name: String = "RED"
+    }
+
+    def apply(name: String): HealthStatus = name.toUpperCase() match {
+      case "GREEN"  => Green
+      case "YELLOW" => Yellow
+      case "RED"    => Red
+      case other    => throw new IllegalArgumentException(s"Invalid health status: $other")
+    }
+  }
+
+  /** Transform state
+    */
+  sealed trait TransformState extends DdlToken {
+    def name: String
+    def sql: String = name
+  }
+
+  object TransformState {
+    case object Started extends TransformState {
+      val name: String = "STARTED"
+    }
+    case object Indexing extends TransformState {
+      val name: String = "INDEXING"
+    }
+    case object Aborting extends TransformState {
+      val name: String = "ABORTING"
+    }
+    case object Stopping extends TransformState {
+      val name: String = "STOPPING"
+    }
+    case object Stopped extends TransformState {
+      val name: String = "STOPPED"
+    }
+    case object Failed extends TransformState {
+      val name: String = "FAILED"
+    }
+    case object Waiting extends TransformState {
+      val name: String = "WAITING"
+    }
+    case class Other(name: String) extends TransformState
+
+    def apply(name: String): TransformState = name.toUpperCase() match {
+      case "STARTED"  => Started
+      case "INDEXING" => Indexing
+      case "ABORTING" => Aborting
+      case "STOPPING" => Stopping
+      case "STOPPED"  => Stopped
+      case "FAILED"   => Failed
+      case "WAITING"  => Waiting
+      case other      => Other(other)
+    }
+  }
+
+  /** Statistics for a Transform
+    *
+    * @param id
+    *   Transform ID
+    * @param state
+    *   Current state of the Transform
+    * @param documentsProcessed
+    *   Total number of documents processed
+    * @param documentsIndexed
+    *   Total number of documents indexed
+    * @param indexFailures
+    *   Total number of indexing failures
+    * @param searchFailures
+    *   Total number of search failures
+    * @param lastCheckpoint
+    *   Last checkpoint number (if any)
+    * @param operationsBehind
+    *   Number of operations behind source index
+    * @param processingTimeMs
+    *   Total processing time in milliseconds
+    */
+  case class TransformStats(
+    id: String,
+    state: TransformState, // "started", "stopped", "failed"
+    documentsProcessed: Long,
+    documentsIndexed: Long,
+    indexFailures: Long,
+    searchFailures: Long,
+    lastCheckpoint: Option[Long],
+    operationsBehind: Long,
+    processingTimeMs: Long
+  )
+  // ==================== Schema ====================
+
+  /** Definition of a column within a table
+    *
+    * @param name
+    *   the column name
+    * @param dataType
+    *   the column SQL type
+    * @param script
+    *   optional script processor associated to this column
+    * @param multiFields
+    *   optional multi fields associated to this column
+    * @param defaultValue
+    *   optional default value for this column
+    * @param notNull
+    *   whether this column is not null
+    * @param comment
+    *   optional comment for this column
+    * @param options
+    *   optional options for this column (search analyzer, ...)
+    * @param struct
+    *   optional parent struct column
+    * @param lineage
+    *   sequence of (table, column) pairs indicating the lineage of this column
+    */
   case class Column(
     name: String,
     dataType: SQLType,
@@ -697,7 +1551,8 @@ package object schema {
     notNull: Boolean = false,
     comment: Option[String] = None,
     options: Map[String, Value[_]] = Map.empty,
-    struct: Option[Column] = None
+    struct: Option[Column] = None,
+    lineage: Map[String, Seq[(String, String)]] = Map.empty // ✅ Key = path ID, Value = chain
   ) extends DdlToken {
     def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
     private def level: Int = struct.map(_.level + 1).getOrElse(0)
@@ -713,6 +1568,18 @@ package object schema {
         cols.get(path)
       }
     }
+
+    /** Flattens all lineage paths into a set of (table, column) pairs */
+    def allLineageSources: Set[(String, String)] =
+      lineage.values.flatten.toSet
+
+    /** Gets the immediate sources (last element of each path) */
+    def immediateSources: Set[(String, String)] =
+      lineage.values.flatMap(_.lastOption).toSet
+
+    /** Gets the original sources (first element of each path) */
+    def originalSources: Set[(String, String)] =
+      lineage.values.flatMap(_.headOption).toSet
 
     def _meta: Map[String, Value[_]] = {
       Map(
@@ -734,7 +1601,25 @@ package object schema {
         "multi_fields" -> ObjectValue(
           multiFields.map(field => field.name -> ObjectValue(field._meta)).toMap
         )
-      )
+      ) ++ (if (lineage.nonEmpty) {
+              // ✅ Lineage as map of paths
+              Map(
+                "lineage" -> ObjectValue(
+                  lineage.map { case (pathId, chain) =>
+                    pathId -> ObjectValues(
+                      chain.map { case (table, column) =>
+                        ObjectValue(
+                          Map(
+                            "table"  -> StringValue(table),
+                            "column" -> StringValue(column)
+                          )
+                        )
+                      }
+                    )
+                  }
+                )
+              )
+            } else Map.empty)
     }
 
     def updateStruct(): Column = {
@@ -789,7 +1674,7 @@ package object schema {
       Map(
         "name"    -> path,
         "type"    -> dataType.typeId,
-        "script"  -> script.map(_.script),
+        "script"  -> script.map(_.script).getOrElse("N/A"),
         "default" -> defaultValue.map(_.value).getOrElse(""),
         "notNull" -> notNull,
         "comment" -> comment.getOrElse(""),
@@ -1129,6 +2014,42 @@ package object schema {
     }
   }
 
+  sealed trait TableType {
+    def name: String
+  }
+
+  object TableType {
+    case object Regular extends TableType {
+      override def name: String = "regular"
+    }
+    case object External extends TableType {
+      override def name: String = "external"
+    }
+    case object Changelog extends TableType {
+      override def name: String = "changelog"
+    }
+    case object Enrichment extends TableType {
+      override def name: String = "enrichment"
+    }
+    case object View extends TableType {
+      override def name: String = "view"
+    }
+    case object MaterializedView extends TableType {
+      override def name: String = "materialized_view"
+    }
+
+    def apply(name: String): TableType =
+      name.toLowerCase match {
+        case "regular"           => Regular
+        case "external"          => External
+        case "changelog"         => Changelog
+        case "enrichment"        => Enrichment
+        case "view"              => View
+        case "materialized_view" => MaterializedView
+        case other               => throw new Exception(s"Unknown table type: $other")
+      }
+  }
+
   /** Definition of a table within the schema
     *
     * @param name
@@ -1147,6 +2068,10 @@ package object schema {
     *   optional list of ingest processors associated to this table (apart from column processors)
     * @param aliases
     *   optional map of aliases associated to this table
+    * @param materializedViews
+    *   optional list of materialized views associated to this table
+    * @param materializedView
+    *   whether this table is a materialized view
     */
   case class Table(
     name: String,
@@ -1156,8 +2081,14 @@ package object schema {
     mappings: Map[String, Value[_]] = Map.empty,
     settings: Map[String, Value[_]] = Map.empty,
     processors: Seq[IngestProcessor] = Seq.empty,
-    aliases: Map[String, Value[_]] = Map.empty
+    aliases: Map[String, Value[_]] = Map.empty,
+    materializedViews: List[String] = Nil,
+    tableType: TableType = TableType.Regular
   ) extends DdlToken {
+    lazy val isRegular: Boolean = tableType == TableType.Regular
+
+    lazy val isPartitioned: Boolean = partitionBy.isDefined
+
     lazy val indexName: String = name.toLowerCase
     private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
 
@@ -1187,7 +2118,13 @@ package object schema {
         )
       )
       .getOrElse(Map.empty) ++
-      Map("columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) }))
+      Map(
+        "columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) })
+      ) ++ Map(
+        "type" -> StringValue(tableType.name)
+      ) ++ Map(
+        "materialized_views" -> StringValues(materializedViews.map(StringValue))
+      )
 
     def update(): Table = {
       val updated =
@@ -1197,12 +2134,18 @@ package object schema {
           "_meta" ->
           ObjectValue(updated.mappings.get("_meta") match {
             case Some(ObjectValue(value)) =>
-              (value - "primary_key" - "partition_by" - "columns") ++ updated._meta
+              (value - "primary_key" - "partition_by" - "columns" - "materialized_views" - "type") ++ updated._meta
             case _ => updated._meta
           })
         )
       )
     }
+
+    lazy val metadata: Map[String, Any] =
+      mappings.get("_meta") match {
+        case Some(ObjectValue(value)) => ObjectValue(value)
+        case _                        => Map.empty
+      }
 
     def sql: String = {
       val opts =
@@ -1245,6 +2188,8 @@ package object schema {
         .toSeq ++ implicitly[Seq[IngestProcessor]](primaryKey)
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
+      if (!isRegular)
+        throw new Exception(s"Cannot alter table $name of type ${tableType.name}")
       statements
         .foldLeft(this) { (table, statement) =>
           statement match {
@@ -1507,7 +2452,7 @@ package object schema {
           val colName = field.fieldAlias.map(_.alias).getOrElse(field.sourceField)
           val col = this.find(colName) match {
             case Some(c) if field.functions.isEmpty => c
-            case None =>
+            case _ =>
               Column(
                 name = colName,
                 dataType = field.out
@@ -1624,9 +2569,20 @@ package object schema {
       node
     }
 
-    lazy val indexAliases: Seq[TableAlias] = aliases.map { case (aliasName, value) =>
-      TableAlias(name, aliasName, value)
-    }.toSeq
+    lazy val indexAliases: Seq[TableAlias] = {
+      val temp = aliases.map { case (aliasName, value) =>
+        TableAlias(name, aliasName, value)
+      }.toSeq
+      // add default read only alias name for partitioned tables
+      /*if(isPartitioned){
+        temp :+ TableAlias(
+          table = name,
+          alias = name,
+          isWriteIndex = false
+        )
+      } else*/
+      temp
+    }
 
     lazy val indexTemplate: ObjectNode = {
       val node = mapper.createObjectNode()
@@ -1637,7 +2593,7 @@ package object schema {
       val template = mapper.createObjectNode()
       template.set("mappings", indexMappings)
       template.set("settings", indexSettings)
-      if (aliases.nonEmpty) {
+      if (indexAliases.nonEmpty) {
         val aliasesNode = mapper.createObjectNode()
         indexAliases.foreach { alias =>
           aliasesNode.set(alias.alias, alias.node)
@@ -1714,6 +2670,8 @@ package object schema {
         aliases = aliasDiffs.toList
       )
     }
+
+    def describe: Seq[Map[String, Any]] = columns.flatMap(_.asMap)
   }
 
 }

@@ -20,6 +20,8 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   Column,
+  Delay,
+  Frequency,
   IngestPipeline,
   IngestPipelineType,
   IngestProcessor,
@@ -27,16 +29,17 @@ import app.softnetwork.elastic.sql.schema.{
   PartitionDate,
   RemoveProcessor,
   RenameProcessor,
-  Schema,
   ScriptProcessor,
   SetProcessor,
-  Table => DdlTable
+  Table => Schema,
+  TableType,
+  TransformTimeUnit
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 
-import java.time.Instant
+import java.time.{Duration, Instant}
 
 package object query {
   sealed trait Statement extends Token
@@ -561,6 +564,130 @@ package object query {
 
   sealed trait TableStatement extends DdlStatement
 
+  sealed trait MaterializedViewStatement extends TableStatement
+
+  case class CreateMaterializedView(
+    view: String,
+    dql: DqlStatement,
+    ifNotExists: Boolean = false,
+    orReplace: Boolean = false,
+    frequency: Option[Frequency] = None,
+    options: Map[String, Value[_]] = Map.empty
+  ) extends MaterializedViewStatement {
+    override def sql: String = {
+      val frequencySql = frequency match {
+        case Some(freq) => freq.sql
+        case None       => ""
+      }
+      val optionsSql = if (options.nonEmpty) {
+        s" WITH (${options
+          .map { case (k, v) => s"$k = $v" }
+          .mkString(", ")})"
+      } else {
+        ""
+      }
+      val replaceClause = if (orReplace) " OR REPLACE" else ""
+      val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
+      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view$frequencySql$optionsSql AS ${dql.sql}"
+    }
+
+    lazy val search: SingleSearch = dql match {
+      case s: SingleSearch => s
+      case _ => throw new IllegalArgumentException("Materialized view must be a single search")
+    }
+
+    lazy val userLatency: Option[Duration] = options.get("user_latency") match {
+      case Some(value) =>
+        value match {
+          case s: StringValue =>
+            val regex = """(\d+)\s*(ms|s|m|h|d|w|M|y)""".r
+            s.value match {
+              case regex(interval, unitStr) =>
+                val unit = unitStr match {
+                  case "ms" => TransformTimeUnit.Milliseconds
+                  case "s"  => TransformTimeUnit.Seconds
+                  case "m"  => TransformTimeUnit.Minutes
+                  case "h"  => TransformTimeUnit.Hours
+                  case "d"  => TransformTimeUnit.Days
+                  case "w"  => TransformTimeUnit.Weeks
+                  case "M"  => TransformTimeUnit.Months
+                  case "y"  => TransformTimeUnit.Years
+                  case _    => TransformTimeUnit.Seconds
+                }
+                Some(Duration.ofSeconds(Frequency(unit, interval.toInt).toSeconds))
+              case _ => None
+            }
+          case i: LongValue => Some(Duration.ofSeconds(i.value))
+          case _            => None
+        }
+      case None => None
+    }
+
+    lazy val delay: Option[Delay] = options.get("delay") match {
+      case Some(value) =>
+        value match {
+          case s: StringValue =>
+            val regex = """(\d+)\s*(ms|s|m|h|d|w|M|y)""".r
+            s.value match {
+              case regex(interval, unitStr) =>
+                val unit = unitStr match {
+                  case "ms" => TransformTimeUnit.Milliseconds
+                  case "s"  => TransformTimeUnit.Seconds
+                  case "m"  => TransformTimeUnit.Minutes
+                  case "h"  => TransformTimeUnit.Hours
+                  case "d"  => TransformTimeUnit.Days
+                  case "w"  => TransformTimeUnit.Weeks
+                  case "M"  => TransformTimeUnit.Months
+                  case "y"  => TransformTimeUnit.Years
+                  case _    => TransformTimeUnit.Seconds
+                }
+                Some(Delay(unit, interval.toInt))
+              case _ => None
+            }
+          case i: LongValue => Some(Delay(TransformTimeUnit.Seconds, i.value.toInt))
+          case _            => None
+        }
+      case None => None
+    }
+  }
+
+  case class DropMaterializedView(name: String, ifExists: Boolean = false)
+      extends MaterializedViewStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      s"DROP MATERIALIZED VIEW $ifExistsClause$name"
+    }
+  }
+
+  case class RefreshMaterializedView(name: String, ifExists: Boolean, scheduleNow: Boolean)
+      extends MaterializedViewStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      val scheduleNowClause = if (scheduleNow) " WITH SCHEDULE NOW" else ""
+      s"REFRESH MATERIALIZED VIEW $ifExistsClause$name$scheduleNowClause"
+    }
+  }
+
+  case object ShowMaterializedViews extends MaterializedViewStatement {
+    override def sql: String = s"SHOW MATERIALIZED VIEWS"
+  }
+
+  case class ShowMaterializedView(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"SHOW MATERIALIZED VIEW $name"
+  }
+
+  case class ShowMaterializedViewStatus(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"SHOW MATERIALIZED VIEW STATUS $name"
+  }
+
+  case class ShowCreateMaterializedView(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"SHOW CREATE MATERIALIZED VIEW $name"
+  }
+
+  case class DescribeMaterializedView(name: String) extends MaterializedViewStatement {
+    override def sql: String = s"DESCRIBE MATERIALIZED VIEW $name"
+  }
+
   case class CreateTable(
     table: String,
     ddl: Either[DqlStatement, List[Column]],
@@ -580,8 +707,22 @@ package object query {
         case Left(select) =>
           s"CREATE$replaceClause TABLE$ineClause $table AS ${select.sql}"
         case Right(columns) =>
-          val colsSql = columns.map(_.sql).mkString(", ")
-          s"CREATE$replaceClause TABLE$ineClause $table ($colsSql)"
+          val colsSql = columns.map(_.sql).mkString(",\n ")
+          val primaryKeyClause =
+            if (primaryKey.nonEmpty)
+              s",\n PRIMARY KEY (${primaryKey.mkString(", ")})"
+            else
+              ""
+          val partitionClause = partitionBy match {
+            case Some(partition) => partition.sql
+            case None            => ""
+          }
+          val optionsClause =
+            if (options.nonEmpty)
+              s" OPTIONS ${ObjectValue(options).ddl}"
+            else
+              ""
+          s"CREATE$replaceClause TABLE$ineClause $table (\n $colsSql$primaryKeyClause\n)$partitionClause$optionsClause"
       }
     }
 
@@ -645,14 +786,39 @@ package object query {
       case None => Map.empty
     }
 
-    lazy val schema: Schema = DdlTable(
+    lazy val materializedViews: List[String] = options.get("materialized_views") match {
+      case Some(value) =>
+        value match {
+          case ov: StringValues =>
+            ov.values.flatMap {
+              case o: StringValue =>
+                Some(o.value)
+              case _ => None
+            }.toList
+          case _ => Nil
+        }
+      case None => Nil
+    }
+
+    lazy val tableType: TableType = (options.get("type") match {
+      case Some(value) =>
+        value match {
+          case s: StringValue => Some(TableType(s.value))
+          case _              => None
+        }
+      case None => None
+    }).getOrElse(TableType.Regular)
+
+    lazy val schema: Schema = Schema(
       name = table,
       columns = columns.toList,
       primaryKey = primaryKey,
       partitionBy = partitionBy,
       mappings = mappings,
       settings = settings,
-      aliases = aliases
+      aliases = aliases,
+      materializedViews = materializedViews,
+      tableType = tableType
     ).update()
 
     lazy val defaultPipeline: IngestPipeline = schema.defaultPipeline
@@ -848,7 +1014,7 @@ package object query {
   case class AlterTableMapping(optionKey: String, optionValue: Value[_])
       extends AlterTableStatement {
     override def sql: String =
-      s"SET MAPPING ($optionKey = $optionValue)"
+      s"SET MAPPING $optionKey = ${optionValue.ddl}"
   }
   case class DropTableMapping(optionKey: String) extends AlterTableStatement {
     override def sql: String =
@@ -857,7 +1023,7 @@ package object query {
   case class AlterTableSetting(optionKey: String, optionValue: Value[_])
       extends AlterTableStatement {
     override def sql: String =
-      s"SET SETTING ($optionKey = $optionValue)"
+      s"SET SETTING $optionKey = ${optionValue.ddl}"
   }
   case class DropTableSetting(optionKey: String) extends AlterTableStatement {
     override def sql: String =
@@ -865,7 +1031,7 @@ package object query {
   }
   case class AlterTableAlias(optionKey: String, optionValue: Value[_]) extends AlterTableStatement {
     override def sql: String =
-      s"SET ALIAS ($optionKey = $optionValue)"
+      s"SET ALIAS $optionKey = ${optionValue.ddl}"
   }
   case class DropTableAlias(optionKey: String) extends AlterTableStatement {
     override def sql: String =
@@ -887,6 +1053,10 @@ package object query {
 
   case class ShowTable(table: String) extends TableStatement {
     override def sql: String = s"SHOW TABLE $table"
+  }
+
+  case object ShowTables extends TableStatement {
+    override def sql: String = s"SHOW TABLES"
   }
 
   case class ShowCreateTable(table: String) extends TableStatement {

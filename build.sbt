@@ -1,5 +1,6 @@
+import app.softnetwork.Publish
+import scala.collection.Seq
 import SoftClient4es.*
-import app.softnetwork.*
 import sbt.Def
 import sbtbuildinfo.BuildInfoKeys.buildInfoObject
 
@@ -19,7 +20,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.15.0"
+ThisBuild / version := "0.16-SNAPSHOT"
 
 ThisBuild / scalaVersion := scala213
 
@@ -99,6 +100,14 @@ ThisBuild / libraryDependencySchemes += "org.scala-lang.modules" %% "scala-xml" 
 
 Test / parallelExecution := false
 
+lazy val licensing = project
+  .in(file("licensing"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings
+  )
+
 lazy val sql = project
   .in(file("sql"))
   .configs(IntegrationTest)
@@ -141,6 +150,9 @@ lazy val core = project
   )
   .dependsOn(
     macros % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    licensing % "compile->compile;test->test;it->it"
   )
 
 lazy val persistence = project
@@ -461,6 +473,7 @@ lazy val root = project
     crossScalaVersions := Nil
   )
   .aggregate(
+    licensing,
     sql,
     bridge,
     macros,

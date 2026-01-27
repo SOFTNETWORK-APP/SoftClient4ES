@@ -32,11 +32,13 @@ import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   Column,
+  Frequency,
   IngestPipelineType,
   IngestProcessor,
   IngestProcessorType,
   PartitionDate,
-  ScriptProcessor
+  ScriptProcessor,
+  TransformTimeUnit
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 
@@ -74,7 +76,7 @@ object Parser
     case s        => MultiSearch(s)
   }
 
-  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_]*""".r
+  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_.]*""".r
 
   private val lparen: Parser[String] = "("
   private val rparen: Parser[String] = ")"
@@ -133,6 +135,7 @@ object Parser
         case "rename"          => IngestProcessorType.Rename
         case "remove"          => IngestProcessorType.Remove
         case "date_index_name" => IngestProcessorType.DateIndexName
+        case "enrich"          => IngestProcessorType.Enrich
         case other             => IngestProcessorType(other)
       }
     }
@@ -174,7 +177,7 @@ object Parser
     }
 
   def describePipeline: PackratParser[DescribePipeline] =
-    ("DESCRIBE" ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
+    (("DESCRIBE" | "DESC") ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
       DescribePipeline(pipeline)
     }
 
@@ -285,8 +288,8 @@ object Parser
             ct,
             opts
           )
-        case cols: List[Column] =>
-          Column(name, dt, None, cols, dv, nn, ct, opts)
+        case cols: List[_] =>
+          Column(name, dt, None, cols.asInstanceOf[List[Column]], dv, nn, ct, opts)
       }
     }
 
@@ -363,6 +366,11 @@ object Parser
         }
     }
 
+  def showTables: PackratParser[ShowTables.type] =
+    ("SHOW" ~ "TABLES") ^^ { _ =>
+      ShowTables
+    }
+
   def showTable: PackratParser[ShowTable] =
     ("SHOW" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
       ShowTable(table)
@@ -374,7 +382,7 @@ object Parser
     }
 
   def describeTable: PackratParser[DescribeTable] =
-    ("DESCRIBE" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
+    (("DESCRIBE" | "DESC") ~ "TABLE") ~ ident ^^ { case _ ~ table =>
       DescribeTable(table)
     }
 
@@ -386,6 +394,84 @@ object Parser
   def truncateTable: PackratParser[TruncateTable] =
     ("TRUNCATE" ~ "TABLE") ~ ident ^^ { case _ ~ name =>
       TruncateTable(name)
+    }
+
+  def frequency: PackratParser[Frequency] =
+    ("REFRESH" ~ "EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
+      str =>
+        val parts = str.trim.split("\\s+")
+        Frequency(TransformTimeUnit(parts(1)), parts(0).toInt)
+    }
+
+  def withOptions: PackratParser[Map[String, Value[_]]] =
+    ("WITH" ~ lparen) ~> repsep(option, separator) <~ rparen ^^ { opts =>
+      opts.toMap
+    }
+
+  def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ~ opt(frequency) ~ opt(
+      withOptions
+    ) ~ ("AS" ~> dqlStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
+      CreateMaterializedView(
+        view,
+        dql,
+        ifNotExists = false,
+        orReplace = true,
+        frequency = freq,
+        options = opts.getOrElse(Map.empty)
+      )
+    }
+
+  def createMaterializedView: PackratParser[CreateMaterializedView] =
+    ("CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ifNotExists ~ ident ~ opt(
+      frequency
+    ) ~ opt(
+      withOptions
+    ) ~ ("AS" ~> dqlStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
+      CreateMaterializedView(
+        view,
+        dql,
+        ifNotExists = ine,
+        orReplace = false,
+        frequency = freq,
+        options = opts.getOrElse(Map.empty)
+      )
+    }
+
+  def dropMaterializedView: PackratParser[DropMaterializedView] =
+    ("DROP" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+      DropMaterializedView(name, ifExists = ie)
+    }
+
+  def refreshMaterializedView: PackratParser[RefreshMaterializedView] =
+    ("REFRESH" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ~ opt("WITH" ~ "SCHEDULE" ~ "NOW") ^^ {
+      case _ ~ ie ~ view ~ wn =>
+        RefreshMaterializedView(view, ifExists = ie, scheduleNow = wn.isDefined)
+    }
+
+  def showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
+    ("SHOW" ~ "MATERIALIZED" ~ "VIEW" ~ "STATUS") ~ ident ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
+      ShowMaterializedViewStatus(view)
+    }
+
+  def showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
+    ("SHOW" ~ "CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
+      ShowCreateMaterializedView(view)
+    }
+
+  def showMaterializedView: PackratParser[ShowMaterializedView] =
+    ("SHOW" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ view =>
+      ShowMaterializedView(view)
+    }
+
+  def showMaterializedViews: PackratParser[ShowMaterializedViews.type] =
+    ("SHOW" ~ "MATERIALIZED" ~ "VIEWS") ^^ { _ =>
+      ShowMaterializedViews
+    }
+
+  def describeMaterializedView: PackratParser[DescribeMaterializedView] =
+    (("DESCRIBE" | "DESC") ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ _ ~ view =>
+      DescribeMaterializedView(view)
     }
 
   def addColumn: PackratParser[AddColumn] =
@@ -508,7 +594,7 @@ object Parser
     }
 
   def alterTableMapping: PackratParser[AlterTableMapping] =
-    (("SET" | "ADD") ~ "MAPPING") ~ start ~> option <~ end ^^ { opt =>
+    (("SET" | "ADD") ~ "MAPPING") ~ option ^^ { case _ ~ opt =>
       AlterTableMapping(opt._1, opt._2)
     }
 
@@ -516,7 +602,7 @@ object Parser
     ("DROP" ~ "MAPPING") ~> ident ^^ { m => DropTableMapping(m) }
 
   def alterTableSetting: PackratParser[AlterTableSetting] =
-    (("SET" | "ADD") ~ "SETTING") ~ start ~> option <~ end ^^ { opt =>
+    (("SET" | "ADD") ~ "SETTING") ~ option ^^ { case _ ~ opt =>
       AlterTableSetting(opt._1, opt._2)
     }
 
@@ -524,7 +610,7 @@ object Parser
     ("DROP" ~ "SETTING") ~> ident ^^ { m => DropTableSetting(m) }
 
   def alterTableAlias: PackratParser[AlterTableAlias] =
-    (("SET" | "ADD") ~ "ALIAS") ~ start ~> option <~ end ^^ { opt =>
+    (("SET" | "ADD") ~ "ALIAS") ~ option ^^ { case _ ~ opt =>
       AlterTableAlias(opt._1, opt._2)
     }
 
@@ -581,13 +667,23 @@ object Parser
     alterPipeline |
     dropTable |
     truncateTable |
+    showTables |
     showTable |
     showCreateTable |
     describeTable |
     dropPipeline |
     showPipeline |
     showCreatePipeline |
-    describePipeline
+    describePipeline |
+    createMaterializedView |
+    createOrReplaceMaterializedView |
+    dropMaterializedView |
+    refreshMaterializedView |
+    showMaterializedViewStatus |
+    showMaterializedViews |
+    showMaterializedView |
+    showCreateMaterializedView |
+    describeMaterializedView
 
   def onConflict: PackratParser[OnConflict] =
     ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {
@@ -896,7 +992,7 @@ trait Parser
     }) >> cast
 
   private val regexAlias =
-    s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_]*""".stripMargin
+    s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_.]*""".stripMargin
 
   def alias: PackratParser[Alias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => Alias(b) }
 

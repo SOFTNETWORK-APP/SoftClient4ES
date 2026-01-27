@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.scalatest
 
+import app.softnetwork.common.UrlValidator
 import app.softnetwork.concurrent.scalatest.CompletionTestKit
 import app.softnetwork.serialization.commonFormats
 import com.typesafe.config.{Config, ConfigFactory}
@@ -32,10 +33,20 @@ import org.slf4j.Logger
 import scala.io.Source
 import scala.util.Try
 
-trait ElasticRestClientTestKit extends CompletionTestKit { _: { def log: Logger } =>
+trait ElasticRestClientTestKit extends CompletionTestKit with UrlValidator {
+  _: { def log: Logger } =>
   implicit def formats: Formats = commonFormats
 
   def elasticURL: String
+
+  lazy val elasticPort: Int = {
+    val uri = validateUrl(elasticURL)
+    require(
+      uri.isSuccess,
+      s"Elastic URL $elasticURL is not valid"
+    )
+    uri.getPort
+  }
 
   lazy val elasticConfig: Config = ConfigFactory
     .parseString(elasticConfigAsString)
@@ -45,7 +56,10 @@ trait ElasticRestClientTestKit extends CompletionTestKit { _: { def log: Logger 
     s"""
        |elastic {
        |  credentials {
-       |    url = "$elasticURL"
+       |    port = $elasticPort
+       |  }
+       |  watcher {
+       |    port = $elasticPort
        |  }
        |  multithreaded     = false
        |  discovery-enabled = false
