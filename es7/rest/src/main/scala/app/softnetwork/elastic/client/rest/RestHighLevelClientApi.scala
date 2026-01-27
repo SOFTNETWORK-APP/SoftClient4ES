@@ -39,7 +39,7 @@ import app.softnetwork.elastic.sql.schema.{
   TopHitsTransformAggregation,
   TransformState
 }
-import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
@@ -1838,11 +1838,17 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
       operation = "createPipeline",
       retryable = false
     )(
-      request = new PutPipelineRequest(
-        pipelineName,
-        new BytesArray(pipelineDefinition),
-        XContentType.JSON
-      )
+      request = {
+        val req = new PutPipelineRequest(
+          pipelineName,
+          new BytesArray(pipelineDefinition),
+          XContentType.JSON
+        )
+        logger.info(
+          s"Creating Ingest Pipeline '$pipelineName':\n${Strings.toString(req, true, true)}"
+        )
+        req
+      }
     )(
       executor = req => apply().ingest().putPipeline(req, RequestOptions.DEFAULT)
     )
@@ -2252,13 +2258,15 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
       retryable = false
     )(
       request = {
-        new PutPolicyRequest(
+        val req = new PutPolicyRequest(
           policy.name,
           policy.policyType.name.toLowerCase,
           policy.indices.asJava,
           policy.matchField,
           policy.enrichFields.asJava
         )
+        logger.info(s"Creating Enrich Policy ${policy.name}:\n${Strings.toString(req, true, true)}")
+        req
       }
     )(
       executor = req => apply().enrich().putPolicy(req, RequestOptions.DEFAULT)
@@ -2308,6 +2316,33 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
     config: schema.TransformConfig,
     start: Boolean
   ): result.ElasticResult[Boolean] = {
+    /*executeRestAction(
+      operation = "createTransform",
+      retryable = false
+    )(request = {
+      implicit val timestamp: Long = System.currentTimeMillis()
+      implicit val context: PainlessContextType = PainlessContextType.Transform
+      val json: String = config.node
+      logger.info(s"Creating transform: ${config.id} with definition:\n$json")
+      val req = new Request(
+        "PUT",
+        s"/_transform/${config.id}"
+      )
+      req.setJsonEntity(json)
+      req
+    })(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp =>
+        resp.getStatusLine.getStatusCode match {
+          case 200 | 201 =>
+            true
+
+          case code =>
+            logger.error(s"❌ Unexpected response code for [${config.id}]: $code")
+            false
+        }
+    )*/
     executeRestAction(
       operation = "createTransform",
       retryable = false
@@ -2318,6 +2353,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
         val conf = convertToElasticTransformConfig(config)
         val req = new PutTransformRequest(conf)
         req.setDeferValidation(false)
+        logger.info(s"Creating Transform ${config.id} :\n${Strings.toString(conf, true, true)}")
         req
       }
     )(
@@ -2546,6 +2582,41 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
           )
         }
       }
+    )
+  }
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "scheduleNow",
+      retryable = false
+    )(
+      request = {
+        val req = new Request(
+          "POST",
+          s"/_transform/$transformId/_schedule_now"
+        )
+        req.setJsonEntity("{}")
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp =>
+        resp.getStatusLine.getStatusCode match {
+          case 200 | 201 =>
+            logger.info(s"✅ Transform [$transformId] scheduled for immediate execution")
+            true
+
+          case 409 =>
+            logger.warn(s"⚠️ Transform [$transformId] is already running")
+            true
+
+          case code =>
+            logger.error(s"❌ Unexpected response code for [$transformId]: $code")
+            false
+        }
     )
   }
 }

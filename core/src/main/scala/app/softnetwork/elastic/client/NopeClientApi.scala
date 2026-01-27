@@ -424,4 +424,9 @@ trait NopeClientApi extends ElasticClientApi {
     transformId: String
   ): ElasticResult[Option[schema.TransformStats]] =
     ElasticSuccess(None)
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
 }

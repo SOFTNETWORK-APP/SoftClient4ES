@@ -24,7 +24,7 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.sql.schema.{TransformConfig, TransformCreationStatus, TransformStats}
 
-trait TransformApi extends ElasticClientHelpers {
+trait TransformApi extends ElasticClientHelpers { _: VersionApi =>
 
   /** Create a transform with the given configuration. If start is true, the transform will be
     * started immediately after creation.
@@ -153,6 +153,49 @@ trait TransformApi extends ElasticClientHelpers {
     }
   }
 
+  def scheduleTransformNow(transformId: String): ElasticResult[Boolean] = {
+    // Implementation depends on Elasticsearch capabilities; placeholder here
+    val elasticsearchVersion = version match {
+      case ElasticSuccess(version) => version
+      case ElasticFailure(error) =>
+        val failure = s"Cannot schedule transform [$transformId] to run now: " +
+          s"failed to get Elasticsearch version: ${error.message}"
+        logger.error(s"❌ $failure")
+        return ElasticFailure(
+          ElasticError(
+            message = failure,
+            cause = Some(error),
+            statusCode = error.statusCode,
+            operation = Some("scheduleNow")
+          )
+        )
+    }
+    if (!ElasticsearchVersion.supportsScheduleTransformNow(elasticsearchVersion)) {
+      val failure = s"Cannot schedule transform [$transformId] to run now: " +
+        s"Elasticsearch version $elasticsearchVersion does not support latest transform features."
+      logger.error(s"❌ $failure")
+      return ElasticFailure(
+        ElasticError(
+          message = failure,
+          statusCode = Some(400),
+          operation = Some("scheduleNow")
+        )
+      )
+    }
+    logger.info(s"Scheduling transform [$transformId] to run now...")
+    executeScheduleTransformNow(transformId) match {
+      case success @ ElasticSuccess(true) =>
+        logger.info(s"✅ Transform [$transformId] scheduled to run now successfully.")
+        success
+      case success @ ElasticSuccess(false) =>
+        logger.warn(s"⚠️ Transform [$transformId] could not be scheduled to run now.")
+        success
+      case failure @ ElasticFailure(error) =>
+        logger.error(s"❌ Failed to schedule transform [$transformId] to run now: ${error.message}")
+        failure
+    }
+  }
+
   private[client] def executeCreateTransform(
     config: TransformConfig,
     start: Boolean
@@ -175,4 +218,7 @@ trait TransformApi extends ElasticClientHelpers {
     transformId: String
   ): ElasticResult[Option[TransformStats]]
 
+  private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean]
 }

@@ -1407,6 +1407,11 @@ class MetricsElasticClient(
       delegate.getTransformStats(transformId)
     }
 
+  override def scheduleTransformNow(transformId: String): ElasticResult[Boolean] =
+    measureResult("scheduleNow") {
+      delegate.scheduleTransformNow(transformId)
+    }
+
   // ==================== Enrich policy (delegate) ====================
 
   override def createEnrichPolicy(policy: schema.EnrichPolicy): ElasticResult[Boolean] =

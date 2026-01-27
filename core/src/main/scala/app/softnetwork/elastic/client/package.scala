@@ -19,8 +19,11 @@ package app.softnetwork.elastic
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.query.SQLAggregation
+import com.typesafe.scalalogging.LazyLogging
 import org.slf4j.Logger
 
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
@@ -54,11 +57,117 @@ package object client extends SerializationApi {
     aggregations: Map[String, ClientAggregation]
   )
 
+  sealed trait ElasticAuthMethod
+
+  case object BasicAuth extends ElasticAuthMethod
+  case object ApiKeyAuth extends ElasticAuthMethod
+  case object BearerTokenAuth extends ElasticAuthMethod
+  case object NoAuth extends ElasticAuthMethod
+
+  object ElasticAuthMethod {
+    def fromCredentials(credentials: ElasticCredentials): Option[ElasticAuthMethod] = {
+      if (credentials.apiKey.exists(_.nonEmpty)) {
+        Some(ApiKeyAuth)
+      } else if (credentials.bearerToken.exists(_.nonEmpty)) {
+        Some(BearerTokenAuth)
+      } else if (credentials.username.nonEmpty && credentials.password.nonEmpty) {
+        Some(BasicAuth)
+      } else {
+        None
+      }
+    }
+
+    def apply(method: String): Option[ElasticAuthMethod] = method.toLowerCase match {
+      case "basic"  => Some(BasicAuth)
+      case "apikey" => Some(ApiKeyAuth)
+      case "bearer" => Some(BearerTokenAuth)
+      case "noauth" => Some(NoAuth)
+      case _        => None
+    }
+  }
+
+  /** Elastic connection credentials
+    * @param scheme
+    *   - the connection scheme (http or https)
+    * @param host
+    *   - the elasticsearch host
+    * @param port
+    *   - the elasticsearch port
+    * @param method
+    *   - the authentication method (basic, apikey, bearer)
+    * @param username
+    *   - the elasticsearch username
+    * @param password
+    *   - the elasticsearch password
+    * @param apiKey
+    *   - the elasticsearch api key
+    * @param bearerToken
+    *   - the elasticsearch bearer token
+    */
   case class ElasticCredentials(
-    url: String = "http://localhost:9200",
+    scheme: String = "http",
+    host: String = "localhost",
+    port: Int = 9200,
+    method: Option[String] = None,
     username: String = "",
-    password: String = ""
-  )
+    password: String = "",
+    apiKey: Option[String] = None,
+    bearerToken: Option[String] = None
+  ) extends LazyLogging {
+    lazy val url = s"$scheme://$host:$port"
+
+    lazy val authMethod: Option[ElasticAuthMethod] = {
+      method.flatMap(ElasticAuthMethod(_)).orElse {
+        ElasticAuthMethod.fromCredentials(this)
+      }
+    }
+
+    /** Get encoded API Key for Authorization header */
+    lazy val encodedApiKey: Option[String] = {
+      apiKey.map { key =>
+        if (key.contains(":")) {
+          // Format "id:api_key" -> encode to Base64
+          Base64.getEncoder.encodeToString(key.getBytes(StandardCharsets.UTF_8))
+        } else {
+          // Already encoded
+          key
+        }
+      }
+    }
+
+    def isBasicAuth: Boolean = authMethod.contains(BasicAuth)
+
+    def isApiKeyAuth: Boolean = authMethod.contains(ApiKeyAuth)
+
+    def isBearerTokenAuth: Boolean = authMethod.contains(BearerTokenAuth)
+
+    /** Validate credentials based on selected auth method */
+    def validate(): Either[String, Unit] = {
+      authMethod match {
+        case Some(BasicAuth) =>
+          if (username.isEmpty || password.isEmpty) {
+            Left("Basic auth requires non-empty username and password")
+          } else {
+            Right(())
+          }
+        case Some(ApiKeyAuth) =>
+          if (apiKey.forall(_.isEmpty)) {
+            Left("API Key auth requires non-empty apiKey")
+          } else {
+            Right(())
+          }
+        case Some(BearerTokenAuth) =>
+          if (bearerToken.forall(_.isEmpty)) {
+            Left("Bearer token auth requires non-empty bearerToken")
+          } else {
+            Right(())
+          }
+        case _ =>
+          Right(()) // No auth needed
+      }
+    }
+
+  }
 
   /** Elastic query wrapper
     * @param query

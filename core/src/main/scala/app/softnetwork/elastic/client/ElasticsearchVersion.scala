@@ -167,4 +167,11 @@ object ElasticsearchVersion {
   def supportsMaterializedView(version: String): Boolean = {
     supportsEnrich(version) && supportsLatestTransform(version)
   }
+
+  /** Check if scheduling transform to run now is supported (ES >= 8.0)
+    */
+  def supportsScheduleTransformNow(version: String): Boolean = {
+    isAtLeast(version, 8, 7)
+  }
+
 }

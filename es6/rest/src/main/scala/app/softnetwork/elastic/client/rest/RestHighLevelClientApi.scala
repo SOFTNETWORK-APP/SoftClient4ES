@@ -2031,4 +2031,15 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
         statusCode = Some(501)
       )
     )
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Transform schedule now not implemented for Rest client",
+        operation = Some("ScheduleNow"),
+        statusCode = Some(501)
+      )
+    )
 }

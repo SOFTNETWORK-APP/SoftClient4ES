@@ -737,24 +737,24 @@ package object schema {
 
     def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
       val node = mapper.createObjectNode()
-      node.put("name", name)
-      node.put("type", policyType.name)
+      val policy = mapper.createObjectNode()
       val indicesNode = mapper.createArrayNode()
       indices.foreach { index =>
         indicesNode.add(index)
         ()
       }
-      node.set("indices", indicesNode)
-      node.put("match_field", matchField)
+      policy.set("indices", indicesNode)
+      policy.put("match_field", matchField)
       val enrichFieldsNode = mapper.createArrayNode()
       enrichFields.foreach { field =>
         enrichFieldsNode.add(field)
         ()
       }
-      node.set("enrich_fields", enrichFieldsNode)
+      policy.set("enrich_fields", enrichFieldsNode)
       criteria.foreach { c =>
-        node.set("query", implicitly[JsonNode](c))
+        policy.set("query", implicitly[JsonNode](c))
       }
+      node.set(policyType.name.toLowerCase, policy)
       node
     }
   }
@@ -1674,7 +1674,7 @@ package object schema {
       Map(
         "name"    -> path,
         "type"    -> dataType.typeId,
-        "script"  -> script.map(_.script),
+        "script"  -> script.map(_.script).getOrElse("N/A"),
         "default" -> defaultValue.map(_.value).getOrElse(""),
         "notNull" -> notNull,
         "comment" -> comment.getOrElse(""),
@@ -2452,7 +2452,7 @@ package object schema {
           val colName = field.fieldAlias.map(_.alias).getOrElse(field.sourceField)
           val col = this.find(colName) match {
             case Some(c) if field.functions.isEmpty => c
-            case None =>
+            case _ =>
               Column(
                 name = colName,
                 dataType = field.out
@@ -2569,9 +2569,20 @@ package object schema {
       node
     }
 
-    lazy val indexAliases: Seq[TableAlias] = aliases.map { case (aliasName, value) =>
-      TableAlias(name, aliasName, value)
-    }.toSeq
+    lazy val indexAliases: Seq[TableAlias] = {
+      val temp = aliases.map { case (aliasName, value) =>
+        TableAlias(name, aliasName, value)
+      }.toSeq
+      // add default read only alias name for partitioned tables
+      /*if(isPartitioned){
+        temp :+ TableAlias(
+          table = name,
+          alias = name,
+          isWriteIndex = false
+        )
+      } else*/
+      temp
+    }
 
     lazy val indexTemplate: ObjectNode = {
       val node = mapper.createObjectNode()

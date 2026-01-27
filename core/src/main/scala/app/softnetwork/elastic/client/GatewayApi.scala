@@ -32,9 +32,11 @@ import app.softnetwork.elastic.client.result.{
   SQLResult,
   TableResult
 }
+import app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
+  AlterTableSetting,
   CopyInto,
   CreatePipeline,
   CreateTable,
@@ -44,6 +46,7 @@ import app.softnetwork.elastic.sql.query.{
   DescribeTable,
   DmlStatement,
   DqlStatement,
+  DropPipeline,
   DropTable,
   Insert,
   MultiSearch,
@@ -117,21 +120,20 @@ class DqlExecutor(api: ScrollApi with SearchApi, logger: Logger) extends Executo
       // SingleSearch → SCROLL
       // ============================
       case single: SingleSearch =>
-        single.limit match {
-          case Some(l) if l.offset.map(_.offset).getOrElse(0) > 0 =>
-            logger.info(s"▶ Executing classic search on index ${single.from.tables.mkString(",")}")
-            api.searchAsync(single) map {
-              case ElasticSuccess(results) =>
-                logger.info(s"✅ Search returned ${results.results.size} hits.")
-                ElasticSuccess(QueryStructured(results))
-              case ElasticFailure(err) =>
-                ElasticFailure(err.copy(operation = Some("dql")))
-            }
-          case _ =>
-            logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
-            Future.successful(
-              ElasticSuccess(QueryStream(api.scroll(single)))
-            )
+        if (single.limit.isDefined || single.fields.isEmpty) {
+          logger.info(s"▶ Executing classic search on index ${single.from.tables.mkString(",")}")
+          api.searchAsync(single) map {
+            case ElasticSuccess(results) =>
+              logger.info(s"✅ Search returned ${results.results.size} hits.")
+              ElasticSuccess(QueryStructured(results))
+            case ElasticFailure(err) =>
+              ElasticFailure(err.copy(operation = Some("dql")))
+          }
+        } else {
+          logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
+          Future.successful(
+            ElasticSuccess(QueryStream(api.scroll(single)))
+          )
         }
 
       // ============================
@@ -668,8 +670,8 @@ class TableExecutor(
                     - "creation_date"
                     - "provided_name"
                     - "version"
-                    - "default_pipeline"
-                    - "final_pipeline"
+//                    - "default_pipeline"
+//                    - "final_pipeline"
                 ),
                 diff
               ) match {
@@ -959,10 +961,11 @@ class TableExecutor(
     existingPipelineName: Option[String]
   ): ElasticResult[Option[List[PipelineDiff]]] = {
     updatedPipelineName match {
-      case Some(pipelineName) if pipelineName != existingPipelineName.getOrElse("") =>
-        logger.info(
-          s"🔄 ${pipelineType.name} ingesting pipeline for index ${table.name} has been updated to $pipelineName."
-        )
+      case Some(pipelineName) =>
+        if (pipelineName != existingPipelineName.getOrElse(""))
+          logger.info(
+            s"🔄 ${pipelineType.name} ingesting pipeline for index ${table.name} has been updated to $pipelineName."
+          )
         // load new pipeline
         api.getPipeline(pipelineName) match {
           case ElasticSuccess(maybePipeline) if maybePipeline.isDefined =>
@@ -1068,87 +1071,286 @@ class TableExecutor(
     diff: TableDiff
   ): Either[ElasticError, Boolean] = {
 
+    // create temporary index name
     val tmpIndex = s"${indexName}_tmp_${System.currentTimeMillis()}"
 
+    // handle all steps for migration
+    var steps = collection.mutable.Seq[() => Either[ElasticError, Boolean]]()
+
+    // handle tmp schema settings updates
+    var updatingSchema = newSchema
+
+    // handle target schema settings updates
+    var alterTableSettings: Seq[AlterTableSetting] = Seq()
+
+    // handle target schema pipelines creation
+    var createOrReplaceTablePipelines: collection.mutable.Seq[() => Either[ElasticError, Boolean]] =
+      collection.mutable.Seq()
+
+    // handle target schema pipelines deletion
+    var dropTmpPipelines: collection.mutable.Seq[() => Either[ElasticError, Boolean]] =
+      collection.mutable.Seq()
+
+    val (tmpDefaultPipelineName, tmpDefaultPipeline) =
+      migratePipeline(
+        indexName,
+        tmpIndex,
+        oldSchema.defaultPipeline,
+        newSchema.defaultPipeline,
+        diff
+      )
+
+    tmpDefaultPipelineName match {
+      case Some(pipelineName) =>
+        updatingSchema = updatingSchema.setDefaultPipelineName(pipelineName)
+        if (newSchema.defaultPipeline.processors.nonEmpty) {
+          alterTableSettings :+=
+            AlterTableSetting(
+              "default_pipeline",
+              sql.StringValue(newSchema.defaultPipeline.name)
+            )
+          createOrReplaceTablePipelines :+= { () =>
+            api
+              .pipeline(
+                CreatePipeline(
+                  name = newSchema.defaultPipeline.name,
+                  pipelineType = newSchema.defaultPipeline.pipelineType,
+                  ifNotExists = false,
+                  orReplace = true,
+                  processors = newSchema.defaultPipeline.processors
+                )
+              )
+              .toEither
+          }
+          dropTmpPipelines :+= { () =>
+            api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
+          }
+        }
+      case None => // do Nothing
+    }
+
+    val (tmpFinalPipelineName, tmpFinalPipeline) =
+      migratePipeline(
+        indexName,
+        tmpIndex,
+        oldSchema.finalPipeline,
+        newSchema.finalPipeline,
+        diff
+      )
+
+    tmpFinalPipelineName match {
+      case Some(pipelineName) =>
+        updatingSchema = updatingSchema.setFinalPipelineName(pipelineName)
+        if (newSchema.finalPipeline.processors.nonEmpty) {
+          alterTableSettings :+=
+            AlterTableSetting(
+              "final_pipeline",
+              sql.StringValue(newSchema.finalPipeline.name)
+            )
+          createOrReplaceTablePipelines :+= { () =>
+            api
+              .pipeline(
+                CreatePipeline(
+                  name = newSchema.finalPipeline.name,
+                  pipelineType = newSchema.finalPipeline.pipelineType,
+                  ifNotExists = false,
+                  orReplace = true,
+                  processors = newSchema.finalPipeline.processors
+                )
+              )
+              .toEither
+          }
+          dropTmpPipelines :+= { () =>
+            api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
+          }
+        }
+      case None => // do Nothing
+    }
+
     // migrate index with updated schema
-    val migrate: ElasticResult[Boolean] =
-      api.performMigration(
-        index = indexName,
-        tempIndex = tmpIndex,
-        mapping = newSchema.indexMappings,
-        settings = newSchema.indexSettings,
-        aliases = newSchema.indexAliases
-      ) match {
-        case ElasticFailure(err) =>
-          logger.error(s"❌ Failed to perform migration for index $indexName: ${err.message}")
-          api.rollbackMigration(
+    val migrate: () => Either[ElasticError, Boolean] =
+      () =>
+        {
+          api.performMigration(
             index = indexName,
             tempIndex = tmpIndex,
-            originalMapping = oldSchema.indexMappings,
-            originalSettings = oldSchema.indexSettings,
-            originalAliases = oldSchema.indexAliases
+            mapping = updatingSchema.indexMappings,
+            settings = updatingSchema.indexSettings,
+            aliases = updatingSchema.indexAliases
           ) match {
-            case ElasticSuccess(_) =>
-              logger.info(s"✅ Rollback of migration for index $indexName completed successfully.")
-              ElasticFailure(err.copy(operation = Some("schema")))
-            case ElasticFailure(rollbackErr) =>
-              logger.error(
-                s"❌ Failed to rollback migration for index $indexName: ${rollbackErr.message}"
+            case ElasticFailure(err) =>
+              logger.error(s"❌ Failed to perform migration for index $indexName: ${err.message}")
+              api.rollbackMigration(
+                index = indexName,
+                tempIndex = tmpIndex,
+                originalMapping = oldSchema.indexMappings,
+                originalSettings = oldSchema.indexSettings,
+                originalAliases = oldSchema.indexAliases
+              ) match {
+                case ElasticSuccess(_) =>
+                  logger.info(
+                    s"✅ Rollback of migration for index $indexName completed successfully."
+                  )
+                  ElasticFailure(err.copy(operation = Some("schema")))
+                case ElasticFailure(rollbackErr) =>
+                  logger.error(
+                    s"❌ Failed to rollback migration for index $indexName: ${rollbackErr.message}"
+                  )
+                  ElasticFailure(
+                    ElasticError(
+                      message =
+                        s"Migration failed: ${err.message}. Rollback failed: ${rollbackErr.message}",
+                      statusCode = Some(500),
+                      operation = Some("schema")
+                    )
+                  )
+              }
+
+            case success @ ElasticSuccess(_) =>
+              logger.info(
+                s"🔄 Migration performed successfully for index $indexName to temporary index $tmpIndex."
               )
-              ElasticFailure(
+              success
+          }
+        }.toEither
+
+    val updateTableSettings =
+      () => {
+        if (alterTableSettings.nonEmpty) {
+          logger.info(
+            s"🔧 Applying $indexName new pipeline settings [${alterTableSettings.map(_.sql).mkString(", ")}]."
+          )
+          val schema = updatingSchema.merge(alterTableSettings)
+          api
+            .updateSettings(
+              indexName,
+              schema
+                .copy(settings = schema.settings - "number_of_shards" - "number_of_replicas")
+                .indexSettings
+            )
+            .toEither
+        } else Right(false)
+      }
+
+    steps ++= Seq(
+      tmpDefaultPipeline,
+      tmpFinalPipeline,
+      migrate
+    ) ++ (createOrReplaceTablePipelines :+ updateTableSettings) ++ dropTmpPipelines
+
+    steps.foldLeft(Right(true): Either[ElasticError, Boolean]) {
+      case (Left(err), _) => Left(err)
+      case (_, step)      => step()
+    }
+  }
+
+  private def migratePipeline(
+    indexName: String,
+    tmpIndexName: String,
+    oldPipeline: IngestPipeline,
+    newPipeline: IngestPipeline,
+    diff: TableDiff
+  ): (Option[String], () => Either[ElasticError, Boolean]) = {
+    if (oldPipeline.pipelineType != newPipeline.pipelineType) {
+      logger.error(
+        s"❌ Cannot change pipeline type from ${oldPipeline.pipelineType.name} to ${newPipeline.pipelineType.name} for index $indexName."
+      )
+      return (
+        None,
+        () =>
+          Left(
+            ElasticError(
+              message =
+                s"Cannot change pipeline type from ${oldPipeline.pipelineType.name} to ${newPipeline.pipelineType.name} for index $indexName.",
+              statusCode = Some(400),
+              operation = Some("schema")
+            )
+          )
+      )
+    }
+    if (oldPipeline.name != newPipeline.name) {
+      logger.info(
+        s"🔄 ${oldPipeline.pipelineType.name} Ingesting pipeline for index $indexName has been updated to ${newPipeline.name}."
+      )
+      // create updated default pipeline
+      val step: () => Either[ElasticError, Boolean] = { () =>
+        api
+          .pipeline(
+            CreatePipeline(
+              name = newPipeline.name,
+              pipelineType = newPipeline.pipelineType,
+              ifNotExists = false,
+              orReplace = true,
+              processors = newPipeline.processors
+            )
+          )
+          .toEither
+          .flatMap { result =>
+            if (result) {
+              logger.info(
+                s"🔧 Created updated ${oldPipeline.pipelineType.name} ingesting pipeline ${newPipeline.name} for index $tmpIndexName."
+              )
+              Right(result)
+            } else {
+              val error =
                 ElasticError(
                   message =
-                    s"Migration failed: ${err.message}. Rollback failed: ${rollbackErr.message}",
+                    s"Failed to create ${oldPipeline.pipelineType.name} ingesting pipeline ${newPipeline.name}.",
                   statusCode = Some(500),
                   operation = Some("schema")
                 )
-              )
+              logger.error(s"❌ ${error.message}")
+              Left(error)
+            }
           }
-
-        case success @ ElasticSuccess(_) =>
-          logger.info(
-            s"🔄 Migration performed successfully for index $indexName to temporary index $tmpIndex."
-          )
-          success
       }
-
-    val defaultPipelineCreateOrUpdate: ElasticResult[Boolean] =
-      if (diff.defaultPipeline.nonEmpty) {
-        newSchema.defaultPipelineName match {
-          case Some(pipelineName) =>
-            logger.info(
-              s"🔧 Updating default ingesting pipeline for index $indexName to $pipelineName."
-            )
-            api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Default))
-          case None =>
-            val pipelineName = newSchema.defaultPipeline.name
-            api.pipeline(
-              diff.createPipeline(pipelineName, IngestPipelineType.Default)
-            )
-        }
-      } else ElasticSuccess(true)
-
-    val finalPipelineCreateOrUpdate: ElasticResult[Boolean] =
-      if (diff.finalPipeline.nonEmpty) {
-        newSchema.finalPipelineName match {
-          case Some(pipelineName) =>
-            logger.info(
-              s"🔧 Updating final ingesting pipeline for index $indexName to $pipelineName."
-            )
-            api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Final))
-          case None =>
-            val pipelineName = newSchema.finalPipeline.name
-            api.pipeline(
-              diff.createPipeline(pipelineName, IngestPipelineType.Final)
-            )
-        }
-      } else ElasticSuccess(true)
-
-    for {
-      _    <- migrate.toEither
-      _    <- defaultPipelineCreateOrUpdate.toEither
-      last <- finalPipelineCreateOrUpdate.toEither
-    } yield last
+      (None, step)
+    } else {
+      diff.alterPipeline(oldPipeline.name, oldPipeline.pipelineType) match {
+        case Some(alterPipeline) =>
+          val tmpDefaultPipeline =
+            s"${tmpIndexName}_ddl_${oldPipeline.pipelineType.name.toLowerCase}_pipeline"
+          logger.warn(
+            s"⚠️ Default ingesting pipeline ${oldPipeline.name} for index $indexName has been updated. Creating a temporary pipeline $tmpDefaultPipeline that will be used for reindex."
+          )
+          val step = () => {
+            // create updated default pipeline
+            val mergedDefaultPipeline = oldPipeline.merge(alterPipeline.statements)
+            api
+              .pipeline(
+                CreatePipeline(
+                  name = tmpDefaultPipeline,
+                  pipelineType = oldPipeline.pipelineType,
+                  ifNotExists = false,
+                  orReplace = true,
+                  processors = mergedDefaultPipeline.processors
+                )
+              )
+              .toEither
+              .flatMap { result =>
+                if (result) {
+                  logger.info(
+                    s"🔧 Created updated ${oldPipeline.pipelineType.name} ingesting pipeline $tmpDefaultPipeline for index $tmpIndexName."
+                  )
+                  Right(result)
+                } else {
+                  val error =
+                    ElasticError(
+                      message =
+                        s"Failed to create ${oldPipeline.pipelineType.name} ingesting pipeline $tmpDefaultPipeline.",
+                      statusCode = Some(500),
+                      operation = Some("schema")
+                    )
+                  logger.error(s"❌ ${error.message}")
+                  Left(error)
+                }
+              }
+          }
+          (Some(tmpDefaultPipeline), step)
+        case _ => // no changes to default pipeline
+          (None, () => Right(false))
+      }
+    }
   }
 }
 

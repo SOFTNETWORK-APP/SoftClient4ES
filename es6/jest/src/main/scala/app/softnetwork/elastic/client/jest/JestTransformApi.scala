@@ -20,7 +20,7 @@ import app.softnetwork.elastic.client.{result, TransformApi}
 import app.softnetwork.elastic.sql.schema
 
 trait JestTransformApi extends TransformApi with JestClientHelpers {
-  _: JestClientCompanion =>
+  _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreateTransform(
     config: schema.TransformConfig,
@@ -77,6 +77,17 @@ trait JestTransformApi extends TransformApi with JestClientHelpers {
       result.ElasticError(
         message = "Get Transform stats not implemented for Jest client",
         operation = Some("GetTransformStats"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): result.ElasticResult[Boolean] =
+    result.ElasticFailure(
+      result.ElasticError(
+        message = "Schedule Transform now not implemented for Jest client",
+        operation = Some("ScheduleNow"),
         statusCode = Some(501)
       )
     )

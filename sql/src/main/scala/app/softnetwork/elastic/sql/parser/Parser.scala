@@ -76,7 +76,7 @@ object Parser
     case s        => MultiSearch(s)
   }
 
-  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_]*""".r
+  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_.]*""".r
 
   private val lparen: Parser[String] = "("
   private val rparen: Parser[String] = ")"
@@ -288,8 +288,8 @@ object Parser
             ct,
             opts
           )
-        case cols: List[Column] =>
-          Column(name, dt, None, cols, dv, nn, ct, opts)
+        case cols: List[_] =>
+          Column(name, dt, None, cols.asInstanceOf[List[Column]], dv, nn, ct, opts)
       }
     }
 
@@ -444,8 +444,9 @@ object Parser
     }
 
   def refreshMaterializedView: PackratParser[RefreshMaterializedView] =
-    ("REFRESH" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ view =>
-      RefreshMaterializedView(view)
+    ("REFRESH" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ~ opt("WITH" ~ "SCHEDULE" ~ "NOW") ^^ {
+      case _ ~ ie ~ view ~ wn =>
+        RefreshMaterializedView(view, ifExists = ie, scheduleNow = wn.isDefined)
     }
 
   def showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
@@ -593,7 +594,7 @@ object Parser
     }
 
   def alterTableMapping: PackratParser[AlterTableMapping] =
-    (("SET" | "ADD") ~ "MAPPING") ~ start ~> option <~ end ^^ { opt =>
+    (("SET" | "ADD") ~ "MAPPING") ~ option ^^ { case _ ~ opt =>
       AlterTableMapping(opt._1, opt._2)
     }
 
@@ -601,7 +602,7 @@ object Parser
     ("DROP" ~ "MAPPING") ~> ident ^^ { m => DropTableMapping(m) }
 
   def alterTableSetting: PackratParser[AlterTableSetting] =
-    (("SET" | "ADD") ~ "SETTING") ~ start ~> option <~ end ^^ { opt =>
+    (("SET" | "ADD") ~ "SETTING") ~ option ^^ { case _ ~ opt =>
       AlterTableSetting(opt._1, opt._2)
     }
 
@@ -609,7 +610,7 @@ object Parser
     ("DROP" ~ "SETTING") ~> ident ^^ { m => DropTableSetting(m) }
 
   def alterTableAlias: PackratParser[AlterTableAlias] =
-    (("SET" | "ADD") ~ "ALIAS") ~ start ~> option <~ end ^^ { opt =>
+    (("SET" | "ADD") ~ "ALIAS") ~ option ^^ { case _ ~ opt =>
       AlterTableAlias(opt._1, opt._2)
     }
 

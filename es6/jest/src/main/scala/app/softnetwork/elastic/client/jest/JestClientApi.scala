@@ -49,33 +49,3 @@ trait JestClientApi
     with JestEnrichPolicyApi
     with JestTransformApi
     with JestClientCompanion
-
-object JestClientApi extends SerializationApi {
-
-  implicit def requestToSearch(elasticSelect: ElasticSearchRequest): Search = {
-    import elasticSelect._
-    val search = new Search.Builder(query)
-    for (source <- sources) search.addIndex(source)
-    search.build()
-  }
-
-  implicit class SearchElasticQuery(elasticQuery: ElasticQuery) {
-    def search: (Search, String) = {
-      import elasticQuery._
-      val _search = new Search.Builder(query)
-      for (indice <- indices) _search.addIndex(indice)
-      for (t      <- types) _search.addType(t)
-      (_search.build(), query)
-    }
-  }
-
-  implicit class SearchResults(searchResult: SearchResult) {
-    def apply[M: Manifest]()(implicit formats: Formats): List[M] = {
-      searchResult.getSourceAsStringList.asScala.map(source => serialization.read[M](source)).toList
-    }
-  }
-
-  implicit class JestBulkAction(bulkableAction: BulkableAction[DocumentResult]) {
-    def index: String = bulkableAction.getIndex
-  }
-}

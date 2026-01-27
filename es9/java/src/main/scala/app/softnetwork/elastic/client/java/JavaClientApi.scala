@@ -72,6 +72,7 @@ import co.elastic.clients.elasticsearch.transform.{
   DeleteTransformRequest,
   GetTransformStatsRequest,
   PutTransformRequest,
+  ScheduleNowTransformRequest,
   StartTransformRequest,
   StopTransformRequest
 }
@@ -1997,16 +1998,20 @@ trait JavaClientEnrichPolicyApi extends EnrichPolicyApi with JavaClientHelpers {
       operation = "createEnrichPolicy",
       index = None,
       retryable = false
-    )(
-      apply()
-        .enrich()
-        .putPolicy(
-          new PutPolicyRequest.Builder()
-            .name(policy.name)
-            .withJson(new StringReader(policy.node))
-            .build()
-        )
-    )(resp => resp.acknowledged())
+    ) {
+      val json: String = policy.node
+      logger.info(s"Creating enrich policy: ${policy.name} with definition:\n$json")
+      val req =
+        apply()
+          .enrich()
+          .putPolicy(
+            new PutPolicyRequest.Builder()
+              .name(policy.name)
+              .withJson(new StringReader(json))
+              .build()
+          )
+      req
+    }(resp => resp.acknowledged())
   }
 
   override private[client] def executeDeleteEnrichPolicy(
@@ -2061,21 +2066,17 @@ trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
     ) {
       implicit val timestamp: Long = System.currentTimeMillis()
       implicit val context: PainlessContextType = PainlessContextType.Transform
+      val json: String = config.node
+      logger.info(s"Creating transform: ${config.id} with definition:\n$json")
       apply()
         .transform()
         .putTransform(
           new PutTransformRequest.Builder()
             .transformId(config.id)
-            .withJson(new StringReader(convertToElasticTransformConfig(config)))
+            .withJson(new StringReader(json))
             .build()
         )
     }(resp => resp.acknowledged())
-
-  private def convertToElasticTransformConfig(
-    config: schema.TransformConfig
-  )(implicit criteriaToNode: Criteria => JsonNode): String = {
-    config.node
-  }
 
   override private[client] def executeDeleteTransform(
     transformId: String,
@@ -2160,11 +2161,29 @@ trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
             .flatMap(c => Option(c.last()))
             .map(_.checkpoint()),
           operationsBehind = Option(stats.checkpointing())
-            .flatMap(info => Option(info.operationsBehind().longValue()))
+            .flatMap(info => Option(info.operationsBehind()).map(_.longValue()))
             .getOrElse(0L),
           processingTimeMs = stats.stats().processingTimeInMs()
         )
       }
       statsOpt
     }
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "scheduleNow",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .scheduleNowTransform(
+          new ScheduleNowTransformRequest.Builder()
+            .transformId(transformId)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
 }

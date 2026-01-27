@@ -1832,6 +1832,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Option[schema.TransformStats]] =
     delegate.getTransformStats(transformId)
 
+  override def scheduleTransformNow(transformId: String): ElasticResult[Boolean] =
+    delegate.scheduleTransformNow(transformId)
+
   override private[client] def executeCreateTransform(
     config: schema.TransformConfig,
     start: Boolean
@@ -1858,6 +1861,12 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     transformId: String
   ): ElasticResult[Option[schema.TransformStats]] =
     delegate.executeGetTransformStats(transformId)
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    delegate.executeScheduleTransformNow(transformId)
+
   // ==================== Enrich policy (delegate) ====================
 
   override def createEnrichPolicy(policy: schema.EnrichPolicy): ElasticResult[Boolean] =

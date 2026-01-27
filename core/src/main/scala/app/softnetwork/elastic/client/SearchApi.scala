@@ -358,7 +358,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           single,
           collection.immutable.Seq(single.sources: _*)
         )
-        singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
+        if (
+          single.windowFunctions.exists(
+            _.isWindowing
+          ) && single.groupBy.isEmpty && (!single.select.fields.forall(
+            _.isAggregation
+          ) || single.scriptFields.nonEmpty)
+        )
+          Future.successful(searchWithWindowEnrichment(single))
+        else
+          singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
       case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
@@ -1147,10 +1156,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   // ========================================================================
 
   /** Search with window function enrichment
-    *
+    * {{{
     * Strategy:
-    *   1. Execute aggregation query to compute window values 2. Execute main query (without window
-    *      functions) 3. Enrich results with window values
+    *   1. Execute aggregation query to compute window values
+    *   2. Execute main query (without window functions)
+    *   3. Enrich results with window values
+    * }}}
     */
   private def searchWithWindowEnrichment(
     request: SingleSearch

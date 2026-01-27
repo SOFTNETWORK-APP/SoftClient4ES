@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.{IngestTimestampValue, StringValue}
+import app.softnetwork.elastic.sql.{IngestTimestampValue, StringValue, StringValues}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
@@ -1282,6 +1282,48 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           "BOOLEAN",
           Some(true)
         ))
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE MAPPINGS" in {
+    val sql = """ALTER TABLE orders (
+                |  ADD COLUMN _last_updated TIMESTAMP DEFAULT _ingest.timestamp,
+                |  SET MAPPING _meta.materialized_views = ["orders_with_customers_mv"]
+                |)""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    println(stmt.sql)
+    stmt.sql.replaceAll("\t", "  ") shouldBe sql
+    stmt match {
+      case AlterTable("orders", _, stmts) =>
+        stmts.length shouldBe 2
+        stmts.collect { case AddColumn(c, false) => c.name } should contain("_last_updated")
+        stmts.collect { case AlterTableMapping(k, v) => (k, v) } should contain(
+          ("_meta.materialized_views", StringValues(Seq(StringValue("orders_with_customers_mv"))))
+        )
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE SETTINGS" in {
+    val sql = """ALTER TABLE orders (
+                |  ADD COLUMN _last_updated TIMESTAMP DEFAULT _ingest.timestamp,
+                |  SET SETTING index.refresh_interval = "1s"
+                |)""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    println(stmt.sql)
+    stmt.sql.replaceAll("\t", "  ") shouldBe sql
+    stmt match {
+      case AlterTable("orders", _, stmts) =>
+        stmts.length shouldBe 2
+        stmts.collect { case AddColumn(c, false) => c.name } should contain("_last_updated")
+        stmts.collect { case AlterTableSetting(k, v) => (k, v) } should contain(
+          ("index.refresh_interval", StringValue("1s"))
+        )
       case _ => fail("Expected AlterTable")
     }
   }
