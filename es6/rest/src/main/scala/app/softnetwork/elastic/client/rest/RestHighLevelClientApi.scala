@@ -21,17 +21,21 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
-import app.softnetwork.elastic.client.result.{
-  ElasticError,
-  ElasticFailure,
-  ElasticResult,
-  ElasticSuccess
-}
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.{schema, ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.schema.{EnrichPolicy, TableAlias}
+import app.softnetwork.elastic.sql.schema.{
+  Delay,
+  EnrichPolicy,
+  TableAlias,
+  TransformTimeInterval,
+  WatcherExecutionState
+}
+import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.utils.CronIntervalCalculator
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
@@ -82,6 +86,22 @@ import org.elasticsearch.client.indices.{
   PutIndexTemplateRequest,
   PutMappingRequest
 }
+import org.elasticsearch.client.license.{
+  GetLicenseRequest,
+  GetLicenseResponse,
+  StartBasicRequest,
+  StartBasicResponse,
+  StartTrialRequest,
+  StartTrialResponse
+}
+import org.elasticsearch.client.watcher.{
+  DeleteWatchRequest,
+  DeleteWatchResponse,
+  GetWatchRequest,
+  GetWatchResponse,
+  PutWatchRequest,
+  PutWatchResponse
+}
 import org.elasticsearch.cluster.metadata.AliasMetaData
 import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
@@ -94,6 +114,8 @@ import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods
 
 import java.io.IOException
+import java.time.ZoneId
+import java.util.Date
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
@@ -121,13 +143,15 @@ trait RestHighLevelClientApi
     with RestHighLevelClientTemplateApi
     with RestHighLevelClientEnrichPolicyApi
     with RestHighLevelClientTransformApi
+    with RestHighLevelClientWatcherApi
+    with RestHighLevelClientLicenseApi
 
 /** Version API implementation for RestHighLevelClient
   * @see
   *   [[VersionApi]] for generic API documentation
   */
 trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientCompanion =>
   override private[client] def executeVersion(): ElasticResult[String] =
     executeRestLowLevelAction[String](
       operation = "version",
@@ -721,7 +745,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
   *   [[IndexApi]] for generic API documentation
   */
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion =>
   override private[client] def executeIndex(
     index: String,
     id: String,
@@ -791,7 +815,7 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
   *   [[UpdateApi]] for generic API documentation
   */
 trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion =>
   override private[client] def executeUpdate(
     index: String,
     id: String,
@@ -922,7 +946,7 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
   *   [[GetApi]] for generic API documentation
   */
 trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientCompanion =>
   override private[client] def executeGet(
     index: String,
     id: String
@@ -969,7 +993,7 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
   *   [[SearchApi]] for generic API documentation
   */
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
-  _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
+  _: ElasticConversion with RestHighLevelClientCompanion =>
 
   override implicit def singleSearchToJsonQuery(sqlSearch: SingleSearch)(implicit
     timestamp: Long,
@@ -1629,7 +1653,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 }
 
 trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -1688,7 +1712,7 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
 }
 
 trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 
@@ -1971,7 +1995,7 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
 // ==================== TRANSFORM API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
 
 trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateTransform(
     config: schema.TransformConfig,
@@ -2042,4 +2066,212 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
         statusCode = Some(501)
       )
     )
+}
+
+// ==================== WATCHER API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateWatcher(
+    watcher: schema.Watcher,
+    active: Boolean
+  ): result.ElasticResult[Boolean] =
+    executeRestAction[PutWatchRequest, PutWatchResponse, Boolean](
+      operation = "createWatcher",
+      index = None,
+      retryable = false
+    )(
+      request = {
+        implicit val timestamp: Long = System.currentTimeMillis()
+        val json = watcher
+          .copy(actions = watcher.actions.map { case (name, action) =>
+            name -> (action match {
+              case l: schema.LoggingAction =>
+                l.copy(foreach = None, maxIterations = None)
+              case w: schema.WebhookAction =>
+                w.copy(foreach = None, maxIterations = None)
+              case other => other
+            })
+          })
+          .node
+        logger.info(s"Creating Watcher ${watcher.id} :\n${sanitizeWatcherJson(json)}")
+        val req = new PutWatchRequest(
+          watcher.id,
+          new BytesArray(json),
+          XContentType.JSON
+        )
+        req.setActive(active)
+        req
+      }
+    )(
+      executor = req => apply().watcher().putWatch(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isCreated
+    )
+
+  override private[client] def executeDeleteWatcher(id: JSONQuery): ElasticResult[Boolean] =
+    executeRestAction[DeleteWatchRequest, DeleteWatchResponse, Boolean](
+      operation = "deleteWatcher",
+      index = None,
+      retryable = false
+    )(
+      request = new DeleteWatchRequest(id)
+    )(
+      executor = req => apply().watcher().deleteWatch(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isFound
+    )
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): result.ElasticResult[Option[schema.WatcherStatus]] =
+    executeRestAction[GetWatchRequest, GetWatchResponse, Option[schema.WatcherStatus]](
+      operation = "getWatcher",
+      index = None,
+      retryable = true
+    )(
+      request = new GetWatchRequest(id)
+    )(
+      executor = req => apply().watcher().getWatch(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        if (resp.isFound) {
+          // extract interval
+          val watchNode: JsonNode = resp.getSource.utf8ToString()
+          val interval: Option[TransformTimeInterval] = {
+            val triggerNode = watchNode.get("trigger")
+            if (triggerNode.has("schedule")) {
+              val scheduleNode = triggerNode.get("schedule")
+              if (scheduleNode.has("cron")) {
+                val cron = scheduleNode.get("cron").asText()
+                logger.info(s"Watcher $id has cron schedule: $cron")
+                CronIntervalCalculator.validateAndCalculate(cron) match {
+                  case Right(interval) =>
+                    val tuple = TransformTimeInterval.fromSeconds(interval._2)
+                    Some(
+                      Delay(
+                        timeUnit = tuple._1,
+                        interval = tuple._2
+                      )
+                    )
+                  case _ =>
+                    logger.warn(
+                      s"Watcher [$id] has invalid cron expression: $cron"
+                    )
+                    None
+                }
+              } else if (scheduleNode.has("interval")) {
+                val interval = scheduleNode.get("interval").asText()
+                logger.info(s"Watcher $id has interval schedule: $interval")
+                TransformTimeInterval(interval) match {
+                  case Some(ti) => Some(ti)
+                  case _ =>
+                    logger.warn(
+                      s"Watcher [$id] has invalid interval: $interval"
+                    )
+                    None
+                }
+              } else {
+                logger.info(s"Watcher $id has unknown schedule")
+                None
+              }
+            } else {
+              logger.info(s"Watcher $id does not have a schedule")
+              None
+            }
+          }
+
+          interval match {
+            case None =>
+              logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+            case Some(t) => // valid interval
+              logger.info(s"Watcher [$id] has schedule interval: $t")
+          }
+
+          Option(resp.getStatus).map { status =>
+            val version = resp.getVersion
+            val state = Option(status.state())
+            val active = state.exists(_.isActive)
+            import _root_.java.time.ZonedDateTime
+            val timestamp =
+              state
+                .map(s =>
+                  ZonedDateTime.ofInstant(
+                    new Date(s.getTimestamp.toInstant.getMillis).toInstant,
+                    ZoneId.of("UTC")
+                  )
+                )
+                .getOrElse(ZonedDateTime.now())
+            val activationState =
+              schema.WatcherActivationState(active = active, timestamp = timestamp)
+            schema.WatcherStatus(
+              id = id,
+              version = version,
+              activationState = activationState,
+              executionState =
+                Option(status.getExecutionState).map(es => WatcherExecutionState(es.name())),
+              lastChecked = Option(status.lastChecked()).map(lc =>
+                ZonedDateTime
+                  .ofInstant(new Date(lc.toInstant.getMillis).toInstant, ZoneId.of("UTC"))
+              ),
+              lastMetCondition = Option(status.lastMetCondition()).map(lmc =>
+                ZonedDateTime.ofInstant(
+                  new Date(lmc.toInstant.getMillis).toInstant,
+                  ZoneId.of("UTC")
+                )
+              ),
+              interval = interval
+            )
+          }
+        } else {
+          None
+        }
+      }
+    )
+}
+
+// ==================== LICENSE API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientLicenseApi extends LicenseApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] = {
+    executeRestAction[GetLicenseRequest, GetLicenseResponse, Option[String]](
+      operation = "licenseInfo",
+      retryable = true
+    )(
+      request = new GetLicenseRequest()
+    )(
+      executor = req => apply().license().getLicense(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => Option(resp.getLicenseDefinition)
+    )
+  }
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] = {
+    executeRestAction[StartBasicRequest, StartBasicResponse, Boolean](
+      operation = "enableBasicLicense",
+      retryable = false
+    )(
+      request = new StartBasicRequest(true)
+    )(
+      executor = req => apply().license().startBasic(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] = {
+    executeRestAction[StartTrialRequest, StartTrialResponse, Boolean](
+      operation = "enableTrialLicense",
+      retryable = false
+    )(
+      request = new StartTrialRequest(true)
+    )(
+      executor = req => apply().license().startTrial(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
 }

@@ -1,5 +1,3 @@
-[Back to index](README.md)
-
 # 📘 **DDL Statements — SQL Gateway for Elasticsearch**
 
 ---
@@ -14,6 +12,7 @@ It allows defining tables, schemas, pipelines, mappings, and settings using a re
 - **ingest pipelines** (default or user-defined)
 - **mappings** and **settings**
 - **metadata** (primary key, generated columns, comments, options)
+- **watchers** (scheduled monitoring and alerting)
 
 The DDL engine is:
 
@@ -122,6 +121,7 @@ CREATE TABLE docs (
 `FIELDS (...)` also enables the definition of **STRUCT** types, representing hierarchical data.
 
 **Example:**
+
 ```sql
 CREATE TABLE users (
   id INT NOT NULL,
@@ -174,7 +174,7 @@ CREATE TABLE store (
 	- `NOT NULL`
 	- `COMMENT`
 	- `OPTIONS`
-	- `SCRIPT AS` (except inside ARRAY<STRUCT>)
+	- `SCRIPT AS` (except inside ARRAY\<STRUCT>)
 - Multi-level nesting is supported.
 
 ---
@@ -342,6 +342,215 @@ DESCRIBE PIPELINE pipeline_name;
 
 ```sql
 DESCRIBE PIPELINE user_pipeline;
+```
+
+---
+
+## Watchers
+
+Watchers provide scheduled monitoring and alerting on Elasticsearch data.  
+A watcher consists of:
+
+- **Trigger** — scheduling (cron or interval)
+- **Input** — data source (search, simple payload, or none)
+- **Condition** — evaluation logic (always, compare, script)
+- **Actions** — what to do when condition is met (logging, webhook, etc.)
+
+---
+
+## CREATE WATCHER
+
+### Syntax
+
+```sql
+CREATE [OR REPLACE] WATCHER watcher_name AS
+  condition
+  TRIGGER { EVERY interval unit | AT SCHEDULE 'cron_expression' }
+  action_name AS (action_config) [, ...]
+  input_clause
+  [AND options]
+```
+
+---
+
+### Conditions
+
+| Condition Type | Syntax | Description |
+|----------------|--------|-------------|
+| `ALWAYS` | `ALWAYS` | Always triggers actions |
+| `NEVER` | `NEVER` | Never triggers (useful for testing) |
+| `WHEN` (compare) | `WHEN field operator value` | Compare field to value |
+| `WHEN` (script) | `WHEN SCRIPT 'source' USING LANG 'painless' WITH PARAMS (...) RETURNS TRUE` | Custom Painless condition |
+
+**Comparison Operators:** `>`, `>=`, `<`, `<=`, `=`, `!=`
+
+---
+
+### Triggers
+
+| Trigger Type | Syntax | Example |
+|--------------|--------|---------|
+| Interval | `EVERY n unit` | `EVERY 5 MINUTES` |
+| Cron | `AT SCHEDULE 'expression'` | `AT SCHEDULE '0 */5 * * * ?'` |
+
+**Supported units:** `SECOND(S)`, `MINUTE(S)`, `HOUR(S)`, `DAY(S)`, `WEEK(S)`, `MONTH(S)`
+
+---
+
+### Actions
+
+#### Logging Action
+
+```sql
+action_name AS (
+  logging = (
+    text = "message with {{ctx.payload.field}}",
+    level = "info"
+  ),
+  foreach = "ctx.payload.hits.hits",
+  max_iterations = 100
+)
+```
+
+#### Webhook Action
+
+```sql
+action_name AS (
+  webhook = (
+    scheme = "https",
+    host = "example.com",
+    port = 443,
+    method = "POST",
+    path = "/webhook",
+    headers = ("Content-Type" = "application/json"),
+    params = (watch_id = "{{ctx.watch_id}}"),
+    body = '{"message": "Alert: {{ctx.payload.value}}"}',
+    connection_timeout = "10s",
+    read_timeout = "30s"
+  ),
+  foreach = "ctx.payload.results",
+  max_iterations = 50
+)
+```
+
+---
+
+### Inputs
+
+| Input Type | Syntax | Description |
+|------------|--------|-------------|
+| None | `WITH NO INPUT` | No data loaded |
+| Simple | `WITH INPUT (key = value, ...)` | Static payload |
+| Search | `WITH INPUT AS SELECT * FROM index [WHERE condition]` | Query Elasticsearch |
+
+---
+
+### Examples
+
+#### Monitor error rate
+
+```sql
+CREATE OR REPLACE WATCHER high_error_rate AS
+  WHEN ctx.payload.hits.total > 100
+  TRIGGER EVERY 5 MINUTES
+  notify AS (
+    logging = (
+      text = "High error rate: {{ctx.payload.hits.total}} errors",
+      level = "error"
+    )
+  )
+  WITH INPUT AS SELECT * FROM logs-* WHERE level = 'ERROR'
+```
+
+#### Scheduled webhook with cron
+
+```sql
+CREATE OR REPLACE WATCHER daily_report AS
+  ALWAYS
+  TRIGGER AT SCHEDULE '0 0 9 * * ?'
+  send_report AS (
+    webhook = (
+      scheme = "https",
+      host = "api.example.com",
+      port = 443,
+      method = "POST",
+      path = "/reports",
+      body = '{"report_date": "{{ctx.execution_time}}"}'
+    )
+  )
+  WITH INPUT AS SELECT COUNT(*) FROM orders
+  AND (throttle_period = "1d")
+```
+
+#### Script condition with iteration
+
+```sql
+CREATE OR REPLACE WATCHER check_thresholds AS
+  WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' 
+    USING LANG 'painless' 
+    WITH PARAMS (threshold = 5) 
+    RETURNS TRUE
+  TRIGGER EVERY 1 HOUR
+  alert AS (
+    logging = (text = "Threshold exceeded for {{ctx.payload._value}}")
+  ),
+  webhook AS (
+    webhook = (
+      scheme = "http",
+      host = "localhost",
+      port = 8080,
+      method = "POST",
+      path = "/alert"
+    ),
+    foreach = "ctx.payload.keys",
+    max_iterations = 10
+  )
+  WITH INPUT (keys = ["key1", "key2", "key3", "key4", "key5", "key6"])
+```
+
+---
+
+## DROP WATCHER
+
+```sql
+DROP WATCHER [IF EXISTS] watcher_name;
+```
+
+Deletes the watcher and stops its execution.
+
+---
+
+## SHOW WATCHER STATUS
+
+```sql
+SHOW WATCHER STATUS watcher_name;
+```
+
+Returns:
+- activation state (active/inactive)
+- last execution time
+- last condition met time
+- execution statistics
+
+---
+
+## Watcher Options
+
+Options can be specified with `AND (...)`:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `throttle_period` | `STRING` | Minimum time between action executions (e.g., `"5m"`, `"1h"`) |
+| `metadata` | `OBJECT` | Custom metadata for the watcher |
+
+**Example:**
+```sql
+CREATE WATCHER my_watcher AS
+  ALWAYS
+  TRIGGER EVERY 1 MINUTE
+  log AS (logging = (text = "Hello"))
+  WITH NO INPUT
+  AND (throttle_period = "5m", metadata = (owner = "team-ops"))
 ```
 
 ---
@@ -580,7 +789,8 @@ Steps:
 | date_index_name      | ✔    | ✔    | ✔    | ✔    |
 | Generated scripts    | ✔    | ✔    | ✔    | ✔    |
 | STRUCT               | ✔    | ✔    | ✔    | ✔    |
-| ARRAY<STRUCT>        | ✔    | ✔    | ✔    | ✔    |
+| ARRAY\<STRUCT>       | ✔    | ✔    | ✔    | ✔    |
+| Watchers             | ✔    | ✔    | ✔    | ✔    |
 
 ---
 

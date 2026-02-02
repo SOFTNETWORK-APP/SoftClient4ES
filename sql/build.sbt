@@ -24,6 +24,6 @@ libraryDependencies ++= jacksonDependencies(elasticSearchVersion.value) ++
     "javax.activation" % "activation" % "1.1.1" % Test
   ) :+
   "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
-//  ("app.softnetwork.persistence" %% "persistence-core" % Versions.genericPersistence excludeAll(jacksonExclusions: _*)) :+
+  "com.github.alonsodomin.cron4s" %% "cron4s-core" % Versions.cron4s :+
   "org.scala-lang" % "scala-reflect" % scalaVersion.value :+
   "com.google.code.gson" % "gson" % Versions.gson % Test

@@ -16,9 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import com.fasterxml.jackson.databind.{DeserializationFeature, JsonNode, ObjectMapper}
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.scala.{ClassTagExtensions, DefaultScalaModule}
+import com.fasterxml.jackson.databind.JsonNode
 import org.json4s.{Extraction, Formats}
 
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDateTime}
@@ -27,13 +25,6 @@ import scala.util.Try
 import scala.jdk.CollectionConverters._
 
 trait ElasticConversion {
-  private[this] val mapper = new ObjectMapper() with ClassTagExtensions
-  mapper.registerModule(DefaultScalaModule)
-  mapper.registerModule(new JavaTimeModule())
-  //mapper.registerModule(new ParameterNamesModule())
-
-  // Ignore unknown properties during deserialization
-  mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
   def convertTo[T](map: Map[String, Any])(implicit m: Manifest[T], formats: Formats): T = {
     val jValue = Extraction.decompose(map)
@@ -809,4 +800,4 @@ trait ElasticConversion {
   }
 }
 
-object ElasticConversion extends ElasticConversion with SerializationApi
+object ElasticConversion extends ElasticConversion

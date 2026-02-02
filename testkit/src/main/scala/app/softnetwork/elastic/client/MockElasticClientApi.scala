@@ -25,8 +25,6 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
-import app.softnetwork.serialization._
-import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -39,8 +37,6 @@ trait MockElasticClientApi extends NopeClientApi {
   def elasticVersion: String
 
   protected lazy val logger: Logger = LoggerFactory getLogger getClass.getName
-
-  implicit def formats: Formats = commonFormats
 
   protected val elasticDocuments: ElasticDocuments = new ElasticDocuments() {}
 

@@ -11,12 +11,6 @@ import scala.util.{Failure, Success}
 
 class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConversion {
 
-  implicit val formats: Formats =
-    Serialization.formats(NoTypeHints) ++
-    JodaTimeSerializers.all ++
-    JavaTypesSerializers.all ++
-    JavaTimeSerializers.all
-
   "elastic conversion" should "parse simple hits" in {
     val results =
       """{

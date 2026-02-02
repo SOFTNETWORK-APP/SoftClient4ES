@@ -57,12 +57,84 @@ package object client extends SerializationApi {
     aggregations: Map[String, ClientAggregation]
   )
 
-  sealed trait ElasticAuthMethod
+  sealed trait ElasticAuthMethod {
 
-  case object BasicAuth extends ElasticAuthMethod
-  case object ApiKeyAuth extends ElasticAuthMethod
-  case object BearerTokenAuth extends ElasticAuthMethod
-  case object NoAuth extends ElasticAuthMethod
+    /** Create Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String
+  }
+
+  case object BasicAuth extends ElasticAuthMethod {
+
+    /** Create Basic Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the Basic Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      if (elasticCredentials.username.isEmpty || elasticCredentials.password.isEmpty) {
+        throw new IllegalArgumentException(
+          "Basic auth requires non-empty username and password"
+        )
+      }
+      import elasticCredentials._
+      val credentials = s"$username:$password"
+      val encoded = Base64.getEncoder.encodeToString(
+        credentials.getBytes(StandardCharsets.UTF_8)
+      )
+      s"Basic $encoded"
+    }
+  }
+
+  case object ApiKeyAuth extends ElasticAuthMethod {
+
+    /** Create API Key Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the API Key Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      val encodedApiKey = elasticCredentials.encodedApiKey.getOrElse {
+        throw new IllegalArgumentException("API Key auth requires non-empty apiKey")
+      }
+      s"ApiKey $encodedApiKey"
+    }
+  }
+
+  case object BearerTokenAuth extends ElasticAuthMethod {
+
+    /** Create Bearer Token Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the Bearer Token Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      val bearerToken = elasticCredentials.bearerToken.getOrElse {
+        throw new IllegalArgumentException("Bearer token auth requires non-empty bearerToken")
+      }
+      s"Bearer $bearerToken"
+    }
+  }
+
+  case object NoAuth extends ElasticAuthMethod {
+
+    /** Create empty Authorization header value
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - an empty Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      ""
+    }
+  }
 
   object ElasticAuthMethod {
     def fromCredentials(credentials: ElasticCredentials): Option[ElasticAuthMethod] = {

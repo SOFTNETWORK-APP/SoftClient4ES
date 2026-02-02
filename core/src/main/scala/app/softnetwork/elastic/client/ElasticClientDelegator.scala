@@ -215,6 +215,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.updateByQuery(index, query, pipelineId, refresh)
 
   /** Insert documents by query into an index.
+    *
     * @param index
     *   - the name of the index to insert into
     * @param query
@@ -1246,7 +1247,6 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *
     * @note
     *   This method is a variant of searchAsyncAs without compile-time SQL validation.
-    *
     * @param sqlQuery
     *   the SQL query
     * @tparam U
@@ -1369,7 +1369,6 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *
     * @note
     *   This method is a variant of scrollAs without compile-time SQL validation.
-    *
     * @param sql
     *   - SQL query
     * @param config
@@ -1892,4 +1891,90 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     policyName: String
   ): ElasticResult[String] =
     delegate.executeExecuteEnrichPolicy(policyName)
+
+  // ==================== Watcher (delegate) ====================
+
+  /** Create a watcher.
+    *
+    * @param watcher
+    *   - the watcher to create
+    * @param active
+    *   - whether the watcher should be active (default is true)
+    * @return
+    *   true if the watcher was created successfully, false otherwise
+    */
+  override def createWatcher(
+    watcher: schema.Watcher,
+    active: Boolean = true
+  ): ElasticResult[Boolean] =
+    delegate.createWatcher(watcher, active)
+
+  /** Delete a watcher by its id
+    *
+    * @param id
+    *   the id of the watcher to delete
+    * @return
+    *   true if the watcher was deleted, false otherwise
+    */
+  override def deleteWatcher(id: String): ElasticResult[Boolean] =
+    delegate.deleteWatcher(id)
+
+  /** Get a watcher status by its id.
+    *
+    * @param id
+    *   - the id of the watcher to get
+    * @return
+    *   an Option containing the watcher status if it was found, None otherwise
+    */
+  override def getWatcherStatus(id: String): ElasticResult[Option[schema.WatcherStatus]] =
+    delegate.getWatcherStatus(id)
+
+  override private[client] def executeCreateWatcher(
+    watcher: schema.Watcher,
+    active: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateWatcher(watcher, active)
+
+  override private[client] def executeDeleteWatcher(id: JSONQuery): ElasticResult[Boolean] =
+    delegate.executeDeleteWatcher(id)
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): ElasticResult[Option[schema.WatcherStatus]] =
+    delegate.executeGetWatcherStatus(id)
+
+  // ==================== License (delegate) ====================
+
+  /** Get license information.
+    *
+    * @return
+    *   an Option containing the license information if available, None otherwise
+    */
+  override def licenseInfo: ElasticResult[Option[String]] =
+    delegate.licenseInfo
+
+  /** Enable basic license.
+    *
+    * @return
+    *   true if the basic license was enabled successfully, false otherwise
+    */
+  override def enableBasicLicense(): ElasticResult[Boolean] =
+    delegate.enableBasicLicense()
+
+  /** Enable trial license.
+    *
+    * @return
+    *   true if the trial license was enabled successfully, false otherwise
+    */
+  override def enableTrialLicense(): ElasticResult[Boolean] =
+    delegate.enableTrialLicense()
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
+    delegate.executeLicenseInfo
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] =
+    delegate.executeEnableBasicLicense()
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
+    delegate.executeEnableTrialLicense()
 }

@@ -33,7 +33,14 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.{schema, PainlessContextType}
-import app.softnetwork.elastic.sql.schema.{EnrichPolicy, TableAlias, TransformState}
+import app.softnetwork.elastic.sql.schema.{
+  Delay,
+  EnrichPolicy,
+  TableAlias,
+  TransformState,
+  TransformTimeInterval
+}
+import app.softnetwork.elastic.utils.CronIntervalCalculator
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
   Conflicts,
@@ -73,6 +80,11 @@ import co.elastic.clients.elasticsearch.ingest.{
   GetPipelineRequest,
   PutPipelineRequest
 }
+import co.elastic.clients.elasticsearch.license.{
+  GetLicenseRequest,
+  PostStartBasicRequest,
+  PostStartTrialRequest
+}
 import co.elastic.clients.elasticsearch.transform.{
   DeleteTransformRequest,
   GetTransformStatsRequest,
@@ -80,6 +92,12 @@ import co.elastic.clients.elasticsearch.transform.{
   ScheduleNowTransformRequest,
   StartTransformRequest,
   StopTransformRequest
+}
+import co.elastic.clients.elasticsearch.watcher.{
+  DeleteWatchRequest,
+  GetWatchRequest,
+  PutWatchRequest,
+  PutWatchResponse
 }
 import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.JsonParser
@@ -113,13 +131,15 @@ trait JavaClientApi
     with JavaClientTemplateApi
     with JavaClientEnrichPolicyApi
     with JavaClientTransformApi
+    with JavaClientWatcherApi
+    with JavaClientLicenseApi
 
 /** Elasticsearch client implementation using the Java Client
   * @see
   *   [[VersionApi]] for version information
   */
 trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
-  _: SerializationApi with JavaClientCompanion =>
+  _: JavaClientCompanion =>
   override private[client] def executeVersion(): ElasticResult[String] =
     executeJavaAction(
       operation = "version",
@@ -695,7 +715,7 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
   *   [[IndexApi]] for index operations
   */
 trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
-  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion =>
 
   override private[client] def executeIndex(
     index: String,
@@ -755,7 +775,7 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
   *   [[UpdateApi]] for update operations
   */
 trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
-  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion =>
 
   override private[client] def executeUpdate(
     index: String,
@@ -883,7 +903,7 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
   *   [[GetApi]] for get operations
   */
 trait JavaClientGetApi extends GetApi with JavaClientHelpers {
-  _: JavaClientCompanion with SerializationApi =>
+  _: JavaClientCompanion =>
 
   override private[client] def executeGet(
     index: String,
@@ -937,7 +957,7 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
   *   [[SearchApi]] for search operations
   */
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
-  _: JavaClientCompanion with SerializationApi =>
+  _: JavaClientCompanion =>
 
   override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
     timestamp: Long,
@@ -1692,7 +1712,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 }
 
 trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers {
-  _: JavaClientVersionApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientVersionApi with JavaClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -1755,7 +1775,7 @@ trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers {
 }
 
 trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers {
-  _: JavaClientVersionApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientVersionApi with JavaClientCompanion =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 
@@ -2187,6 +2207,194 @@ trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
           new ScheduleNowTransformRequest.Builder()
             .transformId(transformId)
             .build()
+        )
+    )(resp => resp.acknowledged())
+}
+
+// ==================== WATCHER API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientWatcherApi extends WatcherApi with JavaClientHelpers {
+  _: JavaClientVersionApi with JavaClientCompanion =>
+
+  override private[client] def executeCreateWatcher(
+    watcher: schema.Watcher,
+    active: Boolean
+  ): result.ElasticResult[Boolean] =
+    executeJavaAction[PutWatchResponse, Boolean](
+      operation = "createWatcher",
+      index = None,
+      retryable = false
+    )(
+      action = {
+        implicit val timestamp: Long = System.currentTimeMillis()
+        val json = watcher.node
+        logger.info(s"Creating Watcher ${watcher.id} :\n${sanitizeWatcherJson(json)}")
+        apply()
+          .watcher()
+          .putWatch(
+            PutWatchRequest.of(builder =>
+              builder
+                .id(watcher.id)
+                .active(active)
+                .withJson(new StringReader(json))
+            )
+          )
+      }
+    )(
+      transformer = resp => resp.created()
+    )
+
+  override private[client] def executeDeleteWatcher(id: String): result.ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deleteWatcher",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .watcher()
+        .deleteWatch(
+          DeleteWatchRequest.of(builder => builder.id(id))
+        )
+    )(resp => resp.found())
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): result.ElasticResult[Option[schema.WatcherStatus]] =
+    executeJavaAction(
+      operation = "getWatcherStatus",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .watcher()
+        .getWatch(
+          GetWatchRequest.of(builder => builder.id(id))
+        )
+    ) { resp =>
+      if (resp.found()) {
+        val trigger = resp.watch().trigger()
+        val interval: Option[TransformTimeInterval] =
+          if (trigger.isSchedule) {
+            val schedule = trigger.schedule()
+            logger.debug(s"Watcher [$id] has schedule: $schedule")
+            if (schedule.isCron) {
+              val cron = schedule.cron()
+              logger.debug(s"Watcher [$id] has cron schedule: $cron")
+              CronIntervalCalculator.validateAndCalculate(cron) match {
+                case Right(interval) =>
+                  val tuple = TransformTimeInterval.fromSeconds(interval._2)
+                  Some(
+                    Delay(
+                      timeUnit = tuple._1,
+                      interval = tuple._2
+                    )
+                  )
+                case _ =>
+                  logger.warn(
+                    s"Watcher [$id] has invalid cron expression: $cron"
+                  )
+                  None
+              }
+            } else if (schedule.isInterval) {
+              val interval = schedule.interval()
+              logger.debug(s"Watcher [$id] has interval schedule: $interval")
+              TransformTimeInterval(interval.time()) match {
+                case Some(ti) => Some(ti)
+                case _ =>
+                  logger.warn(
+                    s"Watcher [$id] has invalid interval: $interval"
+                  )
+                  None
+              }
+            } else {
+              logger.warn(s"Watcher [$id] has unknown schedule type")
+              None
+            }
+          } else {
+            logger.warn(s"Watcher [$id] does not have a schedule trigger")
+            None
+          }
+
+        interval match {
+          case None =>
+            logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+          case Some(t) => // valid interval
+            logger.info(s"Watcher [$id] has schedule interval: $t")
+        }
+
+        Option(resp.status()).map { status =>
+          val version = resp.version()
+          val state = Option(status.state())
+          val active = state.exists(_.active())
+          import _root_.java.time.ZonedDateTime
+          val timestamp =
+            state
+              .map(_.timestamp().toZonedDateTime)
+              .getOrElse(ZonedDateTime.now())
+          schema.WatcherStatus(
+            id = id,
+            version = version,
+            executionState =
+              Option(status.executionState()).map(es => schema.WatcherExecutionState(es)),
+            activationState = schema.WatcherActivationState(
+              active = active,
+              timestamp = timestamp
+            ),
+            lastChecked = Option(status.lastChecked())
+              .map(_.toZonedDateTime),
+            lastMetCondition = Option(status.lastMetCondition())
+              .map(_.toZonedDateTime),
+            interval = interval
+          )
+        }
+      } else {
+        None
+      }
+    }
+}
+
+// ==================== LICENSE API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientLicenseApi extends LicenseApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
+    executeJavaAction(
+      operation = "licenseInfo",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .license()
+        .get(new GetLicenseRequest.Builder().build())
+    ) { resp =>
+      val jsonString = convertToJson(resp)
+      Some(jsonString)
+    }
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "enableBasicLicense",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .license()
+        .postStartBasic(
+          PostStartBasicRequest.of(builder => builder.acknowledge(true))
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "enableTrialLicense",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .license()
+        .postStartTrial(
+          PostStartTrialRequest.of(builder => builder.acknowledge(true))
         )
     )(resp => resp.acknowledged())
 }

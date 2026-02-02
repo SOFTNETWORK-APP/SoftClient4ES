@@ -17,14 +17,14 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.jest.actions.Pipeline
-import app.softnetwork.elastic.client.{result, PipelineApi, SerializationApi}
+import app.softnetwork.elastic.client.{result, PipelineApi}
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
 
 trait JestPipelineApi extends PipelineApi with JestClientHelpers {
-  _: JestVersionApi with SerializationApi with JestClientCompanion =>
+  _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,

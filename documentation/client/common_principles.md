@@ -32,7 +32,6 @@ trait ElasticClientApi
   with CountApi
   with SearchApi
   // ... other APIs
-  with SerializationApi
   with Closeable
 ```
 
@@ -47,9 +46,9 @@ trait ElasticClientApi
 APIs use **self-type annotations** to declare dependencies:
 
 ```scala
-trait VersionApi extends ElasticClientHelpers { 
-  _: SerializationApi =>
-  // This trait requires SerializationApi to be mixed in
+trait ScrollApi extends ElasticClientHelpers {
+  _: VersionApi with SearchApi =>
+  // This trait requires VersionApi and SearchApi to be mixed in
   // ...
 }
 ```

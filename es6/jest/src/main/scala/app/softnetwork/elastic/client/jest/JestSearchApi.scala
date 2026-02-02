@@ -29,7 +29,7 @@ import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
 
 trait JestSearchApi extends SearchApi with JestClientHelpers {
-  _: JestClientCompanion with SerializationApi =>
+  _: JestClientCompanion =>
 
   implicit def requestToSearch(elasticSelect: ElasticSearchRequest): Search = {
     import elasticSelect._
@@ -50,7 +50,9 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
 
   implicit class SearchResults(searchResult: SearchResult) {
     def apply[M: Manifest]()(implicit formats: Formats): List[M] = {
-      searchResult.getSourceAsStringList.asScala.map(source => serialization.read[M](source)).toList
+      searchResult.getSourceAsStringList.asScala
+        .map(source => SerializationApi.serialization.read[M](source))
+        .toList
     }
   }
 

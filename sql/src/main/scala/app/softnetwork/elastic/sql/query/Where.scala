@@ -543,6 +543,25 @@ case class GenericExpression(
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 }
 
+case class Comparison(
+  identifier: Identifier,
+  operator: ComparisonOperator,
+  value: PainlessScript,
+  maybeNot: Option[NOT.type] = None
+) extends Expression {
+  override def maybeValue: Option[Token] = Option(value)
+
+  override def update(request: SingleSearch): Criteria = {
+    val updated = this.copy(identifier = identifier.update(request))
+    if (updated.nested) {
+      ElasticNested(updated, limit)
+    } else
+      updated
+  }
+
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+}
+
 case class IsNullExpr(identifier: Identifier) extends Expression {
   override val operator: Operator = IS_NULL
 

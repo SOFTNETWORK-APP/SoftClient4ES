@@ -16,9 +16,12 @@
 
 package app.softnetwork.elastic.scalatest
 
+import app.softnetwork.elastic.client.ElasticsearchVersion
 import org.scalatest.Suite
 import org.testcontainers.containers.BindMode
-//import org.testcontainers.containers.wait.strategy.Wait
+
+import java.nio.charset.StandardCharsets
+import java.nio.file.StandardOpenOption
 import org.testcontainers.elasticsearch.ElasticsearchContainer
 import org.testcontainers.utility.DockerImageName
 
@@ -36,6 +39,14 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
     case _            => false
   }
 
+  lazy val xpackWatcherEnabled: Boolean = true
+
+  lazy val xpackSecurityEnabled: Boolean = false
+
+  lazy val xpackMLEnabled: Boolean = false
+
+  lazy val xpackGraphEnabled: Boolean = false
+
   lazy val elasticContainer: ElasticsearchContainer = {
     val tmpDir =
       if (localExecution) {
@@ -45,26 +56,86 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
       } else {
         "/tmp"
       }
-    Console.println(s"Using temporary directory for Elasticsearch: $tmpDir")
+
+    Console.println(s"📁 Temp directory: $tmpDir")
+
+    val configFile = createElasticsearchYml()
+
+    Console.println(s"⚙️ Config file: $configFile")
+
     val container = new ElasticsearchContainer(
       DockerImageName
         .parse("docker.elastic.co/elasticsearch/elasticsearch")
         .withTag(elasticVersion)
     )
-    container.addEnv("ES_TMPDIR", "/usr/share/elasticsearch/tmp")
-    container.addEnv("discovery.type", "single-node")
-    container.addEnv("xpack.security.enabled", "false")
-    container.addEnv("xpack.ml.enabled", "false")
-    container.addEnv("xpack.watcher.enabled", "false")
-    container.addEnv("xpack.graph.enabled", "false")
-    container.addFileSystemBind(
-      tmpDir,
-      "/usr/share/elasticsearch/tmp",
-      BindMode.READ_WRITE
+
+    container
+      .withEnv("ES_TMPDIR", "/usr/share/elasticsearch/tmp")
+      //.withEnv("ES_JAVA_OPTS", "-Xms1024m -Xmx1024m")
+      .withFileSystemBind(tmpDir, "/usr/share/elasticsearch/tmp", BindMode.READ_WRITE)
+      .withFileSystemBind(
+        configFile,
+        "/usr/share/elasticsearch/config/elasticsearch.yml",
+        BindMode.READ_ONLY
+      )
+      // .withCommand("bin/elasticsearch-syskeygen --silent", "bin/elasticsearch")
+      .withStartupTimeout(Duration.ofMinutes(2))
+  }
+
+  private def createElasticsearchYml(): String = {
+    val enrollmentLine =
+      if (ElasticsearchVersion.isEs8OrHigher(elasticVersion)) {
+        s"xpack.security.enrollment.enabled: $xpackSecurityEnabled\n"
+      } else {
+        "" // not compatible with ES versions < 8.x
+      }
+    val config =
+      s"""# Cluster settings
+        |cluster.name: docker-cluster
+        |node.name: test-node
+        |
+        |# Network
+        |network.host: 0.0.0.0
+        |http.port: 9200
+        |transport.port: 9300
+        |
+        |# Discovery
+        |discovery.type: single-node
+        |
+        |# X-Pack License (force Trial license)
+        |xpack.license.self_generated.type: trial
+        |
+        |# X-Pack Security (disabled for tests)
+        |xpack.security.enabled: $xpackSecurityEnabled
+        |${enrollmentLine}xpack.security.http.ssl.enabled: false
+        |xpack.security.transport.ssl.enabled: false
+        |
+        |# X-Pack Features
+        |xpack.ml.enabled: $xpackMLEnabled
+        |xpack.graph.enabled: $xpackGraphEnabled
+        |
+        |# X-Pack Watcher
+        |xpack.watcher.enabled: $xpackWatcherEnabled
+        |xpack.watcher.encrypt_sensitive_data: false # for tests
+        |# xpack.watcher.encryption_key: "your-32-char-encryption-key" # set a fixed key for tests if needed
+        |
+        |# Set default throttle period to 5s to allow frequent executions during tests
+        |xpack.watcher.execution.default_throttle_period: 5s
+        |
+        |# Performance
+        |bootstrap.memory_lock: false
+        |""".stripMargin
+
+    val configFile = Files.createTempFile("elasticsearch-", ".yml")
+    Files.write(
+      configFile,
+      config.getBytes(StandardCharsets.UTF_8),
+      StandardOpenOption.WRITE
     )
-    // container.addEnv("ES_JAVA_OPTS", "-Xms1024m -Xmx1024m")
-    // container.setWaitStrategy(Wait.forHttp("/").forStatusCode(200))
-    container.withStartupTimeout(Duration.ofMinutes(2))
+
+    Console.println(s"✅ Elasticsearch config created:\n$config")
+
+    configFile.toAbsolutePath.toString
   }
 
   override def start(): Unit = elasticContainer.start()

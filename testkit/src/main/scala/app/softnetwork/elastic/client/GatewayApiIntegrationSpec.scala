@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
   ElasticResult,
+  ElasticSuccess,
   PipelineResult,
   QueryResult,
   QueryRows,
@@ -1560,6 +1561,68 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     res.isFailure shouldBe true
     res.toEither.left.get.message should include("Error parsing schema DDL statement")
+  }
+
+  // ===========================================================================
+  // 7. WATCHERS — CREATE / DROP / SHOW
+  // ===========================================================================
+
+  behavior of "WATCHERS statements"
+
+  it should "create, show and drop a watcher" in {
+    val createIndex =
+      """CREATE TABLE IF NOT EXISTS my_index (
+        |  id INT NOT NULL,
+        |  content VARCHAR,
+        |  PRIMARY KEY (id)
+        |);""".stripMargin
+
+    assertDdl(client.run(createIndex).futureValue)
+
+    val createWatcherWithInterval =
+      """CREATE OR REPLACE WATCHER my_watcher_interval AS
+        | ALWAYS
+        | TRIGGER EVERY 5 SECONDS
+        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
+        | WITH INPUT AS SELECT * FROM my_index;""".stripMargin
+
+    assertDdl(client.run(createWatcherWithInterval).futureValue)
+
+    var watcherStatus = client.run("SHOW WATCHER STATUS my_watcher_interval").futureValue
+    watcherStatus match {
+      case ElasticSuccess(QueryRows(rows)) =>
+        rows.size shouldBe 1
+        val row = rows.head
+        println(s"Watcher Status: $row")
+        row.get("id") shouldBe Some("my_watcher_interval")
+        row.get("is_healthy") shouldBe Some(true)
+        row.get("is_operational") shouldBe Some(true)
+      case _ => fail("Expected QueryRows result")
+    }
+
+    val createWatcherWithCron =
+      """CREATE OR REPLACE WATCHER my_watcher_cron AS
+        | ALWAYS
+        | TRIGGER AT SCHEDULE '* * * * * ?'
+        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
+        | WITH INPUT AS SELECT * FROM my_index;""".stripMargin
+
+    assertDdl(client.run(createWatcherWithCron).futureValue)
+
+    watcherStatus = client.run("SHOW WATCHER STATUS my_watcher_cron").futureValue
+    watcherStatus match {
+      case ElasticSuccess(QueryRows(rows)) =>
+        rows.size shouldBe 1
+        val row = rows.head
+        println(s"Watcher Status: $row")
+        row.get("id") shouldBe Some("my_watcher_cron")
+        row.get("is_healthy") shouldBe Some(true)
+        row.get("is_operational") shouldBe Some(true)
+      case _ => fail("Expected QueryRows result")
+    }
+
+    val dropWatcher = "DROP WATCHER IF EXISTS my_watcher_interval;"
+    assertDdl(client.run(dropWatcher).futureValue)
   }
 
 }

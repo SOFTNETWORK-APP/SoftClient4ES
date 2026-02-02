@@ -33,13 +33,20 @@ import app.softnetwork.elastic.sql.schema.{
   SetProcessor,
   Table => Schema,
   TableType,
-  TransformTimeUnit
+  TransformTimeInterval,
+  TransformTimeUnit,
+  Watcher,
+  WatcherAction,
+  WatcherCondition,
+  WatcherInput,
+  WatcherTrigger
 }
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.time.{Duration, Instant}
+import scala.collection.immutable.ListMap
 
 package object query {
   sealed trait Statement extends Token
@@ -600,23 +607,7 @@ package object query {
       case Some(value) =>
         value match {
           case s: StringValue =>
-            val regex = """(\d+)\s*(ms|s|m|h|d|w|M|y)""".r
-            s.value match {
-              case regex(interval, unitStr) =>
-                val unit = unitStr match {
-                  case "ms" => TransformTimeUnit.Milliseconds
-                  case "s"  => TransformTimeUnit.Seconds
-                  case "m"  => TransformTimeUnit.Minutes
-                  case "h"  => TransformTimeUnit.Hours
-                  case "d"  => TransformTimeUnit.Days
-                  case "w"  => TransformTimeUnit.Weeks
-                  case "M"  => TransformTimeUnit.Months
-                  case "y"  => TransformTimeUnit.Years
-                  case _    => TransformTimeUnit.Seconds
-                }
-                Some(Duration.ofSeconds(Frequency(unit, interval.toInt).toSeconds))
-              case _ => None
-            }
+            TransformTimeInterval(s.value).map(t => Duration.ofSeconds(t.toSeconds))
           case i: LongValue => Some(Duration.ofSeconds(i.value))
           case _            => None
         }
@@ -626,26 +617,9 @@ package object query {
     lazy val delay: Option[Delay] = options.get("delay") match {
       case Some(value) =>
         value match {
-          case s: StringValue =>
-            val regex = """(\d+)\s*(ms|s|m|h|d|w|M|y)""".r
-            s.value match {
-              case regex(interval, unitStr) =>
-                val unit = unitStr match {
-                  case "ms" => TransformTimeUnit.Milliseconds
-                  case "s"  => TransformTimeUnit.Seconds
-                  case "m"  => TransformTimeUnit.Minutes
-                  case "h"  => TransformTimeUnit.Hours
-                  case "d"  => TransformTimeUnit.Days
-                  case "w"  => TransformTimeUnit.Weeks
-                  case "M"  => TransformTimeUnit.Months
-                  case "y"  => TransformTimeUnit.Years
-                  case _    => TransformTimeUnit.Seconds
-                }
-                Some(Delay(unit, interval.toInt))
-              case _ => None
-            }
-          case i: LongValue => Some(Delay(TransformTimeUnit.Seconds, i.value.toInt))
-          case _            => None
+          case s: StringValue => TransformTimeInterval(s.value)
+          case i: LongValue   => Some(Delay(TransformTimeUnit.Seconds, i.value))
+          case _              => None
         }
       case None => None
     }
@@ -1065,6 +1039,58 @@ package object query {
 
   case class DescribeTable(table: String) extends TableStatement {
     override def sql: String = s"DESCRIBE TABLE $table"
+  }
+
+  sealed trait WatcherStatement extends DdlStatement
+
+  case class CreateWatcher(
+    name: String,
+    orReplace: Boolean = false,
+    ifNotExists: Boolean = false,
+    condition: WatcherCondition, // e.g., WHEN condition
+    trigger: WatcherTrigger,
+    actions: ListMap[String, WatcherAction],
+    input: WatcherInput,
+    options: Map[String, Value[_]] = Map.empty
+  ) extends WatcherStatement {
+
+    lazy val watcher: Watcher = Watcher(
+      id = name,
+      condition = condition,
+      trigger = trigger,
+      actions = actions,
+      input = input,
+      throttlePeriod = options.get("throttle_period") match {
+        case Some(value) =>
+          value match {
+            case s: StringValue => TransformTimeInterval(s.value)
+            case i: LongValue   => Some(Delay(TransformTimeUnit.Seconds, i.value))
+            case _              => None
+          }
+        case None => None
+      },
+      metadata = options.get("metadata") match {
+        case Some(value) =>
+          value match {
+            case o: ObjectValue => Some(o)
+            case _              => None
+          }
+        case _ => None
+      }
+    )
+
+    override def sql: String = watcher.sql
+  }
+
+  case class ShowWatcherStatus(name: String) extends WatcherStatement {
+    override def sql: String = s"SHOW WATCHER STATUS $name"
+  }
+
+  case class DropWatcher(name: String, ifExists: Boolean = false) extends WatcherStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      s"DROP WATCHER $ifExistsClause$name"
+    }
   }
 
 }

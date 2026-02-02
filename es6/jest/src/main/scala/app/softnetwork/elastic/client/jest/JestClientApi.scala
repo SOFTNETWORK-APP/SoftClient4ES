@@ -48,4 +48,6 @@ trait JestClientApi
     with JestTemplateApi
     with JestEnrichPolicyApi
     with JestTransformApi
+    with JestWatcherApi
+    with JestLicenseApi
     with JestClientCompanion

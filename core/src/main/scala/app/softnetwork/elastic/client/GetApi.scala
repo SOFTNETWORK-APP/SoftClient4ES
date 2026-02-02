@@ -26,7 +26,7 @@ import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
 
-trait GetApi extends ElasticClientHelpers { _: SerializationApi =>
+trait GetApi extends ElasticClientHelpers {
 
   // ========================================================================
   // PUBLIC METHODS

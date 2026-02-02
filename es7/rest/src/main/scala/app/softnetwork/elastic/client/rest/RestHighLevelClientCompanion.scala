@@ -91,25 +91,23 @@ trait RestHighLevelClientCompanion extends ElasticClientCompanion[RestHighLevelC
           httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
         }
       case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
-        val apiKey = elasticConfig.credentials.encodedApiKey.get
         builder.setHttpClientConfigCallback { httpClientConfigCallback =>
           httpClientConfigCallback.setDefaultHeaders(
             Seq(
               new BasicHeader(
                 "Authorization",
-                s"ApiKey $apiKey"
+                ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
               )
             ).asJava
           )
         }
       case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
-        val bearerToken = elasticConfig.credentials.bearerToken.getOrElse("")
         builder.setHttpClientConfigCallback { httpClientConfigCallback =>
           httpClientConfigCallback.setDefaultHeaders(
             Seq(
               new BasicHeader(
                 "Authorization",
-                s"Bearer $bearerToken"
+                BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
               )
             ).asJava
           )

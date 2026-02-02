@@ -429,4 +429,27 @@ trait NopeClientApi extends ElasticClientApi {
     transformId: String
   ): ElasticResult[Boolean] =
     ElasticSuccess(false)
+
+  override private[client] def executeCreateWatcher(
+    watcher: schema.Watcher,
+    active: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteWatcher(id: String): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): ElasticResult[Option[schema.WatcherStatus]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
+    ElasticSuccess(false)
 }

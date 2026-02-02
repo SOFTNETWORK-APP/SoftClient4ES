@@ -40,6 +40,7 @@ import app.softnetwork.elastic.sql.query.{
   CopyInto,
   CreatePipeline,
   CreateTable,
+  CreateWatcher,
   DdlStatement,
   Delete,
   DescribePipeline,
@@ -48,6 +49,7 @@ import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   DropPipeline,
   DropTable,
+  DropWatcher,
   Insert,
   MultiSearch,
   PipelineStatement,
@@ -57,11 +59,13 @@ import app.softnetwork.elastic.sql.query.{
   ShowPipeline,
   ShowTable,
   ShowTables,
+  ShowWatcherStatus,
   SingleSearch,
   Statement,
   TableStatement,
   TruncateTable,
-  Update
+  Update,
+  WatcherStatement
 }
 import app.softnetwork.elastic.sql.schema.{
   Impossible,
@@ -239,6 +243,66 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
 }
 
 trait DdlExecutor[T <: DdlStatement] extends Executor[T]
+
+class WatcherExecutor(api: WatcherApi, logger: Logger) extends DdlExecutor[WatcherStatement] {
+  override def execute(
+    statement: WatcherStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // handle WATCHER statement
+    statement match {
+      case status: ShowWatcherStatus =>
+        api.getWatcherStatus(status.name) match {
+          case ElasticSuccess(stats) =>
+            stats match {
+              case None =>
+                val error = ElasticError(
+                  message = s"Watcher ${status.name} not found.",
+                  statusCode = Some(404),
+                  operation = Some("watcher")
+                )
+                logger.error(s"❌ ${error.message}")
+                Future.successful(ElasticFailure(error))
+              case Some(status) =>
+                logger.info(s"✅ Retrieved watcher status for ${status.id}.")
+                Future.successful(ElasticResult.success(QueryRows(Seq(status.toMap))))
+            }
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+
+      case create: CreateWatcher =>
+        api.createWatcher(create.watcher) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Created watcher ${create.watcher.id}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+
+      case drop: DropWatcher =>
+        api.deleteWatcher(drop.name) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Deleted watcher ${drop.name}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+    }
+  }
+}
 
 class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[PipelineStatement] {
   override def execute(
@@ -1356,7 +1420,8 @@ class TableExecutor(
 
 class DdlRouterExecutor(
   pipelineExec: PipelineExecutor,
-  tableExec: TableExecutor
+  tableExec: TableExecutor,
+  watcherExec: WatcherExecutor
 ) extends Executor[DdlStatement] {
 
   override def execute(
@@ -1365,6 +1430,7 @@ class DdlRouterExecutor(
 
     case p: PipelineStatement => pipelineExec.execute(p)
     case t: TableStatement    => tableExec.execute(t)
+    case w: WatcherStatement  => watcherExec.execute(w)
 
     case _ =>
       Future.successful(
@@ -1398,9 +1464,15 @@ trait GatewayApi extends ElasticClientHelpers {
     logger = logger
   )
 
+  lazy val watcherExecutor = new WatcherExecutor(
+    api = this,
+    logger = logger
+  )
+
   lazy val ddlExecutor = new DdlRouterExecutor(
     pipelineExec = pipelineExecutor,
-    tableExec = tableExecutor
+    tableExec = tableExecutor,
+    watcherExec = watcherExecutor
   )
 
   // ========================================================================

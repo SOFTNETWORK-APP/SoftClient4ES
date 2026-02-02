@@ -18,7 +18,7 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql._
-import app.softnetwork.elastic.sql.function._
+import app.softnetwork.elastic.sql.function.{time, _}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.`type`.TypeParser
 import app.softnetwork.elastic.sql.parser.function.aggregate.AggregateParser
@@ -31,7 +31,9 @@ import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
+  AlwaysWatcherCondition,
   Column,
+  Delay,
   Frequency,
   IngestPipelineType,
   IngestProcessor,
@@ -42,6 +44,7 @@ import app.softnetwork.elastic.sql.schema.{
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
 
+import scala.collection.immutable.ListMap
 import scala.language.implicitConversions
 import scala.language.existentials
 import scala.util.matching.Regex
@@ -97,8 +100,11 @@ object Parser
     }
 
   def option: PackratParser[(String, Value[_])] =
-    ident ~ "=" ~ (objectValues | objectValue | value) ^^ { case key ~ _ ~ value =>
-      (key, value)
+    (ident | literal) ~ "=" ~ (objectValues | objectValue | value) ^^ { case key ~ _ ~ value =>
+      key match {
+        case lit: StringValue => (lit.value, value)
+        case id: String       => (id, value)
+      }
     }
 
   def options: PackratParser[Map[String, Value[_]]] =
@@ -400,7 +406,7 @@ object Parser
     ("REFRESH" ~ "EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
       str =>
         val parts = str.trim.split("\\s+")
-        Frequency(TransformTimeUnit(parts(1)), parts(0).toInt)
+        Frequency(TransformTimeUnit(parts(1)), parts(0).toLong)
     }
 
   def withOptions: PackratParser[Map[String, Value[_]]] =
@@ -658,6 +664,147 @@ object Parser
         AlterTable(table, ie, stmts)
     }
 
+  def alwaysWatcherCondition: PackratParser[schema.AlwaysWatcherCondition.type] =
+    "ALWAYS" ^^ { _ => AlwaysWatcherCondition }
+
+  def neverWatcherCondition: PackratParser[schema.NeverWatcherCondition.type] =
+    "NEVER" ^^ { _ => schema.NeverWatcherCondition }
+
+  private def comparison_operator: PackratParser[ComparisonOperator] =
+    eq | ne | diff | gt | ge | lt | le
+
+  private def dateMathScript
+    : PackratParser[time.DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
+    date_add | datetime_add | date_sub | datetime_sub
+
+  def compareWatcherCondition: PackratParser[schema.CompareWatcherCondition] =
+    "WHEN" ~> opt(not) ~ ident ~ comparison_operator ~ opt(value) ~ opt(
+      dateMathScript
+    ) ^^ { case n ~ field ~ op ~ v ~ fun =>
+      val target_op =
+        n match {
+          case Some(_) => op.not
+          case None    => op
+        }
+      v match {
+        case Some(value) =>
+          schema.CompareWatcherCondition(field, target_op, Left(value))
+        case None =>
+          fun match {
+            case Some(f) if f.identifier.dependencies.isEmpty =>
+              schema.CompareWatcherCondition(
+                field,
+                target_op,
+                Right(f.identifier.withFunctions(f +: f.identifier.functions))
+              )
+            case Some(_) =>
+              throw new Exception(
+                s"Date/datetime functions with field dependencies are not supported for comparison"
+              )
+            case None =>
+              throw new Exception(
+                s"A value or a date/datetime function must be provided for comparison"
+              )
+          }
+      }
+    }
+
+  private def scriptParams: PackratParser[Map[String, Value[_]]] =
+    ("WITH" ~ "PARAMS") ~> lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ opts ~ _ =>
+      opts.toMap
+    }
+
+  def scriptWatcherCondition: PackratParser[schema.ScriptWatcherCondition] =
+    ("WHEN" ~ "SCRIPT") ~> literal ~ opt("USING" ~ "LANG" ~> literal) ~ opt(
+      scriptParams
+    ) ~ opt("RETURNS" ~ "TRUE") ^^ { case scr ~ lang ~ p ~ _ =>
+      schema.ScriptWatcherCondition(
+        scr.value,
+        lang.map(_.value).getOrElse("painless"),
+        p.getOrElse(Map.empty)
+      )
+    }
+
+  def watcherCondition: PackratParser[schema.WatcherCondition] =
+    alwaysWatcherCondition | neverWatcherCondition | compareWatcherCondition | scriptWatcherCondition
+
+  def triggerWatcherEveryInterval: PackratParser[schema.IntervalWatcherTrigger] =
+    ("TRIGGER" ~ "EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
+      str =>
+        val parts = str.trim.split("\\s+")
+        schema.IntervalWatcherTrigger(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
+    }
+
+  def triggerWatcherAtSchedule: PackratParser[schema.CronWatcherTrigger] =
+    ("TRIGGER" ~ "AT" ~ "SCHEDULE") ~> literal ^^ { cronExpr =>
+      schema.CronWatcherTrigger(cronExpr.value)
+    }
+
+  def watcherTrigger: PackratParser[schema.WatcherTrigger] =
+    triggerWatcherEveryInterval | triggerWatcherAtSchedule
+
+  def simpleWatcherInput: PackratParser[schema.SimpleWatcherInput] =
+    ("WITH" ~ "INPUT") ~> start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
+      schema.SimpleWatcherInput(payload = ObjectValue(opts.toMap))
+    }
+
+  def searchWatcherInput: PackratParser[schema.SearchWatcherInput] =
+    ("WITH" ~ "INPUT" ~ "AS") ~> single ^^ { query =>
+      schema.SearchWatcherInput(
+        query.from.tables.map(_.name).distinct,
+        query.where.flatMap(_.criteria)
+      )
+    }
+
+  def watcherInput: PackratParser[schema.WatcherInput] =
+    searchWatcherInput | simpleWatcherInput | success(schema.EmptyWatcherInput)
+
+  def watcherAction: PackratParser[(String, schema.WatcherAction)] =
+    ident ~ opt("AS") ~ start ~ repsep(option, separator) ~ end ^^ { case name ~ _ ~ _ ~ opts ~ _ =>
+      val options = opts.toMap
+      schema.WatcherAction(options) match {
+        case Some(wa) => (name, wa)
+        case _ =>
+          throw new Exception(
+            s"Unsupported watcher action type in action '$name'"
+          )
+      }
+    }
+
+  def watcherActions: PackratParser[ListMap[String, schema.WatcherAction]] =
+    rep1sep(
+      watcherAction,
+      separator
+    ) ^^ { actions =>
+      ListMap(actions: _*)
+    }
+
+  def createOrReplaceWatcher: PackratParser[CreateWatcher] =
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "WATCHER") ~> ident ~ opt(
+      "AS"
+    ) ~ watcherCondition ~ watcherTrigger ~ watcherActions ~ watcherInput ^^ {
+      case name ~ _ ~ condition ~ trigger ~ actions ~ input =>
+        CreateWatcher(
+          name = name,
+          orReplace = true,
+          ifNotExists = false,
+          condition = condition,
+          trigger = trigger,
+          actions = actions,
+          input = input
+        )
+    }
+
+  def showWatcherStatus: PackratParser[ShowWatcherStatus] =
+    ("SHOW" ~ "WATCHER" ~ "STATUS") ~> ident ^^ { name =>
+      ShowWatcherStatus(name)
+    }
+
+  def dropWatcher: PackratParser[DropWatcher] =
+    ("DROP" ~ "WATCHER") ~ opt("IF" ~ "EXISTS") ~ ident ^^ { case _ ~ ie ~ name =>
+      DropWatcher(name, ifExists = ie.isDefined)
+    }
+
   def ddlStatement: PackratParser[DdlStatement] =
     createTable |
     createPipeline |
@@ -683,7 +830,10 @@ object Parser
     showMaterializedViews |
     showMaterializedView |
     showCreateMaterializedView |
-    describeMaterializedView
+    describeMaterializedView |
+    createOrReplaceWatcher |
+    showWatcherStatus |
+    dropWatcher
 
   def onConflict: PackratParser[OnConflict] =
     ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {

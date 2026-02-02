@@ -17,7 +17,6 @@ The **UpdateApi** trait provides functionality to update documents in Elasticsea
 
 **Dependencies:**
 - Requires `SettingsApi` to check if index refresh is enabled
-- Requires `SerializationApi` for JSON serialization
 
 ---
 

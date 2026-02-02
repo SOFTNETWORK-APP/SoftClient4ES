@@ -1429,4 +1429,80 @@ class MetricsElasticClient(
       delegate.executeEnrichPolicy(policyName)
     }
 
+  // ==================== Watcher (delegate) ====================
+
+  /** Create a watcher.
+    *
+    * @param watcher
+    *   - the watcher to create
+    * @param active
+    *   - whether the watcher should be active (default is true)
+    * @return
+    *   true if the watcher was created successfully, false otherwise
+    */
+  override def createWatcher(
+    watcher: schema.Watcher,
+    active: Boolean = true
+  ): ElasticResult[Boolean] =
+    measureResult("createWatcher") {
+      delegate.createWatcher(watcher, active)
+    }
+
+  /** Delete a watcher by its id
+    *
+    * @param id
+    *   the id of the watcher to delete
+    * @return
+    *   true if the watcher was deleted, false otherwise
+    */
+  override def deleteWatcher(id: String): ElasticResult[Boolean] =
+    measureResult("deleteWatcher") {
+      delegate.deleteWatcher(id)
+    }
+
+  /** Get a watcher status by its id.
+    *
+    * @param id
+    *   - the id of the watcher to get
+    * @return
+    *   an Option containing the watcher status if it was found, None otherwise
+    */
+  override def getWatcherStatus(id: String): ElasticResult[Option[schema.WatcherStatus]] =
+    measureResult("getWatcher") {
+      delegate.getWatcherStatus(id)
+    }
+
+  // ==================== License (delegate) ====================
+
+  /** Get license information.
+    *
+    * @return
+    *   an Option containing the license information if available, None otherwise
+    */
+  override def licenseInfo: ElasticResult[Option[String]] = {
+    measureResult("licenseInfo") {
+      delegate.licenseInfo
+    }
+  }
+
+  /** Enable basic license.
+    *
+    * @return
+    *   true if the basic license was enabled successfully, false otherwise
+    */
+  override def enableBasicLicense(): ElasticResult[Boolean] =
+    measureResult("enableBasicLicense") {
+      delegate.enableBasicLicense()
+    }
+
+  /** Enable trial license.
+    *
+    * @return
+    *   true if the trial license was enabled successfully, false otherwise
+    */
+  override def enableTrialLicense(): ElasticResult[Boolean] =
+    measureResult("enableTrialLicense") {
+      delegate.enableTrialLicense()
+    }
+
 }

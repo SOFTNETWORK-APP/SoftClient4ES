@@ -16,13 +16,13 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{result, SerializationApi, VersionApi}
+import app.softnetwork.elastic.client.{result, VersionApi}
 import io.searchbox.core.Cat
 import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods
 
 trait JestVersionApi extends VersionApi with JestClientHelpers {
-  _: SerializationApi with JestClientCompanion =>
+  _: JestClientCompanion =>
   override private[client] def executeVersion(): result.ElasticResult[String] =
     executeJestAction(
       "version",

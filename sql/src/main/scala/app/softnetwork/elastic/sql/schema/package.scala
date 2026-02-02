@@ -26,15 +26,22 @@ import app.softnetwork.elastic.sql.function.aggregate.{
   MinAgg,
   SumAgg
 }
+import app.softnetwork.elastic.sql.operator.{ComparisonOperator, EQ, GE, GT, LE, LT, NE}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
+import app.softnetwork.elastic.utils.CronIntervalCalculator
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
-import com.fasterxml.jackson.databind.node.{NullNode, ObjectNode}
+import com.fasterxml.jackson.databind.node.ObjectNode
+import org.slf4j.Logger
 
+import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
 import java.util.UUID
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
+import scala.util.Try
 
 package object schema {
   val mapper: ObjectMapper = JacksonConfig.objectMapper
@@ -759,7 +766,9 @@ package object schema {
     }
   }
 
-  // ==================== Transform ====================
+  // ========================================================================
+  // TRANSFORM COMPONENTS
+  // ========================================================================
 
   sealed trait TransformTimeUnit extends DdlToken {
     def name: String
@@ -822,9 +831,9 @@ package object schema {
   }
 
   sealed trait TransformTimeInterval extends DdlToken {
-    def interval: Int
+    def interval: Long
     def timeUnit: TransformTimeUnit
-    def toSeconds: Int = timeUnit match {
+    def toSeconds: Long = timeUnit match {
       case TransformTimeUnit.Milliseconds => interval / 1000
       case TransformTimeUnit.Seconds      => interval
       case TransformTimeUnit.Minutes      => interval * 60
@@ -841,7 +850,7 @@ package object schema {
   object TransformTimeInterval {
 
     /** Creates a time interval from seconds */
-    def fromSeconds(seconds: Int): (TransformTimeUnit, Int) = {
+    def fromSeconds(seconds: Long): (TransformTimeUnit, Long) = {
       if (seconds >= 31536000 && seconds % 31536000 == 0) {
         (TransformTimeUnit.Years, seconds / 31536000)
       } else if (seconds >= 2592000 && seconds % 2592000 == 0) {
@@ -858,11 +867,31 @@ package object schema {
         (TransformTimeUnit.Seconds, seconds)
       }
     }
+
+    def apply(value: String): Option[Delay] = {
+      val regex = """(\d+)\s*(ms|s|m|h|d|w|M|y)""".r
+      value match {
+        case regex(interval, unitStr) =>
+          val unit = unitStr match {
+            case "ms" => TransformTimeUnit.Milliseconds
+            case "s"  => TransformTimeUnit.Seconds
+            case "m"  => TransformTimeUnit.Minutes
+            case "h"  => TransformTimeUnit.Hours
+            case "d"  => TransformTimeUnit.Days
+            case "w"  => TransformTimeUnit.Weeks
+            case "M"  => TransformTimeUnit.Months
+            case "y"  => TransformTimeUnit.Years
+            case _    => TransformTimeUnit.Seconds
+          }
+          Some(Delay(unit, interval.toLong))
+        case _ => None
+      }
+    }
   }
 
   case class Delay(
     timeUnit: TransformTimeUnit,
-    interval: Int
+    interval: Long
   ) extends TransformTimeInterval {
     def sql: String = s"WITH DELAY $interval $timeUnit"
   }
@@ -870,7 +899,7 @@ package object schema {
   object Delay {
     val Default: Delay = Delay(TransformTimeUnit.Minutes, 1)
 
-    def fromSeconds(seconds: Int): Delay = {
+    def fromSeconds(seconds: Long): Delay = {
       val timeInterval = TransformTimeInterval.fromSeconds(seconds)
       Delay(timeInterval._1, timeInterval._2)
     }
@@ -962,7 +991,7 @@ package object schema {
 
   case class Frequency(
     timeUnit: TransformTimeUnit,
-    interval: Int
+    interval: Long
   ) extends TransformTimeInterval {
     def sql: String = s"REFRESH EVERY $interval $timeUnit"
   }
@@ -970,7 +999,7 @@ package object schema {
   case object Frequency {
     val Default: Frequency = apply(Delay.Default)
     def apply(delay: Delay): Frequency = Frequency(delay.timeUnit, delay.interval * 2)
-    def fromSeconds(seconds: Int): Frequency = {
+    def fromSeconds(seconds: Long): Frequency = {
       val timeInterval = TransformTimeInterval.fromSeconds(seconds)
       Frequency(timeInterval._1, timeInterval._2)
     }
@@ -1358,10 +1387,10 @@ package object schema {
   ) extends DdlToken {
 
     /** Delay in seconds for display */
-    lazy val delaySeconds: Int = delay.toSeconds
+    lazy val delaySeconds: Long = delay.toSeconds
 
     /** Frequency in seconds for display */
-    lazy val frequencySeconds: Int = frequency.toSeconds
+    lazy val frequencySeconds: Long = frequency.toSeconds
 
     /** Converts to Elasticsearch JSON format
       */
@@ -1420,25 +1449,90 @@ package object schema {
     */
   sealed trait HealthStatus extends DdlToken {
     def name: String
+    def emoji: String
     def sql: String = name
+
+    /** Check if this status is considered healthy/operational */
+    def isOperational: Boolean = this match {
+      case HealthStatus.Green | HealthStatus.Yellow => true
+      case _                                        => false
+    }
+
+    /** Check if this is an unknown/custom status */
+    def isCustom: Boolean = this.isInstanceOf[HealthStatus.Other]
+
+    /** Get formatted display string */
+    def display: String = s"$emoji $name"
+
+    /** Get severity (0 = best, 3 = worst) */
+    def severity: Int = HealthStatus.severityLevel(this)
+
+    def +(other: HealthStatus): HealthStatus = {
+      if (HealthStatus.ordering.gt(this, other)) this else other
+    }
   }
 
   object HealthStatus {
     case object Green extends HealthStatus {
-      val name: String = "GREEN"
+      val name: String = "Healthy"
+      val emoji = "🟢"
     }
     case object Yellow extends HealthStatus {
-      val name: String = "YELLOW"
+      val name: String = "Warning"
+      val emoji = "🟡"
     }
     case object Red extends HealthStatus {
-      val name: String = "RED"
+      val name: String = "Unhealthy"
+      val emoji = "🔴"
+    }
+    case class Other(name: String) extends HealthStatus {
+      val emoji = "⚪"
     }
 
-    def apply(name: String): HealthStatus = name.toUpperCase() match {
-      case "GREEN"  => Green
-      case "YELLOW" => Yellow
-      case "RED"    => Red
-      case other    => throw new IllegalArgumentException(s"Invalid health status: $other")
+    def apply(name: String): HealthStatus = name.toLowerCase match {
+      case "green" | "healthy"  => Green
+      case "yellow" | "warning" => Yellow
+      case "red" | "unhealthy"  => Red
+      case other                => Other(other)
+    }
+
+    /** Check if status is considered operational */
+    def isOperational(status: HealthStatus): Boolean = status match {
+      case Green | Yellow => true
+      case Red | Other(_) => false
+    }
+
+    /** Get severity level (0 = best, 3 = worst) */
+    def severityLevel(status: HealthStatus): Int = status match {
+      case Green    => 0
+      case Yellow   => 1
+      case Red      => 2
+      case Other(_) => 3
+    }
+
+    /** Compare two health statuses (worse is "greater") */
+    implicit val ordering: Ordering[HealthStatus] = Ordering.by(severityLevel)
+
+    /** Get all known statuses (excluding Other) */
+    val knownStatuses: Seq[HealthStatus] = Seq(Green, Yellow, Red)
+  }
+
+  implicit class HealthStatusOps(val status: HealthStatus) extends AnyVal {
+
+    /** Convert to boolean (true = operational) */
+    def toBoolean: Boolean = status.isOperational
+
+    /** Get color code for terminal output */
+    def colorCode: String = status match {
+      case HealthStatus.Green    => Console.GREEN
+      case HealthStatus.Yellow   => Console.YELLOW
+      case HealthStatus.Red      => Console.RED
+      case HealthStatus.Other(_) => Console.WHITE
+    }
+
+    /** Format for terminal with color */
+    def colorDisplay: String = {
+      s"$colorCode${status.emoji} ${status.name}${Console.RESET}"
     }
   }
 
@@ -1517,7 +1611,1045 @@ package object schema {
     operationsBehind: Long,
     processingTimeMs: Long
   )
-  // ==================== Schema ====================
+
+  // ========================================================================
+  // WATCHER COMPONENTS
+  // ========================================================================
+
+  sealed trait WatcherTrigger extends DdlToken {
+    def interval: TransformTimeInterval
+    def node: JsonNode
+  }
+
+  /** Cron-based trigger
+    */
+  class CronWatcherTrigger private (
+    val cron: String,
+    private val intervalSeconds: Long
+  ) extends WatcherTrigger {
+
+    override def sql: String = s" AT SCHEDULE '$cron'"
+
+    override val interval: TransformTimeInterval =
+      Delay(TransformTimeUnit.Seconds, intervalSeconds.toInt)
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val cronNode = mapper.createObjectNode()
+      cronNode.put("cron", cron)
+      node.set("schedule", cronNode)
+      node
+    }
+  }
+
+  object CronWatcherTrigger {
+
+    /** Safe constructor that validates the cron expression */
+    def apply(cron: String): CronWatcherTrigger = {
+      CronIntervalCalculator.validateAndCalculate(cron) match {
+        case Right((_, interval)) =>
+          new CronWatcherTrigger(cron, interval)
+        case Left(error) =>
+          throw new IllegalArgumentException(
+            s"Invalid cron expression '$cron': $error"
+          )
+      }
+    }
+
+    /** Try-based constructor for safer error handling */
+    def safe(cron: String): Try[CronWatcherTrigger] = Try(apply(cron))
+  }
+
+  /* Interval-based trigger
+   *
+   * @param interval
+   *   Time interval
+   */
+  case class IntervalWatcherTrigger(interval: TransformTimeInterval) extends WatcherTrigger {
+    override def sql: String = s" EVERY ${interval.interval} ${interval.timeUnit}"
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val intervalNode = mapper.createObjectNode()
+      intervalNode.put("interval", s"${interval.interval}${interval.timeUnit.format}")
+      node.set("schedule", intervalNode)
+      node
+    }
+  }
+
+  sealed trait WatcherInput extends DdlToken {
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode
+  }
+
+  case object EmptyWatcherInput extends WatcherInput {
+    override def sql: String = " WITH NO INPUT"
+    override def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      node
+    }
+  }
+
+  case class SimpleWatcherInput(payload: ObjectValue) extends WatcherInput {
+    override def sql: String = s" WITH INPUT ${payload.ddl}"
+    override def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      val payloadNode = payload.toJson
+      node.set("simple", payloadNode.asInstanceOf[JsonNode])
+      node
+    }
+  }
+
+  case class SearchWatcherInput(
+    index: Seq[String],
+    query: Option[Criteria] = None
+  ) extends WatcherInput {
+    override def sql: String = {
+      val queryClause = query.map(q => s" WHERE ${q.sql}").getOrElse("")
+      s" WITH INPUT AS SELECT * FROM ${index.mkString(", ")}$queryClause"
+    }
+
+    override def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      val searchNode = mapper.createObjectNode()
+      val requestNode = mapper.createObjectNode()
+      val indicesNode = mapper.createArrayNode()
+      index.foreach { idx =>
+        indicesNode.add(idx)
+        ()
+      }
+      requestNode.set("indices", indicesNode)
+      val body = mapper.createObjectNode()
+      query match {
+        case Some(q) => body.set("query", implicitly[JsonNode](q))
+        case None =>
+          val q = mapper.createObjectNode()
+          val matchAll = mapper.createObjectNode()
+          q.set("match_all", matchAll)
+          body.set("query", q)
+          ()
+      }
+      requestNode.set("body", body)
+      searchNode.set("request", requestNode)
+      node.set("search", searchNode)
+      node
+    }
+  }
+
+  sealed trait WatcherCondition extends DdlToken {
+    def node: JsonNode
+  }
+
+  case object AlwaysWatcherCondition extends WatcherCondition {
+    override def sql: String = " ALWAYS"
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val alwaysNode = mapper.createObjectNode()
+      node.set("always", alwaysNode)
+      node
+    }
+  }
+
+  case object NeverWatcherCondition extends WatcherCondition {
+    override def sql: String = " NEVER"
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val neverNode = mapper.createObjectNode()
+      node.set("never", neverNode)
+      node
+    }
+  }
+
+  object CompareWatcherCondition {
+    def apply(
+      left: String,
+      operator: ComparisonOperator,
+      right: Either[Value[_], Identifier]
+    ): CompareWatcherCondition = {
+      right match {
+        case Right(script) if script.script.isEmpty =>
+          throw new IllegalArgumentException(
+            s"Invalid date math script in watcher condition: $script"
+          )
+        case _ => // OK
+      }
+
+      new CompareWatcherCondition(left, operator, right)
+    }
+
+    /** Safe constructor */
+    def safe(
+      left: String,
+      operator: ComparisonOperator,
+      right: Either[Value[_], Identifier]
+    ): Try[CompareWatcherCondition] = Try(apply(left, operator, right))
+  }
+
+  class CompareWatcherCondition private (
+    val left: String,
+    val operator: ComparisonOperator,
+    val right: Either[Value[_], Identifier]
+  ) extends WatcherCondition {
+
+    override def validate(): Either[String, Unit] = Right(())
+
+    override def sql: String = {
+      val rightStr = right match {
+        case Left(value)   => value.ddl
+        case Right(script) => script.sql
+      }
+      s" WHEN $left $operator $rightStr"
+    }
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val compareNode = mapper.createObjectNode()
+      val rightNode = mapper.createObjectNode()
+      val operatorStr = operator match {
+        case EQ => "eq"
+        case NE => "neq"
+        case GT => "gt"
+        case GE => "gte"
+        case LT => "lt"
+        case LE => "lte"
+      }
+      right match {
+        case Left(value) =>
+          value match {
+            case ByteValue(v)    => rightNode.put(operatorStr, v)
+            case ShortValue(v)   => rightNode.put(operatorStr, v)
+            case IntValue(v)     => rightNode.put(operatorStr, v)
+            case LongValue(v)    => rightNode.put(operatorStr, v)
+            case DoubleValue(v)  => rightNode.put(operatorStr, v)
+            case FloatValue(v)   => rightNode.put(operatorStr, v)
+            case BooleanValue(v) => rightNode.put(operatorStr, v)
+            case _               => rightNode.put(operatorStr, value.ddl)
+          }
+        case Right(script) =>
+          rightNode.put(operatorStr, script.script.get)
+      }
+      compareNode.set(left, rightNode)
+      node.set("compare", compareNode)
+      node
+    }
+  }
+
+  case class ScriptWatcherCondition(
+    script: String,
+    lang: String = "painless",
+    params: Map[String, Value[_]] = Map.empty
+  ) extends WatcherCondition {
+    override def sql: String = {
+      val base = s" WHEN SCRIPT '$script' USING LANG '$lang'"
+      if (params.nonEmpty) {
+        val paramsStr = ObjectValue(params).ddl
+        s"$base WITH PARAMS $paramsStr RETURNS TRUE"
+      } else {
+        s"$base RETURNS TRUE"
+      }
+    }
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val scriptNode = mapper.createObjectNode()
+      scriptNode.put("source", script)
+      scriptNode.put("lang", lang)
+      if (params.nonEmpty) {
+        val paramsNode = ObjectValue(params).toJson
+        scriptNode.set("params", paramsNode)
+      }
+      node.set("script", scriptNode)
+      node
+    }
+  }
+
+  sealed trait WatcherAction extends DdlToken {
+    def node: JsonNode
+    def options: Map[String, Value[_]]
+    def foreach: Option[String]
+    def maxIterations: Option[Int]
+  }
+
+  object WatcherExceptions {
+    sealed trait WatcherException extends Exception
+
+    case class InvalidActionConfigException(
+      message: String,
+      cause: Option[Throwable] = None
+    ) extends Exception(message, cause.orNull)
+        with WatcherException
+
+    case class MissingRequiredFieldException(
+      actionType: String,
+      field: String
+    ) extends Exception(
+          s"$actionType action requires '$field' field"
+        )
+        with WatcherException
+  }
+
+  object WatcherAction {
+    import WatcherExceptions._
+
+    def apply(options: Map[String, Value[_]]): Option[WatcherAction] = {
+      val loggingKey = options.keys.find(_.trim.toLowerCase == "logging").getOrElse("logging")
+      val webhookKey = options.keys.find(_.trim.toLowerCase == "webhook").getOrElse("webhook")
+      (options.get(loggingKey) match {
+        case Some(ObjectValue(loggingOpts)) =>
+          val text = loggingOpts.get("text") match {
+            case Some(StringValue(t)) => t
+            case _                    => throw MissingRequiredFieldException("Logging", "text")
+          }
+          val level = loggingOpts.get("level") match {
+            case Some(StringValue(l)) => Some(l)
+            case _                    => None
+          }
+          Some(
+            LoggingAction(
+              LoggingActionConfig(text, level),
+              options.get("foreach") match {
+                case Some(StringValue(f)) => Some(f)
+                case _                    => None
+              },
+              options.get("max_iterations") match {
+                case Some(IntValue(mi))  => Some(mi)
+                case Some(LongValue(mi)) => Some(mi.toInt)
+                case _                   => None
+              }
+            )
+          )
+        case _ => None
+      }).orElse {
+        options.get(webhookKey) match {
+          case Some(ObjectValue(webhookOpts)) =>
+            try {
+              val scheme = webhookOpts.get("scheme") match {
+                case Some(StringValue(s)) if Seq("http", "https").contains(s.trim.toLowerCase) =>
+                  s.trim.toLowerCase
+                case _ => "http"
+              }
+              val host = webhookOpts.get("host") match {
+                case Some(StringValue(h)) => h
+                case _                    => throw MissingRequiredFieldException("Webhook", "host")
+              }
+              val port = webhookOpts.get("port") match {
+                case Some(IntValue(p))  => p
+                case Some(LongValue(p)) => p.toInt
+                case _                  => throw MissingRequiredFieldException("Webhook", "port")
+              }
+              val method = webhookOpts.get("method") match {
+                case Some(StringValue(m))
+                    if Seq("get", "post", "put", "delete").contains(m.trim.toLowerCase) =>
+                  m
+                case _ => "get"
+              }
+              val path = webhookOpts.get("path") match {
+                case Some(StringValue(p)) => p
+                case _                    => "/"
+              }
+              val headers = webhookOpts.get("headers") match {
+                case Some(ov: ObjectValue) =>
+                  Some(ov.value.collect { case (k, StringValue(v)) =>
+                    k -> v
+                  })
+                case _ => None
+              }
+              val params = webhookOpts.get("params") match {
+                case Some(ov: ObjectValue) =>
+                  Some(ov.value.collect { case (k, StringValue(v)) =>
+                    k -> v
+                  })
+                case _ => None
+              }
+              val body = webhookOpts.get("body") match {
+                case Some(StringValue(b)) => Some(b)
+                case _                    => None
+              }
+              val connectionTimeout = webhookOpts.get("connection_timeout") match {
+                case Some(StringValue(t)) => TransformTimeInterval(t)
+                case _                    => None
+              }
+              val readTimeout = webhookOpts.get("read_timeout") match {
+                case Some(StringValue(t)) => TransformTimeInterval(t)
+                case _                    => None
+              }
+              val config = schema.WebhookActionConfig(
+                scheme = scheme,
+                host = host,
+                port = port,
+                method = method,
+                path = path,
+                headers = headers,
+                params = params,
+                body = body,
+                connectionTimeout = connectionTimeout,
+                readTimeout = readTimeout
+              )
+              val foreach = options.get("foreach") match {
+                case Some(StringValue(f)) => Some(f)
+                case _                    => None
+              }
+              val maxIterations = options.get("max_iterations") match {
+                case Some(IntValue(m))  => Some(m)
+                case Some(LongValue(m)) => Some(m.toInt)
+                case _                  => None
+              }
+              Some(
+                WebhookAction(
+                  webhook = config,
+                  foreach = foreach,
+                  maxIterations = maxIterations
+                )
+              )
+            } catch {
+              case e: WatcherException => throw e
+              case e: Exception =>
+                throw InvalidActionConfigException(
+                  s"Failed to parse webhook configuration: ${e.getMessage}",
+                  Some(e)
+                )
+            }
+          case _ => None
+        }
+      }
+    }
+  }
+
+  /** Configuration for logging action
+    *
+    * @param text
+    *   Log message text
+    * @param level
+    *   Optional log level (default: info)
+    */
+  case class LoggingActionConfig(
+    text: String,
+    level: Option[String] = Some("info")
+  ) {
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("text", text)
+      level.foreach { lvl =>
+        node.put("level", lvl)
+        ()
+      }
+      node
+    }
+
+    def options: Map[String, Value[_]] = {
+      Map("text"        -> StringValue(text)) ++
+      level.map("level" -> StringValue(_))
+    }
+  }
+
+  /** Logging action
+    *
+    * @param logging
+    *   Logging configuration
+    */
+  case class LoggingAction(
+    logging: LoggingActionConfig,
+    foreach: Option[String] = None,
+    maxIterations: Option[Int] = None
+  ) extends WatcherAction {
+
+    def sql: String = s"${ObjectValue(options).ddl}"
+
+    override def options: Map[String, Value[_]] = Map("logging" -> ObjectValue(logging.options)) ++
+      foreach.map(f => "foreach" -> StringValue(f)) ++
+      maxIterations.map(mi => "max_iterations" -> IntValue(mi))
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      foreach.foreach { fe =>
+        node.put("foreach", fe)
+        ()
+      }
+      maxIterations.foreach { mi =>
+        node.put("max_iterations", mi)
+        ()
+      }
+      val loggingNode = logging.node
+      node.set("logging", loggingNode)
+      node
+    }
+  }
+
+  /** Configuration for webhook action
+    *
+    * @param scheme
+    *   URL scheme (http or https)
+    * @param host
+    *   Hostname
+    * @param port
+    *   Port number
+    * @param method
+    *   HTTP method (GET, POST, etc.)
+    * @param path
+    *   URL path
+    * @param headers
+    *   Optional HTTP headers
+    * @param body
+    *   Optional request body
+    */
+  case class WebhookActionConfig(
+    scheme: String = "http",
+    host: String,
+    port: Int,
+    method: String = "get",
+    path: String,
+    headers: Option[Map[String, String]] = None,
+    body: Option[String] = None,
+    params: Option[Map[String, String]] = None,
+    connectionTimeout: Option[TransformTimeInterval] = Some(Delay(TransformTimeUnit.Seconds, 5)),
+    readTimeout: Option[TransformTimeInterval] = Some(Delay(TransformTimeUnit.Seconds, 30))
+  ) {
+    def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      node.put("scheme", scheme)
+      node.put("host", host)
+      node.put("port", port)
+      node.put("method", method.trim.toLowerCase)
+      node.put("path", path)
+
+      headers.foreach { hdrs =>
+        val headersNode = mapper.createObjectNode()
+        hdrs.foreach { case (k, v) =>
+          headersNode.put(k, v)
+          ()
+        }
+        node.set("headers", headersNode)
+        ()
+      }
+
+      params.foreach { prs =>
+        val paramsNode = mapper.createObjectNode()
+        prs.foreach { case (k, v) =>
+          paramsNode.put(k, v)
+          ()
+        }
+        node.set("params", paramsNode)
+        ()
+      }
+
+      body.foreach { b =>
+        node.put("body", b)
+        ()
+      }
+
+      connectionTimeout.foreach { t =>
+        node.put("connection_timeout", t.toTransformFormat)
+        ()
+      }
+
+      readTimeout.foreach { t =>
+        node.put("read_timeout", t.toTransformFormat)
+        ()
+      }
+
+      node
+    }
+
+    def options: Map[String, Value[_]] = {
+      Map(
+        "scheme" -> StringValue(scheme),
+        "host"   -> StringValue(host),
+        "port"   -> IntValue(port),
+        "method" -> StringValue(method),
+        "path"   -> StringValue(path)
+      ) ++
+      headers.map(h => "headers" -> ObjectValue(h.map { case (k, v) => k -> StringValue(v) })) ++
+      params.map(p => "params" -> ObjectValue(p.map { case (k, v) => k -> StringValue(v) })) ++
+      body.map("body" -> StringValue(_)) ++
+      connectionTimeout.map(t => "connection_timeout" -> StringValue(t.toTransformFormat)) ++
+      readTimeout.map(t => "read_timeout" -> StringValue(t.toTransformFormat))
+    }
+  }
+
+  /** Webhook action
+    *
+    * @param webhook
+    *   Webhook configuration
+    */
+  case class WebhookAction(
+    webhook: WebhookActionConfig,
+    foreach: Option[String] = None,
+    maxIterations: Option[Int] = None
+  ) extends WatcherAction {
+    def sql: String = s"${ObjectValue(options).ddl}"
+
+    override def options: Map[String, Value[_]] =
+      Map(
+        "webhook" -> ObjectValue(webhook.options)
+      ) ++
+      foreach.map(f => "foreach" -> StringValue(f)) ++
+      maxIterations.map(mi => "max_iterations" -> IntValue(mi))
+
+    override def node: JsonNode = {
+      val node = mapper.createObjectNode()
+      val webhookNode = webhook.node
+      foreach.foreach { fe =>
+        node.put("foreach", fe)
+        ()
+      }
+      maxIterations.foreach { mi =>
+        node.put("max_iterations", mi)
+        ()
+      }
+      node.set("webhook", webhookNode)
+      node
+    }
+  }
+
+  /** Watcher activation state
+    *
+    * @param active
+    *   Whether the watcher is active
+    * @param timestamp
+    *   Timestamp of the state
+    */
+  case class WatcherActivationState(active: Boolean, timestamp: ZonedDateTime)
+
+  sealed trait WatcherExecutionState extends DdlToken {
+    def name: String
+    def sql: String = name
+    def health: HealthStatus
+  }
+
+  object WatcherExecutionState {
+
+    /** Condition was not met, no actions were executed. Example: Error count below threshold
+      * Health: Yellow (normal behavior, but monitored)
+      */
+    case object ConditionNotMet extends WatcherExecutionState {
+      val name: String = "ConditionNotMet"
+      val health: HealthStatus = HealthStatus.Green
+    }
+
+    /** Watcher executed successfully, actions were performed. Example: Alert sent successfully
+      * Health: Green
+      */
+    case object Executed extends WatcherExecutionState {
+      val name: String = "Executed"
+      val health: HealthStatus = HealthStatus.Green
+    }
+
+    /** Watcher execution failed. Example: Script error, webhook timeout Health: Red (requires
+      * immediate attention)
+      */
+    case object Failed extends WatcherExecutionState {
+      val name: String = "Failed"
+      val health: HealthStatus = HealthStatus.Red
+    }
+
+    /** Actions were throttled to prevent spam. Example: Throttle period not elapsed since last
+      * execution Health: Yellow (expected behavior, but worth monitoring)
+      */
+    case object Throttled extends WatcherExecutionState {
+      val name: String = "Throttled"
+      val health: HealthStatus = HealthStatus.Yellow
+    }
+
+    /** Watcher was acknowledged (manual override). Example: Operator acknowledged alert to suppress
+      * notifications Health: Yellow (manual intervention required)
+      */
+    case object Acknowledged extends WatcherExecutionState {
+      val name: String = "Acknowledged"
+      val health: HealthStatus = HealthStatus.Yellow
+    }
+
+    case class Other(name: String) extends WatcherExecutionState {
+      val health: HealthStatus = HealthStatus.Other("unknown")
+    }
+
+    def apply(name: String): WatcherExecutionState = name.toLowerCase() match {
+      case "execution_not_needed" => ConditionNotMet
+      case "executed"             => Executed
+      case "failed"               => Failed
+      case "throttled"            => Throttled
+      case "acknowledged"         => Acknowledged
+      case other                  => Other(other)
+    }
+  }
+
+  /** Watcher status
+    * @param id
+    *   Watcher id
+    * @param version
+    *   Watcher version
+    * @param activationState
+    *   Activation state of the watcher
+    * @param executionState
+    *   Execution state of the watcher
+    * @param lastChecked
+    *   Optional timestamp of the last check
+    * @param lastMetCondition
+    *   Optional timestamp of the last time the condition was met
+    * @param interval
+    *   Optional Watcher interval
+    */
+  case class WatcherStatus(
+    id: String,
+    version: Long,
+    activationState: WatcherActivationState,
+    executionState: Option[WatcherExecutionState] = None,
+    lastChecked: Option[ZonedDateTime] = None,
+    lastMetCondition: Option[ZonedDateTime] = None,
+    interval: Option[TransformTimeInterval] = None
+  ) {
+    lazy val healthStatus: Option[WatcherHealthStatus] =
+      interval.map { iv =>
+        WatcherHealthStatus(
+          id = id,
+          active = activationState.active,
+          lastChecked = lastChecked,
+          frequency = iv,
+          createdAt = Some(activationState.timestamp),
+          executionState = executionState
+        )
+      }
+
+    lazy val active: Boolean = activationState.active
+
+    def isHealthy: Boolean = {
+      healthStatus match {
+        case Some(hs) => hs.isHealthy
+        case None     => active
+      }
+    }
+
+    private[this] lazy val timeSinceLastCheck: Option[Long] = lastChecked.map { lc =>
+      ChronoUnit.SECONDS.between(lc, ZonedDateTime.now())
+    }
+
+    lazy val health: HealthStatus = {
+      healthStatus match {
+        case Some(hs) => hs.healthStatus
+        case None =>
+          if (!active) HealthStatus.Yellow
+          else HealthStatus.Green
+      }
+    }
+
+    lazy val overallHealth: HealthStatus = {
+      healthStatus match {
+        case Some(hs) => hs.overallHealthStatus
+        case None =>
+          executionState match {
+            case Some(state) => health + state.health
+            case None        => health
+          }
+      }
+    }
+
+    /** Get health status as a map (useful for JSON serialization) */
+    def toMap: Map[String, Any] = Map(
+      "id"                            -> id,
+      "active"                        -> active,
+      "status"                        -> health.name,
+      "status_emoji"                  -> health.emoji,
+      "severity"                      -> health.severity,
+      "is_healthy"                    -> isHealthy,
+      "is_operational"                -> health.isOperational,
+      "last_checked"                  -> lastChecked.map(_.toString).getOrElse("never"),
+      "time_since_last_check_seconds" -> timeSinceLastCheck.getOrElse(-1), // -1 = unknown
+      "frequency_seconds"             -> interval.map(_.toSeconds).getOrElse(-1),
+      "created_at"                    -> activationState.timestamp.toString,
+      "execution_status"              -> executionState.map(_.name).orNull, // ✅ null if absent
+      "execution_status_emoji"        -> executionState.map(_.health.emoji).orNull,
+      "execution_severity"   -> executionState.map(_.health.severity).getOrElse(-1), // -1 = unknown
+      "overall_status"       -> overallHealth.name,
+      "overall_status_emoji" -> overallHealth.emoji,
+      "overall_severity"     -> overallHealth.severity
+    )
+
+  }
+
+  /** Watcher definition
+    *
+    * @param id
+    *   Watcher ID
+    * @param trigger
+    *   Watcher trigger configuration
+    * @param input
+    *   Watcher input configuration
+    * @param condition
+    *   Watcher condition configuration
+    * @param actions
+    *   Map of action name to WatcherAction
+    * @param throttlePeriod
+    *   Optional throttle period to limit action frequency
+    * @param metadata
+    *   Optional metadata associated with the watcher
+    * @param status
+    *   Optional status of the watcher
+    */
+  case class Watcher(
+    id: String,
+    trigger: WatcherTrigger = IntervalWatcherTrigger(Delay(TransformTimeUnit.Minutes, 5)),
+    input: WatcherInput = SimpleWatcherInput(ObjectValue(Map.empty)),
+    condition: WatcherCondition = AlwaysWatcherCondition,
+    actions: ListMap[String, WatcherAction] = ListMap.empty,
+    throttlePeriod: Option[TransformTimeInterval] = None,
+    metadata: Option[ObjectValue] = None,
+    status: Option[WatcherStatus] = None
+  ) extends DdlToken {
+    lazy val options: Map[String, Value[_]] = {
+      List(
+        throttlePeriod.map { tp =>
+          "throttle_period" -> StringValue(s"${tp.interval}${tp.timeUnit.format}")
+        },
+        metadata.map { md =>
+          "metadata" -> md
+        }
+      ).flatten.toMap
+    }
+
+    override def sql: String = {
+      val optionsClause =
+        options match {
+          case opts if opts.nonEmpty => s" AND ${ObjectValue(opts).ddl}"
+          case _                     => ""
+        }
+      s"CREATE OR REPLACE WATCHER $id AS\n${condition.ddl}\n TRIGGER ${trigger.sql.trim}\n" +
+      actions
+        .map { case (name, action) =>
+          s" $name AS ${action.sql}"
+        }
+        .mkString(",\n") + "\n" +
+      input.ddl + optionsClause
+    }
+
+    def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
+      val node = mapper.createObjectNode()
+      node.set("trigger", trigger.node)
+      node.set("input", input.node)
+      node.set("condition", condition.node)
+      val actionsNode = mapper.createObjectNode()
+      actions.foreach { case (name, action) =>
+        actionsNode.set(name, action.node)
+        ()
+      }
+      node.set("actions", actionsNode)
+      throttlePeriod.foreach { tp =>
+        val throttleNode = mapper.createObjectNode()
+        throttleNode.put("period", s"${tp.interval}${tp.timeUnit.format}")
+        node.set("throttle_period", throttleNode)
+        ()
+      }
+      metadata.foreach { md =>
+        node.set("metadata", md.toJson)
+        ()
+      }
+      node
+    }
+  }
+
+  /** Watcher health status
+    *
+    * @param id
+    *   Watcher ID
+    * @param active
+    *   Whether the watcher is active
+    * @param lastChecked
+    *   Optional timestamp of the last check
+    */
+  case class WatcherHealthStatus(
+    id: String,
+    active: Boolean,
+    lastChecked: Option[ZonedDateTime],
+    frequency: TransformTimeInterval,
+    createdAt: Option[ZonedDateTime] = None,
+    executionState: Option[WatcherExecutionState] = None
+  ) {
+    private[this] lazy val timeSinceLastCheck: Option[Long] = lastChecked.map { lc =>
+      ChronoUnit.SECONDS.between(lc, ZonedDateTime.now())
+    }
+
+    private lazy val timeSinceCreation: Option[Long] = createdAt.map { ca =>
+      ChronoUnit.SECONDS.between(ca, ZonedDateTime.now())
+    }
+
+    /** Determines if the watcher is healthy
+      *
+      * Health criteria:
+      *   - If never checked but recently created (< 2x frequency): Considered healthy (warming up)
+      *   - If checked: Must be within frequency interval
+      *   - If inactive: Always unhealthy
+      */
+    def isHealthy: Boolean = {
+      if (!active) return false
+
+      timeSinceLastCheck match {
+        case Some(seconds) =>
+          // Watcher a déjà été exécuté
+          seconds < frequency.toSeconds
+
+        case None =>
+          // Watcher jamais exécuté : vérifier s'il est récent
+          timeSinceCreation match {
+            case Some(seconds) if seconds < (frequency.toSeconds * 2) =>
+              true // ✅ Nouveau watcher en période de warm-up
+            case Some(_) =>
+              false // ❌ Créé depuis trop longtemps sans exécution
+            case None =>
+              false // ❌ Pas d'info de création et jamais exécuté
+          }
+      }
+    }
+
+    def overallHealthStatus: HealthStatus = {
+      executionState match {
+        case Some(state) =>
+          healthStatus + state.health
+
+        case None =>
+          // If the watcher is recent (< 2x frequency), it's OK
+          // Otherwise, it's suspicious.
+          timeSinceCreation match {
+            case Some(age) if age < (frequency.toSeconds * 2) =>
+              healthStatus // ✅ New watcher, no execution yet
+            case Some(_) =>
+              healthStatus + HealthStatus.Yellow // ⚠️ Former watcher with no execution status
+            case None =>
+              healthStatus // No information, we assume OK
+          }
+      }
+    }
+
+    def healthStatus: HealthStatus = {
+      if (!active) HealthStatus.Yellow
+      else if (isHealthy) HealthStatus.Green
+      else HealthStatus.Red
+    }
+
+    /** Get detailed health info with formatted output */
+    def getHealthDetails: String = {
+      val status = healthStatus
+      val lastCheckInfo = lastChecked match {
+        case Some(lc) =>
+          val delay = timeSinceLastCheck.getOrElse(0L)
+          s"Last checked: ${lc.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)} (${delay}s ago)"
+        case None =>
+          val creationInfo = createdAt match {
+            case Some(ca) =>
+              val age = timeSinceCreation.getOrElse(0L)
+              s" (created ${age}s ago)"
+            case None => ""
+          }
+          s"Never checked$creationInfo"
+      }
+
+      val frequencyInfo =
+        s"Expected frequency: ${frequency.toSeconds}s (${frequency.interval} ${frequency.timeUnit.name})"
+
+      s"""${status.display} Watcher: $id
+         |  Active: $active
+         |  $lastCheckInfo
+         |  $frequencyInfo
+         |  Operational: ${status.isOperational}
+         |""".stripMargin
+    }
+
+    /** Get health status as a map (useful for JSON serialization) */
+    def toMap: Map[String, Any] = Map(
+      "id"                            -> id,
+      "active"                        -> active,
+      "status"                        -> healthStatus.name,
+      "status_emoji"                  -> healthStatus.emoji,
+      "severity"                      -> healthStatus.severity,
+      "is_healthy"                    -> isHealthy,
+      "is_operational"                -> healthStatus.isOperational,
+      "last_checked"                  -> lastChecked.map(_.toString).getOrElse("never"),
+      "time_since_last_check_seconds" -> timeSinceLastCheck.getOrElse(-1), // -1 = unknown
+      "frequency_seconds"             -> frequency.toSeconds,
+      "created_at"                    -> createdAt.map(_.toString).getOrElse("unknown"),
+      "execution_status"              -> executionState.map(_.name).orNull, // ✅ null if absent
+      "execution_status_emoji"        -> executionState.map(_.health.emoji).orNull,
+      "execution_severity"   -> executionState.map(_.health.severity).getOrElse(-1), // -1 = unknown
+      "overall_status"       -> overallHealthStatus.name,
+      "overall_status_emoji" -> overallHealthStatus.emoji,
+      "overall_severity"     -> overallHealthStatus.severity
+    )
+
+    def logWatcherHealth(implicit logger: Logger): Unit = { // UPDATED
+      overallHealthStatus match {
+        case HealthStatus.Green =>
+          logger.info(s"${overallHealthStatus.emoji} Watcher $id is healthy")
+
+        case HealthStatus.Yellow =>
+          val reason = (active, executionState) match {
+            case (false, _) =>
+              "watcher is inactive"
+            case (true, Some(WatcherExecutionState.ConditionNotMet)) =>
+              "condition not met (no action required)"
+            case (true, Some(WatcherExecutionState.Throttled)) =>
+              "actions throttled (too frequent executions)"
+            case (true, Some(WatcherExecutionState.Acknowledged)) =>
+              "watcher acknowledged (manual intervention)"
+            case (true, None) =>
+              "no recent execution data"
+            case _ =>
+              "unknown reason"
+          }
+
+          logger.warn(
+            s"${overallHealthStatus.emoji} Watcher $id is in warning state: $reason"
+          )
+
+        case HealthStatus.Red =>
+          logger.error(
+            s"${overallHealthStatus.emoji} Watcher $id is unhealthy!\n" +
+            getHealthDetails
+          )
+
+        case HealthStatus.Other(name) =>
+          logger.warn(
+            s"${overallHealthStatus.emoji} Watcher $id has unknown status: $name"
+          )
+      }
+    }
+
+  }
+
+  object WatcherHealthStatus {
+
+    /** Creates WatcherHealthStatus from status and trigger info */
+    def fromStatus(
+      watcherId: String,
+      status: WatcherStatus,
+      trigger: WatcherTrigger
+    ): WatcherHealthStatus = {
+      WatcherHealthStatus(
+        id = watcherId,
+        active = status.activationState.active,
+        lastChecked = status.lastChecked,
+        frequency = trigger.interval,
+        executionState = status.executionState
+      )
+    }
+
+    /** Creates WatcherHealthStatus from a Watcher instance
+      *
+      * @param watcher
+      *   Watcher instance
+      * @return
+      *   WatcherHealthStatus
+      */
+    def fromWatcher(watcher: Watcher): WatcherHealthStatus = {
+      val status = watcher.status.getOrElse {
+        throw new IllegalArgumentException(
+          s"Cannot create health status: Watcher '${watcher.id}' has no status"
+        )
+      }
+      fromStatus(watcher.id, status, watcher.trigger)
+    }
+  }
+
+  // ========================================================================
+  // SCHEMA COMPONENTS
+  // ========================================================================
 
   /** Definition of a column within a table
     *

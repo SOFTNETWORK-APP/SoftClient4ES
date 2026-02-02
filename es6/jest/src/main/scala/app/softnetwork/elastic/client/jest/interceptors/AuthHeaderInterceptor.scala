@@ -29,13 +29,11 @@ class AuthHeaderInterceptor(credentials: ElasticCredentials)
   override def process(request: HttpRequest, context: HttpContext): Unit = {
     credentials.authMethod match {
       case Some(ApiKeyAuth) if credentials.apiKey.exists(_.nonEmpty) =>
-        val encodedApiKey = credentials.encodedApiKey.getOrElse("")
-        request.addHeader("Authorization", s"ApiKey $encodedApiKey")
+        request.addHeader("Authorization", ApiKeyAuth.createAuthHeader(credentials))
         logger.debug("Added API Key header to request")
 
       case Some(BearerTokenAuth) if credentials.bearerToken.exists(_.nonEmpty) =>
-        val bearerToken = credentials.bearerToken.get
-        request.addHeader("Authorization", s"Bearer $bearerToken")
+        request.addHeader("Authorization", BearerTokenAuth.createAuthHeader(credentials))
         logger.debug("Added Bearer Token header to request")
 
       case _ =>
