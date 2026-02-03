@@ -19,7 +19,7 @@ class ResultRendererSpec extends AsyncFlatSpec with Matchers {
   it should "render query rows as table" in {
     val rows = Seq(
       Map("id" -> 1, "name" -> "Alice", "email" -> "alice@example.com"),
-      Map("id" -> 2, "name" -> "Bob", "email" -> "bob@example.com")
+      Map("id" -> 2, "name" -> "Bob", "email"   -> "bob@example.com")
     )
 
     val output = ResultRenderer.render(QueryRows(rows), 50.millis)
@@ -55,12 +55,12 @@ class ResultRendererSpec extends AsyncFlatSpec with Matchers {
   it should "format values correctly" in {
     val rows = Seq(
       Map(
-        "string" -> "test",
-        "number" -> 42,
+        "string"  -> "test",
+        "number"  -> 42,
         "boolean" -> true,
-        "null" -> null,
-        "array" -> Seq(1, 2, 3),
-        "map" -> Map("key" -> "value")
+        "null"    -> null,
+        "array"   -> Seq(1, 2, 3),
+        "map"     -> Map("key" -> "value")
       )
     )
 

@@ -17,7 +17,6 @@
 package app.softnetwork.elastic.client.result
 
 import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
-import com.github.freva.asciitable.AsciiTable
 import fansi.Color
 
 import scala.concurrent.duration.Duration
@@ -32,7 +31,7 @@ object ResultRenderer {
   ): String = {
     format match {
       case OutputFormat.Ascii =>
-        renderAscii(result, executionTime) // Existing
+        renderAscii(result, executionTime)
 
       case OutputFormat.Json =>
         JsonFormatter.format(result, executionTime)
@@ -81,19 +80,19 @@ object ResultRenderer {
       return s"${emoji("✅")} ${green("No rows returned")} ${gray(s"(${executionTime.toMillis}ms)")}"
     }
 
-    // Extract columns (preserve insertion order)
+    // Extract columns
     val columnNames: Seq[String] = rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty)
 
     // Prepare headers with colors
-    val headers: Array[String] = columnNames.map(col => bold(cyan(col))).toArray
+    val headers = columnNames.map(col => bold(cyan(col)))
 
-    // Prepare data using ORIGINAL column names (not colored)
-    val dataArray: Array[Array[Object]] = rows.map { row =>
-      columnNames.map(col => formatValue(row.getOrElse(col, null)).asInstanceOf[Object]).toArray
-    }.toArray
+    // Prepare data with colors
+    val dataRows = rows.map { row =>
+      columnNames.map(col => formatValue(row.getOrElse(col, null)))
+    }
 
-    // Create table
-    val table = AsciiTable.getTable(headers, dataArray)
+    // Render custom table with ANSI support
+    val table = renderCustomTable(headers, dataRows)
 
     val output = new StringBuilder()
     output.append(table)
@@ -104,16 +103,55 @@ object ResultRenderer {
     output.toString()
   }
 
+  // Custom table renderer with ANSI support
+  private def renderCustomTable(headers: Seq[String], rows: Seq[Seq[String]]): String = {
+    if (rows.isEmpty) return ""
+
+    val allRows = headers +: rows
+
+    // Calculate column widths (strip ANSI codes)
+    val columnWidths = headers.indices.map { colIndex =>
+      allRows.map(row => stripAnsi(row(colIndex)).length).max + 2
+    }
+
+    def separator = "+" + columnWidths.map("-" * _).mkString("+") + "+"
+
+    def renderRow(row: Seq[String]) = {
+      "|" + row
+        .zip(columnWidths)
+        .map { case (cell, width) =>
+          val visible = stripAnsi(cell)
+          val padding = width - visible.length - 1
+          s" $cell${" " * padding}"
+        }
+        .mkString("|") + "|"
+    }
+
+    val output = new StringBuilder()
+    output.append(separator + "\n")
+    output.append(renderRow(headers) + "\n")
+    output.append(separator + "\n")
+    rows.foreach { row =>
+      output.append(renderRow(row) + "\n")
+    }
+    output.append(separator)
+
+    output.toString()
+  }
+
+  // Strip ANSI escape codes for width calculation
+  private def stripAnsi(s: String): String = {
+    s.replaceAll("\u001B\\[[;\\d]*m", "")
+  }
+
   private def formatValue(value: Any): String = {
     value match {
-      case null       => gray("NULL")
-      case s: String  => s
-      case n: Number  => yellow(n.toString)
-      case b: Boolean => if (b) green("true") else red("false")
-      case d: java.time.temporal.TemporalAccessor =>
-        magenta(d.toString)
-      case seq: Seq[_] =>
-        s"[${seq.map(formatValue).mkString(", ")}]"
+      case null                                   => gray("NULL")
+      case s: String                              => s
+      case n: Number                              => yellow(n.toString)
+      case b: Boolean                             => if (b) green("true") else red("false")
+      case d: java.time.temporal.TemporalAccessor => magenta(d.toString)
+      case seq: Seq[_]                            => s"[${seq.map(formatValue).mkString(", ")}]"
       case map: Map[_, _] =>
         s"{${map.map { case (k, v) => s"$k: ${formatValue(v)}" }.mkString(", ")}}"
       case other => other.toString
@@ -171,18 +209,16 @@ object ResultRenderer {
 
     val rows: List[Map[String, Any]] = table.columns.flatMap(_.asMap)
 
-    // Extract columns (preserve insertion order)
+    // Extract columns
     val columnNames: Seq[String] = rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty)
 
-    // Prepare headers with colors
-    val headers: Array[String] = columnNames.map(col => bold(cyan(col))).toArray
+    // Prepare headers and data with colors
+    val headers = columnNames.map(col => bold(cyan(col)))
+    val dataRows = rows.map { row =>
+      columnNames.map(col => formatValue(row.getOrElse(col, null)))
+    }
 
-    // Prepare data using ORIGINAL column names (not colored)
-    val dataArray: Array[Array[Object]] = rows.map { row =>
-      columnNames.map(col => formatValue(row.getOrElse(col, null)).asInstanceOf[Object]).toArray
-    }.toArray
-
-    output.append(AsciiTable.getTable(headers, dataArray))
+    output.append(renderCustomTable(headers, dataRows))
 
     // Primary Key and Partition
     val properties = Seq(
@@ -237,7 +273,6 @@ object ResultRenderer {
     output.append(s"${bold("Processors:")} (${pipeline.processors.size})\n")
     pipeline.processors.zipWithIndex.foreach { case (processor, i) =>
       output.append(s"\n  ${i + 1}. ${cyan(processor.processorType.name)}\n")
-    // Add processor details if needed
     }
 
     output.toString()
