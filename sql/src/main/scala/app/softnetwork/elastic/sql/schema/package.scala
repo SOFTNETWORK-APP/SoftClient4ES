@@ -2877,7 +2877,11 @@ package object schema {
         "type"    -> dataType.typeId,
         "script"  -> script.map(_.script).getOrElse("N/A"),
         "default" -> defaultValue.map(_.value).getOrElse(""),
-        "notNull" -> notNull,
+        "nullable" -> (if (notNull) {
+                         "no"
+                       } else {
+                         "yes"
+                       }),
         "comment" -> comment.getOrElse(""),
         "options" -> ObjectValue(options).ddl
       )

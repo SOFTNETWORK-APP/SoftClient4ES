@@ -51,4 +51,10 @@ object Versions {
   val delta = "3.3.2"
 
   val cron4s = "0.8.2"
+
+  val jline = "3.30.6"
+
+  val asciiTable = "1.9.0"
+
+  val fansi = "0.5.1"
 }

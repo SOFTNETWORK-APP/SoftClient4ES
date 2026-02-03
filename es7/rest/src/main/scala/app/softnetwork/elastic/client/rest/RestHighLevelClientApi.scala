@@ -146,12 +146,7 @@ import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.core.TimeValue
 import org.elasticsearch.index.query.{QueryBuilder, QueryBuilders}
-import org.elasticsearch.xcontent.{
-  DeprecationHandler,
-  ToXContent,
-  XContentFactory,
-  XContentType
-}
+import org.elasticsearch.xcontent.{DeprecationHandler, ToXContent, XContentFactory, XContentType}
 import org.elasticsearch.rest.RestStatus
 import org.elasticsearch.search.aggregations.AggregatorFactories
 import org.elasticsearch.search.aggregations.metrics.{

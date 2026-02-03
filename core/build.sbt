@@ -37,8 +37,20 @@ val avro = Seq(
   "org.apache.hadoop" % "hadoop-client" % "3.4.2" excludeAll (excludeSlf4jAndLog4j *)
 )
 
+val repl = Seq(
+  "org.jline" % "jline" % Versions.jline,
+  "org.jline" % "jline-reader" % Versions.jline,
+  "org.jline" % "jline-terminal" % Versions.jline,
+
+  // Pretty-print des tables
+  "com.github.freva" % "ascii-table" % Versions.asciiTable,
+
+  // Couleurs ANSI
+  "com.lihaoyi" %% "fansi" % Versions.fansi
+)
+
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
-json4s ++ mockito ++ avro :+ "com.google.code.gson" % "gson" % Versions.gson :+
+json4s ++ mockito ++ avro ++ repl :+ "com.google.code.gson" % "gson" % Versions.gson :+
 "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
 "io.delta" %% "delta-standalone" % Versions.delta :+
 "org.scalatest" %% "scalatest" % Versions.scalatest % Test
