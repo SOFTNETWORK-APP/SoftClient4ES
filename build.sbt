@@ -274,6 +274,23 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     )
 }
 
+def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
+  val majorVersion = elasticSearchMajorVersion(esVersion)
+  val projectId = s"es${majorVersion}cli"
+  Project(id = projectId, base = file(s"es$majorVersion/cli"))
+    .enablePlugins(JavaAppPackaging)
+    .settings(
+      moduleSettings,
+      elasticSearchVersion := esVersion,
+      organization := "app.softnetwork.elastic",
+      name := s"softclient4es$majorVersion-cli-assembly",
+      Compile / mainClass := Some("app.softnetwork.elastic.client.Cli"),
+      Universal / mainClass := Some("app.softnetwork.elastic.client.Cli"),
+      executableScriptName := s"softclient4es$majorVersion",
+    )
+    .settings(ss: _*)
+}
+
 lazy val es6bridge = project
   .in(file("es6/bridge"))
   .configs(IntegrationTest)
@@ -304,6 +321,12 @@ lazy val es6rest = project
   )
   .dependsOn(
     es6testkit % "test->test;it->it"
+  )
+
+lazy val es6cli =
+  cliProject(Versions.es6)
+  .dependsOn(
+    es6rest % "compile->compile"
   )
 
 lazy val es6jest = project
@@ -337,7 +360,8 @@ lazy val es6 = project
     es6bridge,
     es6testkit,
     es6rest,
-    es6jest
+    es6jest,
+    es6cli
   )
 
 lazy val es7bridge = bridgeProject(Versions.es7)
@@ -362,6 +386,12 @@ lazy val es7rest = project
     es7testkit % "test->test;it->it"
   )
 
+lazy val es7cli =
+  cliProject(Versions.es7)
+    .dependsOn(
+      es7rest % "compile->compile"
+    )
+
 lazy val es7 = project
   .in(file("es7"))
   .configs(IntegrationTest)
@@ -374,7 +404,8 @@ lazy val es7 = project
   .aggregate(
     es7bridge,
     es7testkit,
-    es7rest
+    es7rest,
+    es7cli
   )
 
 lazy val es8bridge = bridgeProject(Versions.es8)
@@ -399,6 +430,12 @@ lazy val es8java = project
     es8testkit % "test->test;it->it"
   )
 
+lazy val es8cli =
+  cliProject(Versions.es8)
+    .dependsOn(
+      es8java % "compile->compile"
+    )
+
 lazy val es8 = project
   .in(file("es8"))
   .configs(IntegrationTest)
@@ -411,7 +448,8 @@ lazy val es8 = project
   .aggregate(
     es8bridge,
     es8testkit,
-    es8java
+    es8java,
+    es8cli
   )
 
 lazy val es9bridge = bridgeProject(
@@ -449,6 +487,17 @@ lazy val es9java = project
     es9testkit % "test->test;it->it"
   )
 
+lazy val es9cli =
+  cliProject(
+    Versions.es9,
+    scalaVersion := scala213,
+    crossScalaVersions := Seq(scala213),
+    javacOptions ++= Seq("-source", "17", "-target", "17")
+  )
+    .dependsOn(
+      es9java % "compile->compile"
+    )
+
 lazy val es9 = project
   .in(file("es9"))
   .configs(IntegrationTest)
@@ -461,7 +510,8 @@ lazy val es9 = project
   .aggregate(
     es9bridge,
     es9testkit,
-    es9java
+    es9java,
+    es9cli
   )
 
 lazy val root = project
