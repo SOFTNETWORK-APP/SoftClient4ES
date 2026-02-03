@@ -34,7 +34,11 @@ class SqlRepl(
   private val terminal: Terminal = TerminalBuilder
     .builder()
     .system(true)
+    .jansi(true) // Force l'utilisation de Jansi
+    .jna(true) // Force l'utilisation de JNA
     .build()
+
+  private val completer = new SqlCompleter()
 
   private val reader: LineReader = LineReaderBuilder
     .builder()
@@ -42,7 +46,11 @@ class SqlRepl(
     .appName("SoftClient4ES SQL Gateway")
     .parser(new SqlParser())
     .history(new DefaultHistory())
-    .completer(new SqlCompleter())
+    .completer(completer)
+    .option(LineReader.Option.CASE_INSENSITIVE, true)
+    .option(LineReader.Option.AUTO_LIST, true) // Liste automatique
+    .option(LineReader.Option.AUTO_MENU, true) // Menu automatique
+    .option(LineReader.Option.LIST_AMBIGUOUS, true) // Liste si ambigu
     .highlighter(new SqlHighlighter())
     .build()
 
