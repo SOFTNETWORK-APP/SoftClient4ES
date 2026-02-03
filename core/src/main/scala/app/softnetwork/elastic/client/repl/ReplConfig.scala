@@ -22,7 +22,7 @@ import scala.concurrent.duration._
 
 // ==================== Configuration ====================
 
-case class SqlReplConfig(
+case class ReplConfig(
   var primaryPrompt: String = "sql> ",
   var continuationPrompt: String = "  -> ",
   var timeout: Duration = 30.seconds,
@@ -30,6 +30,6 @@ case class SqlReplConfig(
   var format: OutputFormat = OutputFormat.Ascii
 )
 
-object SqlReplConfig {
-  def default: SqlReplConfig = SqlReplConfig()
+object ReplConfig {
+  def default: ReplConfig = ReplConfig()
 }

@@ -28,7 +28,7 @@ import app.softnetwork.elastic.client.result.{
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
-class SqlExecutor(gateway: GatewayApi)(implicit system: ActorSystem, ec: ExecutionContext) {
+class ReplExecutor(gateway: GatewayApi)(implicit system: ActorSystem, ec: ExecutionContext) {
 
   /** Execute SQL and return formatted result */
   def execute(sql: String): Future[ExecutionResult] = {

@@ -19,7 +19,7 @@ package app.softnetwork.elastic.client.repl
 import org.jline.reader.{Highlighter, LineReader}
 import org.jline.utils.{AttributedString, AttributedStringBuilder, AttributedStyle}
 
-class SqlHighlighter extends Highlighter {
+class ReplHighlighter extends Highlighter {
 
   private val keywords = Set(
     "SELECT",

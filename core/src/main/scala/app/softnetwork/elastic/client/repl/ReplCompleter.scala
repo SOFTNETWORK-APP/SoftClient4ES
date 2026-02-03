@@ -20,7 +20,7 @@ import org.jline.reader.{Candidate, Completer, LineReader, ParsedLine}
 
 import java.util
 
-class SqlCompleter extends Completer {
+class ReplCompleter extends Completer {
 
   private val simpleKeywords = Set(
     // DQL

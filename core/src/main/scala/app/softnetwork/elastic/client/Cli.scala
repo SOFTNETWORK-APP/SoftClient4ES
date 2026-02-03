@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client.repl
+package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
+import app.softnetwork.elastic.client.repl.{Repl, ReplExecutor}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 
 import scala.concurrent.ExecutionContext
 
-object SqlCli extends App {
+object Cli extends App {
 
   implicit val system: ActorSystem = ActorSystem("softclient4es-sql-cli")
   implicit val ec: ExecutionContext = system.dispatcher
@@ -32,8 +33,8 @@ object SqlCli extends App {
   try {
     val gateway = ElasticClientFactory.createWithMonitoring(config.elasticConfig)
 
-    val executor = new SqlExecutor(gateway)
-    val repl = new SqlRepl(executor, config.replConfig)
+    val executor = new ReplExecutor(gateway)
+    val repl = new Repl(executor, config.replConfig)
 
     // Batch mode or interactive mode
     val exitCode = (config.executeFile, config.executeCommand) match {
@@ -64,7 +65,7 @@ object SqlCli extends App {
 
   // ==================== Argument Parsing ====================
 
-  private def parseArgs(args: Array[String]): SqlCliConfig = {
+  private def parseArgs(args: Array[String]): CliConfig = {
     var scheme = "http"
     var host = "localhost"
     var port = 9200
@@ -125,7 +126,7 @@ object SqlCli extends App {
       }
     }
 
-    SqlCliConfig(
+    CliConfig(
       scheme,
       host,
       port,

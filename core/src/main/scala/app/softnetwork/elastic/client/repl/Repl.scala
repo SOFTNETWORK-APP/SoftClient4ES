@@ -26,9 +26,9 @@ import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, TimeoutException}
 import scala.util.{Failure, Success, Try}
 
-class SqlRepl(
-  executor: SqlExecutor,
-  config: SqlReplConfig = SqlReplConfig.default
+class Repl(
+  executor: ReplExecutor,
+  config: ReplConfig = ReplConfig.default
 )(implicit system: ActorSystem, ec: ExecutionContext) {
 
   private val terminal: Terminal = TerminalBuilder
@@ -38,20 +38,20 @@ class SqlRepl(
     .jna(true) // Force l'utilisation de JNA
     .build()
 
-  private val completer = new SqlCompleter()
+  private val completer = new ReplCompleter()
 
   private val reader: LineReader = LineReaderBuilder
     .builder()
     .terminal(terminal)
     .appName("SoftClient4ES SQL Gateway")
-    .parser(new SqlParser())
+    .parser(new ReplParser())
     .history(new DefaultHistory())
     .completer(completer)
     .option(LineReader.Option.CASE_INSENSITIVE, true)
     .option(LineReader.Option.AUTO_LIST, true) // Liste automatique
     .option(LineReader.Option.AUTO_MENU, true) // Menu automatique
     .option(LineReader.Option.LIST_AMBIGUOUS, true) // Liste si ambigu
-    .highlighter(new SqlHighlighter())
+    .highlighter(new ReplHighlighter())
     .build()
 
   private var running = true

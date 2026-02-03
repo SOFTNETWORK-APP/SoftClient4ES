@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client.repl
+package app.softnetwork.elastic.client
 
+import app.softnetwork.elastic.client.repl.ReplConfig
 import com.typesafe.config.{Config, ConfigFactory}
 
-case class SqlCliConfig(
+case class CliConfig(
   scheme: String,
   host: String,
   port: Int,
@@ -28,7 +29,7 @@ case class SqlCliConfig(
   bearerToken: Option[String],
   executeFile: Option[String],
   executeCommand: Option[String],
-  replConfig: SqlReplConfig = SqlReplConfig.default
+  replConfig: ReplConfig = ReplConfig.default
 ) {
   private lazy val elasticConfigAsString: String =
     s"""

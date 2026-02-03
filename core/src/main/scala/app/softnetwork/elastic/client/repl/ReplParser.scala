@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 
 // ==================== SQL Parser (for multiline) ====================
 
-class SqlParser extends Parser {
+class ReplParser extends Parser {
 
   override def parse(line: String, cursor: Int, context: ParseContext): ParsedLine = {
     val trimmed = line.trim
