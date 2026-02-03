@@ -22,23 +22,22 @@ import java.util
 
 class SqlCompleter extends Completer {
 
-  private val keywords = Set(
+  private val simpleKeywords = Set(
     // DQL
     "SELECT",
     "FROM",
     "WHERE",
-    "GROUP BY",
-    "ORDER BY",
+    "GROUP",
+    "ORDER",
     "HAVING",
     "LIMIT",
     "OFFSET",
     "JOIN",
-    "LEFT JOIN",
-    "RIGHT JOIN",
-    "INNER JOIN",
-    "OUTER JOIN",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
     "UNION",
-    "UNION ALL",
     "INTERSECT",
     "EXCEPT",
 
@@ -95,27 +94,64 @@ class SqlCompleter extends Completer {
     "TRUE",
     "FALSE",
 
-    // Enrich Policy
+    // Enrich/Watcher
     "TYPE",
     "MATCH",
     "GEO_MATCH",
     "RANGE",
     "ON",
     "EXECUTE",
-
-    // Watcher
     "SCHEDULE",
     "EVERY",
     "CONDITION",
     "ACTION",
     "WEBHOOK",
     "LOGGING",
-    //"EMAIL",
 
     // Meta
     "SHOW",
     "DESCRIBE",
-    "EXPLAIN"
+    "EXPLAIN",
+    "BY",
+    "ALL",
+    "AS"
+  )
+
+  // Context-aware compound keywords
+  private val compoundKeywords = Map(
+    "GROUP"  -> List("BY"),
+    "ORDER"  -> List("BY"),
+    "LEFT"   -> List("JOIN", "OUTER JOIN"),
+    "RIGHT"  -> List("JOIN", "OUTER JOIN"),
+    "INNER"  -> List("JOIN"),
+    "OUTER"  -> List("JOIN"),
+    "UNION"  -> List("ALL"),
+    "ENRICH" -> List("POLICY"),
+    "GEO"    -> List("MATCH")
+  )
+
+  private val metaCommands = Set(
+    ".help",
+    ".h",
+    ".quit",
+    ".exit",
+    ".q",
+    ".tables",
+    ".t",
+    ".describe",
+    ".desc",
+    ".d",
+    ".pipelines",
+    ".p",
+    ".watchers",
+    ".w",
+    ".policies",
+    ".pol",
+    ".history",
+    ".clear",
+    ".timing",
+    ".format",
+    ".timeout"
   )
 
   override def complete(
@@ -123,22 +159,69 @@ class SqlCompleter extends Completer {
     line: ParsedLine,
     candidates: util.List[Candidate]
   ): Unit = {
-    val word = line.word().toUpperCase
+    val buffer = line.line()
+    val word = line.word()
+    val wordUpper = word.toUpperCase
 
-    keywords
-      .filter(_.startsWith(word))
-      .foreach { keyword =>
-        candidates.add(
-          new Candidate(
-            keyword,
-            keyword,
-            null, // group
-            null, // description
-            null, // suffix
-            null, // key
-            true // complete
+    // Meta commands (start with .)
+    if (buffer.trim.startsWith(".")) {
+      metaCommands
+        .filter(_.startsWith(word.toLowerCase))
+        .foreach { cmd =>
+          candidates.add(
+            new Candidate(
+              cmd,
+              cmd,
+              "meta", // group
+              s"Meta command", // description
+              null,
+              null,
+              true
+            )
           )
-        )
+        }
+    }
+    // SQL keywords
+    else {
+      // Get previous word for compound keyword detection
+      val words = buffer.trim.split("\\s+")
+      val previousWord = if (words.length > 1) words(words.length - 2).toUpperCase else ""
+
+      // Check for compound keywords first
+      if (compoundKeywords.contains(previousWord)) {
+        compoundKeywords(previousWord)
+          .filter(_.startsWith(wordUpper))
+          .foreach { continuation =>
+            candidates.add(
+              new Candidate(
+                continuation,
+                continuation,
+                "keyword",
+                s"$previousWord $continuation",
+                null,
+                null,
+                true
+              )
+            )
+          }
       }
+
+      // Add simple keywords
+      simpleKeywords
+        .filter(_.startsWith(wordUpper))
+        .foreach { keyword =>
+          candidates.add(
+            new Candidate(
+              keyword,
+              keyword,
+              "keyword",
+              "SQL keyword",
+              null,
+              null,
+              true
+            )
+          )
+        }
+    }
   }
 }

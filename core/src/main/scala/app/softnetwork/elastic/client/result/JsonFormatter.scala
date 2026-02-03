@@ -72,8 +72,9 @@ object JsonFormatter {
   private def valueToJson(value: Any): JValue = value match {
     case null           => JNull
     case s: String      => JString(s)
+    case i: Short       => JInt(i)
     case i: Int         => JInt(i)
-    case l: Long        => JInt(l)
+    case l: Long        => JLong(l)
     case d: Double      => JDouble(d)
     case b: Boolean     => JBool(b)
     case seq: Seq[_]    => JArray(seq.map(valueToJson).toList)

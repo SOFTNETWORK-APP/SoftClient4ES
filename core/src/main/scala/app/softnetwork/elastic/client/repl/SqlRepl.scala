@@ -63,7 +63,6 @@ class SqlRepl(
         val line = reader.readLine(prompt)
 
         if (line == null) {
-          // Ctrl+D pressed
           running = false
         } else {
           handleLine(line.trim)
@@ -94,8 +93,9 @@ class SqlRepl(
       case "" if multilineBuffer.isEmpty =>
       // Do nothing
 
-      // Meta commands
+      // Meta commands (execute immediately, clear buffer first)
       case cmd if cmd.startsWith(".") =>
+        multilineBuffer.clear()
         handleMetaCommand(cmd)
 
       // SQL statement (complete or partial)
@@ -111,17 +111,20 @@ class SqlRepl(
   }
 
   private def isCompleteStatement(sql: String): Boolean = {
-    // Simple heuristic: statement ends with semicolon
     sql.trim.endsWith(";")
   }
 
+  // Execute SQL from multiline buffer (semicolon already removed)
   private def executeStatement(sql: String): Unit = {
     val cleanSql = sql.stripSuffix(";").trim
-
     if (cleanSql.isEmpty) return
+    executeStatementDirect(cleanSql)
+  }
 
+  // Execute SQL directly (for meta commands)
+  private def executeStatementDirect(sql: String): Unit = {
     try {
-      val future = executor.execute(cleanSql)
+      val future = executor.execute(sql)
       val result = Await.result(future, config.timeout)
 
       result match {
@@ -167,12 +170,11 @@ class SqlRepl(
   }
 
   private def executeBatch(sql: String): Unit = {
-    // Split into statements (simple split by semicolon)
     val statements = sql.split(";").map(_.trim).filter(_.nonEmpty)
 
     statements.foreach { stmt =>
       println(s"\n${cyan("=>")} ${gray(stmt)}")
-      executeStatement(stmt)
+      executeStatementDirect(stmt)
     }
   }
 
@@ -191,23 +193,23 @@ class SqlRepl(
         running = false
 
       case ".tables" | ".t" =>
-        executeStatement("SHOW TABLES")
+        executeStatementDirect("SHOW TABLES")
 
       case ".describe" | ".desc" | ".d" =>
         if (args.nonEmpty) {
-          executeStatement(s"DESCRIBE TABLE $args")
+          executeStatementDirect(s"DESCRIBE TABLE $args")
         } else {
           printError("Usage: .describe <table_name>")
         }
 
       case ".pipelines" | ".p" =>
-        executeStatement("SHOW PIPELINES")
+        executeStatementDirect("SHOW PIPELINES")
 
       case ".watchers" | ".w" =>
-        executeStatement("SHOW WATCHERS")
+        executeStatementDirect("SHOW WATCHERS")
 
       case ".policies" | ".pol" =>
-        executeStatement("SHOW ENRICH POLICIES")
+        executeStatementDirect("SHOW ENRICH POLICIES")
 
       case ".history" =>
         printHistory()
@@ -277,7 +279,7 @@ class SqlRepl(
          |  ${yellow(".history")}           Show command history
          |  ${yellow(".clear")}             Clear screen
          |  ${yellow(".timing")}            Toggle timing display
-         |  ${yellow(".format <type>")}    Set output format (table|json|csv)
+         |  ${yellow(".format <type>")}    Set output format (ascii|json|csv)
          |  ${yellow(".timeout <seconds>")} Set query timeout
          |
          |${bold(cyan("SQL Commands:"))}
@@ -291,8 +293,9 @@ class SqlRepl(
          |  ${green("SHOW")} TABLES | PIPELINES | WATCHERS
          |
          |${bold(cyan("Tips:"))}
-         |  • Statements can span multiple lines
-         |  • End statements with ${yellow(";")} to execute
+         |  • Meta commands execute immediately (no ; needed)
+         |  • SQL statements can span multiple lines
+         |  • End SQL statements with ${yellow(";")} to execute
          |  • Press ${yellow("Ctrl+C")} to cancel current statement
          |  • Press ${yellow("Ctrl+D")} or type ${yellow(".quit")} to exit
          |  • Use ${yellow("↑")} and ${yellow("↓")} to navigate history
@@ -319,7 +322,7 @@ class SqlRepl(
   // ==================== Helpers ====================
 
   private def emoji(s: String): String = s
-  private def bold(s: String): String = s // Simplified
+  private def bold(s: String): String = s
   private def red(s: String): String = s
   private def green(s: String): String = s
   private def yellow(s: String): String = s
