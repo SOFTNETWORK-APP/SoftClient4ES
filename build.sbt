@@ -278,15 +278,18 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
   val majorVersion = elasticSearchMajorVersion(esVersion)
   val projectId = s"es${majorVersion}cli"
   Project(id = projectId, base = file(s"es$majorVersion/cli"))
-    .enablePlugins(JavaAppPackaging)
+    .enablePlugins(JavaAppPackaging, BuildInfoPlugin)
     .settings(
       moduleSettings,
+      app.softnetwork.Info.infoSettings,
       elasticSearchVersion := esVersion,
+      buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
+      buildInfoObject := "SoftClient4esClientBuildInfo",
       organization := "app.softnetwork.elastic",
       name := s"softclient4es$majorVersion-cli-assembly",
       Compile / mainClass := Some("app.softnetwork.elastic.client.Cli"),
       Universal / mainClass := Some("app.softnetwork.elastic.client.Cli"),
-      executableScriptName := s"softclient4es$majorVersion",
+      executableScriptName := s"softclient4es",
     )
     .settings(ss: _*)
 }

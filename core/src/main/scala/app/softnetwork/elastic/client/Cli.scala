@@ -99,11 +99,11 @@ object Cli extends App {
           password = Some(args(i + 1))
           i += 2
 
-        case "--api-key" =>
+        case "-k" | "--api-key" =>
           apiKey = Some(args(i + 1))
           i += 2
 
-        case "--bearer-token" =>
+        case "-b" | "--bearer-token" =>
           bearerToken = Some(args(i + 1))
           i += 2
 
@@ -145,29 +145,32 @@ object Cli extends App {
         |Elasticsearch SQL CLI
         |
         |Usage:
-        |  elasticsearch-sql [OPTIONS]
+        |  softclient4es [OPTIONS]
         |
         |Options:
-        |  -h, --host <host>         Elasticsearch host (default: localhost)
-        |  -p, --port <port>         Elasticsearch port (default: 9200)
-        |  -u, --username <user>     Username for authentication
-        |  -P, --password <pass>     Password for authentication
-        |  -f, --file <path>         Execute SQL from file and exit
-        |  -c, --command <sql>       Execute SQL command and exit
-        |  --help                    Show this help message
+        |  -s, --scheme <scheme>      Connection scheme (http or https, default: http)
+        |  -h, --host <host>          Elasticsearch host (default: localhost)
+        |  -p, --port <port>          Elasticsearch port (default: 9200)
+        |  -u, --username <user>      Username for authentication
+        |  -P, --password <pass>      Password for authentication
+        |  -k, --api-key <key>        API key for authentication
+        |  -b, --bearer-token <token> Bearer token for authentication
+        |  -f, --file <path>          Execute SQL from file and exit
+        |  -c, --command <sql>        Execute SQL command and exit
+        |  --help                     Show this help message
         |
         |Examples:
         |  # Start interactive REPL
-        |  elasticsearch-sql
+        |  softclient4es
         |
         |  # Connect to remote host
-        |  elasticsearch-sql -h prod-es.example.com -p 9200
+        |  softclient4es -h prod-es.example.com -p 9200
         |
         |  # Execute SQL file
-        |  elasticsearch-sql -f queries.sql
+        |  softclient4es -f queries.sql
         |
         |  # Execute single command
-        |  elasticsearch-sql -c "SELECT * FROM users LIMIT 10"
+        |  softclient4es -c "SELECT * FROM users LIMIT 10"
         |
         |Interactive Commands:
         |  .help                     Show available commands
