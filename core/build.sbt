@@ -41,9 +41,8 @@ val repl = Seq(
   "org.jline" % "jline" % Versions.jline,
   "org.jline" % "jline-reader" % Versions.jline,
   "org.jline" % "jline-terminal" % Versions.jline,
-
-  // Pretty-print des tables
-  "com.github.freva" % "ascii-table" % Versions.asciiTable,
+  "org.jline" % "jline-terminal-jansi" % Versions.jline,
+  "org.jline" % "jline-terminal-jna" % Versions.jline,
 
   // Couleurs ANSI
   "com.lihaoyi" %% "fansi" % Versions.fansi

@@ -54,7 +54,5 @@ object Versions {
 
   val jline = "3.30.6"
 
-  val asciiTable = "1.9.0"
-
   val fansi = "0.5.1"
 }
