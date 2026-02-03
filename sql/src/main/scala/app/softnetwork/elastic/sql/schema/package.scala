@@ -739,8 +739,8 @@ package object schema {
     criteria: Option[Criteria] = None
   ) extends DdlToken {
     def sql: String =
-      s"CREATE OR REPLACE ENRICH POLICY $name TYPE $policyType WITH SOURCE INDICES ${indices
-        .mkString(",")} MATCH FIELD $matchField ENRICH FIELDS (${enrichFields.mkString(", ")})${Where(criteria)}"
+      s"CREATE OR REPLACE ENRICH POLICY $name TYPE $policyType FROM ${indices
+        .mkString(",")} ON $matchField ENRICH ${enrichFields.mkString(", ")}${Where(criteria)}"
 
     def node(implicit criteriaToNode: Criteria => JsonNode): JsonNode = {
       val node = mapper.createObjectNode()
@@ -760,10 +760,79 @@ package object schema {
       policy.set("enrich_fields", enrichFieldsNode)
       criteria.foreach { c =>
         policy.set("query", implicitly[JsonNode](c))
+        ()
       }
       node.set(policyType.name.toLowerCase, policy)
       node
     }
+  }
+
+  sealed trait EnrichPolicyTaskStatus extends DdlToken {
+    def name: String
+    override def sql: String = name
+    def health: HealthStatus
+  }
+
+  object EnrichPolicyTaskStatus {
+    case object Scheduled extends EnrichPolicyTaskStatus {
+      val name: String = "SCHEDULED"
+      def health: HealthStatus = HealthStatus.Yellow
+    }
+    case object Running extends EnrichPolicyTaskStatus {
+      val name: String = "RUNNING"
+      def health: HealthStatus = HealthStatus.Yellow
+    }
+    case object Completed extends EnrichPolicyTaskStatus {
+      val name: String = "COMPLETE"
+      def health: HealthStatus = HealthStatus.Green
+    }
+    case object Cancelled extends EnrichPolicyTaskStatus {
+      val name: String = "CANCELLED"
+      def health: HealthStatus = HealthStatus.Yellow
+    }
+    case object Failed extends EnrichPolicyTaskStatus {
+      val name: String = "FAILED"
+      def health: HealthStatus = HealthStatus.Red
+    }
+    case class Other(status: String) extends EnrichPolicyTaskStatus {
+      val name: String = status
+      def health: HealthStatus = HealthStatus.Other(status)
+    }
+
+    def apply(name: String): EnrichPolicyTaskStatus = name.toUpperCase() match {
+      case "SCHEDULED" => Scheduled
+      case "RUNNING"   => Running
+      case "COMPLETE"  => Completed
+      case "CANCELLED" => Cancelled
+      case "FAILED"    => Failed
+      case other       => Other(other)
+    }
+  }
+
+  case class EnrichPolicyTask(
+    policyName: String,
+    taskId: String,
+    status: EnrichPolicyTaskStatus,
+    startTime: Option[ZonedDateTime] = None,
+    endTime: Option[ZonedDateTime] = None,
+    failureReason: Option[String] = None
+  ) extends DdlToken {
+    def sql: String =
+      s"ENRICH POLICY TASK FOR $policyName IS ${status.name}${startTime
+        .map(t => s" STARTED AT $t")
+        .getOrElse("")}${endTime.map(t => s" ENDED AT $t").getOrElse("")}${failureReason
+        .map(r => s" FAILURE REASON: $r")
+        .getOrElse("")}"
+    def toMap: Map[String, Any] = Map(
+      "policy_name"   -> policyName,
+      "task_id"       -> taskId,
+      "status"        -> status.name,
+      "health"        -> status.health.name,
+      "health_emoji"  -> status.health.emoji,
+      "startTime"     -> startTime.map(_.toString).getOrElse(""),
+      "endTime"       -> endTime.map(_.toString).getOrElse(""),
+      "failureReason" -> failureReason.getOrElse("")
+    )
   }
 
   // ========================================================================

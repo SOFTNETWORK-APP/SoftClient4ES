@@ -32,6 +32,8 @@ import app.softnetwork.elastic.sql.schema.{
   CountTransformAggregation,
   Delay,
   EnrichPolicy,
+  EnrichPolicyTask,
+  EnrichPolicyTaskStatus,
   MaxTransformAggregation,
   MinTransformAggregation,
   SumTransformAggregation,
@@ -143,8 +145,13 @@ import org.elasticsearch.cluster.metadata.{AliasMetadata, ComposableIndexTemplat
 import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.core.TimeValue
-import org.elasticsearch.index.query.QueryBuilders
-import org.elasticsearch.xcontent.{DeprecationHandler, ToXContent, XContentFactory, XContentType}
+import org.elasticsearch.index.query.{QueryBuilder, QueryBuilders}
+import org.elasticsearch.xcontent.{
+  DeprecationHandler,
+  ToXContent,
+  XContentFactory,
+  XContentType
+}
 import org.elasticsearch.rest.RestStatus
 import org.elasticsearch.search.aggregations.AggregatorFactories
 import org.elasticsearch.search.aggregations.metrics.{
@@ -163,6 +170,7 @@ import org.json4s.jackson.JsonMethods
 import org.json4s.DefaultFormats
 
 import java.io.IOException
+import java.time.ZonedDateTime
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
@@ -2287,6 +2295,12 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
           policy.matchField,
           policy.enrichFields.asJava
         )
+        policy.criteria.foreach { criteria =>
+          implicit val timestamp: Long = System.currentTimeMillis()
+          val queryJson: String = implicitly[JsonNode](criteria)
+          val queryBuilder = parseQueryFromJson(queryJson)
+          req.setQuery(queryBuilder)
+        }
         logger.info(s"Creating Enrich Policy ${policy.name}:\n${Strings.toString(req, true, true)}")
         req
       }
@@ -2312,7 +2326,8 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
 
   override private[client] def executeExecuteEnrichPolicy(
     policyName: String
-  ): ElasticResult[String] =
+  ): ElasticResult[EnrichPolicyTask] = {
+    val startTime = ZonedDateTime.now()
     executeRestAction(
       operation = "ExecuteEnrichPolicy",
       retryable = false
@@ -2325,8 +2340,41 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
     )(
       executor = req => apply().enrich().executePolicy(req, RequestOptions.DEFAULT)
     )(
-      transformer = resp => resp.getTaskId
+      transformer = resp => {
+        val endTime = ZonedDateTime.now()
+        val status = EnrichPolicyTaskStatus(resp.getExecutionStatus.getPhase)
+        logger.info(
+          s"Enrich Policy '$policyName' executed in ${endTime.toInstant.toEpochMilli - startTime.toInstant.toEpochMilli} ms with status: ${status.name}"
+        )
+        EnrichPolicyTask(
+          policyName = policyName,
+          taskId = resp.getTaskId,
+          status = status,
+          startTime = Some(startTime),
+          endTime = Some(endTime)
+        )
+      }
     )
+  }
+
+  /** Parse JSON query string into QueryBuilder
+    */
+  private def parseQueryFromJson(queryJson: String): QueryBuilder = {
+    val parser = XContentType.JSON
+      .xContent()
+      .createParser(
+        this.namedXContentRegistry,
+        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+        queryJson
+      )
+
+    try {
+      parser.nextToken() // Move to first token
+      org.elasticsearch.index.query.AbstractQueryBuilder.parseInnerQueryBuilder(parser)
+    } finally {
+      parser.close()
+    }
+  }
 }
 
 // ==================== TRANSFORM API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================

@@ -30,7 +30,7 @@ import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.schema.{EnrichPolicyTask, EnrichPolicyTaskStatus, TableAlias}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
@@ -395,8 +395,8 @@ trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeExecuteEnrichPolicy(
     policyName: String
-  ): ElasticResult[String] =
-    ElasticSuccess("")
+  ): ElasticResult[EnrichPolicyTask] =
+    ElasticSuccess(EnrichPolicyTask(policyName, "not_implemented", EnrichPolicyTaskStatus.Failed))
 
   override private[client] def executeCreateTransform(
     config: schema.TransformConfig,

@@ -22,7 +22,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
-import app.softnetwork.elastic.sql.schema.EnrichPolicy
+import app.softnetwork.elastic.sql.schema.{EnrichPolicy, EnrichPolicyTask}
 
 trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
 
@@ -73,7 +73,7 @@ trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
     executeDeleteEnrichPolicy(policyName)
   }
 
-  def executeEnrichPolicy(policyName: String): ElasticResult[String] = {
+  def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] = {
     checkVersionForEnrichPolicy() match {
       case ElasticSuccess(_)           => // continue
       case failure @ ElasticFailure(_) => return failure
@@ -86,5 +86,7 @@ trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
 
   private[client] def executeDeleteEnrichPolicy(policyName: String): ElasticResult[Boolean]
 
-  private[client] def executeExecuteEnrichPolicy(policyName: String): ElasticResult[String]
+  private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[EnrichPolicyTask]
 }

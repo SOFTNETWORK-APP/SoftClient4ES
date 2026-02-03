@@ -19,6 +19,7 @@ package app.softnetwork.elastic.client.jest
 import app.softnetwork.elastic.client.result.ElasticFailure
 import app.softnetwork.elastic.client.{result, EnrichPolicyApi}
 import app.softnetwork.elastic.sql.schema
+import app.softnetwork.elastic.sql.schema.EnrichPolicyTask
 
 trait JestEnrichPolicyApi extends EnrichPolicyApi with JestClientHelpers {
   _: JestVersionApi with JestClientCompanion =>
@@ -47,7 +48,7 @@ trait JestEnrichPolicyApi extends EnrichPolicyApi with JestClientHelpers {
 
   override private[client] def executeExecuteEnrichPolicy(
     policyName: String
-  ): result.ElasticResult[String] =
+  ): result.ElasticResult[EnrichPolicyTask] =
     ElasticFailure(
       result.ElasticError(
         message = "Enrich policy execution not implemented for Jest client",

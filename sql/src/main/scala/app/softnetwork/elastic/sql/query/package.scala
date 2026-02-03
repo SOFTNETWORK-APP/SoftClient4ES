@@ -21,6 +21,8 @@ import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   Column,
   Delay,
+  EnrichPolicy,
+  EnrichPolicyType,
   Frequency,
   IngestPipeline,
   IngestPipelineType,
@@ -1090,6 +1092,61 @@ package object query {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP WATCHER $ifExistsClause$name"
+    }
+  }
+
+  sealed trait EnrichPolicyStatement extends DdlStatement
+
+  case class CreateEnrichPolicy(
+    name: String,
+    policyType: EnrichPolicyType,
+    from: Seq[String],
+    on: String,
+    enrichFields: List[String],
+    where: Option[Where] = None,
+    orReplace: Boolean = false,
+    ifNotExists: Boolean = false
+  ) extends EnrichPolicyStatement {
+    override def sql: String = {
+      val ineClause = if (ifNotExists) " IF NOT EXISTS" else ""
+      val replaceClause = if (orReplace) " OR REPLACE" else ""
+      val whereClause = this.where.map(w => s" $w").getOrElse("")
+      s"CREATE$replaceClause ENRICH POLICY$ineClause $name TYPE ${policyType.name.toUpperCase} FROM ${from
+        .mkString(",")} ON $on ENRICH ${enrichFields
+        .mkString(", ")}$whereClause"
+    }
+
+    lazy val policy: EnrichPolicy = EnrichPolicy(
+      name = name,
+      policyType = policyType,
+      indices = from,
+      matchField = on,
+      enrichFields = enrichFields,
+      criteria = where.flatMap(_.criteria)
+    )
+
+    override def validate(): Either[SQL, Unit] = {
+      if (from.isEmpty) {
+        Left("Source indices cannot be empty")
+      } else if (on.isEmpty) {
+        Left("Match field cannot be empty")
+      } else if (enrichFields.isEmpty) {
+        Left("Enrich fields cannot be empty")
+      } else {
+        Right(())
+      }
+    }
+  }
+
+  case class ExecuteEnrichPolicy(name: String) extends EnrichPolicyStatement {
+    override def sql: String = s"EXECUTE ENRICH POLICY $name"
+  }
+
+  case class DropEnrichPolicy(name: String, ifExists: Boolean = false)
+      extends EnrichPolicyStatement {
+    override def sql: String = {
+      val ifExistsClause = if (ifExists) "IF EXISTS " else ""
+      s"DROP ENRICH POLICY $ifExistsClause$name"
     }
   }
 

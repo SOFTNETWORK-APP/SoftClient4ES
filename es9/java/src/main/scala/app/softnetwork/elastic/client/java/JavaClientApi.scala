@@ -35,6 +35,8 @@ import app.softnetwork.elastic.sql.{schema, PainlessContextType}
 import app.softnetwork.elastic.sql.schema.{
   Delay,
   EnrichPolicy,
+  EnrichPolicyTask,
+  EnrichPolicyTaskStatus,
   TableAlias,
   TransformState,
   TransformTimeInterval
@@ -2053,7 +2055,8 @@ trait JavaClientEnrichPolicyApi extends EnrichPolicyApi with JavaClientHelpers {
 
   override private[client] def executeExecuteEnrichPolicy(
     policyName: String
-  ): ElasticResult[String] =
+  ): ElasticResult[EnrichPolicyTask] = {
+    val startTime = _root_.java.time.ZonedDateTime.now()
     executeJavaAction(
       operation = "executeEnrichPolicy",
       index = None,
@@ -2067,7 +2070,21 @@ trait JavaClientEnrichPolicyApi extends EnrichPolicyApi with JavaClientHelpers {
             .waitForCompletion(true)
             .build()
         )
-    )(resp => resp.task())
+    )(resp => {
+      val endTime = _root_.java.time.ZonedDateTime.now()
+      val status = EnrichPolicyTaskStatus(resp.status().phase().name())
+      logger.info(
+        s"Enrich Policy '$policyName' executed in ${endTime.toInstant.toEpochMilli - startTime.toInstant.toEpochMilli} ms with status: ${status.name}"
+      )
+      EnrichPolicyTask(
+        policyName = policyName,
+        taskId = resp.task(),
+        status = status,
+        startTime = Some(startTime),
+        endTime = Some(endTime)
+      )
+    })
+  }
 }
 
 // ==================== TRANSFORM API IMPLEMENTATION FOR JAVA CLIENT ====================

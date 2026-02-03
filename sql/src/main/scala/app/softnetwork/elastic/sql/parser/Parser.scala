@@ -34,6 +34,7 @@ import app.softnetwork.elastic.sql.schema.{
   AlwaysWatcherCondition,
   Column,
   Delay,
+  EnrichPolicyType,
   Frequency,
   IngestPipelineType,
   IngestProcessor,
@@ -795,14 +796,91 @@ object Parser
         )
     }
 
+  def createWatcher: PackratParser[CreateWatcher] =
+    ("CREATE" ~ "WATCHER") ~ ifNotExists ~ ident ~ opt(
+      "AS"
+    ) ~ watcherCondition ~ watcherTrigger ~ watcherActions ~ watcherInput ^^ {
+      case _ ~ _ ~ ine ~ name ~ _ ~ condition ~ trigger ~ actions ~ input =>
+        CreateWatcher(
+          name = name,
+          orReplace = false,
+          ifNotExists = ine,
+          condition = condition,
+          trigger = trigger,
+          actions = actions,
+          input = input
+        )
+    }
+
   def showWatcherStatus: PackratParser[ShowWatcherStatus] =
     ("SHOW" ~ "WATCHER" ~ "STATUS") ~> ident ^^ { name =>
       ShowWatcherStatus(name)
     }
 
   def dropWatcher: PackratParser[DropWatcher] =
-    ("DROP" ~ "WATCHER") ~ opt("IF" ~ "EXISTS") ~ ident ^^ { case _ ~ ie ~ name =>
-      DropWatcher(name, ifExists = ie.isDefined)
+    ("DROP" ~ "WATCHER") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+      DropWatcher(name, ifExists = ie)
+    }
+
+  def createEnrichPolicy: PackratParser[CreateEnrichPolicy] =
+    ("CREATE" ~ "ENRICH" ~ "POLICY") ~
+    ifNotExists ~
+    ident ~
+    opt("TYPE" ~> ("MATCH" | "GEO_MATCH" | "RANGE")) ~
+    ("FROM" ~> repsep(ident, separator)) ~
+    ("ON" ~> ident) ~
+    ("ENRICH" ~> repsep(ident, separator)) ~
+    opt(where) ^^ { case _ ~ ine ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
+      val policyType = policyTypeOpt match {
+        case Some("MATCH")     => EnrichPolicyType.Match
+        case Some("GEO_MATCH") => EnrichPolicyType.GeoMatch
+        case Some("RANGE")     => EnrichPolicyType.Range
+        case _                 => EnrichPolicyType.Match
+      }
+      CreateEnrichPolicy(
+        name = name,
+        policyType = policyType,
+        from = sources,
+        on = on,
+        refreshFields,
+        whereOpt,
+        ifNotExists = ine
+      )
+    }
+
+  def createOrReplaceEnrichPolicy: PackratParser[CreateEnrichPolicy] =
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "ENRICH" ~ "POLICY") ~
+    ident ~
+    opt("TYPE" ~> ("MATCH" | "GEO_MATCH" | "RANGE")) ~
+    ("FROM" ~> repsep(ident, separator)) ~
+    ("ON" ~> ident) ~
+    ("ENRICH" ~> repsep(ident, separator)) ~
+    opt(where) ^^ { case _ ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
+      val policyType = policyTypeOpt match {
+        case Some("MATCH")     => EnrichPolicyType.Match
+        case Some("GEO_MATCH") => EnrichPolicyType.GeoMatch
+        case Some("RANGE")     => EnrichPolicyType.Range
+        case _                 => EnrichPolicyType.Match
+      }
+      CreateEnrichPolicy(
+        name = name,
+        policyType = policyType,
+        from = sources,
+        on = on,
+        refreshFields,
+        whereOpt,
+        orReplace = true
+      )
+    }
+
+  def executeEnrichPolicy: PackratParser[ExecuteEnrichPolicy] =
+    ("EXECUTE" ~ "ENRICH" ~ "POLICY") ~> ident ^^ { name =>
+      ExecuteEnrichPolicy(name)
+    }
+
+  def dropEnrichPolicy: PackratParser[DropEnrichPolicy] =
+    ("DROP" ~ "ENRICH" ~ "POLICY") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+      DropEnrichPolicy(name, ifExists = ie)
     }
 
   def ddlStatement: PackratParser[DdlStatement] =
@@ -831,9 +909,14 @@ object Parser
     showMaterializedView |
     showCreateMaterializedView |
     describeMaterializedView |
+    createWatcher |
     createOrReplaceWatcher |
     showWatcherStatus |
-    dropWatcher
+    dropWatcher |
+    createEnrichPolicy |
+    createOrReplaceEnrichPolicy |
+    executeEnrichPolicy |
+    dropEnrichPolicy
 
   def onConflict: PackratParser[OnConflict] =
     ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {

@@ -12,7 +12,7 @@ import app.softnetwork.elastic.sql.{
 }
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.function.FunctionWithIdentifier
-import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateAdd, DateSub, DateTimeFunction}
+import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateSub, DateTimeFunction}
 import app.softnetwork.elastic.sql.operator.GT
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
@@ -22,6 +22,7 @@ import app.softnetwork.elastic.sql.schema.{
   CronWatcherTrigger,
   DateIndexNameProcessor,
   Delay,
+  EnrichPolicyType,
   IngestPipelineType,
   IngestProcessorType,
   IntervalWatcherTrigger,
@@ -36,7 +37,6 @@ import app.softnetwork.elastic.sql.schema.{
   SetProcessor,
   SimpleWatcherInput,
   TransformTimeUnit,
-  Watcher,
   WatcherAction,
   WatcherCondition,
   WatcherInput,
@@ -270,6 +270,8 @@ object Queries {
 class ParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
+
+  implicit def criteriaToNode: Criteria => JsonNode = _ => mapper.createObjectNode()
 
   behavior of "Parser DQL"
 
@@ -1082,6 +1084,38 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "parse this ddl" in {
+    val sql = """CREATE OR REPLACE TABLE orders_with_customers_mv_customers_changelog (
+                |	id INT NOT NULL COMMENT 'JOIN key from customers',
+                |	name VARCHAR FIELDS (
+                |	keyword KEYWORD COMMENT 'Keyword multi-field for aggregations'
+                |	) COMMENT 'Required for enrichment (aggregated from customers.name)',
+                |	email VARCHAR FIELDS (
+                |    keyword KEYWORD COMMENT 'Keyword multi-field for aggregations'
+                |    ) COMMENT 'Required for enrichment (aggregated from customers.email)',
+                |    department STRUCT FIELDS (
+                |		zip_code KEYWORD COMMENT 'Required for enrichment (aggregated from customers.department.zip_code)'),
+                |	_last_updated TIMESTAMP DEFAULT _ingest.timestamp NOT NULL COMMENT 'Last update timestamp',
+                |	PRIMARY KEY (id)
+                |) OPTIONS = (mappings = (_meta = (created_by = "materialized_view_generator", join_keys = ["id"], source_table = "customers", purpose = "Captures field values for enrichment via Transform", required_fields = ["name","email","department.zip_code"])), settings = (number_of_shards = "1", refresh_interval = "30s"))""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ct: CreateTable =>
+        println(ct.sql)
+        ct.table shouldBe "orders_with_customers_mv_customers_changelog"
+        ct.columns.map(_.name) should contain allOf (
+          "id",
+          "name",
+          "email",
+          "department",
+          "_last_updated"
+        )
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
   it should "parse DROP TABLE if exists" in {
     val sql = "DROP TABLE IF EXISTS users"
     val result = Parser(sql)
@@ -1578,8 +1612,6 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   behavior of "Parser DDL with Watcher Statements"
 
-  implicit def criteriaToNode: Criteria => JsonNode = _ => mapper.createObjectNode()
-
   val intervalTrigger: WatcherTrigger = IntervalWatcherTrigger(Delay(TransformTimeUnit.Minutes, 5))
 
   val cronTrigger: WatcherTrigger = CronWatcherTrigger("0 */5 * * * ?")
@@ -2036,6 +2068,353 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
+  }
+
+  behavior of "Parser DDL with Enrich Statements"
+
+  it should "parse CREATE ENRICH POLICY without WHERE clause" in {
+    val sql =
+      """CREATE ENRICH POLICY simple_policy
+        |FROM users
+        |ON user_id
+        |ENRICH name, email
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(
+            "simple_policy",
+            EnrichPolicyType.Match,
+            Seq("users"),
+            "user_id",
+            List("name", "email"),
+            None, // ✅ Pas de WHERE
+            false, // ✅ Pas de OR REPLACE
+            false
+          ) => // success
+      case _ => fail("Expected CreateEnrichPolicy without WHERE")
+    }
+  }
+
+  it should "parse CREATE ENRICH POLICY without OR REPLACE" in {
+    val sql =
+      """CREATE ENRICH POLICY new_policy
+        |FROM users
+        |ON user_id
+        |ENRICH name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, _, _, _, _, _, orReplace, _) =>
+        orReplace shouldBe false
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE MATCH ENRICH POLICY" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+            |FROM source_index
+            |ON id
+            |ENRICH user_id, user_email
+            |WHERE active = true
+            |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateEnrichPolicy(
+            "my_policy",
+            EnrichPolicyType.Match,
+            Seq("source_index"),
+            "id",
+            List("user_id", "user_email"),
+            Some(whereClause),
+            true,
+            false
+          ) => // success
+        whereClause.sql should include("active = true")
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE GEO_MATCH ENRICH POLICY" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+        |TYPE GEO_MATCH
+        |FROM source_index
+        |ON id
+        |ENRICH user_id, user_email
+        |WHERE active = true
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateEnrichPolicy(
+            "my_policy",
+            EnrichPolicyType.GeoMatch,
+            Seq("source_index"),
+            "id",
+            List("user_id", "user_email"),
+            Some(whereClause),
+            true,
+            false
+          ) => // success
+        whereClause.sql should include("active = true")
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE RANGE ENRICH POLICY" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+        |TYPE RANGE
+        |FROM source_index
+        |ON id
+        |ENRICH user_id, user_email
+        |WHERE active = true
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateEnrichPolicy(
+            "my_policy",
+            EnrichPolicyType.Range,
+            Seq("source_index"),
+            "id",
+            List("user_id", "user_email"),
+            Some(whereClause),
+            true,
+            false
+          ) => // success
+        whereClause.sql should include("active = true")
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE ENRICH POLICY with multiple source indices" in {
+    val sql =
+      """CREATE ENRICH POLICY multi_source_policy
+        |FROM users, customers, partners
+        |ON contact_id
+        |ENRICH name, email, company
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(
+            "multi_source_policy",
+            _,
+            Seq("users", "customers", "partners"), // ✅ 3 indices
+            "contact_id",
+            List("name", "email", "company"),
+            _,
+            _,
+            _
+          ) => // success
+      case _ => fail("Expected CreateEnrichPolicy with multiple indices")
+    }
+  }
+
+  it should "parse ENRICH without parentheses" in {
+    val sql =
+      """CREATE ENRICH POLICY policy_no_parens
+        |FROM users
+        |ON user_id
+        |ENRICH name, email, country
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, _, _, _, List("name", "email", "country"), _, _, _) =>
+      // success
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "generate correct SQL for CREATE ENRICH POLICY" in {
+    val policy = CreateEnrichPolicy(
+      name = "test_policy",
+      policyType = EnrichPolicyType.Match,
+      from = Seq("users"),
+      on = "user_id",
+      enrichFields = List("name", "email"),
+      where = None,
+      orReplace = true,
+      ifNotExists = false
+    )
+
+    val expectedSql =
+      """CREATE OR REPLACE ENRICH POLICY test_policy
+        |TYPE MATCH
+        |FROM users
+        |ON user_id
+        |ENRICH name, email""".stripMargin.replaceAll("\n", " ").trim
+
+    policy.sql.replaceAll("\\s+", " ").trim should include(
+      "CREATE OR REPLACE ENRICH POLICY test_policy"
+    )
+    policy.sql should include("FROM users")
+    policy.sql should include("ON user_id")
+    policy.sql should include("ENRICH name, email")
+  }
+
+  it should "round-trip parse and generate SQL" in {
+    val originalSql =
+      """CREATE ENRICH POLICY round_trip_test
+        |FROM users
+        |ON user_id
+        |ENRICH name, email
+        |WHERE active = true
+        |""".stripMargin
+
+    val parsed = Parser(originalSql).toOption.get
+    val regeneratedSql = parsed.sql
+    val reparsed = Parser(regeneratedSql)
+
+    reparsed.isRight shouldBe true
+    reparsed.toOption.get shouldBe parsed
+  }
+
+  it should "parse DROP ENRICH POLICY" in {
+    val sql = "DROP ENRICH POLICY IF EXISTS my_policy"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DropEnrichPolicy("my_policy", true) => // success
+      case _                                   => fail("Expected DropEnrichPolicy")
+    }
+  }
+
+  it should "parse DROP ENRICH POLICY without IF EXISTS" in {
+    val sql = "DROP ENRICH POLICY my_policy"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case DropEnrichPolicy("my_policy", false) => // success
+      case _                                    => fail("Expected DropEnrichPolicy")
+    }
+  }
+
+  it should "parse EXECUTE ENRICH POLICY" in {
+    val sql = "EXECUTE ENRICH POLICY my_policy"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ExecuteEnrichPolicy("my_policy") => // success
+      case _                                => fail("Expected ExecuteEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE ENRICH POLICY with complex WHERE clause" in {
+    val sql =
+      """CREATE ENRICH POLICY complex_filter
+        |FROM users
+        |ON user_id
+        |ENRICH name, email
+        |WHERE status = 'active'
+        |  AND tier IN ('premium', 'enterprise')
+        |  AND created_at > '2023-01-01'
+        |  AND (country = 'US' OR country = 'CA')
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, _, _, _, _, Some(whereClause), _, _) =>
+        whereClause.sql should include("status = 'active'")
+        whereClause.sql should include("tier IN")
+        whereClause.sql should include("created_at >")
+      case _ => fail("Expected CreateEnrichPolicy with complex WHERE")
+    }
+  }
+
+  it should "parse real-world user enrichment policy" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY enrich_orders_with_user_data
+        |FROM users_index
+        |ON user_id
+        |ENRICH user_name, user_email, user_country, user_tier, subscription_end_date
+        |WHERE account_status = 'active' AND email_verified = true
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+  }
+
+  it should "parse geo enrichment policy (future)" in {
+    val sql =
+      """CREATE ENRICH POLICY enrich_with_location
+        |TYPE GEO_MATCH
+        |FROM locations
+        |ON location_field
+        |ENRICH city, region, country, timezone
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, EnrichPolicyType.GeoMatch, _, _, _, _, _, _) =>
+      // success
+      case _ => fail("Expected GEO_MATCH policy")
+    }
+  }
+
+  behavior of "Parser DDL with Enrich Statements - Error Cases"
+
+  it should "fail on CREATE ENRICH POLICY without FROM" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |ON user_id
+        |ENRICH name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on CREATE ENRICH POLICY without ON" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |FROM users
+        |ENRICH name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on CREATE ENRICH POLICY without ENRICH fields" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |FROM users
+        |ON user_id
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on CREATE ENRICH POLICY with empty ENRICH list" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |FROM users
+        |ON user_id
+        |ENRICH
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on DROP ENRICH POLICY without policy name" in {
+    val sql = "DROP ENRICH POLICY"
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on EXECUTE ENRICH POLICY without policy name" in {
+    val sql = "EXECUTE ENRICH POLICY"
+    val result = Parser(sql)
+    result.isLeft shouldBe true
   }
 
   // --- DML ---

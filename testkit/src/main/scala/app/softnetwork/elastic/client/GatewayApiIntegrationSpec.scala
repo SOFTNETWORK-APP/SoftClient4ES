@@ -35,7 +35,12 @@ import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
-import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
+import app.softnetwork.elastic.sql.schema.{
+  EnrichPolicyTaskStatus,
+  HealthStatus,
+  IngestPipeline,
+  Table
+}
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpecLike
@@ -1623,6 +1628,56 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val dropWatcher = "DROP WATCHER IF EXISTS my_watcher_interval;"
     assertDdl(client.run(dropWatcher).futureValue)
+  }
+
+  // ===========================================================================
+  // 8. POLICIES — CREATE / DROP / EXECUTE
+  // ===========================================================================
+
+  behavior of "POLICIES statements"
+
+  it should "create, execute and drop a policy" in {
+
+    val createIndex =
+      """CREATE TABLE IF NOT EXISTS dql_users (
+        |  id INT NOT NULL,
+        |  name VARCHAR FIELDS(
+        |    raw KEYWORD
+        |  ) OPTIONS (fielddata = true),
+        |  age INT,
+        |  birthdate DATE,
+        |  profile STRUCT FIELDS(
+        |    city VARCHAR OPTIONS (fielddata = true),
+        |    followers INT
+        |  )
+        |);""".stripMargin
+
+    assertDdl(client.run(createIndex).futureValue)
+
+    val createPolicy =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+        |FROM dql_users
+        |ON id
+        |ENRICH name, profile.city
+        |WHERE age > 10;""".stripMargin
+
+    assertDdl(client.run(createPolicy).futureValue)
+
+    val executePolicy = "EXECUTE ENRICH POLICY my_policy;"
+    val result = client.run(executePolicy).futureValue
+    result match {
+      case ElasticSuccess(QueryRows(rows)) =>
+        rows.size shouldBe 1
+        val row = rows.head
+        println(s"Policy Execution Result: $row")
+        row.getOrElse("policy_name", "") shouldBe "my_policy"
+        row.getOrElse("status", "") shouldBe EnrichPolicyTaskStatus.Completed.name
+        row.getOrElse("health", "") shouldBe HealthStatus.Green.name
+      case _ => fail("Expected QueryRows result")
+    }
+
+    val dropPolicy = "DROP ENRICH POLICY IF EXISTS my_policy;"
+    assertDdl(client.run(dropPolicy).futureValue)
   }
 
 }

@@ -33,7 +33,12 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.{Index, IndexMappings}
 import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
-import app.softnetwork.elastic.sql.schema.{Schema, TableAlias, TransformCreationStatus}
+import app.softnetwork.elastic.sql.schema.{
+  EnrichPolicyTask,
+  Schema,
+  TableAlias,
+  TransformCreationStatus
+}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -1424,7 +1429,7 @@ class MetricsElasticClient(
       delegate.deleteEnrichPolicy(policyName)
     }
 
-  override def executeEnrichPolicy(policyName: String): ElasticResult[String] =
+  override def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] =
     measureResult("executeEnrichPolicy") {
       delegate.executeEnrichPolicy(policyName)
     }

@@ -38,6 +38,7 @@ import app.softnetwork.elastic.sql.query.{
   AlterTable,
   AlterTableSetting,
   CopyInto,
+  CreateEnrichPolicy,
   CreatePipeline,
   CreateTable,
   CreateWatcher,
@@ -47,9 +48,12 @@ import app.softnetwork.elastic.sql.query.{
   DescribeTable,
   DmlStatement,
   DqlStatement,
+  DropEnrichPolicy,
   DropPipeline,
   DropTable,
   DropWatcher,
+  EnrichPolicyStatement,
+  ExecuteEnrichPolicy,
   Insert,
   MultiSearch,
   PipelineStatement,
@@ -243,6 +247,58 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
 }
 
 trait DdlExecutor[T <: DdlStatement] extends Executor[T]
+
+class EnrichPolicyExecutor(
+  api: EnrichPolicyApi,
+  logger: Logger
+) extends DdlExecutor[EnrichPolicyStatement] {
+  override def execute(
+    statement: EnrichPolicyStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // handle ENRICH POLICY statement
+    statement match {
+      case create: CreateEnrichPolicy =>
+        api.createEnrichPolicy(create.policy) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Created enrich policy ${create.policy.name}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+
+      case execute: ExecuteEnrichPolicy =>
+        api.executeEnrichPolicy(execute.name) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Executed enrich policy ${execute.name}.")
+            Future.successful(ElasticResult.success(QueryRows(Seq(result.toMap))))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+
+      case drop: DropEnrichPolicy =>
+        api.deleteEnrichPolicy(drop.name) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Deleted enrich policy ${drop.name}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+    }
+  }
+}
 
 class WatcherExecutor(api: WatcherApi, logger: Logger) extends DdlExecutor[WatcherStatement] {
   override def execute(
@@ -1421,16 +1477,18 @@ class TableExecutor(
 class DdlRouterExecutor(
   pipelineExec: PipelineExecutor,
   tableExec: TableExecutor,
-  watcherExec: WatcherExecutor
+  watcherExec: WatcherExecutor,
+  policyExec: EnrichPolicyExecutor
 ) extends Executor[DdlStatement] {
 
   override def execute(
     statement: DdlStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = statement match {
 
-    case p: PipelineStatement => pipelineExec.execute(p)
-    case t: TableStatement    => tableExec.execute(t)
-    case w: WatcherStatement  => watcherExec.execute(w)
+    case p: PipelineStatement     => pipelineExec.execute(p)
+    case t: TableStatement        => tableExec.execute(t)
+    case w: WatcherStatement      => watcherExec.execute(w)
+    case e: EnrichPolicyStatement => policyExec.execute(e)
 
     case _ =>
       Future.successful(
@@ -1469,10 +1527,16 @@ trait GatewayApi extends ElasticClientHelpers {
     logger = logger
   )
 
+  lazy val policyExecutor = new EnrichPolicyExecutor(
+    api = this,
+    logger = logger
+  )
+
   lazy val ddlExecutor = new DdlRouterExecutor(
     pipelineExec = pipelineExecutor,
     tableExec = tableExecutor,
-    watcherExec = watcherExecutor
+    watcherExec = watcherExecutor,
+    policyExec = policyExecutor
   )
 
   // ========================================================================

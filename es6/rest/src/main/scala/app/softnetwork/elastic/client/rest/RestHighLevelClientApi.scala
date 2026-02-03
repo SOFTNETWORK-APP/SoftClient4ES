@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.schema.{
   Delay,
   EnrichPolicy,
+  EnrichPolicyTask,
   TableAlias,
   TransformTimeInterval,
   WatcherExecutionState
@@ -1982,7 +1983,7 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
 
   override private[client] def executeExecuteEnrichPolicy(
     policyName: String
-  ): ElasticResult[String] =
+  ): ElasticResult[EnrichPolicyTask] =
     ElasticFailure(
       result.ElasticError(
         message = "Enrich policy execution not implemented for Rest client",

@@ -30,7 +30,12 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
-import app.softnetwork.elastic.sql.schema.{Schema, TableAlias, TransformCreationStatus}
+import app.softnetwork.elastic.sql.schema.{
+  EnrichPolicyTask,
+  Schema,
+  TableAlias,
+  TransformCreationStatus
+}
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -1874,7 +1879,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def deleteEnrichPolicy(policyName: String): ElasticResult[Boolean] =
     delegate.deleteEnrichPolicy(policyName)
 
-  override def executeEnrichPolicy(policyName: String): ElasticResult[String] =
+  override def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] =
     delegate.executeEnrichPolicy(policyName)
 
   override private[client] def executeCreateEnrichPolicy(
@@ -1889,7 +1894,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeExecuteEnrichPolicy(
     policyName: String
-  ): ElasticResult[String] =
+  ): ElasticResult[EnrichPolicyTask] =
     delegate.executeExecuteEnrichPolicy(policyName)
 
   // ==================== Watcher (delegate) ====================
