@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client.repl
 
 import akka.actor.ActorSystem
+import app.softnetwork.elastic.SoftClient4esCoreBuildInfo
 import app.softnetwork.elastic.client.result.{OutputFormat, ResultRenderer}
 import org.jline.reader._
 import org.jline.reader.impl.history.DefaultHistory
@@ -31,6 +32,8 @@ class Repl(
   config: ReplConfig = ReplConfig.default
 )(implicit system: ActorSystem, ec: ExecutionContext) {
 
+  private lazy val version: String = SoftClient4esCoreBuildInfo.version
+
   private val terminal: Terminal = TerminalBuilder
     .builder()
     .system(true)
@@ -43,7 +46,7 @@ class Repl(
   private val reader: LineReader = LineReaderBuilder
     .builder()
     .terminal(terminal)
-    .appName("SoftClient4ES SQL Gateway")
+    .appName("SoftClient4ES CLI")
     .parser(new ReplParser())
     .history(new DefaultHistory())
     .completer(completer)
@@ -256,17 +259,35 @@ class Repl(
   // ==================== Help & Banners ====================
 
   private def printWelcomeBanner(): Unit = {
+    val name = s"║  ${formatLigne(bold(cyan("SoftClient4ES CLI")), 56)} ║"
+    val ver = s"║  ${formatLigne(gray(s"Version $version"), 56)} ║"
+    val help = s"║  ${formatLigne(s"Type ${yellow(".help")} for available commands", 56)} ║"
+    val quit = s"║  ${formatLigne(s"Type ${yellow(".quit")} to exit", 56)} ║"
     println(
       s"""
          |╔═══════════════════════════════════════════════════════════╗
-         |║  ${bold(cyan("SoftClient4ES SQL Gateway"))}                                ║
-         |║  ${gray("Version 1.0.0")}                                            ║
+         |$name
+         |$ver
          |║                                                           ║
-         |║  Type ${yellow(".help")} for available commands                        ║
-         |║  Type ${yellow(".quit")} to exit                                       ║
+         |$help
+         |$quit
          |╚═══════════════════════════════════════════════════════════╝
          |""".stripMargin
     )
+  }
+
+  private def formatLigne(value: String, size: Int): String = {
+    // Supprime les espaces en début et fin de ligne
+    val trimmedValue = value.trim
+
+    // Vérifie la longueur du texte
+    if (trimmedValue.length > size) {
+      // Si le texte est trop long, le tronquer avec '...'
+      trimmedValue.take(size - 3) + "..."
+    } else {
+      // Sinon, on complète avec des espaces
+      trimmedValue + " " * (size - trimmedValue.length)
+    }
   }
 
   private def printGoodbyeBanner(): Unit = {

@@ -140,9 +140,12 @@ lazy val macrosTests = project
 lazy val core = project
   .in(file("core"))
   .configs(IntegrationTest)
+  .enablePlugins(BuildInfoPlugin)
   .settings(
     Defaults.itSettings,
+    app.softnetwork.Info.infoSettings,
     moduleSettings,
+    buildInfoObject := "SoftClient4esCoreBuildInfo",
     scalacOptions ++= Seq(
       "-language:experimental.macros",
       "-Ymacro-debug-lite"
