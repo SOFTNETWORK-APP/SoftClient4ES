@@ -1583,10 +1583,11 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val createWatcherWithInterval =
       """CREATE OR REPLACE WATCHER my_watcher_interval AS
-        | ALWAYS
-        | TRIGGER EVERY 5 SECONDS
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index;""".stripMargin
+        | EVERY 5 SECONDS
+        | FROM my_index WITHIN 1 MINUTE
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END;""".stripMargin
 
     assertDdl(client.run(createWatcherWithInterval).futureValue)
 
@@ -1604,10 +1605,12 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val createWatcherWithCron =
       """CREATE OR REPLACE WATCHER my_watcher_cron AS
-        | ALWAYS
-        | TRIGGER AT SCHEDULE '* * * * * ?'
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index;""".stripMargin
+        | AT SCHEDULE '* * * * * ?'
+        | WITH INPUTS search_data AS FROM my_index WITHIN 1 MINUTE, http_data AS GET "https://jsonplaceholder.typicode.com/todos/1" HEADERS ("Accept" = "application/json") TIMEOUT (connection = "5s", read = "10s")
+        | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END;""".stripMargin
 
     assertDdl(client.run(createWatcherWithCron).futureValue)
 
