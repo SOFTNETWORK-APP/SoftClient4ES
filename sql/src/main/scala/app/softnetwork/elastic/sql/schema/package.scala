@@ -301,13 +301,22 @@ package object schema {
           val policyName = props.get("policy_name").asText()
           val targetField = props.get("target_field").asText()
           val maxMatches = Option(props.get("max_matches")).map(_.asInt()).getOrElse(1)
+          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
+          val ignoreMissing = Option(props.get("ignore_missing")).map(_.asBoolean())
+          val overrideTarget = Option(props.get("override")).map(_.asBoolean())
+          val shapeRelation =
+            Option(props.get("shape_relation")).map(_.asText()).map(EnrichShapeRelation.apply)
           EnrichProcessor(
             pipelineType = pipelineType,
             description = desc,
             column = targetField,
             policyName = policyName,
             field = field,
-            maxMatches = maxMatches
+            maxMatches = maxMatches,
+            ignoreFailure = ignoreFailure,
+            ignoreMissing = ignoreMissing,
+            overrideTarget = overrideTarget,
+            shapeRelation = shapeRelation
           )
 
         case other =>
@@ -549,6 +558,39 @@ package object schema {
     }
   }
 
+  sealed trait EnrichShapeRelation extends DdlToken {
+    def name: String
+    def sql: String = name.toUpperCase
+  }
+
+  object EnrichShapeRelation {
+    case object Intersects extends EnrichShapeRelation {
+      val name: String = "intersects"
+    }
+
+    case object Disjoint extends EnrichShapeRelation {
+      val name: String = "disjoint"
+    }
+
+    case object Contains extends EnrichShapeRelation {
+      val name: String = "contains"
+    }
+
+    case object Within extends EnrichShapeRelation {
+      val name: String = "within"
+    }
+
+    case class Other(name: String) extends EnrichShapeRelation
+
+    def apply(n: String): EnrichShapeRelation = n.toLowerCase match {
+      case "intersects" => Intersects
+      case "disjoint"   => Disjoint
+      case "contains"   => Contains
+      case "within"     => Within
+      case other        => Other(other)
+    }
+  }
+
   case class EnrichProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     description: Option[String] = None,
@@ -556,7 +598,10 @@ package object schema {
     policyName: String,
     field: String,
     maxMatches: Int = 1,
-    ignoreFailure: Boolean = true
+    ignoreFailure: Boolean = true,
+    ignoreMissing: Option[Boolean] = None,
+    overrideTarget: Option[Boolean] = None,
+    shapeRelation: Option[EnrichShapeRelation] = None
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Enrich
 
@@ -571,8 +616,9 @@ package object schema {
       "target_field"   -> targetField,
       "max_matches"    -> maxMatches,
       "ignore_failure" -> ignoreFailure
-    )
-
+    ) ++ ignoreMissing.map("ignore_missing" -> _).toMap ++
+      overrideTarget.map("override" -> _).toMap ++
+      shapeRelation.map("shape_relation" -> _.sql).toMap
   }
 
   sealed trait IngestPipelineType {

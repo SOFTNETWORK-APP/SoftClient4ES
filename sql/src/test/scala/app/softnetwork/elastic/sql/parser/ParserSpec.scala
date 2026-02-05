@@ -20,6 +20,8 @@ import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   mapper,
   DateIndexNameProcessor,
+  EnrichProcessor,
+  EnrichShapeRelation,
   IngestPipelineType,
   IngestProcessorType,
   PartitionDate,
@@ -1427,6 +1429,16 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         |        ignore_failure = false,
         |        ignore_empty_value = false,
         |        value = "{{id}}"
+        |    ),
+        |    ENRICH (
+        |        description = "ENRICH WITH customers ON id = customer_id",
+        |        policy_name = "user_enrichment",
+        |        field = "user_id",
+        |        target_field = "user_info",
+        |        max_matches = 1,
+        |        ignore_missing = true,
+        |        override = false,
+        |        shape_relation = "INTERSECTS"
         |    )
         |)""".stripMargin
     val result = Parser(sql)
@@ -1440,7 +1452,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             true,
             processors
           ) =>
-        processors.size shouldBe 6
+        processors.size shouldBe 7
         processors.find(_.column == "name") match {
           case Some(
                 SetProcessor(
@@ -1537,6 +1549,24 @@ class ParserSpec extends AnyFlatSpec with Matchers {
               ) =>
             cols should contain("id")
           case other => fail(s"Expected DdlPrimaryKeyProcessor for _id, got $other")
+        }
+        processors.find(_.column == "user_info") match {
+          case Some(
+                EnrichProcessor(
+                  IngestPipelineType.Default,
+                  Some("ENRICH WITH customers ON id = customer_id"),
+                  "user_info",
+                  "user_enrichment",
+                  "user_id",
+                  1,
+                  false,
+                  Some(true),
+                  Some(false),
+                  Some(EnrichShapeRelation.Intersects)
+                )
+              ) =>
+          case other =>
+            fail(s"Expected DdlEnrichProcessor for user_info, got $other")
         }
 
       case _ => fail("Expected CreatePipeline")
