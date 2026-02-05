@@ -21,6 +21,7 @@ import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
+  ElasticFailure,
   ElasticResult,
   ElasticSuccess,
   PipelineResult,
@@ -73,6 +74,15 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   override def afterAll(): Unit = {
     Await.result(system.terminate(), Duration(30, TimeUnit.SECONDS))
     self.afterAll()
+  }
+
+  def supportEnrichPolicies: Boolean = {
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsEnrich(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1637,6 +1647,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   behavior of "POLICIES statements"
 
   it should "create, execute and drop a policy" in {
+
+    assume(supportEnrichPolicies, "Enrich policies are not supported in this environment")
 
     val createIndex =
       """CREATE TABLE IF NOT EXISTS dql_users (
