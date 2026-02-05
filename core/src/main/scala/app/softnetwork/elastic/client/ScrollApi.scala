@@ -336,7 +336,9 @@ trait ScrollApi extends ElasticClientHelpers {
       }
       .alsoTo(Sink.lastOption.mapMaterializedValue { lastFuture =>
         lastFuture
-          .map(opt => opt.map(_._2).getOrElse(config.metrics)) // Get final metrics or fallback to current
+          .map(opt =>
+            opt.map(_._2).getOrElse(config.metrics)
+          ) // Get final metrics or fallback to current
           .onComplete {
             case Success(finalMetrics) =>
               val completed = finalMetrics.complete
