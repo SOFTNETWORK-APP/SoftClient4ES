@@ -28,13 +28,15 @@ trait SerializationApi {
 
   val mapper: ObjectMapper = JacksonConfig.objectMapper
 
-  private[this] val defaultFormats: Formats = Serialization.formats(NoTypeHints) ++
+  def defaultFormats: Formats = Serialization.formats(NoTypeHints) ++
     JodaTimeSerializers.all ++
     JavaTypesSerializers.all ++
     JavaTimeSerializers.all
 
-  implicit val formats: Formats = defaultFormats +
-    new SerializationApi.TransformStateSerializer
+  def customSerializers: Seq[SerializationApi.TransformStateSerializer] =
+    Seq(new SerializationApi.TransformStateSerializer)
+
+  implicit val formats: Formats = defaultFormats ++ customSerializers
 }
 
 object SerializationApi extends SerializationApi {

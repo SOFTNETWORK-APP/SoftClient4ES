@@ -26,6 +26,7 @@ import app.softnetwork.persistence._
 import app.softnetwork.persistence.model.Timestamped
 import app.softnetwork.persistence.query.ExternalPersistenceProvider
 import app.softnetwork.elastic.persistence.typed.Elastic
+import app.softnetwork.serialization.commonFormats
 import org.slf4j.Logger
 
 import scala.reflect.ClassTag
@@ -40,6 +41,9 @@ trait ElasticProvider[T <: Timestamped]
   self: ManifestWrapper[T] =>
 
   lazy val delegate: ElasticClientApi = ElasticClientFactory.create(self.config)
+
+  // FIXME commonFormats uses custom serializers for Java Time, should use official ones from json4s
+  override implicit val formats: Formats = commonFormats ++ customSerializers
 
   protected def logger: Logger
 
