@@ -22,7 +22,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
-import app.softnetwork.elastic.sql.schema.{EnrichPolicy, EnrichPolicyTask}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 
 trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
 

@@ -35,12 +35,9 @@ import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
-import app.softnetwork.elastic.sql.schema.{
-  EnrichPolicyTaskStatus,
-  HealthStatus,
-  IngestPipeline,
-  Table
-}
+import app.softnetwork.elastic.sql.health.HealthStatus
+import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
+import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpecLike

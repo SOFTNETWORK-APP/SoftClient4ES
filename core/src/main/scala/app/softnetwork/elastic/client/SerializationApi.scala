@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.schema.TransformState
+import app.softnetwork.elastic.sql.transform.TransformState
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.json4s.ext.{JavaTimeSerializers, JavaTypesSerializers, JodaTimeSerializers}

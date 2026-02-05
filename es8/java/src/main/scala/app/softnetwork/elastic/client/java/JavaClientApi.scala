@@ -32,15 +32,21 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, EnrichPolicyTaskStatus}
 import app.softnetwork.elastic.sql.{schema, PainlessContextType}
-import app.softnetwork.elastic.sql.schema.{
+import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.transform.{
   Delay,
-  EnrichPolicy,
-  EnrichPolicyTask,
-  EnrichPolicyTaskStatus,
-  TableAlias,
+  TransformConfig,
   TransformState,
+  TransformStats,
   TransformTimeInterval
+}
+import app.softnetwork.elastic.sql.watcher.{
+  Watcher,
+  WatcherActivationState,
+  WatcherExecutionState,
+  WatcherStatus
 }
 import app.softnetwork.elastic.utils.CronIntervalCalculator
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
@@ -2097,7 +2103,7 @@ trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
   _: JavaClientVersionApi with JavaClientCompanion =>
 
   override private[client] def executeCreateTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): ElasticResult[Boolean] =
     executeJavaBooleanAction(
@@ -2176,7 +2182,7 @@ trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
 
   override private[client] def executeGetTransformStats(
     transformId: String
-  ): ElasticResult[Option[schema.TransformStats]] =
+  ): ElasticResult[Option[TransformStats]] =
     executeJavaAction(
       operation = "getTransformStats",
       index = None,
@@ -2191,7 +2197,7 @@ trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
         )
     ) { resp =>
       val statsOpt = resp.transforms().asScala.headOption.map { stats =>
-        schema.TransformStats(
+        TransformStats(
           id = stats.id(),
           state = TransformState(stats.state()),
           documentsProcessed = stats.stats().documentsProcessed(),
@@ -2234,7 +2240,7 @@ trait JavaClientWatcherApi extends WatcherApi with JavaClientHelpers {
   _: JavaClientVersionApi with JavaClientCompanion =>
 
   override private[client] def executeCreateWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean
   ): result.ElasticResult[Boolean] =
     executeJavaAction[PutWatchResponse, Boolean](
@@ -2276,7 +2282,7 @@ trait JavaClientWatcherApi extends WatcherApi with JavaClientHelpers {
 
   override private[client] def executeGetWatcherStatus(
     id: String
-  ): result.ElasticResult[Option[schema.WatcherStatus]] =
+  ): result.ElasticResult[Option[WatcherStatus]] =
     executeJavaAction(
       operation = "getWatcherStatus",
       index = None,
@@ -2348,12 +2354,11 @@ trait JavaClientWatcherApi extends WatcherApi with JavaClientHelpers {
             state
               .map(_.timestamp().toZonedDateTime)
               .getOrElse(ZonedDateTime.now())
-          schema.WatcherStatus(
+          WatcherStatus(
             id = id,
             version = version,
-            executionState =
-              Option(status.executionState()).map(es => schema.WatcherExecutionState(es)),
-            activationState = schema.WatcherActivationState(
+            executionState = Option(status.executionState()).map(es => WatcherExecutionState(es)),
+            activationState = WatcherActivationState(
               active = active,
               timestamp = timestamp
             ),

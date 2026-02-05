@@ -29,21 +29,40 @@ import app.softnetwork.elastic.sql.parser.function.math.MathParser
 import app.softnetwork.elastic.sql.parser.function.string.StringParser
 import app.softnetwork.elastic.sql.parser.function.time.TemporalParser
 import app.softnetwork.elastic.sql.parser.operator.math.ArithmeticParser
+import app.softnetwork.elastic.sql.policy.EnrichPolicyType
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
-  AlwaysWatcherCondition,
   Column,
-  Delay,
-  EnrichPolicyType,
-  Frequency,
   IngestPipelineType,
   IngestProcessor,
   IngestProcessorType,
   PartitionDate,
-  ScriptProcessor,
-  TransformTimeUnit
+  ScriptProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
+import app.softnetwork.elastic.sql.transform.{Delay, Frequency, TransformTimeUnit}
+import app.softnetwork.elastic.sql.parser.http.HttpParser
+import app.softnetwork.elastic.sql.watcher.{
+  AlwaysWatcherCondition,
+  ChainInput,
+  CompareWatcherCondition,
+  CronWatcherTrigger,
+  EmptyWatcherInput,
+  HttpInput,
+  IntervalWatcherTrigger,
+  LoggingAction,
+  LoggingActionConfig,
+  LoggingLevel,
+  NeverWatcherCondition,
+  ScriptWatcherCondition,
+  SearchWatcherInput,
+  SimpleWatcherInput,
+  WatcherAction,
+  WatcherCondition,
+  WatcherInput,
+  WatcherTrigger,
+  WebhookAction
+}
 
 import scala.collection.immutable.ListMap
 import scala.language.implicitConversions
@@ -79,54 +98,6 @@ object Parser
     case x :: Nil => x
     case s        => MultiSearch(s)
   }
-
-  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_.]*""".r
-
-  private val lparen: Parser[String] = "("
-  private val rparen: Parser[String] = ")"
-  private val comma: Parser[String] = ","
-  private val lbracket: Parser[String] = "["
-  private val rbracket: Parser[String] = "]"
-  private val startStruct: Parser[String] = "{"
-  private val endStruct: Parser[String] = "}"
-
-  def objectValue: PackratParser[ObjectValue] =
-    lparen ~> rep1sep(option, comma) <~ rparen ^^ { opts =>
-      ObjectValue(opts.toMap)
-    }
-
-  def objectValues: PackratParser[ObjectValues] =
-    lbracket ~> rep1sep(objectValue, comma) <~ rbracket ^^ { ovs =>
-      ObjectValues(ovs)
-    }
-
-  def option: PackratParser[(String, Value[_])] =
-    (ident | literal) ~ "=" ~ (objectValues | objectValue | value) ^^ { case key ~ _ ~ value =>
-      key match {
-        case lit: StringValue => (lit.value, value)
-        case id: String       => (id, value)
-      }
-    }
-
-  def options: PackratParser[Map[String, Value[_]]] =
-    "OPTIONS" ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
-      opts.toMap
-    }
-
-  def array_of_struct: PackratParser[ObjectValues] =
-    lbracket ~> repsep(struct, comma) <~ rbracket ^^ { ovs =>
-      ObjectValues(ovs)
-    }
-
-  def struct_entry: PackratParser[(String, Value[_])] =
-    ident ~ "=" ~ (array_of_struct | struct | value) ^^ { case key ~ _ ~ v =>
-      key -> v
-    }
-
-  def struct: PackratParser[ObjectValue] =
-    startStruct ~> repsep(struct_entry, comma) <~ endStruct ^^ { entries =>
-      ObjectValue(entries.toMap)
-    }
 
   def row: PackratParser[List[Value[_]]] =
     lparen ~> repsep(array_of_struct | struct | value, comma) <~ rparen
@@ -665,11 +636,14 @@ object Parser
         AlterTable(table, ie, stmts)
     }
 
-  def alwaysWatcherCondition: PackratParser[schema.AlwaysWatcherCondition.type] =
+  // Watcher parsers
+
+  // Watcher condition parsers
+  def alwaysWatcherCondition: PackratParser[AlwaysWatcherCondition.type] =
     "ALWAYS" ^^ { _ => AlwaysWatcherCondition }
 
-  def neverWatcherCondition: PackratParser[schema.NeverWatcherCondition.type] =
-    "NEVER" ^^ { _ => schema.NeverWatcherCondition }
+  def neverWatcherCondition: PackratParser[NeverWatcherCondition.type] =
+    "NEVER" ^^ { _ => NeverWatcherCondition }
 
   private def comparison_operator: PackratParser[ComparisonOperator] =
     eq | ne | diff | gt | ge | lt | le
@@ -678,7 +652,7 @@ object Parser
     : PackratParser[time.DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
     date_add | datetime_add | date_sub | datetime_sub
 
-  def compareWatcherCondition: PackratParser[schema.CompareWatcherCondition] =
+  def compareWatcherCondition: PackratParser[CompareWatcherCondition] =
     "WHEN" ~> opt(not) ~ ident ~ comparison_operator ~ opt(value) ~ opt(
       dateMathScript
     ) ^^ { case n ~ field ~ op ~ v ~ fun =>
@@ -689,11 +663,11 @@ object Parser
         }
       v match {
         case Some(value) =>
-          schema.CompareWatcherCondition(field, target_op, Left(value))
+          CompareWatcherCondition(field, target_op, Left(value))
         case None =>
           fun match {
             case Some(f) if f.identifier.dependencies.isEmpty =>
-              schema.CompareWatcherCondition(
+              CompareWatcherCondition(
                 field,
                 target_op,
                 Right(f.identifier.withFunctions(f +: f.identifier.functions))
@@ -715,55 +689,114 @@ object Parser
       opts.toMap
     }
 
-  def scriptWatcherCondition: PackratParser[schema.ScriptWatcherCondition] =
+  def scriptWatcherCondition: PackratParser[ScriptWatcherCondition] =
     ("WHEN" ~ "SCRIPT") ~> literal ~ opt("USING" ~ "LANG" ~> literal) ~ opt(
       scriptParams
     ) ~ opt("RETURNS" ~ "TRUE") ^^ { case scr ~ lang ~ p ~ _ =>
-      schema.ScriptWatcherCondition(
+      ScriptWatcherCondition(
         scr.value,
         lang.map(_.value).getOrElse("painless"),
         p.getOrElse(Map.empty)
       )
     }
 
-  def watcherCondition: PackratParser[schema.WatcherCondition] =
-    alwaysWatcherCondition | neverWatcherCondition | compareWatcherCondition | scriptWatcherCondition
+  def watcherCondition: PackratParser[WatcherCondition] =
+    neverWatcherCondition | alwaysWatcherCondition | compareWatcherCondition | scriptWatcherCondition
 
-  def triggerWatcherEveryInterval: PackratParser[schema.IntervalWatcherTrigger] =
-    ("TRIGGER" ~ "EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
-      str =>
-        val parts = str.trim.split("\\s+")
-        schema.IntervalWatcherTrigger(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
+  // Watcher trigger parsers
+  def triggerWatcherEveryInterval: PackratParser[IntervalWatcherTrigger] =
+    "EVERY" ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ { str =>
+      val parts = str.trim.split("\\s+")
+      IntervalWatcherTrigger(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
     }
 
-  def triggerWatcherAtSchedule: PackratParser[schema.CronWatcherTrigger] =
-    ("TRIGGER" ~ "AT" ~ "SCHEDULE") ~> literal ^^ { cronExpr =>
-      schema.CronWatcherTrigger(cronExpr.value)
+  def triggerWatcherAtSchedule: PackratParser[CronWatcherTrigger] =
+    ("AT" ~ "SCHEDULE") ~> literal ^^ { cronExpr =>
+      CronWatcherTrigger(cronExpr.value)
     }
 
-  def watcherTrigger: PackratParser[schema.WatcherTrigger] =
+  def watcherTrigger: PackratParser[WatcherTrigger] =
     triggerWatcherEveryInterval | triggerWatcherAtSchedule
 
-  def simpleWatcherInput: PackratParser[schema.SimpleWatcherInput] =
-    ("WITH" ~ "INPUT") ~> start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
-      schema.SimpleWatcherInput(payload = ObjectValue(opts.toMap))
+  // Watcher input parsers
+  def simpleWatcherInput: PackratParser[SimpleWatcherInput] =
+    opt("WITH" ~ "INPUT") ~> start ~ repsep(option, comma) ~ end ^^ { case _ ~ opts ~ _ =>
+      SimpleWatcherInput(payload = ObjectValue(opts.toMap))
     }
 
-  def searchWatcherInput: PackratParser[schema.SearchWatcherInput] =
-    ("WITH" ~ "INPUT" ~ "AS") ~> single ^^ { query =>
-      schema.SearchWatcherInput(
-        query.from.tables.map(_.name).distinct,
-        query.where.flatMap(_.criteria)
+  def withinTimeout: PackratParser[Option[Delay]] =
+    opt("WITHIN" ~> """(\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?)""".r) ^^ {
+      case Some(str) =>
+        val parts = str.trim.split("\\s+")
+        Some(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
+      case None => None
+    }
+
+  def searchInput: PackratParser[SearchWatcherInput] =
+    from ~ opt(where) ~ withinTimeout ^^ { case f ~ w ~ t =>
+      SearchWatcherInput(
+        f.tables.map(_.name).distinct,
+        w.flatMap(_.criteria),
+        t
       )
     }
 
-  def watcherInput: PackratParser[schema.WatcherInput] =
-    searchWatcherInput | simpleWatcherInput | success(schema.EmptyWatcherInput)
+  def httpInput: PackratParser[HttpInput] =
+    opt("WITH" ~ "INPUT") ~> httpRequest ^^ { req =>
+      HttpInput(req)
+    }
 
-  def watcherAction: PackratParser[(String, schema.WatcherAction)] =
-    ident ~ opt("AS") ~ start ~ repsep(option, separator) ~ end ^^ { case name ~ _ ~ _ ~ opts ~ _ =>
-      val options = opts.toMap
-      schema.WatcherAction(options) match {
+  def chainInput: PackratParser[(String, WatcherInput)] =
+    ident ~ opt("AS") ~ watcherInput ^^ { case name ~ _ ~ input =>
+      (name, input)
+    }
+
+  def chainInputs: PackratParser[WatcherInput] =
+    ("WITH" ~ "INPUTS") ~> rep1sep(
+      chainInput,
+      comma
+    ) ^^ { inputs =>
+      ChainInput(ListMap(inputs: _*))
+    }
+
+  def watcherInput: PackratParser[WatcherInput] =
+    chainInputs | searchInput | httpInput | simpleWatcherInput | success(EmptyWatcherInput)
+
+  // logging action parsers
+  def info: Parser[LoggingLevel] = "(?i)(INFO)\\b".r ^^ { _ => LoggingLevel.INFO }
+  def debug: Parser[LoggingLevel] = "(?i)(DEBUG)\\b".r ^^ { _ => LoggingLevel.DEBUG }
+  def warn: Parser[LoggingLevel] = "(?i)(WARN)\\b".r ^^ { _ => LoggingLevel.WARN }
+  def error: Parser[LoggingLevel] = "(?i)(ERROR)\\b".r ^^ { _ => LoggingLevel.ERROR }
+
+  def loggingLevel: PackratParser[LoggingLevel] =
+    info | debug | warn | error
+
+  // action foreach limit parser
+  def foreachWithLimit: PackratParser[(String, Int)] =
+    ("FOREACH" ~> literal) ~ ("LIMIT" ~> """\d+""".r) ^^ { case fe ~ l =>
+      (fe.value, l.toInt)
+    }
+
+  // simple logging action parser
+  def loggingAction: PackratParser[Option[LoggingAction]] =
+    ("LOG" ~> literal) ~ opt("AT" ~> loggingLevel) ~ opt(foreachWithLimit) ^^ {
+      case text ~ levelOpt ~ feOpt =>
+        val foreach = feOpt.map(_._1)
+        val limit = feOpt.map(_._2)
+        Some(LoggingAction(LoggingActionConfig(text.value, levelOpt), foreach, limit))
+    }
+
+  // webhook action parser
+  def webhookAction: PackratParser[Option[WebhookAction]] =
+    "WEBHOOK" ~> httpRequest ~ opt(foreachWithLimit) ^^ { case req ~ feOpt =>
+      val foreach = feOpt.map(_._1)
+      val limit = feOpt.map(_._2)
+      Some(WebhookAction(req, foreach, limit))
+    }
+
+  def watcherAction: PackratParser[(String, WatcherAction)] =
+    ident ~ opt("AS") ~ (loggingAction | webhookAction) ^^ { case name ~ _ ~ wa =>
+      wa match {
         case Some(wa) => (name, wa)
         case _ =>
           throw new Exception(
@@ -772,7 +805,7 @@ object Parser
       }
     }
 
-  def watcherActions: PackratParser[ListMap[String, schema.WatcherAction]] =
+  def watcherActions: PackratParser[ListMap[String, WatcherAction]] =
     rep1sep(
       watcherAction,
       separator
@@ -783,8 +816,8 @@ object Parser
   def createOrReplaceWatcher: PackratParser[CreateWatcher] =
     ("CREATE" ~ "OR" ~ "REPLACE" ~ "WATCHER") ~> ident ~ opt(
       "AS"
-    ) ~ watcherCondition ~ watcherTrigger ~ watcherActions ~ watcherInput ^^ {
-      case name ~ _ ~ condition ~ trigger ~ actions ~ input =>
+    ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ ("DO" ~> watcherActions <~ "END") ^^ {
+      case name ~ _ ~ trigger ~ input ~ condition ~ actions =>
         CreateWatcher(
           name = name,
           orReplace = true,
@@ -799,8 +832,8 @@ object Parser
   def createWatcher: PackratParser[CreateWatcher] =
     ("CREATE" ~ "WATCHER") ~ ifNotExists ~ ident ~ opt(
       "AS"
-    ) ~ watcherCondition ~ watcherTrigger ~ watcherActions ~ watcherInput ^^ {
-      case _ ~ _ ~ ine ~ name ~ _ ~ condition ~ trigger ~ actions ~ input =>
+    ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ ("DO" ~> watcherActions <~ "END") ^^ {
+      case _ ~ _ ~ ine ~ name ~ _ ~ trigger ~ input ~ condition ~ actions =>
         CreateWatcher(
           name = name,
           orReplace = false,
@@ -832,10 +865,8 @@ object Parser
     ("ENRICH" ~> repsep(ident, separator)) ~
     opt(where) ^^ { case _ ~ ine ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
       val policyType = policyTypeOpt match {
-        case Some("MATCH")     => EnrichPolicyType.Match
-        case Some("GEO_MATCH") => EnrichPolicyType.GeoMatch
-        case Some("RANGE")     => EnrichPolicyType.Range
-        case _                 => EnrichPolicyType.Match
+        case Some(value) => EnrichPolicyType(value)
+        case _           => EnrichPolicyType.Match
       }
       CreateEnrichPolicy(
         name = name,
@@ -1016,7 +1047,56 @@ trait Parser
     with MathParser
     with StringParser
     with TemporalParser
-    with TypeParser { _: WhereParser with OrderByParser with LimitParser =>
+    with TypeParser
+    with HttpParser { _: WhereParser with OrderByParser with LimitParser =>
+
+  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_.]*""".r
+
+  val lparen: Parser[String] = "("
+  val rparen: Parser[String] = ")"
+  val comma: Parser[String] = ","
+  val lbracket: Parser[String] = "["
+  val rbracket: Parser[String] = "]"
+  val startStruct: Parser[String] = "{"
+  val endStruct: Parser[String] = "}"
+
+  def objectValue: PackratParser[ObjectValue] =
+    lparen ~> rep1sep(option, comma) <~ rparen ^^ { opts =>
+      ObjectValue(opts.toMap)
+    }
+
+  def objectValues: PackratParser[ObjectValues] =
+    lbracket ~> rep1sep(objectValue, comma) <~ rbracket ^^ { ovs =>
+      ObjectValues(ovs)
+    }
+
+  def option: PackratParser[(String, Value[_])] =
+    (ident | literal) ~ "=" ~ (objectValues | objectValue | value) ^^ { case key ~ _ ~ value =>
+      key match {
+        case lit: StringValue => (lit.value, value)
+        case id: String       => (id, value)
+      }
+    }
+
+  def options: PackratParser[Map[String, Value[_]]] =
+    "OPTIONS" ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
+      opts.toMap
+    }
+
+  def array_of_struct: PackratParser[ObjectValues] =
+    lbracket ~> repsep(struct, comma) <~ rbracket ^^ { ovs =>
+      ObjectValues(ovs)
+    }
+
+  def struct_entry: PackratParser[(String, Value[_])] =
+    ident ~ "=" ~ (array_of_struct | struct | value) ^^ { case key ~ _ ~ v =>
+      key -> v
+    }
+
+  def struct: PackratParser[ObjectValue] =
+    startStruct ~> repsep(struct_entry, comma) <~ endStruct ^^ { entries =>
+      ObjectValue(entries.toMap)
+    }
 
   def start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)
 
@@ -1181,7 +1261,18 @@ trait Parser
     "conflict",
     "do",
     "show",
-    "describe"
+    "describe",
+    "every",
+    "at",
+    "never",
+    "always",
+    "foreach",
+    "within",
+//    "protocol",
+//    "http",
+//    "https",
+//    "host",
+//    "port"
   )
 
   private val identifierRegexStr =

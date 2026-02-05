@@ -1,5 +1,7 @@
-package app.softnetwork.elastic.sql.schema
+package app.softnetwork.elastic.sql.watcher
 
+import app.softnetwork.elastic.sql.health.HealthStatus
+import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeUnit}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 

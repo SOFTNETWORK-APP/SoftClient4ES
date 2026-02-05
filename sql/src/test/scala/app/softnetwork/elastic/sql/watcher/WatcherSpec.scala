@@ -1,20 +1,24 @@
-package app.softnetwork.elastic.sql.schema
+package app.softnetwork.elastic.sql.watcher
 
 import app.softnetwork.elastic.sql.function.FunctionWithIdentifier
+import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateSub, DateTimeFunction}
+import app.softnetwork.elastic.sql.http._
+import app.softnetwork.elastic.sql.operator.GT
+import app.softnetwork.elastic.sql.query.Criteria
+import app.softnetwork.elastic.sql.schema.mapper
+import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.time.CalendarInterval
+import app.softnetwork.elastic.sql.time.TimeUnit.DAYS
+import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeUnit}
 import app.softnetwork.elastic.sql.{
   DateMathScript,
   Identifier,
   IntValue,
+  Null,
   ObjectValue,
   StringValue,
   StringValues
 }
-import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateSub, DateTimeFunction}
-import app.softnetwork.elastic.sql.operator.GT
-import app.softnetwork.elastic.sql.query.Criteria
-import app.softnetwork.elastic.sql.serialization._
-import app.softnetwork.elastic.sql.time.CalendarInterval
-import app.softnetwork.elastic.sql.time.TimeUnit.DAYS
 import com.fasterxml.jackson.databind.JsonNode
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -65,12 +69,13 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
       text = "Watcher triggered with {{ctx.payload.hits.total}} hits"
     ),
     foreach = Some("ctx.payload.hits.hits"),
-    maxIterations = Some(500)
+    limit = Some(500)
   )
 
   val searchInput: WatcherInput = SearchWatcherInput(
     index = Seq("my_index"),
-    query = None
+    query = None,
+    timeout = Some(Delay(TransformTimeUnit.Minutes, 2))
   )
 
   it should "supports never condition with interval trigger and search input" in {
@@ -86,15 +91,16 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
-      | NEVER
-      | TRIGGER EVERY 5 MINUTES
-      | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-      | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+      | EVERY 5 MINUTES
+      | FROM my_index WITHIN 2 MINUTES
+      | NEVER DO
+      | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+      | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
     val json: String = watcher.node
-    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"never":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"never":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
   }
 
   it should "supports always condition with interval trigger and search input" in {
@@ -110,15 +116,16 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
-        | ALWAYS
-        | TRIGGER EVERY 5 MINUTES
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
     val json: String = watcher.node
-    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"always":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"always":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
   }
 
   it should "supports compare condition with value, interval trigger and search input" in {
@@ -134,15 +141,17 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
         | WHEN ctx.payload.hits.total > 10
-        | TRIGGER EVERY 5 MINUTES
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
     val json: String = watcher.node
-    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
   }
 
   it should "supports compare condition with date math script, interval trigger and search input" in {
@@ -158,15 +167,17 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
         | WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY)
-        | TRIGGER EVERY 5 MINUTES
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
     val json: String = watcher.node
-    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
   }
 
   it should "supports script condition with interval trigger and search input" in {
@@ -182,15 +193,17 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
         | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
-        | TRIGGER EVERY 5 MINUTES
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
     val json: String = watcher.node
-    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+    json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
   }
 
   it should "supports script condition with cron trigger and search input" in {
@@ -206,15 +219,17 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | FROM my_index WITHIN 2 MINUTES
         | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
-        | TRIGGER AT SCHEDULE '0 */5 * * * ?'
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
     val json: String = watcher.node
-    json shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+    json shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
   }
 
   // =============================================================
@@ -228,21 +243,26 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
     params = Map("threshold" -> IntValue(1))
   )
 
+  val url: Url =
+    Url("https://example.com/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D")
+
+  val timeout: Timeout =
+    Timeout(
+      connection = Some(Delay(TransformTimeUnit.Seconds, 10)),
+      read = Some(Delay(TransformTimeUnit.Seconds, 30))
+    )
+
   val webhookAction: WatcherAction = WebhookAction(
-    WebhookActionConfig(
-      scheme = "https",
-      host = "example.com",
-      port = 443,
-      method = "POST",
-      path = "/webhook",
-      headers = Some(Map("Content-Type" -> "application/json")),
-      body = Some("""{"message": "Watcher triggered with {{ctx.payload._value}}"}"""),
-      params = Some(Map("watch_id" -> "{{ctx.watch_id}}")),
-      connectionTimeout = Some(Delay(TransformTimeUnit.Seconds, 10)),
-      readTimeout = Some(Delay(TransformTimeUnit.Seconds, 30))
+    HttpRequest(
+      url = url,
+      method = Method.Post,
+      headers = Some(Headers(Map("Content-Type" -> StringValue("application/json")))),
+      body =
+        Some(Body(StringValue("""{"message": "Watcher triggered with {{ctx.payload._value}}"}"""))),
+      timeout = Some(timeout)
     ),
     foreach = Some("ctx.payload.keys"),
-    maxIterations = Some(2)
+    limit = Some(2)
   )
 
   val simpleInput: WatcherInput = SimpleWatcherInput(
@@ -263,12 +283,21 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
-        | NEVER
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = (Content-Type = "application/json"), connection_timeout = "10s", method = "POST", body = "{"message": "Watcher triggered with {{ctx.payload._value}}"}", host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | NEVER DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS (Content-Type = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
+
+    val webhook = watcher.actions
+      .getOrElse("webhook_action", fail("webhook_action not found"))
+      .asInstanceOf[WebhookAction]
+
+    webhook.webhook.url.query
+      .flatMap(_.params.get("watch_id"))
+      .getOrElse(Null) shouldBe StringValue("{{ctx.watch_id}}")
 
     val json: String = watcher.node
     json shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"never":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
@@ -287,10 +316,11 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
-        | ALWAYS
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = (Content-Type = "application/json"), connection_timeout = "10s", method = "POST", body = "{"message": "Watcher triggered with {{ctx.payload._value}}"}", host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | ALWAYS DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS (Content-Type = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
@@ -311,10 +341,12 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN ctx.payload.hits.total > 10
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = (Content-Type = "application/json"), connection_timeout = "10s", method = "POST", body = "{"message": "Watcher triggered with {{ctx.payload._value}}"}", host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS (Content-Type = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
@@ -335,10 +367,12 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY)
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = (Content-Type = "application/json"), connection_timeout = "10s", method = "POST", body = "{"message": "Watcher triggered with {{ctx.payload._value}}"}", host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS (Content-Type = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
@@ -359,10 +393,12 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = (Content-Type = "application/json"), connection_timeout = "10s", method = "POST", body = "{"message": "Watcher triggered with {{ctx.payload._value}}"}", host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS (Content-Type = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 
@@ -383,10 +419,12 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
     watcher.sql.replaceAll("\n", " ").replaceAll("\\s+", " ") shouldBe
     """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
-        | TRIGGER AT SCHEDULE '0 */5 * * * ?'
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = (Content-Type = "application/json"), connection_timeout = "10s", method = "POST", body = "{"message": "Watcher triggered with {{ctx.payload._value}}"}", host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS (Content-Type = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
       .replaceAll("\n", " ")
       .replaceAll("\\s+", " ")
 

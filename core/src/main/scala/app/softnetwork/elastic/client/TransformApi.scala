@@ -22,7 +22,11 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
-import app.softnetwork.elastic.sql.schema.{TransformConfig, TransformCreationStatus, TransformStats}
+import app.softnetwork.elastic.sql.transform.{
+  TransformConfig,
+  TransformCreationStatus,
+  TransformStats
+}
 
 trait TransformApi extends ElasticClientHelpers { _: VersionApi =>
 

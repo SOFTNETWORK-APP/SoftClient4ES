@@ -18,14 +18,13 @@ package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.result.ElasticFailure
 import app.softnetwork.elastic.client.{result, EnrichPolicyApi}
-import app.softnetwork.elastic.sql.schema
-import app.softnetwork.elastic.sql.schema.EnrichPolicyTask
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 
 trait JestEnrichPolicyApi extends EnrichPolicyApi with JestClientHelpers {
   _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreateEnrichPolicy(
-    policy: schema.EnrichPolicy
+    policy: EnrichPolicy
   ): result.ElasticResult[Boolean] =
     ElasticFailure(
       result.ElasticError(

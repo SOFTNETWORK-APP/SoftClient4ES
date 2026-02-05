@@ -23,7 +23,7 @@ import org.testcontainers.containers.BindMode
 import java.nio.charset.StandardCharsets
 import java.nio.file.StandardOpenOption
 import org.testcontainers.elasticsearch.ElasticsearchContainer
-import org.testcontainers.utility.DockerImageName
+import org.testcontainers.utility.{DockerImageName, MountableFile}
 
 import java.nio.file.Files
 import java.time.Duration
@@ -73,10 +73,9 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
       .withEnv("ES_TMPDIR", "/usr/share/elasticsearch/tmp")
       //.withEnv("ES_JAVA_OPTS", "-Xms1024m -Xmx1024m")
       .withFileSystemBind(tmpDir, "/usr/share/elasticsearch/tmp", BindMode.READ_WRITE)
-      .withFileSystemBind(
-        configFile,
-        "/usr/share/elasticsearch/config/elasticsearch.yml",
-        BindMode.READ_ONLY
+      .withCopyFileToContainer(
+        MountableFile.forHostPath(configFile, 0x1a4), // ✅ explicit permissions -> 0644
+        "/usr/share/elasticsearch/config/elasticsearch.yml"
       )
       // .withCommand("bin/elasticsearch-syskeygen --silent", "bin/elasticsearch")
       .withStartupTimeout(Duration.ofMinutes(2))

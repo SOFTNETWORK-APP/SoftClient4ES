@@ -18,12 +18,13 @@ package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.{result, TransformApi}
 import app.softnetwork.elastic.sql.schema
+import app.softnetwork.elastic.sql.transform.{TransformConfig, TransformStats}
 
 trait JestTransformApi extends TransformApi with JestClientHelpers {
   _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreateTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): result.ElasticResult[Boolean] =
     result.ElasticFailure(
@@ -72,7 +73,7 @@ trait JestTransformApi extends TransformApi with JestClientHelpers {
 
   override private[client] def executeGetTransformStats(
     transformId: String
-  ): result.ElasticResult[Option[schema.TransformStats]] =
+  ): result.ElasticResult[Option[TransformStats]] =
     result.ElasticFailure(
       result.ElasticError(
         message = "Get Transform stats not implemented for Jest client",

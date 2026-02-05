@@ -20,10 +20,6 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   Column,
-  Delay,
-  EnrichPolicy,
-  EnrichPolicyType,
-  Frequency,
   IngestPipeline,
   IngestPipelineType,
   IngestProcessor,
@@ -34,17 +30,24 @@ import app.softnetwork.elastic.sql.schema.{
   ScriptProcessor,
   SetProcessor,
   Table => Schema,
-  TableType,
+  TableType
+}
+import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
+import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.transform.{
+  Delay,
+  Frequency,
   TransformTimeInterval,
-  TransformTimeUnit,
+  TransformTimeUnit
+}
+import app.softnetwork.elastic.sql.watcher.{
   Watcher,
   WatcherAction,
   WatcherCondition,
   WatcherInput,
   WatcherTrigger
 }
-import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
-import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.time.{Duration, Instant}

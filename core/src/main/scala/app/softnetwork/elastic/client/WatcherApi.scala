@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.ElasticResult
-import app.softnetwork.elastic.sql.schema.{Watcher, WatcherStatus}
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 
 trait WatcherApi extends ElasticClientHelpers {
 

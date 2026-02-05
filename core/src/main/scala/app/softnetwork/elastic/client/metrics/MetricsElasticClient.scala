@@ -31,14 +31,16 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.{Index, IndexMappings}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
-import app.softnetwork.elastic.sql.schema.{
-  EnrichPolicyTask,
-  Schema,
-  TableAlias,
-  TransformCreationStatus
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
+import app.softnetwork.elastic.sql.transform.{
+  TransformConfig,
+  TransformCreationStatus,
+  TransformStats
 }
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import org.json4s.Formats
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -1378,7 +1380,7 @@ class MetricsElasticClient(
   // ==================== Transform (delegate) ====================
 
   override def createTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): ElasticResult[TransformCreationStatus] =
     measureResult("createTransform") {
@@ -1407,7 +1409,7 @@ class MetricsElasticClient(
 
   override def getTransformStats(
     transformId: String
-  ): ElasticResult[Option[schema.TransformStats]] =
+  ): ElasticResult[Option[TransformStats]] =
     measureResult("getTransformStats") {
       delegate.getTransformStats(transformId)
     }
@@ -1419,7 +1421,7 @@ class MetricsElasticClient(
 
   // ==================== Enrich policy (delegate) ====================
 
-  override def createEnrichPolicy(policy: schema.EnrichPolicy): ElasticResult[Boolean] =
+  override def createEnrichPolicy(policy: EnrichPolicy): ElasticResult[Boolean] =
     measureResult("createEnrichPolicy") {
       delegate.createEnrichPolicy(policy)
     }
@@ -1446,7 +1448,7 @@ class MetricsElasticClient(
     *   true if the watcher was created successfully, false otherwise
     */
   override def createWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean = true
   ): ElasticResult[Boolean] =
     measureResult("createWatcher") {
@@ -1472,7 +1474,7 @@ class MetricsElasticClient(
     * @return
     *   an Option containing the watcher status if it was found, None otherwise
     */
-  override def getWatcherStatus(id: String): ElasticResult[Option[schema.WatcherStatus]] =
+  override def getWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]] =
     measureResult("getWatcher") {
       delegate.getWatcherStatus(id)
     }

@@ -10,45 +10,32 @@ import app.softnetwork.elastic.sql.{
   StringValue,
   StringValues
 }
+import app.softnetwork.elastic.sql.http._
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.function.FunctionWithIdentifier
 import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateSub, DateTimeFunction}
 import app.softnetwork.elastic.sql.operator.GT
+import app.softnetwork.elastic.sql.policy.EnrichPolicyType
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   mapper,
-  AlwaysWatcherCondition,
-  CompareWatcherCondition,
-  CronWatcherTrigger,
   DateIndexNameProcessor,
-  Delay,
-  EnrichPolicyType,
   IngestPipelineType,
   IngestProcessorType,
-  IntervalWatcherTrigger,
-  LoggingAction,
-  LoggingActionConfig,
-  NeverWatcherCondition,
   PartitionDate,
   PrimaryKeyProcessor,
   ScriptProcessor,
-  ScriptWatcherCondition,
-  SearchWatcherInput,
-  SetProcessor,
-  SimpleWatcherInput,
-  TransformTimeUnit,
-  WatcherAction,
-  WatcherCondition,
-  WatcherInput,
-  WatcherTrigger,
-  WebhookAction,
-  WebhookActionConfig
+  SetProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit.DAYS
 import app.softnetwork.elastic.sql.time.{CalendarInterval, TimeUnit}
+import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeUnit}
+import app.softnetwork.elastic.sql.watcher._
 import com.fasterxml.jackson.databind.JsonNode
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import scala.collection.immutable.ListMap
 
 object Queries {
   val numericalEq = "SELECT t.col1, t.col2 FROM Table AS t WHERE t.identifier = 1.0"
@@ -1641,39 +1628,10 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     params = Map("threshold" -> IntValue(10))
   )
 
-  val loggingAction: WatcherAction = LoggingAction(
-    LoggingActionConfig(
-      text = "Watcher triggered with {{ctx.payload.hits.total}} hits"
-    ),
-    foreach = Some("ctx.payload.hits.hits"),
-    maxIterations = Some(500)
-  )
-
   val searchInput: WatcherInput = SearchWatcherInput(
     index = Seq("my_index"),
-    query = None
-  )
-
-  val webhookScriptCondition: WatcherCondition = ScriptWatcherCondition(
-    script = "ctx.payload.keys.size > params.threshold",
-    params = Map("threshold" -> IntValue(1))
-  )
-
-  val webhookAction: WatcherAction = WebhookAction(
-    WebhookActionConfig(
-      scheme = "https",
-      host = "example.com",
-      port = 443,
-      method = "POST",
-      path = "/webhook",
-      headers = Some(Map("Content-Type" -> "application/json")),
-      body = Some("{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}"),
-      params = Some(Map("watch_id" -> "{{ctx.watch_id}}")),
-      connectionTimeout = Some(Delay(TransformTimeUnit.Seconds, 10)),
-      readTimeout = Some(Delay(TransformTimeUnit.Seconds, 30))
-    ),
-    foreach = Some("ctx.payload.keys"),
-    maxIterations = Some(2)
+    query = None,
+    timeout = Some(Delay(TransformTimeUnit.Minutes, 2))
   )
 
   val simpleInput: WatcherInput = SimpleWatcherInput(
@@ -1681,15 +1639,64 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       ObjectValue(Map("keys" -> StringValues(Seq(StringValue("value1"), StringValue("value2")))))
   )
 
+  val httpInput: WatcherInput = HttpInput(
+    request = HttpRequest(
+      url = Url("https://www.example.com/api/data"),
+      method = Method.Get,
+      headers = Some(Headers(Map("Authorization" -> StringValue("Bearer token")))),
+      timeout = Some(Timeout(connection = Some(Delay(TransformTimeUnit.Seconds, 5)), read = None))
+    )
+  )
+
+  val chainInput: WatcherInput = ChainInput(
+    ListMap("search_data" -> searchInput, "http_data" -> httpInput)
+  )
+
+  val loggingAction: WatcherAction = LoggingAction(
+    LoggingActionConfig(
+      text = "Watcher triggered with {{ctx.payload.hits.total}} hits"
+    ),
+    foreach = Some("ctx.payload.hits.hits"),
+    limit = Some(500)
+  )
+
+  val webhookScriptCondition: WatcherCondition = ScriptWatcherCondition(
+    script = "ctx.payload.keys.size > params.threshold",
+    params = Map("threshold" -> IntValue(1))
+  )
+
+  val url: Url =
+    Url("https://example.com/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D")
+
+  val timeout: Timeout =
+    Timeout(
+      connection = Some(Delay(TransformTimeUnit.Seconds, 10)),
+      read = Some(Delay(TransformTimeUnit.Seconds, 30))
+    )
+
+  val webhookAction: WatcherAction = WebhookAction(
+    HttpRequest(
+      url = url,
+      method = Method.Post,
+      headers = Some(Headers(Map("Content-Type" -> StringValue("application/json")))),
+      body =
+        Some(Body(StringValue("""{"message": "Watcher triggered with {{ctx.payload._value}}"}"""))),
+      timeout = Some(timeout)
+    ),
+    foreach = Some("ctx.payload.keys"),
+    limit = Some(2)
+  )
+
   // Tests for CreateWatcher with different combinations of conditions, actions, triggers, and inputs
 
   it should "parses never condition with logging action, interval trigger and search input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
-        | NEVER
-        | TRIGGER EVERY 5 MINUTES
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
+        | NEVER DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1702,7 +1709,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe searchInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"never":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"never":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1710,10 +1717,11 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses never condition with webhook action, interval trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
-        | NEVER
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | NEVER DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        |END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1722,32 +1730,21 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.name shouldBe "my_watcher"
         create.condition shouldBe NeverWatcherCondition
         create.trigger shouldBe intervalTrigger
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"never":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"never":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
 
   it should "parses always condition with logging action, interval trigger and search input" in {
     val sql = """CREATE OR REPLACE WATCHER my_watcher AS
-                | ALWAYS
-                | TRIGGER EVERY 5 MINUTES
-                | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-                | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+                | EVERY 5 MINUTES
+                | FROM my_index WITHIN 2 MINUTES
+                | ALWAYS DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1760,7 +1757,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe searchInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"always":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"always":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1768,10 +1765,11 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses always condition with webhook action, interval trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
-        | ALWAYS
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | ALWAYS DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1780,32 +1778,22 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.name shouldBe "my_watcher"
         create.condition shouldBe AlwaysWatcherCondition
         create.trigger shouldBe intervalTrigger
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"always":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"always":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
 
   it should "parses compare condition with value, logging action, interval trigger and search input" in {
     val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM my_index WITHIN 2 MINUTES
                 | WHEN ctx.payload.hits.total > 10
-                | TRIGGER EVERY 5 MINUTES
-                | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-                | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+                | DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1818,7 +1806,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe searchInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1826,10 +1814,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses compare condition with value, webhook action, interval trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN ctx.payload.hits.total > 10
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1838,22 +1828,10 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.name shouldBe "my_watcher"
         create.condition.sql shouldBe compareConditionWithValue.sql
         create.trigger shouldBe intervalTrigger
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1861,10 +1839,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses compare condition with date math script, logging action, interval trigger and search input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
         | WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY)
-        | TRIGGER EVERY 5 MINUTES
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-        | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1877,7 +1857,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe searchInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1885,10 +1865,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses compare condition with date math script, webhook action, interval trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY)
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1897,32 +1879,21 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.name shouldBe "my_watcher"
         create.condition.sql shouldBe compareConditionWithDateMathScript.sql
         create.trigger shouldBe intervalTrigger
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
-        create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
 
   it should "parses script condition with logging action, interval trigger and search input" in {
     val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM my_index WITHIN 2 MINUTES
                 | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
-                | TRIGGER EVERY 5 MINUTES
-                | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-                | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+                | DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1935,7 +1906,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe searchInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1943,10 +1914,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses script condition with webhook action, interval trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
-        | TRIGGER EVERY 5 MINUTES
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1955,32 +1928,22 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.name shouldBe "my_watcher"
         create.condition.sql shouldBe webhookScriptCondition.sql
         create.trigger shouldBe intervalTrigger
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
 
   it should "parses script condition with logging action, cron trigger and search input" in {
     val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | AT SCHEDULE '0 */5 * * * ?'
+                | FROM my_index WITHIN 2 MINUTES
                 | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
-                | TRIGGER AT SCHEDULE '0 */5 * * * ?'
-                | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500)
-                | WITH INPUT AS SELECT * FROM my_index""".stripMargin
+                | DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1993,7 +1956,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe searchInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}}}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -2001,10 +1964,12 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses script condition with webhook action, cron trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
-        | TRIGGER AT SCHEDULE '0 */5 * * * ?'
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -2013,22 +1978,10 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.name shouldBe "my_watcher"
         create.condition.sql shouldBe webhookScriptCondition.sql
         create.trigger.sql shouldBe cronTrigger.sql
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -2036,11 +1989,13 @@ class ParserSpec extends AnyFlatSpec with Matchers {
   it should "parses script condition with multiple actions, cron trigger and simple input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT (keys = ["value1","value2"])
         | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
-        | TRIGGER AT SCHEDULE '0 */5 * * * ?'
-        | log_action AS (logging = (text = "Watcher triggered with {{ctx.payload.hits.total}} hits", level = "info"), foreach = "ctx.payload.hits.hits", max_iterations = 500),
-        | webhook_action AS (webhook = (path = "/webhook", params = (watch_id = "{{ctx.watch_id}}"), port = 443, scheme = "https", headers = ("Content-Type" = "application/json"), connection_timeout = "10s", method = "POST", body = '{"message": "Watcher triggered with {{ctx.payload._value}}"}', host = "example.com", read_timeout = "30s"), foreach = "ctx.payload.keys", max_iterations = 2)
-        | WITH INPUT (keys = ["value1","value2"])""".stripMargin
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500,
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -2050,22 +2005,64 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.condition.sql shouldBe webhookScriptCondition.sql
         create.trigger.sql shouldBe cronTrigger.sql
         create.actions.get("log_action") shouldBe Some(loggingAction)
-        // FIXME : workaround for body escaping issue
-        val actual = create.actions
-          .get("webhook_action")
-          .map(action =>
-            action
-              .asInstanceOf[WebhookAction]
-              .copy(webhook = action.asInstanceOf[WebhookAction].webhook.copy(body = None))
-          )
-        val expected = webhookAction
-          .asInstanceOf[WebhookAction]
-          .copy(webhook = webhookAction.asInstanceOf[WebhookAction].webhook.copy(body = None))
-        actual shouldBe Some(expected)
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with multiple actions, cron trigger and http input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT GET PROTOCOL https HOST "www.example.com" PATH "/api/data" HEADERS ("Authorization" = "Bearer token") TIMEOUT (connection = "5s")
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500,
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe httpInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with multiple actions, cron trigger and chain input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUTS search_data AS FROM my_index WITHIN 2 MINUTES, http_data AS GET PROTOCOL https HOST "www.example.com" PATH "/api/data" HEADERS ("Authorization" = "Bearer token") TIMEOUT (connection = "5s")
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500,
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe chainInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"chain":{"inputs":[{"search_data":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}}},{"http_data":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}}}]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }

@@ -25,26 +25,31 @@ import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, Ela
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.{schema, ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.bridge._
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, EnrichPolicyTaskStatus}
 import app.softnetwork.elastic.sql.query.{Asc, Criteria, Desc, SQLAggregation, SingleSearch}
-import app.softnetwork.elastic.sql.schema.{
+import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.transform.{
   AvgTransformAggregation,
   CardinalityTransformAggregation,
   CountTransformAggregation,
   Delay,
-  EnrichPolicy,
-  EnrichPolicyTask,
-  EnrichPolicyTaskStatus,
   MaxTransformAggregation,
   MinTransformAggregation,
   SumTransformAggregation,
-  TableAlias,
   TermsGroupBy,
   TopHitsTransformAggregation,
+  TransformConfig,
   TransformState,
-  TransformTimeInterval,
-  WatcherExecutionState
+  TransformStats,
+  TransformTimeInterval
 }
 import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.watcher.{
+  Watcher,
+  WatcherActivationState,
+  WatcherExecutionState,
+  WatcherStatus
+}
 import app.softnetwork.elastic.utils.CronIntervalCalculator
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -131,7 +136,7 @@ import org.elasticsearch.client.transform.transforms.{
   QueryConfig,
   SourceConfig,
   TimeSyncConfig,
-  TransformConfig
+  TransformConfig => ElasticTransformConfig
 }
 import org.elasticsearch.client.watcher.{
   DeleteWatchRequest,
@@ -2378,7 +2383,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
   _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): result.ElasticResult[Boolean] = {
     /*executeRestAction(
@@ -2429,9 +2434,9 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
   }
 
   private def convertToElasticTransformConfig(
-    config: schema.TransformConfig
-  )(implicit criteriaToNode: Criteria => JsonNode): TransformConfig = {
-    val builder = TransformConfig.builder()
+    config: TransformConfig
+  )(implicit criteriaToNode: Criteria => JsonNode): ElasticTransformConfig = {
+    val builder = ElasticTransformConfig.builder()
 
     // Set ID
     builder.setId(config.id)
@@ -2618,7 +2623,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
 
   override private[client] def executeGetTransformStats(
     transformId: String
-  ): result.ElasticResult[Option[schema.TransformStats]] = {
+  ): result.ElasticResult[Option[TransformStats]] = {
     executeRestAction(
       operation = "getTransformStats",
       retryable = true
@@ -2630,7 +2635,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
       transformer = resp => {
         val statsArray = resp.getTransformsStats.asScala
         statsArray.headOption.map { stats =>
-          schema.TransformStats(
+          TransformStats(
             id = stats.getId,
             state = TransformState(stats.getState.value()),
             documentsProcessed = stats.getIndexerStats.getDocumentsProcessed,
@@ -2692,7 +2697,7 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
   _: RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean
   ): result.ElasticResult[Boolean] =
     executeRestAction[PutWatchRequest, PutWatchResponse, Boolean](
@@ -2733,8 +2738,8 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
 
   override private[client] def executeGetWatcherStatus(
     id: String
-  ): result.ElasticResult[Option[schema.WatcherStatus]] =
-    executeRestAction[GetWatchRequest, GetWatchResponse, Option[schema.WatcherStatus]](
+  ): result.ElasticResult[Option[WatcherStatus]] =
+    executeRestAction[GetWatchRequest, GetWatchResponse, Option[WatcherStatus]](
       operation = "getWatcher",
       index = None,
       retryable = true
@@ -2803,8 +2808,8 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
             val timestamp =
               state.map(_.getTimestamp).getOrElse(ZonedDateTime.now())
             val activationState =
-              schema.WatcherActivationState(active = active, timestamp = timestamp)
-            schema.WatcherStatus(
+              WatcherActivationState(active = active, timestamp = timestamp)
+            WatcherStatus(
               id = id,
               version = version,
               activationState = activationState,

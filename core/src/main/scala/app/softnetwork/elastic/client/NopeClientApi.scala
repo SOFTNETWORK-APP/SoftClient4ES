@@ -26,11 +26,14 @@ import app.softnetwork.elastic.client.bulk.{
   FailedDocument,
   SuccessfulDocument
 }
-import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
+import app.softnetwork.elastic.sql.{query, PainlessContextType}
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.schema.{EnrichPolicyTask, EnrichPolicyTaskStatus, TableAlias}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, EnrichPolicyTaskStatus}
+import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.transform.{TransformConfig, TransformStats}
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
@@ -384,7 +387,7 @@ trait NopeClientApi extends ElasticClientApi {
     ElasticResult.success(Map.empty)
 
   override private[client] def executeCreateEnrichPolicy(
-    policy: schema.EnrichPolicy
+    policy: EnrichPolicy
   ): ElasticResult[Boolean] =
     ElasticSuccess(false)
 
@@ -399,7 +402,7 @@ trait NopeClientApi extends ElasticClientApi {
     ElasticSuccess(EnrichPolicyTask(policyName, "not_implemented", EnrichPolicyTaskStatus.Failed))
 
   override private[client] def executeCreateTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): ElasticResult[Boolean] =
     ElasticSuccess(false)
@@ -422,7 +425,7 @@ trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeGetTransformStats(
     transformId: String
-  ): ElasticResult[Option[schema.TransformStats]] =
+  ): ElasticResult[Option[TransformStats]] =
     ElasticSuccess(None)
 
   override private[client] def executeScheduleTransformNow(
@@ -431,7 +434,7 @@ trait NopeClientApi extends ElasticClientApi {
     ElasticSuccess(false)
 
   override private[client] def executeCreateWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean
   ): ElasticResult[Boolean] =
     ElasticSuccess(false)
@@ -441,7 +444,7 @@ trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeGetWatcherStatus(
     id: String
-  ): ElasticResult[Option[schema.WatcherStatus]] =
+  ): ElasticResult[Option[WatcherStatus]] =
     ElasticSuccess(None)
 
   override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =

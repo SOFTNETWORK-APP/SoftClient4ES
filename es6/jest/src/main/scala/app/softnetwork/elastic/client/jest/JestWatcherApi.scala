@@ -16,12 +16,18 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.jest.actions.Watcher
+import app.softnetwork.elastic.client.jest.actions.{Watcher => JestWatcher}
 import app.softnetwork.elastic.client.{result, WatcherApi}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.schema
-import app.softnetwork.elastic.sql.schema.{Delay, TransformTimeInterval}
 import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeInterval}
+import app.softnetwork.elastic.sql.watcher.{
+  LoggingAction,
+  Watcher,
+  WatcherActivationState,
+  WatcherStatus,
+  WebhookAction
+}
 import app.softnetwork.elastic.utils.CronIntervalCalculator
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -33,7 +39,7 @@ import scala.util.Try
 trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCompanion =>
 
   override private[client] def executeCreateWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean
   ): result.ElasticResult[Boolean] = {
     // There is no direct API to create a watcher in Jest.
@@ -41,16 +47,16 @@ trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCo
     val json = watcher
       .copy(actions = watcher.actions.map { case (name, action) =>
         name -> (action match {
-          case l: schema.LoggingAction =>
-            l.copy(foreach = None, maxIterations = None)
-          case w: schema.WebhookAction =>
-            w.copy(foreach = None, maxIterations = None)
+          case l: LoggingAction =>
+            l.copy(foreach = None, limit = None)
+          case w: WebhookAction =>
+            w.copy(foreach = None, limit = None)
           case other => other
         })
       })
       .node
     logger.info(s"Creating Watcher ${watcher.id} :\n${sanitizeWatcherJson(json)}")
-    apply().execute(Watcher.Create(watcher.id, json)) match {
+    apply().execute(JestWatcher.Create(watcher.id, json)) match {
       case jestResult: JestResult if jestResult.isSucceeded =>
         result.ElasticSuccess(true)
       case jestResult: JestResult =>
@@ -65,7 +71,7 @@ trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCo
 
   override private[client] def executeDeleteWatcher(id: String): result.ElasticResult[Boolean] = {
     // There is no direct API to delete a watcher in Jest.
-    apply().execute(Watcher.Delete(id)) match {
+    apply().execute(JestWatcher.Delete(id)) match {
       case jestResult: JestResult if jestResult.isSucceeded =>
         result.ElasticSuccess(true)
       case jestResult: JestResult =>
@@ -80,9 +86,9 @@ trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCo
 
   override private[client] def executeGetWatcherStatus(
     id: String
-  ): result.ElasticResult[Option[schema.WatcherStatus]] = {
+  ): result.ElasticResult[Option[WatcherStatus]] = {
     // There is no direct API to get a watcher in Jest.
-    apply().execute(Watcher.Get(id)) match {
+    apply().execute(JestWatcher.Get(id)) match {
       case jestResult: JestResult if jestResult.isSucceeded =>
         val jsonString = jestResult.getJsonString
         if (jsonString != null && jsonString.nonEmpty) {
@@ -157,10 +163,10 @@ trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCo
                     Try(ZonedDateTime.parse(updatedTime)).toOption.getOrElse(ZonedDateTime.now())
                   result.ElasticSuccess(
                     Some(
-                      schema.WatcherStatus(
+                      WatcherStatus(
                         id = id,
                         version = version,
-                        activationState = schema.WatcherActivationState(
+                        activationState = WatcherActivationState(
                           active = active,
                           timestamp = timestamp
                         ),

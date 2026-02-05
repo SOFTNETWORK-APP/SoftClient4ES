@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.{Index, IndexMappings}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.{
   DqlStatement,
@@ -30,12 +31,13 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
-import app.softnetwork.elastic.sql.schema.{
-  EnrichPolicyTask,
-  Schema,
-  TableAlias,
-  TransformCreationStatus
+import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
+import app.softnetwork.elastic.sql.transform.{
+  TransformConfig,
+  TransformCreationStatus,
+  TransformStats
 }
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -1813,7 +1815,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   // ==================== Transform (delegate) ====================
 
   override def createTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): ElasticResult[TransformCreationStatus] =
     delegate.createTransform(config, start)
@@ -1833,14 +1835,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override def getTransformStats(
     transformId: String
-  ): ElasticResult[Option[schema.TransformStats]] =
+  ): ElasticResult[Option[TransformStats]] =
     delegate.getTransformStats(transformId)
 
   override def scheduleTransformNow(transformId: String): ElasticResult[Boolean] =
     delegate.scheduleTransformNow(transformId)
 
   override private[client] def executeCreateTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): ElasticResult[Boolean] =
     delegate.executeCreateTransform(config, start)
@@ -1863,7 +1865,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeGetTransformStats(
     transformId: String
-  ): ElasticResult[Option[schema.TransformStats]] =
+  ): ElasticResult[Option[TransformStats]] =
     delegate.executeGetTransformStats(transformId)
 
   override private[client] def executeScheduleTransformNow(
@@ -1873,7 +1875,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   // ==================== Enrich policy (delegate) ====================
 
-  override def createEnrichPolicy(policy: schema.EnrichPolicy): ElasticResult[Boolean] =
+  override def createEnrichPolicy(policy: EnrichPolicy): ElasticResult[Boolean] =
     delegate.createEnrichPolicy(policy)
 
   override def deleteEnrichPolicy(policyName: String): ElasticResult[Boolean] =
@@ -1883,7 +1885,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.executeEnrichPolicy(policyName)
 
   override private[client] def executeCreateEnrichPolicy(
-    policy: schema.EnrichPolicy
+    policy: EnrichPolicy
   ): ElasticResult[Boolean] =
     delegate.executeCreateEnrichPolicy(policy)
 
@@ -1909,7 +1911,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   true if the watcher was created successfully, false otherwise
     */
   override def createWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean = true
   ): ElasticResult[Boolean] =
     delegate.createWatcher(watcher, active)
@@ -1931,11 +1933,11 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   an Option containing the watcher status if it was found, None otherwise
     */
-  override def getWatcherStatus(id: String): ElasticResult[Option[schema.WatcherStatus]] =
+  override def getWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]] =
     delegate.getWatcherStatus(id)
 
   override private[client] def executeCreateWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean
   ): ElasticResult[Boolean] =
     delegate.executeCreateWatcher(watcher, active)
@@ -1945,7 +1947,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeGetWatcherStatus(
     id: String
-  ): ElasticResult[Option[schema.WatcherStatus]] =
+  ): ElasticResult[Option[WatcherStatus]] =
     delegate.executeGetWatcherStatus(id)
 
   // ==================== License (delegate) ====================

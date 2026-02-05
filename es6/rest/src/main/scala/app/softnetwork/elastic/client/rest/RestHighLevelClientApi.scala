@@ -26,15 +26,23 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.{schema, ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.schema.{
-  Delay,
-  EnrichPolicy,
-  EnrichPolicyTask,
-  TableAlias,
-  TransformTimeInterval,
-  WatcherExecutionState
-}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
+import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.transform.{
+  Delay,
+  TransformConfig,
+  TransformStats,
+  TransformTimeInterval
+}
+import app.softnetwork.elastic.sql.watcher.{
+  LoggingAction,
+  Watcher,
+  WatcherActivationState,
+  WatcherExecutionState,
+  WatcherStatus,
+  WebhookAction
+}
 import app.softnetwork.elastic.utils.CronIntervalCalculator
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -402,7 +410,7 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
   ): ElasticResult[Unit] = {
     executeRestAction[Request, Response, Unit](
       operation = "waitForShards",
-      index = Some(index.toString),
+      index = Some(index),
       retryable = true
     )(
       request = {
@@ -1999,7 +2007,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
   _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateTransform(
-    config: schema.TransformConfig,
+    config: TransformConfig,
     start: Boolean
   ): result.ElasticResult[Boolean] =
     result.ElasticFailure(
@@ -2048,7 +2056,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
 
   override private[client] def executeGetTransformStats(
     transformId: String
-  ): result.ElasticResult[Option[schema.TransformStats]] =
+  ): result.ElasticResult[Option[TransformStats]] =
     result.ElasticFailure(
       result.ElasticError(
         message = "Get Transform stats not implemented for Rest client",
@@ -2075,7 +2083,7 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
   _: RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateWatcher(
-    watcher: schema.Watcher,
+    watcher: Watcher,
     active: Boolean
   ): result.ElasticResult[Boolean] =
     executeRestAction[PutWatchRequest, PutWatchResponse, Boolean](
@@ -2088,10 +2096,10 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
         val json = watcher
           .copy(actions = watcher.actions.map { case (name, action) =>
             name -> (action match {
-              case l: schema.LoggingAction =>
-                l.copy(foreach = None, maxIterations = None)
-              case w: schema.WebhookAction =>
-                w.copy(foreach = None, maxIterations = None)
+              case l: LoggingAction =>
+                l.copy(foreach = None, limit = None)
+              case w: WebhookAction =>
+                w.copy(foreach = None, limit = None)
               case other => other
             })
           })
@@ -2126,8 +2134,8 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
 
   override private[client] def executeGetWatcherStatus(
     id: String
-  ): result.ElasticResult[Option[schema.WatcherStatus]] =
-    executeRestAction[GetWatchRequest, GetWatchResponse, Option[schema.WatcherStatus]](
+  ): result.ElasticResult[Option[WatcherStatus]] =
+    executeRestAction[GetWatchRequest, GetWatchResponse, Option[WatcherStatus]](
       operation = "getWatcher",
       index = None,
       retryable = true
@@ -2205,8 +2213,8 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
                 )
                 .getOrElse(ZonedDateTime.now())
             val activationState =
-              schema.WatcherActivationState(active = active, timestamp = timestamp)
-            schema.WatcherStatus(
+              WatcherActivationState(active = active, timestamp = timestamp)
+            WatcherStatus(
               id = id,
               version = version,
               activationState = activationState,
