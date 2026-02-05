@@ -13,6 +13,7 @@ It allows defining tables, schemas, pipelines, mappings, and settings using a re
 - **mappings** and **settings**
 - **metadata** (primary key, generated columns, comments, options)
 - **watchers** (scheduled monitoring and alerting)
+- **enrich policies** (data enrichment from lookup indices)
 
 The DDL engine is:
 
@@ -352,9 +353,27 @@ Watchers provide scheduled monitoring and alerting on Elasticsearch data.
 A watcher consists of:
 
 - **Trigger** — scheduling (cron or interval)
-- **Input** — data source (search, simple payload, or none)
-- **Condition** — evaluation logic (always, compare, script)
-- **Actions** — what to do when condition is met (logging, webhook, etc.)
+- **Input** — data source (search, simple, HTTP, chain, or none)
+- **Condition** — evaluation logic (always, never, compare, script)
+- **Actions** — what to do when condition is met (logging, webhook)
+
+---
+
+### ⚠️ Limitations
+
+The following Elasticsearch Watcher features are **not supported** in this DSL:
+
+| Feature                      | Status          |
+|------------------------------|-----------------|
+| **Email action**             | ❌ Not supported |
+| **Slack action**             | ❌ Not supported |
+| **PagerDuty action**         | ❌ Not supported |
+| **Jira action**              | ❌ Not supported |
+| **Index action**             | ❌ Not supported |
+| **Transform** (root level)   | ❌ Not supported |
+| **Transform** (action level) | ❌ Not supported |
+
+Only **logging** and **webhook** actions are currently implemented.
 
 ---
 
@@ -364,148 +383,516 @@ A watcher consists of:
 
 ```sql
 CREATE [OR REPLACE] WATCHER watcher_name AS
-  condition
-  TRIGGER { EVERY interval unit | AT SCHEDULE 'cron_expression' }
-  action_name AS (action_config) [, ...]
+  trigger_clause
   input_clause
-  [AND options]
+  condition_clause
+  DO
+  action_name AS action_definition [, ...]
+  END
 ```
-
----
-
-### Conditions
-
-| Condition Type | Syntax | Description |
-|----------------|--------|-------------|
-| `ALWAYS` | `ALWAYS` | Always triggers actions |
-| `NEVER` | `NEVER` | Never triggers (useful for testing) |
-| `WHEN` (compare) | `WHEN field operator value` | Compare field to value |
-| `WHEN` (script) | `WHEN SCRIPT 'source' USING LANG 'painless' WITH PARAMS (...) RETURNS TRUE` | Custom Painless condition |
-
-**Comparison Operators:** `>`, `>=`, `<`, `<=`, `=`, `!=`
 
 ---
 
 ### Triggers
 
-| Trigger Type | Syntax | Example |
-|--------------|--------|---------|
-| Interval | `EVERY n unit` | `EVERY 5 MINUTES` |
-| Cron | `AT SCHEDULE 'expression'` | `AT SCHEDULE '0 */5 * * * ?'` |
+Triggers define when the watcher executes.
 
-**Supported units:** `SECOND(S)`, `MINUTE(S)`, `HOUR(S)`, `DAY(S)`, `WEEK(S)`, `MONTH(S)`
+| Trigger Type  | Syntax                     | Example                       |
+|---------------|----------------------------|-------------------------------|
+| Interval      | `EVERY n unit`             | `EVERY 5 MINUTES`             |
+| Cron          | `AT SCHEDULE 'expression'` | `AT SCHEDULE '0 */5 * * * ?'` |
 
----
+**Supported time units:**
 
-### Actions
+| Unit         | Singular      | Plural         |
+|--------------|---------------|----------------|
+| Milliseconds | `MILLISECOND` | `MILLISECONDS` |
+| Seconds      | `SECOND`      | `SECONDS`      |
+| Minutes      | `MINUTE`      | `MINUTES`      |
+| Hours        | `HOUR`        | `HOURS`        |
+| Days         | `DAY`         | `DAYS`         |
+| Weeks        | `WEEK`        | `WEEKS`        |
+| Months       | `MONTH`       | `MONTHS`       |
+| Years        | `YEAR`        | `YEARS`        |
 
-#### Logging Action
-
-```sql
-action_name AS (
-  logging = (
-    text = "message with {{ctx.payload.field}}",
-    level = "info"
-  ),
-  foreach = "ctx.payload.hits.hits",
-  max_iterations = 100
-)
-```
-
-#### Webhook Action
+**Examples:**
 
 ```sql
-action_name AS (
-  webhook = (
-    scheme = "https",
-    host = "example.com",
-    port = 443,
-    method = "POST",
-    path = "/webhook",
-    headers = ("Content-Type" = "application/json"),
-    params = (watch_id = "{{ctx.watch_id}}"),
-    body = '{"message": "Alert: {{ctx.payload.value}}"}',
-    connection_timeout = "10s",
-    read_timeout = "30s"
-  ),
-  foreach = "ctx.payload.results",
-  max_iterations = 50
-)
+-- Execute every 30 seconds
+EVERY 30 SECONDS
+
+-- Execute every 5 minutes
+EVERY 5 MINUTES
+
+-- Execute daily
+EVERY 1 DAY
+
+-- Execute with cron expression (every day at 9 AM)
+AT SCHEDULE '0 0 9 * * ?'
 ```
 
 ---
 
 ### Inputs
 
-| Input Type | Syntax | Description |
-|------------|--------|-------------|
-| None | `WITH NO INPUT` | No data loaded |
-| Simple | `WITH INPUT (key = value, ...)` | Static payload |
-| Search | `WITH INPUT AS SELECT * FROM index [WHERE condition]` | Query Elasticsearch |
+Inputs define the data source for the watcher.
+
+#### No Input
+
+```sql
+WITH NO INPUT
+```
+
+No data is loaded. The watcher executes with an empty payload.
 
 ---
 
-### Examples
+#### Simple Input
 
-#### Monitor error rate
+```sql
+WITH INPUT (key1 = value1, key2 = value2, ...)
+```
+
+Provides a static payload.
+
+**Example:**
+
+```sql
+WITH INPUT (keys = ["value1", "value2"], threshold = 10)
+```
+
+**Generates:**
+
+```json
+{
+  "input": {
+    "simple": {
+      "keys": ["value1", "value2"],
+      "threshold": 10
+    }
+  }
+}
+```
+
+---
+
+#### Search Input
+
+```sql
+FROM index_name [, index_name2, ...] [WHERE criteria] [WITHIN n unit]
+```
+
+Queries Elasticsearch indices.
+
+**Example:**
+
+```sql
+FROM my_index WITHIN 2 MINUTES
+```
+
+```sql
+FROM logs-*, metrics-* WHERE level = 'ERROR' WITHIN 5 MINUTES
+```
+
+**Generates:**
+
+```json
+{
+  "input": {
+    "search": {
+      "request": {
+        "indices": ["my_index"],
+        "body": {
+          "query": {"match_all": {}}
+        }
+      },
+      "timeout": "2m"
+    }
+  }
+}
+```
+
+---
+
+#### HTTP Input
+
+```sql
+WITH INPUT method PROTOCOL protocol HOST "hostname" [PORT port] [PATH "path"] [PARAMS (...)] [HEADERS (...)] [BODY "body"] [TIMEOUT (...)]
+```
+
+Fetches data from an external HTTP endpoint.
+
+**Components:**
+
+| Component  | Required  | Description                                                  |
+|------------|-----------|--------------------------------------------------------------|
+| `method`   | ✔         | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `PATCH` |
+| `PROTOCOL` | ✔         | `http` or `https`                                            |
+| `HOST`     | ✔         | Hostname (quoted string)                                     |
+| `PORT`     | ✖         | Port number (default: 80 for http, 443 for https)            |
+| `PATH`     | ✖         | URL path (quoted string)                                     |
+| `PARAMS`   | ✖         | Query parameters as key-value pairs                          |
+| `HEADERS`  | ✖         | HTTP headers as key-value pairs                              |
+| `BODY`     | ✖         | Request body (quoted string)                                 |
+| `TIMEOUT`  | ✖         | Connection and read timeouts                                 |
+
+**Example:**
+
+```sql
+WITH INPUT GET PROTOCOL https HOST "api.example.com" PATH "/data" 
+  HEADERS ("Authorization" = "Bearer token", "Accept" = "application/json") 
+  TIMEOUT (connection = "5s", read = "30s")
+```
+
+**Generates:**
+
+```json
+{
+  "input": {
+    "http": {
+      "request": {
+        "scheme": "https",
+        "host": "api.example.com",
+        "port": 443,
+        "method": "get",
+        "path": "/data",
+        "headers": {
+          "Authorization": "Bearer token",
+          "Accept": "application/json"
+        },
+        "connection_timeout": "5s",
+        "read_timeout": "30s"
+      }
+    }
+  }
+}
+```
+
+---
+
+#### Chain Input
+
+```sql
+WITH INPUTS name1 AS input1, name2 AS input2, ...
+```
+
+Combines multiple inputs. Each input is named and can reference previous inputs in the chain.
+
+**Example:**
+
+```sql
+WITH INPUTS 
+  search_data AS FROM my_index WITHIN 2 MINUTES, 
+  http_data AS GET PROTOCOL https HOST "api.example.com" PATH "/enrich" 
+    HEADERS ("Authorization" = "Bearer token") 
+    TIMEOUT (connection = "5s")
+```
+
+**Generates:**
+
+```json
+{
+  "input": {
+    "chain": {
+      "inputs": [
+        {
+          "search_data": {
+            "search": {
+              "request": {
+                "indices": ["my_index"],
+                "body": {"query": {"match_all": {}}}
+              },
+              "timeout": "2m"
+            }
+          }
+        },
+        {
+          "http_data": {
+            "http": {
+              "request": {
+                "scheme": "https",
+                "host": "api.example.com",
+                "port": 443,
+                "method": "get",
+                "path": "/enrich",
+                "headers": {"Authorization": "Bearer token"},
+                "connection_timeout": "5s"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### Conditions
+
+Conditions determine whether actions should execute.
+
+| Condition Type | Syntax | Description |
+|----------------|--------|-------------|
+| `ALWAYS` | `ALWAYS DO` | Always triggers actions |
+| `NEVER` | `NEVER DO` | Never triggers (useful for testing) |
+| Compare | `WHEN path operator value DO` | Compare field to value |
+| Compare (date math) | `WHEN path operator date_function DO` | Compare field to date math expression |
+| Script | `WHEN SCRIPT '...' ... RETURNS TRUE DO` | Custom Painless condition |
+
+---
+
+#### Always / Never Conditions
+
+```sql
+ALWAYS DO
+-- actions
+END
+```
+
+```sql
+NEVER DO
+-- actions
+END
+```
+
+---
+
+#### Compare Condition
+
+```sql
+WHEN ctx.payload.hits.total > 100 DO
+-- actions
+END
+```
+
+**Supported operators:** `>`, `>=`, `<`, `<=`, `=`, `!=`
+
+**With date math:**
+
+```sql
+WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY) DO
+-- actions
+END
+```
+
+**Generates:**
+
+```json
+{
+  "condition": {
+    "compare": {
+      "ctx.execution_time": {
+        "gt": "now-5d/d"
+      }
+    }
+  }
+}
+```
+
+---
+
+#### Script Condition
+
+```sql
+WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' 
+  USING LANG 'painless' 
+  WITH PARAMS (threshold = 10) 
+  RETURNS TRUE 
+DO
+-- actions
+END
+```
+
+**Generates:**
+
+```json
+{
+  "condition": {
+    "script": {
+      "source": "ctx.payload.hits.total > params.threshold",
+      "lang": "painless",
+      "params": {
+        "threshold": 10
+      }
+    }
+  }
+}
+```
+
+---
+
+### Actions
+
+Actions define what happens when the condition is met.
+
+---
+
+#### Logging Action
+
+```sql
+action_name AS LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
+```
+
+| Component | Required | Description |
+|-----------|----------|-------------|
+| Message | ✔ | Log message (supports Mustache templates) |
+| `AT level` | ✖ | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` (default: `INFO`) |
+| `FOREACH` | ✖ | Path to iterate over |
+| `LIMIT` | ✖ | Maximum iterations (default: 100) |
+
+**Example:**
+
+```sql
+log_action AS LOG "Alert: {{ctx.payload.hits.total}} errors detected" AT ERROR FOREACH "ctx.payload.hits.hits" LIMIT 500
+```
+
+**Generates:**
+
+```json
+{
+  "actions": {
+    "log_action": {
+      "foreach": "ctx.payload.hits.hits",
+      "max_iterations": 500,
+      "logging": {
+        "text": "Alert: {{ctx.payload.hits.total}} errors detected",
+        "level": "error"
+      }
+    }
+  }
+}
+```
+
+---
+
+#### Webhook Action
+
+```sql
+action_name AS WEBHOOK method "url" [HEADERS (...)] [BODY "body"] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
+```
+
+| Component | Required | Description |
+|-----------|----------|-------------|
+| Method | ✔ | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `PATCH` |
+| URL | ✔ | Full URL (quoted string, URL-encoded) |
+| `HEADERS` | ✖ | HTTP headers as key-value pairs |
+| `BODY` | ✖ | Request body (quoted string, supports Mustache) |
+| `TIMEOUT` | ✖ | Connection and read timeouts |
+| `FOREACH` | ✖ | Path to iterate over |
+| `LIMIT` | ✖ | Maximum iterations (default: 100) |
+
+**Example:**
+
+```sql
+webhook_action AS WEBHOOK POST "https://api.example.com:443/alert?source={{ctx.watch_id}}" 
+  HEADERS ("Content-Type" = "application/json", "Authorization" = "Bearer secret") 
+  BODY "{\"message\": \"Alert triggered\", \"count\": {{ctx.payload.hits.total}}}" 
+  TIMEOUT (connection = "10s", read = "30s") 
+  FOREACH "ctx.payload.hits.hits" 
+  LIMIT 50
+```
+
+**Generates:**
+
+```json
+{
+  "actions": {
+    "webhook_action": {
+      "foreach": "ctx.payload.hits.hits",
+      "max_iterations": 50,
+      "webhook": {
+        "scheme": "https",
+        "host": "api.example.com",
+        "port": 443,
+        "method": "post",
+        "path": "/alert",
+        "params": {
+          "source": "{{ctx.watch_id}}"
+        },
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer secret"
+        },
+        "body": "{\"message\": \"Alert triggered\", \"count\": {{ctx.payload.hits.total}}}",
+        "connection_timeout": "10s",
+        "read_timeout": "30s"
+      }
+    }
+  }
+}
+```
+
+---
+
+### Complete Examples
+
+#### Monitor with search input and logging
 
 ```sql
 CREATE OR REPLACE WATCHER high_error_rate AS
-  WHEN ctx.payload.hits.total > 100
-  TRIGGER EVERY 5 MINUTES
-  notify AS (
-    logging = (
-      text = "High error rate: {{ctx.payload.hits.total}} errors",
-      level = "error"
-    )
-  )
-  WITH INPUT AS SELECT * FROM logs-* WHERE level = 'ERROR'
+  EVERY 5 MINUTES
+  FROM logs-* WHERE level = 'ERROR' WITHIN 5 MINUTES
+  WHEN ctx.payload.hits.total > 100 DO
+  notify AS LOG "High error rate: {{ctx.payload.hits.total}} errors in the last 5 minutes" AT ERROR
+END
 ```
 
-#### Scheduled webhook with cron
+---
+
+#### Webhook with simple input and script condition
+
+```sql
+CREATE OR REPLACE WATCHER threshold_alert AS
+  EVERY 1 HOUR
+  WITH INPUT (keys = ["server1", "server2", "server3"])
+  WHEN SCRIPT 'ctx.payload.keys.size() > params.threshold' 
+    USING LANG 'painless' 
+    WITH PARAMS (threshold = 2) 
+    RETURNS TRUE 
+  DO
+  alert AS WEBHOOK POST "https://hooks.slack-alternative.com/webhook" 
+    HEADERS ("Content-Type" = "application/json") 
+    BODY "{\"text\": \"Threshold exceeded for {{ctx.payload._value}}\"}" 
+    FOREACH "ctx.payload.keys" 
+    LIMIT 10
+END
+```
+
+---
+
+#### Daily report with cron trigger
 
 ```sql
 CREATE OR REPLACE WATCHER daily_report AS
-  ALWAYS
-  TRIGGER AT SCHEDULE '0 0 9 * * ?'
-  send_report AS (
-    webhook = (
-      scheme = "https",
-      host = "api.example.com",
-      port = 443,
-      method = "POST",
-      path = "/reports",
-      body = '{"report_date": "{{ctx.execution_time}}"}'
-    )
-  )
-  WITH INPUT AS SELECT COUNT(*) FROM orders
-  AND (throttle_period = "1d")
+  AT SCHEDULE '0 0 9 * * ?'
+  FROM orders WHERE status = 'completed' WITHIN 1 DAY
+  ALWAYS DO
+  send_report AS WEBHOOK POST "https://api.company.com/reports" 
+    HEADERS ("Authorization" = "Bearer {{ctx.metadata.api_key}}") 
+    BODY "{\"date\": \"{{ctx.execution_time}}\", \"total_orders\": {{ctx.payload.hits.total}}}" 
+    TIMEOUT (connection = "10s", read = "60s")
+END
 ```
 
-#### Script condition with iteration
+---
+
+#### Chain input with multiple actions
 
 ```sql
-CREATE OR REPLACE WATCHER check_thresholds AS
-  WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' 
-    USING LANG 'painless' 
-    WITH PARAMS (threshold = 5) 
-    RETURNS TRUE
-  TRIGGER EVERY 1 HOUR
-  alert AS (
-    logging = (text = "Threshold exceeded for {{ctx.payload._value}}")
-  ),
-  webhook AS (
-    webhook = (
-      scheme = "http",
-      host = "localhost",
-      port = 8080,
-      method = "POST",
-      path = "/alert"
-    ),
-    foreach = "ctx.payload.keys",
-    max_iterations = 10
-  )
-  WITH INPUT (keys = ["key1", "key2", "key3", "key4", "key5", "key6"])
+CREATE OR REPLACE WATCHER enriched_alert AS
+  AT SCHEDULE '0 */15 * * * ?'
+  WITH INPUTS 
+    alerts AS FROM alerts-* WHERE severity = 'critical' WITHIN 15 MINUTES,
+    context AS GET PROTOCOL https HOST "api.internal.com" PATH "/context" 
+      HEADERS ("X-API-Key" = "secret123")
+  WHEN ctx.payload.alerts.hits.total > 0 DO
+  log_alert AS LOG "Critical alerts: {{ctx.payload.alerts.hits.total}}" AT ERROR,
+  notify_ops AS WEBHOOK POST "https://pagerduty-alternative.com/alert" 
+    HEADERS ("Content-Type" = "application/json") 
+    BODY "{\"alerts\": {{ctx.payload.alerts.hits.total}}, \"context\": \"{{ctx.payload.context.environment}}\"}"
+END
 ```
 
 ---
@@ -518,6 +905,12 @@ DROP WATCHER [IF EXISTS] watcher_name;
 
 Deletes the watcher and stops its execution.
 
+**Example:**
+
+```sql
+DROP WATCHER IF EXISTS high_error_rate;
+```
+
 ---
 
 ## SHOW WATCHER STATUS
@@ -527,30 +920,312 @@ SHOW WATCHER STATUS watcher_name;
 ```
 
 Returns:
-- activation state (active/inactive)
-- last execution time
-- last condition met time
-- execution statistics
+- Activation state (active/inactive)
+- Last execution time
+- Last condition met time
+- Execution statistics
+
+**Example:**
+
+```sql
+SHOW WATCHER STATUS high_error_rate;
+```
 
 ---
 
-## Watcher Options
+## Enrich Policies
 
-Options can be specified with `AND (...)`:
+Enrich policies allow you to add data from existing indices to incoming documents during ingest.  
+This is useful for:
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `throttle_period` | `STRING` | Minimum time between action executions (e.g., `"5m"`, `"1h"`) |
-| `metadata` | `OBJECT` | Custom metadata for the watcher |
+- Adding user profile information to events
+- Enriching logs with geo-location data
+- Adding product details to order documents
+
+---
+
+### ⚠️ Requirements
+
+- Enrich policies require **Elasticsearch 7.5+**
+- The source index must exist before creating the policy
+- The policy must be **executed** before it can be used in a pipeline
+
+---
+
+## CREATE ENRICH POLICY
+
+### Syntax
+
+```sql
+CREATE [OR REPLACE] ENRICH POLICY policy_name
+  ON index_name
+  MATCH (match_field)
+  ENRICH (field1, field2, ...)
+  [WITH TYPE { MATCH | GEO_MATCH | RANGE }]
+```
+
+| Component | Required | Description |
+|-----------|----------|-------------|
+| `policy_name` | ✔ | Unique name for the policy |
+| `ON index_name` | ✔ | Source index containing enrichment data |
+| `MATCH (field)` | ✔ | Field used to match documents |
+| `ENRICH (fields)` | ✔ | Fields to add from the source index |
+| `WITH TYPE` | ✖ | Policy type (default: `MATCH`) |
+
+---
+
+### Policy Types
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `MATCH` | Exact value matching | User IDs, product codes |
+| `GEO_MATCH` | Geo-shape matching | Location-based enrichment |
+| `RANGE` | Range-based matching | IP ranges, numeric ranges |
+
+---
+
+### Examples
+
+#### Basic match policy
+
+```sql
+CREATE ENRICH POLICY user_enrichment
+  ON users
+  MATCH (user_id)
+  ENRICH (name, email, department)
+```
+
+**Generates:**
+
+```json
+{
+  "match": {
+    "indices": "users",
+    "match_field": "user_id",
+    "enrich_fields": ["name", "email", "department"]
+  }
+}
+```
+
+---
+
+#### Geo-match policy
+
+```sql
+CREATE ENRICH POLICY geo_enrichment
+  ON postal_codes
+  MATCH (location)
+  ENRICH (city, region, country, timezone)
+  WITH TYPE GEO_MATCH
+```
+
+**Generates:**
+
+```json
+{
+  "geo_match": {
+    "indices": "postal_codes",
+    "match_field": "location",
+    "enrich_fields": ["city", "region", "country", "timezone"]
+  }
+}
+```
+
+---
+
+#### Range policy
+
+```sql
+CREATE ENRICH POLICY ip_enrichment
+  ON ip_ranges
+  MATCH (ip_range)
+  ENRICH (network_name, datacenter, owner)
+  WITH TYPE RANGE
+```
+
+**Generates:**
+
+```json
+{
+  "range": {
+    "indices": "ip_ranges",
+    "match_field": "ip_range",
+    "enrich_fields": ["network_name", "datacenter", "owner"]
+  }
+}
+```
+
+---
+
+## EXECUTE ENRICH POLICY
+
+After creating an enrich policy, you must **execute** it to create the enrich index.
+
+```sql
+EXECUTE ENRICH POLICY policy_name;
+```
 
 **Example:**
+
 ```sql
-CREATE WATCHER my_watcher AS
-  ALWAYS
-  TRIGGER EVERY 1 MINUTE
-  log AS (logging = (text = "Hello"))
-  WITH NO INPUT
-  AND (throttle_period = "5m", metadata = (owner = "team-ops"))
+EXECUTE ENRICH POLICY user_enrichment;
+```
+
+> ⚠️ **Note:** The policy must be re-executed whenever the source index data changes.
+
+---
+
+## DROP ENRICH POLICY
+
+```sql
+DROP ENRICH POLICY [IF EXISTS] policy_name;
+```
+
+Deletes the enrich policy and its associated enrich index.
+
+**Example:**
+
+```sql
+DROP ENRICH POLICY IF EXISTS user_enrichment;
+```
+
+---
+
+## SHOW ENRICH POLICY
+
+```sql
+SHOW ENRICH POLICY policy_name;
+```
+
+Returns:
+- Policy configuration
+- Source index
+- Match field
+- Enrich fields
+- Policy type
+
+**Example:**
+
+```sql
+SHOW ENRICH POLICY user_enrichment;
+```
+
+---
+
+## Using Enrich Policies in Pipelines
+
+Once an enrich policy is created and executed, use it in an ingest pipeline with the `ENRICH` processor.
+
+### Syntax
+
+```sql
+CREATE PIPELINE my_pipeline
+WITH PROCESSORS (
+    ENRICH (
+        policy_name = "user_enrichment",
+        field = "user_id",
+        target_field = "user_info",
+        max_matches = 1,
+        ignore_missing = true
+    )
+)
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `policy_name` | ✔ | Name of the enrich policy |
+| `field` | ✔ | Field in the incoming document to match |
+| `target_field` | ✔ | Field to store enrichment data |
+| `max_matches` | ✖ | Maximum matching documents (default: 1) |
+| `ignore_missing` | ✖ | Ignore if match field is missing (default: false) |
+| `override` | ✖ | Override existing target field (default: true) |
+| `shape_relation` | ✖ | For geo_match: `INTERSECTS`, `DISJOINT`, `WITHIN`, `CONTAINS` |
+
+---
+
+### Complete Example
+
+#### 1. Create source index
+
+```sql
+CREATE TABLE users (
+  user_id KEYWORD,
+  name VARCHAR,
+  email VARCHAR,
+  department KEYWORD,
+  PRIMARY KEY (user_id)
+);
+
+INSERT INTO users VALUES 
+  ('U001', 'Alice Smith', 'alice@example.com', 'Engineering'),
+  ('U002', 'Bob Jones', 'bob@example.com', 'Marketing');
+```
+
+#### 2. Create enrich policy
+
+```sql
+CREATE ENRICH POLICY user_enrichment
+  ON users
+  MATCH (user_id)
+  ENRICH (name, email, department);
+```
+
+#### 3. Execute the policy
+
+```sql
+EXECUTE ENRICH POLICY user_enrichment;
+```
+
+#### 4. Create pipeline with enrich processor
+
+```sql
+CREATE PIPELINE events_enriched
+WITH PROCESSORS (
+    ENRICH (
+        policy_name = "user_enrichment",
+        field = "user_id",
+        target_field = "user",
+        max_matches = 1,
+        ignore_missing = true
+    )
+);
+```
+
+#### 5. Create table with pipeline
+
+```sql
+CREATE TABLE events (
+  id INT,
+  user_id KEYWORD,
+  event_type KEYWORD,
+  timestamp TIMESTAMP,
+  PRIMARY KEY (id)
+) WITH (default_pipeline = "events_enriched");
+```
+
+#### 6. Insert data
+
+```sql
+INSERT INTO events VALUES (1, 'U001', 'login', '2025-02-05T10:00:00Z');
+```
+
+#### Result
+
+The document is enriched with user data:
+
+```json
+{
+  "id": 1,
+  "user_id": "U001",
+  "event_type": "login",
+  "timestamp": "2025-02-05T10:00:00Z",
+  "user": {
+    "user_id": "U001",
+    "name": "Alice Smith",
+    "email": "alice@example.com",
+    "department": "Engineering"
+  }
+}
 ```
 
 ---
@@ -791,6 +1466,60 @@ Steps:
 | STRUCT               | ✔    | ✔    | ✔    | ✔    |
 | ARRAY\<STRUCT>       | ✔    | ✔    | ✔    | ✔    |
 | Watchers             | ✔    | ✔    | ✔    | ✔    |
+| Enrich Policies      | ✖    | ✔*   | ✔    | ✔    |
+
+\* Enrich policies require ES 7.5+
+
+---
+
+## Quick Reference
+
+### Watcher Syntax Summary
+
+```sql
+CREATE [OR REPLACE] WATCHER name AS
+  -- Trigger (required)
+  EVERY n {MILLISECONDS|SECONDS|MINUTES|HOURS|DAYS|WEEKS|MONTHS|YEARS}
+  | AT SCHEDULE 'cron'
+  
+  -- Input (required)
+  WITH NO INPUT
+  | WITH INPUT (key = value, ...)
+  | FROM index [WHERE criteria] [WITHIN n unit]
+  | WITH INPUT method PROTOCOL scheme HOST "host" [PORT n] [PATH "path"] [HEADERS (...)] [BODY "..."] [TIMEOUT (...)]
+  | WITH INPUTS name AS input, name AS input, ...
+  
+  -- Condition (required)
+  NEVER DO | ALWAYS DO
+  | WHEN path op value DO
+  | WHEN SCRIPT '...' USING LANG '...' WITH PARAMS (...) RETURNS TRUE DO
+  
+  -- Actions (at least one)
+  name AS LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
+  | name AS WEBHOOK method "url" [HEADERS (...)] [BODY "..."] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
+  [, ...]
+END
+```
+
+### Enrich Policy Syntax Summary
+
+```sql
+-- Create policy
+CREATE [OR REPLACE] ENRICH POLICY name
+  ON source_index
+  MATCH (match_field)
+  ENRICH (field1, field2, ...)
+  [WITH TYPE {MATCH|GEO_MATCH|RANGE}]
+
+-- Execute policy (required before use)
+EXECUTE ENRICH POLICY name;
+
+-- Drop policy
+DROP ENRICH POLICY [IF EXISTS] name;
+
+-- Show policy
+SHOW ENRICH POLICY name;
+```
 
 ---
 
