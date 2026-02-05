@@ -387,9 +387,11 @@ CREATE [OR REPLACE] WATCHER watcher_name AS
   input_clause
   condition_clause
   DO
-  action_name AS action_definition [, ...]
+  action_name [AS] action_definition [, ...]
   END
 ```
+
+> **Note:** The `AS` keyword before action definitions is **optional**.
 
 ---
 
@@ -516,33 +518,52 @@ FROM logs-*, metrics-* WHERE level = 'ERROR' WITHIN 5 MINUTES
 
 #### HTTP Input
 
+HTTP requests can be defined in **two ways**:
+
+##### Option 1: Full URL String
+
 ```sql
-WITH INPUT method PROTOCOL protocol HOST "hostname" [PORT port] [PATH "path"] [PARAMS (...)] [HEADERS (...)] [BODY "body"] [TIMEOUT (...)]
+WITH INPUT method "full_url" [HEADERS (...)] [BODY "body"] [TIMEOUT (...)]
 ```
-
-Fetches data from an external HTTP endpoint.
-
-**Components:**
-
-| Component  | Required  | Description                                                  |
-|------------|-----------|--------------------------------------------------------------|
-| `method`   | ✔         | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `PATCH` |
-| `PROTOCOL` | ✔         | `http` or `https`                                            |
-| `HOST`     | ✔         | Hostname (quoted string)                                     |
-| `PORT`     | ✖         | Port number (default: 80 for http, 443 for https)            |
-| `PATH`     | ✖         | URL path (quoted string)                                     |
-| `PARAMS`   | ✖         | Query parameters as key-value pairs                          |
-| `HEADERS`  | ✖         | HTTP headers as key-value pairs                              |
-| `BODY`     | ✖         | Request body (quoted string)                                 |
-| `TIMEOUT`  | ✖         | Connection and read timeouts                                 |
 
 **Example:**
 
 ```sql
-WITH INPUT GET PROTOCOL https HOST "api.example.com" PATH "/data" 
-  HEADERS ("Authorization" = "Bearer token", "Accept" = "application/json") 
+WITH INPUT GET "https://api.example.com:443/data?param=value" 
+  HEADERS ("Authorization" = "Bearer token") 
   TIMEOUT (connection = "5s", read = "30s")
 ```
+
+##### Option 2: Decomposed URL Components
+
+```sql
+WITH INPUT method PROTOCOL protocol HOST "hostname" [PORT port] [PATH "path"] [PARAMS (...)] [HEADERS (...)] [BODY "body"] [TIMEOUT (...)]
+```
+
+**Example:**
+
+```sql
+WITH INPUT GET PROTOCOL https HOST "api.example.com" PORT 443 PATH "/data" 
+  PARAMS (param = "value")
+  HEADERS ("Authorization" = "Bearer token") 
+  TIMEOUT (connection = "5s", read = "30s")
+```
+
+**Components:**
+
+| Component         | Required  | Description                                         |
+|-------------------|-----------|-----------------------------------------------------|
+| `method`          | ✔         | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD` |
+| URL or `PROTOCOL` | ✔         | Either full URL string or protocol (`http`/`https`) |
+| `HOST`            | ✔*        | Hostname (required if using decomposed format)      |
+| `PORT`            | ✖         | Port number (default: 80 for http, 443 for https)   |
+| `PATH`            | ✖         | URL path                                            |
+| `PARAMS`          | ✖         | Query parameters as key-value pairs                 |
+| `HEADERS`         | ✖         | HTTP headers as key-value pairs                     |
+| `BODY`            | ✖         | Request body (quoted string)                        |
+| `TIMEOUT`         | ✖         | Connection and read timeouts                        |
+
+> ⚠️ **Note:** Only `HEAD`, `GET`, `POST`, `PUT`, and `DELETE` methods are supported by Elasticsearch.
 
 **Generates:**
 
@@ -556,10 +577,8 @@ WITH INPUT GET PROTOCOL https HOST "api.example.com" PATH "/data"
         "port": 443,
         "method": "get",
         "path": "/data",
-        "headers": {
-          "Authorization": "Bearer token",
-          "Accept": "application/json"
-        },
+        "params": {"param": "value"},
+        "headers": {"Authorization": "Bearer token"},
         "connection_timeout": "5s",
         "read_timeout": "30s"
       }
@@ -573,17 +592,19 @@ WITH INPUT GET PROTOCOL https HOST "api.example.com" PATH "/data"
 #### Chain Input
 
 ```sql
-WITH INPUTS name1 AS input1, name2 AS input2, ...
+WITH INPUTS name1 [AS] input1, name2 [AS] input2, ...
 ```
 
 Combines multiple inputs. Each input is named and can reference previous inputs in the chain.
+
+> **Note:** The `AS` keyword is **optional**.
 
 **Example:**
 
 ```sql
 WITH INPUTS 
-  search_data AS FROM my_index WITHIN 2 MINUTES, 
-  http_data AS GET PROTOCOL https HOST "api.example.com" PATH "/enrich" 
+  search_data FROM my_index WITHIN 2 MINUTES, 
+  http_data GET "https://api.example.com/enrich" 
     HEADERS ("Authorization" = "Bearer token") 
     TIMEOUT (connection = "5s")
 ```
@@ -727,12 +748,14 @@ END
 
 Actions define what happens when the condition is met.
 
+> **Note:** The `AS` keyword before action definitions is **optional**.
+
 ---
 
 #### Logging Action
 
 ```sql
-action_name AS LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
+action_name [AS] LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
 ```
 
 | Component | Required | Description |
@@ -745,7 +768,7 @@ action_name AS LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
 **Example:**
 
 ```sql
-log_action AS LOG "Alert: {{ctx.payload.hits.total}} errors detected" AT ERROR FOREACH "ctx.payload.hits.hits" LIMIT 500
+log_action LOG "Alert: {{ctx.payload.hits.total}} errors detected" AT ERROR FOREACH "ctx.payload.hits.hits" LIMIT 500
 ```
 
 **Generates:**
@@ -769,30 +792,54 @@ log_action AS LOG "Alert: {{ctx.payload.hits.total}} errors detected" AT ERROR F
 
 #### Webhook Action
 
-```sql
-action_name AS WEBHOOK method "url" [HEADERS (...)] [BODY "body"] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
-```
+Webhook requests can be defined in **two ways**, similar to HTTP inputs:
 
-| Component | Required | Description |
-|-----------|----------|-------------|
-| Method | ✔ | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `PATCH` |
-| URL | ✔ | Full URL (quoted string, URL-encoded) |
-| `HEADERS` | ✖ | HTTP headers as key-value pairs |
-| `BODY` | ✖ | Request body (quoted string, supports Mustache) |
-| `TIMEOUT` | ✖ | Connection and read timeouts |
-| `FOREACH` | ✖ | Path to iterate over |
-| `LIMIT` | ✖ | Maximum iterations (default: 100) |
+##### Option 1: Full URL String
+
+```sql
+action_name [AS] WEBHOOK method "full_url" [HEADERS (...)] [BODY "body"] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
+```
 
 **Example:**
 
 ```sql
-webhook_action AS WEBHOOK POST "https://api.example.com:443/alert?source={{ctx.watch_id}}" 
-  HEADERS ("Content-Type" = "application/json", "Authorization" = "Bearer secret") 
-  BODY "{\"message\": \"Alert triggered\", \"count\": {{ctx.payload.hits.total}}}" 
-  TIMEOUT (connection = "10s", read = "30s") 
-  FOREACH "ctx.payload.hits.hits" 
-  LIMIT 50
+webhook_action WEBHOOK POST "https://api.example.com:443/alert?source={{ctx.watch_id}}" 
+  HEADERS ("Content-Type" = "application/json") 
+  BODY "{\"message\": \"Alert triggered\"}" 
+  TIMEOUT (connection = "10s", read = "30s")
 ```
+
+##### Option 2: Decomposed URL Components
+
+```sql
+action_name [AS] WEBHOOK method PROTOCOL protocol HOST "hostname" [PORT port] [PATH "path"] [PARAMS (...)] [HEADERS (...)] [BODY "body"] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
+```
+
+**Example:**
+
+```sql
+webhook_action WEBHOOK POST PROTOCOL https HOST "api.example.com" PORT 443 PATH "/alert"
+  PARAMS (source = "{{ctx.watch_id}}")
+  HEADERS ("Content-Type" = "application/json") 
+  BODY "{\"message\": \"Alert triggered\"}" 
+  TIMEOUT (connection = "10s", read = "30s")
+```
+
+| Component         | Required  | Description                                         |
+|-------------------|-----------|-----------------------------------------------------|
+| Method            | ✔         | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD` |
+| URL or `PROTOCOL` | ✔         | Either full URL string or protocol                  |
+| `HOST`            | ✔*        | Hostname (required if using decomposed format)      |
+| `PORT`            | ✖         | Port number                                         |
+| `PATH`            | ✖         | URL path                                            |
+| `PARAMS`          | ✖         | Query parameters                                    |
+| `HEADERS`         | ✖         | HTTP headers as key-value pairs                     |
+| `BODY`            | ✖         | Request body (quoted string, supports Mustache)     |
+| `TIMEOUT`         | ✖         | Connection and read timeouts                        |
+| `FOREACH`         | ✖         | Path to iterate over                                |
+| `LIMIT`           | ✖         | Maximum iterations (default: 100)                   |
+
+> ⚠️ **Note:** Only `HEAD`, `GET`, `POST`, `PUT`, and `DELETE` methods are supported by Elasticsearch.
 
 **Generates:**
 
@@ -800,22 +847,15 @@ webhook_action AS WEBHOOK POST "https://api.example.com:443/alert?source={{ctx.w
 {
   "actions": {
     "webhook_action": {
-      "foreach": "ctx.payload.hits.hits",
-      "max_iterations": 50,
       "webhook": {
         "scheme": "https",
         "host": "api.example.com",
         "port": 443,
         "method": "post",
         "path": "/alert",
-        "params": {
-          "source": "{{ctx.watch_id}}"
-        },
-        "headers": {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer secret"
-        },
-        "body": "{\"message\": \"Alert triggered\", \"count\": {{ctx.payload.hits.total}}}",
+        "params": {"source": "{{ctx.watch_id}}"},
+        "headers": {"Content-Type": "application/json"},
+        "body": "{\"message\": \"Alert triggered\"}",
         "connection_timeout": "10s",
         "read_timeout": "30s"
       }
@@ -835,7 +875,7 @@ CREATE OR REPLACE WATCHER high_error_rate AS
   EVERY 5 MINUTES
   FROM logs-* WHERE level = 'ERROR' WITHIN 5 MINUTES
   WHEN ctx.payload.hits.total > 100 DO
-  notify AS LOG "High error rate: {{ctx.payload.hits.total}} errors in the last 5 minutes" AT ERROR
+  notify LOG "High error rate: {{ctx.payload.hits.total}} errors in the last 5 minutes" AT ERROR
 END
 ```
 
@@ -852,7 +892,7 @@ CREATE OR REPLACE WATCHER threshold_alert AS
     WITH PARAMS (threshold = 2) 
     RETURNS TRUE 
   DO
-  alert AS WEBHOOK POST "https://hooks.slack-alternative.com/webhook" 
+  alert WEBHOOK POST "https://hooks.example.com/webhook" 
     HEADERS ("Content-Type" = "application/json") 
     BODY "{\"text\": \"Threshold exceeded for {{ctx.payload._value}}\"}" 
     FOREACH "ctx.payload.keys" 
@@ -869,7 +909,7 @@ CREATE OR REPLACE WATCHER daily_report AS
   AT SCHEDULE '0 0 9 * * ?'
   FROM orders WHERE status = 'completed' WITHIN 1 DAY
   ALWAYS DO
-  send_report AS WEBHOOK POST "https://api.company.com/reports" 
+  send_report WEBHOOK POST "https://api.company.com/reports" 
     HEADERS ("Authorization" = "Bearer {{ctx.metadata.api_key}}") 
     BODY "{\"date\": \"{{ctx.execution_time}}\", \"total_orders\": {{ctx.payload.hits.total}}}" 
     TIMEOUT (connection = "10s", read = "60s")
@@ -884,12 +924,12 @@ END
 CREATE OR REPLACE WATCHER enriched_alert AS
   AT SCHEDULE '0 */15 * * * ?'
   WITH INPUTS 
-    alerts AS FROM alerts-* WHERE severity = 'critical' WITHIN 15 MINUTES,
-    context AS GET PROTOCOL https HOST "api.internal.com" PATH "/context" 
+    alerts FROM alerts-* WHERE severity = 'critical' WITHIN 15 MINUTES,
+    context GET PROTOCOL https HOST "api.internal.com" PATH "/context" 
       HEADERS ("X-API-Key" = "secret123")
   WHEN ctx.payload.alerts.hits.total > 0 DO
-  log_alert AS LOG "Critical alerts: {{ctx.payload.alerts.hits.total}}" AT ERROR,
-  notify_ops AS WEBHOOK POST "https://pagerduty-alternative.com/alert" 
+  log_alert LOG "Critical alerts: {{ctx.payload.alerts.hits.total}}" AT ERROR,
+  notify_ops WEBHOOK POST "https://alerting.example.com/alert" 
     HEADERS ("Content-Type" = "application/json") 
     BODY "{\"alerts\": {{ctx.payload.alerts.hits.total}}, \"context\": \"{{ctx.payload.context.environment}}\"}"
 END
@@ -958,19 +998,21 @@ This is useful for:
 
 ```sql
 CREATE [OR REPLACE] ENRICH POLICY policy_name
-  ON index_name
-  MATCH (match_field)
-  ENRICH (field1, field2, ...)
-  [WITH TYPE { MATCH | GEO_MATCH | RANGE }]
+  [TYPE { MATCH | GEO_MATCH | RANGE }]
+  FROM source_index [, source_index2, ...]
+  ON match_field
+  ENRICH field1, field2, ...
+  [WHERE criteria]
 ```
 
-| Component | Required | Description |
-|-----------|----------|-------------|
-| `policy_name` | ✔ | Unique name for the policy |
-| `ON index_name` | ✔ | Source index containing enrichment data |
-| `MATCH (field)` | ✔ | Field used to match documents |
-| `ENRICH (fields)` | ✔ | Fields to add from the source index |
-| `WITH TYPE` | ✖ | Policy type (default: `MATCH`) |
+| Component     | Required  | Description                                 |
+|---------------|-----------|---------------------------------------------|
+| `policy_name` | ✔         | Unique name for the policy                  |
+| `TYPE`        | ✖         | Policy type (default: `MATCH`)              |
+| `FROM`        | ✔         | Source index(es) containing enrichment data |
+| `ON`          | ✔         | Field used to match documents               |
+| `ENRICH`      | ✔         | Fields to add from the source index         |
+| `WHERE`       | ✖         | Filter criteria for source documents        |
 
 ---
 
@@ -978,7 +1020,7 @@ CREATE [OR REPLACE] ENRICH POLICY policy_name
 
 | Type | Description | Use Case |
 |------|-------------|----------|
-| `MATCH` | Exact value matching | User IDs, product codes |
+| `MATCH` | Exact value matching (default) | User IDs, product codes |
 | `GEO_MATCH` | Geo-shape matching | Location-based enrichment |
 | `RANGE` | Range-based matching | IP ranges, numeric ranges |
 
@@ -986,13 +1028,13 @@ CREATE [OR REPLACE] ENRICH POLICY policy_name
 
 ### Examples
 
-#### Basic match policy
+#### Basic match policy (default type)
 
 ```sql
 CREATE ENRICH POLICY user_enrichment
-  ON users
-  MATCH (user_id)
-  ENRICH (name, email, department)
+  FROM users
+  ON user_id
+  ENRICH name, email, department
 ```
 
 **Generates:**
@@ -1009,14 +1051,57 @@ CREATE ENRICH POLICY user_enrichment
 
 ---
 
+#### Match policy with WHERE clause
+
+```sql
+CREATE OR REPLACE ENRICH POLICY active_user_enrichment
+  FROM users
+  ON user_id
+  ENRICH name, email, department
+  WHERE account_status = 'active' AND email_verified = true
+```
+
+**Generates:**
+
+```json
+{
+  "match": {
+    "indices": "users",
+    "match_field": "user_id",
+    "enrich_fields": ["name", "email", "department"],
+    "query": {
+      "bool": {
+        "must": [
+          {"term": {"account_status": "active"}},
+          {"term": {"email_verified": true}}
+        ]
+      }
+    }
+  }
+}
+```
+
+---
+
+#### Policy with multiple source indices
+
+```sql
+CREATE ENRICH POLICY contact_enrichment
+  FROM users, customers, partners
+  ON contact_id
+  ENRICH name, email, company
+```
+
+---
+
 #### Geo-match policy
 
 ```sql
 CREATE ENRICH POLICY geo_enrichment
-  ON postal_codes
-  MATCH (location)
-  ENRICH (city, region, country, timezone)
-  WITH TYPE GEO_MATCH
+  TYPE GEO_MATCH
+  FROM postal_codes
+  ON location
+  ENRICH city, region, country, timezone
 ```
 
 **Generates:**
@@ -1037,10 +1122,10 @@ CREATE ENRICH POLICY geo_enrichment
 
 ```sql
 CREATE ENRICH POLICY ip_enrichment
-  ON ip_ranges
-  MATCH (ip_range)
-  ENRICH (network_name, datacenter, owner)
-  WITH TYPE RANGE
+  TYPE RANGE
+  FROM ip_ranges
+  ON ip_range
+  ENRICH network_name, datacenter, owner
 ```
 
 **Generates:**
@@ -1053,6 +1138,21 @@ CREATE ENRICH POLICY ip_enrichment
     "enrich_fields": ["network_name", "datacenter", "owner"]
   }
 }
+```
+
+---
+
+#### Complex WHERE clause
+
+```sql
+CREATE ENRICH POLICY premium_users
+  FROM users
+  ON user_id
+  ENRICH name, email, tier, subscription_end_date
+  WHERE status = 'active'
+    AND tier IN ('premium', 'enterprise')
+    AND created_at > '2023-01-01'
+    AND (country = 'US' OR country = 'CA')
 ```
 
 ---
@@ -1131,15 +1231,15 @@ WITH PROCESSORS (
 )
 ```
 
-| Option | Required | Description |
-|--------|----------|-------------|
-| `policy_name` | ✔ | Name of the enrich policy |
-| `field` | ✔ | Field in the incoming document to match |
-| `target_field` | ✔ | Field to store enrichment data |
-| `max_matches` | ✖ | Maximum matching documents (default: 1) |
-| `ignore_missing` | ✖ | Ignore if match field is missing (default: false) |
-| `override` | ✖ | Override existing target field (default: true) |
-| `shape_relation` | ✖ | For geo_match: `INTERSECTS`, `DISJOINT`, `WITHIN`, `CONTAINS` |
+| Option           | Required  | Description                                                   |
+|------------------|-----------|---------------------------------------------------------------|
+| `policy_name`    | ✔         | Name of the enrich policy                                     |
+| `field`          | ✔         | Field in the incoming document to match                       |
+| `target_field`   | ✔         | Field to store enrichment data                                |
+| `max_matches`    | ✖         | Maximum matching documents (default: 1)                       |
+| `ignore_missing` | ✖         | Ignore if match field is missing (default: false)             |
+| `override`       | ✖         | Override existing target field (default: true)                |
+| `shape_relation` | ✖         | For geo_match: `INTERSECTS`, `DISJOINT`, `WITHIN`, `CONTAINS` |
 
 ---
 
@@ -1165,9 +1265,9 @@ INSERT INTO users VALUES
 
 ```sql
 CREATE ENRICH POLICY user_enrichment
-  ON users
-  MATCH (user_id)
-  ENRICH (name, email, department);
+  FROM users
+  ON user_id
+  ENRICH name, email, department;
 ```
 
 #### 3. Execute the policy
@@ -1486,30 +1586,35 @@ CREATE [OR REPLACE] WATCHER name AS
   WITH NO INPUT
   | WITH INPUT (key = value, ...)
   | FROM index [WHERE criteria] [WITHIN n unit]
-  | WITH INPUT method PROTOCOL scheme HOST "host" [PORT n] [PATH "path"] [HEADERS (...)] [BODY "..."] [TIMEOUT (...)]
-  | WITH INPUTS name AS input, name AS input, ...
+  | WITH INPUT method "url" [HEADERS (...)] [BODY "..."] [TIMEOUT (...)]
+  | WITH INPUT method PROTOCOL scheme HOST "host" [PORT n] [PATH "path"] [PARAMS (...)] [HEADERS (...)] [BODY "..."] [TIMEOUT (...)]
+  | WITH INPUTS name [AS] input, name [AS] input, ...
   
   -- Condition (required)
   NEVER DO | ALWAYS DO
   | WHEN path op value DO
   | WHEN SCRIPT '...' USING LANG '...' WITH PARAMS (...) RETURNS TRUE DO
   
-  -- Actions (at least one)
-  name AS LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
-  | name AS WEBHOOK method "url" [HEADERS (...)] [BODY "..."] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
+  -- Actions (at least one, AS is optional)
+  name [AS] LOG "message" [AT level] [FOREACH "path"] [LIMIT n]
+  | name [AS] WEBHOOK method "url" [HEADERS (...)] [BODY "..."] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
+  | name [AS] WEBHOOK method PROTOCOL scheme HOST "host" [PORT n] [PATH "path"] [PARAMS (...)] [HEADERS (...)] [BODY "..."] [TIMEOUT (...)] [FOREACH "path"] [LIMIT n]
   [, ...]
 END
 ```
+
+**Supported HTTP methods:** `HEAD`, `GET`, `POST`, `PUT`, `DELETE`
 
 ### Enrich Policy Syntax Summary
 
 ```sql
 -- Create policy
 CREATE [OR REPLACE] ENRICH POLICY name
-  ON source_index
-  MATCH (match_field)
-  ENRICH (field1, field2, ...)
-  [WITH TYPE {MATCH|GEO_MATCH|RANGE}]
+  [TYPE {MATCH|GEO_MATCH|RANGE}]
+  FROM source_index [, source_index2, ...]
+  ON match_field
+  ENRICH field1, field2, ...
+  [WHERE criteria]
 
 -- Execute policy (required before use)
 EXECUTE ENRICH POLICY name;
