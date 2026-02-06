@@ -43,6 +43,7 @@ import app.softnetwork.elastic.sql.transform.{
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import org.json4s.Formats
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 import scala.reflect.ClassTag
@@ -837,8 +838,8 @@ class MetricsElasticClient(
 
   override def singleSearch(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     measureResult("search", Some(elasticQuery.indices.mkString(","))) {
       delegate.singleSearch(elasticQuery, fieldAliases, aggregations)
@@ -847,8 +848,8 @@ class MetricsElasticClient(
 
   override def multiSearch(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     measureResult("multisearch") {
       delegate.multiSearch(elasticQueries, fieldAliases, aggregations)
@@ -868,8 +869,8 @@ class MetricsElasticClient(
     */
   override def singleSearchAsync(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync", Some(elasticQuery.indices.mkString(","))) {
       delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations).asInstanceOf
@@ -888,8 +889,8 @@ class MetricsElasticClient(
     */
   override def multiSearchAsync(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("multisearchAsync") {
       delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations).asInstanceOf
@@ -910,8 +911,8 @@ class MetricsElasticClient(
     */
   override def singleSearchAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("searchAs", Some(elasticQuery.indices.mkString(","))) {
       delegate.singleSearchAs(elasticQuery, fieldAliases, aggregations)
@@ -932,8 +933,8 @@ class MetricsElasticClient(
     */
   override def multisearchAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("multisearchAs") {
       delegate.multisearchAs(elasticQueries, fieldAliases, aggregations)
@@ -954,8 +955,8 @@ class MetricsElasticClient(
     */
   override def singleSearchAsyncAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -980,8 +981,8 @@ class MetricsElasticClient(
     */
   override def multiSearchAsyncAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,

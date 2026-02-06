@@ -27,6 +27,7 @@ import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 
@@ -337,22 +338,22 @@ trait MockElasticClientApi extends NopeClientApi {
 
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
     Source.single(elasticDocuments.getAll).mapConcat(_.values.toList)
 
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
     scrollClassic(
       elasticQuery,
       fieldAliases,
-      Map.empty,
+      ListMap.empty,
       config
     )
 

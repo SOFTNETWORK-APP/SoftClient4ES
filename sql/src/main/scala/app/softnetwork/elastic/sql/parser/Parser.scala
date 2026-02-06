@@ -994,7 +994,7 @@ object Parser
   def update: PackratParser[Update] =
     ("UPDATE" ~> ident) ~ ("SET" ~> repsep(ident ~ "=" ~ value, separator)) ~ where.? ^^ {
       case table ~ assigns ~ w =>
-        val values = assigns.map { case col ~ _ ~ v => col -> v }.toMap
+        val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
         Update(table, values, w)
     }
 

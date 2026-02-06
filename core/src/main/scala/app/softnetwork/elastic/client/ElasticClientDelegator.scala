@@ -42,6 +42,7 @@ import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.{dynamics, implicitConversions}
 import scala.reflect.ClassTag
@@ -1126,8 +1127,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearch(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] =
     delegate.singleSearch(elasticQuery, fieldAliases, aggregations)
 
@@ -1144,8 +1145,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multiSearch(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] =
     delegate.multiSearch(elasticQueries, fieldAliases, aggregations)
 
@@ -1173,8 +1174,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearchAsync(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations)
 
@@ -1191,8 +1192,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multiSearchAsync(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations)
 
@@ -1225,8 +1226,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearchAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     delegate.singleSearchAs(elasticQuery, fieldAliases, aggregations)
 
@@ -1245,8 +1246,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multisearchAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     delegate.multisearchAs(elasticQueries, fieldAliases, aggregations)
 
@@ -1283,8 +1284,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearchAsyncAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1307,8 +1308,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multiSearchAsyncAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1400,8 +1401,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
     delegate.scrollClassic(elasticQuery, fieldAliases, aggregations, config)
@@ -1409,7 +1410,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
@@ -1418,7 +1419,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem) = {

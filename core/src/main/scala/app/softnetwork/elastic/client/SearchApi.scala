@@ -34,6 +34,7 @@ import app.softnetwork.elastic.sql.query.{
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
 import org.json4s.Formats
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 import scala.language.experimental.macros
@@ -143,8 +144,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearch(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     validateJson("search", elasticQuery.query) match {
       case Some(error) =>
@@ -236,8 +237,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multiSearch(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     elasticQueries.queries.flatMap { elasticQuery =>
       validateJson("search", elasticQuery.query).map(error =>
@@ -409,8 +410,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearchAsync(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
@@ -492,8 +493,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multiSearchAsync(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
@@ -615,8 +616,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearchAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     formats: Formats
@@ -642,8 +643,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multisearchAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] = {
     for {
       response <- multiSearch(elasticQueries, fieldAliases, aggregations)
@@ -724,8 +725,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearchAsyncAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -760,8 +761,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multiSearchAsyncAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1342,7 +1343,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   private def extractWindowValues(
     row: Map[String, Any],
-    aggregations: Map[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation]
   ): WindowValues = {
 
     val values = extractAggregationValues(row, aggregations)

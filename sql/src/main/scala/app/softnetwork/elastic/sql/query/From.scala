@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.{
 }
 
 import scala.annotation.tailrec
+import scala.collection.immutable.ListMap
 
 case object From extends Expr("FROM") with TokenRegex
 
@@ -288,37 +289,41 @@ case class From(tables: Seq[Table]) extends Updateable {
   override def sql: String = s" $From ${tables.map(_.sql).mkString(",")}"
   lazy val unnests: Seq[Unnest] = joins.collect { case u: Unnest => u }
 
-  lazy val tableAliases: Map[String, String] = tables
-    .flatMap((table: Table) =>
-      table.tableAlias match {
-        case Some(alias) if alias.alias.nonEmpty => Some(table.name -> alias.alias)
-        case _                                   => Some(table.name -> table.name)
-      }
-    )
-    .toMap ++ unnestAliases.map(unnest => unnest._2._1 -> unnest._1) ++ joinAliases.map(join =>
+  lazy val tableAliases: ListMap[String, String] = ListMap(
+    tables
+      .flatMap((table: Table) =>
+        table.tableAlias match {
+          case Some(alias) if alias.alias.nonEmpty => Some(table.name -> alias.alias)
+          case _                                   => Some(table.name -> table.name)
+        }
+      ): _*
+  ) ++ unnestAliases.map(unnest => unnest._2._1 -> unnest._1) ++ joinAliases.map(join =>
     join._2._1 -> join._1
   )
 
-  lazy val aliasesToTable: Map[String, String] = tableAliases.map(_.swap)
+  lazy val aliasesToTable: ListMap[String, String] = tableAliases.map(_.swap)
 
   lazy val joins: Seq[Join] = tables.flatMap(_.joins)
 
-  lazy val joinAliases: Map[String, (String, Option[On])] = joins.collect { case sj: StandardJoin =>
-    (
-      sj.alias
-        .map(_.alias)
-        .getOrElse(
-          sj.source.name
-        ),
-      (sj.source.name, sj.on)
-    )
-  }.toMap
+  lazy val joinAliases: ListMap[String, (String, Option[On])] = ListMap(
+    joins.collect { case sj: StandardJoin =>
+      (
+        sj.alias
+          .map(_.alias)
+          .getOrElse(
+            sj.source.name
+          ),
+        (sj.source.name, sj.on)
+      )
+    }: _*
+  )
 
-  lazy val unnestAliases: Map[String, (String, Option[Limit])] = unnests
-    .map(u => // extract unnest info
-      (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
-    )
-    .toMap
+  lazy val unnestAliases: ListMap[String, (String, Option[Limit])] = ListMap(
+    unnests
+      .map(u => // extract unnest info
+        (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
+      ): _*
+  )
 
   def update(request: SingleSearch): From =
     this.copy(tables = tables.map(_.update(request)))
@@ -326,7 +331,7 @@ case class From(tables: Seq[Table]) extends Updateable {
   override def validate(): Either[String, Unit] = {
     if (tables.isEmpty) {
       Left("At least one table is required in FROM clause")
-    } else if (tables.filter(_.joins.nonEmpty).size > 1) {
+    } else if (tables.count(_.joins.nonEmpty) > 1) {
       Left("Only one table with joins is supported in FROM clause")
     } else {
       for {

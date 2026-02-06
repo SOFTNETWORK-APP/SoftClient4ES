@@ -107,6 +107,7 @@ import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
 import _root_.java.util.{Map => JMap}
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
@@ -1309,8 +1310,8 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
   )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
@@ -1409,7 +1410,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
@@ -1429,7 +1430,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
@@ -1659,8 +1660,8 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private def extractAllResults(
     response: Either[SearchResponse[JMap[String, Object]], ScrollResponse[JMap[String, Object]]],
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString =
       response match {
@@ -1686,11 +1687,11 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private def extractHitsOnly(
     response: SearchResponse[JMap[String, Object]],
-    fieldAliases: Map[String, String]
+    fieldAliases: ListMap[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = convertToJson(response)
 
-    parseResponse(jsonString, fieldAliases, Map.empty) match {
+    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} hits from response")
         rows

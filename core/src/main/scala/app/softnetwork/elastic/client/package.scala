@@ -25,6 +25,7 @@ import org.slf4j.Logger
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
 import scala.language.{implicitConversions, reflectiveCalls}
@@ -53,8 +54,8 @@ package object client extends SerializationApi {
     sql: Option[String] = None,
     query: JSONQuery,
     results: Seq[Map[String, Any]],
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, ClientAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, ClientAggregation]
   )
 
   sealed trait ElasticAuthMethod {

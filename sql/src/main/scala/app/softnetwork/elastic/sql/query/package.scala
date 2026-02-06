@@ -100,22 +100,22 @@ package object query {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
 
-    lazy val fieldAliases: Map[String, String] = select.fieldAliases
-    lazy val tableAliases: Map[String, String] = from.tableAliases
-    lazy val unnestAliases: Map[String, (String, Option[Limit])] = from.unnestAliases
-    lazy val bucketNames: Map[String, Bucket] = buckets.flatMap { b =>
+    lazy val fieldAliases: ListMap[String, String] = select.fieldAliases
+    lazy val tableAliases: ListMap[String, String] = from.tableAliases
+    lazy val unnestAliases: ListMap[String, (String, Option[Limit])] = from.unnestAliases
+    lazy val bucketNames: ListMap[String, Bucket] = ListMap(buckets.flatMap { b =>
       val name = b.identifier.identifierName
       "\\d+".r.findFirstIn(name) match {
         case Some(n) if name.trim.split(" ").length == 1 =>
           val identifier = select.fields(n.toInt - 1).identifier
           val updated = b.copy(identifier = select.fields(n.toInt - 1).identifier)
-          Map(
+          ListMap(
             n                         -> updated, // also map numeric bucket to field name
             identifier.identifierName -> updated
           )
-        case _ => Map(name -> b)
+        case _ => ListMap(name -> b)
       }
-    }.toMap
+    }: _*)
 
     var unnests: scala.collection.mutable.Map[String, Unnest] = {
       val map = from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
@@ -162,8 +162,8 @@ package object query {
       )
     }
 
-    lazy val sorts: Map[String, SortOrder] =
-      orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Map.empty).toMap
+    lazy val sorts: ListMap[String, SortOrder] =
+      ListMap(orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Seq.empty): _*)
 
     def update(schema: Option[Schema] = None): SingleSearch = {
       schema match {
@@ -215,8 +215,10 @@ package object query {
         .filter(f => f.isAggregation || f.isBucketScript)
         .filterNot(_.identifier.hasWindow) ++ windowFields
 
-    lazy val sqlAggregations: Map[String, SQLAggregation] =
-      aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a).toMap
+    lazy val sqlAggregations: ListMap[String, SQLAggregation] =
+      ListMap(
+        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a): _*
+      )
 
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
@@ -285,11 +287,11 @@ package object query {
       }
     }
 
-    lazy val sqlAggregations: Map[String, SQLAggregation] =
-      requests.flatMap(_.sqlAggregations).distinct.toMap
+    lazy val sqlAggregations: ListMap[String, SQLAggregation] =
+      ListMap(requests.flatMap(_.sqlAggregations).distinct: _*)
 
-    lazy val fieldAliases: Map[String, String] =
-      requests.flatMap(_.fieldAliases).distinct.toMap
+    lazy val fieldAliases: ListMap[String, String] =
+      ListMap(requests.flatMap(_.fieldAliases).distinct: _*)
   }
 
   sealed trait DmlStatement extends Statement
@@ -420,7 +422,7 @@ package object query {
     }
   }
 
-  case class Update(table: String, values: Map[String, Value[_]], where: Option[Where])
+  case class Update(table: String, values: ListMap[String, Value[_]], where: Option[Where])
       extends DmlStatement {
     override def sql: String = s"UPDATE $table SET ${values
       .map { case (k, v) => s"$k = ${v.value}" }
@@ -850,7 +852,7 @@ package object query {
   }
   case class AlterColumnOptions(
     columnName: String,
-    options: Map[String, Value[_]],
+    options: ListMap[String, Value[_]],
     ifExists: Boolean = false
   ) extends AlterTableStatement {
     override def sql: String = {
@@ -1057,7 +1059,7 @@ package object query {
     trigger: WatcherTrigger,
     actions: ListMap[String, WatcherAction],
     input: WatcherInput,
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty
   ) extends WatcherStatement {
 
     lazy val watcher: Watcher = Watcher(

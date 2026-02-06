@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.{schema, ObjectValue, PainlessContextType, Value}
+import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
@@ -125,6 +125,7 @@ import org.json4s.jackson.JsonMethods
 import java.io.IOException
 import java.time.ZoneId
 import java.util.Date
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
@@ -1393,8 +1394,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
@@ -1499,7 +1500,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
@@ -1606,7 +1607,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
@@ -1616,8 +1617,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   private def extractAllResults(
     response: SearchResponse,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
     parseResponse(
@@ -1638,10 +1639,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   private def extractHitsOnly(
     response: SearchResponse,
-    fieldAliases: Map[String, String]
+    fieldAliases: ListMap[String, String]
   ): Seq[Map[String, Any]] = {
     val jsonString = response.toString
-    parseResponse(jsonString, fieldAliases, Map.empty) match {
+    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)

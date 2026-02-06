@@ -36,6 +36,8 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 
+import scala.collection.immutable.ListMap
+
 case object Select extends Expr("SELECT") with TokenRegex
 
 case class Field(
@@ -127,10 +129,10 @@ case class Select(
 ) extends Updateable {
   override def sql: String =
     s"$Select ${fields.mkString(", ")}${except.getOrElse("")}"
-  lazy val fieldAliases: Map[String, String] = fields.flatMap { field =>
+  lazy val fieldAliases: ListMap[String, String] = ListMap(fields.flatMap { field =>
     field.fieldAlias.map(a => field.identifier.identifierName -> a.alias)
-  }.toMap
-  lazy val aliasesToMap: Map[String, String] = fieldAliases.map(_.swap)
+  }: _*)
+  lazy val aliasesToMap: ListMap[String, String] = fieldAliases.map(_.swap)
   def update(request: SingleSearch): Select =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))
 

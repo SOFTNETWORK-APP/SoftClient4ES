@@ -35,6 +35,7 @@ import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.transform.{TransformConfig, TransformStats}
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 
@@ -169,8 +170,8 @@ trait NopeClientApi extends ElasticClientApi {
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = Source.empty
 
@@ -178,14 +179,14 @@ trait NopeClientApi extends ElasticClientApi {
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = Source.empty
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = Source.empty
