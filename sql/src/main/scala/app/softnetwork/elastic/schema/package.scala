@@ -43,6 +43,7 @@ import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.security.MessageDigest
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 
 package object schema {
@@ -55,8 +56,8 @@ package object schema {
     not_null: Option[Boolean] = None,
     comment: Option[String] = None,
     fields: List[IndexField] = Nil,
-    options: Map[String, Value[_]] = Map.empty,
-    lineage: Map[String, Seq[(String, String)]] = Map.empty // ✅ Added
+    options: ListMap[String, Value[_]] = ListMap.empty,
+    lineage: ListMap[String, Seq[(String, String)]] = ListMap.empty // ✅ Added
   ) {
     lazy val ddlColumn: Column = {
       Column(
@@ -210,7 +211,7 @@ package object schema {
             }
           case _ => None
         }
-        .getOrElse(Map.empty)
+        .getOrElse(ListMap.empty)
 
       IndexField(
         name = name,
@@ -231,7 +232,7 @@ package object schema {
     fields: List[IndexField] = Nil,
     primaryKey: List[String] = Nil,
     partitionBy: Option[IndexDatePartition] = None,
-    options: Map[String, Value[_]] = Map.empty,
+    options: ListMap[String, Value[_]] = ListMap.empty,
     materializedViews: Option[List[String]] = None,
     tableType: TableType = TableType.Regular
   )
@@ -348,7 +349,7 @@ package object schema {
   )
 
   final case class IndexSettings(
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty
   )
 
   object IndexSettings {
@@ -436,12 +437,12 @@ package object schema {
   }
 
   final case class IndexAliases(
-    aliases: Map[String, IndexAlias] = Map.empty
+    aliases: ListMap[String, IndexAlias] = ListMap.empty
   )
 
   object IndexAliases {
     def apply(nodes: Seq[(String, JsonNode)]): IndexAliases = {
-      IndexAliases(nodes.map(entry => entry._1 -> IndexAlias(entry._1, entry._2)).toMap)
+      IndexAliases(ListMap(nodes.map(entry => entry._1 -> IndexAlias(entry._1, entry._2)): _*))
     }
   }
 

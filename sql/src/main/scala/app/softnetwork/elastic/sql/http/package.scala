@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.transform.TransformTimeInterval
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.net.{URLDecoder, URLEncoder}
+import scala.collection.immutable.ListMap
 import scala.util.matching.Regex
 
 package object http {
@@ -82,7 +83,7 @@ package object http {
     override def sql: String = path.sql
   }
 
-  case class QueryParams(params: Map[String, Value[_]]) extends UrlPart {
+  case class QueryParams(params: ListMap[String, Value[_]]) extends UrlPart {
     override def sql: String = s"PARAMS $params"
     lazy val encoded: String = {
       params
@@ -107,19 +108,20 @@ package object http {
 
   object QueryParams {
     def apply(query: String): QueryParams = {
-      lazy val decoded: Map[String, Value[_]] = {
-        URLDecoder
-          .decode(query, "UTF-8")
-          .split("&")
-          .map { param =>
-            val parts = param.split("=")
-            if (parts.length == 2) {
-              parts(0) -> StringValue(parts(1))
-            } else {
-              parts(0) -> StringValue("")
-            }
-          }
-          .toMap
+      lazy val decoded: ListMap[String, Value[_]] = {
+        ListMap(
+          URLDecoder
+            .decode(query, "UTF-8")
+            .split("&")
+            .map { param =>
+              val parts = param.split("=")
+              if (parts.length == 2) {
+                parts(0) -> StringValue(parts(1))
+              } else {
+                parts(0) -> StringValue("")
+              }
+            }: _*
+        )
       }
       QueryParams(decoded)
     }
@@ -214,7 +216,7 @@ package object http {
     }
   }
 
-  case class Headers(headers: Map[String, Value[_]]) extends HttpPart {
+  case class Headers(headers: ListMap[String, Value[_]]) extends HttpPart {
     override def sql: String = s"HEADERS ${ObjectValue(headers).ddl}"
   }
 
@@ -232,7 +234,7 @@ package object http {
       extends DdlToken
       with HttpPart {
     override def sql: String = {
-      val map: Map[String, StringValue] = Map.empty ++
+      val map: ListMap[String, StringValue] = ListMap.empty ++
         connection.map(c => "connection" -> StringValue(c.toTransformFormat)) ++
         read.map(r => "read" -> StringValue(r.toTransformFormat))
       s"TIMEOUT ${ObjectValue(map).ddl}".trim

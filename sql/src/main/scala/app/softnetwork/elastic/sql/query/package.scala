@@ -403,13 +403,14 @@ package object query {
         case Right(rows) =>
           val maps: Seq[ObjectValue] =
             for (row <- rows) yield {
-              val map: Map[String, Value[_]] =
-                cols
-                  .zip(row)
-                  .map { case (k, v) =>
-                    k -> v
-                  }
-                  .toMap
+              val map: ListMap[String, Value[_]] =
+                ListMap(
+                  cols
+                    .zip(row)
+                    .map { case (k, v) =>
+                      k -> v
+                    }: _*
+                )
               ObjectValue(map)
             }
           val json: JsonNode = ObjectValues(maps)
@@ -584,7 +585,7 @@ package object query {
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     frequency: Option[Frequency] = None,
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty
   ) extends MaterializedViewStatement {
     override def sql: String = {
       val frequencySql = frequency match {
@@ -674,7 +675,7 @@ package object query {
     orReplace: Boolean = false,
     primaryKey: List[String] = Nil,
     partitionBy: Option[PartitionDate] = None,
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty
   ) extends TableStatement {
 
     lazy val partitioned: Boolean = partitionBy.isDefined
@@ -738,31 +739,31 @@ package object query {
       }).filterNot(_.name == artificialPkColumnName) ++ artificialPkColumn
     }
 
-    lazy val mappings: Map[String, Value[_]] = options.get("mappings") match {
+    lazy val mappings: ListMap[String, Value[_]] = options.get("mappings") match {
       case Some(value) =>
         value match {
           case o: ObjectValue => o.value
-          case _              => Map.empty
+          case _              => ListMap.empty
         }
-      case None => Map.empty
+      case None => ListMap.empty
     }
 
-    lazy val settings: Map[String, Value[_]] = options.get("settings") match {
+    lazy val settings: ListMap[String, Value[_]] = options.get("settings") match {
       case Some(value) =>
         value match {
           case o: ObjectValue => o.value
-          case _              => Map.empty
+          case _              => ListMap.empty
         }
-      case None => Map.empty
+      case None => ListMap.empty
     }
 
-    lazy val aliases: Map[String, Value[_]] = options.get("aliases") match {
+    lazy val aliases: ListMap[String, Value[_]] = options.get("aliases") match {
       case Some(value) =>
         value match {
           case o: ObjectValue => o.value
-          case _              => Map.empty
+          case _              => ListMap.empty
         }
-      case None => Map.empty
+      case None => ListMap.empty
     }
 
     lazy val materializedViews: List[String] = options.get("materialized_views") match {

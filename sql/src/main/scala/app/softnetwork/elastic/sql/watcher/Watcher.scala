@@ -59,22 +59,24 @@ import scala.collection.immutable.ListMap
 case class Watcher(
   id: String,
   trigger: WatcherTrigger = IntervalWatcherTrigger(Delay(TransformTimeUnit.Minutes, 5)),
-  input: WatcherInput = SimpleWatcherInput(ObjectValue(Map.empty)),
+  input: WatcherInput = SimpleWatcherInput(ObjectValue(ListMap.empty)),
   condition: WatcherCondition = AlwaysWatcherCondition,
   actions: ListMap[String, WatcherAction] = ListMap.empty,
   throttlePeriod: Option[TransformTimeInterval] = None,
   metadata: Option[ObjectValue] = None,
   status: Option[WatcherStatus] = None
 ) extends DdlToken {
-  lazy val options: Map[String, Value[_]] = {
-    List(
-      throttlePeriod.map { tp =>
-        "throttle_period" -> StringValue(s"${tp.interval}${tp.timeUnit.format}")
-      },
-      metadata.map { md =>
-        "metadata" -> md
-      }
-    ).flatten.toMap
+  lazy val options: ListMap[String, Value[_]] = {
+    ListMap(
+      List(
+        throttlePeriod.map { tp =>
+          "throttle_period" -> StringValue(s"${tp.interval}${tp.timeUnit.format}")
+        },
+        metadata.map { md =>
+          "metadata" -> md
+        }
+      ).flatten: _*
+    )
   }
 
   override def sql: String = {

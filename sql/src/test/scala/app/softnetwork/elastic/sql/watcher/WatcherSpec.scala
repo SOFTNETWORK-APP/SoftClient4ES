@@ -55,7 +55,7 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
   val scriptCondition: WatcherCondition = ScriptWatcherCondition(
     script = "ctx.payload.hits.total > params.threshold",
-    params = Map("threshold" -> IntValue(10))
+    params = ListMap("threshold" -> IntValue(10))
   )
 
   // =============================================================
@@ -240,7 +240,7 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
 
   val webhookScriptCondition: WatcherCondition = ScriptWatcherCondition(
     script = "ctx.payload.keys.size > params.threshold",
-    params = Map("threshold" -> IntValue(1))
+    params = ListMap("threshold" -> IntValue(1))
   )
 
   val url: Url =
@@ -256,7 +256,7 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
     HttpRequest(
       url = url,
       method = Method.Post,
-      headers = Some(Headers(Map("Content-Type" -> StringValue("application/json")))),
+      headers = Some(Headers(ListMap("Content-Type" -> StringValue("application/json")))),
       body =
         Some(Body(StringValue("""{"message": "Watcher triggered with {{ctx.payload._value}}"}"""))),
       timeout = Some(timeout)
@@ -266,8 +266,9 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
   )
 
   val simpleInput: WatcherInput = SimpleWatcherInput(
-    payload =
-      ObjectValue(Map("keys" -> StringValues(Seq(StringValue("value1"), StringValue("value2")))))
+    payload = ObjectValue(
+      ListMap("keys" -> StringValues(Seq(StringValue("value1"), StringValue("value2"))))
+    )
   )
 
   it should "supports never condition with interval trigger and simple input" in {

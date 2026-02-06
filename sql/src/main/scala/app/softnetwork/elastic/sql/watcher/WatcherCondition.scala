@@ -33,6 +33,7 @@ import app.softnetwork.elastic.sql.{
 }
 import com.fasterxml.jackson.databind.JsonNode
 
+import scala.collection.immutable.ListMap
 import scala.util.Try
 
 sealed trait WatcherCondition extends DdlToken {
@@ -138,7 +139,7 @@ class CompareWatcherCondition private (
 case class ScriptWatcherCondition(
   script: String,
   lang: String = "painless",
-  params: Map[String, Value[_]] = Map.empty
+  params: ListMap[String, Value[_]] = ListMap.empty
 ) extends WatcherCondition {
   override def sql: String = {
     val base = s" WHEN SCRIPT '$script' USING LANG '$lang'"

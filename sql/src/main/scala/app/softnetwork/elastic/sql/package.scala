@@ -26,6 +26,7 @@ import app.softnetwork.elastic.sql.schema.Column
 import com.fasterxml.jackson.databind.JsonNode
 
 import scala.annotation.tailrec
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe._
 import scala.util.Try
@@ -370,8 +371,8 @@ package object sql {
           }
         case _: Seq[T] => EmptyValues().asInstanceOf[Values[R, T]]
         case o: Map[_, _] =>
-          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }
-          ObjectValue(map)
+          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }.toList
+          ObjectValue(ListMap(map: _*))
         case other => StringValue(other.toString)
       }
     }
@@ -417,7 +418,7 @@ package object sql {
 
   case class Removed(name: String) extends Diff
 
-  case class ObjectValue(override val value: Map[String, Value[_]])
+  case class ObjectValue(override val value: ListMap[String, Value[_]])
       extends Value[Map[String, Value[_]]](value) {
     override def sql: String = value
       .map { case (k, v) => s"""$k = ${v.sql}""" }
@@ -537,7 +538,7 @@ package object sql {
   object ObjectValue {
     import app.softnetwork.elastic.sql.serialization._
 
-    def empty: ObjectValue = ObjectValue(Map.empty)
+    def empty: ObjectValue = ObjectValue(ListMap.empty)
 
     def fromJson(jsonNode: JsonNode): ObjectValue = jsonNode
 

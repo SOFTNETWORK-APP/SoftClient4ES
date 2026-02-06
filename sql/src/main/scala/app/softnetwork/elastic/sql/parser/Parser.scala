@@ -232,7 +232,7 @@ object Parser
 
   def column: PackratParser[Column] =
     ident ~ extension_type ~ (script | multiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
-      Map.empty[String, Value[_]]
+      ListMap.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
       mfs match {
         case script: PainlessScript =>
@@ -295,12 +295,12 @@ object Parser
     }
 
   def columnsWithPartitionBy
-    : PackratParser[(List[Column], List[String], Option[PartitionDate], Map[String, Any])] =
+    : PackratParser[(List[Column], List[String], Option[PartitionDate], ListMap[String, Any])] =
     start ~ repsep(
       column,
       separator
     ) ~ primaryKey ~ end ~ partitionBy ~ ((separator.? ~> options) | success(
-      Map.empty[String, Value[_]]
+      ListMap.empty[String, Value[_]]
     )) ^^ { case _ ~ cols ~ pk ~ _ ~ pb ~ opts =>
       (cols, pk, pb, opts)
     }
@@ -313,7 +313,7 @@ object Parser
                 cols: List[Column],
                 pk: List[String],
                 p: Option[PartitionDate],
-                opts: Map[String, Value[_]]
+                opts: ListMap[String, Value[_]]
               ) =>
             CreateTable(
               name,
@@ -337,7 +337,7 @@ object Parser
                 cols: List[Column],
                 pk: List[String],
                 p: Option[PartitionDate],
-                opts: Map[String, Value[_]]
+                opts: ListMap[String, Value[_]]
               ) =>
             CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p, options = opts)
           case sel: DqlStatement => CreateTable(name, Left(sel), ine)
@@ -381,9 +381,9 @@ object Parser
         Frequency(TransformTimeUnit(parts(1)), parts(0).toLong)
     }
 
-  def withOptions: PackratParser[Map[String, Value[_]]] =
+  def withOptions: PackratParser[ListMap[String, Value[_]]] =
     ("WITH" ~ lparen) ~> repsep(option, separator) <~ rparen ^^ { opts =>
-      opts.toMap
+      ListMap(opts: _*)
     }
 
   def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
@@ -396,7 +396,7 @@ object Parser
         ifNotExists = false,
         orReplace = true,
         frequency = freq,
-        options = opts.getOrElse(Map.empty)
+        options = opts.getOrElse(ListMap.empty)
       )
     }
 
@@ -412,7 +412,7 @@ object Parser
         ifNotExists = ine,
         orReplace = false,
         frequency = freq,
-        options = opts.getOrElse(Map.empty)
+        options = opts.getOrElse(ListMap.empty)
       )
     }
 
@@ -684,9 +684,9 @@ object Parser
       }
     }
 
-  private def scriptParams: PackratParser[Map[String, Value[_]]] =
+  private def scriptParams: PackratParser[ListMap[String, Value[_]]] =
     ("WITH" ~ "PARAMS") ~> lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ opts ~ _ =>
-      opts.toMap
+      ListMap(opts: _*)
     }
 
   def scriptWatcherCondition: PackratParser[ScriptWatcherCondition] =
@@ -696,7 +696,7 @@ object Parser
       ScriptWatcherCondition(
         scr.value,
         lang.map(_.value).getOrElse("painless"),
-        p.getOrElse(Map.empty)
+        p.getOrElse(ListMap.empty)
       )
     }
 
@@ -721,7 +721,7 @@ object Parser
   // Watcher input parsers
   def simpleWatcherInput: PackratParser[SimpleWatcherInput] =
     opt("WITH" ~ "INPUT") ~> start ~ repsep(option, comma) ~ end ^^ { case _ ~ opts ~ _ =>
-      SimpleWatcherInput(payload = ObjectValue(opts.toMap))
+      SimpleWatcherInput(payload = ObjectValue(ListMap(opts: _*)))
     }
 
   def withinTimeout: PackratParser[Option[Delay]] =
@@ -1062,7 +1062,7 @@ trait Parser
 
   def objectValue: PackratParser[ObjectValue] =
     lparen ~> rep1sep(option, comma) <~ rparen ^^ { opts =>
-      ObjectValue(opts.toMap)
+      ObjectValue(ListMap(opts: _*))
     }
 
   def objectValues: PackratParser[ObjectValues] =
@@ -1078,9 +1078,9 @@ trait Parser
       }
     }
 
-  def options: PackratParser[Map[String, Value[_]]] =
+  def options: PackratParser[ListMap[String, Value[_]]] =
     "OPTIONS" ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
-      opts.toMap
+      ListMap(opts: _*)
     }
 
   def array_of_struct: PackratParser[ObjectValues] =
@@ -1095,7 +1095,7 @@ trait Parser
 
   def struct: PackratParser[ObjectValue] =
     startStruct ~> repsep(struct_entry, comma) <~ endStruct ^^ { entries =>
-      ObjectValue(entries.toMap)
+      ObjectValue(ListMap(entries: _*))
     }
 
   def start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)

@@ -32,6 +32,8 @@ import app.softnetwork.elastic.sql.http.{
   UrlPart
 }
 
+import scala.collection.immutable.ListMap
+
 package object http {
 
   trait HttpParser { self: Parser =>
@@ -71,7 +73,7 @@ package object http {
     // url query parameters parser
     def urlQueryParams: PackratParser[QueryParams] =
       "PARAMS" ~> start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
-        QueryParams(opts.toMap)
+        QueryParams(ListMap(opts: _*))
       }
 
     // url part parser
@@ -98,7 +100,7 @@ package object http {
     // headers parser
     def headers: PackratParser[Headers] =
       "HEADERS" ~> start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
-        Headers(opts.toMap)
+        Headers(ListMap(opts: _*))
       }
 
     // body parser
