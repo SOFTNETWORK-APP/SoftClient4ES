@@ -31,6 +31,7 @@ import app.softnetwork.elastic.client.result.{
   QueryStructured,
   ResultRenderer,
   SQLResult,
+  StreamResult,
   TableResult
 }
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
@@ -69,7 +70,7 @@ trait ReplIntegrationTestKit
   def gateway: GatewayApi
 
   // REPL components
-  protected lazy val executor: ReplExecutor = new ReplExecutor(gateway)
+  protected lazy val executor: ReplExecutor = new StreamingReplExecutor(gateway)
   protected lazy val testRepl: TestableRepl = new TestableRepl(executor)
 
   override def beforeAll(): Unit = {
@@ -171,6 +172,11 @@ trait ReplIntegrationTestKit
         } else {
           log.info(s"Rows: $results")
         }
+
+      case StreamResult(estimatedSize, isActive) =>
+        log.info(
+          s"Stream result - Estimated size: ${estimatedSize.getOrElse("N/A")}, Active: $isActive"
+        )
 
       case other => fail(s"Unexpected QueryResult type for SELECT: $other")
     }

@@ -70,6 +70,17 @@ object ResultRenderer {
 
       case QueryStream(_) =>
         renderStreamInfo()
+
+      case StreamResult(estimatedSize, _) =>
+        val sizeInfo = estimatedSize.map(s => s" (~$s rows)").getOrElse("")
+        s"""${emoji("🌊")} ${cyan(s"Streaming result$sizeInfo")}
+           |
+           |${bold("Commands:")}
+           |  ${yellow(".consume [batch] [max]")} - Fetch results (default batch: 100)
+           |  ${yellow(".consume 50 1000")}       - Fetch max 1000 rows in batches of 50
+           |  ${yellow(".cancel")}                - Cancel the stream
+           |
+           |${gray(s"(${executionTime.toMillis}ms to initialize)")}""".stripMargin
     }
   }
 

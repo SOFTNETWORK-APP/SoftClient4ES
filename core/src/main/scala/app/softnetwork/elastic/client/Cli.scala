@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
-import app.softnetwork.elastic.client.repl.{Repl, ReplExecutor}
+import app.softnetwork.elastic.client.repl.{Repl, StreamingReplExecutor}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 
 import scala.concurrent.ExecutionContext
@@ -33,7 +33,7 @@ object Cli extends App {
   try {
     val gateway = ElasticClientFactory.createWithMonitoring(config.elasticConfig)
 
-    val executor = new ReplExecutor(gateway)
+    val executor = new StreamingReplExecutor(gateway)
     val repl = new Repl(executor, config.replConfig)
 
     // Batch mode or interactive mode

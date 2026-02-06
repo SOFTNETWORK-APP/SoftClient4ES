@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client.repl
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.SoftClient4esCoreBuildInfo
-import app.softnetwork.elastic.client.result.{OutputFormat, ResultRenderer}
+import app.softnetwork.elastic.client.result.{OutputFormat, QueryRows, ResultRenderer}
 import org.jline.reader._
 import org.jline.reader.impl.history.DefaultHistory
 import org.jline.terminal.{Terminal, TerminalBuilder}
@@ -28,7 +28,7 @@ import scala.concurrent.{Await, ExecutionContext, TimeoutException}
 import scala.util.{Failure, Success, Try}
 
 class Repl(
-  executor: ReplExecutor,
+  executor: StreamingReplExecutor,
   config: ReplConfig = ReplConfig.default
 )(implicit system: ActorSystem, ec: ExecutionContext) {
 
@@ -251,8 +251,99 @@ class Repl(
             println(s"Current timeout: ${config.timeout.toSeconds}s")
         }
 
+      // ==================== Stream Commands ====================
+
+      case ".consume" | ".c" =>
+        handleConsumeStream(args)
+
+      case ".stream" | ".s" =>
+        handleStreamStatus()
+
+      case ".cancel" =>
+        handleCancelStream()
+
       case unknown =>
         printError(s"Unknown command: $unknown (type .help for available commands)")
+    }
+  }
+
+  private def handleConsumeStream(args: String): Unit = {
+    if (!executor.hasActiveStream) {
+      printError("No active stream. Execute a streaming query first.")
+      return
+    }
+
+    // Parse arguments: .consume [batch_size] [max_rows]
+    val argParts = args.split("\\s+").filter(_.nonEmpty)
+    val batchSize = argParts.headOption.flatMap(s => Try(s.toInt).toOption).getOrElse(100)
+    val maxRows = argParts.lift(1).flatMap(s => Try(s.toInt).toOption)
+
+    println(
+      s"${emoji("🌊")} ${cyan("Consuming stream...")} (batch size: $batchSize${maxRows.map(m => s", max: $m").getOrElse("")})"
+    )
+
+    var displayedRows = 0
+    val allRows = scala.collection.mutable.ListBuffer[Map[String, Any]]()
+
+    val resultFuture = executor.consumeStream(
+      batchSize = batchSize,
+      maxRows = maxRows,
+      onBatch = { batch =>
+        // Accumulate rows for display
+        allRows ++= batch
+        displayedRows += batch.size
+
+        // Show progress
+        print(s"\r${emoji("📊")} Received $displayedRows rows...")
+      }
+    )
+
+    try {
+      val result = Await.result(resultFuture, config.timeout)
+      println() // New line after progress
+
+      result.error match {
+        case Some(err) =>
+          printError(s"Stream error: $err")
+        case None =>
+          // Render accumulated rows
+          if (allRows.nonEmpty) {
+            val output = ResultRenderer.render(
+              QueryRows(allRows.toSeq),
+              result.duration,
+              config.format
+            )
+            println(output)
+          }
+          println(
+            s"${emoji("✅")} ${green(s"Stream completed:")} ${result.totalRows} rows in ${result.batches} batches ${gray(
+              s"(${result.duration.toMillis}ms)"
+            )}"
+          )
+      }
+    } catch {
+      case _: TimeoutException =>
+        executor.cancelStream()
+        printError(s"Stream timeout after ${config.timeout.toSeconds}s")
+    }
+  }
+
+  private def handleStreamStatus(): Unit = {
+    if (executor.hasActiveStream) {
+      println(s"${emoji("🌊")} ${cyan("Active stream available")}")
+      println(s"  Use ${yellow(".consume [batch_size] [max_rows]")} to fetch results")
+      println(s"  Use ${yellow(".cancel")} to cancel the stream")
+    } else {
+      println(s"${emoji("ℹ️")} ${gray("No active stream")}")
+    }
+  }
+
+  private def handleCancelStream(): Unit = {
+    if (executor.hasActiveStream) {
+      executor.cancelStream()
+      println(s"${emoji("✅")} ${green("Stream cancelled")}")
+    } else {
+      println(s"${emoji("ℹ️")} ${gray("No active stream to cancel")}")
     }
   }
 
@@ -299,17 +390,23 @@ class Repl(
       s"""
          |${bold(cyan("Meta Commands:"))}
          |  ${yellow(".help")}              Show this help
+         |  ${yellow(".help <topic>")}      Show help for SQL command or function
          |  ${yellow(".quit")}              Exit the REPL
          |  ${yellow(".tables")}            List all tables
-         |  ${yellow(".describe <table>")} Show table schema
+         |  ${yellow(".describe <table>")}  Show table schema
          |  ${yellow(".pipelines")}         List all pipelines
          |  ${yellow(".watchers")}          List all watchers
          |  ${yellow(".policies")}          List all enrich policies
          |  ${yellow(".history")}           Show command history
          |  ${yellow(".clear")}             Clear screen
          |  ${yellow(".timing")}            Toggle timing display
-         |  ${yellow(".format <type>")}    Set output format (ascii|json|csv)
+         |  ${yellow(".format <type>")}     Set output format (ascii|json|csv)
          |  ${yellow(".timeout <seconds>")} Set query timeout
+         |
+         |${bold(cyan("Stream Commands:"))}
+         |  ${yellow(".stream")}            Show stream status
+         |  ${yellow(".consume [n] [max]")} Consume stream (batch size n, max rows)
+         |  ${yellow(".cancel")}            Cancel active stream
          |
          |${bold(cyan("SQL Commands:"))}
          |  ${green("SELECT")} * FROM table WHERE ...
@@ -322,12 +419,11 @@ class Repl(
          |  ${green("SHOW")} TABLES | PIPELINES | WATCHERS
          |
          |${bold(cyan("Tips:"))}
-         |  • Meta commands execute immediately (no ; needed)
-         |  • SQL statements can span multiple lines
-         |  • End SQL statements with ${yellow(";")} to execute
-         |  • Press ${yellow("Ctrl+C")} to cancel current statement
-         |  • Press ${yellow("Ctrl+D")} or type ${yellow(".quit")} to exit
-         |  • Use ${yellow("↑")} and ${yellow("↓")} to navigate history
+         |  • Type ${yellow(".help SELECT")} for SELECT syntax help
+         |  • Type ${yellow(".help CURRENT_DATE")} for function help
+         |  • Streaming queries return a stream handle
+         |  • Use ${yellow(".consume")} to fetch stream results
+         |  • Press ${yellow("Ctrl+C")} to cancel current operation
          |""".stripMargin
     )
   }

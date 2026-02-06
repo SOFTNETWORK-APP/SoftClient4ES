@@ -405,6 +405,11 @@ package object result {
     def asQueryRows: QueryRows = QueryRows(response.results)
   }
 
+  case class StreamResult(
+    estimatedSize: Option[Long],
+    isActive: Boolean
+  ) extends QueryResult
+
   // --------------------
   // DML (INSERT / UPDATE / DELETE)
   // --------------------
