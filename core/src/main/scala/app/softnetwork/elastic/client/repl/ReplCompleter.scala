@@ -106,7 +106,7 @@ class ReplCompleter extends Completer {
     "CONDITION",
     "ACTION",
     "WEBHOOK",
-    "LOGGING",
+    "LOG",
 
     // Meta
     "SHOW",
