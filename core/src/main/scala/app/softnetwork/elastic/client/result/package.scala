@@ -21,6 +21,7 @@ import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 
+import scala.collection.immutable.ListMap
 import scala.util.control.NonFatal
 
 package object result {
@@ -395,10 +396,10 @@ package object result {
   // --------------------
   // DQL (SELECT)
   // --------------------
-  case class QueryRows(rows: Seq[Map[String, Any]]) extends QueryResult
+  case class QueryRows(rows: Seq[ListMap[String, Any]]) extends QueryResult
 
   case class QueryStream(
-    stream: Source[(Map[String, Any], ScrollMetrics), NotUsed]
+    stream: Source[(ListMap[String, Any], ScrollMetrics), NotUsed]
   ) extends QueryResult
 
   case class QueryStructured(response: ElasticResponse) extends QueryResult {

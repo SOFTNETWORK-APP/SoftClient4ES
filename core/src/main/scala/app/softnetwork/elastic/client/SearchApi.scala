@@ -1266,9 +1266,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       val windowValues = extractWindowValues(row, response.aggregations)
 
       partitionKey -> windowValues
-    }.toMap
+    }
 
-    ElasticResult.success(WindowCache(cache))
+    ElasticResult.success(WindowCache(ListMap(cache: _*)))
   }
 
   // ========================================================================
@@ -1318,7 +1318,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Extract partition key from aggregation row
     */
   private def extractPartitionKey(
-    row: Map[String, Any],
+    row: ListMap[String, Any],
     request: SingleSearch
   ): PartitionKey = {
 
@@ -1329,20 +1329,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       .distinct
 
     if (partitionFields.isEmpty) {
-      return PartitionKey(Map("__global__" -> true))
+      return PartitionKey(ListMap("__global__" -> true))
     }
 
     val keyValues = partitionFields.flatMap { field =>
       row.get(field).map(field -> _)
-    }.toMap
+    }
 
-    PartitionKey(keyValues)
+    PartitionKey(ListMap(keyValues: _*))
   }
 
   /** Extract window function values from aggregation row
     */
   private def extractWindowValues(
-    row: Map[String, Any],
+    row: ListMap[String, Any],
     aggregations: ListMap[String, ClientAggregation]
   ): WindowValues = {
 
@@ -1375,10 +1375,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Enrich a single document with window values
     */
   protected def enrichDocumentWithWindowValues(
-    doc: Map[String, Any],
+    doc: ListMap[String, Any],
     cache: WindowCache,
     request: SingleSearch
-  ): Map[String, Any] = {
+  ): ListMap[String, Any] = {
 
     if (request.windowFunctions.isEmpty) {
       return doc
@@ -1399,9 +1399,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         // Add null values for missing window functions
         val nullValues = request.windowFunctions.map { wf =>
           wf.identifier.aliasOrName -> null
-        }.toMap
+        }
 
-        doc ++ nullValues
+        doc ++ ListMap(nullValues: _*)
     }
   }
 
@@ -1411,7 +1411,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Partition key for window function cache
     */
-  protected case class PartitionKey(values: Map[String, Any]) {
+  protected case class PartitionKey(values: ListMap[String, Any]) {
     override def hashCode(): Int = values.hashCode()
     override def equals(obj: Any): Boolean = obj match {
       case other: PartitionKey => values == other.values
@@ -1421,11 +1421,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Window function values for a partition
     */
-  protected case class WindowValues(values: Map[String, Any])
+  protected case class WindowValues(values: ListMap[String, Any])
 
   /** Cache of partition key -> window values
     */
-  protected case class WindowCache(cache: Map[PartitionKey, WindowValues]) {
+  protected case class WindowCache(cache: ListMap[PartitionKey, WindowValues]) {
     def get(key: PartitionKey): Option[WindowValues] = cache.get(key)
     def size: Int = cache.size
   }

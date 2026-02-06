@@ -23,6 +23,7 @@ import org.jline.reader._
 import org.jline.reader.impl.history.DefaultHistory
 import org.jline.terminal.{Terminal, TerminalBuilder}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, TimeoutException}
 import scala.util.{Failure, Success, Try}
@@ -283,7 +284,7 @@ class Repl(
     )
 
     var displayedRows = 0
-    val allRows = scala.collection.mutable.ListBuffer[Map[String, Any]]()
+    val allRows = scala.collection.mutable.ListBuffer[ListMap[String, Any]]()
 
     val resultFuture = executor.consumeStream(
       batchSize = batchSize,

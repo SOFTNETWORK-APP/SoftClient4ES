@@ -341,7 +341,7 @@ trait MockElasticClientApi extends NopeClientApi {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     Source.single(elasticDocuments.getAll).mapConcat(_.values.toList)
 
   override private[client] def searchAfter(
@@ -349,7 +349,7 @@ trait MockElasticClientApi extends NopeClientApi {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     scrollClassic(
       elasticQuery,
       fieldAliases,
@@ -404,9 +404,9 @@ trait MockElasticClientApi extends NopeClientApi {
 
 trait ElasticDocuments {
 
-  private[this] var documents: Map[String, Map[String, AnyRef]] = Map()
+  private[this] var documents: Map[String, ListMap[String, AnyRef]] = Map()
 
-  def createOrUpdate(entity: Map[String, AnyRef], uuid: String): Unit = {
+  def createOrUpdate(entity: ListMap[String, AnyRef], uuid: String): Unit = {
     documents = documents.updated(uuid, entity)
   }
 
@@ -414,8 +414,8 @@ trait ElasticDocuments {
     documents = documents - uuid
   }
 
-  def getAll: Map[String, Map[String, AnyRef]] = documents
+  def getAll: Map[String, ListMap[String, AnyRef]] = documents
 
-  def get(uuid: String): Option[Map[String, AnyRef]] = documents.get(uuid)
+  def get(uuid: String): Option[ListMap[String, AnyRef]] = documents.get(uuid)
 
 }

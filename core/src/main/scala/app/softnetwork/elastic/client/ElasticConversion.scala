@@ -56,7 +56,7 @@ trait ElasticConversion {
     results: String,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
-  ): Try[Seq[Map[String, Any]]] = {
+  ): Try[Seq[ListMap[String, Any]]] = {
     var json = mapper.readTree(results)
     if (json.has("responses")) {
       json = json.get("responses")
@@ -76,7 +76,7 @@ trait ElasticConversion {
     jsonArray: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
-  ): Try[Seq[Map[String, Any]]] =
+  ): Try[Seq[ListMap[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
 
@@ -110,7 +110,7 @@ trait ElasticConversion {
     json: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
-  ): Try[Seq[Map[String, Any]]] =
+  ): Try[Seq[ListMap[String, Any]]] =
     Try {
       // check if it is an error response
       if (json.has("error")) {
@@ -129,7 +129,7 @@ trait ElasticConversion {
     json: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
-  ): Seq[Map[String, Any]] = {
+  ): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
       .map(_.elements().asScala.toList)
@@ -145,9 +145,9 @@ trait ElasticConversion {
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
         val ret = parseAggregations(aggs, ListMap.empty, fieldAliases, aggregations)
-        val groupedRows: Map[String, Seq[Map[String, Any]]] =
+        val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
           ret.groupBy(_.getOrElse("bucket_root", "").toString)
-        groupedRows.values.foldLeft(Seq(Map.empty[String, Any])) { (acc, group) =>
+        groupedRows.values.foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
           for {
             accMap   <- acc
             groupMap <- group
@@ -157,9 +157,9 @@ trait ElasticConversion {
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
         val ret = parseAggregations(aggs, ListMap.empty, fieldAliases, aggregations)
-        val groupedRows: Map[String, Seq[Map[String, Any]]] =
+        val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
           ret.groupBy(_.getOrElse("bucket_root", "").toString)
-        groupedRows.values.foldLeft(Seq(Map.empty[String, Any])) { (acc, group) =>
+        groupedRows.values.foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
           for {
             accMap   <- acc
             groupMap <- group
@@ -306,7 +306,7 @@ trait ElasticConversion {
     parentContext: ListMap[String, Any],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
-  ): Seq[Map[String, Any]] = {
+  ): Seq[ListMap[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {
       return Seq.empty
@@ -422,7 +422,7 @@ trait ElasticConversion {
             .map(_.asLong())
             .getOrElse(0L)
 
-          val currentContext = parentContext ++ Map(
+          val currentContext = parentContext ++ ListMap(
             aggName                 -> bucketKey,
             s"${aggName}_doc_count" -> docCount
           ) ++ metrics ++ allTopHits
@@ -517,22 +517,18 @@ trait ElasticConversion {
   def extractMetrics(
     aggsNode: JsonNode,
     aggregations: ListMap[String, ClientAggregation]
-  ): Map[String, Any] = {
-    if (!aggsNode.isObject) return Map.empty
-    var bucketRoot: Option[String] = None
-    val metrics =
-      aggsNode
-        .properties()
-        .asScala
-        .flatMap { entry =>
-          val name = normalizeAggregationKey(entry.getKey)
+  ): ListMap[String, Any] = {
+    aggsNode match {
+      case n: ObjectNode =>
+        var bucketRoot: Option[String] = None
+        var metrics: Seq[(String, Any)] = Seq.empty
+        n.forEachEntry { (key, value) =>
+          val name = normalizeAggregationKey(key)
           aggregations.get(name) match {
             case Some(agg) =>
               bucketRoot = Some(agg.bucketRoot)
             case _ =>
           }
-          val value = entry.getValue
-
           // Detect simple metric values
           Option(value.get("value"))
             .filter(!_.isNull)
@@ -550,7 +546,7 @@ trait ElasticConversion {
               // Stats aggregations
               if (value.has("count") && value.has("sum") && value.has("avg")) {
                 Some(
-                  name -> Map(
+                  name -> ListMap(
                     "count" -> value.get("count").asLong(),
                     "sum"   -> Option(value.get("sum")).filterNot(_.isNull).map(_.asDouble()),
                     "avg"   -> Option(value.get("avg")).filterNot(_.isNull).map(_.asDouble()),
@@ -564,26 +560,32 @@ trait ElasticConversion {
             }
             .orElse {
               // Percentiles
-              if (value.has("values") && value.get("values").isObject) {
-                val percentiles = value
-                  .get("values")
-                  .properties()
-                  .asScala
-                  .map { pEntry =>
-                    pEntry.getKey -> pEntry.getValue.asDouble()
-                  }
-                  .toMap
-                Some(name -> percentiles)
+              if (value.has("values")) {
+                Option(value.get("values")) match {
+                  case Some(valuesNode: ObjectNode) =>
+                    var percentiles: Seq[(String, Any)] = Seq.empty
+                    valuesNode.forEachEntry { (k, v) => percentiles ++= Seq(k -> v.asDouble()) }
+                    Some(name -> ListMap(percentiles: _*))
+                  case _ => None
+                }
               } else {
                 None
               }
-            }
+            } match {
+            case Some(m) =>
+              metrics ++= Seq(m._1 -> m._2)
+            case _ =>
+          }
         }
-        .toMap
-    bucketRoot match {
-      case Some(root) => metrics + ("bucket_root" -> root)
-      case None       => metrics
+        ListMap((bucketRoot match {
+          case Some(root) => metrics ++ Seq("bucket_root" -> root)
+          case None       => metrics
+        }): _*)
+
+      case _ =>
+        ListMap.empty
     }
+
   }
 
   /** Extract all top_hits aggregations with their names and hits */
@@ -704,9 +706,9 @@ trait ElasticConversion {
   }
 
   def extractAggregationValues(
-    row: Map[String, Any],
+    row: ListMap[String, Any],
     aggregations: ListMap[String, ClientAggregation]
-  ): Map[String, Any] = {
+  ): ListMap[String, Any] = {
     val values = aggregations
       .map { wf =>
         val fieldName = wf._1

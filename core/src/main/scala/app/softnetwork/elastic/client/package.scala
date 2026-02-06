@@ -53,7 +53,7 @@ package object client extends SerializationApi {
   case class ElasticResponse(
     sql: Option[String] = None,
     query: JSONQuery,
-    results: Seq[Map[String, Any]],
+    results: Seq[ListMap[String, Any]],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
   )

@@ -19,6 +19,7 @@ package app.softnetwork.elastic.sql.policy
 import app.softnetwork.elastic.sql.DdlToken
 
 import java.time.ZonedDateTime
+import scala.collection.immutable.ListMap
 
 case class EnrichPolicyTask(
   policyName: String,
@@ -34,7 +35,7 @@ case class EnrichPolicyTask(
       .getOrElse("")}${endTime.map(t => s" ENDED AT $t").getOrElse("")}${failureReason
       .map(r => s" FAILURE REASON: $r")
       .getOrElse("")}"
-  def toMap: Map[String, Any] = Map(
+  def toMap: ListMap[String, Any] = ListMap(
     "policy_name"   -> policyName,
     "task_id"       -> taskId,
     "status"        -> status.name,

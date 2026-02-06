@@ -1371,7 +1371,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
-  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
 
   /** Scroll and convert results into typed entities from an SQL query.
     *
@@ -1404,7 +1404,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     delegate.scrollClassic(elasticQuery, fieldAliases, aggregations, config)
   }
 
@@ -1413,7 +1413,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     delegate.searchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 

@@ -84,6 +84,7 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.serialization._
 import org.slf4j.Logger
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 
 trait Executor[T <: Statement] {
@@ -448,7 +449,7 @@ class TableExecutor(
               ElasticResult.success(
                 QueryRows(
                   mappings.map { case (index, mappings) =>
-                    Map("name" -> index, "type" -> mappings.tableType.name.toUpperCase)
+                    ListMap("name" -> index, "type" -> mappings.tableType.name.toUpperCase)
                   }.toSeq
                 )
               )

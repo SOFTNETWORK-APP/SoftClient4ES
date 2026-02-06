@@ -1397,10 +1397,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+      .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             scrollIdOpt match {
@@ -1503,10 +1503,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+      .unfoldAsync[Option[Array[Object]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             searchAfterOpt match {
@@ -1610,7 +1610,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
@@ -1619,7 +1619,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     response: SearchResponse,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation]
-  ): Seq[Map[String, Any]] = {
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = response.toString
     parseResponse(
       jsonString,
@@ -1640,7 +1640,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   private def extractHitsOnly(
     response: SearchResponse,
     fieldAliases: ListMap[String, String]
-  ): Seq[Map[String, Any]] = {
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = response.toString
     parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) => rows

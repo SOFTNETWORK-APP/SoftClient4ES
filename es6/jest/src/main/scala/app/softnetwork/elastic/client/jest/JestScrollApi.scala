@@ -42,10 +42,10 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+      .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             scrollIdOpt match {
@@ -123,10 +123,10 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+      .unfoldAsync[Option[Seq[Any]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             searchAfterOpt match {
@@ -245,7 +245,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
 
   /** Extract ALL results: hits + aggregations
@@ -254,7 +254,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     jsonObject: JsonObject,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation]
-  ): Seq[Map[String, Any]] = {
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = jsonObject.toString
     parseResponse(
       jsonString,
@@ -273,7 +273,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
   private def extractHitsOnlyFromJest(
     jsonObject: JsonObject,
     fieldAliases: ListMap[String, String]
-  ): Seq[Map[String, Any]] = {
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = jsonObject.toString
 
     parseResponse(jsonString, fieldAliases, ListMap.empty) match {

@@ -1028,7 +1028,7 @@ class MetricsElasticClient(
     */
   override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
-  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
     val source = delegate.scroll(statement, config)

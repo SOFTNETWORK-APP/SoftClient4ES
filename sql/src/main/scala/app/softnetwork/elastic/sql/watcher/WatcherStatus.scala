@@ -22,6 +22,7 @@ import app.softnetwork.elastic.sql.transform.TransformTimeInterval
 
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
+import scala.collection.immutable.ListMap
 
 /** Watcher activation state
   *
@@ -165,7 +166,7 @@ case class WatcherStatus(
   }
 
   /** Get health status as a map (useful for JSON serialization) */
-  def toMap: Map[String, Any] = Map(
+  def toMap: ListMap[String, Any] = ListMap(
     "id"                            -> id,
     "active"                        -> active,
     "status"                        -> health.name,

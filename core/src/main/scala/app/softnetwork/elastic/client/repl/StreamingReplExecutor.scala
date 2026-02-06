@@ -30,6 +30,7 @@ import app.softnetwork.elastic.client.result.{
   StreamResult
 }
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
 
@@ -45,7 +46,7 @@ class StreamingReplExecutor(gateway: GatewayApi)(implicit
   private var activeStream: Option[StreamContext] = None
 
   case class StreamContext(
-    source: Source[Map[String, Any], _],
+    source: Source[ListMap[String, Any], _],
     name: String,
     startTime: Long
   )
@@ -87,7 +88,7 @@ class StreamingReplExecutor(gateway: GatewayApi)(implicit
   def consumeStream(
     batchSize: Int = 100,
     maxRows: Option[Int] = None,
-    onBatch: Seq[Map[String, Any]] => Unit = _ => ()
+    onBatch: Seq[ListMap[String, Any]] => Unit = _ => ()
   ): Future[StreamConsumptionResult] = {
     activeStream match {
       case None =>

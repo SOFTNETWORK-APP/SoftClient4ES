@@ -3,6 +3,7 @@ package app.softnetwork.elastic.client.result
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.duration._
 
 class ResultRendererSpec extends AsyncFlatSpec with Matchers {
@@ -18,8 +19,8 @@ class ResultRendererSpec extends AsyncFlatSpec with Matchers {
 
   it should "render query rows as table" in {
     val rows = Seq(
-      Map("id" -> 1, "name" -> "Alice", "email" -> "alice@example.com"),
-      Map("id" -> 2, "name" -> "Bob", "email"   -> "bob@example.com")
+      ListMap("id" -> 1, "name" -> "Alice", "email" -> "alice@example.com"),
+      ListMap("id" -> 2, "name" -> "Bob", "email"   -> "bob@example.com")
     )
 
     val output = ResultRenderer.render(QueryRows(rows), 50.millis)
@@ -54,7 +55,7 @@ class ResultRendererSpec extends AsyncFlatSpec with Matchers {
 
   it should "format values correctly" in {
     val rows = Seq(
-      Map(
+      ListMap(
         "string"  -> "test",
         "number"  -> 42,
         "boolean" -> true,
