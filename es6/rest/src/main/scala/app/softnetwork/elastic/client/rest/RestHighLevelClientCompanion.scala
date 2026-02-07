@@ -16,10 +16,16 @@
 
 package app.softnetwork.elastic.client.rest
 
-import app.softnetwork.elastic.client.ElasticClientCompanion
+import app.softnetwork.elastic.client.{
+  ApiKeyAuth,
+  BasicAuth,
+  BearerTokenAuth,
+  ElasticClientCompanion
+}
 import org.elasticsearch.client.{RequestOptions, RestClient, RestClientBuilder, RestHighLevelClient}
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
+import org.apache.http.message.BasicHeader
 import org.elasticsearch.search.SearchModule
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.xcontent.NamedXContentRegistry
@@ -56,7 +62,7 @@ trait RestHighLevelClientCompanion extends ElasticClientCompanion[RestHighLevelC
     }
   }
 
-  /** Build RestClientBuilder with credentials and configuration
+  /** Build RestClientBuilder with authentication
     */
   private def buildRestClient(): RestClientBuilder = {
     val httpHost = parseHttpHost(elasticConfig.credentials.url)
@@ -69,21 +75,44 @@ trait RestHighLevelClientCompanion extends ElasticClientCompanion[RestHighLevelC
           .setSocketTimeout(elasticConfig.socketTimeout.toMillis.toInt)
       }
 
-    // Add credentials if provided
-    if (elasticConfig.credentials.username.nonEmpty) {
-      builder.setHttpClientConfigCallback { httpClientBuilder =>
-        val credentialsProvider = new BasicCredentialsProvider()
-        credentialsProvider.setCredentials(
-          AuthScope.ANY,
-          new UsernamePasswordCredentials(
-            elasticConfig.credentials.username,
-            elasticConfig.credentials.password
+    // Authenticate
+    elasticConfig.credentials.authMethod match {
+      case Some(BasicAuth) if elasticConfig.credentials.username.nonEmpty =>
+        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
+          val credentialsProvider = new BasicCredentialsProvider()
+          credentialsProvider.setCredentials(
+            AuthScope.ANY,
+            new UsernamePasswordCredentials(
+              elasticConfig.credentials.username,
+              elasticConfig.credentials.password
+            )
           )
-        )
-        httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
-      }
-    } else {
-      builder
+          httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
+        }
+      case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
+        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
+          httpClientConfigCallback.setDefaultHeaders(
+            Seq(
+              new BasicHeader(
+                "Authorization",
+                ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
+              )
+            ).asJava
+          )
+        }
+      case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
+        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
+          httpClientConfigCallback.setDefaultHeaders(
+            Seq(
+              new BasicHeader(
+                "Authorization",
+                BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
+              )
+            ).asJava
+          )
+        }
+      case _ => // No authentication
+        builder
     }
   }
 

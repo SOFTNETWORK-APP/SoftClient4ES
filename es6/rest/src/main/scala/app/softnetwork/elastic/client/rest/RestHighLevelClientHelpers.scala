@@ -94,9 +94,8 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
       case Failure(ex: org.elasticsearch.ElasticsearchException) =>
         // Extract status code from Elasticsearch exception
         val statusCode = Option(ex.status()).map(_.getStatus)
-        logger.error(
-          s"Elasticsearch exception during operation '$operation'$indexStr: ${ex.getMessage}",
-          ex
+        logger.warn(
+          s"Elasticsearch exception during operation '$operation'$indexStr: ${ex.getMessage}"
         )
         ElasticResult.failure(
           ElasticError(
@@ -108,10 +107,7 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
         )
       case Failure(ex: org.elasticsearch.client.ResponseException) =>
         val statusCode = Some(ex.getResponse.getStatusLine.getStatusCode)
-        logger.error(
-          s"Response exception during operation '$operation'$indexStr: ${ex.getMessage}",
-          ex
-        )
+        logger.warn(s"Response exception during operation '$operation'$indexStr: ${ex.getMessage}")
         ElasticResult.failure(
           ElasticError(
             message = s"HTTP error during $operation: ${ex.getMessage}",
@@ -144,7 +140,7 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
             ElasticError(
               message = s"Failed to transform result: ${ex.getMessage}",
               cause = Some(ex),
-              statusCode = None,
+              statusCode = Some(500),
               operation = Some(operation)
             )
           )
@@ -239,10 +235,7 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
         ElasticResult.success(result)
       case Failure(ex: org.elasticsearch.client.ResponseException) =>
         val statusCode = Some(ex.getResponse.getStatusLine.getStatusCode)
-        logger.error(
-          s"Response exception during operation '$operation'$indexStr: ${ex.getMessage}",
-          ex
-        )
+        logger.warn(s"Response exception during operation '$operation'$indexStr: ${ex.getMessage}")
         ElasticResult.failure(
           ElasticError(
             message = s"HTTP error during $operation: ${ex.getMessage}",
@@ -279,7 +272,7 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
               ElasticError(
                 message = s"Failed to transform result: ${ex.getMessage}",
                 cause = Some(ex),
-                statusCode = Some(statusCode),
+                statusCode = Some(500),
                 operation = Some(operation)
               )
             )
@@ -374,7 +367,7 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
                   ElasticError(
                     message = s"Failed to transform result: ${ex.getMessage}",
                     cause = Some(ex),
-                    statusCode = None,
+                    statusCode = Some(500),
                     operation = Some(operation)
                   )
                 )
@@ -393,7 +386,7 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
               (s"Exception during $operation: ${ex.getMessage}", None)
           }
 
-          logger.error(s"Exception during operation '$operation'$indexStr: ${ex.getMessage}", ex)
+          logger.warn(s"Exception during operation '$operation'$indexStr: ${ex.getMessage}")
 
           promise.success(
             ElasticResult.failure(

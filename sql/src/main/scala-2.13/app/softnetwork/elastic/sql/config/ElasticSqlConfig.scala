@@ -22,7 +22,8 @@ import configs.ConfigReader
 
 case class ElasticSqlConfig(
   compositeKeySeparator: String,
-  artificialPrimaryKeyColumnName: String
+  artificialPrimaryKeyColumnName: String,
+  transformLastUpdatedColumnName: String
 )
 
 object ElasticSqlConfig extends StrictLogging {

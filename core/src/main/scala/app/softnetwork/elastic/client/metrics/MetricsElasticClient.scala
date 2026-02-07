@@ -30,12 +30,20 @@ import app.softnetwork.elastic.client.{
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.schema.{Index, IndexMappings}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
 import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
+import app.softnetwork.elastic.sql.transform.{
+  TransformConfig,
+  TransformCreationStatus,
+  TransformStats
+}
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import org.json4s.Formats
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 import scala.reflect.ClassTag
@@ -454,6 +462,11 @@ class MetricsElasticClient(
       delegate.updateMapping(index, mapping, settings)
     }
 
+  override def allMappings: ElasticResult[Map[String, IndexMappings]] =
+    measureResult("allMappings") {
+      delegate.allMappings
+    }
+
   // ==================== RefreshApi ====================
 
   override def refresh(index: String): ElasticResult[Boolean] = {
@@ -825,8 +838,8 @@ class MetricsElasticClient(
 
   override def singleSearch(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     measureResult("search", Some(elasticQuery.indices.mkString(","))) {
       delegate.singleSearch(elasticQuery, fieldAliases, aggregations)
@@ -835,8 +848,8 @@ class MetricsElasticClient(
 
   override def multiSearch(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     measureResult("multisearch") {
       delegate.multiSearch(elasticQueries, fieldAliases, aggregations)
@@ -856,8 +869,8 @@ class MetricsElasticClient(
     */
   override def singleSearchAsync(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync", Some(elasticQuery.indices.mkString(","))) {
       delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations).asInstanceOf
@@ -876,8 +889,8 @@ class MetricsElasticClient(
     */
   override def multiSearchAsync(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("multisearchAsync") {
       delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations).asInstanceOf
@@ -898,8 +911,8 @@ class MetricsElasticClient(
     */
   override def singleSearchAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("searchAs", Some(elasticQuery.indices.mkString(","))) {
       delegate.singleSearchAs(elasticQuery, fieldAliases, aggregations)
@@ -920,8 +933,8 @@ class MetricsElasticClient(
     */
   override def multisearchAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     measureResult("multisearchAs") {
       delegate.multisearchAs(elasticQueries, fieldAliases, aggregations)
@@ -942,8 +955,8 @@ class MetricsElasticClient(
     */
   override def singleSearchAsyncAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -968,8 +981,8 @@ class MetricsElasticClient(
     */
   override def multiSearchAsyncAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1015,7 +1028,7 @@ class MetricsElasticClient(
     */
   override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
-  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
     val source = delegate.scroll(statement, config)
@@ -1364,5 +1377,140 @@ class MetricsElasticClient(
       delegate.run(statement)
     }
   }
+
+  // ==================== Transform (delegate) ====================
+
+  override def createTransform(
+    config: TransformConfig,
+    start: Boolean
+  ): ElasticResult[TransformCreationStatus] =
+    measureResult("createTransform") {
+      delegate.createTransform(config, start)
+    }
+
+  override def deleteTransform(transformId: String, force: Boolean): ElasticResult[Boolean] =
+    measureResult("deleteTransform") {
+      delegate.deleteTransform(transformId, force)
+    }
+
+  override def startTransform(transformId: String): ElasticResult[Boolean] = {
+    measureResult("startTransform") {
+      delegate.startTransform(transformId)
+    }
+  }
+
+  override def stopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    measureResult("stopTransform") {
+      delegate.stopTransform(transformId, force, waitForCompletion)
+    }
+
+  override def getTransformStats(
+    transformId: String
+  ): ElasticResult[Option[TransformStats]] =
+    measureResult("getTransformStats") {
+      delegate.getTransformStats(transformId)
+    }
+
+  override def scheduleTransformNow(transformId: String): ElasticResult[Boolean] =
+    measureResult("scheduleNow") {
+      delegate.scheduleTransformNow(transformId)
+    }
+
+  // ==================== Enrich policy (delegate) ====================
+
+  override def createEnrichPolicy(policy: EnrichPolicy): ElasticResult[Boolean] =
+    measureResult("createEnrichPolicy") {
+      delegate.createEnrichPolicy(policy)
+    }
+
+  override def deleteEnrichPolicy(policyName: String): ElasticResult[Boolean] =
+    measureResult("deleteEnrichPolicy") {
+      delegate.deleteEnrichPolicy(policyName)
+    }
+
+  override def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] =
+    measureResult("executeEnrichPolicy") {
+      delegate.executeEnrichPolicy(policyName)
+    }
+
+  // ==================== Watcher (delegate) ====================
+
+  /** Create a watcher.
+    *
+    * @param watcher
+    *   - the watcher to create
+    * @param active
+    *   - whether the watcher should be active (default is true)
+    * @return
+    *   true if the watcher was created successfully, false otherwise
+    */
+  override def createWatcher(
+    watcher: Watcher,
+    active: Boolean = true
+  ): ElasticResult[Boolean] =
+    measureResult("createWatcher") {
+      delegate.createWatcher(watcher, active)
+    }
+
+  /** Delete a watcher by its id
+    *
+    * @param id
+    *   the id of the watcher to delete
+    * @return
+    *   true if the watcher was deleted, false otherwise
+    */
+  override def deleteWatcher(id: String): ElasticResult[Boolean] =
+    measureResult("deleteWatcher") {
+      delegate.deleteWatcher(id)
+    }
+
+  /** Get a watcher status by its id.
+    *
+    * @param id
+    *   - the id of the watcher to get
+    * @return
+    *   an Option containing the watcher status if it was found, None otherwise
+    */
+  override def getWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]] =
+    measureResult("getWatcher") {
+      delegate.getWatcherStatus(id)
+    }
+
+  // ==================== License (delegate) ====================
+
+  /** Get license information.
+    *
+    * @return
+    *   an Option containing the license information if available, None otherwise
+    */
+  override def licenseInfo: ElasticResult[Option[String]] = {
+    measureResult("licenseInfo") {
+      delegate.licenseInfo
+    }
+  }
+
+  /** Enable basic license.
+    *
+    * @return
+    *   true if the basic license was enabled successfully, false otherwise
+    */
+  override def enableBasicLicense(): ElasticResult[Boolean] =
+    measureResult("enableBasicLicense") {
+      delegate.enableBasicLicense()
+    }
+
+  /** Enable trial license.
+    *
+    * @return
+    *   true if the trial license was enabled successfully, false otherwise
+    */
+  override def enableTrialLicense(): ElasticResult[Boolean] =
+    measureResult("enableTrialLicense") {
+      delegate.enableTrialLicense()
+    }
 
 }

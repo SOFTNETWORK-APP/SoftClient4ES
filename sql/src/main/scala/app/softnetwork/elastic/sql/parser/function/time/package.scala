@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.parser.function
 
-import app.softnetwork.elastic.sql.{function, Identifier, StringValue}
+import app.softnetwork.elastic.sql.{function, DateMathScript, Identifier, StringValue}
 import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLNumeric, SQLTemporal, SQLTypes}
 import app.softnetwork.elastic.sql.function.{
   BinaryFunction,
@@ -68,19 +68,19 @@ package object time {
 
   trait DateParser { self: Parser with TemporalParser =>
 
-    def date_add: PackratParser[DateFunction with FunctionWithIdentifier] =
+    def date_add: PackratParser[DateFunction with FunctionWithIdentifier with DateMathScript] =
       DateAdd.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ interval ~ end ^^ {
         case _ ~ _ ~ i ~ _ ~ t ~ _ =>
           DateAdd(i, t)
       }
 
-    def date_sub: PackratParser[DateFunction with FunctionWithIdentifier] =
+    def date_sub: PackratParser[DateFunction with FunctionWithIdentifier with DateMathScript] =
       DateSub.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ interval ~ end ^^ {
         case _ ~ _ ~ i ~ _ ~ t ~ _ =>
           DateSub(i, t)
       }
 
-    def date_parse: PackratParser[DateFunction with FunctionWithIdentifier] =
+    def date_parse: PackratParser[DateFunction with FunctionWithIdentifier with DateMathScript] =
       DateParse.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | literal | identifier) ~ separator ~ literal ~ end ^^ {
         case _ ~ _ ~ li ~ _ ~ f ~ _ =>
           li match {
@@ -114,13 +114,15 @@ package object time {
 
   trait DateTimeParser { self: Parser with TemporalParser =>
 
-    def datetime_add: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
+    def datetime_add
+      : PackratParser[DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
       DateTimeAdd.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ interval ~ end ^^ {
         case _ ~ _ ~ i ~ _ ~ t ~ _ =>
           DateTimeAdd(i, t)
       }
 
-    def datetime_sub: PackratParser[DateTimeFunction with FunctionWithIdentifier] =
+    def datetime_sub
+      : PackratParser[DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
       DateTimeSub.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ interval ~ end ^^ {
         case _ ~ _ ~ i ~ _ ~ t ~ _ =>
           DateTimeSub(i, t)

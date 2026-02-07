@@ -44,6 +44,7 @@ import _root_.java.util.UUID
 import _root_.java.util.concurrent.TimeUnit
 import java.time.temporal.Temporal
 import java.time.{LocalDate, LocalDateTime, ZoneOffset, ZonedDateTime}
+import scala.collection.immutable.ListMap
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor, Future}
 import scala.util.{Failure, Success, Try}
@@ -155,7 +156,7 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       TableAlias(
         table = "create_mappings_aliases",
         alias = "create_mappings_aliases_alias2",
-        filter = Map("term" -> Map("name.raw" -> "Homer Simpson"))
+        filter = ListMap("term" -> ListMap("name.raw" -> "Homer Simpson"))
       )
     )
 

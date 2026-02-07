@@ -20,7 +20,7 @@ import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, Ela
 
 import java.util.concurrent.atomic.AtomicReference
 
-trait VersionApi extends ElasticClientHelpers { _: SerializationApi =>
+trait VersionApi extends ElasticClientHelpers {
 
   // ========================================================================
   // PUBLIC METHODS
@@ -49,6 +49,8 @@ trait VersionApi extends ElasticClientHelpers { _: SerializationApi =>
         }
     }
   }
+
+  // def checkVersion(check: Int => Boolean)
 
   // ========================================================================
   // METHODS TO IMPLEMENT

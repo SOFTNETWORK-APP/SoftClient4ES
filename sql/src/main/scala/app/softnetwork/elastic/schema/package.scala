@@ -16,7 +16,14 @@
 
 package app.softnetwork.elastic
 
-import app.softnetwork.elastic.sql.{BooleanValue, ObjectValue, StringValue, StringValues, Value}
+import app.softnetwork.elastic.sql.{
+  BooleanValue,
+  ObjectValue,
+  ObjectValues,
+  StringValue,
+  StringValues,
+  Value
+}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.schema.{
   Column,
@@ -28,12 +35,15 @@ import app.softnetwork.elastic.sql.schema.{
   Schema,
   ScriptProcessor,
   SetProcessor,
-  Table
+  Table,
+  TableType
 }
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.JsonNode
 
+import java.security.MessageDigest
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 
 package object schema {
@@ -46,7 +56,8 @@ package object schema {
     not_null: Option[Boolean] = None,
     comment: Option[String] = None,
     fields: List[IndexField] = Nil,
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty,
+    lineage: ListMap[String, Seq[(String, String)]] = ListMap.empty // ✅ Added
   ) {
     lazy val ddlColumn: Column = {
       Column(
@@ -57,7 +68,8 @@ package object schema {
         defaultValue = null_value,
         notNull = not_null.getOrElse(false),
         comment = comment,
-        options = options
+        options = options,
+        lineage = lineage // ✅ Added
       )
     }
   }
@@ -161,6 +173,46 @@ package object schema {
           }
         case _ => None
       }
+
+      // ✅ Extract lineage from _meta
+      val lineage = _meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("lineage") match {
+              case Some(lin: ObjectValue) =>
+                Some(
+                  lin.value.flatMap {
+                    case (pathId, pathValue: ObjectValues) =>
+                      // Parse the chain of (table, column) pairs
+                      val chain = pathValue.values.flatMap {
+                        case obj: ObjectValue =>
+                          val tableOpt = obj.value.get("table") match {
+                            case Some(StringValue(t)) => Some(t)
+                            case _                    => None
+                          }
+                          val columnOpt = obj.value.get("column") match {
+                            case Some(StringValue(c)) => Some(c)
+                            case _                    => None
+                          }
+                          for {
+                            table  <- tableOpt
+                            column <- columnOpt
+                          } yield (table, column)
+                        case _ => None
+                      }
+
+                      if (chain.nonEmpty) Some(pathId -> chain)
+                      else None
+
+                    case _ => None
+                  }
+                )
+              case _ => None
+            }
+          case _ => None
+        }
+        .getOrElse(ListMap.empty)
+
       IndexField(
         name = name,
         `type` = tpe,
@@ -169,7 +221,8 @@ package object schema {
         not_null = notNull,
         comment = comment,
         fields = fields,
-        options = options
+        options = options,
+        lineage = lineage
       )
 
     }
@@ -179,10 +232,17 @@ package object schema {
     fields: List[IndexField] = Nil,
     primaryKey: List[String] = Nil,
     partitionBy: Option[IndexDatePartition] = None,
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty,
+    materializedViews: Option[List[String]] = None,
+    tableType: TableType = TableType.Regular
   )
 
   object IndexMappings {
+    def apply(json: String): IndexMappings = {
+      val root: JsonNode = json
+      apply(root)
+    }
+
     def apply(root: JsonNode): IndexMappings = {
       if (root.has("mappings")) {
         val mappingsNode = root.path("mappings")
@@ -248,11 +308,36 @@ package object schema {
         case _ => None
       }
 
+      val materializedViews: Option[List[String]] = meta
+        .map {
+          case m: ObjectValue =>
+            m.value.get("materialized_views") match {
+              case Some(mvs: StringValues) => mvs.values.map(_.ddl.replaceAll("\"", "")).toList
+              case Some(mv: StringValue)   => List(mv.ddl.replaceAll("\"", ""))
+              case _                       => List.empty
+            }
+          case _ => List.empty
+        }
+        .filter(_.nonEmpty)
+
+      val tableType: TableType = meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("type") match {
+              case Some(mv: StringValue) => Some(TableType(mv.value))
+              case _                     => None
+            }
+          case _ => None
+        }
+        .getOrElse(TableType.Regular)
+
       IndexMappings(
         fields = fields,
         primaryKey = primaryKey,
         partitionBy = partitionBy,
-        options = options
+        options = options,
+        materializedViews = materializedViews,
+        tableType = tableType
       )
     }
 
@@ -264,7 +349,7 @@ package object schema {
   )
 
   final case class IndexSettings(
-    options: Map[String, Value[_]] = Map.empty
+    options: ListMap[String, Value[_]] = ListMap.empty
   )
 
   object IndexSettings {
@@ -352,12 +437,12 @@ package object schema {
   }
 
   final case class IndexAliases(
-    aliases: Map[String, IndexAlias] = Map.empty
+    aliases: ListMap[String, IndexAlias] = ListMap.empty
   )
 
   object IndexAliases {
     def apply(nodes: Seq[(String, JsonNode)]): IndexAliases = {
-      IndexAliases(nodes.map(entry => entry._1 -> IndexAlias(entry._1, entry._2)).toMap)
+      IndexAliases(ListMap(nodes.map(entry => entry._1 -> IndexAlias(entry._1, entry._2)): _*))
     }
   }
 
@@ -433,7 +518,7 @@ package object schema {
             enrichedCols.update(col, c.copy(script = Some(p)))
           }
 
-        case p: SetProcessor =>
+        case p: SetProcessor if p.isDefault =>
           val col = p.column
           enrichedCols.get(col).foreach { c =>
             enrichedCols.update(col, c.copy(defaultValue = Some(p.value)))
@@ -465,7 +550,9 @@ package object schema {
         mappings = esMappings.options,
         settings = esSettings.options,
         processors = processors.toSeq,
-        aliases = aliases
+        aliases = aliases,
+        materializedViews = esMappings.materializedViews.getOrElse(Nil),
+        tableType = esMappings.tableType
       ).update()
     }
   }
@@ -504,6 +591,78 @@ package object schema {
         settings = settings,
         aliases = aliases
       )
+    }
+  }
+
+  object NamingUtils {
+
+    /** Normalizes Elasticsearch object names (indices, pipelines, transforms, policies)
+      *
+      * Rules:
+      *   - Only lowercase alphanumeric + underscore + dot
+      *   - Max 255 characters
+      *   - If too long, truncates with readable prefix + hash suffix
+      */
+    def normalizeObjectName(name: String, maxLength: Int = 255): String = {
+      require(maxLength > 10, "maxLength must be > 10 to allow prefix + hash")
+
+      // Step 1: Normalize to Elasticsearch-safe characters
+      // Keep: a-z, 0-9, underscore, dot
+      val normalized = name.toLowerCase
+        .replaceAll("[^a-zA-Z0-9_.]", "_") // caractères invalides -> "_"
+        .replaceAll("_+", "_") // compacter plusieurs "_"
+        .stripPrefix("_")
+        .stripSuffix("_")
+
+      // Step 2: If within limit, return as-is
+      if (normalized.length <= maxLength) {
+        return normalized
+      }
+
+      // Step 3: Generate readable truncated name with hash
+      // Format: <prefix>_<hash8>
+      // Example: orders_with_customers_mv_orders_enri_a1b2c3d4
+
+      val hashLength = 8 // Short hash for readability
+      val prefixLength = maxLength - hashLength - 1 // -1 for underscore
+
+      val prefix = normalized.take(prefixLength)
+      val hash = generateShortHash(normalized, hashLength)
+
+      s"${prefix}_${hash}"
+    }
+
+    /** Generates a short deterministic hash from a string
+      *
+      * Uses MD5 for consistency, takes first N hex chars
+      */
+    private def generateShortHash(input: String, length: Int = 8): String = {
+      val digest = MessageDigest.getInstance("MD5")
+      val hashBytes = digest.digest(input.getBytes("UTF-8"))
+      hashBytes.map("%02x".format(_)).mkString.take(length)
+    }
+
+    /** Validates an Elasticsearch object name
+      *
+      * @return
+      *   Right(name) if valid, Left(error) otherwise
+      */
+    def validateObjectName(name: String): Either[String, String] = {
+      if (name.isEmpty) {
+        Left("Name cannot be empty")
+      } else if (name.length > 255) {
+        Left(s"Name exceeds 255 characters: ${name.length}")
+      } else if (!name.matches("^[a-z0-9_.]+$")) {
+        Left(
+          s"Name contains invalid characters. Only lowercase alphanumeric, underscore and dot allowed: $name"
+        )
+      } else if (name.startsWith("_") || name.startsWith("-") || name.startsWith("+")) {
+        Left(s"Name cannot start with _, - or +: $name")
+      } else if (name == "." || name == "..") {
+        Left("Name cannot be . or ..")
+      } else {
+        Right(name)
+      }
     }
   }
 }

@@ -102,4 +102,29 @@ trait JestMappingApi extends MappingApi with JestClientHelpers {
       }
     }
   }
+
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+    executeJestAction(
+      operation = "getAllMappings",
+      index = None,
+      retryable = true
+    )(
+      new GetMapping.Builder().build()
+    ) { result =>
+      val jsonString = result.getJsonString
+      val jsonObject = JsonParser.parseString(jsonString).getAsJsonObject
+      val mappings = jsonObject
+        .entrySet()
+        .toArray
+        .map { entry =>
+          val e = entry.asInstanceOf[java.util.Map.Entry[String, com.google.gson.JsonElement]]
+          val indexName = e.getKey
+          val mappingObj = e.getValue.getAsJsonObject
+            .getAsJsonObject("mappings")
+            .getAsJsonObject("_doc")
+          indexName -> mappingObj.toString
+        }
+        .toMap
+      mappings
+    }
 }

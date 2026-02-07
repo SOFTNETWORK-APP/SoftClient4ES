@@ -19,9 +19,13 @@ package app.softnetwork.elastic
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.query.SQLAggregation
+import com.typesafe.scalalogging.LazyLogging
 import org.slf4j.Logger
 
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.concurrent.TimeUnit
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
 import scala.language.{implicitConversions, reflectiveCalls}
@@ -49,16 +53,194 @@ package object client extends SerializationApi {
   case class ElasticResponse(
     sql: Option[String] = None,
     query: JSONQuery,
-    results: Seq[Map[String, Any]],
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, ClientAggregation]
+    results: Seq[ListMap[String, Any]],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, ClientAggregation]
   )
 
+  sealed trait ElasticAuthMethod {
+
+    /** Create Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String
+  }
+
+  case object BasicAuth extends ElasticAuthMethod {
+
+    /** Create Basic Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the Basic Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      if (elasticCredentials.username.isEmpty || elasticCredentials.password.isEmpty) {
+        throw new IllegalArgumentException(
+          "Basic auth requires non-empty username and password"
+        )
+      }
+      import elasticCredentials._
+      val credentials = s"$username:$password"
+      val encoded = Base64.getEncoder.encodeToString(
+        credentials.getBytes(StandardCharsets.UTF_8)
+      )
+      s"Basic $encoded"
+    }
+  }
+
+  case object ApiKeyAuth extends ElasticAuthMethod {
+
+    /** Create API Key Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the API Key Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      val encodedApiKey = elasticCredentials.encodedApiKey.getOrElse {
+        throw new IllegalArgumentException("API Key auth requires non-empty apiKey")
+      }
+      s"ApiKey $encodedApiKey"
+    }
+  }
+
+  case object BearerTokenAuth extends ElasticAuthMethod {
+
+    /** Create Bearer Token Authorization header value based on credentials
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - the Bearer Token Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      val bearerToken = elasticCredentials.bearerToken.getOrElse {
+        throw new IllegalArgumentException("Bearer token auth requires non-empty bearerToken")
+      }
+      s"Bearer $bearerToken"
+    }
+  }
+
+  case object NoAuth extends ElasticAuthMethod {
+
+    /** Create empty Authorization header value
+      * @param elasticCredentials
+      *   - the elasticsearch credentials
+      * @return
+      *   - an empty Authorization header value
+      */
+    def createAuthHeader(elasticCredentials: ElasticCredentials): String = {
+      ""
+    }
+  }
+
+  object ElasticAuthMethod {
+    def fromCredentials(credentials: ElasticCredentials): Option[ElasticAuthMethod] = {
+      if (credentials.apiKey.exists(_.nonEmpty)) {
+        Some(ApiKeyAuth)
+      } else if (credentials.bearerToken.exists(_.nonEmpty)) {
+        Some(BearerTokenAuth)
+      } else if (credentials.username.nonEmpty && credentials.password.nonEmpty) {
+        Some(BasicAuth)
+      } else {
+        None
+      }
+    }
+
+    def apply(method: String): Option[ElasticAuthMethod] = method.toLowerCase match {
+      case "basic"  => Some(BasicAuth)
+      case "apikey" => Some(ApiKeyAuth)
+      case "bearer" => Some(BearerTokenAuth)
+      case "noauth" => Some(NoAuth)
+      case _        => None
+    }
+  }
+
+  /** Elastic connection credentials
+    * @param scheme
+    *   - the connection scheme (http or https)
+    * @param host
+    *   - the elasticsearch host
+    * @param port
+    *   - the elasticsearch port
+    * @param method
+    *   - the authentication method (basic, apikey, bearer)
+    * @param username
+    *   - the elasticsearch username
+    * @param password
+    *   - the elasticsearch password
+    * @param apiKey
+    *   - the elasticsearch api key
+    * @param bearerToken
+    *   - the elasticsearch bearer token
+    */
   case class ElasticCredentials(
-    url: String = "http://localhost:9200",
+    scheme: String = "http",
+    host: String = "localhost",
+    port: Int = 9200,
+    method: Option[String] = None,
     username: String = "",
-    password: String = ""
-  )
+    password: String = "",
+    apiKey: Option[String] = None,
+    bearerToken: Option[String] = None
+  ) extends LazyLogging {
+    lazy val url = s"$scheme://$host:$port"
+
+    lazy val authMethod: Option[ElasticAuthMethod] = {
+      method.flatMap(ElasticAuthMethod(_)).orElse {
+        ElasticAuthMethod.fromCredentials(this)
+      }
+    }
+
+    /** Get encoded API Key for Authorization header */
+    lazy val encodedApiKey: Option[String] = {
+      apiKey.map { key =>
+        if (key.contains(":")) {
+          // Format "id:api_key" -> encode to Base64
+          Base64.getEncoder.encodeToString(key.getBytes(StandardCharsets.UTF_8))
+        } else {
+          // Already encoded
+          key
+        }
+      }
+    }
+
+    def isBasicAuth: Boolean = authMethod.contains(BasicAuth)
+
+    def isApiKeyAuth: Boolean = authMethod.contains(ApiKeyAuth)
+
+    def isBearerTokenAuth: Boolean = authMethod.contains(BearerTokenAuth)
+
+    /** Validate credentials based on selected auth method */
+    def validate(): Either[String, Unit] = {
+      authMethod match {
+        case Some(BasicAuth) =>
+          if (username.isEmpty || password.isEmpty) {
+            Left("Basic auth requires non-empty username and password")
+          } else {
+            Right(())
+          }
+        case Some(ApiKeyAuth) =>
+          if (apiKey.forall(_.isEmpty)) {
+            Left("API Key auth requires non-empty apiKey")
+          } else {
+            Right(())
+          }
+        case Some(BearerTokenAuth) =>
+          if (bearerToken.forall(_.isEmpty)) {
+            Left("Bearer token auth requires non-empty bearerToken")
+          } else {
+            Right(())
+          }
+        case _ =>
+          Right(()) // No auth needed
+      }
+    }
+
+  }
 
   /** Elastic query wrapper
     * @param query

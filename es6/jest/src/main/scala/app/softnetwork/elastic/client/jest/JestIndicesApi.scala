@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.IndicesApi
-import app.softnetwork.elastic.client.jest.actions.{GetIndex, WaitForShards}
+import app.softnetwork.elastic.client.jest.actions.{GetIndex, GetLicense, WaitForShards}
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.schema.{mapper, TableAlias}
 import com.fasterxml.jackson.databind.node.ObjectNode

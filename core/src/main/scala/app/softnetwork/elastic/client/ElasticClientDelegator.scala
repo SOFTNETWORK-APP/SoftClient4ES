@@ -22,8 +22,9 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.{query, schema}
+import app.softnetwork.elastic.schema.{Index, IndexMappings}
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
+import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   SQLAggregation,
@@ -31,10 +32,17 @@ import app.softnetwork.elastic.sql.query.{
   SingleSearch
 }
 import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
+import app.softnetwork.elastic.sql.transform.{
+  TransformConfig,
+  TransformCreationStatus,
+  TransformStats
+}
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import com.typesafe.config.Config
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.{dynamics, implicitConversions}
 import scala.reflect.ClassTag
@@ -215,6 +223,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.updateByQuery(index, query, pipelineId, refresh)
 
   /** Insert documents by query into an index.
+    *
     * @param index
     *   - the name of the index to insert into
     * @param query
@@ -610,6 +619,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Boolean] =
     delegate.updateMapping(index, mapping, settings)
 
+  override def allMappings: ElasticResult[Map[String, IndexMappings]] =
+    delegate.allMappings
+
   /** Migrate an existing index to a new mapping.
     *
     * Process:
@@ -643,6 +655,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeGetMapping(index: String): ElasticResult[String] = {
     delegate.executeGetMapping(index)
+  }
+
+  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] = {
+    delegate.executeGetAllMappings()
   }
 
   // ==================== RefreshApi ====================
@@ -1111,8 +1127,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearch(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] =
     delegate.singleSearch(elasticQuery, fieldAliases, aggregations)
 
@@ -1129,8 +1145,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multiSearch(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] =
     delegate.multiSearch(elasticQueries, fieldAliases, aggregations)
 
@@ -1158,8 +1174,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearchAsync(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations)
 
@@ -1176,8 +1192,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multiSearchAsync(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations)
 
@@ -1210,8 +1226,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearchAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     delegate.singleSearchAs(elasticQuery, fieldAliases, aggregations)
 
@@ -1230,8 +1246,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multisearchAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] =
     delegate.multisearchAs(elasticQueries, fieldAliases, aggregations)
 
@@ -1239,7 +1255,6 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *
     * @note
     *   This method is a variant of searchAsyncAs without compile-time SQL validation.
-    *
     * @param sqlQuery
     *   the SQL query
     * @tparam U
@@ -1269,8 +1284,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def singleSearchAsyncAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1293,8 +1308,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def multiSearchAsyncAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1322,10 +1337,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   )(implicit formats: Formats): ElasticResult[Seq[(U, Seq[I])]] =
     delegate.multisearchWithInnerHits[U, I](elasticQueries, innerField)
 
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
+  override private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: SingleSearch
-  )(implicit timestamp: Long): String =
-    delegate.sqlSearchRequestToJsonQuery(sqlSearch)
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String =
+    delegate.singleSearchToJsonQuery(sqlSearch)
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
@@ -1353,13 +1371,12 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     */
   override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
     system: ActorSystem
-  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
 
   /** Scroll and convert results into typed entities from an SQL query.
     *
     * @note
     *   This method is a variant of scrollAs without compile-time SQL validation.
-    *
     * @param sql
     *   - SQL query
     * @param config
@@ -1384,25 +1401,25 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     delegate.scrollClassic(elasticQuery, fieldAliases, aggregations, config)
   }
 
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     delegate.searchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
   )(implicit system: ActorSystem) = {
@@ -1795,4 +1812,177 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     system: ActorSystem
   ): Future[ElasticResult[QueryResult]] =
     delegate.run(statement)
+
+  // ==================== Transform (delegate) ====================
+
+  override def createTransform(
+    config: TransformConfig,
+    start: Boolean
+  ): ElasticResult[TransformCreationStatus] =
+    delegate.createTransform(config, start)
+
+  override def deleteTransform(transformId: String, force: Boolean): ElasticResult[Boolean] =
+    delegate.deleteTransform(transformId, force)
+
+  override def startTransform(transformId: String): ElasticResult[Boolean] =
+    delegate.startTransform(transformId)
+
+  override def stopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.stopTransform(transformId, force, waitForCompletion)
+
+  override def getTransformStats(
+    transformId: String
+  ): ElasticResult[Option[TransformStats]] =
+    delegate.getTransformStats(transformId)
+
+  override def scheduleTransformNow(transformId: String): ElasticResult[Boolean] =
+    delegate.scheduleTransformNow(transformId)
+
+  override private[client] def executeCreateTransform(
+    config: TransformConfig,
+    start: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateTransform(config, start)
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeDeleteTransform(transformId, force)
+
+  override private[client] def executeStartTransform(transformId: String): ElasticResult[Boolean] =
+    delegate.executeStartTransform(transformId)
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeStopTransform(transformId, force, waitForCompletion)
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): ElasticResult[Option[TransformStats]] =
+    delegate.executeGetTransformStats(transformId)
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    delegate.executeScheduleTransformNow(transformId)
+
+  // ==================== Enrich policy (delegate) ====================
+
+  override def createEnrichPolicy(policy: EnrichPolicy): ElasticResult[Boolean] =
+    delegate.createEnrichPolicy(policy)
+
+  override def deleteEnrichPolicy(policyName: String): ElasticResult[Boolean] =
+    delegate.deleteEnrichPolicy(policyName)
+
+  override def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] =
+    delegate.executeEnrichPolicy(policyName)
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateEnrichPolicy(policy)
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Boolean] =
+    delegate.executeDeleteEnrichPolicy(policyName)
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[EnrichPolicyTask] =
+    delegate.executeExecuteEnrichPolicy(policyName)
+
+  // ==================== Watcher (delegate) ====================
+
+  /** Create a watcher.
+    *
+    * @param watcher
+    *   - the watcher to create
+    * @param active
+    *   - whether the watcher should be active (default is true)
+    * @return
+    *   true if the watcher was created successfully, false otherwise
+    */
+  override def createWatcher(
+    watcher: Watcher,
+    active: Boolean = true
+  ): ElasticResult[Boolean] =
+    delegate.createWatcher(watcher, active)
+
+  /** Delete a watcher by its id
+    *
+    * @param id
+    *   the id of the watcher to delete
+    * @return
+    *   true if the watcher was deleted, false otherwise
+    */
+  override def deleteWatcher(id: String): ElasticResult[Boolean] =
+    delegate.deleteWatcher(id)
+
+  /** Get a watcher status by its id.
+    *
+    * @param id
+    *   - the id of the watcher to get
+    * @return
+    *   an Option containing the watcher status if it was found, None otherwise
+    */
+  override def getWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]] =
+    delegate.getWatcherStatus(id)
+
+  override private[client] def executeCreateWatcher(
+    watcher: Watcher,
+    active: Boolean
+  ): ElasticResult[Boolean] =
+    delegate.executeCreateWatcher(watcher, active)
+
+  override private[client] def executeDeleteWatcher(id: JSONQuery): ElasticResult[Boolean] =
+    delegate.executeDeleteWatcher(id)
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): ElasticResult[Option[WatcherStatus]] =
+    delegate.executeGetWatcherStatus(id)
+
+  // ==================== License (delegate) ====================
+
+  /** Get license information.
+    *
+    * @return
+    *   an Option containing the license information if available, None otherwise
+    */
+  override def licenseInfo: ElasticResult[Option[String]] =
+    delegate.licenseInfo
+
+  /** Enable basic license.
+    *
+    * @return
+    *   true if the basic license was enabled successfully, false otherwise
+    */
+  override def enableBasicLicense(): ElasticResult[Boolean] =
+    delegate.enableBasicLicense()
+
+  /** Enable trial license.
+    *
+    * @return
+    *   true if the trial license was enabled successfully, false otherwise
+    */
+  override def enableTrialLicense(): ElasticResult[Boolean] =
+    delegate.enableTrialLicense()
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
+    delegate.executeLicenseInfo
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] =
+    delegate.executeEnableBasicLicense()
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
+    delegate.executeEnableTrialLicense()
 }

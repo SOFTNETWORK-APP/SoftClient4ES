@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
   DqlStatement,
@@ -33,6 +34,7 @@ import app.softnetwork.elastic.sql.query.{
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
 import org.json4s.Formats
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 import scala.language.experimental.macros
@@ -142,8 +144,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearch(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     validateJson("search", elasticQuery.query) match {
       case Some(error) =>
@@ -235,8 +237,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multiSearch(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   ): ElasticResult[ElasticResponse] = {
     elasticQueries.queries.flatMap { elasticQuery =>
       validateJson("search", elasticQuery.query).map(error =>
@@ -357,7 +359,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           single,
           collection.immutable.Seq(single.sources: _*)
         )
-        singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
+        if (
+          single.windowFunctions.exists(
+            _.isWindowing
+          ) && single.groupBy.isEmpty && (!single.select.fields.forall(
+            _.isAggregation
+          ) || single.scriptFields.nonEmpty)
+        )
+          Future.successful(searchWithWindowEnrichment(single))
+        else
+          singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
 
       case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
@@ -399,8 +410,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearchAsync(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
@@ -482,8 +493,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multiSearchAsync(
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
@@ -605,8 +616,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearchAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     formats: Formats
@@ -632,8 +643,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multisearchAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit m: Manifest[U], formats: Formats): ElasticResult[Seq[U]] = {
     for {
       response <- multiSearch(elasticQueries, fieldAliases, aggregations)
@@ -714,8 +725,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def singleSearchAsyncAs[U](
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -750,8 +761,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   def multiSearchAsyncAs[U](
     elasticQueries: ElasticQueries,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
   )(implicit
     m: Manifest[U],
     ec: ExecutionContext,
@@ -1035,8 +1046,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   JSON string representation of the query
     */
-  private[client] implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  private[client] implicit def singleSearchToJsonQuery(sqlSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String
 
   private def parseInnerHits[M: Manifest: ClassTag, I: Manifest: ClassTag](
@@ -1145,10 +1157,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   // ========================================================================
 
   /** Search with window function enrichment
-    *
+    * {{{
     * Strategy:
-    *   1. Execute aggregation query to compute window values 2. Execute main query (without window
-    *      functions) 3. Enrich results with window values
+    *   1. Execute aggregation query to compute window values
+    *   2. Execute main query (without window functions)
+    *   3. Enrich results with window values
+    * }}}
     */
   private def searchWithWindowEnrichment(
     request: SingleSearch
@@ -1252,9 +1266,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       val windowValues = extractWindowValues(row, response.aggregations)
 
       partitionKey -> windowValues
-    }.toMap
+    }
 
-    ElasticResult.success(WindowCache(cache))
+    ElasticResult.success(WindowCache(ListMap(cache: _*)))
   }
 
   // ========================================================================
@@ -1304,7 +1318,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Extract partition key from aggregation row
     */
   private def extractPartitionKey(
-    row: Map[String, Any],
+    row: ListMap[String, Any],
     request: SingleSearch
   ): PartitionKey = {
 
@@ -1315,21 +1329,21 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       .distinct
 
     if (partitionFields.isEmpty) {
-      return PartitionKey(Map("__global__" -> true))
+      return PartitionKey(ListMap("__global__" -> true))
     }
 
     val keyValues = partitionFields.flatMap { field =>
       row.get(field).map(field -> _)
-    }.toMap
+    }
 
-    PartitionKey(keyValues)
+    PartitionKey(ListMap(keyValues: _*))
   }
 
   /** Extract window function values from aggregation row
     */
   private def extractWindowValues(
-    row: Map[String, Any],
-    aggregations: Map[String, ClientAggregation]
+    row: ListMap[String, Any],
+    aggregations: ListMap[String, ClientAggregation]
   ): WindowValues = {
 
     val values = extractAggregationValues(row, aggregations)
@@ -1361,10 +1375,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** Enrich a single document with window values
     */
   protected def enrichDocumentWithWindowValues(
-    doc: Map[String, Any],
+    doc: ListMap[String, Any],
     cache: WindowCache,
     request: SingleSearch
-  ): Map[String, Any] = {
+  ): ListMap[String, Any] = {
 
     if (request.windowFunctions.isEmpty) {
       return doc
@@ -1385,9 +1399,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         // Add null values for missing window functions
         val nullValues = request.windowFunctions.map { wf =>
           wf.identifier.aliasOrName -> null
-        }.toMap
+        }
 
-        doc ++ nullValues
+        doc ++ ListMap(nullValues: _*)
     }
   }
 
@@ -1397,7 +1411,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Partition key for window function cache
     */
-  protected case class PartitionKey(values: Map[String, Any]) {
+  protected case class PartitionKey(values: ListMap[String, Any]) {
     override def hashCode(): Int = values.hashCode()
     override def equals(obj: Any): Boolean = obj match {
       case other: PartitionKey => values == other.values
@@ -1407,11 +1421,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   /** Window function values for a partition
     */
-  protected case class WindowValues(values: Map[String, Any])
+  protected case class WindowValues(values: ListMap[String, Any])
 
   /** Cache of partition key -> window values
     */
-  protected case class WindowCache(cache: Map[PartitionKey, WindowValues]) {
+  protected case class WindowCache(cache: ListMap[PartitionKey, WindowValues]) {
     def get(key: PartitionKey): Option[WindowValues] = cache.get(key)
     def size: Int = cache.size
   }

@@ -21,7 +21,7 @@ class VersionApiSpec
   val mockLogger: Logger = mock[Logger]
 
   // Concrete implementation for testing
-  class TestVersionApi extends VersionApi with SerializationApi {
+  class TestVersionApi extends VersionApi {
     override protected def logger: Logger = mockLogger
 
     // Variable to control the behavior of executeVersion
@@ -430,7 +430,7 @@ class VersionApiSpec
         var callCount = 0
 
         // Override to count calls
-        val countingApi = new VersionApi with SerializationApi {
+        val countingApi = new VersionApi {
           override protected def logger: Logger = mockLogger
           override private[client] def executeVersion(): ElasticResult[String] = {
             callCount += 1
@@ -451,7 +451,7 @@ class VersionApiSpec
         // Given
         var callCount = 0
 
-        val failingApi = new VersionApi with SerializationApi {
+        val failingApi = new VersionApi {
           override protected def logger: Logger = mockLogger
           override private[client] def executeVersion(): ElasticResult[String] = {
             callCount += 1

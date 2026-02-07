@@ -1,5 +1,6 @@
+import app.softnetwork.Publish
+import scala.collection.Seq
 import SoftClient4es.*
-import app.softnetwork.*
 import sbt.Def
 import sbtbuildinfo.BuildInfoKeys.buildInfoObject
 
@@ -19,7 +20,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.15.0"
+ThisBuild / version := "0.16-SNAPSHOT"
 
 ThisBuild / scalaVersion := scala213
 
@@ -99,6 +100,14 @@ ThisBuild / libraryDependencySchemes += "org.scala-lang.modules" %% "scala-xml" 
 
 Test / parallelExecution := false
 
+lazy val licensing = project
+  .in(file("licensing"))
+  .configs(IntegrationTest)
+  .settings(
+    Defaults.itSettings,
+    moduleSettings
+  )
+
 lazy val sql = project
   .in(file("sql"))
   .configs(IntegrationTest)
@@ -131,9 +140,12 @@ lazy val macrosTests = project
 lazy val core = project
   .in(file("core"))
   .configs(IntegrationTest)
+  .enablePlugins(BuildInfoPlugin)
   .settings(
     Defaults.itSettings,
+    app.softnetwork.Info.infoSettings,
     moduleSettings,
+    buildInfoObject := "SoftClient4esCoreBuildInfo",
     scalacOptions ++= Seq(
       "-language:experimental.macros",
       "-Ymacro-debug-lite"
@@ -141,6 +153,9 @@ lazy val core = project
   )
   .dependsOn(
     macros % "compile->compile;test->test;it->it"
+  )
+  .dependsOn(
+    licensing % "compile->compile;test->test;it->it"
   )
 
 lazy val persistence = project
@@ -262,6 +277,26 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     )
 }
 
+def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
+  val majorVersion = elasticSearchMajorVersion(esVersion)
+  val projectId = s"es${majorVersion}cli"
+  Project(id = projectId, base = file(s"es$majorVersion/cli"))
+    .enablePlugins(JavaAppPackaging, BuildInfoPlugin)
+    .settings(
+      moduleSettings,
+      app.softnetwork.Info.infoSettings,
+      elasticSearchVersion := esVersion,
+      buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
+      buildInfoObject := "SoftClient4esClientBuildInfo",
+      organization := "app.softnetwork.elastic",
+      name := s"softclient4es$majorVersion-cli-assembly",
+      Compile / mainClass := Some("app.softnetwork.elastic.client.Cli"),
+      Universal / mainClass := Some("app.softnetwork.elastic.client.Cli"),
+      executableScriptName := s"softclient4es",
+    )
+    .settings(ss: _*)
+}
+
 lazy val es6bridge = project
   .in(file("es6/bridge"))
   .configs(IntegrationTest)
@@ -292,6 +327,12 @@ lazy val es6rest = project
   )
   .dependsOn(
     es6testkit % "test->test;it->it"
+  )
+
+lazy val es6cli =
+  cliProject(Versions.es6)
+  .dependsOn(
+    es6rest % "compile->compile"
   )
 
 lazy val es6jest = project
@@ -325,7 +366,8 @@ lazy val es6 = project
     es6bridge,
     es6testkit,
     es6rest,
-    es6jest
+    es6jest,
+    es6cli
   )
 
 lazy val es7bridge = bridgeProject(Versions.es7)
@@ -350,6 +392,12 @@ lazy val es7rest = project
     es7testkit % "test->test;it->it"
   )
 
+lazy val es7cli =
+  cliProject(Versions.es7)
+    .dependsOn(
+      es7rest % "compile->compile"
+    )
+
 lazy val es7 = project
   .in(file("es7"))
   .configs(IntegrationTest)
@@ -362,7 +410,8 @@ lazy val es7 = project
   .aggregate(
     es7bridge,
     es7testkit,
-    es7rest
+    es7rest,
+    es7cli
   )
 
 lazy val es8bridge = bridgeProject(Versions.es8)
@@ -387,6 +436,12 @@ lazy val es8java = project
     es8testkit % "test->test;it->it"
   )
 
+lazy val es8cli =
+  cliProject(Versions.es8)
+    .dependsOn(
+      es8java % "compile->compile"
+    )
+
 lazy val es8 = project
   .in(file("es8"))
   .configs(IntegrationTest)
@@ -399,7 +454,8 @@ lazy val es8 = project
   .aggregate(
     es8bridge,
     es8testkit,
-    es8java
+    es8java,
+    es8cli
   )
 
 lazy val es9bridge = bridgeProject(
@@ -437,6 +493,17 @@ lazy val es9java = project
     es9testkit % "test->test;it->it"
   )
 
+lazy val es9cli =
+  cliProject(
+    Versions.es9,
+    scalaVersion := scala213,
+    crossScalaVersions := Seq(scala213),
+    javacOptions ++= Seq("-source", "17", "-target", "17")
+  )
+    .dependsOn(
+      es9java % "compile->compile"
+    )
+
 lazy val es9 = project
   .in(file("es9"))
   .configs(IntegrationTest)
@@ -449,7 +516,8 @@ lazy val es9 = project
   .aggregate(
     es9bridge,
     es9testkit,
-    es9java
+    es9java,
+    es9cli
   )
 
 lazy val root = project
@@ -461,6 +529,7 @@ lazy val root = project
     crossScalaVersions := Nil
   )
   .aggregate(
+    licensing,
     sql,
     bridge,
     macros,

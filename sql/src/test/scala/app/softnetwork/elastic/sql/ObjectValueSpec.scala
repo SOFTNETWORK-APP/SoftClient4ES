@@ -3,14 +3,16 @@ package app.softnetwork.elastic.sql
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import scala.collection.immutable.ListMap
+
 class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   "ObjectValue" should "correctly store and retrieve nested objects" in {
-    val nestedObject = Map(
+    val nestedObject = ListMap(
       "level1" -> ObjectValue(
-        Map(
+        ListMap(
           "level2" -> ObjectValue(
-            Map(
+            ListMap(
               "level3" -> StringValue("value")
             )
           )
@@ -32,10 +34,10 @@ class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   it should "return Null for non-existing paths" in {
     val objectValue = ObjectValue(
-      Map(
+      ListMap(
         "key1" -> StringValue("value1"),
         "key2" -> ObjectValue(
-          Map(
+          ListMap(
             "key3" -> StringValue("value3")
           )
         )
@@ -48,10 +50,10 @@ class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   it should "set values at specified paths" in {
     val objectValue = ObjectValue(
-      Map(
+      ListMap(
         "key1" -> StringValue("value1"),
         "key2" -> ObjectValue(
-          Map(
+          ListMap(
             "key3" -> StringValue("value3")
           )
         )
@@ -68,10 +70,10 @@ class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   it should "overwrite existing values when setting at a path" in {
     val objectValue = ObjectValue(
-      Map(
+      ListMap(
         "key1" -> StringValue("value1"),
         "key2" -> ObjectValue(
-          Map(
+          ListMap(
             "key3" -> StringValue("value3")
           )
         )
@@ -88,10 +90,10 @@ class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   it should "remove values at specified paths" in {
     val objectValue = ObjectValue(
-      Map(
+      ListMap(
         "key1" -> StringValue("value1"),
         "key2" -> ObjectValue(
-          Map(
+          ListMap(
             "key3" -> StringValue("value3"),
             "key4" -> StringValue("value4")
           )
@@ -109,10 +111,10 @@ class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   it should "handle removal of non-existing paths gracefully" in {
     val objectValue = ObjectValue(
-      Map(
+      ListMap(
         "key1" -> StringValue("value1"),
         "key2" -> ObjectValue(
-          Map(
+          ListMap(
             "key3" -> StringValue("value3")
           )
         )
@@ -126,10 +128,10 @@ class ObjectValueSpec extends AnyFlatSpec with Matchers {
 
   it should "correctly serialize and deserialize to/from JSON" in {
     val objectValue = ObjectValue(
-      Map(
+      ListMap(
         "key1" -> StringValue("value1"),
         "key2" -> ObjectValue(
-          Map(
+          ListMap(
             "key3" -> StringValue("value3")
           )
         )

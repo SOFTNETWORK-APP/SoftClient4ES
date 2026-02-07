@@ -23,13 +23,16 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTemporal,
   SQLVarchar
 }
+import app.softnetwork.elastic.sql.config.ElasticSqlConfig
 import app.softnetwork.elastic.sql.function.aggregate.COUNT
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.NullNode
 import com.sksamuel.elastic4s.ElasticApi
 import com.sksamuel.elastic4s.ElasticApi._
-import com.sksamuel.elastic4s.requests.common.FetchSourceContext
+import com.sksamuel.elastic4s.json.JacksonBuilder
 import com.sksamuel.elastic4s.requests.script.Script
 import com.sksamuel.elastic4s.requests.script.ScriptType.Source
 import com.sksamuel.elastic4s.requests.searches.aggs.{
@@ -51,17 +54,30 @@ import scala.language.implicitConversions
 
 package object bridge {
 
-  def now(script: Script)(implicit timestamp: Long): Script = {
+  lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
+
+  def now(script: Script)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Script = {
     if (!script.script.contains("params.__now__")) {
       return script
     }
-    script.param("__now__", timestamp)
+    contextType match {
+      case PainlessContextType.Query => script.param("__now__", timestamp)
+      case PainlessContextType.Transform =>
+        script.param("__now__", sqlConfig.transformLastUpdatedColumnName)
+      case _ => script
+    }
   }
 
   implicit def requestToNestedFilterAggregation(
     request: SingleSearch,
     innerHitsName: String
-  )(implicit timestamp: Long): Option[FilterAggregation] = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Option[FilterAggregation] = {
     val having: Option[Query] =
       request.having.flatMap(_.criteria) match {
         case Some(f) =>
@@ -137,7 +153,10 @@ package object bridge {
 
   implicit def requestToFilterAggregation(
     request: SingleSearch
-  )(implicit timestamp: Long): Option[FilterAggregation] =
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Option[FilterAggregation] =
     request.having.flatMap(_.criteria) match {
       case Some(f) =>
         val boolQuery = Option(ElasticBoolQuery(group = true))
@@ -155,7 +174,10 @@ package object bridge {
   implicit def requestToRootAggregations(
     request: SingleSearch,
     aggregations: Seq[ElasticAggregation]
-  )(implicit timestamp: Long): Seq[AbstractAggregation] = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Seq[AbstractAggregation] = {
     val notNestedAggregations = aggregations.filterNot(_.nested)
 
     val notNestedBuckets = request.bucketTree.filterNot(_.bucket.nested)
@@ -207,7 +229,10 @@ package object bridge {
   implicit def requestToScopedAggregations(
     request: SingleSearch,
     aggregations: Seq[ElasticAggregation]
-  )(implicit timestamp: Long): Seq[NestedAggregation] = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Seq[NestedAggregation] = {
     // Group nested aggregations by their nested path
     val nestedAggregations: Map[String, Seq[ElasticAggregation]] = aggregations
       .filter(_.nested)
@@ -413,7 +438,8 @@ package object bridge {
   }
 
   implicit def requestToElasticSearchRequest(request: SingleSearch)(implicit
-    timestamp: Long
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): ElasticSearchRequest =
     ElasticSearchRequest(
       request.sql,
@@ -431,7 +457,10 @@ package object bridge {
 
   implicit def requestToSearchRequest(
     request: SingleSearch
-  )(implicit timestamp: Long): SearchRequest = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): SearchRequest = {
     import request._
 
     val aggregations = request.aggregates.map(
@@ -491,7 +520,7 @@ package object bridge {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
-          val context = PainlessContext()
+          val context = PainlessContext(context = contextType)
           val script = field.painless(Some(context))
           scriptField(
             field.scriptName,
@@ -512,7 +541,7 @@ package object bridge {
       case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
         _search sortBy o.sorts.map { sort =>
           if (sort.isScriptSort) {
-            val context = PainlessContext()
+            val context = PainlessContext(context = contextType)
             val painless = sort.field.painless(Some(context))
             val painlessScript = s"$context$painless"
             val script =
@@ -571,7 +600,10 @@ package object bridge {
 
   implicit def requestToMultiSearchRequest(
     request: MultiSearch
-  )(implicit timestamp: Long): MultiSearchRequest = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): MultiSearchRequest = {
     MultiSearchRequest(
       request.requests.map(implicitly[SearchRequest](_))
     )
@@ -582,7 +614,10 @@ package object bridge {
     doubleOp: Double => A
   ): A = n.toEither.fold(longOp, doubleOp)
 
-  implicit def expressionToQuery(expression: GenericExpression)(implicit timestamp: Long): Query = {
+  implicit def expressionToQuery(expression: GenericExpression)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
     import expression._
     if (isAggregation)
       return matchAllQuery()
@@ -592,7 +627,7 @@ package object bridge {
         case _           => true
       }))
     ) {
-      val context = PainlessContext()
+      val context = PainlessContext(context = contextType)
       val script = painless(Some(context))
       return scriptQuery(
         now(Script(script = s"$context$script").lang("painless").scriptType("source"))
@@ -810,7 +845,7 @@ package object bridge {
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
                 }
               case _ =>
-                val context = PainlessContext()
+                val context = PainlessContext(context = contextType)
                 val script = painless(Some(context))
                 scriptQuery(
                   now(
@@ -821,7 +856,7 @@ package object bridge {
                 )
             }
           case _ =>
-            val context = PainlessContext()
+            val context = PainlessContext(context = contextType)
             val script = painless(Some(context))
             scriptQuery(
               now(
@@ -884,7 +919,10 @@ package object bridge {
 
   implicit def betweenToQuery(
     between: BetweenExpr
-  )(implicit timestamp: Long): Query = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
     import between._
     // Geo distance special case
     identifier.functions.headOption match {
@@ -1007,6 +1045,40 @@ package object bridge {
     )
   }
 
+  implicit def queryToJson(
+    query: Query
+  ): JsonNode = {
+    JacksonBuilder.toNode(
+      SearchBodyBuilderFn(
+        ElasticApi.search("") query {
+          query
+        }
+      ).value
+    ) match {
+      case Left(node: JsonNode) =>
+        if (node.has("query")) {
+          node.get("query")
+        } else {
+          node
+        }
+      case Right(_) => NullNode.instance
+    }
+  }
+
+  implicit def criteriaToQuery(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
+    ElasticCriteria(criteria).asQuery()
+  }
+
+  implicit def criteriaToNode(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): JsonNode = {
+    queryToJson(criteriaToQuery(criteria))
+  }
+
   implicit def filterToQuery(
     filter: ElasticFilter
   ): ElasticBridge = {
@@ -1015,7 +1087,10 @@ package object bridge {
 
   implicit def sqlQueryToAggregations(
     query: SelectStatement
-  )(implicit timestamp: Long): Seq[ElasticAggregation] = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Seq[ElasticAggregation] = {
     import query._
     statement
       .map {
