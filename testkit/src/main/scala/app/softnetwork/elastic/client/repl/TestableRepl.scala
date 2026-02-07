@@ -19,18 +19,47 @@ package app.softnetwork.elastic.client.repl
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.result.OutputFormat
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{Await, ExecutionContextExecutor}
 import scala.concurrent.duration._
 
 /** Testable REPL for integration tests
   */
 class TestableRepl(
-  executor: ReplExecutor,
+  executor: StreamingReplExecutor,
   config: ReplConfig = ReplConfig.default
 )(implicit system: ActorSystem, ec: ExecutionContextExecutor) {
 
   def executeSync(sql: String, timeout: Duration = 30.seconds): ExecutionResult = {
     Await.result(executor.execute(sql), timeout)
+  }
+
+  def consumeStreamSync(
+    batchSize: Int = 100,
+    maxRows: Option[Int] = None,
+    timeout: Duration = 30.seconds
+  ): Seq[ListMap[String, Any]] = {
+    var displayedRows = 0
+    val allRows = scala.collection.mutable.ListBuffer[ListMap[String, Any]]()
+
+    Await.result(
+      executor.consumeStream(
+        batchSize = batchSize,
+        maxRows = maxRows,
+        onBatch = { batch =>
+          // Accumulate rows for display
+          allRows ++= batch
+          displayedRows += batch.size
+
+          // Show progress
+          print(s"\r📊 Received $displayedRows rows...")
+        }
+      ),
+      timeout
+    )
+    println() // New line after progress
+
+    allRows.toSeq
   }
 
   def setFormat(format: OutputFormat): Unit = {

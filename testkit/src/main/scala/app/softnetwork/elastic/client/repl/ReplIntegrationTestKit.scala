@@ -70,7 +70,7 @@ trait ReplIntegrationTestKit
   def gateway: GatewayApi
 
   // REPL components
-  protected lazy val executor: ReplExecutor = new StreamingReplExecutor(gateway)
+  protected lazy val executor: StreamingReplExecutor = new StreamingReplExecutor(gateway)
   protected lazy val testRepl: TestableRepl = new TestableRepl(executor)
 
   override def beforeAll(): Unit = {
@@ -99,7 +99,15 @@ trait ReplIntegrationTestKit
     val duration = (System.nanoTime() - startTime).nanos
     res match {
       case ExecutionSuccess(result, _) =>
-        log.info(s"\n${ResultRenderer.render(result, duration)}")
+        result match {
+          case StreamResult(_, _) =>
+            log.info(s"✅ Query executed successfully in ${duration.toMillis} ms (streaming result)")
+            log.info(
+              s"\n${ResultRenderer.render(QueryRows(testRepl.consumeStreamSync()), duration)}"
+            )
+          case _ =>
+            log.info(s"\n${ResultRenderer.render(result, duration)}")
+        }
       case ExecutionFailure(error, _) =>
         log.error(s"❌ Execution failed after ${duration.toMillis} ms: ${error.message}")
     }
