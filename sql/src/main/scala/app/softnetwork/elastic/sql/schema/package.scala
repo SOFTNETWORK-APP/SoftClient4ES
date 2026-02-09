@@ -959,21 +959,22 @@ package object schema {
       s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
-    def asMap: Seq[ListMap[String, Any]] = Seq(
+    def asMap(table: Table): Seq[ListMap[String, Any]] = Seq(
       ListMap(
-        "name"    -> path,
-        "type"    -> dataType.typeId,
-        "script"  -> script.map(_.script).getOrElse("N/A"),
-        "default" -> defaultValue.map(_.value).getOrElse(""),
-        "nullable" -> (if (notNull) {
-                         "no"
-                       } else {
-                         "yes"
-                       }),
-        "comment" -> comment.getOrElse(""),
-        "options" -> ObjectValue(options).ddl
+        "Field" -> path,
+        "Type"  -> dataType.typeId,
+        "Null" -> (if (notNull) {
+                     "no"
+                   } else {
+                     "yes"
+                   }),
+        "Key"     -> (if (table.primaryKey.contains(path)) "PRI" else ""),
+        "Default" -> defaultValue.map(_.value).getOrElse("NULL"),
+        "Comment" -> comment.getOrElse(""),
+        "Script"  -> script.map(_.script).getOrElse(""),
+        "Extra"   -> ObjectValue(options).ddl
       )
-    ) ++ multiFields.flatMap(_.asMap)
+    ) ++ multiFields.flatMap(_.asMap(table))
 
     def processors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
@@ -1476,7 +1477,7 @@ package object schema {
         }
       val cols = columns.map(_.sql).mkString(",\n\t")
       val pkStr = if (primaryKey.nonEmpty) {
-        s",\n\tPRIMARY KEY (${primaryKey.mkString(", ")})\n"
+        s",\n\tPRIMARY KEY (${primaryKey.mkString(", ")})"
       } else {
         ""
       }
@@ -1972,7 +1973,7 @@ package object schema {
       )
     }
 
-    def describe: Seq[ListMap[String, Any]] = columns.flatMap(_.asMap)
+    def describe: Seq[ListMap[String, Any]] = columns.flatMap(_.asMap(this))
   }
 
 }

@@ -306,17 +306,17 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     assertDdl(System.nanoTime(), client.run(create).futureValue)
 
-    val startTime = System.nanoTime()
-    val res = client.run("DESCRIBE TABLE desc_users").futureValue
-    renderResults(startTime, res)
-    res.isSuccess shouldBe true
-    res.toOption.get shouldBe a[QueryRows]
+    val rows =
+      assertQueryRows(System.nanoTime(), client.run("DESCRIBE TABLE desc_users").futureValue)
 
-    val rows = res.toOption.get.asInstanceOf[QueryRows].rows
-
-    rows.exists(_("name") == "id") shouldBe true
-    rows.exists(_("name") == "name") shouldBe true
-    rows.exists(_("name") == "profile.city") shouldBe true
+    rows.size shouldBe 6
+    rows.exists(row =>
+      row("Field") == "id" &&
+      row("Null") == "no" &&
+      row("Key") == "PRI"
+    ) shouldBe true
+    rows.exists(_("Field") == "name") shouldBe true
+    rows.exists(_("Field") == "profile.city") shouldBe true
   }
 
   // ===========================================================================

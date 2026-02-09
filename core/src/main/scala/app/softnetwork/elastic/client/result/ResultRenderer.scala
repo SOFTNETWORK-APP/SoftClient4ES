@@ -218,7 +218,7 @@ object ResultRenderer {
       "\n\n"
     )
 
-    val rows: List[Map[String, Any]] = table.columns.flatMap(_.asMap)
+    val rows: List[Map[String, Any]] = table.columns.flatMap(_.asMap(table))
 
     // Extract columns
     val columnNames: Seq[String] = rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty)
@@ -266,6 +266,12 @@ object ResultRenderer {
       table.aliases.foreach { case (k, v) =>
         output.append(s"  ${cyan(k)}: ${yellow(v.toString)}\n")
       }
+    }
+
+    // DDL
+    if (table.ddl.nonEmpty) {
+      output.append(s"\n\n${emoji("📝")} ${bold("DDL:")}\n")
+      output.append(highlightSql(table.ddl))
     }
 
     output.toString()
