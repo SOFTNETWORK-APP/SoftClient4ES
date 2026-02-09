@@ -25,7 +25,12 @@ import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, Ela
 import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, EnrichPolicyTaskStatus}
+import app.softnetwork.elastic.sql.policy.{
+  EnrichPolicy,
+  EnrichPolicyTask,
+  EnrichPolicyTaskStatus,
+  EnrichPolicyType
+}
 import app.softnetwork.elastic.sql.query.{Asc, Criteria, Desc, SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.transform.{
@@ -92,7 +97,12 @@ import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
 import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions, Response}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
-import org.elasticsearch.client.enrich.{DeletePolicyRequest, ExecutePolicyRequest, PutPolicyRequest}
+import org.elasticsearch.client.enrich.{
+  DeletePolicyRequest,
+  ExecutePolicyRequest,
+  GetPolicyRequest,
+  PutPolicyRequest
+}
 import org.elasticsearch.client.indices.{
   CloseIndexRequest,
   ComposableIndexTemplateExistRequest,
@@ -2379,6 +2389,68 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
     )
   }
 
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    executeRestAction(
+      operation = "GetEnrichPolicy",
+      retryable = true
+    )(
+      request = new GetPolicyRequest(policyName)
+    )(
+      executor = req => apply().enrich().getPolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val policies = resp.getPolicies
+        if (policies != null && !policies.isEmpty) {
+          policies.asScala.find(_.getName == policyName) match {
+            case Some(policy) =>
+              Some(
+                EnrichPolicy(
+                  name = policy.getName,
+                  policyType = EnrichPolicyType(policy.getType.toUpperCase),
+                  indices = policy.getIndices.asScala.toSeq,
+                  matchField = policy.getMatchField,
+                  enrichFields = policy.getEnrichFields.asScala.toList,
+                  query = Option(policy.getQuery).map(_.utf8ToString())
+                )
+              )
+            case _ => None
+          }
+        } else {
+          None
+        }
+      }
+    )
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    executeRestAction(
+      operation = "ListEnrichPolicies",
+      retryable = true
+    )(
+      request = new GetPolicyRequest()
+    )(
+      executor = req => apply().enrich().getPolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val policies = resp.getPolicies
+        if (policies != null) {
+          policies.asScala.map { policy =>
+            EnrichPolicy(
+              name = policy.getName,
+              policyType = EnrichPolicyType(policy.getType.toUpperCase),
+              indices = policy.getIndices.asScala.toSeq,
+              matchField = policy.getMatchField,
+              enrichFields = policy.getEnrichFields.asScala.toList,
+              query = Option(policy.getQuery).map(_.utf8ToString())
+            )
+          }.toSeq
+        } else {
+          Seq.empty
+        }
+      }
+    )
+
   /** Parse JSON query string into QueryBuilder
     */
   private def parseQueryFromJson(queryJson: String): QueryBuilder = {
@@ -2931,7 +3003,7 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
                   active = active,
                   timestamp = timestamp.getOrElse(ZonedDateTime.now())
                 )
-                val version = watcherNode.get("version").asLong()
+                val version = Option(watcherNode.get("version")).map(_.asLong()).getOrElse(-1L)
                 WatcherStatus(
                   id = id,
                   version = version,

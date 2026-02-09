@@ -51,6 +51,7 @@ import java.time.LocalDate
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContextExecutor}
 import java.util.concurrent.TimeUnit
+import scala.collection.immutable.ListMap
 
 // ---------------------------------------------------------------------------
 // Base test trait — to be mixed with ElasticDockerTestKit
@@ -77,9 +78,18 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     self.afterAll()
   }
 
-  def supportEnrichPolicies: Boolean = {
+  def supportsEnrichPolicies: Boolean = {
     client.asInstanceOf[VersionApi].version match {
       case ElasticSuccess(v) => ElasticsearchVersion.supportsEnrich(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
+  }
+
+  def supportsQueryWatchers: Boolean = {
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsQueryWatchers(v)
       case ElasticFailure(error) =>
         log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
         false
@@ -1650,28 +1660,24 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     assertDdl(System.nanoTime(), client.run(createWatcherWithInterval).futureValue)
 
-    var watcherStatus = client.run("SHOW WATCHER STATUS my_watcher_interval").futureValue
-    watcherStatus match {
-      case ElasticSuccess(QueryRows(rows)) =>
-        rows.size shouldBe 1
-        val row = rows.head
-        println(s"Watcher Status: $row")
-        row.get("id") shouldBe Some("my_watcher_interval")
-        row.get("is_healthy") shouldBe Some(true)
-        row.get("is_operational") shouldBe Some(true)
-      case _ => fail("Expected QueryRows result")
-    }
+    var rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SHOW WATCHER STATUS my_watcher_interval").futureValue
+    )
+    rows.size shouldBe 1
+    var row = rows.head
+    row.get("id") shouldBe Some("my_watcher_interval")
+    row.get("is_healthy") shouldBe Some(true)
+    row.get("is_operational") shouldBe Some(true)
 
-    val watchers = client.run("SHOW WATCHERS").futureValue
-    watchers match {
-      case ElasticSuccess(QueryRows(rows)) =>
-        rows.find(row => row.get("id").contains("my_watcher_interval")) match {
-          case Some(row) =>
-            row.get("is_healthy") shouldBe Some(true)
-            row.get("is_operational") shouldBe Some(true)
-          case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
-        }
-      case _ => fail("Expected QueryRows result")
+    if (supportsQueryWatchers) {
+      rows = assertQueryRows(System.nanoTime(), client.run("SHOW WATCHERS").futureValue)
+      rows.find(row => row.get("id").contains("my_watcher_interval")) match {
+        case Some(row) =>
+          row.get("is_healthy") shouldBe Some(true)
+          row.get("is_operational") shouldBe Some(true)
+        case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
+      }
     }
 
     val createWatcherWithCron =
@@ -1685,17 +1691,15 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     assertDdl(System.nanoTime(), client.run(createWatcherWithCron).futureValue)
 
-    watcherStatus = client.run("SHOW WATCHER STATUS my_watcher_cron").futureValue
-    watcherStatus match {
-      case ElasticSuccess(QueryRows(rows)) =>
-        rows.size shouldBe 1
-        val row = rows.head
-        println(s"Watcher Status: $row")
-        row.get("id") shouldBe Some("my_watcher_cron")
-        row.get("is_healthy") shouldBe Some(true)
-        row.get("is_operational") shouldBe Some(true)
-      case _ => fail("Expected QueryRows result")
-    }
+    rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SHOW WATCHER STATUS my_watcher_cron").futureValue
+    )
+    rows.size shouldBe 1
+    row = rows.head
+    row.get("id") shouldBe Some("my_watcher_cron")
+    row.get("is_healthy") shouldBe Some(true)
+    row.get("is_operational") shouldBe Some(true)
 
     val dropWatcher = "DROP WATCHER IF EXISTS my_watcher_interval;"
     assertDdl(System.nanoTime(), client.run(dropWatcher).futureValue)
@@ -1707,9 +1711,9 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
   behavior of "POLICIES statements"
 
-  it should "create, execute and drop a policy" in {
+  it should "create, show, execute and drop a policy" in {
 
-    assume(supportEnrichPolicies, "Enrich policies are not supported in this environment")
+    assume(supportsEnrichPolicies, "Enrich policies are not supported in this environment")
 
     val createIndex =
       """CREATE TABLE IF NOT EXISTS dql_users (
@@ -1736,18 +1740,41 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     assertDdl(System.nanoTime(), client.run(createPolicy).futureValue)
 
+    var rows =
+      assertQueryRows(System.nanoTime(), client.run("SHOW ENRICH POLICIES").futureValue)
+    rows.size shouldBe 1
+    var enrichPolicy = rows.head
+    enrichPolicy.get("name") shouldBe Some("my_policy")
+    enrichPolicy.get("type") shouldBe Some("match")
+    enrichPolicy.get("indices") shouldBe Some("dql_users")
+    enrichPolicy.get("match_field") shouldBe Some("id")
+    enrichPolicy.get("enrich_fields") shouldBe Some("name,profile.city")
+    enrichPolicy
+      .getOrElse("query", "")
+      .asInstanceOf[String]
+      .contains("""{"bool":{"filter":[{"range":{"age":{""") shouldBe true
+
+    rows =
+      assertQueryRows(System.nanoTime(), client.run("SHOW ENRICH POLICY my_policy").futureValue)
+    rows.size shouldBe 1
+    enrichPolicy = rows.head
+    enrichPolicy.get("name") shouldBe Some("my_policy")
+    enrichPolicy.get("type") shouldBe Some("match")
+    enrichPolicy.get("indices") shouldBe Some("dql_users")
+    enrichPolicy.get("match_field") shouldBe Some("id")
+    enrichPolicy.get("enrich_fields") shouldBe Some("name,profile.city")
+    enrichPolicy
+      .getOrElse("query", "")
+      .asInstanceOf[String]
+      .contains("""{"bool":{"filter":[{"range":{"age":{""") shouldBe true
+
     val executePolicy = "EXECUTE ENRICH POLICY my_policy;"
-    val result = client.run(executePolicy).futureValue
-    result match {
-      case ElasticSuccess(QueryRows(rows)) =>
-        rows.size shouldBe 1
-        val row = rows.head
-        println(s"Policy Execution Result: $row")
-        row.getOrElse("policy_name", "") shouldBe "my_policy"
-        row.getOrElse("status", "") shouldBe EnrichPolicyTaskStatus.Completed.name
-        row.getOrElse("health", "") shouldBe HealthStatus.Green.name
-      case _ => fail("Expected QueryRows result")
-    }
+    rows = assertQueryRows(System.nanoTime(), client.run(executePolicy).futureValue)
+    rows.size shouldBe 1
+    val row = rows.head
+    row.getOrElse("policy_name", "") shouldBe "my_policy"
+    row.getOrElse("status", "") shouldBe EnrichPolicyTaskStatus.Completed.name
+    row.getOrElse("health", "") shouldBe HealthStatus.Green.name
 
     val dropPolicy = "DROP ENRICH POLICY IF EXISTS my_policy;"
     assertDdl(System.nanoTime(), client.run(dropPolicy).futureValue)

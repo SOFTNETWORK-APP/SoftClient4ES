@@ -60,6 +60,8 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   ShowCreatePipeline,
   ShowCreateTable,
+  ShowEnrichPolicies,
+  ShowEnrichPolicy,
   ShowPipeline,
   ShowPipelines,
   ShowTable,
@@ -261,6 +263,43 @@ class EnrichPolicyExecutor(
     implicit val ec: ExecutionContext = system.dispatcher
     // handle ENRICH POLICY statement
     statement match {
+      case ShowEnrichPolicies =>
+        api.listEnrichPolicies() match {
+          case ElasticSuccess(policies) =>
+            logger.info(s"✅ Retrieved ${policies.size} enrich policies.")
+            Future.successful(
+              ElasticResult.success(QueryRows(policies.map(_.toMap)))
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+      case show: ShowEnrichPolicy =>
+        api.getEnrichPolicy(show.name) match {
+          case ElasticSuccess(policy) =>
+            policy match {
+              case None =>
+                val error = ElasticError(
+                  message = s"Enrich policy ${show.name} not found.",
+                  statusCode = Some(404),
+                  operation = Some("enrich_policy")
+                )
+                logger.error(s"❌ ${error.message}")
+                Future.successful(ElasticFailure(error))
+              case Some(policy) =>
+                logger.info(s"✅ Retrieved enrich policy ${policy.name}.")
+                Future.successful(ElasticResult.success(QueryRows(Seq(policy.toMap))))
+            }
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
       case create: CreateEnrichPolicy =>
         api.createEnrichPolicy(create.policy) match {
           case ElasticSuccess(result) =>

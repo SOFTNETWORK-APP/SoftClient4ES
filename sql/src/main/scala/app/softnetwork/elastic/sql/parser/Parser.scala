@@ -924,6 +924,16 @@ object Parser
       DropEnrichPolicy(name, ifExists = ie)
     }
 
+  def showEnrichPolicy: PackratParser[ShowEnrichPolicy] =
+    ("SHOW" ~ "ENRICH" ~ "POLICY") ~> ident ^^ { name =>
+      ShowEnrichPolicy(name)
+    }
+
+  def showEnrichPolicies: PackratParser[ShowEnrichPolicies.type] =
+    ("SHOW" ~ "ENRICH" ~ "POLICIES") ^^ { _ =>
+      ShowEnrichPolicies
+    }
+
   def ddlStatement: PackratParser[DdlStatement] =
     createTable |
     createPipeline |
@@ -959,6 +969,8 @@ object Parser
     createEnrichPolicy |
     createOrReplaceEnrichPolicy |
     executeEnrichPolicy |
+    showEnrichPolicy |
+    showEnrichPolicies |
     dropEnrichPolicy
 
   def onConflict: PackratParser[OnConflict] =

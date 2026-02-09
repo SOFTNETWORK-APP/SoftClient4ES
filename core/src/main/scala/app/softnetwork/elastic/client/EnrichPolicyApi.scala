@@ -61,7 +61,16 @@ trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
       case failure @ ElasticFailure(_) => return failure
     }
     logger.info(s"🔧 Creating enrich policy: ${policy.name}")
-    executeCreateEnrichPolicy(policy)
+    executeCreateEnrichPolicy(policy) match {
+      case success @ ElasticSuccess(_) =>
+        logger.info(s"✅ Successfully created enrich policy: ${policy.name}")
+        success
+      case failure @ ElasticFailure(_) =>
+        logger.error(
+          s"❌ Failed to create enrich policy: ${failure.error.getOrElse("Unknown error")}"
+        )
+        failure
+    }
   }
 
   def deleteEnrichPolicy(policyName: String): ElasticResult[Boolean] = {
@@ -70,7 +79,16 @@ trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
       case failure @ ElasticFailure(_) => return failure
     }
     logger.info(s"🔧 Deleting enrich policy: $policyName")
-    executeDeleteEnrichPolicy(policyName)
+    executeDeleteEnrichPolicy(policyName) match {
+      case success @ ElasticSuccess(_) =>
+        logger.info(s"✅ Successfully deleted enrich policy: $policyName")
+        success
+      case failure @ ElasticFailure(_) =>
+        logger.error(
+          s"❌ Failed to delete enrich policy: ${failure.error.getOrElse("Unknown error")}"
+        )
+        failure
+    }
   }
 
   def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] = {
@@ -79,7 +97,52 @@ trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
       case failure @ ElasticFailure(_) => return failure
     }
     logger.info(s"🔧 Executing enrich policy: $policyName")
-    executeExecuteEnrichPolicy(policyName)
+    executeExecuteEnrichPolicy(policyName) match {
+      case success @ ElasticSuccess(_) =>
+        logger.info(s"✅ Successfully executed enrich policy: $policyName")
+        success
+      case failure @ ElasticFailure(_) =>
+        logger.error(
+          s"❌ Failed to execute enrich policy: ${failure.error.getOrElse("Unknown error")}"
+        )
+        failure
+    }
+  }
+
+  def getEnrichPolicy(policyName: String): ElasticResult[Option[EnrichPolicy]] = {
+    checkVersionForEnrichPolicy() match {
+      case ElasticSuccess(_)           => // continue
+      case failure @ ElasticFailure(_) => return failure
+    }
+    logger.info(s"🔍 Getting enrich policy: $policyName")
+    executeGetEnrichPolicy(policyName) match {
+      case success @ ElasticSuccess(_) =>
+        logger.info(s"✅ Successfully retrieved enrich policy: $policyName")
+        success
+      case failure @ ElasticFailure(_) =>
+        logger.error(
+          s"❌ Failed to get enrich policy: $policyName: ${failure.error.getOrElse("Unknown error")}"
+        )
+        failure
+    }
+  }
+
+  def listEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] = {
+    checkVersionForEnrichPolicy() match {
+      case ElasticSuccess(_)           => // continue
+      case failure @ ElasticFailure(_) => return failure
+    }
+    logger.info(s"🔍 Listing enrich policies")
+    executeListEnrichPolicies() match {
+      case success @ ElasticSuccess(policies) =>
+        logger.info(s"✅ Successfully retrieved ${policies.size} enrich policies")
+        success
+      case failure @ ElasticFailure(_) =>
+        logger.error(
+          s"❌ Failed to list enrich policies: ${failure.error.getOrElse("Unknown error")}"
+        )
+        failure
+    }
   }
 
   private[client] def executeCreateEnrichPolicy(policy: EnrichPolicy): ElasticResult[Boolean]
@@ -89,4 +152,10 @@ trait EnrichPolicyApi extends ElasticClientHelpers { _: VersionApi =>
   private[client] def executeExecuteEnrichPolicy(
     policyName: String
   ): ElasticResult[EnrichPolicyTask]
+
+  private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]]
+
+  private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]]
 }

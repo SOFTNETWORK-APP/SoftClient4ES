@@ -405,6 +405,14 @@ trait NopeClientApi extends ElasticClientApi {
   ): ElasticResult[EnrichPolicyTask] =
     ElasticSuccess(EnrichPolicyTask(policyName, "not_implemented", EnrichPolicyTaskStatus.Failed))
 
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    ElasticSuccess(Seq.empty)
+
   override private[client] def executeCreateTransform(
     config: TransformConfig,
     start: Boolean

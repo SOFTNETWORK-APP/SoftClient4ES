@@ -32,7 +32,12 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
-import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, EnrichPolicyTaskStatus}
+import app.softnetwork.elastic.sql.policy.{
+  EnrichPolicy,
+  EnrichPolicyTask,
+  EnrichPolicyTaskStatus,
+  EnrichPolicyType
+}
 import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.transform.{
@@ -79,6 +84,7 @@ import co.elastic.clients.elasticsearch.core.search.PointInTimeReference
 import co.elastic.clients.elasticsearch.enrich.{
   DeletePolicyRequest,
   ExecutePolicyRequest,
+  GetPolicyRequest,
   PutPolicyRequest
 }
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
@@ -2120,6 +2126,68 @@ trait JavaClientEnrichPolicyApi extends EnrichPolicyApi with JavaClientHelpers {
       )
     })
   }
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    executeJavaAction(
+      operation = "getEnrichPolicy",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .enrich()
+        .getPolicy(
+          new GetPolicyRequest.Builder()
+            .name(policyName)
+            .build()
+        )
+    ) { resp =>
+      resp.policies().asScala.map(_.config()).find(_.value().name() == policyName).map { pair =>
+        val policyType = EnrichPolicyType(pair.key().name())
+        val policy = pair.value()
+        EnrichPolicy(
+          name = policy.name(),
+          policyType = policyType,
+          indices = policy.indices().asScala.toSeq,
+          matchField = policy.matchField(),
+          enrichFields = policy.enrichFields().asScala.toList,
+          query = Option(policy.query()).map(convertToJson)
+        )
+      }
+    }
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    executeJavaAction(
+      operation = "listEnrichPolicies",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .enrich()
+        .getPolicy(
+          new GetPolicyRequest.Builder()
+            .build()
+        )
+    ) { resp =>
+      resp
+        .policies()
+        .asScala
+        .map(_.config())
+        .map { pair =>
+          val policyType = EnrichPolicyType(pair.key().name())
+          val policy = pair.value()
+          EnrichPolicy(
+            name = policy.name(),
+            policyType = policyType,
+            indices = policy.indices().asScala.toSeq,
+            matchField = policy.matchField(),
+            enrichFields = policy.enrichFields().asScala.toList,
+            query = Option(policy.query()).map(convertToJson)
+          )
+        }
+        .toSeq
+    }
 }
 
 // ==================== TRANSFORM API IMPLEMENTATION FOR JAVA CLIENT ====================

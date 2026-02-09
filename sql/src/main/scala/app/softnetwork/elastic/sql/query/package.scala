@@ -1164,4 +1164,11 @@ package object query {
     }
   }
 
+  case class ShowEnrichPolicy(name: String) extends EnrichPolicyStatement {
+    override def sql: String = s"SHOW ENRICH POLICY $name"
+  }
+
+  case object ShowEnrichPolicies extends EnrichPolicyStatement {
+    override def sql: String = s"SHOW ENRICH POLICIES"
+  }
 }

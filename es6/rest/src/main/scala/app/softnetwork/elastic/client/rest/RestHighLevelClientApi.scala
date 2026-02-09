@@ -2007,7 +2007,7 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
     ElasticFailure(
       result.ElasticError(
         message = "Enrich policy deletion not implemented for Rest client",
-        operation = Some("CreateEnrichPolicy"),
+        operation = Some("DeleteEnrichPolicy"),
         statusCode = Some(501)
       )
     )
@@ -2019,6 +2019,26 @@ trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLe
       result.ElasticError(
         message = "Enrich policy execution not implemented for Rest client",
         operation = Some("ExecuteEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Get enrich policy not implemented for Rest client",
+        operation = Some("GetEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "List enrich policies not implemented for Rest client",
+        operation = Some("ListEnrichPolicies"),
         statusCode = Some(501)
       )
     )

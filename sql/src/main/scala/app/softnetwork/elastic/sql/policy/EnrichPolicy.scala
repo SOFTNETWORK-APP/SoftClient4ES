@@ -21,13 +21,16 @@ import app.softnetwork.elastic.sql.query.{Criteria, Where}
 import app.softnetwork.elastic.sql.schema.mapper
 import com.fasterxml.jackson.databind.JsonNode
 
+import scala.collection.immutable.ListMap
+
 case class EnrichPolicy(
   name: String,
   policyType: EnrichPolicyType = EnrichPolicyType.Match,
   indices: Seq[String],
   matchField: String,
   enrichFields: List[String],
-  criteria: Option[Criteria] = None
+  criteria: Option[Criteria] = None,
+  query: Option[String] = None
 ) extends DdlToken {
   def sql: String =
     s"CREATE OR REPLACE ENRICH POLICY $name TYPE $policyType FROM ${indices
@@ -53,7 +56,29 @@ case class EnrichPolicy(
       policy.set("query", implicitly[JsonNode](c))
       ()
     }
+    query.foreach { q =>
+      policy.put("query", q)
+      ()
+    }
     node.set(policyType.name.toLowerCase, policy)
     node
+  }
+
+  def toMap: ListMap[String, Any] = {
+    val baseMap = ListMap(
+      "name"          -> name,
+      "type"          -> policyType.name.toLowerCase,
+      "indices"       -> indices.mkString(","),
+      "match_field"   -> matchField,
+      "enrich_fields" -> enrichFields.mkString(",")
+    )
+    criteria match {
+      case Some(c) => baseMap + ("query" -> c.sql)
+      case None =>
+        query match {
+          case Some(q) => baseMap + ("query" -> q)
+          case None    => baseMap
+        }
+    }
   }
 }

@@ -1891,6 +1891,12 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def executeEnrichPolicy(policyName: String): ElasticResult[EnrichPolicyTask] =
     delegate.executeEnrichPolicy(policyName)
 
+  override def getEnrichPolicy(policyName: String): ElasticResult[Option[EnrichPolicy]] =
+    delegate.getEnrichPolicy(policyName)
+
+  override def listEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    delegate.listEnrichPolicies()
+
   override private[client] def executeCreateEnrichPolicy(
     policy: EnrichPolicy
   ): ElasticResult[Boolean] =
@@ -1905,6 +1911,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     policyName: String
   ): ElasticResult[EnrichPolicyTask] =
     delegate.executeExecuteEnrichPolicy(policyName)
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    delegate.executeGetEnrichPolicy(policyName)
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    delegate.executeListEnrichPolicies()
 
   // ==================== Watcher (delegate) ====================
 

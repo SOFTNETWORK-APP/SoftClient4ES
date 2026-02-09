@@ -40,7 +40,7 @@ trait JestEnrichPolicyApi extends EnrichPolicyApi with JestClientHelpers {
     ElasticFailure(
       result.ElasticError(
         message = "Enrich policy deletion not implemented for Jest client",
-        operation = Some("CreateEnrichPolicy"),
+        operation = Some("DeleteEnrichPolicy"),
         statusCode = Some(501)
       )
     )
@@ -52,6 +52,27 @@ trait JestEnrichPolicyApi extends EnrichPolicyApi with JestClientHelpers {
       result.ElasticError(
         message = "Enrich policy execution not implemented for Jest client",
         operation = Some("ExecuteEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): result.ElasticResult[Option[EnrichPolicy]] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Enrich policy retrieval not implemented for Jest client",
+        operation = Some("GetEnrichPolicy"),
+        statusCode = Some(501)
+      )
+    )
+
+  override private[client] def executeListEnrichPolicies()
+    : result.ElasticResult[Seq[EnrichPolicy]] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Enrich policy listing not implemented for Jest client",
+        operation = Some("ListEnrichPolicies"),
         statusCode = Some(501)
       )
     )

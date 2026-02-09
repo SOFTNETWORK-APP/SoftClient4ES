@@ -1442,6 +1442,18 @@ class MetricsElasticClient(
       delegate.executeEnrichPolicy(policyName)
     }
 
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    measureResult("executeGetEnrichPolicy") {
+      delegate.executeGetEnrichPolicy(policyName)
+    }
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    measureResult("executeListEnrichPolicies") {
+      delegate.executeListEnrichPolicies()
+    }
+
   // ==================== Watcher (delegate) ====================
 
   /** Create a watcher.
