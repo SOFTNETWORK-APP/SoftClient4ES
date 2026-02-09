@@ -174,4 +174,9 @@ object ElasticsearchVersion {
     isAtLeast(version, 8, 7)
   }
 
+  /** Check if query watchers are supported (ES >= 7.11)
+    */
+  def supportsQueryWatchers(version: String): Boolean = {
+    isAtLeast(version, 7, 11)
+  }
 }

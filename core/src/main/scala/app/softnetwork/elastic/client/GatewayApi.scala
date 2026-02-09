@@ -61,9 +61,11 @@ import app.softnetwork.elastic.sql.query.{
   ShowCreatePipeline,
   ShowCreateTable,
   ShowPipeline,
+  ShowPipelines,
   ShowTable,
   ShowTables,
   ShowWatcherStatus,
+  ShowWatchers,
   SingleSearch,
   Statement,
   TableStatement,
@@ -308,6 +310,20 @@ class WatcherExecutor(api: WatcherApi, logger: Logger) extends DdlExecutor[Watch
     implicit val ec: ExecutionContext = system.dispatcher
     // handle WATCHER statement
     statement match {
+      case ShowWatchers =>
+        api.listWatchers() match {
+          case ElasticSuccess(watchers) =>
+            logger.info(s"✅ Retrieved ${watchers.size} watchers.")
+            Future.successful(
+              ElasticResult.success(QueryRows(watchers.map(_.toMap)))
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
       case status: ShowWatcherStatus =>
         api.getWatcherStatus(status.name) match {
           case ElasticSuccess(stats) =>
@@ -367,6 +383,30 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
     statement match {
+      case ShowPipelines =>
+        // handle SHOW PIPELINES statement
+        api.pipelines() match {
+          case ElasticSuccess(pipelines) =>
+            logger.info(s"✅ Retrieved all pipelines.")
+            Future.successful(
+              ElasticResult.success(
+                QueryRows(
+                  pipelines.map { pipeline =>
+                    ListMap(
+                      "name"             -> pipeline.name,
+                      "processors_count" -> pipeline.processors.size
+                    )
+                  }.toSeq
+                )
+              )
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("pipelines"))
+              )
+            )
+        }
       case show: ShowPipeline =>
         // handle SHOW PIPELINE statement
         api.loadPipeline(show.name) match {

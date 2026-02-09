@@ -149,6 +149,11 @@ object Parser
       ShowPipeline(pipeline)
     }
 
+  def showPipelines: PackratParser[ShowPipelines.type] =
+    ("SHOW" ~ "PIPELINES") ^^ { _ =>
+      ShowPipelines
+    }
+
   def showCreatePipeline: PackratParser[ShowCreatePipeline] =
     ("SHOW" ~ "CREATE" ~ "PIPELINE") ~ ident ^^ { case _ ~ _ ~ _ ~ pipeline =>
       ShowCreatePipeline(pipeline)
@@ -850,6 +855,11 @@ object Parser
       ShowWatcherStatus(name)
     }
 
+  def showWatchers: PackratParser[ShowWatchers.type] =
+    ("SHOW" ~ "WATCHERS") ^^ { _ =>
+      ShowWatchers
+    }
+
   def dropWatcher: PackratParser[DropWatcher] =
     ("DROP" ~ "WATCHER") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropWatcher(name, ifExists = ie)
@@ -928,6 +938,7 @@ object Parser
     showCreateTable |
     describeTable |
     dropPipeline |
+    showPipelines |
     showPipeline |
     showCreatePipeline |
     describePipeline |
@@ -942,6 +953,7 @@ object Parser
     describeMaterializedView |
     createWatcher |
     createOrReplaceWatcher |
+    showWatchers |
     showWatcherStatus |
     dropWatcher |
     createEnrichPolicy |

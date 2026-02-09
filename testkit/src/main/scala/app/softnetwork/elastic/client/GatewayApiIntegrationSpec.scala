@@ -196,10 +196,10 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   }
 
   // -------------------------------------------------------------------------
-  // Helper: assert SHOW TABLES result type
+  // Helper: assert Query Rows result type
   // -------------------------------------------------------------------------
 
-  def assertShowTables(startTime: Long, res: ElasticResult[QueryResult]): Seq[Map[String, Any]] = {
+  def assertQueryRows(startTime: Long, res: ElasticResult[QueryResult]): Seq[Map[String, Any]] = {
     renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[QueryRows]
@@ -707,7 +707,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   }
 
   it should "list all tables" in {
-    val tables = assertShowTables(System.nanoTime(), client.run("SHOW TABLES").futureValue)
+    val tables = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES").futureValue)
     tables should not be empty
     for {
       table <- tables
@@ -1560,6 +1560,9 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val showCreate = client.run("SHOW CREATE PIPELINE user_pipeline").futureValue
     val ddl = assertShowCreate(System.nanoTime(), showCreate)
     ddl should include("CREATE OR REPLACE PIPELINE user_pipeline")
+
+    val pipelines = assertQueryRows(System.nanoTime(), client.run("SHOW PIPELINES").futureValue)
+    pipelines should contain(Map("name" -> "user_pipeline", "processors_count" -> 6))
   }
 
   // ---------------------------------------------------------------------------
@@ -1656,6 +1659,18 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         row.get("id") shouldBe Some("my_watcher_interval")
         row.get("is_healthy") shouldBe Some(true)
         row.get("is_operational") shouldBe Some(true)
+      case _ => fail("Expected QueryRows result")
+    }
+
+    val watchers = client.run("SHOW WATCHERS").futureValue
+    watchers match {
+      case ElasticSuccess(QueryRows(rows)) =>
+        rows.find(row => row.get("id").contains("my_watcher_interval")) match {
+          case Some(row) =>
+            row.get("is_healthy") shouldBe Some(true)
+            row.get("is_operational") shouldBe Some(true)
+          case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
+        }
       case _ => fail("Expected QueryRows result")
     }
 

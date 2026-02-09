@@ -1665,6 +1665,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def loadPipeline(pipelineName: String): ElasticResult[schema.IngestPipeline] =
     delegate.loadPipeline(pipelineName)
 
+  override def pipelines(): ElasticResult[Seq[schema.IngestPipeline]] =
+    delegate.pipelines()
+
   override private[client] def executeCreatePipeline(
     pipelineName: String,
     pipelineDefinition: String
@@ -1681,6 +1684,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     pipelineName: String
   ): ElasticResult[Option[String]] =
     delegate.executeGetPipeline(pipelineName)
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] =
+    delegate.executeListPipelines()
 
   // ==================== TemplateApi (delegate) ====================
 
@@ -1937,6 +1943,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def getWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]] =
     delegate.getWatcherStatus(id)
 
+  /** Get all watchers
+    *
+    * @return
+    *   a sequence of watchers
+    */
+  override def listWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    delegate.listWatchers()
+
   override private[client] def executeCreateWatcher(
     watcher: Watcher,
     active: Boolean
@@ -1950,6 +1964,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     id: String
   ): ElasticResult[Option[WatcherStatus]] =
     delegate.executeGetWatcherStatus(id)
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    delegate.executeListWatchers()
 
   // ==================== License (delegate) ====================
 

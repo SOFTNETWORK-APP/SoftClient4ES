@@ -16,10 +16,15 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.client.result.ElasticResult
+import app.softnetwork.elastic.client.result.{
+  ElasticError,
+  ElasticFailure,
+  ElasticResult,
+  ElasticSuccess
+}
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 
-trait WatcherApi extends ElasticClientHelpers {
+trait WatcherApi extends ElasticClientHelpers { _: VersionApi =>
 
   /** Create a watcher
     * @param watcher
@@ -56,6 +61,40 @@ trait WatcherApi extends ElasticClientHelpers {
     executeGetWatcherStatus(id)
   }
 
+  /** List all watchers
+    * @return
+    *   a sequence of watchers
+    */
+  def listWatchers(): ElasticResult[Seq[WatcherStatus]] = {
+    // Get Elasticsearch version
+    val elasticVersion = {
+      this.version match {
+        case ElasticSuccess(v) => v
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+          return ElasticFailure(error)
+      }
+    }
+    if (ElasticsearchVersion.supportsQueryWatchers(elasticVersion)) {
+      logger.info(s"Listing all Watchers")
+      executeListWatchers() match {
+        case success @ ElasticSuccess(watchers) =>
+          logger.info(s"✅ Successfully retrieved list of ${watchers.size} Watchers")
+          success
+        case failure @ ElasticFailure(error) =>
+          logger.error(s"❌ Failed to list Watchers: ${error.message}")
+          failure
+      }
+    } else {
+      logger.error(
+        s"❌ Elasticsearch version $elasticVersion does not support querying watchers directly."
+      )
+      ElasticFailure(
+        ElasticError.notFound("_watcher", "_query", "listWatchers")
+      )
+    }
+  }
+
   private[client] def sanitizeWatcherJson(json: String): String = {
     // Hide Authorization header content
     json.replaceAll(
@@ -72,4 +111,6 @@ trait WatcherApi extends ElasticClientHelpers {
   private[client] def executeDeleteWatcher(id: String): ElasticResult[Boolean]
 
   private[client] def executeGetWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]]
+
+  private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]]
 }

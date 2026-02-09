@@ -1719,6 +1719,28 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
       }
     )
   }
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Map[String, String]](
+      operation = "listPipelines",
+      retryable = true
+    )(
+      request = new GetPipelineRequest()
+    )(
+      executor = req => apply().ingest().getPipeline(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        resp
+          .pipelines()
+          .asScala
+          .map { pipeline =>
+            val config = pipeline.getConfigAsMap
+            pipeline.getId -> mapper.writeValueAsString(config)
+          }
+          .toMap
+      }
+    )
+  }
 }
 
 trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClientHelpers {
@@ -2081,7 +2103,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
 // ==================== WATCHER API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
 
 trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientCompanion =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateWatcher(
     watcher: Watcher,
@@ -2238,6 +2260,15 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
           None
         }
       }
+    )
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    ElasticFailure(
+      result.ElasticError(
+        message = "Listing watchers not implemented for Rest client",
+        operation = Some("ListWatchers"),
+        statusCode = Some(501)
+      )
     )
 }
 

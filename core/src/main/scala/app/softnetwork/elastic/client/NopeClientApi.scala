@@ -274,6 +274,9 @@ trait NopeClientApi extends ElasticClientApi {
   ): ElasticResult[Option[String]] =
     ElasticResult.success(None)
 
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
+
   override private[client] def executeCreateComposableTemplate(
     templateName: String,
     templateDefinition: String
@@ -447,6 +450,9 @@ trait NopeClientApi extends ElasticClientApi {
     id: String
   ): ElasticResult[Option[WatcherStatus]] =
     ElasticSuccess(None)
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    ElasticSuccess(Seq.empty)
 
   override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
     ElasticSuccess(None)

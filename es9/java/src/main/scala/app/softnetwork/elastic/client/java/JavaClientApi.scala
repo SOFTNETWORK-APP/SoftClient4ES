@@ -100,7 +100,9 @@ import co.elastic.clients.elasticsearch.watcher.{
   DeleteWatchRequest,
   GetWatchRequest,
   PutWatchRequest,
-  PutWatchResponse
+  PutWatchResponse,
+  Watch,
+  WatchStatus
 }
 import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.JsonParser
@@ -1777,6 +1779,29 @@ trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers with Java
       }
     }
   }
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] =
+    executeJavaAction(
+      operation = "listPipelines",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .ingest()
+        .getPipeline(
+          new GetPipelineRequest.Builder()
+            .id("*")
+            .build()
+        )
+    ) { resp =>
+      resp
+        .pipelines()
+        .asScala
+        .map { case (id, pipeline) =>
+          id -> convertToJson(pipeline)
+        }
+        .toMap
+    }
 }
 
 trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with JavaClientVersionApi {
@@ -2293,81 +2318,124 @@ trait JavaClientWatcherApi extends WatcherApi with JavaClientHelpers {
         )
     ) { resp =>
       if (resp.found()) {
-        val trigger = resp.watch().trigger()
-        val interval: Option[TransformTimeInterval] =
-          if (trigger.isSchedule) {
-            val schedule = trigger.schedule()
-            logger.debug(s"Watcher [$id] has schedule: $schedule")
-            if (schedule.isCron) {
-              val cron = schedule.cron()
-              logger.debug(s"Watcher [$id] has cron schedule: $cron")
-              CronIntervalCalculator.validateAndCalculate(cron) match {
-                case Right(interval) =>
-                  val tuple = TransformTimeInterval.fromSeconds(interval._2)
-                  Some(
-                    Delay(
-                      timeUnit = tuple._1,
-                      interval = tuple._2
-                    )
-                  )
-                case _ =>
-                  logger.warn(
-                    s"Watcher [$id] has invalid cron expression: $cron"
-                  )
-                  None
-              }
-            } else if (schedule.isInterval) {
-              val interval = schedule.interval()
-              logger.debug(s"Watcher [$id] has interval schedule: $interval")
-              TransformTimeInterval(interval.time()) match {
-                case Some(ti) => Some(ti)
-                case _ =>
-                  logger.warn(
-                    s"Watcher [$id] has invalid interval: $interval"
-                  )
-                  None
-              }
-            } else {
-              logger.warn(s"Watcher [$id] has unknown schedule type")
-              None
-            }
-          } else {
-            logger.warn(s"Watcher [$id] does not have a schedule trigger")
-            None
-          }
-
-        interval match {
-          case None =>
-            logger.warn(s"Watcher [$id] does not have a valid schedule interval")
-          case Some(t) => // valid interval
-            logger.info(s"Watcher [$id] has schedule interval: $t")
-        }
-
-        Option(resp.status()).map { status =>
-          val version = resp.version()
-          val active = Option(status.state()).exists(_.active())
-          import _root_.java.time.ZonedDateTime
-          val timestamp =
-            Option(status.state()).map(_.timestamp().toZonedDateTime).getOrElse(ZonedDateTime.now())
-          WatcherStatus(
-            id = id,
-            version = version,
-            activationState = WatcherActivationState(
-              active = active,
-              timestamp = timestamp
-            ),
-            executionState = Option(status.executionState()).map(es => WatcherExecutionState(es)),
-            lastChecked = Option(status.lastChecked())
-              .map(_.toZonedDateTime),
-            lastMetCondition = Option(status.lastMetCondition())
-              .map(_.toZonedDateTime),
-            interval = interval
-          )
-        }
+        val watch = resp.watch()
+        val version = resp.version()
+        val status = resp.status()
+        extractWatcherStatus(
+          id = id,
+          watch = watch,
+          version = Some(version),
+          status = status
+        )
       } else {
         None
       }
     }
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    executeJavaAction(
+      operation = "listWatchers",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .watcher()
+        .queryWatches()
+    ) { resp =>
+      resp.watches().asScala.toSeq.flatMap { qw =>
+        val id = qw.id()
+        val watch = qw.watch()
+        val status = qw.status()
+        extractWatcherStatus(
+          id = id,
+          watch = watch,
+          version = None,
+          status = status
+        )
+      }
+    }
+
+  private def extractWatcherStatus(
+    id: String,
+    watch: Watch,
+    version: Option[Long] = None,
+    status: WatchStatus
+  ): Option[WatcherStatus] = {
+    val trigger = watch.trigger()
+    val interval: Option[TransformTimeInterval] =
+      if (trigger.isSchedule) {
+        val schedule = trigger.schedule()
+        logger.debug(s"Watcher [$id] has schedule: $schedule")
+        if (schedule.isCron) {
+          val cron = schedule.cron()
+          logger.debug(s"Watcher [$id] has cron schedule: $cron")
+          CronIntervalCalculator.validateAndCalculate(cron) match {
+            case Right(interval) =>
+              val tuple = TransformTimeInterval.fromSeconds(interval._2)
+              Some(
+                Delay(
+                  timeUnit = tuple._1,
+                  interval = tuple._2
+                )
+              )
+            case _ =>
+              logger.warn(
+                s"Watcher [$id] has invalid cron expression: $cron"
+              )
+              None
+          }
+        } else if (schedule.isInterval) {
+          val interval = schedule.interval()
+          logger.debug(s"Watcher [$id] has interval schedule: $interval")
+          TransformTimeInterval(interval.time()) match {
+            case Some(ti) => Some(ti)
+            case _ =>
+              logger.warn(
+                s"Watcher [$id] has invalid interval: $interval"
+              )
+              None
+          }
+        } else {
+          logger.warn(s"Watcher [$id] has unknown schedule type")
+          None
+        }
+      } else {
+        logger.warn(s"Watcher [$id] does not have a schedule trigger")
+        None
+      }
+
+    interval match {
+      case None =>
+        logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+      case Some(t) => // valid interval
+        logger.info(s"Watcher [$id] has schedule interval: $t")
+    }
+
+    Option(status).map { status =>
+      val state = Option(status.state())
+      val active = state.exists(_.active())
+      import _root_.java.time.ZonedDateTime
+      val timestamp =
+        state
+          .map(_.timestamp().toZonedDateTime)
+          .getOrElse(ZonedDateTime.now())
+      WatcherStatus(
+        id = id,
+        version = version.getOrElse(status.version()),
+        executionState = Option(status.executionState()).map(es => WatcherExecutionState(es)),
+        activationState = WatcherActivationState(
+          active = active,
+          timestamp = timestamp
+        ),
+        lastChecked = Option(status.lastChecked())
+          .map(_.toZonedDateTime),
+        lastMetCondition = Option(status.lastMetCondition())
+          .map(_.toZonedDateTime),
+        interval = interval
+      )
+    }
+  }
+
 }
 
 // ==================== LICENSE API IMPLEMENTATION FOR JAVA CLIENT ====================

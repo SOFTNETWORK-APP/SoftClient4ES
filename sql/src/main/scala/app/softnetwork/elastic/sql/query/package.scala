@@ -577,6 +577,10 @@ package object query {
     override def sql: String = s"DESCRIBE PIPELINE $name"
   }
 
+  case object ShowPipelines extends PipelineStatement {
+    override def sql: String = s"SHOW PIPELINES"
+  }
+
   sealed trait TableStatement extends DdlStatement
 
   sealed trait MaterializedViewStatement extends TableStatement
@@ -1099,6 +1103,10 @@ package object query {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP WATCHER $ifExistsClause$name"
     }
+  }
+
+  case object ShowWatchers extends WatcherStatement {
+    override def sql: String = s"SHOW WATCHERS"
   }
 
   sealed trait EnrichPolicyStatement extends DdlStatement

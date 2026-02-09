@@ -52,7 +52,7 @@ import app.softnetwork.elastic.sql.watcher.{
 }
 import app.softnetwork.elastic.utils.CronIntervalCalculator
 import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.node.ObjectNode
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.Alias
@@ -1899,9 +1899,9 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
   }
 
   override private[client] def executeGetPipeline(
-    pipelineName: JSONQuery
-  ): ElasticResult[Option[JSONQuery]] = {
-    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[JSONQuery]](
+    pipelineName: String
+  ): ElasticResult[Option[String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[String]](
       operation = "getPipeline",
       retryable = true
     )(
@@ -1914,11 +1914,32 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
         if (pipelines.nonEmpty) {
           val pipeline = pipelines.head
           val config = pipeline.getConfigAsMap
-          val mapper = JacksonConfig.objectMapper
           Some(mapper.writeValueAsString(config))
         } else {
           None
         }
+      }
+    )
+  }
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Map[String, String]](
+      operation = "listPipelines",
+      retryable = true
+    )(
+      request = new GetPipelineRequest()
+    )(
+      executor = req => apply().ingest().getPipeline(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        resp
+          .pipelines()
+          .asScala
+          .map { pipeline =>
+            val config = pipeline.getConfigAsMap
+            pipeline.getId -> mapper.writeValueAsString(config)
+          }
+          .toMap
       }
     )
   }
@@ -2695,7 +2716,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
 // ==================== WATCHER API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
 
 trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientCompanion =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreateWatcher(
     watcher: Watcher,
@@ -2805,7 +2826,6 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
             val version = resp.getVersion
             val state = Option(status.state())
             val active = state.exists(_.isActive)
-            import _root_.java.time.ZonedDateTime
             val timestamp =
               state.map(_.getTimestamp).getOrElse(ZonedDateTime.now())
             val activationState =
@@ -2826,6 +2846,114 @@ trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientH
         }
       }
     )
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    executeRestLowLevelAction[Seq[WatcherStatus]](
+      operation = "listWatchers",
+      index = None,
+      retryable = true
+    )(
+      request = new Request("POST", "/_watcher/_query/watches")
+    )(
+      transformer = resp => {
+        val jsonString = EntityUtils.toString(resp.getEntity)
+        val root = mapper.readTree(jsonString)
+        if (root.has("watches")) {
+          root.get("watches") match {
+            case watchersNode: ArrayNode =>
+              logger.info(s"Found ${watchersNode.size()} watchers")
+              watchersNode.elements().asScala.toSeq.map { watcherNode: JsonNode =>
+                val id = watcherNode.get("_id").asText()
+                val watch = watcherNode.get("watch")
+                val interval: Option[TransformTimeInterval] = {
+                  watch.get("trigger") match {
+                    case triggerNode if triggerNode.has("schedule") =>
+                      val scheduleNode = triggerNode.get("schedule")
+                      if (scheduleNode.has("interval")) {
+                        val intervalStr = scheduleNode.get("interval").asText()
+                        TransformTimeInterval(intervalStr) match {
+                          case Some(ti) => Some(ti)
+                          case _ =>
+                            logger.warn(
+                              s"Watcher [$id] has invalid interval: $intervalStr"
+                            )
+                            None
+                        }
+                      } else if (scheduleNode.has("cron")) {
+                        val cronExpr = scheduleNode.get("cron").asText()
+                        CronIntervalCalculator.validateAndCalculate(cronExpr) match {
+                          case Right(interval) =>
+                            val tuple = TransformTimeInterval.fromSeconds(interval._2)
+                            Some(
+                              Delay(
+                                timeUnit = tuple._1,
+                                interval = tuple._2
+                              )
+                            )
+                          case _ =>
+                            logger.warn(
+                              s"Watcher [$id] has invalid cron expression: $cronExpr"
+                            )
+                            None
+                        }
+                      } else {
+                        None
+                      }
+                    case _ => None
+                  }
+                }
+
+                interval match {
+                  case None =>
+                    logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+                  case Some(t) => // valid interval
+                    logger.info(s"Watcher [$id] has schedule interval: $t")
+                }
+
+                val status = watcherNode.get("status")
+                val state = Option(status.get("state"))
+                val active = state.exists(_.get("active").asBoolean())
+                val timestamp = state
+                  .flatMap(s => Option(s.get("timestamp")))
+                  .map(_.asText())
+                  .flatMap { ts =>
+                    try {
+                      Some(ZonedDateTime.parse(ts))
+                    } catch {
+                      case e: Exception =>
+                        logger.warn(
+                          s"Failed to parse timestamp '$ts' for watcher [$id]: ${e.getMessage}"
+                        )
+                        None
+                    }
+                  }
+                val activationState = WatcherActivationState(
+                  active = active,
+                  timestamp = timestamp.getOrElse(ZonedDateTime.now())
+                )
+                val version = watcherNode.get("version").asLong()
+                WatcherStatus(
+                  id = id,
+                  version = version,
+                  activationState = activationState,
+                  executionState = None,
+                  lastChecked = None,
+                  lastMetCondition = None,
+                  interval = interval
+                )
+              }
+            case _ =>
+              logger.warn(
+                s"Unexpected 'watches' node type: ${root.get("watches").getClass.getName}"
+              )
+              Seq.empty
+          }
+        } else {
+          Seq.empty
+        }
+      }
+    )
+
 }
 
 // ==================== LICENSE API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================

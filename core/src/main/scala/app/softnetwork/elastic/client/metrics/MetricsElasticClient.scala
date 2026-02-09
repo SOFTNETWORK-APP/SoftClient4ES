@@ -1278,6 +1278,11 @@ class MetricsElasticClient(
       delegate.loadPipeline(pipelineName)
     }
 
+  override def pipelines(): ElasticResult[Seq[schema.IngestPipeline]] =
+    measureResult("pipelines") {
+      delegate.pipelines()
+    }
+
   // ==================== TemplateApi (delegate) ====================
 
   /** Create or update an index template.
@@ -1478,6 +1483,16 @@ class MetricsElasticClient(
   override def getWatcherStatus(id: String): ElasticResult[Option[WatcherStatus]] =
     measureResult("getWatcher") {
       delegate.getWatcherStatus(id)
+    }
+
+  /** Get all watchers
+    *
+    * @return
+    *   a sequence of watchers
+    */
+  override def listWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    measureResult("listWatchers") {
+      delegate.listWatchers()
     }
 
   // ==================== License (delegate) ====================

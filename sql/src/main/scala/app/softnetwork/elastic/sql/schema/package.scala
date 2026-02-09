@@ -165,7 +165,13 @@ package object schema {
 
       processorType match {
         case IngestProcessorType.Set.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"SET processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
           val valueNode = Option(props.get("value"))
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
@@ -216,7 +222,7 @@ package object schema {
 
         case IngestProcessorType.Script.name =>
           val desc = Option(props.get("description")).map(_.asText())
-          val lang = props.get("lang").asText()
+          val lang = Option(props.get("lang")).map(_.asText()).getOrElse("painless")
           require(lang == "painless", s"Only painless supported, got $lang")
           val source = props.get("source").asText()
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
@@ -241,13 +247,31 @@ package object schema {
           }
 
         case IngestProcessorType.DateIndexName.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"date_index_name processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
-          val rounding = props.get("date_rounding").asText()
+          val rounding = Option(props.get("date_rounding"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"date_index_name processor must have a 'date_rounding' property, got: $props"
+              )
+            )
           val formats = Option(props.get("date_formats"))
             .map(_.elements().asScala.toList.map(_.asText()))
             .getOrElse(Nil)
-          val prefix = props.get("index_name_prefix").asText()
+          val prefix = Option(props.get("index_name_prefix"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"date_index_name processor must have an 'index_name_prefix' property, got: $props"
+              )
+            )
 
           DateIndexNameProcessor(
             pipelineType = pipelineType,
@@ -259,7 +283,13 @@ package object schema {
           )
 
         case IngestProcessorType.Remove.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"remove processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
 
           RemoveProcessor(
@@ -271,7 +301,13 @@ package object schema {
         case IngestProcessorType.Rename.name =>
           val field = props.get("field").asText()
           val desc = Option(props.get("description")).map(_.asText())
-          val targetField = props.get("target_field").asText()
+          val targetField = Option(props.get("target_field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"rename processor must have a 'target_field' property, got: $props"
+              )
+            )
 
           RenameProcessor(
             pipelineType = pipelineType,
@@ -281,10 +317,28 @@ package object schema {
           )
 
         case IngestProcessorType.Enrich.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"enrich processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
-          val policyName = props.get("policy_name").asText()
-          val targetField = props.get("target_field").asText()
+          val policyName = Option(props.get("policy_name"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"enrich processor must have a 'policy_name' property, got: $props"
+              )
+            )
+          val targetField = Option(props.get("target_field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"enrich processor must have a 'target_field' property, got: $props"
+              )
+            )
           val maxMatches = Option(props.get("max_matches")).map(_.asInt()).getOrElse(1)
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
           val ignoreMissing = Option(props.get("ignore_missing")).map(_.asBoolean())

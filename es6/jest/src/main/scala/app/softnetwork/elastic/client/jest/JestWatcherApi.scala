@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.jest.actions.{Watcher => JestWatcher}
+import app.softnetwork.elastic.client.result.{ElasticError, ElasticFailure}
 import app.softnetwork.elastic.client.{result, WatcherApi}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.serialization._
@@ -36,7 +37,8 @@ import io.searchbox.client.JestResult
 import java.time.ZonedDateTime
 import scala.util.Try
 
-trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCompanion =>
+trait JestWatcherApi extends WatcherApi with JestClientHelpers {
+  _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreateWatcher(
     watcher: Watcher,
@@ -192,4 +194,14 @@ trait JestWatcherApi extends WatcherApi with JestClientHelpers { _: JestClientCo
         )
     }
   }
+
+  override private[client] def executeListWatchers(): result.ElasticResult[Seq[WatcherStatus]] =
+    ElasticFailure(
+      ElasticError(
+        message = "Listing watchers is not supported by Jest client",
+        cause = None,
+        statusCode = Some(501),
+        operation = Some("listWatchers")
+      )
+    )
 }
