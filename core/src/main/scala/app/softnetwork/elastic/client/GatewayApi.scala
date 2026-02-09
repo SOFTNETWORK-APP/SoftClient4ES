@@ -57,6 +57,7 @@ import app.softnetwork.elastic.sql.query.{
   Insert,
   MultiSearch,
   PipelineStatement,
+  SearchStatement,
   SelectStatement,
   ShowCreatePipeline,
   ShowCreateTable,
@@ -97,10 +98,11 @@ trait Executor[T <: Statement] {
   ): Future[ElasticResult[QueryResult]]
 }
 
-class DqlExecutor(api: ScrollApi with SearchApi, logger: Logger) extends Executor[DqlStatement] {
+class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
+    extends Executor[SearchStatement] {
 
   override def execute(
-    statement: DqlStatement
+    statement: SearchStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
@@ -256,7 +258,7 @@ trait DdlExecutor[T <: DdlStatement] extends Executor[T]
 class EnrichPolicyExecutor(
   api: EnrichPolicyApi,
   logger: Logger
-) extends DdlExecutor[EnrichPolicyStatement] {
+) extends Executor[EnrichPolicyStatement] {
   override def execute(
     statement: EnrichPolicyStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
@@ -342,7 +344,7 @@ class EnrichPolicyExecutor(
   }
 }
 
-class WatcherExecutor(api: WatcherApi, logger: Logger) extends DdlExecutor[WatcherStatement] {
+class WatcherExecutor(api: WatcherApi, logger: Logger) extends Executor[WatcherStatement] {
   override def execute(
     statement: WatcherStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
@@ -416,7 +418,7 @@ class WatcherExecutor(api: WatcherApi, logger: Logger) extends DdlExecutor[Watch
   }
 }
 
-class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[PipelineStatement] {
+class PipelineExecutor(api: PipelineApi, logger: Logger) extends Executor[PipelineStatement] {
   override def execute(
     statement: PipelineStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
@@ -512,7 +514,7 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
 class TableExecutor(
   api: IndicesApi with PipelineApi with TemplateApi with SettingsApi with MappingApi with AliasApi,
   logger: Logger
-) extends DdlExecutor[TableStatement] {
+) extends Executor[TableStatement] {
   override def execute(
     statement: TableStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
@@ -1554,6 +1556,33 @@ class TableExecutor(
   }
 }
 
+class DqlRouterExecutor(
+  searchExec: SearchExecutor,
+  pipelineExec: PipelineExecutor,
+  tableExec: TableExecutor,
+  watcherExec: WatcherExecutor,
+  policyExec: EnrichPolicyExecutor
+) extends Executor[DqlStatement] {
+
+  override def execute(
+    statement: DqlStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = statement match {
+
+    case s: SearchStatement       => searchExec.execute(s)
+    case p: PipelineStatement     => pipelineExec.execute(p)
+    case t: TableStatement        => tableExec.execute(t)
+    case w: WatcherStatement      => watcherExec.execute(w)
+    case e: EnrichPolicyStatement => policyExec.execute(e)
+
+    case _ =>
+      Future.successful(
+        ElasticFailure(
+          ElasticError(s"Unsupported DQL statement: $statement", statusCode = Some(400))
+        )
+      )
+  }
+}
+
 class DdlRouterExecutor(
   pipelineExec: PipelineExecutor,
   tableExec: TableExecutor,
@@ -1582,7 +1611,7 @@ class DdlRouterExecutor(
 trait GatewayApi extends ElasticClientHelpers {
   self: ElasticClientApi =>
 
-  lazy val dqlExecutor = new DqlExecutor(
+  lazy val searchExecutor = new SearchExecutor(
     api = this,
     logger = logger
   )
@@ -1610,6 +1639,14 @@ trait GatewayApi extends ElasticClientHelpers {
   lazy val policyExecutor = new EnrichPolicyExecutor(
     api = this,
     logger = logger
+  )
+
+  lazy val dqlExecutor = new DqlRouterExecutor(
+    searchExec = searchExecutor,
+    pipelineExec = pipelineExecutor,
+    tableExec = tableExecutor,
+    watcherExec = watcherExecutor,
+    policyExec = policyExecutor
   )
 
   lazy val ddlExecutor = new DdlRouterExecutor(

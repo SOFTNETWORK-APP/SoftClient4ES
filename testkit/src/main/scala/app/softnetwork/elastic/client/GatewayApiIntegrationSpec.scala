@@ -308,7 +308,6 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val rows =
       assertQueryRows(System.nanoTime(), client.run("DESCRIBE TABLE desc_users").futureValue)
-
     rows.size shouldBe 6
     rows.exists(row =>
       row("Field") == "id" &&

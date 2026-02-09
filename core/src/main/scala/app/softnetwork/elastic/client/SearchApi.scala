@@ -28,6 +28,7 @@ import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   MultiSearch,
   SQLAggregation,
+  SearchStatement,
   SelectStatement,
   SingleSearch
 }
@@ -68,7 +69,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   the Elasticsearch response
     */
-  def search(statement: DqlStatement): ElasticResult[ElasticResponse] = {
+  def search(statement: SearchStatement): ElasticResult[ElasticResponse] = {
     implicit def timestamp: Long = System.currentTimeMillis()
     val query = statement.sql
     statement match {
@@ -328,7 +329,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     *   a Future containing the Elasticsearch response
     */
   def searchAsync(
-    statement: DqlStatement
+    statement: SearchStatement
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {

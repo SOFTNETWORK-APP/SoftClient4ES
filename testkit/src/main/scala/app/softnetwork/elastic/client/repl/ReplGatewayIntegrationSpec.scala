@@ -82,19 +82,15 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
 
     assertDdl(System.nanoTime(), executeSync(create))
 
-    val startTime = System.nanoTime()
-    val res = executeSync("DESCRIBE TABLE desc_users")
-    renderResults(startTime, res)
-
-    res shouldBe a[ExecutionSuccess]
-    val success = res.asInstanceOf[ExecutionSuccess]
-    success.result shouldBe a[QueryRows]
-
-    val rows = success.result.asInstanceOf[QueryRows].rows
-
-    rows.exists(_("name") == "id") shouldBe true
-    rows.exists(_("name") == "name") shouldBe true
-    rows.exists(_("name") == "profile.city") shouldBe true
+    val rows = assertQueryRows(System.nanoTime(), executeSync("DESCRIBE TABLE desc_users"))
+    rows.size shouldBe 6
+    rows.exists(row =>
+      row("Field") == "id" &&
+      row("Null") == "no" &&
+      row("Key") == "PRI"
+    ) shouldBe true
+    rows.exists(_("Field") == "name") shouldBe true
+    rows.exists(_("Field") == "profile.city") shouldBe true
   }
 
   // =========================================================================

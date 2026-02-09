@@ -56,7 +56,9 @@ import scala.collection.immutable.ListMap
 package object query {
   sealed trait Statement extends Token
 
-  trait DqlStatement extends Statement
+  sealed trait DqlStatement extends Statement
+
+  sealed trait SearchStatement extends DqlStatement
 
   /** Select Statement wrapper
     * @param query
@@ -64,7 +66,7 @@ package object query {
     * @param score
     *   - optional minimum score for the elasticsearch query
     */
-  case class SelectStatement(query: SQL, score: Option[Double] = None) extends DqlStatement {
+  case class SelectStatement(query: SQL, score: Option[Double] = None) extends SearchStatement {
     import app.softnetwork.elastic.sql.SQLImplicits._
 
     lazy val statement: Option[DqlStatement] = {
@@ -96,7 +98,7 @@ package object query {
     updateByQuery: Boolean = false,
     onConflict: Option[OnConflict] = None,
     schema: Option[Schema] = None
-  ) extends DqlStatement {
+  ) extends SearchStatement {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
 
@@ -275,7 +277,7 @@ package object query {
 
   }
 
-  case class MultiSearch(requests: Seq[SingleSearch]) extends DqlStatement {
+  case class MultiSearch(requests: Seq[SingleSearch]) extends SearchStatement {
     override def sql: String = s"${requests.map(_.sql).mkString(" UNION ALL ")}"
 
     def update(): MultiSearch = this.copy(requests = requests.map(_.update()))
@@ -311,7 +313,7 @@ package object query {
   case class Insert(
     table: String,
     cols: Seq[String],
-    values: Either[DqlStatement, Seq[Seq[Value[_]]]],
+    values: Either[SearchStatement, Seq[Seq[Value[_]]]],
     onConflict: Option[OnConflict] = None
   ) extends DmlStatement {
     lazy val conflictTarget: Option[Seq[String]] = onConflict.flatMap(_.target)
@@ -497,7 +499,7 @@ package object query {
 
   sealed trait DdlStatement extends Statement
 
-  sealed trait PipelineStatement extends DdlStatement
+  sealed trait PipelineStatement extends Statement
 
   case class CreatePipeline(
     name: String,
@@ -505,7 +507,8 @@ package object query {
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     processors: Seq[IngestProcessor]
-  ) extends PipelineStatement {
+  ) extends PipelineStatement
+      with DdlStatement {
     override def sql: String = {
       val processorsDdl = processors.map(_.ddl).mkString(", ")
       val replaceClause = if (orReplace) " OR REPLACE" else ""
@@ -536,7 +539,8 @@ package object query {
     name: String,
     ifExists: Boolean,
     statements: List[AlterPipelineStatement]
-  ) extends PipelineStatement {
+  ) extends PipelineStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS " else ""
       val parenthesesNeeded = statements.size > 1
@@ -558,30 +562,32 @@ package object query {
       )
   }
 
-  case class DropPipeline(name: String, ifExists: Boolean = false) extends PipelineStatement {
+  case class DropPipeline(name: String, ifExists: Boolean = false)
+      extends PipelineStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP PIPELINE $ifExistsClause$name"
     }
   }
 
-  case class ShowPipeline(name: String) extends PipelineStatement {
+  case class ShowPipeline(name: String) extends PipelineStatement with DqlStatement {
     override def sql: String = s"SHOW PIPELINE $name"
   }
 
-  case class ShowCreatePipeline(name: String) extends PipelineStatement {
+  case class ShowCreatePipeline(name: String) extends PipelineStatement with DqlStatement {
     override def sql: String = s"SHOW CREATE PIPELINE $name"
   }
 
-  case class DescribePipeline(name: String) extends PipelineStatement {
+  case class DescribePipeline(name: String) extends PipelineStatement with DqlStatement {
     override def sql: String = s"DESCRIBE PIPELINE $name"
   }
 
-  case object ShowPipelines extends PipelineStatement {
+  case object ShowPipelines extends PipelineStatement with DqlStatement {
     override def sql: String = s"SHOW PIPELINES"
   }
 
-  sealed trait TableStatement extends DdlStatement
+  sealed trait TableStatement extends Statement
 
   sealed trait MaterializedViewStatement extends TableStatement
 
@@ -592,7 +598,8 @@ package object query {
     orReplace: Boolean = false,
     frequency: Option[Frequency] = None,
     options: ListMap[String, Value[_]] = ListMap.empty
-  ) extends MaterializedViewStatement {
+  ) extends MaterializedViewStatement
+      with DdlStatement {
     override def sql: String = {
       val frequencySql = frequency match {
         case Some(freq) => freq.sql
@@ -638,7 +645,8 @@ package object query {
   }
 
   case class DropMaterializedView(name: String, ifExists: Boolean = false)
-      extends MaterializedViewStatement {
+      extends MaterializedViewStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP MATERIALIZED VIEW $ifExistsClause$name"
@@ -646,7 +654,8 @@ package object query {
   }
 
   case class RefreshMaterializedView(name: String, ifExists: Boolean, scheduleNow: Boolean)
-      extends MaterializedViewStatement {
+      extends MaterializedViewStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       val scheduleNowClause = if (scheduleNow) " WITH SCHEDULE NOW" else ""
@@ -654,35 +663,44 @@ package object query {
     }
   }
 
-  case object ShowMaterializedViews extends MaterializedViewStatement {
+  case object ShowMaterializedViews extends MaterializedViewStatement with DqlStatement {
     override def sql: String = s"SHOW MATERIALIZED VIEWS"
   }
 
-  case class ShowMaterializedView(name: String) extends MaterializedViewStatement {
+  case class ShowMaterializedView(name: String)
+      extends MaterializedViewStatement
+      with DqlStatement {
     override def sql: String = s"SHOW MATERIALIZED VIEW $name"
   }
 
-  case class ShowMaterializedViewStatus(name: String) extends MaterializedViewStatement {
+  case class ShowMaterializedViewStatus(name: String)
+      extends MaterializedViewStatement
+      with DqlStatement {
     override def sql: String = s"SHOW MATERIALIZED VIEW STATUS $name"
   }
 
-  case class ShowCreateMaterializedView(name: String) extends MaterializedViewStatement {
+  case class ShowCreateMaterializedView(name: String)
+      extends MaterializedViewStatement
+      with DqlStatement {
     override def sql: String = s"SHOW CREATE MATERIALIZED VIEW $name"
   }
 
-  case class DescribeMaterializedView(name: String) extends MaterializedViewStatement {
+  case class DescribeMaterializedView(name: String)
+      extends MaterializedViewStatement
+      with DqlStatement {
     override def sql: String = s"DESCRIBE MATERIALIZED VIEW $name"
   }
 
   case class CreateTable(
     table: String,
-    ddl: Either[DqlStatement, List[Column]],
+    ddl: Either[SearchStatement, List[Column]],
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     primaryKey: List[String] = Nil,
     partitionBy: Option[PartitionDate] = None,
     options: ListMap[String, Value[_]] = ListMap.empty
-  ) extends TableStatement {
+  ) extends TableStatement
+      with DdlStatement {
 
     lazy val partitioned: Boolean = partitionBy.isDefined
 
@@ -812,7 +830,8 @@ package object query {
   }
 
   case class AlterTable(table: String, ifExists: Boolean, statements: List[AlterTableStatement])
-      extends TableStatement {
+      extends TableStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS " else ""
       val parenthesesNeeded = statements.size > 1
@@ -1025,7 +1044,8 @@ package object query {
   }
 
   case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)
-      extends TableStatement {
+      extends TableStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       val cascadeClause = if (cascade) " CASCADE" else ""
@@ -1033,15 +1053,15 @@ package object query {
     }
   }
 
-  case class TruncateTable(table: String) extends TableStatement {
+  case class TruncateTable(table: String) extends TableStatement with DdlStatement {
     override def sql: String = s"TRUNCATE TABLE $table"
   }
 
-  case class ShowTable(table: String) extends TableStatement {
+  case class ShowTable(table: String) extends TableStatement with DqlStatement {
     override def sql: String = s"SHOW TABLE $table"
   }
 
-  case class ShowTables(indices: Seq[String] = Seq.empty) extends TableStatement {
+  case class ShowTables(indices: Seq[String] = Seq.empty) extends TableStatement with DqlStatement {
     override def sql: String = {
       if (indices.nonEmpty) {
         s"SHOW TABLES LIKE ${indices.mkString("'", "', '", "'")}"
@@ -1049,15 +1069,15 @@ package object query {
     }
   }
 
-  case class ShowCreateTable(table: String) extends TableStatement {
+  case class ShowCreateTable(table: String) extends TableStatement with DqlStatement {
     override def sql: String = s"SHOW CREATE TABLE $table"
   }
 
-  case class DescribeTable(table: String) extends TableStatement {
+  case class DescribeTable(table: String) extends TableStatement with DqlStatement {
     override def sql: String = s"DESCRIBE TABLE $table"
   }
 
-  sealed trait WatcherStatement extends DdlStatement
+  sealed trait WatcherStatement extends Statement
 
   case class CreateWatcher(
     name: String,
@@ -1068,7 +1088,8 @@ package object query {
     actions: ListMap[String, WatcherAction],
     input: WatcherInput,
     options: ListMap[String, Value[_]] = ListMap.empty
-  ) extends WatcherStatement {
+  ) extends WatcherStatement
+      with DdlStatement {
 
     lazy val watcher: Watcher = Watcher(
       id = name,
@@ -1098,22 +1119,24 @@ package object query {
     override def sql: String = watcher.sql
   }
 
-  case class ShowWatcherStatus(name: String) extends WatcherStatement {
+  case class ShowWatcherStatus(name: String) extends WatcherStatement with DqlStatement {
     override def sql: String = s"SHOW WATCHER STATUS $name"
   }
 
-  case class DropWatcher(name: String, ifExists: Boolean = false) extends WatcherStatement {
+  case class DropWatcher(name: String, ifExists: Boolean = false)
+      extends WatcherStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP WATCHER $ifExistsClause$name"
     }
   }
 
-  case object ShowWatchers extends WatcherStatement {
+  case object ShowWatchers extends WatcherStatement with DqlStatement {
     override def sql: String = s"SHOW WATCHERS"
   }
 
-  sealed trait EnrichPolicyStatement extends DdlStatement
+  sealed trait EnrichPolicyStatement extends Statement
 
   case class CreateEnrichPolicy(
     name: String,
@@ -1124,7 +1147,8 @@ package object query {
     where: Option[Where] = None,
     orReplace: Boolean = false,
     ifNotExists: Boolean = false
-  ) extends EnrichPolicyStatement {
+  ) extends EnrichPolicyStatement
+      with DdlStatement {
     override def sql: String = {
       val ineClause = if (ifNotExists) " IF NOT EXISTS" else ""
       val replaceClause = if (orReplace) " OR REPLACE" else ""
@@ -1156,23 +1180,24 @@ package object query {
     }
   }
 
-  case class ExecuteEnrichPolicy(name: String) extends EnrichPolicyStatement {
+  case class ExecuteEnrichPolicy(name: String) extends EnrichPolicyStatement with DdlStatement {
     override def sql: String = s"EXECUTE ENRICH POLICY $name"
   }
 
   case class DropEnrichPolicy(name: String, ifExists: Boolean = false)
-      extends EnrichPolicyStatement {
+      extends EnrichPolicyStatement
+      with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       s"DROP ENRICH POLICY $ifExistsClause$name"
     }
   }
 
-  case class ShowEnrichPolicy(name: String) extends EnrichPolicyStatement {
+  case class ShowEnrichPolicy(name: String) extends EnrichPolicyStatement with DqlStatement {
     override def sql: String = s"SHOW ENRICH POLICY $name"
   }
 
-  case object ShowEnrichPolicies extends EnrichPolicyStatement {
+  case object ShowEnrichPolicies extends EnrichPolicyStatement with DqlStatement {
     override def sql: String = s"SHOW ENRICH POLICIES"
   }
 }

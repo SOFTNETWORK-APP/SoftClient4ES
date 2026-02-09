@@ -33,6 +33,7 @@ import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   MultiSearch,
   SQLAggregation,
+  SearchStatement,
   SelectStatement,
   SingleSearch
 }
@@ -124,7 +125,7 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
-    statement: DqlStatement,
+    statement: SearchStatement,
     config: ScrollConfig = ScrollConfig()
   )(implicit system: ActorSystem): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     implicit def timestamp: Long = System.currentTimeMillis()

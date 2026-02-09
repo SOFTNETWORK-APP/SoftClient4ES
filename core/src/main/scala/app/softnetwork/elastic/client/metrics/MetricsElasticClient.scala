@@ -33,7 +33,7 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.{Index, IndexMappings}
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema}
-import app.softnetwork.elastic.sql.query.{DqlStatement, SQLAggregation, SelectStatement}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SearchStatement, SelectStatement}
 import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import app.softnetwork.elastic.sql.transform.{
   TransformConfig,
@@ -782,7 +782,7 @@ class MetricsElasticClient(
     * @return
     *   the Elasticsearch response
     */
-  override def search(statement: DqlStatement): ElasticResult[ElasticResponse] =
+  override def search(statement: SearchStatement): ElasticResult[ElasticResponse] =
     measureResult("search") {
       delegate.search(statement)
     }
@@ -795,7 +795,7 @@ class MetricsElasticClient(
     *   a Future containing the Elasticsearch response
     */
   override def searchAsync(
-    statement: DqlStatement
+    statement: SearchStatement
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync") {
       delegate.searchAsync(statement)
@@ -1028,7 +1028,7 @@ class MetricsElasticClient(
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
+  override def scroll(statement: SearchStatement, config: ScrollConfig)(implicit
     system: ActorSystem
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element

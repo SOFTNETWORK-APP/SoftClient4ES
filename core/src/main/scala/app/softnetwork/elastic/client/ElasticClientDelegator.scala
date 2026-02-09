@@ -26,8 +26,8 @@ import app.softnetwork.elastic.schema.{Index, IndexMappings}
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.{
-  DqlStatement,
   SQLAggregation,
+  SearchStatement,
   SelectStatement,
   SingleSearch
 }
@@ -1115,7 +1115,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   the Elasticsearch response
     */
-  override def search(statement: DqlStatement): ElasticResult[ElasticResponse] =
+  override def search(statement: SearchStatement): ElasticResult[ElasticResponse] =
     delegate.search(statement)
 
   /** Search for documents / aggregations matching the Elasticsearch query.
@@ -1161,7 +1161,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   a Future containing the Elasticsearch response
     */
-  override def searchAsync(statement: DqlStatement)(implicit
+  override def searchAsync(statement: SearchStatement)(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(statement)
 
@@ -1373,7 +1373,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   /** Create a scrolling source with automatic strategy selection
     */
-  override def scroll(statement: DqlStatement, config: ScrollConfig)(implicit
+  override def scroll(statement: SearchStatement, config: ScrollConfig)(implicit
     system: ActorSystem
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
 

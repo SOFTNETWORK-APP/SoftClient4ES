@@ -94,7 +94,7 @@ object Parser
 
   def union: PackratParser[UNION.type] = UNION.regex ^^ (_ => UNION)
 
-  def dqlStatement: PackratParser[DqlStatement] = rep1sep(single, union) ^^ {
+  def searchStatement: PackratParser[SearchStatement] = rep1sep(single, union) ^^ {
     case x :: Nil => x
     case s        => MultiSearch(s)
   }
@@ -311,7 +311,7 @@ object Parser
     }
 
   def createOrReplaceTable: PackratParser[CreateTable] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
+    ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columnsWithPartitionBy | ("AS" ~> searchStatement)) ^^ {
       case _ ~ name ~ lr =>
         lr match {
           case (
@@ -329,13 +329,13 @@ object Parser
               partitionBy = p,
               options = opts
             )
-          case sel: DqlStatement =>
+          case sel: SearchStatement =>
             CreateTable(name, Left(sel), ifNotExists = false, orReplace = true)
         }
     }
 
   def createTable: PackratParser[CreateTable] =
-    ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | ("AS" ~> dqlStatement)) ^^ {
+    ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | ("AS" ~> searchStatement)) ^^ {
       case _ ~ ine ~ name ~ lr =>
         lr match {
           case (
@@ -345,7 +345,7 @@ object Parser
                 opts: ListMap[String, Value[_]]
               ) =>
             CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p, options = opts)
-          case sel: DqlStatement => CreateTable(name, Left(sel), ine)
+          case sel: SearchStatement => CreateTable(name, Left(sel), ine)
         }
     }
 
@@ -398,7 +398,7 @@ object Parser
   def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
     ("CREATE" ~ "OR" ~ "REPLACE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ~ opt(frequency) ~ opt(
       withOptions
-    ) ~ ("AS" ~> dqlStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
+    ) ~ ("AS" ~> searchStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
       CreateMaterializedView(
         view,
         dql,
@@ -414,7 +414,7 @@ object Parser
       frequency
     ) ~ opt(
       withOptions
-    ) ~ ("AS" ~> dqlStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
+    ) ~ ("AS" ~> searchStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
       CreateMaterializedView(
         view,
         dql,
@@ -938,6 +938,27 @@ object Parser
       ShowEnrichPolicies
     }
 
+  def dqlStatement: PackratParser[DqlStatement] = {
+    searchStatement |
+    showTables |
+    showTable |
+    showCreateTable |
+    describeTable |
+    showPipelines |
+    showPipeline |
+    showCreatePipeline |
+    describePipeline |
+    showMaterializedViewStatus |
+    showMaterializedViews |
+    showMaterializedView |
+    showCreateMaterializedView |
+    describeMaterializedView |
+    showWatchers |
+    showWatcherStatus |
+    showEnrichPolicy |
+    showEnrichPolicies
+  }
+
   def ddlStatement: PackratParser[DdlStatement] =
     createTable |
     createPipeline |
@@ -947,34 +968,17 @@ object Parser
     alterPipeline |
     dropTable |
     truncateTable |
-    showTables |
-    showTable |
-    showCreateTable |
-    describeTable |
     dropPipeline |
-    showPipelines |
-    showPipeline |
-    showCreatePipeline |
-    describePipeline |
     createMaterializedView |
     createOrReplaceMaterializedView |
     dropMaterializedView |
     refreshMaterializedView |
-    showMaterializedViewStatus |
-    showMaterializedViews |
-    showMaterializedView |
-    showCreateMaterializedView |
-    describeMaterializedView |
     createWatcher |
     createOrReplaceWatcher |
-    showWatchers |
-    showWatcherStatus |
     dropWatcher |
     createEnrichPolicy |
     createOrReplaceEnrichPolicy |
     executeEnrichPolicy |
-    showEnrichPolicy |
-    showEnrichPolicies |
     dropEnrichPolicy
 
   def onConflict: PackratParser[OnConflict] =
@@ -990,7 +994,7 @@ object Parser
   def insert: PackratParser[Insert] =
     ("INSERT" ~ "INTO") ~ ident ~ opt(lparen ~> repsep(ident, comma) <~ rparen) ~
     (("VALUES" ~> rows) ^^ { vs => Right(vs) }
-    | "AS".? ~> dqlStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
+    | "AS".? ~> searchStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
       case _ ~ table ~ colsOpt ~ vals ~ conflict =>
         conflict match {
           case Some(c) => Insert(table, colsOpt.getOrElse(Nil), vals, Some(c))
