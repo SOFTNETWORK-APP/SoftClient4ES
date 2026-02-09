@@ -19,6 +19,7 @@ package app.softnetwork.elastic.client.result
 import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 import fansi.Color
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.duration.Duration
 
 object ResultRenderer {
@@ -218,7 +219,7 @@ object ResultRenderer {
       "\n\n"
     )
 
-    val rows: List[Map[String, Any]] = table.columns.flatMap(_.asMap(table))
+    val rows: List[ListMap[String, Any]] = table.columns.flatMap(_.asMap(table))
 
     // Extract columns
     val columnNames: Seq[String] = rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty)
@@ -272,6 +273,7 @@ object ResultRenderer {
     if (table.ddl.nonEmpty) {
       output.append(s"\n\n${emoji("📝")} ${bold("DDL:")}\n")
       output.append(highlightSql(table.ddl))
+      output.append("\n")
     }
 
     output.toString()
@@ -283,13 +285,26 @@ object ResultRenderer {
     val output = new StringBuilder()
     output.append(s"${emoji("🔄")} ${bold(cyan(s"Pipeline: ${pipeline.name}"))}\n\n")
 
-    if (pipeline.describe.nonEmpty) {
-      output.append(s"${bold("Description:")} ${pipeline.describe}\n\n")
+    output.append(s"${bold("Processors:")} (${pipeline.processors.size})\n")
+
+    val rows: Seq[ListMap[String, Any]] = pipeline.describe
+
+    // Extract columns
+    val columnNames: Seq[String] = rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty)
+
+    // Prepare headers and data with colors
+    val headers = columnNames.map(col => bold(cyan(col)))
+    val dataRows = rows.map { row =>
+      columnNames.map(col => formatValue(row.getOrElse(col, null)))
     }
 
-    output.append(s"${bold("Processors:")} (${pipeline.processors.size})\n")
-    pipeline.processors.zipWithIndex.foreach { case (processor, i) =>
-      output.append(s"\n  ${i + 1}. ${cyan(processor.processorType.name)}\n")
+    output.append(renderCustomTable(headers, dataRows))
+
+    // DDL
+    if (pipeline.sql.nonEmpty) {
+      output.append(s"\n\n${emoji("📝")} ${bold("DDL:")}\n")
+      output.append(highlightSql(pipeline.ddl))
+      output.append("\n")
     }
 
     output.toString()

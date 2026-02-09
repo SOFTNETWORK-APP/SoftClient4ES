@@ -861,6 +861,18 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     pipeline.name shouldBe "user_pipeline"
     pipeline.processors.size shouldBe 2
 
+    val desc = assertQueryRows(System.nanoTime(), executeSync("DESCRIBE PIPELINE user_pipeline"))
+    desc.exists(row =>
+      row("processor_type") == "set" &&
+      row("field") == "name" &&
+      row("description").asInstanceOf[String].contains("SET DEFAULT 'anonymous'")
+    ) shouldBe true
+    desc.exists(row =>
+      row("processor_type") == "set" &&
+      row("field") == "_id" &&
+      row("description").asInstanceOf[String].contains("PRIMARY KEY (id)")
+    ) shouldBe true
+
     val showCreate = executeSync("SHOW CREATE PIPELINE user_pipeline")
     val ddl = assertShowCreate(System.nanoTime(), showCreate)
     ddl should include("CREATE OR REPLACE PIPELINE user_pipeline")

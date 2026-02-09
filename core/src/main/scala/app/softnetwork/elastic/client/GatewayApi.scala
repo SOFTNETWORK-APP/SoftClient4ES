@@ -467,7 +467,7 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends Executor[Pipeli
           case ElasticSuccess(pipeline) =>
             logger.info(s"✅ Retrieved pipeline ${showCreate.name}.")
             Future.successful(
-              ElasticResult.success(SQLResult(pipeline.sql))
+              ElasticResult.success(SQLResult(pipeline.ddl))
             )
           case ElasticFailure(elasticError) =>
             Future.successful(

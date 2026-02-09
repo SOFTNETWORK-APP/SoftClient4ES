@@ -1574,6 +1574,19 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     pipeline.name shouldBe "user_pipeline"
     pipeline.processors.size shouldBe 6
 
+    val desc =
+      assertQueryRows(System.nanoTime(), client.run("DESCRIBE PIPELINE user_pipeline").futureValue)
+    desc.exists(row =>
+      row("processor_type") == "set" &&
+      row("field") == "name" &&
+      row("description").asInstanceOf[String].contains("SET DEFAULT 'anonymous'")
+    ) shouldBe true
+    desc.exists(row =>
+      row("processor_type") == "set" &&
+      row("field") == "_id" &&
+      row("description").asInstanceOf[String].contains("PRIMARY KEY (id)")
+    ) shouldBe true
+
     val showCreate = client.run("SHOW CREATE PIPELINE user_pipeline").futureValue
     val ddl = assertShowCreate(System.nanoTime(), showCreate)
     ddl should include("CREATE OR REPLACE PIPELINE user_pipeline")

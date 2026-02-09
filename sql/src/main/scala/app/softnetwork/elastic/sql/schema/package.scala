@@ -83,6 +83,28 @@ package object schema {
     def description: Option[String]
     def name: String = processorType.name
     def properties: ListMap[String, Any]
+    def boolToString(b: Boolean): String = if (b) "yes" else "no"
+    def describe: ListMap[String, Any] = {
+      ListMap(
+        "processor_type" -> processorType.name,
+        "description"    -> description.getOrElse(sql),
+        "field"          -> column,
+        "ignore_failure" -> boolToString(ignoreFailure)
+      ) ++ ListMap(
+        "options" -> ObjectValue(
+          properties
+            .filterNot(p =>
+              Set(
+                "processor_type",
+                "description",
+                "field",
+                "ignore_failure"
+              ).contains(p._1)
+            )
+            .map(kv => kv._1 -> Value(kv._2))
+        ).ddl
+      )
+    }
 
     private def normalizeValue(v: Any): Any = v match {
       case s: String     => s.trim
@@ -774,7 +796,7 @@ package object schema {
       }
     }
 
-    def describe: Seq[ListMap[String, Any]] = processors.map(_.properties)
+    def describe: Seq[ListMap[String, Any]] = processors.map(_.describe)
   }
 
   object IngestPipeline {
