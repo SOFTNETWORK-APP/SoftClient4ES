@@ -462,9 +462,11 @@ class MetricsElasticClient(
       delegate.updateMapping(index, mapping, settings)
     }
 
-  override def allMappings: ElasticResult[Map[String, IndexMappings]] =
+  override def allMappings(
+    indices: Seq[String] = Seq.empty
+  ): ElasticResult[Map[String, IndexMappings]] =
     measureResult("allMappings") {
-      delegate.allMappings
+      delegate.allMappings(indices)
     }
 
   // ==================== RefreshApi ====================

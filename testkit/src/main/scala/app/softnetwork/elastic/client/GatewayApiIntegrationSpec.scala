@@ -281,6 +281,14 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     ddl should include("name VARCHAR")
     ddl should include("age INT DEFAULT 0")
     ddl should include("PRIMARY KEY (id)")
+
+    var rows =
+      assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE 'show_*'").futureValue)
+    rows.size should be >= 1
+    rows.exists(_("name") == "show_users") shouldBe true
+
+    rows = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE '.*'").futureValue)
+    rows.size shouldBe 0
   }
 
   it should "describe a table using DESCRIBE TABLE" in {

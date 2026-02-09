@@ -520,8 +520,8 @@ class TableExecutor(
     // handle TABLE statement
     statement match {
       // handle SHOW TABLE statement
-      case ShowTables =>
-        api.allMappings match {
+      case tables: ShowTables =>
+        api.allMappings(tables.indices) match {
           case ElasticSuccess(mappings) =>
             logger.info("✅ Retrieved all tables.")
             Future.successful(

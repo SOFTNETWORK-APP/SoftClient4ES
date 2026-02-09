@@ -156,12 +156,14 @@ trait MappingApi extends ElasticClientHelpers {
   }
 
   /** Get the mappings of all indices.
+    * @param indices
+    *   - optional list of index names to filter by (if empty, retrieves mappings for all indices)
     * @return
     *   a map of index names to their mappings
     */
-  def allMappings: ElasticResult[Map[String, IndexMappings]] = {
+  def allMappings(indices: Seq[String] = Seq.empty): ElasticResult[Map[String, IndexMappings]] = {
     // Get mappings for all indices
-    executeGetAllMappings().map { mappingsMap =>
+    executeGetAllMappings(indices).map { mappingsMap =>
       mappingsMap.map { case (index, mappingJson) =>
         val indexMappings = IndexMappings(mappingJson)
         (index, indexMappings)
@@ -408,5 +410,7 @@ trait MappingApi extends ElasticClientHelpers {
 
   private[client] def executeGetMapping(index: String): ElasticResult[String]
 
-  private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]]
+  private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]]
 }

@@ -26,7 +26,7 @@ import app.softnetwork.elastic.client.result.{
 import com.google.gson.JsonParser
 import io.searchbox.indices.mapping.{GetMapping, PutMapping}
 
-import scala.util.Try
+import scala.jdk.CollectionConverters._
 
 /** Mapping management API for Jest (Elasticsearch HTTP Client).
   * @see
@@ -103,13 +103,15 @@ trait JestMappingApi extends MappingApi with JestClientHelpers {
     }
   }
 
-  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]] =
     executeJestAction(
       operation = "getAllMappings",
       index = None,
       retryable = true
     )(
-      new GetMapping.Builder().build()
+      new GetMapping.Builder().addIndices(indices.asJava).build()
     ) { result =>
       val jsonString = result.getJsonString
       val jsonObject = JsonParser.parseString(jsonString).getAsJsonObject

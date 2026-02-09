@@ -77,7 +77,7 @@ import org.elasticsearch.action.search.{
   SearchResponse,
   SearchScrollRequest
 }
-import org.elasticsearch.action.support.WriteRequest
+import org.elasticsearch.action.support.{IndicesOptions, WriteRequest}
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
@@ -649,7 +649,9 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
       }
     })
 
-  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]] =
     executeRestAction[
       GetMappingsRequest,
       GetMappingsResponse,
@@ -659,7 +661,9 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
       index = None,
       retryable = true
     )(
-      request = new GetMappingsRequest().indices()
+      request = new GetMappingsRequest()
+        .indices(indices: _*)
+        .indicesOptions(IndicesOptions.STRICT_EXPAND_OPEN_CLOSED)
     )(
       executor = req => apply().indices().getMapping(req, RequestOptions.DEFAULT)
     )(response => {

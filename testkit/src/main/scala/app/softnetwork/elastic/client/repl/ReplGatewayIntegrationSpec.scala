@@ -58,6 +58,13 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     ddl should include("name VARCHAR")
     ddl should include("age INT DEFAULT 0")
     ddl should include("PRIMARY KEY (id)")
+
+    var rows = assertQueryRows(System.nanoTime(), executeSync("SHOW TABLES LIKE 'show_*'"))
+    rows.size should be >= 1
+    rows.exists(_("name") == "show_users") shouldBe true
+
+    rows = assertQueryRows(System.nanoTime(), executeSync("SHOW TABLES LIKE '.*'"))
+    rows.size shouldBe 0
   }
 
   it should "describe a table using DESCRIBE TABLE" in {
@@ -279,7 +286,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
   }
 
   it should "list all tables" in {
-    val tables = assertShowTables(System.nanoTime(), executeSync("SHOW TABLES"))
+    val tables = assertQueryRows(System.nanoTime(), executeSync("SHOW TABLES"))
     tables should not be empty
     for {
       table <- tables
@@ -861,6 +868,9 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     val showCreate = executeSync("SHOW CREATE PIPELINE user_pipeline")
     val ddl = assertShowCreate(System.nanoTime(), showCreate)
     ddl should include("CREATE OR REPLACE PIPELINE user_pipeline")
+
+    val pipelines = assertQueryRows(System.nanoTime(), executeSync("SHOW PIPELINES"))
+    pipelines should contain(Map("name" -> "user_pipeline", "processors_count" -> 2))
   }
 
   it should "alter an existing pipeline by adding and dropping processors" in {
@@ -943,6 +953,20 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
       case _ => fail("Expected QueryRows result")
     }
 
+    if (supportsQueryWatchers) {
+      val watchers = executeSync("SHOW WATCHERS")
+      watchers match {
+        case ExecutionSuccess(QueryRows(rows), _) =>
+          rows.find(row => row.get("id").contains("my_watcher_interval")) match {
+            case Some(row) =>
+              row.get("is_healthy") shouldBe Some(true)
+              row.get("is_operational") shouldBe Some(true)
+            case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
+          }
+        case _ => fail("Expected QueryRows result")
+      }
+    }
+
     val createWatcherWithCron =
       """CREATE OR REPLACE WATCHER my_watcher_cron AS
         | AT SCHEDULE '* * * * * ?'
@@ -964,8 +988,8 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
 
   behavior of "REPL - POLICIES statements"
 
-  it should "create, execute and drop a policy" in {
-    assume(supportEnrichPolicies, "Enrich policies are not supported in this environment")
+  it should "create, show, execute and drop a policy" in {
+    assume(supportsEnrichPolicies, "Enrich policies are not supported in this environment")
 
     val createIndex =
       """CREATE TABLE IF NOT EXISTS policy_users (
@@ -995,6 +1019,32 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |WHERE age > 10""".stripMargin
 
     assertDdl(System.nanoTime(), executeSync(createPolicy))
+
+    var rows = assertQueryRows(System.nanoTime(), executeSync("SHOW ENRICH POLICIES"))
+    rows.size shouldBe 1
+    var enrichPolicy = rows.head
+    enrichPolicy.get("name") shouldBe Some("my_policy")
+    enrichPolicy.get("type") shouldBe Some("match")
+    enrichPolicy.get("indices") shouldBe Some("policy_users")
+    enrichPolicy.get("match_field") shouldBe Some("id")
+    enrichPolicy.get("enrich_fields") shouldBe Some("name,city")
+    enrichPolicy
+      .getOrElse("query", "")
+      .asInstanceOf[String]
+      .contains("""{"bool":{"filter":[{"range":{"age":{""") shouldBe true
+
+    rows = assertQueryRows(System.nanoTime(), executeSync("SHOW ENRICH POLICY my_policy"))
+    rows.size shouldBe 1
+    enrichPolicy = rows.head
+    enrichPolicy.get("name") shouldBe Some("my_policy")
+    enrichPolicy.get("type") shouldBe Some("match")
+    enrichPolicy.get("indices") shouldBe Some("policy_users")
+    enrichPolicy.get("match_field") shouldBe Some("id")
+    enrichPolicy.get("enrich_fields") shouldBe Some("name,city")
+    enrichPolicy
+      .getOrElse("query", "")
+      .asInstanceOf[String]
+      .contains("""{"bool":{"filter":[{"range":{"age":{""") shouldBe true
 
     val executePolicy = "EXECUTE ENRICH POLICY my_policy"
     val result = executeSync(executePolicy)

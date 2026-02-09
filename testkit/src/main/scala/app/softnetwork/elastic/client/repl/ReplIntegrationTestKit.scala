@@ -82,9 +82,18 @@ trait ReplIntegrationTestKit
     self.afterAll()
   }
 
-  def supportEnrichPolicies: Boolean = {
+  def supportsEnrichPolicies: Boolean = {
     gateway.asInstanceOf[VersionApi].version match {
       case ElasticSuccess(v) => ElasticsearchVersion.supportsEnrich(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
+  }
+
+  def supportsQueryWatchers: Boolean = {
+    gateway.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsQueryWatchers(v)
       case ElasticFailure(error) =>
         log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
         false
@@ -223,10 +232,10 @@ trait ReplIntegrationTestKit
   }
 
   // -------------------------------------------------------------------------
-  // Helper: Assert SHOW TABLES result type
+  // Helper: Assert Query Rows result type
   // -------------------------------------------------------------------------
 
-  def assertShowTables(startTime: Long, res: ExecutionResult): Seq[Map[String, Any]] = {
+  def assertQueryRows(startTime: Long, res: ExecutionResult): Seq[Map[String, Any]] = {
     renderResults(startTime, res)
     res shouldBe a[ExecutionSuccess]
     res.asInstanceOf[ExecutionSuccess].result shouldBe a[QueryRows]

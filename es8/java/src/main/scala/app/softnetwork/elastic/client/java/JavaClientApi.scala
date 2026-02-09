@@ -57,6 +57,7 @@ import app.softnetwork.elastic.utils.CronIntervalCalculator
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
   Conflicts,
+  ExpandWildcard,
   FieldSort,
   FieldValue,
   Refresh,
@@ -612,7 +613,9 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
     }
   }
 
-  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]] =
     executeJavaAction(
       operation = "getAllMappings",
       index = None,
@@ -621,7 +624,15 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
       apply()
         .indices()
         .getMapping(
-          new GetMappingRequest.Builder().build()
+          new GetMappingRequest.Builder()
+            .index(indices.asJava)
+            .expandWildcards(
+              List(
+                ExpandWildcard.Open,
+                ExpandWildcard.Closed
+              ).asJava
+            )
+            .build()
         )
     ) { response =>
       response

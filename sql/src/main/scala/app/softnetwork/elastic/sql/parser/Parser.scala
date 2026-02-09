@@ -349,9 +349,13 @@ object Parser
         }
     }
 
-  def showTables: PackratParser[ShowTables.type] =
-    ("SHOW" ~ "TABLES") ^^ { _ =>
-      ShowTables
+  def patterns: PackratParser[List[String]] = "LIKE" ~> repsep(literal, comma) ^^ { patterns =>
+    patterns.map(_.value)
+  }
+
+  def showTables: PackratParser[ShowTables] =
+    ("SHOW" ~ "TABLES") ~> opt(patterns) ^^ { indices =>
+      ShowTables(indices.getOrElse(Seq.empty))
     }
 
   def showTable: PackratParser[ShowTable] =
@@ -370,7 +374,7 @@ object Parser
     }
 
   def dropTable: PackratParser[DropTable] =
-    ("DROP" ~ "TABLE") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+    ("DROP" ~ ("TABLE" | "INDEX")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropTable(name, ifExists = ie)
     }
 

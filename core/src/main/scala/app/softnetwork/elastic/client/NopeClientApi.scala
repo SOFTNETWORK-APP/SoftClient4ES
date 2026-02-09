@@ -387,7 +387,9 @@ trait NopeClientApi extends ElasticClientApi {
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     throw new UnsupportedOperationException
 
-  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] =
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String] = Seq.empty
+  ): ElasticResult[Map[String, String]] =
     ElasticResult.success(Map.empty)
 
   override private[client] def executeCreateEnrichPolicy(

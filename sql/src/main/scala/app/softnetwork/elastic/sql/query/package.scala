@@ -1041,8 +1041,12 @@ package object query {
     override def sql: String = s"SHOW TABLE $table"
   }
 
-  case object ShowTables extends TableStatement {
-    override def sql: String = s"SHOW TABLES"
+  case class ShowTables(indices: Seq[String] = Seq.empty) extends TableStatement {
+    override def sql: String = {
+      if (indices.nonEmpty) {
+        s"SHOW TABLES LIKE ${indices.mkString("'", "', '", "'")}"
+      } else "SHOW TABLES"
+    }
   }
 
   case class ShowCreateTable(table: String) extends TableStatement {

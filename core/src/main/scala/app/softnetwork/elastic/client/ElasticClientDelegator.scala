@@ -619,8 +619,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Boolean] =
     delegate.updateMapping(index, mapping, settings)
 
-  override def allMappings: ElasticResult[Map[String, IndexMappings]] =
-    delegate.allMappings
+  override def allMappings(
+    indices: Seq[String] = Seq.empty
+  ): ElasticResult[Map[String, IndexMappings]] =
+    delegate.allMappings(indices)
 
   /** Migrate an existing index to a new mapping.
     *
@@ -657,8 +659,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     delegate.executeGetMapping(index)
   }
 
-  override private[client] def executeGetAllMappings(): ElasticResult[Map[String, String]] = {
-    delegate.executeGetAllMappings()
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String] = Seq.empty
+  ): ElasticResult[Map[String, String]] = {
+    delegate.executeGetAllMappings(indices)
   }
 
   // ==================== RefreshApi ====================
