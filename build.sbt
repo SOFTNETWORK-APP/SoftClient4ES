@@ -280,8 +280,10 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
 def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
   val majorVersion = elasticSearchMajorVersion(esVersion)
   val projectId = s"es${majorVersion}cli"
+  val projectName = s"softclient4es$majorVersion-cli"
+
   Project(id = projectId, base = file(s"es$majorVersion/cli"))
-    .enablePlugins(JavaAppPackaging, BuildInfoPlugin)
+    .enablePlugins(JavaAppPackaging, UniversalPlugin, BuildInfoPlugin)
     .settings(
       moduleSettings,
       app.softnetwork.Info.infoSettings,
@@ -289,10 +291,39 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
       buildInfoObject := "SoftClient4esClientBuildInfo",
       organization := "app.softnetwork.elastic",
-      name := s"softclient4es$majorVersion-cli-assembly",
+      name := projectName,
+
+      // Main class
       Compile / mainClass := Some("app.softnetwork.elastic.client.Cli"),
-      Universal / mainClass := Some("app.softnetwork.elastic.client.Cli"),
-      executableScriptName := s"softclient4es",
+
+      Compile / packageBin / publishArtifact := false,
+      Compile / packageSrc / publishArtifact := false,
+      Compile / packageDoc / publishArtifact := false,
+      Compile / packageDoc / mappings := Seq(),
+
+      assembly / assemblyJarName := s"$projectName-${version.value}-assembly.jar",
+
+      Compile / unmanagedResources ++= Seq(
+        (ThisBuild / baseDirectory).value / "README.md",
+        (ThisBuild / baseDirectory).value / "LICENSE"
+      ),
+
+      assembly / assemblyMergeStrategy := {
+        case PathList("META-INF", "services", _ @_*) => MergeStrategy.concat
+        case PathList("META-INF", _ @_*) => MergeStrategy.discard
+        case "reference.conf"            => MergeStrategy.concat
+        case "README.md"                 => MergeStrategy.first
+        case "LICENSE"                   => MergeStrategy.first
+        case _                           => MergeStrategy.first
+      },
+
+      Compile / assembly / artifact := {
+        val art: Artifact = (Compile / packageBin / artifact).value
+        art.withClassifier(Some("assembly"))
+      },
+
+      addArtifact(Compile / assembly / artifact, assembly),
+
     )
     .settings(ss: _*)
 }
