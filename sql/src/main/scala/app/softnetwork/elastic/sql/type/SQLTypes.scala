@@ -56,6 +56,8 @@ object SQLTypes {
 
   case object GeoPoint extends EsqlGeoPoint { val typeId = "GEO_POINT" }
 
+  case object VarBinary extends SQLVarBinary { val typeId = "VARBINARY" }
+
   def apply(typeName: String): SQLType = typeName.toLowerCase match {
     case "null"                     => Null
     case "boolean"                  => Boolean
@@ -75,6 +77,7 @@ object SQLTypes {
     case "object" | "struct"        => Struct
     case "nested" | "array<struct>" => Array(Struct)
     case "geo_point"                => GeoPoint
+    case "binary" | "varbinary"     => VarBinary
     case _                          => Any
   }
 

@@ -42,12 +42,15 @@ package object time {
     }
     case object DAY_OF_MONTH extends Expr("DAY") with TimeField {
       override val timeField: String = "DAY_OF_MONTH"
+      override lazy val words: List[String] = List(sql, "DAYOFMONTH")
     }
     case object DAY_OF_WEEK extends Expr("WEEKDAY") with TimeField {
       override val timeField: String = "DAY_OF_WEEK"
+      override lazy val words: List[String] = List(sql, "DAYOFWEEK")
     }
     case object DAY_OF_YEAR extends Expr("YEARDAY") with TimeField {
       override val timeField: String = "DAY_OF_YEAR"
+      override lazy val words: List[String] = List(sql, "DAYOFYEAR")
     }
     case object HOUR_OF_DAY extends Expr("HOUR") with TimeField {
       override val timeField: String = "HOUR_OF_DAY"
@@ -90,6 +93,7 @@ package object time {
 
     case object WEEK_OF_WEEK_BASED_YEAR extends Expr("WEEK") with IsoField {
       override val isoField: String = "WEEK_OF_WEEK_BASED_YEAR"
+      override lazy val words: List[String] = List(sql, "WEEKOFYEAR")
     }
 
   }

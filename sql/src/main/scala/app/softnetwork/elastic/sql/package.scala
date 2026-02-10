@@ -635,6 +635,12 @@ package object sql {
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
+  case object RandomValue extends Value[Double](Math.random()) with TokenRegex {
+    override def sql: String = "RANDOM"
+    override def painless(context: Option[PainlessContext]): String = "Math.random()"
+    override def baseType: SQLNumeric = SQLTypes.Double
+  }
+
   case object EValue extends Value[Double](Math.E) with TokenRegex {
     override def sql: String = "E"
     override def painless(context: Option[PainlessContext]): String = "Math.E"

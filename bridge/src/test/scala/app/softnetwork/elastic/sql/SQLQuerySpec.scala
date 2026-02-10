@@ -1265,73 +1265,121 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "exists": {
-        |            "field": "identifier2"
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "script_fields": {
-        |    "y": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    },
-        |    "q": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
-        |      }
-        |    },
-        |    "m": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    },
-        |    "w": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    },
-        |    "d": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    },
-        |    "h": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    },
-        |    "m2": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    },
-        |    "lastSeen": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
-        |      }
-        |    }
-        |  },
-        |  "_source": {
-        |    "includes": [
-        |      "identifier"
-        |    ]
-        |  }
-        |}""".stripMargin
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "y": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "y2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "q": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
+      |      }
+      |    },
+      |    "q2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = param1 != null ? param1.withMonth((((param1.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param3.format(param2)"
+      |      }
+      |    },
+      |    "m": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "m2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "w": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "w2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "d": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "d2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "h": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "h2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.HOURS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "mi": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "mi2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.MINUTES)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    },
+      |    "lastSeen2": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.SECONDS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
@@ -1583,31 +1631,37 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "exists": {
-        |            "field": "identifier2"
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "script_fields": {
-        |    "lastSeen": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)); param1"
-        |      }
-        |    }
-        |  },
-        |  "_source": {
-        |    "includes": [
-        |      "identifier"
-        |    ]
-        |  }
-        |}""".stripMargin
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.plus(10, ChronoUnit.DAYS)); param1"
+      |      }
+      |    },
+      |    "trigger": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['createdDate'].size() == 0 ? null : doc['createdDate'].value.plus(1, ChronoUnit.WEEKS)); param1"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
@@ -1634,31 +1688,37 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     println(query)
     query shouldBe
     """{
-        |  "query": {
-        |    "bool": {
-        |      "filter": [
-        |        {
-        |          "exists": {
-        |            "field": "identifier2"
-        |          }
-        |        }
-        |      ]
-        |    }
-        |  },
-        |  "script_fields": {
-        |    "lastSeen": {
-        |      "script": {
-        |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)); param1"
-        |      }
-        |    }
-        |  },
-        |  "_source": {
-        |    "includes": [
-        |      "identifier"
-        |    ]
-        |  }
-        |}""".stripMargin
+      |  "query": {
+      |    "bool": {
+      |      "filter": [
+      |        {
+      |          "exists": {
+      |            "field": "identifier2"
+      |          }
+      |        }
+      |      ]
+      |    }
+      |  },
+      |  "script_fields": {
+      |    "lastSeen": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.minus(10, ChronoUnit.DAYS)); param1"
+      |      }
+      |    },
+      |    "lastMonth": {
+      |      "script": {
+      |        "lang": "painless",
+      |        "source": "def param1 = (doc['createdDate'].size() == 0 ? null : doc['createdDate'].value.minus(2, ChronoUnit.MONTHS)); param1"
+      |      }
+      |    }
+      |  },
+      |  "_source": {
+      |    "includes": [
+      |      "identifier"
+      |    ]
+      |  }
+      |}""".stripMargin
       .replaceAll("\\s", "")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")

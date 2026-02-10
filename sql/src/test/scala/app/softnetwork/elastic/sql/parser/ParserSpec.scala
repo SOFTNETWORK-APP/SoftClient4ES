@@ -161,21 +161,29 @@ object Queries {
     """SELECT
       |identifier,
       |date_format(date_trunc(lastUpdated, YEAR), '%Y-%m-%d') AS y,
+      |date_format(date_trunc(YEAR, lastUpdated), '%Y-%m-%d') AS y2,
       |date_format(date_trunc(lastUpdated, QUARTER), '%Y-%m-%d') AS q,
+      |date_format(date_trunc(QUARTER, lastUpdated), '%Y-%m-%d') AS q2,
       |date_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d') AS m,
+      |date_format(date_trunc(MONTH, lastUpdated), '%Y-%m-%d') AS m2,
       |date_format(date_trunc(lastUpdated, WEEK), '%Y-%m-%d') AS w,
+      |date_format(date_trunc(WEEK, lastUpdated), '%Y-%m-%d') AS w2,
       |date_format(date_trunc(lastUpdated, DAY), '%Y-%m-%d') AS d,
+      |date_format(date_trunc(DAY, lastUpdated), '%Y-%m-%d') AS d2,
       |date_format(date_trunc(lastUpdated, HOUR), '%Y-%m-%d') AS h,
-      |date_format(date_trunc(lastUpdated, MINUTE), '%Y-%m-%d') AS m2,
-      |date_format(date_trunc(lastUpdated, SECOND), '%Y-%m-%d') AS lastSeen
+      |date_format(date_trunc(HOUR, lastUpdated), '%Y-%m-%d') AS h2,
+      |date_format(date_trunc(lastUpdated, MINUTE), '%Y-%m-%d') AS mi,
+      |date_format(date_trunc(MINUTE, lastUpdated), '%Y-%m-%d') AS mi2,
+      |date_format(date_trunc(lastUpdated, SECOND), '%Y-%m-%d') AS lastSeen,
+      |date_format(date_trunc(SECOND, lastUpdated), '%Y-%m-%d') AS lastSeen2
       |FROM Table
       |WHERE identifier2 IS NOT NULL""".stripMargin.replaceAll("\n", " ")
   val dateTimeFormat =
     "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d %H:%i:%s') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
-    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen, date_add(WEEK, 1, createdDate) as trigger FROM Table WHERE identifier2 is NOT null"
   val dateSub =
-    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen, date_sub(MONTH, 2, createdDate) as lastMonth FROM Table WHERE identifier2 is NOT null"
   val dateTimeAdd =
     "SELECT identifier, datetime_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeSub =

@@ -50,6 +50,14 @@ package object convert {
         i.withFunctions(Convert(i, targetType = t) +: i.functions)
       }
 
+    def convert_transact_sql_identifier: PackratParser[Identifier] =
+      Convert.regex ~ start ~> sql_type ~ separator ~ (identifierWithTransformation |
+      identifierWithIntervalFunction |
+      identifierWithFunction |
+      identifier) <~ end ^^ { case t ~ _ ~ i =>
+        i.withFunctions(Convert(i, targetType = t, transactSql = true) +: i.functions)
+      }
+
     def cast: Identifier => PackratParser[Identifier] = i =>
       (CastOperator.regex ~ sql_type).? ^^ {
         case None => i
@@ -58,7 +66,10 @@ package object convert {
       }
 
     def conversionFunctionWithIdentifier: PackratParser[Identifier] =
-      (cast_identifier | try_cast_identifier | convert_identifier) ~ rep(
+      (cast_identifier |
+      try_cast_identifier |
+      convert_identifier |
+      convert_transact_sql_identifier) ~ rep(
         intervalFunction
       ) ^^ { case id ~ funcs =>
         id.withFunctions(funcs ++ id.functions)

@@ -132,8 +132,12 @@ package object convert {
 
   case object Convert extends Expr("CONVERT") with TokenRegex
 
-  case class Convert(value: PainlessScript, targetType: SQLType) extends Conversion {
-    override def sql: String = s"$Convert(${value.sql}, $targetType)"
+  case class Convert(value: PainlessScript, targetType: SQLType, transactSql: Boolean = false)
+      extends Conversion {
+    override def sql: String = {
+      if (transactSql) s"$Convert($targetType, ${value.sql})"
+      else s"$Convert(${value.sql}, $targetType)"
+    }
 
     override def safe: Boolean = false
 

@@ -126,7 +126,7 @@ trait WhereParser {
   def lt: PackratParser[ComparisonOperator] = LT.sql ^^ (_ => LT)
 
   private def comparison: PackratParser[GenericExpression] =
-    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | geo_distance | long | literal | any_identifier) ^^ {
+    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | random | geo_distance | long | literal | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 

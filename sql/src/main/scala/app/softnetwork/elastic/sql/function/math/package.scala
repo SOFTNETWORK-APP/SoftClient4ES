@@ -69,6 +69,12 @@ package object math {
   case object Tan extends Expr("TAN") with Trigonometric
   case object Atan extends Expr("ATAN") with Trigonometric
   case object Atan2 extends Expr("ATAN2") with Trigonometric
+  case object Degrees extends Expr("DEGREES") with Trigonometric {
+    override def painless(context: Option[PainlessContext] = None): String = "Math.toDegrees"
+  }
+  case object Radians extends Expr("RADIANS") with Trigonometric {
+    override def painless(context: Option[PainlessContext] = None): String = "Math.toRadians"
+  }
 
   sealed trait MathematicalFunction extends TransformFunction[SQLNumeric, SQLNumeric] {
     override def inputType: SQLNumeric = SQLTypes.Numeric
