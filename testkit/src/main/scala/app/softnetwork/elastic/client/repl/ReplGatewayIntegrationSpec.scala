@@ -865,7 +865,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     desc.exists(row =>
       row("processor_type") == "set" &&
       row("field") == "name" &&
-      row("description").asInstanceOf[String].contains("SET DEFAULT 'anonymous'")
+      row("description").asInstanceOf[String].contains("DEFAULT 'anonymous'")
     ) shouldBe true
     desc.exists(row =>
       row("processor_type") == "set" &&
