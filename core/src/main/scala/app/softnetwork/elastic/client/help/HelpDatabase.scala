@@ -37,7 +37,7 @@ case class HelpDatabase(
 
   def byCategory(category: HelpCategory): Seq[HelpEntry] = {
     val cmdResults = commands.values.filter(_.category == category)
-    val fnResults = if (category == HelpCategory.Function) functions.values else Seq.empty
+    val fnResults = if (category == HelpCategory.Functions) functions.values else Seq.empty
     (cmdResults ++ fnResults).toSeq.sortBy(_.name)
   }
 }

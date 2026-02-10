@@ -301,7 +301,7 @@ class Repl(
     } else if (args.equalsIgnoreCase("dql")) {
       println(HelpRenderer.renderTopicList(Some(HelpCategory.DQL)))
     } else if (args.equalsIgnoreCase("functions")) {
-      println(HelpRenderer.renderTopicList(Some(HelpCategory.Function)))
+      println(HelpRenderer.renderTopicList(Some(HelpCategory.Functions)))
     } else {
       // Specific topic help
       HelpRegistry.getHelp(args) match {

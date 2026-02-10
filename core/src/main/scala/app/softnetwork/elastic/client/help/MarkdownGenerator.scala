@@ -84,7 +84,7 @@ object MarkdownGenerator {
   /** Generate functions documentation
     */
   private def generateFunctionsDocumentation(outputDir: String): Unit = {
-    val entries = HelpRegistry.byCategory(HelpCategory.Function)
+    val entries = HelpRegistry.byCategory(HelpCategory.Functions)
 
     val content = new StringBuilder()
     content.append("# Functions Reference\n\n")

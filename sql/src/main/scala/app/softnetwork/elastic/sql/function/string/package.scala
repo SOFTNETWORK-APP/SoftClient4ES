@@ -81,7 +81,7 @@ package object string {
   }
   case object Reverse extends Expr("REVERSE") with StringOp
   case object Position extends Expr("POSITION") with StringOp {
-    override lazy val words: List[String] = List(sql, "STRPOS")
+    override lazy val words: List[String] = List(sql, "STRPOS", "LOCATE")
     override def painless(context: Option[PainlessContext]): String = ".indexOf"
   }
 

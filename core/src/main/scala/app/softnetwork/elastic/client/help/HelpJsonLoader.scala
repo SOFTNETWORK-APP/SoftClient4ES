@@ -43,7 +43,15 @@ object HelpJsonLoader {
   /** Load functions from JSON files
     */
   private def loadFunctions(): Map[String, FunctionHelp] = {
-    val categories = List("aggregate", "string", "date", "numeric", "geo", "conditional", "window")
+    val categories = List(
+      "aggregate",
+      "conditional",
+      "conversion",
+      "date",
+      "geo",
+      "numeric",
+      "string"
+    )
 
     categories.flatMap { category =>
       loadJsonFilesFromDirectory(s"$basePath/functions/$category").flatMap { json =>
@@ -144,7 +152,7 @@ object HelpJsonLoader {
   private def convertToFunctionHelp(fn: FunctionJson): FunctionHelp = {
     FunctionHelp(
       name = fn.name,
-      category = HelpCategory.Function,
+      category = HelpCategory.Functions,
       shortDescription = fn.shortDescription,
       syntax = fn.syntax.mkString("\n"),
       description = fn.description,
@@ -165,7 +173,7 @@ object HelpJsonLoader {
       case "DDL" => HelpCategory.DDL
       case "DML" => HelpCategory.DML
       case "DQL" => HelpCategory.DQL
-      case _     => HelpCategory.Function
+      case _     => HelpCategory.Functions
     }
   }
 

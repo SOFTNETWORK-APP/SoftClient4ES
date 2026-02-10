@@ -1,10 +1,5 @@
 package app.softnetwork.elastic.client
 
-import org.json4s._
-import org.json4s.native.JsonMethods._
-import scala.io.Source
-import scala.util.{Failure, Success, Try}
-
 package object help {
 
   /** Help entry for SQL commands and functions
@@ -34,11 +29,11 @@ package object help {
     case object DDL extends HelpCategory { val name = "DDL"; val order = 1 }
     case object DML extends HelpCategory { val name = "DML"; val order = 2 }
     case object DQL extends HelpCategory { val name = "DQL"; val order = 3 }
-    case object Function extends HelpCategory { val name = "Functions"; val order = 4 }
-    case object Operator extends HelpCategory { val name = "Operators"; val order = 5 }
+    case object Functions extends HelpCategory { val name = "Functions"; val order = 4 }
+    case object Operators extends HelpCategory { val name = "Operators"; val order = 5 }
     case object Meta extends HelpCategory { val name = "Meta Commands"; val order = 6 }
 
-    val all: Seq[HelpCategory] = Seq(DDL, DML, DQL, Function, Operator, Meta)
+    val all: Seq[HelpCategory] = Seq(DDL, DML, DQL, Functions, Operators, Meta)
   }
 
   /** SQL Command help entry
@@ -66,7 +61,7 @@ package object help {
     */
   case class FunctionHelp(
     name: String,
-    category: HelpCategory = HelpCategory.Function,
+    category: HelpCategory = HelpCategory.Functions,
     shortDescription: String,
     syntax: String,
     description: String,
