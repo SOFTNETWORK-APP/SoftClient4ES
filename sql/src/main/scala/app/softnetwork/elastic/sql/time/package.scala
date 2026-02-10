@@ -172,9 +172,9 @@ package object time {
       in match {
         case SQLTypes.Date =>
           unit match {
-            case YEARS | MONTHS | DAYS     => Right(SQLTypes.Date)
-            case HOURS | MINUTES | SECONDS => Right(SQLTypes.Timestamp)
-            case _                         => Left(s"Invalid interval unit $unit for DATE")
+            case YEARS | QUARTERS | MONTHS | WEEKS | DAYS => Right(SQLTypes.Date)
+            case HOURS | MINUTES | SECONDS                => Right(SQLTypes.Timestamp)
+            case _ => Left(s"Invalid interval unit $unit for DATE")
           }
         case SQLTypes.Time =>
           unit match {
