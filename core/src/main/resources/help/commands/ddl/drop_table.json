@@ -1,0 +1,37 @@
+{
+  "name": "DROP TABLE",
+  "category": "DDL",
+  "shortDescription": "Delete a table and all its data",
+  "syntax": [
+    "DROP TABLE [IF EXISTS] table_name"
+  ],
+  "description": "Permanently delete an Elasticsearch index and all its documents. This operation cannot be undone.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Don't raise an error if the table doesn't exist",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Drop a table",
+      "description": "Delete a table (error if not exists)",
+      "sql": "DROP TABLE old_logs"
+    },
+    {
+      "title": "Drop if exists",
+      "description": "Safely drop a table that may not exist",
+      "sql": "DROP TABLE IF EXISTS temporary_data"
+    }
+  ],
+  "notes": [
+    "This operation is irreversible - all data will be lost",
+    "Associated pipelines are also deleted",
+    "For partitioned tables, drops the index template and all partitions"
+  ],
+  "limitations": [],
+  "seeAlso": ["CREATE TABLE", "TRUNCATE TABLE"],
+  "minVersion": null,
+  "aliases": ["DROP INDEX"]
+}

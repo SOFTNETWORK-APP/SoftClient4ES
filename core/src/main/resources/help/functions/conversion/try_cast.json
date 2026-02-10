@@ -1,0 +1,49 @@
+{
+  "name": "TRY_CAST",
+  "category": "Conversion",
+  "shortDescription": "Convert value to specified type, NULL on failure",
+  "syntax": [
+    "TRY_CAST(expression AS data_type)"
+  ],
+  "description": "Attempts to convert an expression to the specified data type. Returns NULL if conversion fails instead of raising an error.",
+  "parameters": [
+    {
+      "name": "expression",
+      "type": "ANY",
+      "description": "Value to convert",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "data_type",
+      "type": "KEYWORD",
+      "description": "Target data type",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Specified data_type or NULL",
+  "examples": [
+    {
+      "title": "Safe string to number",
+      "description": "Convert with NULL fallback",
+      "sql": "SELECT TRY_CAST(user_input AS INT) as parsed_number FROM submissions"
+    },
+    {
+      "title": "Handle invalid data",
+      "description": "Filter invalid values",
+      "sql": "SELECT * FROM data WHERE TRY_CAST(value AS INT) IS NOT NULL"
+    },
+    {
+      "title": "With COALESCE",
+      "description": "Provide default for invalid",
+      "sql": "SELECT COALESCE(TRY_CAST(input AS INT), 0) as safe_number FROM data"
+    }
+  ],
+  "notes": [
+    "Returns NULL instead of error on conversion failure",
+    "Useful for data cleaning and validation"
+  ],
+  "seeAlso": ["CAST", "COALESCE"],
+  "aliases": ["SAFE_CAST"]
+}

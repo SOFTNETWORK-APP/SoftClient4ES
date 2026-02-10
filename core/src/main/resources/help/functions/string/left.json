@@ -1,0 +1,43 @@
+{
+  "name": "LEFT",
+  "category": "String",
+  "shortDescription": "Extract leftmost characters",
+  "syntax": [
+    "LEFT(string, length)"
+  ],
+  "description": "Returns the leftmost characters of a string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "Source string",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "length",
+      "type": "INT",
+      "description": "Number of characters to return",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Get first character",
+      "description": "Get initial",
+      "sql": "SELECT LEFT(name, 1) as initial FROM users"
+    },
+    {
+      "title": "Get prefix",
+      "description": "Get first 5 characters",
+      "sql": "SELECT LEFT(phone, 5) as area_code FROM contacts"
+    }
+  ],
+  "notes": [
+    "Equivalent to SUBSTRING(string, 1, length)"
+  ],
+  "seeAlso": ["RIGHT", "SUBSTRING"],
+  "aliases": []
+}

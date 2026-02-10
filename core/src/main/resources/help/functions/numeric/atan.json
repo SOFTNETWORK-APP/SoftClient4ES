@@ -1,0 +1,31 @@
+{
+  "name": "ATAN",
+  "category": "Numeric",
+  "shortDescription": "Calculate arc tangent (inverse tangent)",
+  "syntax": [
+    "ATAN(value)"
+  ],
+  "description": "Returns the arc tangent (inverse tangent) in radians.",
+  "parameters": [
+    {
+      "name": "value",
+      "type": "DOUBLE",
+      "description": "Any numeric value",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Calculate arc tangent",
+      "description": "Inverse of tan(45°)",
+      "sql": "SELECT DEGREES(ATAN(1)) as angle_degrees"
+    }
+  ],
+  "notes": [
+    "Returns value in radians between -π/2 and π/2"
+  ],
+  "seeAlso": ["TAN", "ATAN2", "ASIN", "ACOS"],
+  "aliases": []
+}

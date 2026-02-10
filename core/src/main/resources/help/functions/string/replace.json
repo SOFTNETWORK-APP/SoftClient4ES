@@ -1,0 +1,51 @@
+{
+  "name": "REPLACE",
+  "category": "String",
+  "shortDescription": "Replace occurrences in string",
+  "syntax": [
+    "REPLACE(string, search, replacement)"
+  ],
+  "description": "Replaces all occurrences of a substring with another string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "Source string",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "search",
+      "type": "VARCHAR",
+      "description": "Substring to find",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "replacement",
+      "type": "VARCHAR",
+      "description": "Replacement string",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Replace characters",
+      "description": "Remove dashes from phone",
+      "sql": "SELECT REPLACE(phone, '-', '') as clean_phone FROM contacts"
+    },
+    {
+      "title": "Replace substring",
+      "description": "Update URLs",
+      "sql": "SELECT REPLACE(url, 'http://', 'https://') as secure_url FROM links"
+    }
+  ],
+  "notes": [
+    "Replacement is case-sensitive",
+    "Use empty string to remove occurrences"
+  ],
+  "seeAlso": [],
+  "aliases": []
+}

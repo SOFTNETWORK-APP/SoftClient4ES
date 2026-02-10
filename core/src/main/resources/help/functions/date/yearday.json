@@ -1,0 +1,32 @@
+{
+  "name": "YEARDAY",
+  "category": "Date/Time",
+  "shortDescription": "Extract day of year from date",
+  "syntax": [
+    "YEARDAY(date)",
+    "DAYOFYEAR(date)"
+  ],
+  "description": "Returns the day of the year (1-366) for a date.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract day of year from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get day of year",
+      "description": "Extract day number",
+      "sql": "SELECT YEARDAY(created_at) as day_of_year FROM events"
+    }
+  ],
+  "notes": [
+    "Returns 1-365 (or 366 in leap years)"
+  ],
+  "seeAlso": ["DAY", "WEEKDAY", "WEEK"],
+  "aliases": ["DAYOFYEAR"]
+}

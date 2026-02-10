@@ -1,0 +1,31 @@
+{
+  "name": "SIGN",
+  "category": "Numeric",
+  "shortDescription": "Get sign of a number",
+  "syntax": [
+    "SIGN(number)"
+  ],
+  "description": "Returns -1, 0, or 1 depending on the sign of the number.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Number to check sign",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Check sign",
+      "description": "Determine positive/negative",
+      "sql": "SELECT SIGN(balance) as balance_sign FROM accounts"
+    }
+  ],
+  "notes": [
+    "Returns -1 for negative, 0 for zero, 1 for positive"
+  ],
+  "seeAlso": ["ABS"],
+  "aliases": []
+}

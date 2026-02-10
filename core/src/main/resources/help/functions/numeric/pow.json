@@ -1,0 +1,42 @@
+{
+  "name": "POW",
+  "category": "Numeric",
+  "shortDescription": "Raise to a power",
+  "syntax": [
+    "POW(base, exponent)",
+    "POWER(base, exponent)"
+  ],
+  "description": "Returns the base raised to the power of the exponent.",
+  "parameters": [
+    {
+      "name": "base",
+      "type": "NUMERIC",
+      "description": "Base number",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "exponent",
+      "type": "NUMERIC",
+      "description": "Exponent",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Square a number",
+      "description": "Calculate area",
+      "sql": "SELECT POW(radius, 2) * PI() as area FROM circles"
+    },
+    {
+      "title": "Compound interest",
+      "description": "Calculate future value",
+      "sql": "SELECT principal * POW(1 + rate, years) as future_value FROM investments"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["SQRT", "EXP", "LOG"],
+  "aliases": ["POWER"]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "SHOW TABLE",
+  "category": "DQL",
+  "shortDescription": "Display table structure and metadata",
+  "syntax": [
+    "SHOW TABLE table_name"
+  ],
+  "description": "Display detailed information about a table including columns, data types, constraints, and settings.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show table structure",
+      "description": "Display table details",
+      "sql": "SHOW TABLE users"
+    }
+  ],
+  "notes": [
+    "Returns complete table schema including nested fields",
+    "Shows PRIMARY KEY, PARTITION KEY, Settings, and Mappings",
+    "Includes generated DDL statement"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW TABLES", "DESCRIBE TABLE", "SHOW CREATE TABLE"],
+  "minVersion": null,
+  "aliases": []
+}

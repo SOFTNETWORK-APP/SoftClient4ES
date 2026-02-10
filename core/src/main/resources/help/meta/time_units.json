@@ -1,0 +1,61 @@
+{
+  "name": "Time Units",
+  "category": "Reference",
+  "description": "Supported time units for INTERVAL and date functions",
+  "units": [
+    {
+      "name": "MILLISECOND",
+      "aliases": [],
+      "description": "Milliseconds (1/1000 second)",
+      "example": "INTERVAL 500 MILLISECOND"
+    },
+    {
+      "name": "SECOND",
+      "aliases": [],
+      "description": "Seconds",
+      "example": "INTERVAL 30 SECOND"
+    },
+    {
+      "name": "MINUTE",
+      "aliases": [],
+      "description": "Minutes (60 seconds)",
+      "example": "INTERVAL 5 MINUTE"
+    },
+    {
+      "name": "HOUR",
+      "aliases": [],
+      "description": "Hours (60 minutes)",
+      "example": "INTERVAL 2 HOUR"
+    },
+    {
+      "name": "DAY",
+      "aliases": [],
+      "description": "Days (24 hours)",
+      "example": "INTERVAL 7 DAY"
+    },
+    {
+      "name": "WEEK",
+      "aliases": [],
+      "description": "Weeks (7 days)",
+      "example": "INTERVAL 2 WEEK"
+    },
+    {
+      "name": "MONTH",
+      "aliases": [],
+      "description": "Months (varies 28-31 days)",
+      "example": "INTERVAL 1 MONTH"
+    },
+    {
+      "name": "QUARTER",
+      "aliases": [],
+      "description": "Quarters (3 months)",
+      "example": "INTERVAL 1 QUARTER"
+    },
+    {
+      "name": "YEAR",
+      "aliases": [],
+      "description": "Years (12 months)",
+      "example": "INTERVAL 1 YEAR"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "name": "SELECT",
+  "category": "DQL",
+  "shortDescription": "Retrieve data from one or more tables",
+  "syntax": [
+    "SELECT [DISTINCT] columns",
+    "FROM table [AS alias]",
+    "[JOIN table ON condition]",
+    "[WHERE condition]",
+    "[GROUP BY columns]",
+    "[HAVING condition]",
+    "[ORDER BY columns [ASC|DESC]]",
+    "[LIMIT n [OFFSET m]]"
+  ],
+  "description": "The SELECT statement retrieves rows from Elasticsearch indices. It supports most standard SQL features including joins, aggregations, and subqueries.",
+  "clauses": [
+    {
+      "name": "DISTINCT",
+      "description": "Remove duplicate rows from results",
+      "optional": true
+    },
+    {
+      "name": "FROM",
+      "description": "Specify source table(s)/index(es)",
+      "optional": false
+    },
+    {
+      "name": "JOIN",
+      "description": "Combine rows from multiple tables",
+      "optional": true,
+      "variants": ["LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "OUTER JOIN"]
+    },
+    {
+      "name": "WHERE",
+      "description": "Filter rows based on conditions",
+      "optional": true
+    },
+    {
+      "name": "GROUP BY",
+      "description": "Group rows for aggregation",
+      "optional": true
+    },
+    {
+      "name": "HAVING",
+      "description": "Filter groups after aggregation",
+      "optional": true
+    },
+    {
+      "name": "ORDER BY",
+      "description": "Sort result rows",
+      "optional": true,
+      "modifiers": ["ASC", "DESC", "NULLS FIRST", "NULLS LAST"]
+    },
+    {
+      "name": "LIMIT/OFFSET",
+      "description": "Limit number of returned rows",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Simple select",
+      "description": "Select all columns with a filter",
+      "sql": "SELECT * FROM users WHERE age > 21",
+      "output": null
+    },
+    {
+      "title": "Select with aggregation",
+      "description": "Group by department and compute statistics",
+      "sql": "SELECT department, COUNT(*) as count, AVG(salary) as avg_salary\nFROM employees\nGROUP BY department",
+      "output": null
+    },
+    {
+      "title": "Select with join",
+      "description": "Join orders with customers",
+      "sql": "SELECT o.id, c.name\nFROM orders o\nJOIN customers c ON o.customer_id = c.id",
+      "output": null
+    },
+    {
+      "title": "Select with ordering and limit",
+      "description": "Get the 10 most recent products",
+      "sql": "SELECT name, created_at\nFROM products\nORDER BY created_at DESC\nLIMIT 10",
+      "output": null
+    }
+  ],
+  "notes": [
+    "Elasticsearch has a default limit of 10,000 documents per query",
+    "Use scroll/search_after for large result sets",
+    "Nested fields require special handling with UNNEST"
+  ],
+  "limitations": [],
+  "seeAlso": ["INSERT", "UPDATE", "DELETE", "JOIN", "UNNEST"],
+  "minVersion": null,
+  "aliases": []
+}

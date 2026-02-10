@@ -1,0 +1,50 @@
+{
+  "name": "DATE_TRUNC",
+  "category": "Date/Time",
+  "shortDescription": "Truncate date to specified precision",
+  "syntax": [
+    "DATE_TRUNC(date, unit)",
+    "DATE_TRUNC(unit, date)"
+  ],
+  "description": "Truncates a date/timestamp to the specified unit precision.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to truncate",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "unit",
+      "type": "KEYWORD",
+      "description": "Precision unit (YEAR, QUARTER, MONTH, WEEK, DAY, HOUR, MINUTE, SECOND)",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DATE/TIMESTAMP",
+  "examples": [
+    {
+      "title": "Truncate to month",
+      "description": "Get first day of month",
+      "sql": "SELECT DATE_TRUNC(created_at, MONTH) as month_start FROM orders"
+    },
+    {
+      "title": "Group by day",
+      "description": "Aggregate by date",
+      "sql": "SELECT DATE_TRUNC(timestamp, DAY) as day, COUNT(*) as count\nFROM events\nGROUP BY DATE_TRUNC(timestamp, DAY)"
+    },
+    {
+      "title": "Truncate to hour",
+      "description": "Remove minutes and seconds",
+      "sql": "SELECT DATE_TRUNC(event_time, HOUR) as hour FROM logs"
+    }
+  ],
+  "notes": [
+    "Useful for grouping by time periods",
+    "WEEK truncates to Monday"
+  ],
+  "seeAlso": ["YEAR", "MONTH", "DAY"],
+  "aliases": ["DATETRUNC"]
+}

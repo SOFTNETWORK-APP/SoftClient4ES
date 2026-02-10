@@ -1,0 +1,29 @@
+{
+  "name": "RTRIM",
+  "category": "String",
+  "shortDescription": "Remove trailing whitespace",
+  "syntax": [
+    "RTRIM(string)"
+  ],
+  "description": "Removes trailing whitespace from a string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to trim",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Remove trailing spaces",
+      "description": "Clean right side of string",
+      "sql": "SELECT RTRIM(name) FROM users"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["LTRIM", "TRIM"],
+  "aliases": []
+}

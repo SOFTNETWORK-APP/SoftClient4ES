@@ -1,0 +1,44 @@
+{
+  "name": "SUM",
+  "category": "Aggregate",
+  "shortDescription": "Calculate the sum of values",
+  "syntax": [
+    "SUM(column)",
+    "SUM(DISTINCT column)",
+    "SUM(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Aggregate function that calculates the sum of numeric values.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "NUMERIC",
+      "description": "Numeric column to sum",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Sum all values",
+      "description": "Total of all amounts",
+      "sql": "SELECT SUM(amount) as total FROM orders"
+    },
+    {
+      "title": "Sum by group",
+      "description": "Total per category",
+      "sql": "SELECT category, SUM(price) as total_price\nFROM products\nGROUP BY category"
+    },
+    {
+      "title": "Sum distinct",
+      "description": "Sum unique values only",
+      "sql": "SELECT SUM(DISTINCT quantity) FROM order_items"
+    }
+  ],
+  "notes": [
+    "NULL values are ignored",
+    "Returns NULL if all values are NULL"
+  ],
+  "seeAlso": ["COUNT", "AVG", "MIN", "MAX"],
+  "aliases": []
+}

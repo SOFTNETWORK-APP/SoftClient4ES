@@ -1,0 +1,77 @@
+{
+  "name": "Operators",
+  "category": "Reference",
+  "description": "Supported SQL operators",
+  "operators": [
+    {
+      "category": "Arithmetic",
+      "operators": [
+        {"symbol": "+", "description": "Addition", "example": "a + b"},
+        {"symbol": "-", "description": "Subtraction", "example": "a - b"},
+        {"symbol": "*", "description": "Multiplication", "example": "a * b"},
+        {"symbol": "/", "description": "Division", "example": "a / b"},
+        {"symbol": "%", "description": "Modulo (remainder)", "example": "a % b"}
+      ]
+    },
+    {
+      "category": "Comparison",
+      "operators": [
+        {"symbol": "=", "description": "Equal to", "example": "a = b"},
+        {"symbol": "<>", "description": "Not equal to", "example": "a <> b"},
+        {"symbol": "!=", "description": "Not equal to (alias)", "example": "a != b"},
+        {"symbol": "<", "description": "Less than", "example": "a < b"},
+        {"symbol": "<=", "description": "Less than or equal", "example": "a <= b"},
+        {"symbol": ">", "description": "Greater than", "example": "a > b"},
+        {"symbol": ">=", "description": "Greater than or equal", "example": "a >= b"}
+      ]
+    },
+    {
+      "category": "Logical",
+      "operators": [
+        {"symbol": "AND", "description": "Logical AND", "example": "a AND b"},
+        {"symbol": "OR", "description": "Logical OR", "example": "a OR b"},
+        {"symbol": "NOT", "description": "Logical NOT", "example": "NOT a"},
+        {"symbol": "!", "description": "Logical NOT (alias)", "example": "!a"}
+      ]
+    },
+    {
+      "category": "Pattern Matching",
+      "operators": [
+        {"symbol": "LIKE", "description": "Pattern match with wildcards", "example": "name LIKE 'A%'"},
+        {"symbol": "NOT LIKE", "description": "Negated pattern match", "example": "name NOT LIKE 'A%'"},
+        {"symbol": "RLIKE", "description": "Regular expression match", "example": "name RLIKE '^A.*'"},
+        {"symbol": "REGEXP", "description": "Regular expression (alias)", "example": "name REGEXP '^A.*'"}
+      ]
+    },
+    {
+      "category": "Range/Set",
+      "operators": [
+        {"symbol": "BETWEEN", "description": "Within range (inclusive)", "example": "x BETWEEN 1 AND 10"},
+        {"symbol": "NOT BETWEEN", "description": "Outside range", "example": "x NOT BETWEEN 1 AND 10"},
+        {"symbol": "IN", "description": "In set of values", "example": "x IN (1, 2, 3)"},
+        {"symbol": "NOT IN", "description": "Not in set", "example": "x NOT IN (1, 2, 3)"}
+      ]
+    },
+    {
+      "category": "NULL Handling",
+      "operators": [
+        {"symbol": "IS NULL", "description": "Check if NULL", "example": "x IS NULL"},
+        {"symbol": "IS NOT NULL", "description": "Check if not NULL", "example": "x IS NOT NULL"}
+      ]
+    },
+    {
+      "category": "String",
+      "operators": [
+        {"symbol": "||", "description": "String concatenation", "example": "'Hello' || ' ' || 'World'"},
+        {"symbol": "CONCAT", "description": "Concatenate (function)", "example": "CONCAT(a, b)"}
+      ]
+    },
+    {
+      "category": "Type Cast",
+      "operators": [
+        {"symbol": "::", "description": "Type cast (PostgreSQL)", "example": "value::INT"},
+        {"symbol": "CAST", "description": "Type cast (standard)", "example": "CAST(value AS INT)"}
+      ]
+    }
+  ]
+}

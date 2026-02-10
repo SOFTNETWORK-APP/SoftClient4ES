@@ -1,0 +1,24 @@
+{
+  "name": "NOW",
+  "category": "Date/Time",
+  "shortDescription": "Get current date and time",
+  "syntax": [
+    "NOW",
+    "NOW()"
+  ],
+  "description": "Returns the current date and time. Alias for CURRENT_TIMESTAMP.",
+  "parameters": [],
+  "returnType": "TIMESTAMP",
+  "examples": [
+    {
+      "title": "Get current time",
+      "description": "Use NOW function",
+      "sql": "SELECT NOW() as current_time"
+    }
+  ],
+  "notes": [
+    "Equivalent to CURRENT_TIMESTAMP"
+  ],
+  "seeAlso": ["CURRENT_TIMESTAMP", "CURRENT_DATE"],
+  "aliases": []
+}

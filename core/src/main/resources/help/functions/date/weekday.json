@@ -1,0 +1,32 @@
+{
+  "name": "WEEKDAY",
+  "category": "Date/Time",
+  "shortDescription": "Extract day of week from date",
+  "syntax": [
+    "WEEKDAY(date)",
+    "DAYOFWEEK(date)"
+  ],
+  "description": "Returns the day of the week for a date (1=Monday, 7=Sunday).",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract weekday from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get weekday",
+      "description": "Check if weekend",
+      "sql": "SELECT * FROM events WHERE WEEKDAY(event_date) IN (6, 7)"
+    }
+  ],
+  "notes": [
+    "Returns 1-7 (Monday=1, Sunday=7)"
+  ],
+  "seeAlso": ["DAY", "WEEK", "YEARDAY"],
+  "aliases": ["DAYOFWEEK"]
+}

@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.client.repl
 
+import app.softnetwork.elastic.client.help.HelpRegistry
 import org.jline.reader.{Candidate, Completer, LineReader, ParsedLine}
 
 import java.util
@@ -164,7 +165,24 @@ class ReplCompleter extends Completer {
     val wordUpper = word.toUpperCase
 
     // Meta commands (start with .)
-    if (buffer.trim.startsWith(".")) {
+    if (buffer.trim.toLowerCase.startsWith(".help ")) {
+      val helpArg = buffer.trim.drop(6).toUpperCase
+      HelpRegistry.allTopics
+        .filter(_.startsWith(helpArg))
+        .foreach { topic =>
+          candidates.add(
+            new Candidate(
+              topic,
+              topic,
+              "help",
+              "Help topic",
+              null,
+              null,
+              true
+            )
+          )
+        }
+    } else if (buffer.trim.startsWith(".")) {
       metaCommands
         .filter(_.startsWith(word.toLowerCase))
         .foreach { cmd =>

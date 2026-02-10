@@ -1,0 +1,44 @@
+{
+  "name": "CONVERT",
+  "category": "Conversion",
+  "shortDescription": "Convert value to specified type",
+  "syntax": [
+    "CONVERT(expression, data_type)",
+    "CONVERT(data_type, expression)"
+  ],
+  "description": "Converts an expression to the specified data type.",
+  "parameters": [
+    {
+      "name": "data_type",
+      "type": "KEYWORD",
+      "description": "Target data type",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "expression",
+      "type": "ANY",
+      "description": "Value to convert",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Specified data_type",
+  "examples": [
+    {
+      "title": "Convert to VARCHAR",
+      "description": "Number to string",
+      "sql": "SELECT CONVERT(123, VARCHAR) as str_value"
+    },
+    {
+      "title": "Date",
+      "description": "Format date",
+      "sql": "SELECT CONVERT(VARCHAR, CURRENT_DATE) as formatted FROM events"
+    }
+  ],
+  "notes": [
+    "CAST is preferred for standard SQL"
+  ],
+  "seeAlso": ["CAST", "TRY_CAST"],
+  "aliases": []
+}

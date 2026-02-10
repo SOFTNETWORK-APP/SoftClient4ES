@@ -1,0 +1,52 @@
+{
+  "name": "CASE",
+  "category": "Conditional",
+  "shortDescription": "Conditional expression with multiple branches",
+  "syntax": [
+    "-- Simple CASE:",
+    "CASE expression",
+    "  WHEN value1 THEN result1",
+    "  WHEN value2 THEN result2",
+    "  [ELSE default_result]",
+    "END",
+    "",
+    "-- Searched CASE:",
+    "CASE",
+    "  WHEN condition1 THEN result1",
+    "  WHEN condition2 THEN result2",
+    "  [ELSE default_result]",
+    "END"
+  ],
+  "description": "Evaluates conditions and returns a result based on the first matching condition.",
+  "parameters": [],
+  "returnType": "Varies (based on result expressions)",
+  "examples": [
+    {
+      "title": "Simple CASE",
+      "description": "Map status codes to labels",
+      "sql": "SELECT id,\n  CASE status\n    WHEN 'A' THEN 'Active'\n    WHEN 'I' THEN 'Inactive'\n    WHEN 'P' THEN 'Pending'\n    ELSE 'Unknown'\n  END as status_label\nFROM users"
+    },
+    {
+      "title": "Searched CASE",
+      "description": "Categorize by value ranges",
+      "sql": "SELECT product,\n  CASE\n    WHEN price < 10 THEN 'Budget'\n    WHEN price < 50 THEN 'Standard'\n    WHEN price < 100 THEN 'Premium'\n    ELSE 'Luxury'\n  END as tier\nFROM products"
+    },
+    {
+      "title": "CASE in aggregation",
+      "description": "Conditional counting",
+      "sql": "SELECT\n  COUNT(CASE WHEN status = 'active' THEN 1 END) as active_count,\n  COUNT(CASE WHEN status = 'inactive' THEN 1 END) as inactive_count\nFROM users"
+    },
+    {
+      "title": "CASE with NULL handling",
+      "description": "Handle NULL values",
+      "sql": "SELECT name,\n  CASE\n    WHEN email IS NULL THEN 'No email'\n    WHEN email = '' THEN 'Empty email'\n    ELSE email\n  END as email_display\nFROM users"
+    }
+  ],
+  "notes": [
+    "Conditions are evaluated in order, first match wins",
+    "ELSE is optional - returns NULL if no match and no ELSE",
+    "All result expressions must be compatible types"
+  ],
+  "seeAlso": ["IF", "COALESCE", "NULLIF"],
+  "aliases": []
+}

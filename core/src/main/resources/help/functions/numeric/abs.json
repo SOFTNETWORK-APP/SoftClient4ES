@@ -1,0 +1,29 @@
+{
+  "name": "ABS",
+  "category": "Numeric",
+  "shortDescription": "Get absolute value",
+  "syntax": [
+    "ABS(number)"
+  ],
+  "description": "Returns the absolute (positive) value of a number.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Number to get absolute value of",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as input",
+  "examples": [
+    {
+      "title": "Absolute value",
+      "description": "Get absolute difference",
+      "sql": "SELECT ABS(actual - expected) as difference FROM measurements"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["SIGN"],
+  "aliases": []
+}

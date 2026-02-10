@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client.repl
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.SoftClient4esCoreBuildInfo
+import app.softnetwork.elastic.client.help.{HelpCategory, HelpRegistry, HelpRenderer}
 import app.softnetwork.elastic.client.result.{OutputFormat, QueryRows, ResultRenderer}
 import org.jline.reader._
 import org.jline.reader.impl.history.DefaultHistory
@@ -198,30 +199,46 @@ class Repl(
     val args = if (parts.length > 1) parts(1) else ""
 
     command match {
-      case ".help" | ".h" =>
-        printHelp()
+      case ".help" | ".h" | "/h" =>
+        handleHelp(args)
 
-      case ".quit" | ".exit" | ".q" =>
+      case ".quit" | ".exit" | ".q" | "/q" =>
         running = false
 
-      case ".tables" | ".t" =>
-        executeStatementDirect("SHOW TABLES")
+      case ".tables" | ".t" | "/t" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW TABLE $args")
+        } else {
+          executeStatementDirect("SHOW TABLES")
+        }
 
-      case ".describe" | ".desc" | ".d" =>
+      case ".describe" | ".desc" | ".d" | "/dt" =>
         if (args.nonEmpty) {
           executeStatementDirect(s"DESCRIBE TABLE $args")
         } else {
           printError("Usage: .describe <table_name>")
         }
 
-      case ".pipelines" | ".p" =>
-        executeStatementDirect("SHOW PIPELINES")
+      case ".pipelines" | ".p" | "/p" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW PIPELINE $args")
+        } else {
+          executeStatementDirect("SHOW PIPELINES")
+        }
 
-      case ".watchers" | ".w" =>
-        executeStatementDirect("SHOW WATCHERS")
+      case ".watchers" | ".w" | "/w" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW WATCHER $args")
+        } else {
+          executeStatementDirect("SHOW WATCHERS")
+        }
 
-      case ".policies" | ".pol" =>
-        executeStatementDirect("SHOW ENRICH POLICIES")
+      case ".enrich" | ".e" | "/e" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW ENRICH POLICY STATUS $args")
+        } else {
+          executeStatementDirect("SHOW ENRICH POLICIES")
+        }
 
       case ".history" =>
         printHistory()
@@ -267,6 +284,46 @@ class Repl(
         printError(s"Unknown command: $unknown (type .help for available commands)")
     }
   }
+
+  private def handleHelp(args: String): Unit = {
+    if (args.isEmpty) {
+      // Show general help with topic list
+      println(HelpRenderer.renderTopicList())
+    } else if (args.startsWith("search ") || args.startsWith("find ")) {
+      // Search mode
+      val query = args.stripPrefix("search ").stripPrefix("find ").trim
+      val results = HelpRegistry.search(query)
+      println(HelpRenderer.renderSearchResults(query, results))
+    } else if (args.equalsIgnoreCase("ddl")) {
+      println(HelpRenderer.renderTopicList(Some(HelpCategory.DDL)))
+    } else if (args.equalsIgnoreCase("dml")) {
+      println(HelpRenderer.renderTopicList(Some(HelpCategory.DML)))
+    } else if (args.equalsIgnoreCase("dql")) {
+      println(HelpRenderer.renderTopicList(Some(HelpCategory.DQL)))
+    } else if (args.equalsIgnoreCase("functions")) {
+      println(HelpRenderer.renderTopicList(Some(HelpCategory.Function)))
+    } else {
+      // Specific topic help
+      HelpRegistry.getHelp(args) match {
+        case Some(entry) =>
+          println(HelpRenderer.render(entry))
+        case None =>
+          // Try search as fallback
+          val results = HelpRegistry.search(args)
+          if (results.nonEmpty) {
+            println(s"${yellow("Topic not found.")} Did you mean one of these?\n")
+            println(HelpRenderer.renderSearchResults(args, results.take(5)))
+          } else {
+            printError(s"No help available for '$args'")
+            println(s"Type ${yellow(".help")} to see available topics.")
+          }
+      }
+    }
+  }
+
+  // Update completer for help topics
+  private val helpTopics: Set[String] = HelpRegistry.allTopics.toSet ++
+    Set("ddl", "dml", "dql", "functions", "search")
 
   private def handleConsumeStream(args: String): Unit = {
     if (!executor.hasActiveStream) {

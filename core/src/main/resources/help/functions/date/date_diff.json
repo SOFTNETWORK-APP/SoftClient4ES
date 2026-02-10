@@ -1,0 +1,57 @@
+{
+  "name": "DATE_DIFF",
+  "category": "Date/Time",
+  "shortDescription": "Calculate difference between dates",
+  "syntax": [
+    "DATE_DIFF(date1, date2, unit)",
+    "DATE_DIFF(unit, date1, date2)"
+  ],
+  "description": "Returns the difference between two dates in the specified unit.",
+  "parameters": [
+    {
+      "name": "date1",
+      "type": "DATE/TIMESTAMP",
+      "description": "First date (start)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "date2",
+      "type": "DATE/TIMESTAMP",
+      "description": "Second date (end)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "unit",
+      "type": "KEYWORD",
+      "description": "Unit for result (YEAR, MONTH, WEEK, DAY, HOUR, MINUTE, SECOND)",
+      "optional": true,
+      "defaultValue": "DAY"
+    }
+  ],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Calculate age",
+      "description": "Years between birthdate and now",
+      "sql": "SELECT DATE_DIFF(birthdate, CURRENT_DATE, YEAR) as age FROM users"
+    },
+    {
+      "title": "Days since event",
+      "description": "Calculate days elapsed",
+      "sql": "SELECT DATE_DIFF(event_date, CURRENT_DATE, DAY) as days_ago FROM events"
+    },
+    {
+      "title": "Hours between timestamps",
+      "description": "Calculate duration",
+      "sql": "SELECT DATE_DIFF(start_time, end_time, HOUR) as duration_hours FROM sessions"
+    }
+  ],
+  "notes": [
+    "Returns negative value if date2 is before date1",
+    "Truncates to whole units (no fractions)"
+  ],
+  "seeAlso": ["DATE_ADD", "DATE_SUB"],
+  "aliases": ["DATEDIFF"]
+}

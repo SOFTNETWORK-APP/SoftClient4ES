@@ -1,0 +1,22 @@
+{
+  "name": "SHOW ENRICH POLICY",
+  "category": "DQL",
+  "shortDescription": "Display enrich policy details",
+  "syntax": [
+    "SHOW ENRICH POLICY policy_name"
+  ],
+  "description": "Display detailed information about an enrich policy.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show policy details",
+      "description": "Display policy configuration",
+      "sql": "SHOW ENRICH POLICY user_enrich"
+    }
+  ],
+  "notes": [],
+  "limitations": [],
+  "seeAlso": ["SHOW ENRICH POLICIES", "CREATE ENRICH POLICY", "EXECUTE ENRICH POLICY"],
+  "minVersion": "7.5",
+  "aliases": []
+}

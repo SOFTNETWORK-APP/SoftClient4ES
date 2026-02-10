@@ -1,0 +1,74 @@
+{
+  "name": "INSERT",
+  "category": "DML",
+  "shortDescription": "Insert new rows into a table",
+  "syntax": [
+    "INSERT INTO table_name [(column1, column2, ...)]",
+    "VALUES (value1, value2, ...) [, (value1, value2, ...), ...]",
+    "",
+    "-- Insert from SELECT:",
+    "INSERT INTO table_name [(column1, column2, ...)]",
+    "SELECT ... FROM other_table"
+  ],
+  "description": "Insert one or more rows into an Elasticsearch index. Uses the Bulk API for efficient batch inserts. If the table has a PRIMARY KEY, duplicate keys will update existing documents (upsert behavior).",
+  "clauses": [
+    {
+      "name": "column list",
+      "description": "Optional list of columns to insert. If omitted, all columns must be provided in order.",
+      "optional": true
+    },
+    {
+      "name": "VALUES",
+      "description": "One or more value tuples to insert",
+      "optional": false
+    },
+    {
+      "name": "SELECT",
+      "description": "Insert results from a SELECT query",
+      "optional": false
+    }
+  ],
+  "examples": [
+    {
+      "title": "Insert single row",
+      "description": "Insert one document",
+      "sql": "INSERT INTO users (id, name, email)\nVALUES (1, 'Alice', 'alice@example.com')"
+    },
+    {
+      "title": "Insert multiple rows",
+      "description": "Batch insert multiple documents",
+      "sql": "INSERT INTO users (id, name, email) VALUES\n  (1, 'Alice', 'alice@example.com'),\n  (2, 'Bob', 'bob@example.com'),\n  (3, 'Charlie', 'charlie@example.com')"
+    },
+    {
+      "title": "Insert with struct",
+      "description": "Insert document with nested object",
+      "sql": "INSERT INTO users (id, name, profile) VALUES\n  (1, 'Alice', {city = 'Paris', followers = 100})"
+    },
+    {
+      "title": "Insert with array",
+      "description": "Insert document with array of nested objects",
+      "sql": "INSERT INTO orders (id, customer_id, items) VALUES\n  (1, 100, [\n    {product = 'Laptop', quantity = 1, price = 999.99},\n    {product = 'Mouse', quantity = 2, price = 29.99}\n  ])"
+    },
+    {
+      "title": "Insert from SELECT",
+      "description": "Insert data from another table",
+      "sql": "INSERT INTO archive_users\nSELECT * FROM users WHERE created_at < '2024-01-01'"
+    },
+    {
+      "title": "Insert with specific columns",
+      "description": "Insert only specified columns (others get defaults)",
+      "sql": "INSERT INTO products (sku, name)\nVALUES ('SKU001', 'Widget')"
+    }
+  ],
+  "notes": [
+    "If table has a PRIMARY KEY, it will be used as document _id",
+    "Duplicate _id will update existing document (upsert behavior)",
+    "Batch inserts use the Bulk API for better performance",
+    "DEFAULT values are applied by the ingest pipeline",
+    "NULL values are inserted as missing fields"
+  ],
+  "limitations": [],
+  "seeAlso": ["UPDATE", "DELETE", "COPY INTO", "BULK INSERT"],
+  "minVersion": null,
+  "aliases": []
+}

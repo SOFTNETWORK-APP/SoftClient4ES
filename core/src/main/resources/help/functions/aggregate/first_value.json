@@ -1,0 +1,32 @@
+{
+  "name": "FIRST_VALUE",
+  "category": "Aggregate",
+  "shortDescription": "Get the first value in a group or window",
+  "syntax": [
+    "FIRST_VALUE(column) OVER (PARTITION BY ... ORDER BY ...)"
+  ],
+  "description": "Window function that returns the first value in an ordered partition.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "ANY",
+      "description": "Column to get first value from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as input",
+  "examples": [
+    {
+      "title": "First value per group",
+      "description": "Get earliest value in each partition",
+      "sql": "SELECT product, amount,\n  FIRST_VALUE(amount) OVER (PARTITION BY product ORDER BY timestamp) as first_amount\nFROM sales"
+    }
+  ],
+  "notes": [
+    "Typically used as a window function with OVER clause",
+    "Order determined by ORDER BY in window specification"
+  ],
+  "seeAlso": ["LAST_VALUE"],
+  "aliases": []
+}

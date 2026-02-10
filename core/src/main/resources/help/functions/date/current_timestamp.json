@@ -1,0 +1,30 @@
+{
+  "name": "CURRENT_TIMESTAMP",
+  "category": "Date/Time",
+  "shortDescription": "Get current date and time",
+  "syntax": [
+    "CURRENT_TIMESTAMP",
+    "CURRENT_TIMESTAMP()"
+  ],
+  "description": "Returns the current date and time with timezone (UTC).",
+  "parameters": [],
+  "returnType": "TIMESTAMP",
+  "examples": [
+    {
+      "title": "Get current time",
+      "description": "Use in query",
+      "sql": "SELECT CURRENT_TIMESTAMP as now"
+    },
+    {
+      "title": "Set timestamp",
+      "description": "Insert with current time",
+      "sql": "INSERT INTO logs (message, created_at) VALUES ('test', CURRENT_TIMESTAMP)"
+    }
+  ],
+  "notes": [
+    "Returns timestamp in UTC",
+    "Includes milliseconds"
+  ],
+  "seeAlso": ["CURRENT_DATE", "NOW", "TODAY"],
+  "aliases": []
+}

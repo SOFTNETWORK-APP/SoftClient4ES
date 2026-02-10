@@ -1,0 +1,34 @@
+{
+  "name": "ISNULL",
+  "category": "Conditional",
+  "shortDescription": "Check if value is NULL",
+  "syntax": [
+    "ISNULL(expression)"
+  ],
+  "description": "Returns False if the expression is not NULL, otherwise returns True.",
+  "parameters": [
+    {
+      "name": "expression",
+      "type": "ANY",
+      "description": "Value to check for NULL",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BOOLEAN",
+  "examples": [
+    {
+      "title": "Conditional",
+      "description": "Conditional logic",
+      "sql": "SELECT \n  name,\n  CASE\n    WHEN ISNULL(last_login) THEN 'Never logged in'\n    ELSE 'Active user'\n  END AS user_status\nFROM users"
+    },
+    {
+      "title": "Filter",
+      "description": "Filter NULL values",
+      "sql": "SELECT * \nFROM products\nWHERE ISNULL(description)"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["ISNOTNULL"],
+  "aliases": []
+}

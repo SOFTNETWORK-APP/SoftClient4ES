@@ -1,0 +1,36 @@
+{
+  "name": "RIGHT",
+  "category": "String",
+  "shortDescription": "Extract rightmost characters",
+  "syntax": [
+    "RIGHT(string, length)"
+  ],
+  "description": "Returns the rightmost characters of a string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "Source string",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "length",
+      "type": "INT",
+      "description": "Number of characters to return",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Get last 4 characters",
+      "description": "Get file extension",
+      "sql": "SELECT RIGHT(filename, 4) as extension FROM files"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["LEFT", "SUBSTRING"],
+  "aliases": []
+}

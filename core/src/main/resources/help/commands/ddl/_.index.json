@@ -1,0 +1,14 @@
+[
+  "create_table.json",
+  "alter_table.json",
+  "drop_table.json",
+  "truncate_table.json",
+  "create_pipeline.json",
+  "alter_pipeline.json",
+  "drop_pipeline.json",
+  "create_watcher.json",
+  "drop_watcher.json",
+  "create_enrich_policy.json",
+  "drop_enrich_policy.json",
+  "execute_enrich_policy.json"
+]

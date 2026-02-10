@@ -1,0 +1,43 @@
+{
+  "name": "DATE_PARSE",
+  "category": "Date/Time",
+  "shortDescription": "Convert string to date",
+  "syntax": [
+    "DATE_PARSE(string, format)"
+  ],
+  "description": "Converts a string to a date using format pattern.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to convert",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "format",
+      "type": "VARCHAR",
+      "description": "Format pattern for parsing",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DATE",
+  "examples": [
+    {
+      "title": "Convert ISO date",
+      "description": "Parse standard format",
+      "sql": "SELECT DATE_PARSE('2024-01-15', '%Y-%m-%d') as date"
+    },
+    {
+      "title": "Parse custom format",
+      "description": "Custom format pattern",
+      "sql": "SELECT TO_DATE('15/01/2024', '%d/%m/%Y') as date"
+    }
+  ],
+  "notes": [
+    "Returns NULL if parsing fails"
+  ],
+  "seeAlso": ["DATETIME_PARSE", "DATE_FORMAT", "CAST"],
+  "aliases": ["PARSE_DATE", "TO_DATE", "DATEPARSE"]
+}

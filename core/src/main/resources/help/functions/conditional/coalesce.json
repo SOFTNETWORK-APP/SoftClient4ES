@@ -1,0 +1,43 @@
+{
+  "name": "COALESCE",
+  "category": "Conditional",
+  "shortDescription": "Return first non-NULL value",
+  "syntax": [
+    "COALESCE(expression1, expression2, ...)"
+  ],
+  "description": "Returns the first non-NULL expression from the list.",
+  "parameters": [
+    {
+      "name": "expressions",
+      "type": "ANY",
+      "description": "Two or more expressions to evaluate",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as expressions",
+  "examples": [
+    {
+      "title": "First non-NULL",
+      "description": "Get first available contact",
+      "sql": "SELECT COALESCE(mobile, home_phone, work_phone, 'No phone') as contact_phone FROM users"
+    },
+    {
+      "title": "Default value",
+      "description": "Use default if NULL",
+      "sql": "SELECT COALESCE(nickname, name) as display_name FROM users"
+    },
+    {
+      "title": "Multiple fallbacks",
+      "description": "Chain of alternatives",
+      "sql": "SELECT COALESCE(preferred_email, work_email, personal_email, 'unknown@example.com') as email FROM contacts"
+    }
+  ],
+  "notes": [
+    "Evaluates expressions left to right",
+    "Stops at first non-NULL value",
+    "All expressions should have compatible types"
+  ],
+  "seeAlso": ["CASE"],
+  "aliases": []
+}

@@ -1,0 +1,61 @@
+{
+  "name": "CAST",
+  "category": "Conversion",
+  "shortDescription": "Convert value to specified type",
+  "syntax": [
+    "CAST(expression AS data_type)",
+    "expression::data_type"
+  ],
+  "description": "Converts an expression to the specified data type. Raises an error if conversion fails.",
+  "parameters": [
+    {
+      "name": "expression",
+      "type": "ANY",
+      "description": "Value to convert",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "data_type",
+      "type": "KEYWORD",
+      "description": "Target data type",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Specified data_type",
+  "examples": [
+    {
+      "title": "String to integer",
+      "description": "Convert string to number",
+      "sql": "SELECT CAST('123' AS INT) as num"
+    },
+    {
+      "title": "Number to string",
+      "description": "Convert for concatenation",
+      "sql": "SELECT 'ID: ' || CAST(id AS VARCHAR) as label FROM users"
+    },
+    {
+      "title": "Using :: operator",
+      "description": "PostgreSQL-style casting",
+      "sql": "SELECT id::VARCHAR as id_string FROM users"
+    },
+    {
+      "title": "Date conversion",
+      "description": "String to date",
+      "sql": "SELECT CAST('2024-01-15' AS DATE) as date_value"
+    },
+    {
+      "title": "Decimal precision",
+      "description": "Cast to decimal with precision",
+      "sql": "SELECT CAST(price AS DECIMAL(10,2)) as formatted_price FROM products"
+    }
+  ],
+  "notes": [
+    "Raises error if conversion fails",
+    "Use TRY_CAST or SAFE_CAST for NULL on failure",
+    "Supported types: INT, BIGINT, DOUBLE, DECIMAL, VARCHAR, DATE, TIMESTAMP, BOOLEAN"
+  ],
+  "seeAlso": ["TRY_CAST", "SAFE_CAST", "CONVERT"],
+  "aliases": []
+}

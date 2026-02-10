@@ -1,0 +1,56 @@
+{
+  "name": "DATE_ADD",
+  "category": "Date/Time",
+  "shortDescription": "Add interval to date",
+  "syntax": [
+    "DATE_ADD(date, INTERVAL n unit)",
+    "DATE_ADD(unit, n, date)"
+  ],
+  "description": "Adds a specified time interval to a date.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE",
+      "description": "Base date",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "n",
+      "type": "INT",
+      "description": "Number of units to add",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "unit",
+      "type": "KEYWORD",
+      "description": "Time unit (YEAR, QUARTER, MONTH, WEEK, DAY, HOUR, MINUTE, SECOND)",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DATE/TIMESTAMP",
+  "examples": [
+    {
+      "title": "Add days",
+      "description": "Calculate future date",
+      "sql": "SELECT DATE_ADD(CURRENT_DATE, INTERVAL 7 DAY) as next_week"
+    },
+    {
+      "title": "Add months",
+      "description": "Calculate expiration date",
+      "sql": "SELECT DATE_ADD(created_at, INTERVAL 1 MONTH) as renewal_date FROM subscriptions"
+    },
+    {
+      "title": "Add hours",
+      "description": "Calculate timestamp",
+      "sql": "SELECT DATE_ADD(HOUR, 2, start_time) as end_time FROM events"
+    }
+  ],
+  "notes": [
+    "Supported units: SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, YEAR"
+  ],
+  "seeAlso": ["DATE_SUB", "DATE_DIFF", "INTERVAL"],
+  "aliases": ["DATEADD"]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "TODAY",
+  "category": "Date/Time",
+  "shortDescription": "Get current date",
+  "syntax": [
+    "TODAY",
+    "TODAY()"
+  ],
+  "description": "Returns the current date. Alias for CURRENT_DATE.",
+  "parameters": [],
+  "returnType": "DATE",
+  "examples": [
+    {
+      "title": "Get current date",
+      "description": "Use TODAY function",
+      "sql": "SELECT TODAY() as current"
+    }
+  ],
+  "notes": [
+    "Equivalent to CURRENT_DATE"
+  ],
+  "seeAlso": ["CURRENT_TIMESTAMP", "CURRENT_DATE"],
+  "aliases": []
+}

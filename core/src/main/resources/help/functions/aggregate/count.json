@@ -1,0 +1,59 @@
+{
+  "name": "COUNT",
+  "category": "Aggregate",
+  "shortDescription": "Count rows or non-null values",
+  "syntax": [
+    "COUNT(*)",
+    "COUNT(column)",
+    "COUNT(DISTINCT column)",
+    "COUNT(*) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Aggregate function that counts rows or non-null values.",
+  "parameters": [
+    {
+      "name": "*",
+      "type": "WILDCARD",
+      "description": "Count all rows",
+      "optional": true,
+      "defaultValue": null
+    },
+    {
+      "name": "column",
+      "type": "ANY",
+      "description": "Count non-null values in column",
+      "optional": true,
+      "defaultValue": null
+    },
+    {
+      "name": "DISTINCT column",
+      "type": "ANY",
+      "description": "Count unique non-null values",
+      "optional": true,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Count all rows",
+      "description": "Get total number of users",
+      "sql": "SELECT COUNT(*) FROM users"
+    },
+    {
+      "title": "Count by group",
+      "description": "Count employees per department",
+      "sql": "SELECT department, COUNT(*) as emp_count\nFROM employees\nGROUP BY department"
+    },
+    {
+      "title": "Count distinct",
+      "description": "Count unique categories",
+      "sql": "SELECT COUNT(DISTINCT category) as unique_categories FROM products"
+    }
+  ],
+  "notes": [
+    "COUNT(*) counts all rows including those with NULL values",
+    "COUNT(column) only counts non-null values"
+  ],
+  "seeAlso": ["SUM", "AVG", "MIN", "MAX"],
+  "aliases": []
+}

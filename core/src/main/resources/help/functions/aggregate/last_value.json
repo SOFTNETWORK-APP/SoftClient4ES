@@ -1,0 +1,32 @@
+{
+  "name": "LAST_VALUE",
+  "category": "Aggregate",
+  "shortDescription": "Get the last value in a group or window",
+  "syntax": [
+    "LAST_VALUE(column) OVER (PARTITION BY ... ORDER BY ...)"
+  ],
+  "description": "Window function that returns the last value in an ordered partition.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "ANY",
+      "description": "Column to get last value from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as input",
+  "examples": [
+    {
+      "title": "Last value per group",
+      "description": "Get most recent value in each partition",
+      "sql": "SELECT product, amount,\n  LAST_VALUE(amount) OVER (PARTITION BY product ORDER BY timestamp) as last_amount\nFROM sales"
+    }
+  ],
+  "notes": [
+    "Window frame affects which row is considered 'last'",
+    "Default frame may not include all rows - use ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING for full partition"
+  ],
+  "seeAlso": ["FIRST_VALUE"],
+  "aliases": []
+}

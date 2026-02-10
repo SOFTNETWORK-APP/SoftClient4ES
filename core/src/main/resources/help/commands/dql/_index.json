@@ -1,0 +1,15 @@
+[
+  "select.json",
+  "show_tables.json",
+  "show_table.json",
+  "describe_table.json",
+  "show_create_table.json",
+  "show_pipelines.json",
+  "show_pipeline.json",
+  "describe_pipeline.json",
+  "show_create_pipeline.json",
+  "show_watchers.json",
+  "show_watcher_status.json",
+  "show_enrich_policies.json",
+  "show_enrich_policy.json"
+]

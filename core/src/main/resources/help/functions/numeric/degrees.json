@@ -1,0 +1,31 @@
+{
+  "name": "DEGREES",
+  "category": "Numeric",
+  "shortDescription": "Convert radians to degrees",
+  "syntax": [
+    "DEGREES(radians)"
+  ],
+  "description": "Converts an angle from radians to degrees.",
+  "parameters": [
+    {
+      "name": "radians",
+      "type": "DOUBLE",
+      "description": "Angle in radians",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Convert to degrees",
+      "description": "Convert π to degrees",
+      "sql": "SELECT DEGREES(PI()) as degrees"
+    }
+  ],
+  "notes": [
+    "Formula: degrees = radians × (180/π)"
+  ],
+  "seeAlso": ["RADIANS", "PI"],
+  "aliases": []
+}

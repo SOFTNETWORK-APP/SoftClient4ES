@@ -1,0 +1,29 @@
+{
+  "name": "FLOOR",
+  "category": "Numeric",
+  "shortDescription": "Round down to nearest integer",
+  "syntax": [
+    "FLOOR(number)"
+  ],
+  "description": "Rounds a number down to the nearest integer.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Number to round down",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Round down",
+      "description": "Calculate complete units",
+      "sql": "SELECT FLOOR(balance / 100) as hundreds FROM accounts"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["CEIL", "ROUND"],
+  "aliases": []
+}

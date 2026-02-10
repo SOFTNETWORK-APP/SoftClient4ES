@@ -1,0 +1,29 @@
+{
+  "name": "LTRIM",
+  "category": "String",
+  "shortDescription": "Remove leading whitespace",
+  "syntax": [
+    "LTRIM(string)"
+  ],
+  "description": "Removes leading whitespace from a string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to trim",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Remove leading spaces",
+      "description": "Clean left side of string",
+      "sql": "SELECT LTRIM(name) FROM users"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["RTRIM", "TRIM"],
+  "aliases": []
+}

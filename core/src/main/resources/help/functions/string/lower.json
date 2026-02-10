@@ -1,0 +1,36 @@
+{
+  "name": "LOWER",
+  "category": "String",
+  "shortDescription": "Convert string to lowercase",
+  "syntax": [
+    "LOWER(string)"
+  ],
+  "description": "Converts all characters in a string to lowercase.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to convert",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Convert to lowercase",
+      "description": "Normalize email addresses",
+      "sql": "SELECT LOWER(email) as email FROM users"
+    },
+    {
+      "title": "Case-insensitive comparison",
+      "description": "Compare ignoring case",
+      "sql": "SELECT * FROM users WHERE LOWER(name) = 'alice'"
+    }
+  ],
+  "notes": [
+    "Returns NULL for NULL input"
+  ],
+  "seeAlso": ["UPPER"],
+  "aliases": ["LCASE"]
+}

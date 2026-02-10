@@ -1,0 +1,31 @@
+{
+  "name": "ACOS",
+  "category": "Numeric",
+  "shortDescription": "Calculate arc cosine (inverse cosine)",
+  "syntax": [
+    "ACOS(value)"
+  ],
+  "description": "Returns the arc cosine (inverse cosine) in radians. Input must be between -1 and 1.",
+  "parameters": [
+    {
+      "name": "value",
+      "type": "DOUBLE",
+      "description": "Value between -1 and 1",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Calculate arc cosine",
+      "description": "Inverse of cos(0°)",
+      "sql": "SELECT DEGREES(ACOS(1)) as angle_degrees"
+    }
+  ],
+  "notes": [
+    "Returns value in radians between 0 and π"
+  ],
+  "seeAlso": ["COS", "ASIN", "ATAN"],
+  "aliases": []
+}

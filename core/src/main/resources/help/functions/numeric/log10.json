@@ -1,0 +1,29 @@
+{
+  "name": "LOG10",
+  "category": "Numeric",
+  "shortDescription": "Calculate base-10 logarithm",
+  "syntax": [
+    "LOG10(number)"
+  ],
+  "description": "Returns the base-10 logarithm of a positive number.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Positive number",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Log base 10",
+      "description": "Calculate magnitude",
+      "sql": "SELECT LOG10(population) as magnitude FROM cities"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["LOG", "EXP"],
+  "aliases": []
+}

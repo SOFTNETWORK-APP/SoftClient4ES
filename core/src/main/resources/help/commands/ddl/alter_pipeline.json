@@ -1,0 +1,62 @@
+{
+  "name": "ALTER PIPELINE",
+  "category": "DDL",
+  "shortDescription": "Modify an existing ingest pipeline",
+  "syntax": [
+    "ALTER PIPELINE [IF EXISTS] pipeline_name (",
+    "  ADD PROCESSOR processor_definition,",
+    "  DROP PROCESSOR processor_type (field_name),",
+    "  ALTER PROCESSOR processor_definition,",
+    "  ...",
+    ")"
+  ],
+  "description": "Add, remove or alter processors from an existing Elasticsearch ingest pipeline.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Only alter if pipeline exists",
+      "optional": true
+    },
+    {
+      "name": "ADD PROCESSOR",
+      "description": "Add a new processor to the pipeline",
+      "optional": true
+    },
+    {
+      "name": "DROP PROCESSOR",
+      "description": "Remove a processor from the pipeline",
+      "optional": true
+    },
+    {
+      "name": "ALTER PROCESSOR",
+      "description": "Modify an existing processor's configuration",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Add a processor",
+      "description": "Add a new SET processor",
+      "sql": "ALTER PIPELINE IF EXISTS my_pipeline (\n  ADD PROCESSOR SET (\n    field = 'updated_at',\n    value = '_ingest.timestamp'\n  )\n)"
+    },
+    {
+      "title": "Remove a processor",
+      "description": "Remove the SET processor for _id field",
+      "sql": "ALTER PIPELINE IF EXISTS my_pipeline (\n  DROP PROCESSOR SET (_id)\n)"
+    },
+    {
+      "title": "Multiple changes",
+      "description": "Add and remove processors",
+      "sql": "ALTER PIPELINE IF EXISTS my_pipeline (\n  ADD PROCESSOR SET (field = 'version', value = '2.0'),\n  DROP PROCESSOR SCRIPT (old_field),\n  ADD PROCESSOR LOWERCASE (field = 'email')\n)"
+    }
+  ],
+  "notes": [
+    "Processors are identified by type and field name",
+    "Changes take effect immediately for new documents",
+    "Existing documents are not reprocessed"
+  ],
+  "limitations": [],
+  "seeAlso": ["CREATE PIPELINE", "DROP PIPELINE", "SHOW PIPELINE"],
+  "minVersion": null,
+  "aliases": []
+}

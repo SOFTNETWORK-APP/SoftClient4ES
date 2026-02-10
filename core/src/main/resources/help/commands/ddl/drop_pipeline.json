@@ -1,0 +1,36 @@
+{
+  "name": "DROP PIPELINE",
+  "category": "DDL",
+  "shortDescription": "Delete an ingest pipeline",
+  "syntax": [
+    "DROP PIPELINE [IF EXISTS] pipeline_name"
+  ],
+  "description": "Delete an Elasticsearch ingest pipeline. Tables using this pipeline will no longer process documents through it.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Don't raise an error if the pipeline doesn't exist",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Drop a pipeline",
+      "description": "Delete a pipeline",
+      "sql": "DROP PIPELINE old_processor"
+    },
+    {
+      "title": "Drop if exists",
+      "description": "Safely drop a pipeline",
+      "sql": "DROP PIPELINE IF EXISTS temporary_pipeline"
+    }
+  ],
+  "notes": [
+    "Tables using this pipeline will need to be updated",
+    "Cannot be undone"
+  ],
+  "limitations": [],
+  "seeAlso": ["CREATE PIPELINE", "ALTER PIPELINE"],
+  "minVersion": null,
+  "aliases": []
+}

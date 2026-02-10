@@ -1,0 +1,31 @@
+{
+  "name": "SECOND",
+  "category": "Date/Time",
+  "shortDescription": "Extract second from timestamp",
+  "syntax": [
+    "SECOND(timestamp)"
+  ],
+  "description": "Extracts the second component (0-59) from a timestamp.",
+  "parameters": [
+    {
+      "name": "timestamp",
+      "type": "TIMESTAMP",
+      "description": "Timestamp to extract second from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get second",
+      "description": "Extract second from timestamp",
+      "sql": "SELECT SECOND(created_at) as second FROM logs"
+    }
+  ],
+  "notes": [
+    "Returns 0-59"
+  ],
+  "seeAlso": ["HOUR", "MINUTE", "MILLISECOND"],
+  "aliases": []
+}

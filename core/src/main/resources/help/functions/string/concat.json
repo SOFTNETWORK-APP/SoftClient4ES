@@ -1,0 +1,36 @@
+{
+  "name": "CONCAT",
+  "category": "String",
+  "shortDescription": "Concatenate strings",
+  "syntax": [
+    "CONCAT(string1, string2, ...)"
+  ],
+  "description": "Joins two or more strings together into a single string.",
+  "parameters": [
+    {
+      "name": "strings",
+      "type": "VARCHAR",
+      "description": "Two or more strings to concatenate",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Concatenate names",
+      "description": "Join first and last name",
+      "sql": "SELECT CONCAT(first_name, ' ', last_name) as full_name FROM users"
+    },
+    {
+      "title": "Multiple strings",
+      "description": "Join multiple values",
+      "sql": "SELECT CONCAT(city, ', ', state, ' ', zip) as address FROM customers"
+    }
+  ],
+  "notes": [
+    "NULL values are converted to empty strings"
+  ],
+  "seeAlso": ["SUBSTRING", "LENGTH"],
+  "aliases": []
+}

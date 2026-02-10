@@ -1,0 +1,22 @@
+{
+  "name": "SHOW CREATE PIPELINE",
+  "category": "DQL",
+  "shortDescription": "Display the DDL statement to recreate the pipeline",
+  "syntax": [
+    "SHOW CREATE PIPELINE pipeline_name"
+  ],
+  "description": "Generate the CREATE PIPELINE statement that would recreate the pipeline.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show CREATE PIPELINE",
+      "description": "Get DDL for a pipeline",
+      "sql": "SHOW CREATE PIPELINE user_pipeline"
+    }
+  ],
+  "notes": [],
+  "limitations": [],
+  "seeAlso": ["SHOW PIPELINE", "CREATE PIPELINE"],
+  "minVersion": null,
+  "aliases": []
+}

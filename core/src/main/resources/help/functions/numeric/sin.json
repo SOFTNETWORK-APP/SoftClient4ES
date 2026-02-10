@@ -1,0 +1,31 @@
+{
+  "name": "SIN",
+  "category": "Numeric",
+  "shortDescription": "Calculate sine",
+  "syntax": [
+    "SIN(angle)"
+  ],
+  "description": "Returns the sine of an angle in radians.",
+  "parameters": [
+    {
+      "name": "angle",
+      "type": "DOUBLE",
+      "description": "Angle in radians",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Calculate sine",
+      "description": "Sin of 90 degrees",
+      "sql": "SELECT SIN(RADIANS(90)) as sin_90"
+    }
+  ],
+  "notes": [
+    "Input must be in radians, use RADIANS() to convert from degrees"
+  ],
+  "seeAlso": ["COS", "TAN", "ASIN"],
+  "aliases": []
+}

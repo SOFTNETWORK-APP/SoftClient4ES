@@ -1,0 +1,25 @@
+{
+  "name": "SHOW WATCHERS",
+  "category": "DQL",
+  "shortDescription": "List all watchers",
+  "syntax": [
+    "SHOW WATCHERS"
+  ],
+  "description": "List all Elasticsearch watchers in the cluster.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show all watchers",
+      "description": "List all watchers",
+      "sql": "SHOW WATCHERS"
+    }
+  ],
+  "notes": [
+    "Requires X-Pack or Elasticsearch subscription",
+    "Requires Elasticsearch 7.11+"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW WATCHER STATUS", "CREATE WATCHER"],
+  "minVersion": "7.11",
+  "aliases": []
+}

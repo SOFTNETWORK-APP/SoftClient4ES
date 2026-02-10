@@ -1,0 +1,215 @@
+{
+  "name": "ALTER TABLE",
+  "category": "DDL",
+  "shortDescription": "Modify the structure of an existing table",
+  "syntax": [
+    "-- Single alteration:",
+    "ALTER TABLE table_name alteration",
+    "",
+    "-- Multiple alterations:",
+    "ALTER TABLE table_name (",
+    "  alteration1,",
+    "  alteration2,",
+    "  ...",
+    ")",
+    "",
+    "-- Alteration types:",
+    "ADD COLUMN [IF NOT EXISTS] column_name data_type [constraints]",
+    "DROP COLUMN [IF EXISTS] column_name",
+    "RENAME COLUMN old_name TO new_name",
+    "ALTER COLUMN [IF EXISTS] column_name SET DEFAULT value",
+    "ALTER COLUMN [IF EXISTS] column_name DROP DEFAULT",
+    "ALTER COLUMN [IF EXISTS] column_name SET NOT NULL",
+    "ALTER COLUMN [IF EXISTS] column_name DROP NOT NULL",
+    "ALTER COLUMN [IF EXISTS] column_name SET COMMENT 'text'",
+    "ALTER COLUMN [IF EXISTS] column_name DROP COMMENT",
+    "ALTER COLUMN [IF EXISTS] column_name SET TYPE new_type",
+    "ALTER COLUMN [IF EXISTS] column_name SET SCRIPT AS (expression)",
+    "ALTER COLUMN [IF EXISTS] column_name DROP SCRIPT",
+    "ALTER COLUMN [IF EXISTS] column_name SET OPTIONS (option = value, ...)",
+    "ALTER COLUMN [IF EXISTS] column_name SET OPTION (option = value)",
+    "ALTER COLUMN [IF EXISTS] column_name DROP OPTION option",
+    "ALTER COLUMN [IF EXISTS] column_name SET FIELDS (...)",
+    "ALTER COLUMN [IF EXISTS] column_name SET FIELD field_name ...",
+    "ALTER COLUMN [IF EXISTS] column_name DROP FIELD field_name",
+    "SET MAPPING mapping = value",
+    "DROP MAPPING mapping",
+    "SET SETTING setting = value",
+    "DROP SETTING setting",
+    "SET ALIAS alias = value",
+    "DROP ALIAS alias"
+  ],
+  "description": "Modify an existing Elasticsearch index by adding, removing, or modifying columns. Some operations require index reindexing (like changing data types).",
+  "clauses": [
+    {
+      "name": "ADD COLUMN",
+      "description": "Add a new column to the table",
+      "optional": false
+    },
+    {
+      "name": "DROP COLUMN",
+      "description": "Remove a column from the table (mapping only, data preserved)",
+      "optional": false
+    },
+    {
+      "name": "RENAME COLUMN",
+      "description": "Rename a column using reindex operation",
+      "optional": false
+    },
+    {
+      "name": "SET DEFAULT",
+      "description": "Set or change the default value for a column",
+      "optional": false
+    },
+    {
+      "name": "DROP DEFAULT",
+      "description": "Remove the default value from a column",
+      "optional": false
+    },
+    {
+      "name": "SET NOT NULL",
+      "description": "Make a column required (non-nullable)",
+      "optional": false
+    },
+    {
+      "name": "DROP NOT NULL",
+      "description": "Make a column optional (nullable)",
+      "optional": false
+    },
+    {
+      "name": "SET COMMENT",
+      "description": "Add or update column comment",
+      "optional": false
+    },
+    {
+      "name": "DROP COMMENT",
+      "description": "Remove column comment",
+      "optional": false
+    },
+    {
+      "name": "SET TYPE",
+      "description": "Change column data type (requires reindex)",
+      "optional": false
+    },
+    {
+      "name": "SET SCRIPT AS",
+      "description": "Define or update a computed column using a Painless expression",
+      "optional": false
+    },
+    {
+      "name": "DROP SCRIPT",
+      "description": "Remove the computed column definition",
+      "optional": false
+    },
+    {
+      "name": "SET OPTIONS",
+      "description": "Add or update multiple Elasticsearch field mapping options",
+      "optional": false
+    },
+    {
+      "name": "SET OPTION",
+      "description": "Add or update a single Elasticsearch field mapping option",
+      "optional": false
+    },
+    {
+      "name": "DROP OPTION",
+      "description": "Remove a single Elasticsearch field mapping option",
+      "optional": false
+    },
+    {
+      "name": "SET FIELDS",
+      "description": "Modify nested fields of a STRUCT column",
+      "optional": false
+    },
+    {
+      "name": "SET FIELD",
+      "description": "Add or update a single nested field in a STRUCT column",
+      "optional": false
+    },
+    {
+      "name": "DROP FIELD",
+      "description": "Remove a single nested field from a STRUCT column",
+      "optional": false
+    },
+    {
+      "name": "IF EXISTS / IF NOT EXISTS",
+      "description": "Conditional execution to avoid errors",
+      "optional": true
+    },
+    {
+      "name": "SET MAPPING / DROP MAPPING",
+      "description": "Add, update, or remove Elasticsearch field mappings",
+      "optional": true
+    },
+    {
+      "name": "SET SETTING / DROP SETTING",
+      "description": "Add, update, or remove index settings",
+      "optional": true
+    },
+    {
+      "name": "SET ALIAS / DROP ALIAS",
+      "description": "Add, update, or remove index aliases",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Add a simple column",
+      "description": "Add a new nullable column",
+      "sql": "ALTER TABLE users ADD COLUMN phone VARCHAR"
+    },
+    {
+      "title": "Add column with default",
+      "description": "Add a column with a default value",
+      "sql": "ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'active'"
+    },
+    {
+      "title": "Rename a column",
+      "description": "Rename column using reindex",
+      "sql": "ALTER TABLE users RENAME COLUMN name TO full_name"
+    },
+    {
+      "title": "Change default value",
+      "description": "Update the default value of a column",
+      "sql": "ALTER TABLE products ALTER COLUMN price SET DEFAULT 0.0"
+    },
+    {
+      "title": "Make column required",
+      "description": "Set column as NOT NULL",
+      "sql": "ALTER TABLE orders ALTER COLUMN customer_id SET NOT NULL"
+    },
+    {
+      "title": "Change data type",
+      "description": "Convert column to different type (triggers reindex)",
+      "sql": "ALTER TABLE events ALTER COLUMN id SET DATA TYPE BIGINT"
+    },
+    {
+      "title": "Modify nested struct",
+      "description": "Add or modify fields in a STRUCT column",
+      "sql": "ALTER TABLE users ALTER COLUMN profile SET FIELDS (\n  bio VARCHAR,\n  website VARCHAR,\n  followers INT DEFAULT 0,\n  verified BOOLEAN DEFAULT false\n)"
+    },
+    {
+      "title": "Multiple alterations",
+      "description": "Apply several changes in one statement",
+      "sql": "ALTER TABLE users (\n  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0,\n  RENAME COLUMN name TO full_name,\n  ALTER COLUMN status SET DEFAULT 'active',\n  ALTER COLUMN profile SET FIELDS (\n    bio VARCHAR DEFAULT 'N/A',\n    verified BOOLEAN DEFAULT false\n  )\n)"
+    }
+  ],
+  "notes": [
+    "DROP COLUMN only removes the mapping, existing data is not deleted",
+    "RENAME COLUMN and SET DATA TYPE operations trigger a reindex",
+    "Adding columns with DEFAULT creates/updates the ingest pipeline",
+    "Use IF EXISTS/IF NOT EXISTS to make scripts idempotent"
+  ],
+  "limitations": [
+    "Cannot change PRIMARY KEY after creation",
+    "Cannot change PARTITIONED BY after creation",
+    "Some type changes may fail if data is incompatible"
+  ],
+  "seeAlso": [
+    "CREATE TABLE",
+    "DROP TABLE",
+    "SHOW TABLE"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

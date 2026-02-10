@@ -1,0 +1,31 @@
+{
+  "name": "DESCRIBE TABLE",
+  "category": "DQL",
+  "shortDescription": "List columns and their properties",
+  "syntax": [
+    "DESCRIBE TABLE table_name",
+    "DESC TABLE table_name"
+  ],
+  "description": "Display a tabular list of all columns in a table with their data types and properties.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Describe a table",
+      "description": "List all columns",
+      "sql": "DESCRIBE TABLE users"
+    },
+    {
+      "title": "Short form",
+      "description": "Using DESC alias",
+      "sql": "DESC TABLE users"
+    }
+  ],
+  "notes": [
+    "Returns: Field, Type, Null, Key, Default, Comment, Script, Extra",
+    "Nested fields shown with dot notation (profile.city)"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW TABLE", "SHOW TABLES"],
+  "minVersion": null,
+  "aliases": ["DESC TABLE"]
+}

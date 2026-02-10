@@ -1,0 +1,27 @@
+{
+  "name": "EXECUTE ENRICH POLICY",
+  "category": "DDL",
+  "shortDescription": "Execute an enrich policy to create the enrich index",
+  "syntax": [
+    "EXECUTE ENRICH POLICY policy_name"
+  ],
+  "description": "Execute an enrich policy to create or update the internal enrich index. This must be done before the policy can be used in an ingest pipeline, and should be repeated when source data changes.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Execute a policy",
+      "description": "Create/update the enrich index",
+      "sql": "EXECUTE ENRICH POLICY user_enrich"
+    }
+  ],
+  "notes": [
+    "Must be executed after CREATE ENRICH POLICY before policy can be used",
+    "Re-execute when source data changes",
+    "Creates a hidden system index for fast lookups",
+    "Execution may take time for large datasets"
+  ],
+  "limitations": [],
+  "seeAlso": ["CREATE ENRICH POLICY", "DROP ENRICH POLICY"],
+  "minVersion": "7.5",
+  "aliases": []
+}

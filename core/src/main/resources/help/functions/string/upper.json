@@ -1,0 +1,31 @@
+{
+  "name": "UPPER",
+  "category": "String",
+  "shortDescription": "Convert string to uppercase",
+  "syntax": [
+    "UPPER(string)"
+  ],
+  "description": "Converts all characters in a string to uppercase.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to convert",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Convert to uppercase",
+      "description": "Uppercase codes",
+      "sql": "SELECT UPPER(country_code) as code FROM countries"
+    }
+  ],
+  "notes": [
+    "Returns NULL for NULL input"
+  ],
+  "seeAlso": ["LOWER"],
+  "aliases": ["UCASE"]
+}

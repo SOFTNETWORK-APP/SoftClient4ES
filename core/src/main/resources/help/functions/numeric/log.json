@@ -1,0 +1,31 @@
+{
+  "name": "LOG",
+  "category": "Numeric",
+  "shortDescription": "Calculate logarithm",
+  "syntax": [
+    "LOG(number)"
+  ],
+  "description": "Returns the natural logarithm (base e).",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Positive number",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Natural logarithm",
+      "description": "Calculate ln(x)",
+      "sql": "SELECT LOG(value) as ln_value FROM data"
+    }
+  ],
+  "notes": [
+    "Returns NULL for non-positive input"
+  ],
+  "seeAlso": ["LOG10", "EXP"],
+  "aliases": []
+}

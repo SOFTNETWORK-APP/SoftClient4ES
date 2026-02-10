@@ -1,0 +1,39 @@
+{
+  "name": "DATE_FORMAT",
+  "category": "Date/Time",
+  "shortDescription": "Format date as string",
+  "syntax": [
+    "DATE_FORMAT(date, format)"
+  ],
+  "description": "Formats a date as a string using the specified format pattern.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE",
+      "description": "Date to format",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "format",
+      "type": "VARCHAR",
+      "description": "Format pattern (MySQL-style Date/Time Patterns)",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Format as ISO date",
+      "description": "YYYY-MM-DD format",
+      "sql": "SELECT DATE_FORMAT(created_at, '%Y-%m-%d') as date_str FROM events"
+    }
+  ],
+  "notes": [
+    "Uses MySQL-style Date/Time Patterns",
+    "Common patterns: %Y (year 4 digits), %m (month), %d (day)"
+  ],
+  "seeAlso": ["TO_DATE", "TO_TIMESTAMP"],
+  "aliases": ["FORMAT", "DATE_FORMAT"]
+}

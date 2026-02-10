@@ -1,0 +1,39 @@
+{
+  "name": "ATAN2",
+  "category": "Numeric",
+  "shortDescription": "Calculate two-argument arc tangent",
+  "syntax": [
+    "ATAN2(y, x)"
+  ],
+  "description": "Returns the arc tangent of y/x in radians, using the signs to determine the quadrant.",
+  "parameters": [
+    {
+      "name": "y",
+      "type": "DOUBLE",
+      "description": "Y coordinate",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "x",
+      "type": "DOUBLE",
+      "description": "X coordinate",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Calculate angle",
+      "description": "Get angle from coordinates",
+      "sql": "SELECT DEGREES(ATAN2(y, x)) as bearing FROM positions"
+    }
+  ],
+  "notes": [
+    "Returns value in radians between -π and π",
+    "Handles all quadrants correctly unlike ATAN(y/x)"
+  ],
+  "seeAlso": ["ATAN", "SIN", "COS"],
+  "aliases": []
+}

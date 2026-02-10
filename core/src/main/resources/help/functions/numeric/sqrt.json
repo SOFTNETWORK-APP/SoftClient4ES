@@ -1,0 +1,31 @@
+{
+  "name": "SQRT",
+  "category": "Numeric",
+  "shortDescription": "Calculate square root",
+  "syntax": [
+    "SQRT(number)"
+  ],
+  "description": "Returns the square root of a non-negative number.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Non-negative number",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Square root",
+      "description": "Calculate distance",
+      "sql": "SELECT SQRT(POW(x2-x1, 2) + POW(y2-y1, 2)) as distance FROM points"
+    }
+  ],
+  "notes": [
+    "Returns NULL for negative input"
+  ],
+  "seeAlso": ["POW", "EXP"],
+  "aliases": []
+}
