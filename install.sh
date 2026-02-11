@@ -687,7 +687,7 @@ print_summary() {
     echo "    ├── lib/"
     echo "    │   └── $JAR_NAME"
     echo "    ├── logs/"
-    echo "    │   └── softclient4es.log # (created at runtime)
+    echo "    │   └── softclient4es.log # (created at runtime)"
     echo "    ├── LICENSE"
     echo "    ├── README.md"
     echo "    ├── VERSION"
