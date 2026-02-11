@@ -19,6 +19,10 @@ param(
 $JFROG_REPO_URL = "https://softnetwork.jfrog.io/artifactory/releases/app/softnetwork/elastic"
 $JFROG_API_URL = "https://softnetwork.jfrog.io/artifactory/api/storage/releases/app/softnetwork/elastic"
 
+$GITHUB_RAW_URL = "https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/refs/heads/main"
+$README_URL = "${GITHUB_RAW_URL}/documentation/client/repl.md"
+$LICENSE_URL = "${GITHUB_RAW_URL}/LICENSE"
+
 # =============================================================================
 # Help
 # =============================================================================
@@ -244,6 +248,31 @@ function Create-Directories {
 }
 
 # =============================================================================
+# Download File Helper
+# =============================================================================
+
+function Download-File {
+    param(
+        [string]$Url,
+        [string]$Dest,
+        [string]$Description
+    )
+
+    Write-Info "Downloading $Description..."
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -ErrorAction Stop
+        Write-Success "Downloaded $Description"
+        return $true
+    }
+    catch {
+        Write-Warn "Failed to download $Description from $Url"
+        return $false
+    }
+}
+
+# =============================================================================
 # Download JAR
 # =============================================================================
 
@@ -265,6 +294,65 @@ function Download-Jar {
         Write-Err $_.Exception.Message
         exit 1
     }
+}
+
+# =============================================================================
+# Download Documentation and License
+# =============================================================================
+
+function Download-Docs {
+    Write-Info "Downloading documentation and license..."
+
+    # Download README.md
+    $readmeResult = Download-File -Url $README_URL -Dest "$Target\README.md" -Description "README.md"
+    if (-not $readmeResult) {
+        Write-Warn "README.md download failed, creating minimal version"
+        Create-MinimalReadme
+    }
+
+    # Download LICENSE
+    Download-File -Url $LICENSE_URL -Dest "$Target\LICENSE" -Description "LICENSE" | Out-Null
+}
+
+# =============================================================================
+# Create Minimal README (Fallback)
+# =============================================================================
+
+function Create-MinimalReadme {
+    $readmeContent = @'
+# SoftClient4ES
+
+SQL Gateway for Elasticsearch
+
+## Quick Start
+
+```powershell
+# Start the REPL
+.\bin\softclient4es.bat
+
+# Execute a single command
+.\bin\softclient4es.bat -c "SHOW TABLES"
+
+# Get help
+.\bin\softclient4es.bat --help
+```
+
+## Configuration
+
+Edit `conf\application.conf` to configure default connection settings.
+
+## Documentation
+
+Full documentation available at:
+https://github.com/SOFTNETWORK-APP/SoftClient4ES
+
+## License
+
+See LICENSE file for details.
+'@
+
+    $readmeContent | Out-File -FilePath "$Target\README.md" -Encoding UTF8
+    Write-Success "Created minimal README.md"
 }
 
 # =============================================================================
@@ -470,6 +558,8 @@ function Print-Summary {
     Write-Host "    |   \-- application.conf"
     Write-Host "    +-- lib\"
     Write-Host "    |   \-- $JAR_NAME"
+    Write-Host "    +-- LICENSE"
+    Write-Host "    +-- README.md"
     Write-Host "    +-- VERSION"
     Write-Host "    \-- uninstall.ps1"
     Write-Host ""
@@ -480,6 +570,9 @@ function Print-Summary {
     Write-Host ""
     Write-Host "  Or add to your PATH:"
     Write-Host "    `$env:PATH += `";$Target\bin`"" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Documentation:"
+    Write-Host "    Get-Content $Target\README.md" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  Configuration:"
     Write-Host "    Edit $Target\conf\application.conf"
@@ -503,6 +596,7 @@ Write-Host ""
 Check-Prerequisites
 Create-Directories
 Download-Jar
+Download-Docs
 Create-Config
 Create-Launcher
 Create-Uninstaller

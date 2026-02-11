@@ -193,6 +193,9 @@ softclient4es/
 │   └── application.conf    # Configuration file
 ├── lib/
 │   └── softclient4es8-cli_2.13-x.y.z-assembly.jar
+├── LICENSE                 # License file
+├── README.md               # Documentation
+├── VERSION                 # Installation info
 └── uninstall.sh            # or uninstall.ps1 on Windows
 ```
 

@@ -18,6 +18,10 @@ DEFAULT_SCALA_VERSION="2.13"
 JFROG_REPO_URL="https://softnetwork.jfrog.io/artifactory/releases/app/softnetwork/elastic"
 JFROG_API_URL="https://softnetwork.jfrog.io/artifactory/api/storage/releases/app/softnetwork/elastic"
 
+GITHUB_RAW_URL="https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/refs/heads/main"
+README_URL="${GITHUB_RAW_URL}/documentation/client/repl.md"
+LICENSE_URL="${GITHUB_RAW_URL}/LICENSE"
+
 # =============================================================================
 # Colors and Output
 # =============================================================================
@@ -320,6 +324,33 @@ create_directories() {
 }
 
 # =============================================================================
+# Download File Helper
+# =============================================================================
+
+download_file() {
+    local url="$1"
+    local dest="$2"
+    local description="$3"
+
+    info "Downloading $description..."
+
+    if [[ "$DOWNLOADER" == "curl" ]]; then
+        if ! curl -fsSL -o "$dest" "$url" 2>/dev/null; then
+            warn "Failed to download $description from $url"
+            return 1
+        fi
+    else
+        if ! wget -q -O "$dest" "$url" 2>/dev/null; then
+            warn "Failed to download $description from $url"
+            return 1
+        fi
+    fi
+
+    success "Downloaded $description"
+    return 0
+}
+
+# =============================================================================
 # Download JAR
 # =============================================================================
 
@@ -346,6 +377,69 @@ download_jar() {
     fi
 
     success "Downloaded to $dest"
+}
+
+# =============================================================================
+# Download Documentation and License
+# =============================================================================
+
+download_docs() {
+    info "Downloading documentation and license..."
+
+    # Download README.md
+    if download_file "$README_URL" "$TARGET_DIR/README.md" "README.md"; then
+        : # success already printed
+    else
+        warn "README.md download failed, creating minimal version"
+        create_minimal_readme
+    fi
+
+    # Download LICENSE
+    if download_file "$LICENSE_URL" "$TARGET_DIR/LICENSE" "LICENSE"; then
+        : # success already printed
+    else
+        warn "LICENSE download failed, skipping"
+    fi
+}
+
+# =============================================================================
+# Create Minimal README (Fallback)
+# =============================================================================
+
+create_minimal_readme() {
+    cat > "$TARGET_DIR/README.md" << 'EOF'
+# SoftClient4ES
+
+SQL Gateway for Elasticsearch
+
+## Quick Start
+
+```bash
+# Start the REPL
+./bin/softclient4es
+
+# Execute a single command
+./bin/softclient4es -c "SHOW TABLES"
+
+# Get help
+./bin/softclient4es --help
+```
+
+## Configuration
+
+Edit `conf/application.conf` to configure default connection settings.
+
+## Documentation
+
+Full documentation available at:
+https://github.com/SOFTNETWORK-APP/SoftClient4ES
+
+## License
+
+See LICENSE file for details.
+EOF
+
+    success "Created minimal README.md"
 }
 
 # =============================================================================
@@ -524,6 +618,8 @@ print_summary() {
     echo "    │   └── application.conf"
     echo "    ├── lib/"
     echo "    │   └── $JAR_NAME"
+    echo "    ├── LICENSE"
+    echo "    ├── README.md"
     echo "    ├── VERSION"
     echo "    └── uninstall.sh"
     echo ""
@@ -532,6 +628,9 @@ print_summary() {
     echo ""
     echo "  Or add to your PATH:"
     echo -e "    ${BLUE}export PATH=\"\$PATH:$TARGET_DIR/bin\"${NC}"
+    echo ""
+    echo "  Documentation:"
+    echo -e "    ${BLUE}cat $TARGET_DIR/README.md${NC}"
     echo ""
     echo "  Configuration:"
     echo "    Edit $TARGET_DIR/conf/application.conf"
@@ -556,6 +655,7 @@ main() {
     check_prerequisites
     create_directories
     download_jar
+    download_docs
     create_config
     create_launcher
     create_uninstaller
