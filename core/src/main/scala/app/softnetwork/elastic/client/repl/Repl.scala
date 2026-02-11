@@ -24,6 +24,8 @@ import org.jline.reader._
 import org.jline.reader.impl.history.DefaultHistory
 import org.jline.terminal.{Terminal, TerminalBuilder}
 
+import java.nio.file.{Files, Path, Paths}
+
 import scala.collection.immutable.ListMap
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, TimeoutException}
@@ -43,6 +45,16 @@ class Repl(
     .jna(true) // Force l'utilisation de JNA
     .build()
 
+  private val configDir: Path = {
+    val dir = Paths.get(System.getProperty("user.home"), ".softclient4es")
+    if (!Files.exists(dir)) {
+      Files.createDirectories(dir)
+    }
+    dir
+  }
+
+  private val historyFile: Path = configDir.resolve("history")
+
   private val completer = new ReplCompleter()
 
   private val reader: LineReader = LineReaderBuilder
@@ -57,6 +69,17 @@ class Repl(
     .option(LineReader.Option.AUTO_MENU, true) // Menu automatique
     .option(LineReader.Option.LIST_AMBIGUOUS, true) // Liste si ambigu
     .highlighter(new ReplHighlighter())
+    // Options d'historique
+    .option(LineReader.Option.HISTORY_IGNORE_DUPS, true) // Ignorer les doublons consécutifs
+    .option(
+      LineReader.Option.HISTORY_IGNORE_SPACE,
+      true
+    ) // Ignorer les lignes commençant par espace
+    .option(LineReader.Option.HISTORY_REDUCE_BLANKS, true) // Réduire les espaces multiples
+    // Variables
+    .variable(LineReader.HISTORY_FILE, historyFile) // Fichier d'historique
+    .variable(LineReader.HISTORY_SIZE, 1000) // Nombre max d'entrées
+    .variable(LineReader.HISTORY_FILE_SIZE, 10000) // Taille max du fichier
     .build()
 
   private var running = true
