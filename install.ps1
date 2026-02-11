@@ -243,8 +243,9 @@ function Create-Directories {
     New-Item -ItemType Directory -Force -Path "$Target\bin" | Out-Null
     New-Item -ItemType Directory -Force -Path "$Target\conf" | Out-Null
     New-Item -ItemType Directory -Force -Path "$Target\lib" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$Target\logs" | Out-Null
 
-    Write-Success "Created $Target\{bin,conf,lib}"
+    Write-Success "Created $Target\{bin,conf,lib,logs}"
 }
 
 # =============================================================================
@@ -398,6 +399,60 @@ elastic {
 }
 
 # =============================================================================
+# Create Logback Configuration
+# =============================================================================
+
+function Create-LogbackConfig {
+    Write-Info "Creating logback configuration..."
+
+    $logbackContent = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <variable name="LOG_DIR" value="${log.dir:-logs}" />
+    <variable name="LOG_FILE" value="softclient4es" />
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/${LOG_FILE}.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/${LOG_FILE}-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%date{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>8192</queueSize>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="FILE" />
+    </appender>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%date{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="app.softnetwork.elastic" level="INFO" />
+    <logger name="org.apache.http" level="WARN" />
+    <logger name="org.elasticsearch" level="WARN" />
+
+    <root level="INFO">
+        <appender-ref ref="ASYNC" />
+    </root>
+
+</configuration>
+'@
+
+    $logbackContent | Out-File -FilePath "$Target\conf\logback.xml" -Encoding UTF8
+
+    Write-Success "Created $Target\conf\logback.xml"
+}
+
+# =============================================================================
 # Create Launcher Scripts
 # =============================================================================
 
@@ -468,7 +523,7 @@ if (-not (Test-Path `$JarFile)) {
 
 # Create logs directory if it doesn't exist
 if (-not (Test-Path `$LogDir)) {
-    New-Item -ItemType Directory -Path $LogDir | Out-Null
+    New-Item -ItemType Directory -Path `$LogDir | Out-Null
 }
 
 # Check Java
@@ -502,7 +557,8 @@ if (Test-Path `$LogbackFile) {
     `$LogbackOpts = @("-Dlogback.configurationFile=`$LogbackFile")
 }
 
-& java `$JavaOpts "-Dconfig.file=`$ConfigFile" "-Dlog.dir=`$LogDir" @LogbackOpts -jar `$JarFile `$args"@
+& java `$JavaOpts "-Dconfig.file=`$ConfigFile" "-Dlog.dir=`$LogDir" @LogbackOpts -jar `$JarFile `$args
+"@
 
     $psContent | Out-File -FilePath "$Target\bin\softclient4es.ps1" -Encoding UTF8
 
@@ -576,9 +632,12 @@ function Print-Summary {
     Write-Host "    |   +-- softclient4es.bat"
     Write-Host "    |   \-- softclient4es.ps1"
     Write-Host "    +-- conf\"
-    Write-Host "    |   \-- application.conf"
+    Write-Host "    |   +-- application.conf"
+    Write-Host "    |   \-- logback.xml"
     Write-Host "    +-- lib\"
     Write-Host "    |   \-- $JAR_NAME"
+    Write-Host "    +-- logs\"
+    Write-Host "    |   \-- (runtime logs)"
     Write-Host "    +-- LICENSE"
     Write-Host "    +-- README.md"
     Write-Host "    +-- VERSION"
@@ -596,8 +655,11 @@ function Print-Summary {
     Write-Host "    Get-Content $Target\README.md" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  Configuration:"
-    Write-Host "    Edit $Target\conf\application.conf"
-    Write-Host "    Or use command-line options (run with --help)"
+    Write-Host "    Application: $Target\conf\application.conf"
+    Write-Host "    Logging:     $Target\conf\logback.xml"
+    Write-Host ""
+    Write-Host "  Log files:"
+    Write-Host "    $Target\logs\softclient4es.log" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  To uninstall:"
     Write-Host "    $Target\uninstall.ps1" -ForegroundColor Cyan
@@ -619,6 +681,7 @@ Create-Directories
 Download-Jar
 Download-Docs
 Create-Config
+Create-LogbackConfig    # <-- Création du fichier logback.xml
 Create-Launcher
 Create-Uninstaller
 Create-VersionInfo
