@@ -18,7 +18,8 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql._
-import app.softnetwork.elastic.sql.function.{time, _}
+import app.softnetwork.elastic.sql.function.time.DateTimeFunction
+import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.parser.`type`.TypeParser
 import app.softnetwork.elastic.sql.parser.function.aggregate.AggregateParser
@@ -658,7 +659,7 @@ object Parser
     eq | ne | diff | gt | ge | lt | le
 
   private def dateMathScript
-    : PackratParser[time.DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
+    : PackratParser[DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
     date_add | datetime_add | date_sub | datetime_sub
 
   def compareWatcherCondition: PackratParser[CompareWatcherCondition] =
