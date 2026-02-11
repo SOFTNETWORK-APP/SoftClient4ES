@@ -17,12 +17,14 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
+  query,
   Expr,
   Identifier,
   LiteralParam,
   PainlessContext,
   PainlessScript,
-  TokenRegex
+  TokenRegex,
+  Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{
   SQLAny,
@@ -82,6 +84,10 @@ package object cond {
           s"${arg.trim} == null" // TODO check when identifier is nullable and has functions
         case _ => throw new IllegalArgumentException("ISNULL requires exactly one argument")
       }
+
+    override def update(request: query.SingleSearch): IsNull = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case class IsNotNull(identifier: Identifier) extends ConditionalFunction[SQLAny] {
@@ -101,6 +107,10 @@ package object cond {
           s"${arg.trim} != null" // TODO check when identifier is nullable and has functions
         case _ => throw new IllegalArgumentException("ISNOTNULL requires exactly one argument")
       }
+
+    override def update(request: query.SingleSearch): IsNotNull = {
+      this.copy(identifier = identifier.update(request))
+    }
   }
 
   case class Coalesce(values: List[PainlessScript])
@@ -144,6 +154,13 @@ package object cond {
       }
 
     override def nullable: Boolean = values.forall(_.nullable)
+
+    override def update(request: query.SingleSearch): Coalesce = {
+      this.copy(values = values.map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case other         => other
+      })
+    }
   }
 
   case class NullIf(expr1: PainlessScript, expr2: PainlessScript)
@@ -199,6 +216,19 @@ package object cond {
         _ <- Validator.validateTypesMatching(expr1.out, expr2.out)
       } yield ()
     }
+
+    override def update(request: query.SingleSearch): NullIf = {
+      this.copy(
+        expr1 = expr1 match {
+          case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+          case other         => other
+        },
+        expr2 = expr2 match {
+          case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+          case other         => other
+        }
+      )
+    }
   }
 
   case class Case(
@@ -211,6 +241,7 @@ package object cond {
       default.toList
 
     override def inputType: SQLAny = SQLTypes.Any
+
     override def outputType: SQLAny = SQLTypes.Any
 
     override def sql: String = {
@@ -362,6 +393,29 @@ package object cond {
 
     override def nullable: Boolean =
       conditions.exists { case (_, res) => res.nullable } || default.forall(_.nullable)
-  }
 
+    override def update(request: query.SingleSearch): Case = {
+      this.copy(
+        expression = expression.map {
+          case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+          case other         => other
+        },
+        conditions = conditions.map { case (cond, res) =>
+          val newCond = cond match {
+            case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+            case other         => other
+          }
+          val newRes = res match {
+            case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+            case other         => other
+          }
+          (newCond, newRes)
+        },
+        default = default.map {
+          case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+          case other         => other
+        }
+      )
+    }
+  }
 }

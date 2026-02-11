@@ -1,0 +1,16 @@
+[
+  "concat.json",
+  "substring.json",
+  "length.json",
+  "lower.json",
+  "upper.json",
+  "trim.json",
+  "ltrim.json",
+  "rtrim.json",
+  "left.json",
+  "right.json",
+  "replace.json",
+  "reverse.json",
+  "position.json",
+  "regexp_like.json"
+]

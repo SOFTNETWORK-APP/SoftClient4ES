@@ -47,17 +47,17 @@ If both arguments are fixed points, the distance is **precomputed at query compi
 
 ### Supported Distance Units
 
-| Categoryc    | Unitc          | Syntaxc | Examplec             |
-|--------------|----------------|---------|----------------------|
-| **Metric**   | Kilometers     | `km`    | `5000 km`, `10.5 km` |
-|              | Meters         | `m`     | `500 m`, `1000 m`    |
-|              | Centimeters    | `cm`    | `100 cm`, `50 cm`    |
-|              | Millimeters    | `mm`    | `1000 mm`, `500 mm`  |
-| **Imperial** | Miles          | `mi`    | `10 mi`, `5.5 mi`    |
-|              | Yards          | `yd`    | `100 yd`, `50 yd`    |
-|              | Feet           | `ft`    | `500 ft`, `100 ft`   |
-|              | Inches         | `in`    | `100 in`, `50 in`    |
-| **Nautical** | Nautical Miles | `nmi`   | `50 nmi`, `10 nmi`   |
+| Category     | Unit           | Syntax | Example              |
+|--------------|----------------|--------|----------------------|
+| **Metric**   | Kilometers     | `km`   | `5000 km`, `10.5 km` |
+|              | Meters         | `m`    | `500 m`, `1000 m`    |
+|              | Centimeters    | `cm`   | `100 cm`, `50 cm`    |
+|              | Millimeters    | `mm`   | `1000 mm`, `500 mm`  |
+| **Imperial** | Miles          | `mi`   | `10 mi`, `5.5 mi`    |
+|              | Yards          | `yd`   | `100 yd`, `50 yd`    |
+|              | Feet           | `ft`   | `500 ft`, `100 ft`   |
+|              | Inches         | `in`   | `100 in`, `50 in`    |
+| **Nautical** | Nautical Miles | `nmi`  | `50 nmi`, `10 nmi`   |
 
 ---
 

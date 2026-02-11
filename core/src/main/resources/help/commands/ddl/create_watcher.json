@@ -1,0 +1,180 @@
+{
+  "name": "CREATE WATCHER",
+  "category": "DDL",
+  "shortDescription": "Create a scheduled monitoring watcher",
+  "syntax": [
+    "CREATE [OR REPLACE] WATCHER watcher_name AS",
+    "  trigger_clause",
+    "  input_clause",
+    "  condition_clause",
+    "  DO",
+    "  action_definitions",
+    "  END",
+    "",
+    "-- Trigger clauses:",
+    "EVERY n time_unit",
+    "AT SCHEDULE 'cron_expression'",
+    "",
+    "-- Input clauses:",
+    "WITH NO INPUT",
+    "WITH INPUT (key = value, ...)",
+    "FROM index [WHERE condition] [WITHIN duration]",
+    "WITH INPUT method 'url' [HEADERS (...)] [BODY '...'] [TIMEOUT (...)]",
+    "WITH INPUT method PROTOCOL proto HOST 'host' [PORT n] [PATH 'path'] [PARAMS (...)] [HEADERS (...)] [BODY '...']",
+    "WITH INPUTS name1 [AS] input1, name2 [AS] input2, ...",
+    "",
+    "-- Condition clauses:",
+    "ALWAYS DO",
+    "NEVER DO",
+    "WHEN expression DO",
+    "WHEN SCRIPT 'script' [USING LANG 'lang'] [WITH PARAMS (...)] [RETURNS TRUE|FALSE] DO",
+    "",
+    "-- Action definitions:",
+    "action_name [AS] LOG 'message' AT level [FOREACH 'path' LIMIT n]",
+    "action_name [AS] WEBHOOK method 'url' [HEADERS (...)] [BODY '...']",
+    "action_name [AS] WEBHOOK method PROTOCOL proto HOST 'host' [PORT n] [PATH 'path'] [PARAMS (...)] [HEADERS (...)] [BODY '...']"
+  ],
+  "description": "Create an Elasticsearch watcher for scheduled monitoring and alerting. Watchers can query data, evaluate conditions, and execute actions like logging or calling webhooks.",
+  "clauses": [
+    {
+      "name": "EVERY n unit",
+      "description": "Interval-based trigger. Executes every n time units.",
+      "optional": false,
+      "variants": ["EVERY 5 SECONDS", "EVERY 1 MINUTE", "EVERY 1 HOUR", "EVERY 1 DAY"]
+    },
+    {
+      "name": "AT SCHEDULE",
+      "description": "Cron-based trigger using cron expression.",
+      "optional": false,
+      "variants": ["AT SCHEDULE '0 0 * * * ?'", "AT SCHEDULE '0 */5 * * * ?'"]
+    },
+    {
+      "name": "WITH NO INPUT",
+      "description": "No input data - actions triggered unconditionally.",
+      "optional": true
+    },
+    {
+      "name": "WITH INPUT",
+      "description": "Static payload or HTTP request input.",
+      "optional": true
+    },
+    {
+      "name": "FROM index",
+      "description": "Search input from Elasticsearch index.",
+      "optional": true
+    },
+    {
+      "name": "WITH INPUTS",
+      "description": "Chain multiple inputs together.",
+      "optional": true
+    },
+    {
+      "name": "WITHIN",
+      "description": "Time range for search input (e.g., WITHIN 5 MINUTES).",
+      "optional": true
+    },
+    {
+      "name": "ALWAYS DO",
+      "description": "Always execute actions regardless of input.",
+      "optional": true
+    },
+    {
+      "name": "NEVER DO",
+      "description": "Never execute actions (useful for testing).",
+      "optional": true
+    },
+    {
+      "name": "WHEN condition DO",
+      "description": "Execute actions when condition is true.",
+      "optional": true
+    },
+    {
+      "name": "WHEN SCRIPT DO",
+      "description": "Execute actions based on script evaluation.",
+      "optional": true
+    },
+    {
+      "name": "LOG",
+      "description": "Log action - writes to Elasticsearch log.",
+      "optional": true
+    },
+    {
+      "name": "WEBHOOK",
+      "description": "HTTP webhook action.",
+      "optional": true
+    },
+    {
+      "name": "AS",
+      "description": "Optional keyword before action definition.",
+      "optional": true
+    },
+    {
+      "name": "FOREACH",
+      "description": "Execute action for each element in array.",
+      "optional": true
+    },
+    {
+      "name": "LIMIT",
+      "description": "Maximum number of action executions.",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Simple monitoring watcher",
+      "description": "Monitor for errors every 5 minutes",
+      "sql": "CREATE WATCHER error_monitor AS\n  EVERY 5 MINUTES\n  FROM logs WHERE level = 'ERROR' WITHIN 5 MINUTES\n  WHEN ctx.payload.hits.total > 10 DO\n  alert LOG 'High error rate: {{ctx.payload.hits.total}} errors' AT ERROR\nEND"
+    },
+    {
+      "title": "Cron-scheduled watcher",
+      "description": "Run at specific times using cron",
+      "sql": "CREATE WATCHER daily_report AS\n  AT SCHEDULE '0 0 9 * * ?'\n  FROM sales WHERE date >= 'now-1d' WITHIN 1 DAY\n  ALWAYS DO\n  report LOG 'Daily sales: {{ctx.payload.hits.total}} transactions' AT INFO\nEND"
+    },
+    {
+      "title": "Webhook notification",
+      "description": "Send webhook on threshold breach",
+      "sql": "CREATE WATCHER cpu_alert AS\n  EVERY 1 MINUTE\n  FROM metrics WHERE cpu_usage > 90 WITHIN 5 MINUTES\n  WHEN ctx.payload.hits.total > 0 DO\n  notify WEBHOOK POST 'https://hooks.example.com/alert'\n    HEADERS ('Content-Type' = 'application/json', 'Authorization' = 'Bearer token')\n    BODY '{\"text\": \"High CPU: {{ctx.payload.hits.total}} instances\"}'\nEND"
+    },
+    {
+      "title": "Webhook with decomposed URL",
+      "description": "HTTP request with separate URL components",
+      "sql": "CREATE WATCHER api_monitor AS\n  EVERY 10 MINUTES\n  WITH INPUT GET PROTOCOL https HOST 'api.example.com' PORT 443 PATH '/health'\n    HEADERS ('Accept' = 'application/json')\n    TIMEOUT (connection = '5s', read = '10s')\n  WHEN ctx.payload.status != 'healthy' DO\n  alert LOG 'API unhealthy: {{ctx.payload.status}}' AT ERROR\nEND"
+    },
+    {
+      "title": "Multiple inputs",
+      "description": "Combine search and HTTP inputs",
+      "sql": "CREATE OR REPLACE WATCHER multi_input AS\n  EVERY 5 MINUTES\n  WITH INPUTS\n    search_data FROM my_index WITHIN 1 MINUTE,\n    http_data GET 'https://api.example.com/status' HEADERS ('Accept' = 'application/json')\n  WHEN ctx.payload.search_data.hits.total > 0 DO\n  alert LOG 'Found {{ctx.payload.search_data.hits.total}} items' AT INFO\nEND"
+    },
+    {
+      "title": "Script condition",
+      "description": "Complex condition using Painless script",
+      "sql": "CREATE WATCHER script_watcher AS\n  EVERY 1 HOUR\n  FROM orders WITHIN 1 HOUR\n  WHEN SCRIPT 'ctx.payload.hits.total > params.threshold && ctx.payload.aggregations.avg_value.value > params.min_value'\n    USING LANG 'painless'\n    WITH PARAMS (threshold = 100, min_value = 50.0)\n    RETURNS TRUE\n  DO\n  notify LOG 'Threshold exceeded' AT WARN\nEND"
+    },
+    {
+      "title": "Foreach action",
+      "description": "Execute action for each result",
+      "sql": "CREATE WATCHER foreach_watcher AS\n  EVERY 5 MINUTES\n  FROM alerts WHERE status = 'new' WITHIN 5 MINUTES\n  WHEN ctx.payload.hits.total > 0 DO\n  notify LOG 'Alert: {{ctx.payload._source.message}}' AT WARN\n    FOREACH 'ctx.payload.hits.hits' LIMIT 100\nEND"
+    }
+  ],
+  "notes": [
+    "Supported time units: MILLISECONDS, SECONDS, MINUTES, HOURS, DAYS, WEEKS, MONTHS, YEARS",
+    "Supported HTTP methods: HEAD, GET, POST, PUT, DELETE (PATCH not supported)",
+    "The AS keyword before action definitions is optional",
+    "HTTP requests can use full URL string or decomposed components (PROTOCOL, HOST, PORT, PATH, PARAMS)",
+    "Use mustache templates ({{...}}) for dynamic values in messages and bodies",
+    "Log levels: DEBUG, INFO, WARN, ERROR"
+  ],
+  "limitations": [
+    "Email action not supported",
+    "Slack action not supported",
+    "PagerDuty action not supported",
+    "Jira action not supported",
+    "Index action not supported",
+    "Transform at root level not supported",
+    "Transform at action level not supported",
+    "PATCH HTTP method not supported"
+  ],
+  "seeAlso": ["DROP WATCHER", "SHOW WATCHER STATUS", "SHOW WATCHERS"],
+  "minVersion": null,
+  "aliases": []
+}

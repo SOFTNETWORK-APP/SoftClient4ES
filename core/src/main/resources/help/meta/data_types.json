@@ -1,0 +1,133 @@
+{
+  "name": "Data Types",
+  "category": "Reference",
+  "description": "Supported SQL data types and their Elasticsearch mappings",
+  "types": [
+    {
+      "sqlType": "NULL",
+      "aliases": [],
+      "esType": "null",
+      "description": "null value",
+      "examples": [null]
+    },
+    {
+      "sqlType": "INT",
+      "aliases": ["INTEGER"],
+      "esType": "integer",
+      "description": "32-bit signed integer (-2^31 to 2^31-1)",
+      "examples": ["42", "-100", "0"]
+    },
+    {
+      "sqlType": "BIGINT",
+      "aliases": ["LONG"],
+      "esType": "long",
+      "description": "64-bit signed integer (-2^63 to 2^63-1)",
+      "examples": ["9223372036854775807", "-1"]
+    },
+    {
+      "sqlType": "SMALLINT",
+      "aliases": ["SHORT"],
+      "esType": "short",
+      "description": "16-bit signed integer (-32768 to 32767)",
+      "examples": ["100", "-1000"]
+    },
+    {
+      "sqlType": "TINYINT",
+      "aliases": ["BYTE"],
+      "esType": "byte",
+      "description": "8-bit signed integer (-128 to 127)",
+      "examples": ["127", "-128"]
+    },
+    {
+      "sqlType": "DOUBLE",
+      "aliases": ["DOUBLE PRECISION", "FLOAT8"],
+      "esType": "double",
+      "description": "64-bit IEEE 754 floating point",
+      "examples": ["3.14159", "-0.001", "1.23e10"]
+    },
+    {
+      "sqlType": "REAL",
+      "aliases": ["FLOAT"],
+      "esType": "float",
+      "description": "32-bit IEEE 754 floating point",
+      "examples": ["3.14", "-0.5"]
+    },
+    {
+      "sqlType": "BOOLEAN",
+      "aliases": [],
+      "esType": "boolean",
+      "description": "True or false value",
+      "examples": ["true", "false", "TRUE", "FALSE"]
+    },
+    {
+      "sqlType": "VARCHAR",
+      "aliases": ["TEXT"],
+      "esType": "text",
+      "description": "Variable-length character string (analyzed)",
+      "examples": ["'Hello World'", "'user@example.com'"]
+    },
+    {
+      "sqlType": "KEYWORD",
+      "aliases": [],
+      "esType": "keyword",
+      "description": "Exact-match string (not analyzed)",
+      "examples": ["'status'", "'product_code'"]
+    },
+    {
+      "sqlType": "DATE",
+      "aliases": [],
+      "esType": "date",
+      "description": "Calendar date (year, month, day)",
+      "examples": ["'2024-01-15'", "DATE '2024-01-15'"]
+    },
+    {
+      "sqlType": "TIMESTAMP",
+      "aliases": ["DATETIME"],
+      "esType": "date",
+      "description": "Date and time with timezone",
+      "examples": ["'2024-01-15T10:30:00Z'", "TIMESTAMP '2024-01-15 10:30:00'"]
+    },
+    {
+      "sqlType": "TIME",
+      "aliases": [],
+      "esType": "date",
+      "description": "Time of day",
+      "examples": ["'10:30:00'", "TIME '14:45:30'"]
+    },
+    {
+      "sqlType": "VARBINARY",
+      "aliases": [],
+      "esType": "binary",
+      "description": "Binary data (Base64 encoded)",
+      "examples": ["X'48454C4C4F'"]
+    },
+    {
+      "sqlType": "GEO_POINT",
+      "aliases": [],
+      "esType": "geo_point",
+      "description": "Geographic point (lat/lon)",
+      "examples": ["{lat: 48.8566, lon: 2.3522}", "POINT(2.3522, 48.8566)"]
+    },
+    {
+      "sqlType": "STRUCT",
+      "aliases": ["OBJECT", "ROW"],
+      "esType": "object",
+      "description": "Nested object with named fields",
+      "examples": ["{city = 'Paris', country = 'France'}"]
+    },
+    {
+      "sqlType": "ARRAY<T>",
+      "aliases": [],
+      "esType": "esType (of T)",
+      "description": "Array of elements of type T",
+      "examples": ["[1, 2, 3]", "['a', 'b', 'c']"]
+    },
+    {
+      "sqlType": "ARRAY<STRUCT>",
+      "aliases": [],
+      "esType": "nested",
+      "description": "Array of nested objects",
+      "examples": ["[{name: 'A'}, {name: 'B'}]"]
+    }
+  ]
+}

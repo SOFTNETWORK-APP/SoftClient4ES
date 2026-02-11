@@ -1,0 +1,36 @@
+{
+  "name": "DROP WATCHER",
+  "category": "DDL",
+  "shortDescription": "Delete a watcher",
+  "syntax": [
+    "DROP WATCHER [IF EXISTS] watcher_name"
+  ],
+  "description": "Delete an Elasticsearch watcher. The watcher will stop executing immediately.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Don't raise an error if the watcher doesn't exist",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Drop a watcher",
+      "description": "Delete a watcher",
+      "sql": "DROP WATCHER old_monitor"
+    },
+    {
+      "title": "Drop if exists",
+      "description": "Safely drop a watcher",
+      "sql": "DROP WATCHER IF EXISTS temporary_watcher"
+    }
+  ],
+  "notes": [
+    "Watcher execution stops immediately",
+    "Historical execution data may be preserved in watch history index"
+  ],
+  "limitations": [],
+  "seeAlso": ["CREATE WATCHER", "SHOW WATCHERS"],
+  "minVersion": null,
+  "aliases": []
+}

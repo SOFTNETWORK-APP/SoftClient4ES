@@ -29,7 +29,7 @@ import scala.reflect.ClassTag
 
 /** Index Management API
   */
-trait IndexApi extends ElasticClientHelpers { _: SettingsApi with SerializationApi =>
+trait IndexApi extends ElasticClientHelpers { _: SettingsApi =>
 
   // ========================================================================
   // PUBLIC METHODS

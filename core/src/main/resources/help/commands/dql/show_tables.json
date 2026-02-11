@@ -1,0 +1,37 @@
+{
+  "name": "SHOW TABLES",
+  "category": "DQL",
+  "shortDescription": "List all tables in the database",
+  "syntax": [
+    "SHOW TABLES",
+    "SHOW TABLES LIKE 'pattern'"
+  ],
+  "description": "List all Elasticsearch indices (tables) in the cluster. Optionally filter by name pattern.",
+  "clauses": [
+    {
+      "name": "LIKE",
+      "description": "Filter tables by name pattern (supports wildcards)",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Show all tables",
+      "description": "List all indices",
+      "sql": "SHOW TABLES"
+    },
+    {
+      "title": "Show tables with pattern",
+      "description": "Filter tables by name",
+      "sql": "SHOW TABLES LIKE 'logs_*'"
+    }
+  ],
+  "notes": [
+    "System indices (starting with .) are excluded by default",
+    "Returns table name, type, and document count"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW TABLE", "DESCRIBE TABLE", "CREATE TABLE"],
+  "minVersion": null,
+  "aliases": ["SHOW INDICES", "SHOW INDEXES"]
+}

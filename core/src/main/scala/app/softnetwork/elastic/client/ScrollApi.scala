@@ -33,12 +33,14 @@ import app.softnetwork.elastic.sql.query.{
   DqlStatement,
   MultiSearch,
   SQLAggregation,
+  SearchStatement,
   SelectStatement,
   SingleSearch
 }
 import org.json4s.{Formats, JNothing}
 import org.json4s.jackson.JsonMethods.parse
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.experimental.macros
 import scala.util.{Failure, Success}
@@ -123,9 +125,9 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
-    statement: DqlStatement,
+    statement: SearchStatement,
     config: ScrollConfig = ScrollConfig()
-  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  )(implicit system: ActorSystem): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     implicit def timestamp: Long = System.currentTimeMillis()
     statement match {
       // Select statement
@@ -179,26 +181,26 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed]
 
   /** Search After (only for hits, more efficient)
     */
   private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed]
 
   private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed]
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed]
 
   /** Typed scroll source converting results into typed entities from an SQL query
     *
@@ -271,7 +273,7 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   private def determineScrollStrategy(
     elasticQuery: ElasticQuery,
-    aggregations: Map[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation]
   ): ScrollStrategy = {
     // If aggregations are present, use classic scrolling
     if (aggregations.nonEmpty) {
@@ -302,11 +304,11 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   private def scrollWithMetrics(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  )(implicit system: ActorSystem): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
 
@@ -334,9 +336,11 @@ trait ScrollApi extends ElasticClientHelpers {
         }
 
       }
-      .alsoTo(Sink.last.mapMaterializedValue { lastFuture =>
+      .alsoTo(Sink.lastOption.mapMaterializedValue { lastFuture =>
         lastFuture
-          .map(_._2)
+          .map(opt =>
+            opt.map(_._2).getOrElse(config.metrics)
+          ) // Get final metrics or fallback to current
           .onComplete {
             case Success(finalMetrics) =>
               val completed = finalMetrics.complete
@@ -366,11 +370,11 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   private def scroll(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     val strategy = determineScrollStrategy(elasticQuery, aggregations)
 
     logger.info(
@@ -408,7 +412,7 @@ trait ScrollApi extends ElasticClientHelpers {
   )(implicit
     system: ActorSystem,
     timestamp: Long
-  ): Source[(Map[String, Any], ScrollMetrics), NotUsed] = {
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
 

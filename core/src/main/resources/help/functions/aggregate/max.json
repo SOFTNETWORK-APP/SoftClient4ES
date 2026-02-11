@@ -1,0 +1,43 @@
+{
+  "name": "MAX",
+  "category": "Aggregate",
+  "shortDescription": "Find the maximum value",
+  "syntax": [
+    "MAX(column)",
+    "MAX(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Aggregate function that returns the maximum value in a column.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "ANY",
+      "description": "Column to find maximum value",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as input",
+  "examples": [
+    {
+      "title": "Maximum value",
+      "description": "Find highest price",
+      "sql": "SELECT MAX(price) as highest_price FROM products"
+    },
+    {
+      "title": "Maximum date",
+      "description": "Find most recent date",
+      "sql": "SELECT MAX(updated_at) as last_update FROM users"
+    },
+    {
+      "title": "Maximum by group",
+      "description": "Maximum per category",
+      "sql": "SELECT category, MAX(price) as max_price\nFROM products\nGROUP BY category"
+    }
+  ],
+  "notes": [
+    "Works with numeric, date, and string types",
+    "NULL values are ignored"
+  ],
+  "seeAlso": ["MIN", "AVG", "SUM"],
+  "aliases": []
+}

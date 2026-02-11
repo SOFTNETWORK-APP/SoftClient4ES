@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.fasterxml.jackson.databind.node.ObjectNode
 
 import java.util.UUID
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
 
@@ -34,6 +35,10 @@ package object schema {
   type Schema = Table
 
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
+
+  // ========================================================================
+  // PIPELINE COMPONENTS
+  // ========================================================================
 
   sealed trait IngestProcessorType {
     def name: String
@@ -77,7 +82,29 @@ package object schema {
     def sql: String // = s"${processorType.name.toUpperCase}${Value(properties).ddl}"
     def description: Option[String]
     def name: String = processorType.name
-    def properties: Map[String, Any]
+    def properties: ListMap[String, Any]
+    def boolToString(b: Boolean): String = if (b) "yes" else "no"
+    def describe: ListMap[String, Any] = {
+      ListMap(
+        "processor_type" -> processorType.name,
+        "description"    -> description.getOrElse(sql),
+        "field"          -> column,
+        "ignore_failure" -> boolToString(ignoreFailure)
+      ) ++ ListMap(
+        "options" -> ObjectValue(
+          properties
+            .filterNot(p =>
+              Set(
+                "processor_type",
+                "description",
+                "field",
+                "ignore_failure"
+              ).contains(p._1)
+            )
+            .map(kv => kv._1 -> Value(kv._2))
+        ).ddl
+      )
+    }
 
     private def normalizeValue(v: Any): Any = v match {
       case s: String     => s.trim
@@ -160,7 +187,13 @@ package object schema {
 
       processorType match {
         case IngestProcessorType.Set.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"SET processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
           val valueNode = Option(props.get("value"))
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
@@ -211,7 +244,7 @@ package object schema {
 
         case IngestProcessorType.Script.name =>
           val desc = Option(props.get("description")).map(_.asText())
-          val lang = props.get("lang").asText()
+          val lang = Option(props.get("lang")).map(_.asText()).getOrElse("painless")
           require(lang == "painless", s"Only painless supported, got $lang")
           val source = props.get("source").asText()
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
@@ -231,19 +264,36 @@ package object schema {
               GenericProcessor(
                 pipelineType = pipelineType,
                 processorType = IngestProcessorType.Script,
-                properties =
-                  mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+                properties = props
               )
           }
 
         case IngestProcessorType.DateIndexName.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"date_index_name processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
-          val rounding = props.get("date_rounding").asText()
+          val rounding = Option(props.get("date_rounding"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"date_index_name processor must have a 'date_rounding' property, got: $props"
+              )
+            )
           val formats = Option(props.get("date_formats"))
             .map(_.elements().asScala.toList.map(_.asText()))
             .getOrElse(Nil)
-          val prefix = props.get("index_name_prefix").asText()
+          val prefix = Option(props.get("index_name_prefix"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"date_index_name processor must have an 'index_name_prefix' property, got: $props"
+              )
+            )
 
           DateIndexNameProcessor(
             pipelineType = pipelineType,
@@ -255,7 +305,13 @@ package object schema {
           )
 
         case IngestProcessorType.Remove.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"remove processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
 
           RemoveProcessor(
@@ -267,7 +323,13 @@ package object schema {
         case IngestProcessorType.Rename.name =>
           val field = props.get("field").asText()
           val desc = Option(props.get("description")).map(_.asText())
-          val targetField = props.get("target_field").asText()
+          val targetField = Option(props.get("target_field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"rename processor must have a 'target_field' property, got: $props"
+              )
+            )
 
           RenameProcessor(
             pipelineType = pipelineType,
@@ -277,26 +339,52 @@ package object schema {
           )
 
         case IngestProcessorType.Enrich.name =>
-          val field = props.get("field").asText()
+          val field = Option(props.get("field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"enrich processor must have a 'field' property, got: $props"
+              )
+            )
           val desc = Option(props.get("description")).map(_.asText())
-          val policyName = props.get("policy_name").asText()
-          val targetField = props.get("target_field").asText()
+          val policyName = Option(props.get("policy_name"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"enrich processor must have a 'policy_name' property, got: $props"
+              )
+            )
+          val targetField = Option(props.get("target_field"))
+            .map(_.asText())
+            .getOrElse(
+              throw new IllegalArgumentException(
+                s"enrich processor must have a 'target_field' property, got: $props"
+              )
+            )
           val maxMatches = Option(props.get("max_matches")).map(_.asInt()).getOrElse(1)
+          val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
+          val ignoreMissing = Option(props.get("ignore_missing")).map(_.asBoolean())
+          val overrideTarget = Option(props.get("override")).map(_.asBoolean())
+          val shapeRelation =
+            Option(props.get("shape_relation")).map(_.asText()).map(EnrichShapeRelation.apply)
           EnrichProcessor(
             pipelineType = pipelineType,
             description = desc,
             column = targetField,
             policyName = policyName,
             field = field,
-            maxMatches = maxMatches
+            maxMatches = maxMatches,
+            ignoreFailure = ignoreFailure,
+            ignoreMissing = ignoreMissing,
+            overrideTarget = overrideTarget,
+            shapeRelation = shapeRelation
           )
 
         case other =>
           GenericProcessor(
             pipelineType = pipelineType,
             processorType = IngestProcessorType(other),
-            properties =
-              mapper.convertValue(props, classOf[java.util.Map[String, Object]]).asScala.toMap
+            properties = props
           )
 
       }
@@ -306,7 +394,7 @@ package object schema {
   case class GenericProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     processorType: IngestProcessorType,
-    properties: Map[String, Any]
+    properties: ListMap[String, Any]
   ) extends IngestProcessor {
     override def description: Option[String] = properties.get("description") match {
       case Some(s: String) => Some(s)
@@ -339,7 +427,7 @@ package object schema {
 
     def processorType: IngestProcessorType = IngestProcessorType.Script
 
-    override def properties: Map[String, Any] = Map(
+    override def properties: ListMap[String, Any] = ListMap(
       "description"    -> description.getOrElse(sql),
       "lang"           -> "painless",
       "source"         -> source,
@@ -360,7 +448,7 @@ package object schema {
 
     override def sql: String = s"$column RENAME TO $newName"
 
-    override def properties: Map[String, Any] = Map(
+    override def properties: ListMap[String, Any] = ListMap(
       "description"    -> description.getOrElse(sql),
       "field"          -> column,
       "target_field"   -> newName,
@@ -382,7 +470,7 @@ package object schema {
 
     override def sql: String = s"REMOVE $column"
 
-    override def properties: Map[String, Any] = Map(
+    override def properties: ListMap[String, Any] = ListMap(
       "description"    -> description.getOrElse(sql),
       "field"          -> column,
       "ignore_failure" -> ignoreFailure
@@ -405,7 +493,7 @@ package object schema {
 
     override def sql: String = s"PRIMARY KEY (${value.mkString(", ")})"
 
-    override def properties: Map[String, Any] = Map(
+    override def properties: ListMap[String, Any] = ListMap(
       "description"    -> description.getOrElse(sql),
       "field"          -> column,
       "value"          -> value.mkString("{{", separator, "}}"),
@@ -429,7 +517,14 @@ package object schema {
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Set
 
+    def isDefault: Boolean = copyFrom.isEmpty && value != Null && (doIf match {
+      case Some(i) if i.contains(s"ctx.$column == null") => true
+      case _                                             => false
+    })
+
     override def sql: String = {
+      if (isDefault)
+        return s"$column SET DEFAULT ${value.sql}"
       val base = copyFrom match {
         case Some(source) => s"$column COPY FROM $source"
         case None         => s"$column SET VALUE ${value.sql}"
@@ -459,8 +554,8 @@ package object schema {
         }
     }
 
-    override def properties: Map[String, Any] = {
-      Map(
+    override def properties: ListMap[String, Any] = {
+      ListMap(
         "description"               -> description.getOrElse(sql),
         "field"                     -> column,
         "ignore_failure"            -> ignoreFailure
@@ -496,7 +591,7 @@ package object schema {
 
     override def sql: String = s"PARTITION BY $column (${TimeUnit(dateRounding).sql})"
 
-    override def properties: Map[String, Any] = Map(
+    override def properties: ListMap[String, Any] = ListMap(
       "description"       -> description.getOrElse(sql),
       "field"             -> column,
       "date_rounding"     -> dateRounding,
@@ -523,6 +618,39 @@ package object schema {
     }
   }
 
+  sealed trait EnrichShapeRelation extends DdlToken {
+    def name: String
+    def sql: String = name.toUpperCase
+  }
+
+  object EnrichShapeRelation {
+    case object Intersects extends EnrichShapeRelation {
+      val name: String = "intersects"
+    }
+
+    case object Disjoint extends EnrichShapeRelation {
+      val name: String = "disjoint"
+    }
+
+    case object Contains extends EnrichShapeRelation {
+      val name: String = "contains"
+    }
+
+    case object Within extends EnrichShapeRelation {
+      val name: String = "within"
+    }
+
+    case class Other(name: String) extends EnrichShapeRelation
+
+    def apply(n: String): EnrichShapeRelation = n.toLowerCase match {
+      case "intersects" => Intersects
+      case "disjoint"   => Disjoint
+      case "contains"   => Contains
+      case "within"     => Within
+      case other        => Other(other)
+    }
+  }
+
   case class EnrichProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     description: Option[String] = None,
@@ -530,7 +658,10 @@ package object schema {
     policyName: String,
     field: String,
     maxMatches: Int = 1,
-    ignoreFailure: Boolean = true
+    ignoreFailure: Boolean = true,
+    ignoreMissing: Option[Boolean] = None,
+    overrideTarget: Option[Boolean] = None,
+    shapeRelation: Option[EnrichShapeRelation] = None
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Enrich
 
@@ -538,15 +669,16 @@ package object schema {
 
     override def sql: String = s"ENRICH USING POLICY $policyName FROM $field INTO $targetField"
 
-    override def properties: Map[String, Any] = Map(
+    override def properties: ListMap[String, Any] = ListMap(
       "description"    -> description.getOrElse(sql),
       "policy_name"    -> policyName,
       "field"          -> field,
       "target_field"   -> targetField,
       "max_matches"    -> maxMatches,
       "ignore_failure" -> ignoreFailure
-    )
-
+    ) ++ ignoreMissing.map("ignore_missing" -> _).toMap ++
+      overrideTarget.map("override" -> _).toMap ++
+      shapeRelation.map("shape_relation" -> _.sql).toMap
   }
 
   sealed trait IngestPipelineType {
@@ -578,6 +710,7 @@ package object schema {
       val processorsNode = mapper.createArrayNode()
       processors.foreach { processor =>
         processorsNode.add(processor.node)
+        ()
       }
       node.put("description", sql)
       node.set("processors", processorsNode)
@@ -662,6 +795,8 @@ package object schema {
         )
       }
     }
+
+    def describe: Seq[ListMap[String, Any]] = processors.map(_.describe)
   }
 
   object IngestPipeline {
@@ -688,6 +823,33 @@ package object schema {
     }
   }
 
+  // ========================================================================
+  // SCHEMA COMPONENTS
+  // ========================================================================
+
+  /** Definition of a column within a table
+    *
+    * @param name
+    *   the column name
+    * @param dataType
+    *   the column SQL type
+    * @param script
+    *   optional script processor associated to this column
+    * @param multiFields
+    *   optional multi fields associated to this column
+    * @param defaultValue
+    *   optional default value for this column
+    * @param notNull
+    *   whether this column is not null
+    * @param comment
+    *   optional comment for this column
+    * @param options
+    *   optional options for this column (search analyzer, ...)
+    * @param struct
+    *   optional parent struct column
+    * @param lineage
+    *   sequence of (table, column) pairs indicating the lineage of this column
+    */
   case class Column(
     name: String,
     dataType: SQLType,
@@ -696,13 +858,17 @@ package object schema {
     defaultValue: Option[Value[_]] = None,
     notNull: Boolean = false,
     comment: Option[String] = None,
-    options: Map[String, Value[_]] = Map.empty,
-    struct: Option[Column] = None
+    options: ListMap[String, Value[_]] = ListMap.empty,
+    struct: Option[Column] = None,
+    lineage: ListMap[String, Seq[(String, String)]] =
+      ListMap.empty // ✅ Key = path ID, Value = chain
   ) extends DdlToken {
     def path: String = struct.map(st => s"${st.name}.$name").getOrElse(name)
     private def level: Int = struct.map(_.level + 1).getOrElse(0)
 
-    private def cols: Map[String, Column] = multiFields.map(field => field.name -> field).toMap
+    private def cols: ListMap[String, Column] = ListMap(
+      multiFields.map(field => field.name -> field): _*
+    )
 
     /* Recursive find */
     def find(path: String): Option[Column] = {
@@ -714,8 +880,20 @@ package object schema {
       }
     }
 
-    def _meta: Map[String, Value[_]] = {
-      Map(
+    /** Flattens all lineage paths into a set of (table, column) pairs */
+    def allLineageSources: Set[(String, String)] =
+      lineage.values.flatten.toSet
+
+    /** Gets the immediate sources (last element of each path) */
+    def immediateSources: Set[(String, String)] =
+      lineage.values.flatMap(_.lastOption).toSet
+
+    /** Gets the original sources (first element of each path) */
+    def originalSources: Set[(String, String)] =
+      lineage.values.flatMap(_.headOption).toSet
+
+    def _meta: ListMap[String, Value[_]] = {
+      ListMap(
         "data_type" -> StringValue(dataType.typeId),
         "not_null"  -> StringValue(s"$notNull")
       ) ++ defaultValue.map(d => "default_value" -> d) ++ comment.map(ct =>
@@ -723,18 +901,36 @@ package object schema {
       ) ++ script
         .map { sc =>
           ObjectValue(
-            Map(
+            ListMap(
               "sql"      -> StringValue(sc.script),
               "column"   -> StringValue(path),
               "painless" -> StringValue(sc.source)
             )
           )
         }
-        .map("script" -> _) ++ Map(
+        .map("script" -> _) ++ ListMap(
         "multi_fields" -> ObjectValue(
-          multiFields.map(field => field.name -> ObjectValue(field._meta)).toMap
+          ListMap(multiFields.map(field => field.name -> ObjectValue(field._meta)): _*)
         )
-      )
+      ) ++ (if (lineage.nonEmpty) {
+              // ✅ Lineage as map of paths
+              ListMap(
+                "lineage" -> ObjectValue(
+                  lineage.map { case (pathId, chain) =>
+                    pathId -> ObjectValues(
+                      chain.map { case (table, column) =>
+                        ObjectValue(
+                          ListMap(
+                            "table"  -> StringValue(table),
+                            "column" -> StringValue(column)
+                          )
+                        )
+                      }
+                    )
+                  }
+                )
+              )
+            } else ListMap.empty)
     }
 
     def updateStruct(): Column = {
@@ -785,17 +981,22 @@ package object schema {
       s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
-    def asMap: Seq[Map[String, Any]] = Seq(
-      Map(
-        "name"    -> path,
-        "type"    -> dataType.typeId,
-        "script"  -> script.map(_.script),
-        "default" -> defaultValue.map(_.value).getOrElse(""),
-        "notNull" -> notNull,
-        "comment" -> comment.getOrElse(""),
-        "options" -> ObjectValue(options).ddl
+    def asMap(table: Table): Seq[ListMap[String, Any]] = Seq(
+      ListMap(
+        "Field" -> path,
+        "Type"  -> dataType.typeId,
+        "Null" -> (if (notNull) {
+                     "no"
+                   } else {
+                     "yes"
+                   }),
+        "Key"     -> (if (table.primaryKey.contains(path)) "PRI" else ""),
+        "Default" -> defaultValue.map(_.value).getOrElse("NULL"),
+        "Comment" -> comment.getOrElse(""),
+        "Script"  -> script.map(_.script).getOrElse(""),
+        "Extra"   -> ObjectValue(options).ddl
       )
-    ) ++ multiFields.flatMap(_.asMap)
+    ) ++ multiFields.flatMap(_.asMap(table))
 
     def processors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
@@ -821,7 +1022,7 @@ package object schema {
           defaultValue.foreach {
             case IngestTimestampValue => () // do not set null_value for ingest timestamp
             case dv => // set null_value for other types
-              updateNode(root, Map("null_value" -> dv))
+              updateNode(root, ListMap("null_value" -> dv))
           }
       }
       if (multiFields.nonEmpty) {
@@ -1041,7 +1242,7 @@ package object schema {
   case class TableAlias(
     table: String,
     alias: String,
-    filter: Map[String, Any] = Map.empty,
+    filter: ListMap[String, Any] = ListMap.empty,
     routing: Option[String] = None,
     indexRouting: Option[String] = None,
     searchRouting: Option[String] = None,
@@ -1094,7 +1295,7 @@ package object schema {
       val filter = obj.value.get("filter") match {
         case Some(ObjectValue(f)) =>
           f.map { case (k, v) => k -> v.value }
-        case _ => Map.empty[String, Any]
+        case _ => ListMap.empty[String, Any]
       }
       val routing = obj.value.get("routing") match {
         case Some(StringValue(r)) => Some(r)
@@ -1129,6 +1330,42 @@ package object schema {
     }
   }
 
+  sealed trait TableType {
+    def name: String
+  }
+
+  object TableType {
+    case object Regular extends TableType {
+      override def name: String = "regular"
+    }
+    case object External extends TableType {
+      override def name: String = "external"
+    }
+    case object Changelog extends TableType {
+      override def name: String = "changelog"
+    }
+    case object Enrichment extends TableType {
+      override def name: String = "enrichment"
+    }
+    case object View extends TableType {
+      override def name: String = "view"
+    }
+    case object MaterializedView extends TableType {
+      override def name: String = "materialized_view"
+    }
+
+    def apply(name: String): TableType =
+      name.toLowerCase match {
+        case "regular"           => Regular
+        case "external"          => External
+        case "changelog"         => Changelog
+        case "enrichment"        => Enrichment
+        case "view"              => View
+        case "materialized_view" => MaterializedView
+        case other               => throw new Exception(s"Unknown table type: $other")
+      }
+  }
+
   /** Definition of a table within the schema
     *
     * @param name
@@ -1147,19 +1384,31 @@ package object schema {
     *   optional list of ingest processors associated to this table (apart from column processors)
     * @param aliases
     *   optional map of aliases associated to this table
+    * @param materializedViews
+    *   optional list of materialized views associated to this table
+    * @param materializedView
+    *   whether this table is a materialized view
     */
   case class Table(
     name: String,
     columns: List[Column],
     primaryKey: List[String] = Nil,
     partitionBy: Option[PartitionDate] = None,
-    mappings: Map[String, Value[_]] = Map.empty,
-    settings: Map[String, Value[_]] = Map.empty,
+    mappings: ListMap[String, Value[_]] = ListMap.empty,
+    settings: ListMap[String, Value[_]] = ListMap.empty,
     processors: Seq[IngestProcessor] = Seq.empty,
-    aliases: Map[String, Value[_]] = Map.empty
+    aliases: ListMap[String, Value[_]] = ListMap.empty,
+    materializedViews: List[String] = Nil,
+    tableType: TableType = TableType.Regular
   ) extends DdlToken {
+    lazy val isRegular: Boolean = tableType == TableType.Regular
+
+    lazy val isPartitioned: Boolean = partitionBy.isDefined
+
     lazy val indexName: String = name.toLowerCase
-    private[schema] lazy val cols: Map[String, Column] = columns.map(c => c.name -> c).toMap
+    private[schema] lazy val cols: ListMap[String, Column] = ListMap(
+      columns.map(c => c.name -> c): _*
+    )
 
     def find(path: String): Option[Column] = {
       if (path.contains(".")) {
@@ -1170,43 +1419,55 @@ package object schema {
       }
     }
 
-    private lazy val _meta: Map[String, Value[_]] = Map.empty ++ {
+    private lazy val _meta: ListMap[String, Value[_]] = ListMap.empty ++ ListMap({
       if (primaryKey.nonEmpty)
         Option("primary_key" -> StringValues(primaryKey.map(StringValue)))
       else
         None
-    }.toMap ++ partitionBy
+    }.toList: _*) ++ partitionBy
       .map(pb =>
-        Map(
+        ListMap(
           "partition_by" -> ObjectValue(
-            Map(
+            ListMap(
               "column"      -> StringValue(pb.column),
               "granularity" -> StringValue(pb.granularity.script.get)
             )
           )
         )
       )
-      .getOrElse(Map.empty) ++
-      Map("columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) }))
+      .getOrElse(ListMap.empty) ++
+      ListMap(
+        "columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) })
+      ) ++ ListMap(
+        "type" -> StringValue(tableType.name)
+      ) ++ ListMap(
+        "materialized_views" -> StringValues(materializedViews.map(StringValue))
+      )
 
     def update(): Table = {
       val updated =
         this.copy(columns = columns.map(_.update())) // update columns first with struct info
       updated.copy(
-        mappings = updated.mappings ++ Map(
+        mappings = updated.mappings ++ ListMap(
           "_meta" ->
           ObjectValue(updated.mappings.get("_meta") match {
             case Some(ObjectValue(value)) =>
-              (value - "primary_key" - "partition_by" - "columns") ++ updated._meta
+              (value - "primary_key" - "partition_by" - "columns" - "materialized_views" - "type") ++ updated._meta
             case _ => updated._meta
           })
         )
       )
     }
 
+    lazy val metadata: ListMap[String, Any] =
+      mappings.get("_meta") match {
+        case Some(ObjectValue(value)) => ObjectValue(value)
+        case _                        => ListMap.empty
+      }
+
     def sql: String = {
       val opts =
-        if (mappings.nonEmpty || settings.nonEmpty) {
+        if (mappings.nonEmpty || settings.nonEmpty || aliases.nonEmpty) {
           val mappingOpts =
             if (mappings.nonEmpty) {
               s"mappings = ${ObjectValue(mappings).ddl}"
@@ -1226,17 +1487,23 @@ package object schema {
               ""
             }
           val separator = if (partitionBy.nonEmpty) "," else ""
-          s"$separator OPTIONS = (${Seq(mappingOpts, settingsOpts, aliasesOpts).filter(_.nonEmpty).mkString(", ")})"
+          s"$separator\nOPTIONS = ${Seq(
+            mappingOpts,
+            settingsOpts,
+            aliasesOpts
+          )
+            .filter(_.nonEmpty)
+            .mkString("(\n\t", ",\n\t", "\n)")}"
         } else {
           ""
         }
       val cols = columns.map(_.sql).mkString(",\n\t")
       val pkStr = if (primaryKey.nonEmpty) {
-        s",\n\tPRIMARY KEY (${primaryKey.mkString(", ")})\n"
+        s",\n\tPRIMARY KEY (${primaryKey.mkString(", ")})"
       } else {
         ""
       }
-      s"CREATE OR REPLACE TABLE $name (\n\t$cols$pkStr)${partitionBy.getOrElse("")}$opts"
+      s"CREATE OR REPLACE TABLE $name (\n\t$cols$pkStr\n)${partitionBy.map(p => s"\n$p").getOrElse("")}$opts"
     }
 
     def tableProcessors: Seq[IngestProcessor] =
@@ -1245,6 +1512,8 @@ package object schema {
         .toSeq ++ implicitly[Seq[IngestProcessor]](primaryKey)
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
+      if (!isRegular)
+        throw new Exception(s"Cannot alter table $name of type ${tableType.name}")
       statements
         .foldLeft(this) { (table, statement) =>
           statement match {
@@ -1507,7 +1776,7 @@ package object schema {
           val colName = field.fieldAlias.map(_.alias).getOrElse(field.sourceField)
           val col = this.find(colName) match {
             case Some(c) if field.functions.isEmpty => c
-            case None =>
+            case _ =>
               Column(
                 name = colName,
                 dataType = field.out
@@ -1624,9 +1893,20 @@ package object schema {
       node
     }
 
-    lazy val indexAliases: Seq[TableAlias] = aliases.map { case (aliasName, value) =>
-      TableAlias(name, aliasName, value)
-    }.toSeq
+    lazy val indexAliases: Seq[TableAlias] = {
+      val temp = aliases.map { case (aliasName, value) =>
+        TableAlias(name, aliasName, value)
+      }.toSeq
+      // add default read only alias name for partitioned tables
+      /*if(isPartitioned){
+        temp :+ TableAlias(
+          table = name,
+          alias = name,
+          isWriteIndex = false
+        )
+      } else*/
+      temp
+    }
 
     lazy val indexTemplate: ObjectNode = {
       val node = mapper.createObjectNode()
@@ -1637,7 +1917,7 @@ package object schema {
       val template = mapper.createObjectNode()
       template.set("mappings", indexMappings)
       template.set("settings", indexSettings)
-      if (aliases.nonEmpty) {
+      if (indexAliases.nonEmpty) {
         val aliasesNode = mapper.createObjectNode()
         indexAliases.foreach { alias =>
           aliasesNode.set(alias.alias, alias.node)
@@ -1714,6 +1994,8 @@ package object schema {
         aliases = aliasDiffs.toList
       )
     }
+
+    def describe: Seq[ListMap[String, Any]] = columns.flatMap(_.asMap(this))
   }
 
 }

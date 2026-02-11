@@ -19,6 +19,36 @@ DQL supports:
 
 ---
 
+## Table of Contents
+
+- [SELECT](#select)
+- [WHERE](#where)
+- [ORDER BY](#order-by)
+- [LIMIT / OFFSET](#limit--offset)
+- [UNION ALL](#union-all)
+- [JOIN UNNEST](#join-unnest)
+- [Aggregations](#aggregations)
+- [Parent-Level Aggregations on Nested Arrays](#parent-level-aggregations-on-nested-arrays)
+- [Window Functions](#window-functions)
+- [Functions](#functions)
+- [Scroll & Pagination](#scroll--pagination)
+- [Version Compatibility](#version-compatibility)
+- [Limitations](#limitations)
+- [SHOW TABLES](#show-tables)
+- [SHOW TABLE](#show-table)
+- [SHOW CREATE TABLE](#show-create-table)
+- [DESCRIBE TABLE](#describe-table)
+- [SHOW PIPELINES](#show-pipelines)
+- [SHOW PIPELINE](#show-pipeline)
+- [SHOW CREATE PIPELINE](#show-create-pipeline)
+- [DESCRIBE PIPELINE](#describe-pipeline)
+- [SHOW WATCHERS](#show-watchers)
+- [SHOW WATCHER STATUS](#show-watcher-status)
+- [SHOW ENRICH POLICIES](#show-enrich-policies)
+- [SHOW ENRICH POLICY](#show-enrich-policy)
+
+---
+
 ## SELECT
 
 #### Basic syntax
@@ -124,6 +154,8 @@ LIMIT 10 OFFSET 20;
 ```
 
 ---
+
+## UNION ALL
 
 `UNION ALL` combines the results of multiple `SELECT` queries **without removing duplicates**.
 
@@ -692,6 +724,563 @@ Even though the DQL engine is powerful, some SQL features are not (yet) supporte
 - No explicit window frame clauses (`ROWS BETWEEN ...`)
 
 These constraints keep the translation to Elasticsearch efficient and predictable.
+
+---
+
+## SHOW TABLES
+
+```sql
+SHOW TABLES [LIKE 'pattern'];
+```
+
+Returns a list of all tables with summary information (name, type, primary key, partitioning).
+
+May be filtered using `LIKE` with SQL wildcard `%`.
+
+**Example:*
+
+```sql
+CREATE TABLE IF NOT EXISTS show_users (
+  id INT NOT NULL,
+  name VARCHAR FIELDS(
+    raw KEYWORD
+  ) OPTIONS (fielddata = true),
+  age INT DEFAULT 0,
+  PRIMARY KEY (id)
+);
+
+SHOW TABLES LIKE 'show_%';
+```
+
+| name       | type    | pk | partitioned |
+|------------|---------|----|-------------|
+| show_users | REGULAR | id |             |
+📊 1 row(s) (7ms)
+
+---
+
+## SHOW TABLE
+
+Returns:
+
+- schema summary
+- primary key
+- partitioning
+- settings
+- mappings
+- ddl
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id INT NOT NULL COMMENT 'user identifier',
+  name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
+  birthdate DATE,
+  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
+  profile STRUCT FIELDS(
+    bio VARCHAR,
+    followers INT,
+    join_date DATE,
+    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+  ) COMMENT 'user profile',
+  PRIMARY KEY (id)
+) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false));
+
+SHOW TABLE users;
+```
+
+📋 Table: users [Regular]
+
+| Field             | Type      | Null | Key | Default           | Comment         | Script                                          | Extra                                             |
+|-------------------|-----------|------|-----|-------------------|-----------------|-------------------------------------------------|---------------------------------------------------|
+| age               | INT       | yes  |     | NULL              |                 | DATE_DIFF(birthdate, CURRENT_DATE, YEAR)        | ()                                                |
+| birthdate         | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
+| id                | INT       | no   | PRI | NULL              | user identifier |                                                 | ()                                                |
+| ingested_at       | TIMESTAMP | yes  |     | _ingest.timestamp |                 |                                                 | ()                                                |
+| name              | VARCHAR   | yes  |     | anonymous         |                 |                                                 | (analyzer = "french", search_analyzer = "french") |
+| name.raw          | KEYWORD   | yes  |     | NULL              | sortable        |                                                 | ()                                                |
+| profile           | STRUCT    | yes  |     | NULL              | user profile    |                                                 | ()                                                |
+| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(profile.join_date, CURRENT_DATE, DAY) | ()                                                |
+| profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.bio       | VARCHAR   | yes  |     | NULL              |                 |                                                 | ()                                                |
+
+🔑 PRIMARY KEY id
+📅 PARTITION BY birthdate (MONTH)
+
+⚙️ Settings:
+default_pipeline: 'users_ddl_default_pipeline'
+
+
+🗺️ Mappings:
+dynamic: false
+_meta: (primary_key = ('id'), partition_by = (column = 'birthdate', granularity = 'M'), columns = (...), type = 'regular', materialized_views = ())
+
+
+📝 DDL:
+```sql
+CREATE OR REPLACE TABLE users (
+	age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
+	birthdate DATE,
+	id INT NOT NULL COMMENT 'user identifier',
+	ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
+	name VARCHAR FIELDS (
+		raw KEYWORD COMMENT 'sortable'
+	) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french"),
+	profile STRUCT FIELDS (
+		seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)),
+		join_date DATE,
+		followers INT,
+		bio VARCHAR
+	) COMMENT 'user profile',
+	PRIMARY KEY (id)
+)
+PARTITION BY birthdate (MONTH),
+OPTIONS = (
+	mappings = (dynamic = false, _meta = (primary_key = ["id"], partition_by = (column = "birthdate", granularity = "M"), columns = (...), type = "regular", materialized_views = [])),
+	settings = (default_pipeline = "users_ddl_default_pipeline")
+)
+```
+
+---
+
+## SHOW CREATE TABLE
+
+Returns the full, normalized DDL statement used to create the table, including all fields, types, options, comments, and scripts.
+
+```sql
+SHOW CREATE TABLE users;
+```
+
+```sql
+CREATE OR REPLACE TABLE users (
+	age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
+	birthdate DATE,
+	id INT NOT NULL COMMENT 'user identifier',
+	ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
+	name VARCHAR FIELDS (
+		raw KEYWORD COMMENT 'sortable'
+	) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french"),
+	profile STRUCT FIELDS (
+		seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)),
+		join_date DATE,
+		followers INT,
+		bio VARCHAR
+	) COMMENT 'user profile',
+	PRIMARY KEY (id)
+)
+PARTITION BY birthdate (MONTH),
+OPTIONS = (
+	mappings = (dynamic = false, _meta = (primary_key = ["id"], partition_by = (column = "birthdate", granularity = "M"), columns = (...), type = "regular", materialized_views = [])),
+	settings = (default_pipeline = "users_ddl_default_pipeline")
+)
+```
+
+## DESCRIBE TABLE
+
+```sql
+DESCRIBE TABLE users;
+```
+
+Returns the **normalized SQL schema**, including :
+
+- fields
+- types
+- nulls
+- keys
+- defaults
+- comments
+- scripts
+- STRUCT fields
+- options
+
+| Field             | Type      | Null | Key | Default           | Comment         | Script                                          | Extra                                             |
+|-------------------|-----------|------|-----|-------------------|-----------------|-------------------------------------------------|---------------------------------------------------|
+| age               | INT       | yes  |     | NULL              |                 | DATE_DIFF(birthdate, CURRENT_DATE, YEAR)        | ()                                                |
+| birthdate         | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
+| id                | INT       | no   | PRI | NULL              | user identifier |                                                 | ()                                                |
+| ingested_at       | TIMESTAMP | yes  |     | _ingest.timestamp |                 |                                                 | ()                                                |
+| name              | VARCHAR   | yes  |     | anonymous         |                 |                                                 | (analyzer = "french", search_analyzer = "french") |
+| name.raw          | KEYWORD   | yes  |     | NULL              | sortable        |                                                 | ()                                                |
+| profile           | STRUCT    | yes  |     | NULL              | user profile    |                                                 | ()                                                |
+| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(profile.join_date, CURRENT_DATE, DAY) | ()                                                |
+| profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.bio       | VARCHAR   | yes  |     | NULL              |                 |                                                 | ()                                                |
+
+---
+
+## SHOW PIPELINES
+
+```sql
+SHOW PIPELINES;
+```
+
+**Description**
+
+- Returns a list of all user-defined pipelines with summary information (name, number of processors)
+
+**Example**
+
+```sql
+SHOW PIPELINES;
+```
+
+| name                                             | processors_count |
+|--------------------------------------------------|------------------|
+| users_alter4_ddl_default_pipeline                | 1                |
+| user_pipeline                                    | 6                |
+| metrics-apm.transaction@default-pipeline         | 3                |
+| users_alter6_ddl_default_pipeline                | 1                |
+| tmp_truncate_ddl_default_pipeline                | 1                |
+| users_alter5_ddl_default_pipeline                | 3                |
+| logs@default-pipeline                            | 2                |
+| dql_users_ddl_default_pipeline                   | 1                |
+| apm@pipeline                                     | 4                |
+| logs-apm.error@default-pipeline                  | 3                |
+| metrics-apm.service_transaction@default-pipeline | 3                |
+| users_cr_ddl_default_pipeline                    | 1                |
+| users_alter2_ddl_default_pipeline                | 1                |
+| metrics-apm.internal@default-pipeline            | 6                |
+| traces-apm.rum@default-pipeline                  | 3                |
+| metrics-apm.app@default-pipeline                 | 3                |
+| users_alter1_ddl_default_pipeline                | 2                |
+| tmp_drop_ddl_default_pipeline                    | 1                |
+| dql_sales_ddl_default_pipeline                   | 1                |
+| ent-search-generic-ingestion                     | 6                |
+| logs@json-message                                | 4                |
+| users_alter3_ddl_default_pipeline                | 1                |
+| dml_users_ddl_default_pipeline                   | 1                |
+| traces-apm@default-pipeline                      | 3                |
+| metrics-apm@pipeline                             | 3                |
+| users_alter8_ddl_default_pipeline                | 5                |
+| dml_chain_ddl_default_pipeline                   | 1                |
+| users_ddl_default_pipeline                       | 6                |
+| copy_into_test_ddl_default_pipeline              | 1                |
+| accounts_src_ddl_default_pipeline                | 1                |
+| users_alter7_ddl_default_pipeline                | 1                |
+| dml_accounts_ddl_default_pipeline                | 1                |
+| reindex-data-stream-pipeline                     | 1                |
+| behavioral_analytics-events-final_pipeline       | 9                |
+| logs@json-pipeline                               | 4                |
+| logs-default-pipeline                            | 2                |
+| dql_orders_ddl_default_pipeline                  | 1                |
+| dml_logs_ddl_default_pipeline                    | 1                |
+| search-default-ingestion                         | 6                |
+| accounts_ddl_default_pipeline                    | 1                |
+| dql_geo_ddl_default_pipeline                     | 1                |
+| show_users_ddl_default_pipeline                  | 2                |
+| logs-apm.app@default-pipeline                    | 3                |
+| traces-apm@pipeline                              | 7                |
+| desc_users_ddl_default_pipeline                  | 2                |
+| metrics-apm.service_summary@default-pipeline     | 3                |
+| metrics-apm.service_destination@default-pipeline | 3                |
+📊 47 row(s) (10ms)
+
+---
+
+## SHOW PIPELINE
+
+```sql
+SHOW PIPELINE pipeline_name;
+```
+
+**Description**
+
+- Returns a high‑level view of the pipeline processors
+
+**Example**
+
+```sql
+SHOW PIPELINE user_pipeline;
+```
+
+🔄 Pipeline: user_pipeline
+
+Processors: (6)
+| processor_type  | description                                                                       | field             | ignore_failure | options                                                                                                                                                                                                                                                                                             |
+|-----------------|-----------------------------------------------------------------------------------|-------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| set             | DEFAULT 'anonymous'                                                               | name              | yes            | (value = "anonymous", if = "ctx.name == null")                                                                                                                                                                                                                                                      |
+| script          | age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))                      | age               | yes            | (lang = "painless", source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))")                       |
+| set             | DEFAULT _ingest.timestamp                                                         | ingested_at       | yes            | (value = "_ingest.timestamp", if = "ctx.ingested_at == null")                                                                                                                                                                                                                                       |
+| script          | profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)) | profile.seniority | yes            | (lang = "painless", source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))") |
+| date_index_name | PARTITION BY birthdate (MONTH)                                                    | birthdate         | yes            | (date_rounding = "M", date_formats = ["yyyy-MM"], index_name_prefix = "users-")                                                                                                                                                                                                                     |
+| set             | PRIMARY KEY (id)                                                                  | _id               | no             | (value = "{{id}}", ignore_empty_value = false)                                                                                                                                                                                                                                                      |
+
+📝 DDL:
+```sql
+CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
+	SET(
+		description = "DEFAULT 'anonymous'", 
+		field = "name", 
+		ignore_failure = true, 
+		value = "anonymous", 
+		if = "ctx.name == null"
+	), 
+	SCRIPT(
+		description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))", 
+		lang = "painless", 
+		source = "...", 
+		ignore_failure = true
+	), 
+	SET(
+		description = "DEFAULT _ingest.timestamp", 
+		field = "ingested_at", 
+		ignore_failure = true, 
+		value = "_ingest.timestamp", 
+		if = "ctx.ingested_at == null"
+	), 
+	SCRIPT(
+		description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))", 
+		lang = "painless", 
+		source = "...", 
+		ignore_failure = true
+	), 
+	DATE_INDEX_NAME(
+		description = "PARTITION BY birthdate (MONTH)", 
+		field = "birthdate", 
+		date_rounding = "M", 
+		date_formats = ["yyyy-MM"], 
+		index_name_prefix = "users-", 
+		ignore_failure = true
+	), 
+	SET(
+		description = "PRIMARY KEY (id)", 
+		field = "_id", 
+		value = "{{id}}", 
+		ignore_failure = false, 
+		ignore_empty_value = false)
+	)
+)
+```
+
+---
+
+## SHOW CREATE PIPELINE
+
+```sql
+SHOW CREATE PIPELINE pipeline_name;
+```
+
+**Description**
+
+- Returns the full, normalized DDL statement used to create the pipeline, including all processors, options, and flags.
+
+**Example**
+
+```sql
+SHOW CREATE PIPELINE user_pipeline;
+```
+
+```sql
+CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
+	SET(
+		description = "DEFAULT 'anonymous'", 
+		field = "name", 
+		ignore_failure = true, 
+		value = "anonymous", 
+		if = "ctx.name == null"
+	), 
+	SCRIPT(
+		description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))", 
+		lang = "painless", 
+		source = "...", 
+		ignore_failure = true
+	), 
+	SET(
+		description = "DEFAULT _ingest.timestamp", 
+		field = "ingested_at", 
+		ignore_failure = true, 
+		value = "_ingest.timestamp", 
+		if = "ctx.ingested_at == null"
+	), 
+	SCRIPT(
+		description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))", 
+		lang = "painless", 
+		source = "...", 
+		ignore_failure = true
+	), 
+	DATE_INDEX_NAME(
+		description = "PARTITION BY birthdate (MONTH)", 
+		field = "birthdate", 
+		date_rounding = "M", 
+		date_formats = ["yyyy-MM"], 
+		index_name_prefix = "users-", 
+		ignore_failure = true
+	), 
+	SET(
+		description = "PRIMARY KEY (id)", 
+		field = "_id", 
+		value = "{{id}}", 
+		ignore_failure = false, 
+		ignore_empty_value = false)
+	)
+)
+```
+
+---
+
+## DESCRIBE PIPELINE
+
+```sql
+DESCRIBE PIPELINE pipeline_name;
+```
+
+**Description**
+
+- Returns the full, normalized definition of the pipeline:
+	- processors in execution order
+	- full configuration of each processor (`SET`, `SCRIPT`, `REMOVE`, `RENAME`, `DATE_INDEX_NAME`, etc.)
+	- flags such as `ignore_failure`, `if`, `description`
+
+**Example**
+
+```sql
+DESCRIBE PIPELINE user_pipeline;
+```
+
+| processor_type  | description                                                                       | field             | ignore_failure | options                                                                                                                                                                                                                                                                                             |
+|-----------------|-----------------------------------------------------------------------------------|-------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| set             | DEFAULT 'anonymous'                                                               | name              | yes            | (value = "anonymous", if = "ctx.name == null")                                                                                                                                                                                                                                                      |
+| script          | age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))                      | age               | yes            | (lang = "painless", source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))")                       |
+| set             | DEFAULT _ingest.timestamp                                                         | ingested_at       | yes            | (value = "_ingest.timestamp", if = "ctx.ingested_at == null")                                                                                                                                                                                                                                       |
+| script          | profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)) | profile.seniority | yes            | (lang = "painless", source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))") |
+| date_index_name | PARTITION BY birthdate (MONTH)                                                    | birthdate         | yes            | (date_rounding = "M", date_formats = ["yyyy-MM"], index_name_prefix = "users-")                                                                                                                                                                                                                     |
+| set             | PRIMARY KEY (id)                                                                  | _id               | no             | (value = "{{id}}", ignore_empty_value = false)                                                                                                                                                                                                                                                      |
+📊 6 row(s) (1ms)
+
+---
+
+## SHOW WATCHERS
+
+```sql
+SHOW WATCHERS;
+```
+
+Returns a list of all watchers with summary information (name, activation state, last execution time, ...).
+
+**Example:**
+
+```sql
+CREATE OR REPLACE WATCHER my_watcher_interval AS
+ EVERY 5 SECONDS
+ FROM my_index WITHIN 1 MINUTE
+ ALWAYS DO
+ log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+ END;
+
+CREATE OR REPLACE WATCHER my_watcher_cron AS
+ AT SCHEDULE '* * * * * ?'
+ WITH INPUTS search_data AS FROM my_index WITHIN 1 MINUTE, http_data AS GET "https://jsonplaceholder.typicode.com/todos/1" HEADERS ("Accept" = "application/json") TIMEOUT (connection = "5s", read = "10s")
+ WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
+ DO
+ log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+ END;
+
+SHOW WATCHERS;
+```
+
+| id                  | active | status  | status_emoji | severity | is_healthy | is_operational | last_checked | time_since_last_check_seconds | frequency_seconds | created_at               | execution_status | execution_status_emoji | execution_severity | overall_status | overall_status_emoji | overall_severity |
+|---------------------|--------|---------|--------------|----------|------------|----------------|--------------|-------------------------------|-------------------|--------------------------|------------------|------------------------|--------------------|----------------|----------------------|------------------|
+| my_watcher_interval | true   | Healthy | 🟢           | 0        | true       | true           | never        | -1                            | 5                 | 2026-02-11T12:11:02.542Z | NULL             | NULL                   | -1                 | Healthy        | 🟢                   | 0                |
+| my_watcher_cron     | true   | Healthy | 🟢           | 0        | true       | true           | never        | -1                            | 1                 | 2026-02-11T12:11:02.816Z | NULL             | NULL                   | -1                 | Healthy        | 🟢                   | 0                |
+📊 2 row(s) (9ms)
+
+**Query watchers require Elasticsearch 7.11+.**
+
+---
+
+## SHOW WATCHER STATUS
+
+```sql
+SHOW WATCHER STATUS watcher_name;
+```
+
+Returns:
+- Activation state (active/inactive)
+- Last execution time
+- Last condition met time
+- Execution statistics
+
+**Example:**
+
+```sql
+SHOW WATCHER STATUS auto_refresh_orders_with_customers_mv_enrich_policies;
+```
+
+| id                                                    | active | status  | status_emoji | severity | is_healthy | is_operational | last_checked             | time_since_last_check_seconds | frequency_seconds | created_at               | execution_status | execution_status_emoji | execution_severity | overall_status | overall_status_emoji | overall_severity |
+|-------------------------------------------------------|--------|---------|--------------|----------|------------|----------------|--------------------------|-------------------------------|-------------------|--------------------------|------------------|------------------------|--------------------|----------------|----------------------|------------------|
+| auto_refresh_orders_with_customers_mv_enrich_policies | true   | Healthy | 🟢           | 0        | true       | true           | 2026-02-11T10:28:20.581Z | 5                             | 8                 | 2026-02-11T10:28:12.174Z | Executed         | 🟢                     | 0                  | Healthy        | 🟢                   | 0                |
+📊 1 row(s) (9ms)
+
+---
+
+## SHOW ENRICH POLICIES
+
+```sql
+SHOW ENRICH POLICIES;
+```
+
+Returns a list of all enrich policies with their configurations.
+
+**Example:*
+
+```sql
+CREATE TABLE IF NOT EXISTS dql_users (
+  id INT NOT NULL,
+  name VARCHAR FIELDS(
+    raw KEYWORD
+  ) OPTIONS (fielddata = true),
+  age INT,
+  birthdate DATE,
+  profile STRUCT FIELDS(
+    city VARCHAR OPTIONS (fielddata = true),
+    followers INT
+  )
+);
+
+CREATE OR REPLACE ENRICH POLICY my_policy
+FROM dql_users
+ON id
+ENRICH name, profile.city
+WHERE age > 10;
+
+SHOW ENRICH POLICIES;
+
+```
+
+| name      | type  | indices   | match_field | enrich_fields     | query                                             |
+|-----------|-------|-----------|-------------|-------------------|---------------------------------------------------|
+| my_policy | match | dql_users | id          | name,profile.city | {"bool":{"filter":[{"range":{"age":{"gt":10}}}]}} |
+📊 1 row(s) (4ms)
+
+
+---
+
+## SHOW ENRICH POLICY
+
+```sql
+SHOW ENRICH POLICY policy_name;
+```
+
+Returns policy details, including:
+- Name
+- Type
+- Indices
+- Match field
+- Enrich fields
+- Query criteria (if any)
+
+**Example:**
+
+```sql
+SHOW ENRICH POLICY my_policy;
+```
+
+| name      | type  | indices   | match_field | enrich_fields     | query                                             |
+|-----------|-------|-----------|-------------|-------------------|---------------------------------------------------|
+| my_policy | match | dql_users | id          | name,profile.city | {"bool":{"filter":[{"range":{"age":{"gt":10}}}]}} |
+📊 1 row(s) (4ms)
 
 ---
 

@@ -1,0 +1,29 @@
+{
+  "name": "REVERSE",
+  "category": "String",
+  "shortDescription": "Reverse a string",
+  "syntax": [
+    "REVERSE(string)"
+  ],
+  "description": "Returns the string with characters in reverse order.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to reverse",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Reverse string",
+      "description": "Reverse character order",
+      "sql": "SELECT REVERSE(name) as reversed FROM users"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["SUBSTRING", "LENGTH"],
+  "aliases": []
+}

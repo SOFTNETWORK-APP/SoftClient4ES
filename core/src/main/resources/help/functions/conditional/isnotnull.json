@@ -1,0 +1,34 @@
+{
+  "name": "ISNOTNULL",
+  "category": "Conditional",
+  "shortDescription": "Check if an expression is not NULL",
+  "syntax": [
+    "ISNOTNULL(expression)"
+  ],
+  "description": "Returns True if the expression is not NULL, otherwise returns False.",
+  "parameters": [
+    {
+      "name": "expression",
+      "type": "ANY",
+      "description": "Value to check for not NULL",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BOOLEAN",
+  "examples": [
+    {
+      "title": "Count",
+      "description": "Count non-NULLs",
+      "sql": "SELECT \n  COUNT(*) as total,\n  SUM(CASE WHEN ISNOTNULL(email) THEN 1 ELSE 0 END) as with_emails\nFROM users"
+    },
+    {
+      "title": "Filter",
+      "description": "Filter non-NULL values",
+      "sql": "SELECT * \nFROM products\nWHERE ISNOTNULL(description)"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["ISNULL"],
+  "aliases": []
+}

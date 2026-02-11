@@ -117,7 +117,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
               ElasticError(
                 message = s"Failed to transform result: ${ex.getMessage}",
                 cause = Some(ex),
-                statusCode = Some(result.getResponseCode),
+                statusCode = Some(500),
                 operation = Some(operation)
               )
             )
@@ -331,7 +331,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
                   ElasticError(
                     message = s"Failed to transform result: ${ex.getMessage}",
                     cause = Some(ex),
-                    statusCode = Some(result.getResponseCode),
+                    statusCode = Some(500),
                     operation = Some(operation)
                   )
                 )

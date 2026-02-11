@@ -1,0 +1,21 @@
+{
+  "name": "RANDOM",
+  "category": "Numeric",
+  "shortDescription": "Generate random number",
+  "syntax": [
+    "RANDOM()"
+  ],
+  "description": "Returns a random floating-point number between 0 and 1.",
+  "parameters": [],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Random number",
+      "description": "Generate random value",
+      "sql": "SELECT RANDOM() as random_value"
+    }
+  ],
+  "notes": [],
+  "seeAlso": [],
+  "aliases": []
+}

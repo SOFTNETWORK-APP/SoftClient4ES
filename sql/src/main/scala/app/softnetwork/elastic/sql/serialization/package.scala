@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql
 
 import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.core.`type`.TypeReference
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.fasterxml.jackson.databind.{
   DeserializationFeature,
@@ -27,6 +28,7 @@ import com.fasterxml.jackson.databind.{
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.scala.{ClassTagExtensions, DefaultScalaModule}
 
+import scala.collection.immutable.ListMap
 import scala.language.implicitConversions
 import scala.jdk.CollectionConverters._
 
@@ -69,9 +71,23 @@ package object serialization {
     mapper.writeValueAsString(node)
   }
 
-  implicit def jsonNodeToMap(value: JsonNode): Map[String, Any] = {
+  implicit def jsonNodeToMap(value: JsonNode): ListMap[String, Any] = {
     import JacksonConfig.{objectMapper => mapper}
-    mapper.convertValue(value, classOf[Map[String, Any]])
+    import java.util.{Map => JMap, List => JList}
+
+    def toScala(value: Any): Any = value match {
+      case m: JMap[_, _] =>
+        ListMap(m.asScala.toSeq.map { case (k, v) => k.toString -> toScala(v) }: _*)
+      case l: JList[_] => l.asScala.toList.map(toScala)
+      case other       => other
+    }
+
+    toScala(
+      mapper.convertValue(
+        value,
+        new TypeReference[java.util.LinkedHashMap[String, AnyRef]] {}
+      )
+    ).asInstanceOf[ListMap[String, Any]]
   }
 
   implicit def objectValueToObjectNode(value: ObjectValue): ObjectNode = {
@@ -87,6 +103,11 @@ package object serialization {
     values.values.foreach { value =>
       node.add(value)
     }
+    node
+  }
+
+  implicit def objectValueToMap(value: ObjectValue): ListMap[String, Any] = {
+    val node: ObjectNode = value
     node
   }
 
@@ -140,21 +161,23 @@ package object serialization {
   private[elastic] def extractObject(
     node: JsonNode,
     ignoredKeys: Set[String] = Set.empty
-  ): Map[String, Value[_]] = {
-    node
-      .properties()
-      .asScala
-      .flatMap { entry =>
-        val key = entry.getKey
-        val value = entry.getValue
+  ): ListMap[String, Value[_]] = {
+    val conversion: Seq[(String, Value[_])] =
+      node
+        .properties()
+        .asScala
+        .flatMap { entry =>
+          val key = entry.getKey
+          val value = entry.getValue
 
-        if (ignoredKeys.contains(key)) {
-          None
-        } else {
-          Value(value).map(key -> Value(_))
+          if (ignoredKeys.contains(key)) {
+            None
+          } else {
+            Value(value).map(key -> Value(_))
+          }
         }
-      }
-      .toMap
+        .toList
+    ListMap(conversion: _*)
   }
 
   private[elastic] def extractArray(

@@ -6,7 +6,7 @@
 
 The **VersionApi** trait provides functionality to retrieve the Elasticsearch cluster version with automatic caching to minimize network overhead.
 
-**Dependencies:** Requires `SerializationApi` for JSON response parsing.
+**Dependencies:** N/A.
 
 ---
 

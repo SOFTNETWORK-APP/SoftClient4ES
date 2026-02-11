@@ -1,0 +1,31 @@
+{
+  "name": "EXP",
+  "category": "Numeric",
+  "shortDescription": "Calculate e raised to a power",
+  "syntax": [
+    "EXP(number)"
+  ],
+  "description": "Returns e (Euler's number) raised to the specified power.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Exponent",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Exponential",
+      "description": "Calculate e^x",
+      "sql": "SELECT EXP(rate) as exponential FROM data"
+    }
+  ],
+  "notes": [
+    "e ≈ 2.71828..."
+  ],
+  "seeAlso": ["LOG", "POW"],
+  "aliases": []
+}

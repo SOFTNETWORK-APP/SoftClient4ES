@@ -58,3 +58,5 @@ trait EsqlText extends EsqlType with SQLVarchar
 trait EsqlKeyword extends EsqlType with SQLVarchar
 
 trait EsqlGeoPoint extends EsqlType
+
+trait SQLVarBinary extends SQLType

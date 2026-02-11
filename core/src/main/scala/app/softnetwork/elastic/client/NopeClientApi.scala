@@ -26,12 +26,16 @@ import app.softnetwork.elastic.client.bulk.{
   FailedDocument,
   SuccessfulDocument
 }
-import app.softnetwork.elastic.sql.query
+import app.softnetwork.elastic.sql.{query, PainlessContextType}
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, EnrichPolicyTaskStatus}
 import app.softnetwork.elastic.sql.schema.TableAlias
+import app.softnetwork.elastic.sql.transform.{TransformConfig, TransformStats}
+import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 
@@ -166,26 +170,26 @@ trait NopeClientApi extends ElasticClientApi {
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = Source.empty
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = Source.empty
 
   /** Search After (only for hits, more efficient)
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = Source.empty
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = Source.empty
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = Source.empty
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = Source.empty
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
@@ -214,9 +218,12 @@ trait NopeClientApi extends ElasticClientApi {
     * @return
     *   JSON string representation of the query
     */
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
+  override private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: query.SingleSearch
-  )(implicit timestamp: Long): String = "{\"query\": {\"match_all\": {}}}"
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String = "{\"query\": {\"match_all\": {}}}"
 
   override private[client] def executeUpdateSettings(
     index: String,
@@ -266,6 +273,9 @@ trait NopeClientApi extends ElasticClientApi {
     pipelineName: String
   ): ElasticResult[Option[String]] =
     ElasticResult.success(None)
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
 
   override private[client] def executeCreateComposableTemplate(
     templateName: String,
@@ -376,4 +386,90 @@ trait NopeClientApi extends ElasticClientApi {
   /** Conversion BulkActionType -> BulkItem */
   override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
     throw new UnsupportedOperationException
+
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String] = Seq.empty
+  ): ElasticResult[Map[String, String]] =
+    ElasticResult.success(Map.empty)
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[EnrichPolicyTask] =
+    ElasticSuccess(EnrichPolicyTask(policyName, "not_implemented", EnrichPolicyTaskStatus.Failed))
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    ElasticSuccess(Seq.empty)
+
+  override private[client] def executeCreateTransform(
+    config: TransformConfig,
+    start: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeStartTransform(transformId: String): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): ElasticResult[Option[TransformStats]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeCreateWatcher(
+    watcher: Watcher,
+    active: Boolean
+  ): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeDeleteWatcher(id: String): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): ElasticResult[Option[WatcherStatus]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    ElasticSuccess(Seq.empty)
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
+    ElasticSuccess(None)
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] =
+    ElasticSuccess(false)
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
+    ElasticSuccess(false)
 }

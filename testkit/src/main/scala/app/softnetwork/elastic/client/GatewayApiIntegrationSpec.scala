@@ -21,12 +21,15 @@ import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
+  ElasticFailure,
   ElasticResult,
+  ElasticSuccess,
   PipelineResult,
   QueryResult,
   QueryRows,
   QueryStream,
   QueryStructured,
+  ResultRenderer,
   SQLResult,
   TableResult
 }
@@ -34,6 +37,8 @@ import app.softnetwork.elastic.client.scroll.ScrollMetrics
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.health.HealthStatus
+import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
 import app.softnetwork.elastic.sql.schema.{IngestPipeline, Table}
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.concurrent.ScalaFutures
@@ -46,6 +51,7 @@ import java.time.LocalDate
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContextExecutor}
 import java.util.concurrent.TimeUnit
+import scala.collection.immutable.ListMap
 
 // ---------------------------------------------------------------------------
 // Base test trait — to be mixed with ElasticDockerTestKit
@@ -72,19 +78,47 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     self.afterAll()
   }
 
+  def supportsEnrichPolicies: Boolean = {
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsEnrich(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
+  }
+
+  def supportsQueryWatchers: Boolean = {
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsQueryWatchers(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
+  }
+
+  def renderResults(stratTime: Long, res: ElasticResult[QueryResult]): Unit = {
+    val duration = (System.nanoTime() - stratTime).nanos
+    res match {
+      case ElasticSuccess(result) =>
+        log.info(s"\n${ResultRenderer.render(result, duration)}")
+      case ElasticFailure(error) =>
+        log.error(s"❌ Execution failed after ${duration.toMillis} ms: ${error.message}")
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Helper: assert SELECT result type
   // -------------------------------------------------------------------------
 
-  private def normalizeRow(row: Map[String, Any]): Map[String, Any] = {
+  private def normalizeRow(row: ListMap[String, Any]): ListMap[String, Any] = {
     val updated = row - "_id" - "_index" - "_score" - "_version" - "_sort"
     updated.map(entry =>
       entry._2 match {
-        case m: Map[_, _] =>
-          entry._1 -> normalizeRow(m.asInstanceOf[Map[String, Any]])
+        case m: ListMap[_, _] =>
+          entry._1 -> normalizeRow(m.asInstanceOf[ListMap[String, Any]])
         case seq: Seq[_] if seq.nonEmpty && seq.head.isInstanceOf[Map[_, _]] =>
           entry._1 -> seq
-            .asInstanceOf[Seq[Map[String, Any]]]
+            .asInstanceOf[Seq[ListMap[String, Any]]]
             .map(m => normalizeRow(m))
         case other => entry._1 -> other
       }
@@ -92,41 +126,58 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   }
 
   def assertSelectResult(
+    startTime: Long,
     res: ElasticResult[QueryResult],
-    rows: Seq[Map[String, Any]] = Seq.empty
+    rows: Seq[Map[String, Any]] = Seq.empty,
+    nbResults: Option[Int] = None
   ): Unit = {
+    if (!res.isSuccess) {
+      renderResults(startTime, res)
+    }
     res.isSuccess shouldBe true
     res.toOption.get match {
       case QueryStream(stream) =>
-        val sink = Sink.fold[Seq[Map[String, Any]], (Map[String, Any], ScrollMetrics)](Seq.empty) {
-          case (acc, (row, _)) =>
-            acc :+ normalizeRow(row)
-        }
+        val sink =
+          Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
+            case (acc, (row, _)) =>
+              acc :+ normalizeRow(row)
+          }
         val results = stream.runWith(sink).futureValue
+        renderResults(startTime, ElasticSuccess(QueryRows(results)))
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
+        } else if (nbResults.isDefined) {
+          results.size shouldBe nbResults.get
         } else {
           log.info(s"Rows: $results")
         }
       case QueryStructured(response) =>
+        renderResults(startTime, res)
         val results =
           response.results.map(normalizeRow)
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
+        } else if (nbResults.isDefined) {
+          results.size shouldBe nbResults.get
         } else {
           log.info(s"Rows: $results")
         }
       case q: QueryRows =>
+        renderResults(startTime, res)
         val results = q.rows.map(normalizeRow)
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
+        } else if (nbResults.isDefined) {
+          results.size shouldBe nbResults.get
         } else {
           log.info(s"Rows: $results")
         }
-      case other => fail(s"Unexpected QueryResult type for SELECT: $other")
+      case other =>
+        renderResults(startTime, res)
+        fail(s"Unexpected QueryResult type for SELECT: $other")
     }
   }
 
@@ -134,7 +185,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert DDL result type
   // -------------------------------------------------------------------------
 
-  def assertDdl(res: ElasticResult[QueryResult]): Unit = {
+  def assertDdl(startTime: Long, res: ElasticResult[QueryResult]): Unit = {
+    renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[DdlResult]
   }
@@ -143,7 +195,12 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert DML result type
   // -------------------------------------------------------------------------
 
-  def assertDml(res: ElasticResult[QueryResult], result: Option[DmlResult] = None): Unit = {
+  def assertDml(
+    startTime: Long,
+    res: ElasticResult[QueryResult],
+    result: Option[DmlResult] = None
+  ): Unit = {
+    renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[DmlResult]
     result match {
@@ -157,10 +214,22 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   }
 
   // -------------------------------------------------------------------------
+  // Helper: assert Query Rows result type
+  // -------------------------------------------------------------------------
+
+  def assertQueryRows(startTime: Long, res: ElasticResult[QueryResult]): Seq[Map[String, Any]] = {
+    renderResults(startTime, res)
+    res.isSuccess shouldBe true
+    res.toOption.get shouldBe a[QueryRows]
+    res.toOption.get.asInstanceOf[QueryRows].rows
+  }
+
+  // -------------------------------------------------------------------------
   // Helper: assert SHOW TABLE result type
   // -------------------------------------------------------------------------
 
-  def assertShowTable(res: ElasticResult[QueryResult]): Table = {
+  def assertShowTable(startTime: Long, res: ElasticResult[QueryResult]): Table = {
+    renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[TableResult]
     res.toOption.get.asInstanceOf[TableResult].table
@@ -170,7 +239,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert SHOW PIPELINE result type
   // -------------------------------------------------------------------------
 
-  def assertShowPipeline(res: ElasticResult[QueryResult]): IngestPipeline = {
+  def assertShowPipeline(startTime: Long, res: ElasticResult[QueryResult]): IngestPipeline = {
+    renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[PipelineResult]
     res.toOption.get.asInstanceOf[PipelineResult].pipeline
@@ -180,7 +250,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert SHOW CREATE result type
   // -------------------------------------------------------------------------
 
-  def assertShowCreate(res: ElasticResult[QueryResult]): String = {
+  def assertShowCreate(startTime: Long, res: ElasticResult[QueryResult]): String = {
+    renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe a[SQLResult]
     res.toOption.get.asInstanceOf[SQLResult].sql
@@ -196,17 +267,20 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     val create =
       """CREATE TABLE IF NOT EXISTS show_users (
         |  id INT NOT NULL,
-        |  name VARCHAR,
-        |  age INT DEFAULT 0
+        |  name VARCHAR FIELDS(
+        |    raw KEYWORD
+        |  ) OPTIONS (fielddata = true),
+        |  age INT DEFAULT 0,
+        |  PRIMARY KEY (id)
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val show = client.run("SHOW TABLE show_users").futureValue
-    val table = assertShowTable(show)
+    val table = assertShowTable(System.nanoTime(), show)
 
     val showCreate = client.run("SHOW CREATE TABLE show_users").futureValue
-    val sql = assertShowCreate(showCreate)
+    val sql = assertShowCreate(System.nanoTime(), showCreate)
     sql should include("CREATE OR REPLACE TABLE show_users")
 
     val ddl = table.ddl
@@ -214,6 +288,15 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     ddl should include("id INT NOT NULL")
     ddl should include("name VARCHAR")
     ddl should include("age INT DEFAULT 0")
+    ddl should include("PRIMARY KEY (id)")
+
+    var rows =
+      assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE 'show_%'").futureValue)
+    rows.size should be >= 1
+    rows.exists(_("name") == "show_users") shouldBe true
+
+    rows = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE '.%'").futureValue)
+    rows.size shouldBe 0
   }
 
   it should "describe a table using DESCRIBE TABLE" in {
@@ -225,20 +308,22 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  profile STRUCT FIELDS(
         |    city VARCHAR,
         |    followers INT
-        |  )
+        |  ),
+        |  PRIMARY KEY (id)
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
-    val res = client.run("DESCRIBE TABLE desc_users").futureValue
-    res.isSuccess shouldBe true
-    res.toOption.get shouldBe a[QueryRows]
-
-    val rows = res.toOption.get.asInstanceOf[QueryRows].rows
-
-    rows.exists(_("name") == "id") shouldBe true
-    rows.exists(_("name") == "name") shouldBe true
-    rows.exists(_("name") == "profile.city") shouldBe true
+    val rows =
+      assertQueryRows(System.nanoTime(), client.run("DESCRIBE TABLE desc_users").futureValue)
+    rows.size shouldBe 6
+    rows.exists(row =>
+      row("Field") == "id" &&
+      row("Null") == "no" &&
+      row("Key") == "PRI"
+    ) shouldBe true
+    rows.exists(_("Field") == "name") shouldBe true
+    rows.exists(_("Field") == "profile.city") shouldBe true
   }
 
   // ===========================================================================
@@ -268,10 +353,10 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  PRIMARY KEY (id)
         |) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false));""".stripMargin
 
-    assertDdl(client.run(sql).futureValue)
+    assertDdl(System.nanoTime(), client.run(sql).futureValue)
 
     // Vérification via SHOW TABLE
-    val table = assertShowTable(client.run("SHOW TABLE users").futureValue)
+    val table = assertShowTable(System.nanoTime(), client.run("SHOW TABLE users").futureValue)
     val ddl = table.ddl.replaceAll("\\s+", " ")
 
     ddl should include("CREATE OR REPLACE TABLE users")
@@ -308,8 +393,8 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |    )
         |);""".stripMargin
 
-    assertDdl(client.run(sql).futureValue)
-    assertDdl(client.run(sql).futureValue) // second call should succeed
+    assertDdl(System.nanoTime(), client.run(sql).futureValue)
+    assertDdl(System.nanoTime(), client.run(sql).futureValue) // second call should succeed
   }
 
   // ---------------------------------------------------------------------------
@@ -325,7 +410,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  PRIMARY KEY (id)
         |);""".stripMargin
 
-    assertDdl(client.run(createSource).futureValue)
+    assertDdl(System.nanoTime(), client.run(createSource).futureValue)
 
     val insertSource =
       """INSERT INTO accounts_src (id, name, active) VALUES
@@ -333,15 +418,15 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         | (2, 'Bob',   false),
         | (3, 'Chloe', true);""".stripMargin
 
-    assertDml(client.run(insertSource).futureValue)
+    assertDml(System.nanoTime(), client.run(insertSource).futureValue)
 
     val createOrReplace =
       "CREATE OR REPLACE TABLE users_cr AS SELECT id, name FROM accounts_src WHERE active = true;"
 
-    assertDml(client.run(createOrReplace).futureValue)
+    assertDml(System.nanoTime(), client.run(createOrReplace).futureValue)
 
     // Vérification via SHOW TABLE
-    val table = assertShowTable(client.run("SHOW TABLE users_cr").futureValue)
+    val table = assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_cr").futureValue)
     table.ddl should include("CREATE OR REPLACE TABLE users_cr")
     table.ddl should include("id INT")
     table.ddl should include("name VARCHAR")
@@ -358,12 +443,12 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  value VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val drop =
       """DROP TABLE IF EXISTS tmp_drop;""".stripMargin
 
-    assertDdl(client.run(drop).futureValue)
+    assertDdl(System.nanoTime(), client.run(drop).futureValue)
   }
 
   // ---------------------------------------------------------------------------
@@ -377,7 +462,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  value VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO tmp_truncate (id, value) VALUES
@@ -385,14 +470,14 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (2, 'b'),
         |  (3, 'c');""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(System.nanoTime(), client.run(insert).futureValue)
 
     val truncate = "TRUNCATE TABLE tmp_truncate;"
-    assertDdl(client.run(truncate).futureValue)
+    assertDdl(System.nanoTime(), client.run(truncate).futureValue)
 
     // Vérification : SELECT doit renvoyer 0 lignes
     val select = client.run("SELECT * FROM tmp_truncate").futureValue
-    assertSelectResult(select)
+    assertSelectResult(System.nanoTime(), select)
   }
 
   // ---------------------------------------------------------------------------
@@ -406,15 +491,16 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  status VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val alter =
       """ALTER TABLE users_alter1
         |  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0;""".stripMargin
 
-    assertDdl(client.run(alter).futureValue)
+    assertDdl(System.nanoTime(), client.run(alter).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter1").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter1").futureValue)
     table.ddl should include("age INT DEFAULT 0")
   }
 
@@ -429,15 +515,16 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  name VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val alter =
       """ALTER TABLE users_alter2
         |  RENAME COLUMN name TO full_name;""".stripMargin
 
-    assertDdl(client.run(alter).futureValue)
+    assertDdl(System.nanoTime(), client.run(alter).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter2").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter2").futureValue)
     table.ddl should include("full_name VARCHAR")
   }
 
@@ -452,7 +539,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  status VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val setComment =
       """ALTER TABLE users_alter3
@@ -462,10 +549,11 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       """ALTER TABLE users_alter3
         |  ALTER COLUMN IF EXISTS status DROP COMMENT;""".stripMargin
 
-    assertDdl(client.run(setComment).futureValue)
-    assertDdl(client.run(dropComment).futureValue)
+    assertDdl(System.nanoTime(), client.run(setComment).futureValue)
+    assertDdl(System.nanoTime(), client.run(dropComment).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter3").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter3").futureValue)
     table.ddl should not include "COMMENT 'a description'"
   }
 
@@ -480,7 +568,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  status VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val setDefault =
       """ALTER TABLE users_alter4
@@ -490,10 +578,11 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       """ALTER TABLE users_alter4
         |  ALTER COLUMN status DROP DEFAULT;""".stripMargin
 
-    assertDdl(client.run(setDefault).futureValue)
-    assertDdl(client.run(dropDefault).futureValue)
+    assertDdl(System.nanoTime(), client.run(setDefault).futureValue)
+    assertDdl(System.nanoTime(), client.run(dropDefault).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter4").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter4").futureValue)
     table.ddl should not include "DEFAULT 'active'"
   }
 
@@ -513,7 +602,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  )
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val alter =
       """ALTER TABLE users_alter5
@@ -525,9 +614,10 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |    reputation DOUBLE DEFAULT 0.0
         |  );""".stripMargin
 
-    assertDdl(client.run(alter).futureValue)
+    assertDdl(System.nanoTime(), client.run(alter).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter5").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter5").futureValue)
     table.find("profile.reputation") match {
       case Some(col) =>
         col.dataType shouldBe SQLTypes.Double
@@ -555,7 +645,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  status VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val setNotNull =
       """ALTER TABLE users_alter6
@@ -565,10 +655,11 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       """ALTER TABLE users_alter6
         |  ALTER COLUMN status DROP NOT NULL;""".stripMargin
 
-    assertDdl(client.run(setNotNull).futureValue)
-    assertDdl(client.run(dropNotNull).futureValue)
+    assertDdl(System.nanoTime(), client.run(setNotNull).futureValue)
+    assertDdl(System.nanoTime(), client.run(dropNotNull).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter6").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter6").futureValue)
     table.find("status") match {
       case Some(col) => col.nullable shouldBe true
       case _         => fail("Column 'status' not found")
@@ -586,15 +677,16 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  status VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val alter =
       """ALTER TABLE users_alter7
         |  ALTER COLUMN id SET DATA TYPE BIGINT;""".stripMargin
 
-    assertDdl(client.run(alter).futureValue)
+    assertDdl(System.nanoTime(), client.run(alter).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter7").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter7").futureValue)
     table.ddl should include("id BIGINT NOT NULL")
   }
 
@@ -614,7 +706,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  )
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val alter =
       """ALTER TABLE users_alter8 (
@@ -627,15 +719,27 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  )
         |);""".stripMargin
 
-    assertDdl(client.run(alter).futureValue)
+    assertDdl(System.nanoTime(), client.run(alter).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE users_alter8").futureValue)
+    val table =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE users_alter8").futureValue)
 
     table.ddl should include("age INT DEFAULT 0")
     table.ddl should include("full_name VARCHAR")
     table.ddl should include("status VARCHAR DEFAULT 'active'")
     table.ddl should include("description VARCHAR DEFAULT 'N/A'")
     table.ddl should include("visibility BOOLEAN DEFAULT true")
+  }
+
+  it should "list all tables" in {
+    val tables = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES").futureValue)
+    tables should not be empty
+    for {
+      table <- tables
+    } {
+      table should contain key "name"
+      table should contain key "type"
+    }
   }
 
   // ===========================================================================
@@ -656,7 +760,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  age INT
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO dml_users (id, name, age) VALUES
@@ -665,14 +769,14 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (3, 'Chloe', 25);""".stripMargin
 
     val res = client.run(insert).futureValue
-    assertDml(res)
+    assertDml(System.nanoTime(), res)
 
     val dml = res.toOption.get.asInstanceOf[DmlResult]
     dml.inserted shouldBe 3
 
     // Vérification via SELECT
     val select = client.run("SELECT * FROM dml_users ORDER BY id ASC").futureValue
-    assertSelectResult(select)
+    assertSelectResult(System.nanoTime(), select)
   }
 
   // ---------------------------------------------------------------------------
@@ -687,7 +791,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  balance DOUBLE
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO dml_accounts (id, owner, balance) VALUES
@@ -695,7 +799,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (2, 'Bob',   50.00),
         |  (3, 'Chloe', 75.00);""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(System.nanoTime(), client.run(insert).futureValue)
 
     val update =
       """UPDATE dml_accounts
@@ -703,7 +807,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |WHERE owner = 'Alice';""".stripMargin
 
     val res = client.run(update).futureValue
-    assertDml(res)
+    assertDml(System.nanoTime(), res)
 
     val dml = res.toOption.get.asInstanceOf[DmlResult]
     dml.updated should be >= 1L
@@ -715,7 +819,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |WHERE owner = 'Alice';""".stripMargin
 
     val q = client.run(select).futureValue
-    assertSelectResult(q)
+    assertSelectResult(System.nanoTime(), q)
   }
 
   // ---------------------------------------------------------------------------
@@ -730,7 +834,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  message VARCHAR
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO dml_logs (id, level, message) VALUES
@@ -738,14 +842,14 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (2, 'ERROR', 'failed'),
         |  (3, 'INFO',  'running');""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(System.nanoTime(), client.run(insert).futureValue)
 
     val delete =
       """DELETE FROM dml_logs
         |WHERE level = 'ERROR';""".stripMargin
 
     val res = client.run(delete).futureValue
-    assertDml(res)
+    assertDml(System.nanoTime(), res)
 
     val dml = res.toOption.get.asInstanceOf[DmlResult]
     dml.deleted shouldBe 1L
@@ -757,7 +861,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |ORDER BY id ASC;""".stripMargin
 
     val q = client.run(select).futureValue
-    assertSelectResult(q)
+    assertSelectResult(System.nanoTime(), q)
   }
 
   // ---------------------------------------------------------------------------
@@ -771,7 +875,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  value INT
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO dml_chain (id, value) VALUES
@@ -779,24 +883,24 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (2, 20),
         |  (3, 30);""".stripMargin
 
-    assertDml(client.run(insert).futureValue)
+    assertDml(System.nanoTime(), client.run(insert).futureValue)
 
     val update =
       """UPDATE dml_chain
         |SET value = 50
         |WHERE id IN (1, 3);""".stripMargin
 
-    assertDml(client.run(update).futureValue)
+    assertDml(System.nanoTime(), client.run(update).futureValue)
 
     val delete =
       """DELETE FROM dml_chain
         |WHERE value > 40;""".stripMargin
 
-    assertDml(client.run(delete).futureValue)
+    assertDml(System.nanoTime(), client.run(delete).futureValue)
 
     // Vérification finale
     val select = client.run("SELECT * FROM dml_chain ORDER BY id ASC").futureValue
-    assertSelectResult(select)
+    assertSelectResult(System.nanoTime(), select)
   }
 
   // ---------------------------------------------------------------------------
@@ -814,7 +918,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  PRIMARY KEY (uuid)
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     // 2. Prepare sample documents
     val persons = List(
@@ -835,7 +939,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       s"""COPY INTO copy_into_test FROM "${jsonlFile.getAbsolutePath}";"""
 
     val jsonlResult = client.run(copyJsonl).futureValue
-    assertDml(jsonlResult, Some(DmlResult(inserted = persons.size)))
+    assertDml(System.nanoTime(), jsonlResult, Some(DmlResult(inserted = persons.size)))
 
     // 5. Create a temporary JSON_ARRAY file
     val jsonArrayFile = java.io.File.createTempFile("copy_into_array", ".json")
@@ -851,11 +955,12 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       s"""COPY INTO copy_into_test FROM "${jsonArrayFile.getAbsolutePath}" FILE_FORMAT = JSON_ARRAY ON CONFLICT DO UPDATE;"""
 
     val arrayResult = client.run(copyArray).futureValue
-    assertDml(arrayResult, Some(DmlResult(inserted = persons.size)))
+    assertDml(System.nanoTime(), arrayResult, Some(DmlResult(inserted = persons.size)))
 
     // 7. Final verification: SELECT all documents
     val select = client.run("SELECT * FROM copy_into_test ORDER BY uuid ASC").futureValue
     assertSelectResult(
+      System.nanoTime(),
       select,
       Seq(
         Map(
@@ -906,7 +1011,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  )
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO dql_users (id, name, age, birthdate, profile) VALUES
@@ -916,7 +1021,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (4, 'David', 50, '1974-03-15', {city = "Marseille", followers = 10});
         |""".stripMargin
 
-    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
   }
 
   // ---------------------------------------------------------------------------
@@ -934,6 +1039,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val res = client.run(sql).futureValue
     assertSelectResult(
+      System.nanoTime(),
       res,
       Seq(
         Map(
@@ -980,6 +1086,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val res = client.run(sql).futureValue
     assertSelectResult(
+      System.nanoTime(),
       res,
       Seq(
         Map("id" -> 2, "name" -> "Bob"),
@@ -1006,9 +1113,9 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  ) OPTIONS (include_in_parent = false)
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE dql_orders").futureValue)
+    val table = assertShowTable(System.nanoTime(), client.run("SHOW TABLE dql_orders").futureValue)
     table.ddl should include("items ARRAY<STRUCT> FIELDS")
 
     val insert =
@@ -1017,7 +1124,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |           { product = "B", quantity = 1, price = 20.0 } ]),
         |  (2, 2, [ { product = "C", quantity = 3, price = 5.0 } ]);""".stripMargin
 
-    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 2)))
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 2)))
 
     val sql =
       """SELECT
@@ -1032,6 +1139,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val res = client.run(sql).futureValue
     assertSelectResult(
+      System.nanoTime(),
       res,
       Seq(
         Map(
@@ -1065,6 +1173,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val res = client.run(sql).futureValue
     assertSelectResult(
+      System.nanoTime(),
       res,
       Seq(
         Map("id" -> 1, "name" -> "Alice", "age" -> 30),
@@ -1085,7 +1194,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |LIMIT 2 OFFSET 1;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1103,7 +1212,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |ORDER BY COUNT(*) DESC;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1122,7 +1231,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  AND (name LIKE 'A%' OR name RLIKE '.*o.*');""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1139,7 +1248,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |FROM dql_users;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1164,7 +1273,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |FROM dql_users;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1189,6 +1298,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val res = client.run(sql).futureValue
     assertSelectResult(
+      System.nanoTime(),
       res,
       Seq(
         Map(
@@ -1284,7 +1394,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |FROM dql_users;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1299,9 +1409,9 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  PRIMARY KEY (id)
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
-    val table = assertShowTable(client.run("SHOW TABLE dql_geo").futureValue)
+    val table = assertShowTable(System.nanoTime(), client.run("SHOW TABLE dql_geo").futureValue)
     table.ddl should include("location GEO_POINT")
     table.find("location").exists(_.dataType == SQLTypes.GeoPoint) shouldBe true
 
@@ -1310,7 +1420,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (1, {lon = 2.3522, lat = 48.8566}),
         |  (2, {lon = 4.8357, lat = 45.7640});""".stripMargin
 
-    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 2)))
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 2)))
 
     val sql =
       """SELECT id,
@@ -1318,7 +1428,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |FROM dql_geo;""".stripMargin
 
     val res = client.run(sql).futureValue
-    assertSelectResult(res)
+    assertSelectResult(System.nanoTime(), res)
   }
 
   // ---------------------------------------------------------------------------
@@ -1335,7 +1445,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  ts TIMESTAMP
         |);""".stripMargin
 
-    assertDdl(client.run(create).futureValue)
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
       """INSERT INTO dql_sales (id, product, customer, amount, ts) VALUES
@@ -1344,7 +1454,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |  (3, 'B', 'C1', 30.0, '2024-01-01T12:00:00Z'),
         |  (4, 'A', 'C3', 40.0, '2024-01-01T13:00:00Z');""".stripMargin
 
-    assertDml(client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
 
     val sql =
       """SELECT
@@ -1361,6 +1471,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     val res = client.run(sql).futureValue
     assertSelectResult(
+      System.nanoTime(),
       res,
       Seq(
         Map(
@@ -1464,15 +1575,32 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |    )
         |);""".stripMargin
 
-    assertDdl(client.run(sql).futureValue)
+    assertDdl(System.nanoTime(), client.run(sql).futureValue)
 
-    val pipeline = assertShowPipeline(client.run("SHOW PIPELINE user_pipeline").futureValue)
+    val pipeline =
+      assertShowPipeline(System.nanoTime(), client.run("SHOW PIPELINE user_pipeline").futureValue)
     pipeline.name shouldBe "user_pipeline"
     pipeline.processors.size shouldBe 6
 
+    val desc =
+      assertQueryRows(System.nanoTime(), client.run("DESCRIBE PIPELINE user_pipeline").futureValue)
+    desc.exists(row =>
+      row("processor_type") == "set" &&
+      row("field") == "name" &&
+      row("description").asInstanceOf[String].contains("DEFAULT 'anonymous'")
+    ) shouldBe true
+    desc.exists(row =>
+      row("processor_type") == "set" &&
+      row("field") == "_id" &&
+      row("description").asInstanceOf[String].contains("PRIMARY KEY (id)")
+    ) shouldBe true
+
     val showCreate = client.run("SHOW CREATE PIPELINE user_pipeline").futureValue
-    val ddl = assertShowCreate(showCreate)
+    val ddl = assertShowCreate(System.nanoTime(), showCreate)
     ddl should include("CREATE OR REPLACE PIPELINE user_pipeline")
+
+    val pipelines = assertQueryRows(System.nanoTime(), client.run("SHOW PIPELINES").futureValue)
+    pipelines should contain(Map("name" -> "user_pipeline", "processors_count" -> 6))
   }
 
   // ---------------------------------------------------------------------------
@@ -1492,7 +1620,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         |    DROP PROCESSOR SET (_id)
         |);""".stripMargin
 
-    assertDdl(client.run(sql).futureValue)
+    assertDdl(System.nanoTime(), client.run(sql).futureValue)
   }
 
   // ---------------------------------------------------------------------------
@@ -1501,7 +1629,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
   it should "drop a pipeline" in {
     val sql = "DROP PIPELINE IF EXISTS user_pipeline;"
-    assertDdl(client.run(sql).futureValue)
+    assertDdl(System.nanoTime(), client.run(sql).futureValue)
   }
 
   // ===========================================================================
@@ -1532,6 +1660,153 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
 
     res.isFailure shouldBe true
     res.toEither.left.get.message should include("Error parsing schema DDL statement")
+  }
+
+  // ===========================================================================
+  // 7. WATCHERS — CREATE / DROP / SHOW
+  // ===========================================================================
+
+  behavior of "WATCHERS statements"
+
+  it should "create, show and drop a watcher" in {
+    val createIndex =
+      """CREATE TABLE IF NOT EXISTS my_index (
+        |  id INT NOT NULL,
+        |  content VARCHAR,
+        |  PRIMARY KEY (id)
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(createIndex).futureValue)
+
+    val createWatcherWithInterval =
+      """CREATE OR REPLACE WATCHER my_watcher_interval AS
+        | EVERY 5 SECONDS
+        | FROM my_index WITHIN 1 MINUTE
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END;""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(createWatcherWithInterval).futureValue)
+
+    var rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SHOW WATCHER STATUS my_watcher_interval").futureValue
+    )
+    rows.size shouldBe 1
+    var row = rows.head
+    row.get("id") shouldBe Some("my_watcher_interval")
+    row.get("is_healthy") shouldBe Some(true)
+    row.get("is_operational") shouldBe Some(true)
+
+    val createWatcherWithCron =
+      """CREATE OR REPLACE WATCHER my_watcher_cron AS
+        | AT SCHEDULE '* * * * * ?'
+        | WITH INPUTS search_data AS FROM my_index WITHIN 1 MINUTE, http_data AS GET "https://jsonplaceholder.typicode.com/todos/1" HEADERS ("Accept" = "application/json") TIMEOUT (connection = "5s", read = "10s")
+        | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END;""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(createWatcherWithCron).futureValue)
+
+    rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SHOW WATCHER STATUS my_watcher_cron").futureValue
+    )
+    rows.size shouldBe 1
+    row = rows.head
+    row.get("id") shouldBe Some("my_watcher_cron")
+    row.get("is_healthy") shouldBe Some(true)
+    row.get("is_operational") shouldBe Some(true)
+
+    if (supportsQueryWatchers) {
+      rows = assertQueryRows(System.nanoTime(), client.run("SHOW WATCHERS").futureValue)
+      rows.find(row => row.get("id").contains("my_watcher_interval")) match {
+        case Some(row) =>
+          row.get("is_healthy") shouldBe Some(true)
+          row.get("is_operational") shouldBe Some(true)
+        case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
+      }
+    }
+
+    val dropWatcher = "DROP WATCHER IF EXISTS my_watcher_interval;"
+    assertDdl(System.nanoTime(), client.run(dropWatcher).futureValue)
+
+  }
+
+  // ===========================================================================
+  // 8. POLICIES — CREATE / DROP / EXECUTE
+  // ===========================================================================
+
+  behavior of "POLICIES statements"
+
+  it should "create, show, execute and drop a policy" in {
+
+    assume(supportsEnrichPolicies, "Enrich policies are not supported in this environment")
+
+    val createIndex =
+      """CREATE TABLE IF NOT EXISTS dql_users (
+        |  id INT NOT NULL,
+        |  name VARCHAR FIELDS(
+        |    raw KEYWORD
+        |  ) OPTIONS (fielddata = true),
+        |  age INT,
+        |  birthdate DATE,
+        |  profile STRUCT FIELDS(
+        |    city VARCHAR OPTIONS (fielddata = true),
+        |    followers INT
+        |  )
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(createIndex).futureValue)
+
+    val createPolicy =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+        |FROM dql_users
+        |ON id
+        |ENRICH name, profile.city
+        |WHERE age > 10;""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(createPolicy).futureValue)
+
+    var rows =
+      assertQueryRows(System.nanoTime(), client.run("SHOW ENRICH POLICIES").futureValue)
+    rows.size shouldBe 1
+    var enrichPolicy = rows.head
+    enrichPolicy.get("name") shouldBe Some("my_policy")
+    enrichPolicy.get("type") shouldBe Some("match")
+    enrichPolicy.get("indices") shouldBe Some("dql_users")
+    enrichPolicy.get("match_field") shouldBe Some("id")
+    enrichPolicy.get("enrich_fields") shouldBe Some("name,profile.city")
+    enrichPolicy
+      .getOrElse("query", "")
+      .asInstanceOf[String]
+      .contains("""{"bool":{"filter":[{"range":{"age":{""") shouldBe true
+
+    rows =
+      assertQueryRows(System.nanoTime(), client.run("SHOW ENRICH POLICY my_policy").futureValue)
+    rows.size shouldBe 1
+    enrichPolicy = rows.head
+    enrichPolicy.get("name") shouldBe Some("my_policy")
+    enrichPolicy.get("type") shouldBe Some("match")
+    enrichPolicy.get("indices") shouldBe Some("dql_users")
+    enrichPolicy.get("match_field") shouldBe Some("id")
+    enrichPolicy.get("enrich_fields") shouldBe Some("name,profile.city")
+    enrichPolicy
+      .getOrElse("query", "")
+      .asInstanceOf[String]
+      .contains("""{"bool":{"filter":[{"range":{"age":{""") shouldBe true
+
+    val executePolicy = "EXECUTE ENRICH POLICY my_policy;"
+    rows = assertQueryRows(System.nanoTime(), client.run(executePolicy).futureValue)
+    rows.size shouldBe 1
+    val row = rows.head
+    row.getOrElse("policy_name", "") shouldBe "my_policy"
+    row.getOrElse("status", "") shouldBe EnrichPolicyTaskStatus.Completed.name
+    row.getOrElse("health", "") shouldBe HealthStatus.Green.name
+
+    val dropPolicy = "DROP ENRICH POLICY IF EXISTS my_policy;"
+    assertDdl(System.nanoTime(), client.run(dropPolicy).futureValue)
   }
 
 }

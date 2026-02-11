@@ -17,12 +17,14 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
+  query,
   Expr,
   IntValue,
   PainlessContext,
   PainlessParam,
   PainlessScript,
-  TokenRegex
+  TokenRegex,
+  Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLType, SQLTypes}
 
@@ -67,6 +69,12 @@ package object math {
   case object Tan extends Expr("TAN") with Trigonometric
   case object Atan extends Expr("ATAN") with Trigonometric
   case object Atan2 extends Expr("ATAN2") with Trigonometric
+  case object Degrees extends Expr("DEGREES") with Trigonometric {
+    override def painless(context: Option[PainlessContext] = None): String = "Math.toDegrees"
+  }
+  case object Radians extends Expr("RADIANS") with Trigonometric {
+    override def painless(context: Option[PainlessContext] = None): String = "Math.toRadians"
+  }
 
   sealed trait MathematicalFunction extends TransformFunction[SQLNumeric, SQLNumeric] {
     override def inputType: SQLNumeric = SQLTypes.Numeric
@@ -91,12 +99,26 @@ package object math {
     arg: PainlessScript
   ) extends MathematicalFunction {
     override def args: List[PainlessScript] = List(arg)
+    override def update(request: query.SingleSearch): MathematicalFunctionWithOp = {
+      arg match {
+        case updatable: Updateable =>
+          this.copy(arg = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 
   case class Pow(arg: PainlessScript, exponent: Int) extends MathematicalFunction {
     override def mathOp: MathOp = Pow
     override def args: List[PainlessScript] = List(arg, IntValue(exponent))
     override def nullable: Boolean = arg.nullable
+    override def update(request: query.SingleSearch): Pow = {
+      arg match {
+        case updatable: Updateable =>
+          this.copy(arg = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 
   case class PowParam(scale: Int) extends PainlessParam with PainlessScript {
@@ -130,6 +152,13 @@ package object math {
       s"${fun.map(_.sql).getOrElse("")}($arg${scale.map(s => s", $s").getOrElse("")})"
     }
 
+    override def update(request: query.SingleSearch): Round = {
+      arg match {
+        case updatable: Updateable =>
+          this.copy(arg = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 
   case class Sign(arg: PainlessScript) extends MathematicalFunction {
@@ -143,12 +172,38 @@ package object math {
         case _ => throw new IllegalArgumentException("Sign function requires exactly one argument")
       }
 
+    override def update(request: query.SingleSearch): Sign = {
+      arg match {
+        case updatable: Updateable =>
+          this.copy(arg = updatable.update(request).asInstanceOf[PainlessScript])
+        case _ => this
+      }
+    }
   }
 
   case class Atan2(y: PainlessScript, x: PainlessScript) extends MathematicalFunction {
     override def mathOp: MathOp = Atan2
     override def args: List[PainlessScript] = List(y, x)
     override def nullable: Boolean = y.nullable || x.nullable
+
+    override def update(request: query.SingleSearch): Atan2 = {
+      (y, x) match {
+        case (updatableY: Updateable, updatableX: Updateable) =>
+          this.copy(
+            y = updatableY.update(request).asInstanceOf[PainlessScript],
+            x = updatableX.update(request).asInstanceOf[PainlessScript]
+          )
+        case (updatableY: Updateable, _) =>
+          this.copy(
+            y = updatableY.update(request).asInstanceOf[PainlessScript]
+          )
+        case (_, updatableX: Updateable) =>
+          this.copy(
+            x = updatableX.update(request).asInstanceOf[PainlessScript]
+          )
+        case _ => this
+      }
+    }
   }
 
 }

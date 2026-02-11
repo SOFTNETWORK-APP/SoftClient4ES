@@ -16,19 +16,26 @@
 
 package app.softnetwork.elastic.client.java
 
-import app.softnetwork.elastic.client.ElasticClientCompanion
+import app.softnetwork.elastic.client.{
+  ApiKeyAuth,
+  BasicAuth,
+  BearerTokenAuth,
+  ElasticClientCompanion
+}
 import co.elastic.clients.elasticsearch.{ElasticsearchAsyncClient, ElasticsearchClient}
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import co.elastic.clients.transport.rest_client.RestClientTransport
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
-import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
+import org.apache.http.message.BasicHeader
 import org.elasticsearch.client.{RestClient, RestClientBuilder}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.{Future, Promise}
+
+import scala.jdk.CollectionConverters._
 
 trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
 
@@ -63,25 +70,62 @@ trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
     }
   }
 
-  private def buildTransport(): RestClientTransport = {
-    val credentialsProvider = new BasicCredentialsProvider()
-    if (elasticConfig.credentials.username.nonEmpty) {
-      credentialsProvider.setCredentials(
-        AuthScope.ANY,
-        new UsernamePasswordCredentials(
-          elasticConfig.credentials.username,
-          elasticConfig.credentials.password
-        )
-      )
+  /** Build RestClientBuilder with authentication
+    */
+  private def buildRestClient(): RestClientBuilder = {
+    val httpHost = parseHttpHost(elasticConfig.credentials.url)
+
+    val builder = RestClient
+      .builder(httpHost)
+      .setRequestConfigCallback { requestConfigBuilder =>
+        requestConfigBuilder
+          .setConnectTimeout(elasticConfig.connectionTimeout.toMillis.toInt)
+          .setSocketTimeout(elasticConfig.socketTimeout.toMillis.toInt)
+      }
+
+    // Authenticate
+    elasticConfig.credentials.authMethod match {
+      case Some(BasicAuth) if elasticConfig.credentials.username.nonEmpty =>
+        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
+          val credentialsProvider = new BasicCredentialsProvider()
+          credentialsProvider.setCredentials(
+            AuthScope.ANY,
+            new UsernamePasswordCredentials(
+              elasticConfig.credentials.username,
+              elasticConfig.credentials.password
+            )
+          )
+          httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
+        }
+      case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
+        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
+          httpClientConfigCallback.setDefaultHeaders(
+            Seq(
+              new BasicHeader(
+                "Authorization",
+                ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
+              )
+            ).asJava
+          )
+        }
+      case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
+        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
+          httpClientConfigCallback.setDefaultHeaders(
+            Seq(
+              new BasicHeader(
+                "Authorization",
+                BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
+              )
+            ).asJava
+          )
+        }
+      case _ => // No authentication
+        builder
     }
-    val restClientBuilder: RestClientBuilder = RestClient
-      .builder(
-        parseHttpHost(elasticConfig.credentials.url)
-      )
-      .setHttpClientConfigCallback((httpAsyncClientBuilder: HttpAsyncClientBuilder) =>
-        httpAsyncClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
-      )
-    new RestClientTransport(restClientBuilder.build(), new JacksonJsonpMapper())
+  }
+
+  private def buildTransport(): RestClientTransport = {
+    new RestClientTransport(buildRestClient().build(), new JacksonJsonpMapper())
   }
 
   /** Create and configure Elasticsearch Client

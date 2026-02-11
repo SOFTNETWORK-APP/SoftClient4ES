@@ -1,0 +1,36 @@
+{
+  "name": "MONTH",
+  "category": "Date/Time",
+  "shortDescription": "Extract month from date",
+  "syntax": [
+    "MONTH(date)"
+  ],
+  "description": "Extracts the month component (1-12) from a date or timestamp.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract month from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get month",
+      "description": "Extract month from date",
+      "sql": "SELECT MONTH(created_at) as month FROM orders"
+    },
+    {
+      "title": "Filter by month",
+      "description": "Get January records",
+      "sql": "SELECT * FROM events WHERE MONTH(event_date) = 1"
+    }
+  ],
+  "notes": [
+    "Returns 1-12 (January = 1, December = 12)"
+  ],
+  "seeAlso": ["YEAR", "DAY", "DATE_TRUNC"],
+  "aliases": []
+}

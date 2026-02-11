@@ -1,0 +1,39 @@
+{
+  "name": "AVG",
+  "category": "Aggregate",
+  "shortDescription": "Calculate the average of values",
+  "syntax": [
+    "AVG(column)",
+    "AVG(DISTINCT column)",
+    "AVG(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Aggregate function that calculates the arithmetic mean of numeric values.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "NUMERIC",
+      "description": "Numeric column to average",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Average value",
+      "description": "Calculate average price",
+      "sql": "SELECT AVG(price) as avg_price FROM products"
+    },
+    {
+      "title": "Average by group",
+      "description": "Average salary per department",
+      "sql": "SELECT department, AVG(salary) as avg_salary\nFROM employees\nGROUP BY department"
+    }
+  ],
+  "notes": [
+    "NULL values are ignored in calculation",
+    "Returns NULL if all values are NULL"
+  ],
+  "seeAlso": ["SUM", "COUNT", "MIN", "MAX"],
+  "aliases": []
+}

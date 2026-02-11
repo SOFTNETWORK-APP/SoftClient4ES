@@ -1,0 +1,25 @@
+{
+  "name": "SHOW CREATE TABLE",
+  "category": "DQL",
+  "shortDescription": "Display the DDL statement to recreate the table",
+  "syntax": [
+    "SHOW CREATE TABLE table_name"
+  ],
+  "description": "Generate the CREATE TABLE statement that would recreate the table with its current structure.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show CREATE TABLE",
+      "description": "Get DDL for a table",
+      "sql": "SHOW CREATE TABLE users"
+    }
+  ],
+  "notes": [
+    "Useful for documentation or replication",
+    "Includes all columns, constraints, and options"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW TABLE", "CREATE TABLE"],
+  "minVersion": null,
+  "aliases": []
+}

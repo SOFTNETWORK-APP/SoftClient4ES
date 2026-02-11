@@ -22,12 +22,12 @@ import akka.stream.scaladsl.{Flow, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.client.scroll._
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
-import app.softnetwork.serialization._
-import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
 
@@ -38,8 +38,6 @@ trait MockElasticClientApi extends NopeClientApi {
   def elasticVersion: String
 
   protected lazy val logger: Logger = LoggerFactory getLogger getClass.getName
-
-  implicit def formats: Formats = commonFormats
 
   protected val elasticDocuments: ElasticDocuments = new ElasticDocuments() {}
 
@@ -290,9 +288,10 @@ trait MockElasticClientApi extends NopeClientApi {
 
   // ==================== SearchApi ====================
 
-  override private[client] implicit def sqlSearchRequestToJsonQuery(
-    sqlSearch: SingleSearch
-  )(implicit timestamp: Long): String =
+  override private[client] implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String =
     """{
       |  "query": {
       |    "match_all": {}
@@ -339,22 +338,22 @@ trait MockElasticClientApi extends NopeClientApi {
 
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     Source.single(elasticDocuments.getAll).mapConcat(_.values.toList)
 
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     scrollClassic(
       elasticQuery,
       fieldAliases,
-      Map.empty,
+      ListMap.empty,
       config
     )
 
@@ -405,9 +404,9 @@ trait MockElasticClientApi extends NopeClientApi {
 
 trait ElasticDocuments {
 
-  private[this] var documents: Map[String, Map[String, AnyRef]] = Map()
+  private[this] var documents: Map[String, ListMap[String, AnyRef]] = Map()
 
-  def createOrUpdate(entity: Map[String, AnyRef], uuid: String): Unit = {
+  def createOrUpdate(entity: ListMap[String, AnyRef], uuid: String): Unit = {
     documents = documents.updated(uuid, entity)
   }
 
@@ -415,8 +414,8 @@ trait ElasticDocuments {
     documents = documents - uuid
   }
 
-  def getAll: Map[String, Map[String, AnyRef]] = documents
+  def getAll: Map[String, ListMap[String, AnyRef]] = documents
 
-  def get(uuid: String): Option[Map[String, AnyRef]] = documents.get(uuid)
+  def get(uuid: String): Option[ListMap[String, AnyRef]] = documents.get(uuid)
 
 }

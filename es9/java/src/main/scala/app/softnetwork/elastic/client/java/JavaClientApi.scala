@@ -31,11 +31,33 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.sql.policy.{
+  EnrichPolicy,
+  EnrichPolicyTask,
+  EnrichPolicyTaskStatus,
+  EnrichPolicyType
+}
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.transform.{
+  Delay,
+  TransformConfig,
+  TransformState,
+  TransformStats,
+  TransformTimeInterval
+}
+import app.softnetwork.elastic.sql.watcher.{
+  Watcher,
+  WatcherActivationState,
+  WatcherExecutionState,
+  WatcherStatus
+}
+import app.softnetwork.elastic.utils.CronIntervalCalculator
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping
 import co.elastic.clients.elasticsearch._types.{
   Conflicts,
+  ExpandWildcard,
   FieldSort,
   FieldValue,
   Refresh,
@@ -55,6 +77,12 @@ import co.elastic.clients.elasticsearch.core.msearch.{MultisearchHeader, Request
 import co.elastic.clients.elasticsearch.core._
 import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESSource}
 import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
+import co.elastic.clients.elasticsearch.enrich.{
+  DeletePolicyRequest,
+  ExecutePolicyRequest,
+  GetPolicyRequest,
+  PutPolicyRequest
+}
 import co.elastic.clients.elasticsearch.indices.update_aliases.{Action, AddAction, RemoveAction}
 import co.elastic.clients.elasticsearch.indices.{ExistsRequest => IndexExistsRequest, _}
 import co.elastic.clients.elasticsearch.ingest.{
@@ -62,11 +90,33 @@ import co.elastic.clients.elasticsearch.ingest.{
   GetPipelineRequest,
   PutPipelineRequest
 }
+import co.elastic.clients.elasticsearch.license.{
+  GetLicenseRequest,
+  PostStartBasicRequest,
+  PostStartTrialRequest
+}
+import co.elastic.clients.elasticsearch.transform.{
+  DeleteTransformRequest,
+  GetTransformStatsRequest,
+  PutTransformRequest,
+  ScheduleNowTransformRequest,
+  StartTransformRequest,
+  StopTransformRequest
+}
+import co.elastic.clients.elasticsearch.watcher.{
+  DeleteWatchRequest,
+  GetWatchRequest,
+  PutWatchRequest,
+  PutWatchResponse,
+  Watch,
+  WatchStatus
+}
 import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
 import _root_.java.util.{Map => JMap}
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.language.implicitConversions
@@ -92,13 +142,17 @@ trait JavaClientApi
     with JavaClientVersionApi
     with JavaClientPipelineApi
     with JavaClientTemplateApi
+    with JavaClientEnrichPolicyApi
+    with JavaClientTransformApi
+    with JavaClientWatcherApi
+    with JavaClientLicenseApi
 
 /** Elasticsearch client implementation using the Java Client
   * @see
   *   [[VersionApi]] for version information
   */
 trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
-  _: SerializationApi with JavaClientCompanion =>
+  _: JavaClientCompanion =>
   override private[client] def executeVersion(): ElasticResult[String] =
     executeJavaAction(
       operation = "version",
@@ -558,6 +612,36 @@ trait JavaClientMappingApi extends MappingApi with JavaClientHelpers {
     }
   }
 
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]] =
+    executeJavaAction(
+      operation = "getAllMappings",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .indices()
+        .getMapping(
+          new GetMappingRequest.Builder()
+            .index(indices.asJava)
+            .expandWildcards(
+              List(
+                ExpandWildcard.Open,
+                ExpandWildcard.Closed
+              ).asJava
+            )
+            .build()
+        )
+    ) { response =>
+      response
+        .mappings()
+        .asScala
+        .map { case (index, mapping) =>
+          (index, convertToJson(mapping))
+        }
+        .toMap
+    }
 }
 
 /** Elasticsearch client implementation of Refresh API using the Java Client
@@ -658,7 +742,7 @@ trait JavaClientCountApi extends CountApi with JavaClientHelpers {
   *   [[IndexApi]] for index operations
   */
 trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
-  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion =>
 
   override private[client] def executeIndex(
     index: String,
@@ -721,7 +805,7 @@ trait JavaClientIndexApi extends IndexApi with JavaClientHelpers {
   *   [[UpdateApi]] for update operations
   */
 trait JavaClientUpdateApi extends UpdateApi with JavaClientHelpers {
-  _: JavaClientSettingsApi with JavaClientCompanion with SerializationApi =>
+  _: JavaClientSettingsApi with JavaClientCompanion =>
 
   override private[client] def executeUpdate(
     index: String,
@@ -843,7 +927,7 @@ trait JavaClientDeleteApi extends DeleteApi with JavaClientHelpers {
   *   [[GetApi]] for get operations
   */
 trait JavaClientGetApi extends GetApi with JavaClientHelpers {
-  _: JavaClientCompanion with SerializationApi =>
+  _: JavaClientCompanion =>
 
   override private[client] def executeGet(
     index: String,
@@ -897,12 +981,13 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
   *   [[SearchApi]] for search operations
   */
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
-  _: JavaClientCompanion with SerializationApi =>
+  _: JavaClientCompanion =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String =
-    implicitly[ElasticSearchRequest](sqlSearch).query
+    implicitly[ElasticSearchRequest](singleSearch).query
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
@@ -1244,13 +1329,13 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): scaladsl.Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+      .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             scrollIdOpt match {
@@ -1344,10 +1429,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): scaladsl.Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): scaladsl.Source[ListMap[String, Any], NotUsed] = {
     pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 
@@ -1364,10 +1449,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
 
     // Step 1: Open PIT
@@ -1379,7 +1464,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
           logger.info(s"Opened PIT: $pitId for indices: ${elasticQuery.indices.mkString(", ")}")
 
           Source
-            .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+            .unfoldAsync[Option[Seq[Any]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
               retryWithBackoff(config.retryConfig) {
                 Future {
                   searchAfterOpt match {
@@ -1594,9 +1679,9 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private def extractAllResults(
     response: Either[SearchResponse[JMap[String, Object]], ScrollResponse[JMap[String, Object]]],
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): Seq[Map[String, Any]] = {
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
+  ): Seq[ListMap[String, Any]] = {
     val jsonString =
       response match {
         case Left(l)  => convertToJson(l)
@@ -1621,11 +1706,11 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private def extractHitsOnly(
     response: SearchResponse[JMap[String, Object]],
-    fieldAliases: Map[String, String]
-  ): Seq[Map[String, Any]] = {
+    fieldAliases: ListMap[String, String]
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = convertToJson(response)
 
-    parseResponse(jsonString, fieldAliases, Map.empty) match {
+    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} hits from response")
         rows
@@ -1651,7 +1736,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 }
 
 trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers with JavaClientVersionApi {
-  _: JavaClientCompanion with SerializationApi =>
+  _: JavaClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -1711,10 +1796,33 @@ trait JavaClientPipelineApi extends PipelineApi with JavaClientHelpers with Java
       }
     }
   }
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] =
+    executeJavaAction(
+      operation = "listPipelines",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .ingest()
+        .getPipeline(
+          new GetPipelineRequest.Builder()
+            .id("*")
+            .build()
+        )
+    ) { resp =>
+      resp
+        .pipelines()
+        .asScala
+        .map { case (id, pipeline) =>
+          id -> convertToJson(pipeline)
+        }
+        .toMap
+    }
 }
 
 trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with JavaClientVersionApi {
-  _: JavaClientCompanion with SerializationApi =>
+  _: JavaClientCompanion =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 
@@ -1946,4 +2054,511 @@ trait JavaClientTemplateApi extends TemplateApi with JavaClientHelpers with Java
     )(resp => resp.value())
   }
 
+}
+
+// ==================== ENRICH POLICY API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientEnrichPolicyApi extends EnrichPolicyApi with JavaClientHelpers {
+  _: JavaClientVersionApi with JavaClientCompanion =>
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): ElasticResult[Boolean] = {
+    implicit val timestamp: Long = System.currentTimeMillis()
+    executeJavaBooleanAction(
+      operation = "createEnrichPolicy",
+      index = None,
+      retryable = false
+    ) {
+      val json: String = policy.node
+      logger.info(s"Creating enrich policy: ${policy.name} with definition:\n$json")
+      val req =
+        apply()
+          .enrich()
+          .putPolicy(
+            new PutPolicyRequest.Builder()
+              .name(policy.name)
+              .withJson(new StringReader(json))
+              .build()
+          )
+      req
+    }(resp => resp.acknowledged())
+  }
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deleteEnrichPolicy",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .enrich()
+        .deletePolicy(
+          new DeletePolicyRequest.Builder()
+            .name(policyName)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[EnrichPolicyTask] = {
+    val startTime = _root_.java.time.ZonedDateTime.now()
+    executeJavaAction(
+      operation = "executeEnrichPolicy",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .enrich()
+        .executePolicy(
+          new ExecutePolicyRequest.Builder()
+            .name(policyName)
+            .waitForCompletion(true)
+            .build()
+        )
+    )(resp => {
+      val endTime = _root_.java.time.ZonedDateTime.now()
+      val status = EnrichPolicyTaskStatus(resp.status().phase().name())
+      logger.info(
+        s"Enrich Policy '$policyName' executed in ${endTime.toInstant.toEpochMilli - startTime.toInstant.toEpochMilli} ms with status: ${status.name}"
+      )
+      EnrichPolicyTask(
+        policyName = policyName,
+        taskId = resp.task(),
+        status = status,
+        startTime = Some(startTime),
+        endTime = Some(endTime)
+      )
+    })
+  }
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    executeJavaAction(
+      operation = "getEnrichPolicy",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .enrich()
+        .getPolicy(
+          new GetPolicyRequest.Builder()
+            .name(policyName)
+            .build()
+        )
+    ) { resp =>
+      resp.policies().asScala.map(_.config()).find(_.value().name() == policyName).map { pair =>
+        val policyType = EnrichPolicyType(pair.key().name())
+        val policy = pair.value()
+        EnrichPolicy(
+          name = policy.name(),
+          policyType = policyType,
+          indices = policy.indices().asScala.toSeq,
+          matchField = policy.matchField(),
+          enrichFields = policy.enrichFields().asScala.toList,
+          query = Option(policy.query()).map(convertToJson)
+        )
+      }
+    }
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    executeJavaAction(
+      operation = "listEnrichPolicies",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .enrich()
+        .getPolicy(
+          new GetPolicyRequest.Builder()
+            .build()
+        )
+    ) { resp =>
+      resp
+        .policies()
+        .asScala
+        .map(_.config())
+        .map { pair =>
+          val policyType = EnrichPolicyType(pair.key().name())
+          val policy = pair.value()
+          EnrichPolicy(
+            name = policy.name(),
+            policyType = policyType,
+            indices = policy.indices().asScala.toSeq,
+            matchField = policy.matchField(),
+            enrichFields = policy.enrichFields().asScala.toList,
+            query = Option(policy.query()).map(convertToJson)
+          )
+        }
+        .toSeq
+    }
+}
+
+// ==================== TRANSFORM API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientTransformApi extends TransformApi with JavaClientHelpers {
+  _: JavaClientVersionApi with JavaClientCompanion =>
+
+  override private[client] def executeCreateTransform(
+    config: TransformConfig,
+    start: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "createTransform",
+      index = None,
+      retryable = false
+    ) {
+      implicit val timestamp: Long = System.currentTimeMillis()
+      implicit val context: PainlessContextType = PainlessContextType.Transform
+      val json: String = config.node
+      logger.info(s"Creating transform: ${config.id} with definition:\n$json")
+      apply()
+        .transform()
+        .putTransform(
+          new PutTransformRequest.Builder()
+            .transformId(config.id)
+            .withJson(new StringReader(json))
+            .build()
+        )
+    }(resp => resp.acknowledged())
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deleteTransform",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .deleteTransform(
+          new DeleteTransformRequest.Builder()
+            .transformId(transformId)
+            .force(force)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeStartTransform(transformId: String): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "startTransform",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .startTransform(
+          new StartTransformRequest.Builder()
+            .transformId(transformId)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "stopTransform",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .stopTransform(
+          new StopTransformRequest.Builder()
+            .transformId(transformId)
+            .force(force)
+            .waitForCompletion(waitForCompletion)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): ElasticResult[Option[TransformStats]] =
+    executeJavaAction(
+      operation = "getTransformStats",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .transform()
+        .getTransformStats(
+          new GetTransformStatsRequest.Builder()
+            .transformId(transformId)
+            .build()
+        )
+    ) { resp =>
+      val statsOpt = resp.transforms().asScala.headOption.map { stats =>
+        TransformStats(
+          id = stats.id(),
+          state = TransformState(stats.state()),
+          documentsProcessed = stats.stats().documentsProcessed(),
+          documentsIndexed = stats.stats().documentsIndexed(),
+          indexFailures = stats.stats().indexFailures(),
+          searchFailures = stats.stats().searchFailures(),
+          lastCheckpoint = Option(stats.checkpointing())
+            .flatMap(c => Option(c.last()))
+            .map(_.checkpoint()),
+          operationsBehind = Option(stats.checkpointing())
+            .flatMap(info => Option(info.operationsBehind()).map(_.longValue()))
+            .getOrElse(0L),
+          processingTimeMs = stats.stats().processingTimeInMs()
+        )
+      }
+      statsOpt
+    }
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "scheduleNow",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .transform()
+        .scheduleNowTransform(
+          new ScheduleNowTransformRequest.Builder()
+            .transformId(transformId)
+            .build()
+        )
+    )(resp => resp.acknowledged())
+
+}
+
+// ==================== WATCHER API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientWatcherApi extends WatcherApi with JavaClientHelpers {
+  _: JavaClientVersionApi with JavaClientCompanion =>
+
+  override private[client] def executeCreateWatcher(
+    watcher: Watcher,
+    active: Boolean
+  ): result.ElasticResult[Boolean] =
+    executeJavaAction[PutWatchResponse, Boolean](
+      operation = "createWatcher",
+      index = None,
+      retryable = false
+    )(
+      action = {
+        implicit val timestamp: Long = System.currentTimeMillis()
+        val json = watcher.node
+        logger.info(s"Creating Watcher ${watcher.id} :\n${sanitizeWatcherJson(json)}")
+        apply()
+          .watcher()
+          .putWatch(
+            PutWatchRequest.of(builder =>
+              builder
+                .id(watcher.id)
+                .active(active)
+                .withJson(new StringReader(json))
+            )
+          )
+      }
+    )(
+      transformer = resp => resp.created()
+    )
+
+  override private[client] def executeDeleteWatcher(id: String): result.ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "deleteWatcher",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .watcher()
+        .deleteWatch(
+          DeleteWatchRequest.of(builder => builder.id(id))
+        )
+    )(resp => resp.found())
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): result.ElasticResult[Option[WatcherStatus]] =
+    executeJavaAction(
+      operation = "getWatcherStatus",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .watcher()
+        .getWatch(
+          GetWatchRequest.of(builder => builder.id(id))
+        )
+    ) { resp =>
+      if (resp.found()) {
+        val watch = resp.watch()
+        val version = resp.version()
+        val status = resp.status()
+        extractWatcherStatus(
+          id = id,
+          watch = watch,
+          version = Some(version),
+          status = status
+        )
+      } else {
+        None
+      }
+    }
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    executeJavaAction(
+      operation = "listWatchers",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .watcher()
+        .queryWatches()
+    ) { resp =>
+      resp.watches().asScala.toSeq.flatMap { qw =>
+        val id = qw.id()
+        val watch = qw.watch()
+        val status = qw.status()
+        extractWatcherStatus(
+          id = id,
+          watch = watch,
+          version = None,
+          status = status
+        )
+      }
+    }
+
+  private def extractWatcherStatus(
+    id: String,
+    watch: Watch,
+    version: Option[Long] = None,
+    status: WatchStatus
+  ): Option[WatcherStatus] = {
+    val trigger = watch.trigger()
+    val interval: Option[TransformTimeInterval] =
+      if (trigger.isSchedule) {
+        val schedule = trigger.schedule()
+        logger.debug(s"Watcher [$id] has schedule: $schedule")
+        if (schedule.isCron) {
+          val cron = schedule.cron()
+          logger.debug(s"Watcher [$id] has cron schedule: $cron")
+          CronIntervalCalculator.validateAndCalculate(cron) match {
+            case Right(interval) =>
+              val tuple = TransformTimeInterval.fromSeconds(interval._2)
+              Some(
+                Delay(
+                  timeUnit = tuple._1,
+                  interval = tuple._2
+                )
+              )
+            case _ =>
+              logger.warn(
+                s"Watcher [$id] has invalid cron expression: $cron"
+              )
+              None
+          }
+        } else if (schedule.isInterval) {
+          val interval = schedule.interval()
+          logger.debug(s"Watcher [$id] has interval schedule: $interval")
+          TransformTimeInterval(interval.time()) match {
+            case Some(ti) => Some(ti)
+            case _ =>
+              logger.warn(
+                s"Watcher [$id] has invalid interval: $interval"
+              )
+              None
+          }
+        } else {
+          logger.warn(s"Watcher [$id] has unknown schedule type")
+          None
+        }
+      } else {
+        logger.warn(s"Watcher [$id] does not have a schedule trigger")
+        None
+      }
+
+    interval match {
+      case None =>
+        logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+      case Some(t) => // valid interval
+        logger.info(s"Watcher [$id] has schedule interval: $t")
+    }
+
+    Option(status).map { status =>
+      val state = Option(status.state())
+      val active = state.exists(_.active())
+      import _root_.java.time.ZonedDateTime
+      val timestamp =
+        state
+          .map(_.timestamp().toZonedDateTime)
+          .getOrElse(ZonedDateTime.now())
+      WatcherStatus(
+        id = id,
+        version = version.getOrElse(status.version()),
+        executionState = Option(status.executionState()).map(es => WatcherExecutionState(es)),
+        activationState = WatcherActivationState(
+          active = active,
+          timestamp = timestamp
+        ),
+        lastChecked = Option(status.lastChecked())
+          .map(_.toZonedDateTime),
+        lastMetCondition = Option(status.lastMetCondition())
+          .map(_.toZonedDateTime),
+        interval = interval
+      )
+    }
+  }
+
+}
+
+// ==================== LICENSE API IMPLEMENTATION FOR JAVA CLIENT ====================
+
+trait JavaClientLicenseApi extends LicenseApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] =
+    executeJavaAction(
+      operation = "licenseInfo",
+      index = None,
+      retryable = true
+    )(
+      apply()
+        .license()
+        .get(new GetLicenseRequest.Builder().build())
+    ) { resp =>
+      val jsonString = convertToJson(resp)
+      Some(jsonString)
+    }
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "enableBasicLicense",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .license()
+        .postStartBasic(
+          PostStartBasicRequest.of(builder => builder.acknowledge(true))
+        )
+    )(resp => resp.acknowledged())
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
+    executeJavaBooleanAction(
+      operation = "enableTrialLicense",
+      index = None,
+      retryable = false
+    )(
+      apply()
+        .license()
+        .postStartTrial(
+          PostStartTrialRequest.of(builder => builder.acknowledge(true))
+        )
+    )(resp => resp.acknowledged())
 }

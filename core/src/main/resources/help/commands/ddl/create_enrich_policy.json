@@ -1,0 +1,91 @@
+{
+  "name": "CREATE ENRICH POLICY",
+  "category": "DDL",
+  "shortDescription": "Create a data enrichment policy",
+  "syntax": [
+    "CREATE [OR REPLACE] ENRICH POLICY policy_name",
+    "  [TYPE {MATCH | GEO_MATCH | RANGE}]",
+    "  FROM source_index [, source_index2, ...]",
+    "  ON match_field",
+    "  ENRICH field1, field2, ...",
+    "  [WHERE condition]"
+  ],
+  "description": "Create an enrich policy to add data from lookup indices to incoming documents during ingest. The policy must be executed before it can be used in a pipeline.",
+  "clauses": [
+    {
+      "name": "OR REPLACE",
+      "description": "Replace existing policy if it exists",
+      "optional": true
+    },
+    {
+      "name": "TYPE",
+      "description": "Policy type - determines how documents are matched",
+      "optional": true,
+      "variants": ["MATCH (default)", "GEO_MATCH", "RANGE"]
+    },
+    {
+      "name": "FROM",
+      "description": "Source index(es) containing enrichment data. Multiple indices supported.",
+      "optional": false
+    },
+    {
+      "name": "ON",
+      "description": "Field used to match documents between source and target",
+      "optional": false
+    },
+    {
+      "name": "ENRICH",
+      "description": "Fields to copy from source index to target document",
+      "optional": false
+    },
+    {
+      "name": "WHERE",
+      "description": "Filter criteria for source documents",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Basic match policy",
+      "description": "Enrich documents with user information",
+      "sql": "CREATE ENRICH POLICY user_enrich\n  FROM users\n  ON user_id\n  ENRICH name, email, department"
+    },
+    {
+      "title": "Policy with WHERE clause",
+      "description": "Only enrich with active users",
+      "sql": "CREATE OR REPLACE ENRICH POLICY active_user_enrich\n  FROM users\n  ON user_id\n  ENRICH name, email, department\n  WHERE account_status = 'active' AND email_verified = true"
+    },
+    {
+      "title": "Multiple source indices",
+      "description": "Enrich from multiple lookup tables",
+      "sql": "CREATE ENRICH POLICY contact_enrich\n  FROM users, customers, partners\n  ON contact_id\n  ENRICH name, email, company"
+    },
+    {
+      "title": "Geo-match policy",
+      "description": "Enrich with location-based data",
+      "sql": "CREATE ENRICH POLICY geo_enrich\n  TYPE GEO_MATCH\n  FROM regions\n  ON location\n  ENRICH region_name, country, timezone"
+    },
+    {
+      "title": "Range policy",
+      "description": "Enrich with IP range data",
+      "sql": "CREATE ENRICH POLICY ip_enrich\n  TYPE RANGE\n  FROM ip_ranges\n  ON ip_range\n  ENRICH network_name, datacenter, owner"
+    },
+    {
+      "title": "Nested field enrichment",
+      "description": "Enrich with nested fields",
+      "sql": "CREATE ENRICH POLICY profile_enrich\n  FROM users\n  ON user_id\n  ENRICH name, profile.city, profile.preferences"
+    }
+  ],
+  "notes": [
+    "Policy must be EXECUTE'd before use: EXECUTE ENRICH POLICY policy_name",
+    "Re-execute the policy when source data changes to update the enrich index",
+    "MATCH type uses exact matching on keyword fields",
+    "GEO_MATCH type uses geo_shape matching for location data",
+    "RANGE type uses range matching for numeric or date fields",
+    "Requires Elasticsearch 7.5+"
+  ],
+  "limitations": [],
+  "seeAlso": ["EXECUTE ENRICH POLICY", "DROP ENRICH POLICY", "SHOW ENRICH POLICIES", "CREATE PIPELINE"],
+  "minVersion": "7.5",
+  "aliases": []
+}

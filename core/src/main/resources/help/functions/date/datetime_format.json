@@ -1,0 +1,44 @@
+{
+  "name": "DATETIME_FORMAT",
+  "category": "Date/Time",
+  "shortDescription": "Format timestamp as string",
+  "syntax": [
+    "DATETIME_FORMAT(date, format)"
+  ],
+  "description": "Formats a timestamp as a string using the specified format pattern.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "TIMESTAMP",
+      "description": "Date to format",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "format",
+      "type": "VARCHAR",
+      "description": "Format pattern (MySQL-style Date/Time Patterns)",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Format as ISO date",
+      "description": "YYYY-MM-DD format",
+      "sql": "SELECT DATETIME_FORMAT(created_at, '%Y-%m-%d') as date_str FROM events"
+    },
+    {
+      "title": "Custom format",
+      "description": "Full date and time",
+      "sql": "SELECT DATETIME_FORMAT(timestamp, '%Y-%m-%d %H:%i:%s') as formatted FROM logs"
+    }
+  ],
+  "notes": [
+    "Uses MySQL-style Date/Time Patterns",
+    "Common patterns: %Y (year 4 digits), %m (month), %d (day), %H (hour), %i (minute), %s (second)"
+  ],
+  "seeAlso": ["TO_DATE", "TO_TIMESTAMP"],
+  "aliases": ["DATETIME_FORMAT"]
+}

@@ -1,0 +1,43 @@
+{
+  "name": "INTERVAL",
+  "category": "Date/Time",
+  "shortDescription": "Define a time interval",
+  "syntax": [
+    "INTERVAL n unit"
+  ],
+  "description": "Defines a time interval for use with date arithmetic functions.",
+  "parameters": [
+    {
+      "name": "n",
+      "type": "INT",
+      "description": "Number of units",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "unit",
+      "type": "KEYWORD",
+      "description": "Time unit",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INTERVAL",
+  "examples": [
+    {
+      "title": "Add interval to date",
+      "description": "Add 7 days",
+      "sql": "SELECT CURRENT_DATE + INTERVAL 7 DAY"
+    },
+    {
+      "title": "Subtract interval",
+      "description": "Go back 1 month",
+      "sql": "SELECT CURRENT_DATE - INTERVAL 1 MONTH"
+    }
+  ],
+  "notes": [
+    "Supported units: MILLISECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, YEAR"
+  ],
+  "seeAlso": ["DATE_ADD", "DATE_SUB"],
+  "aliases": []
+}

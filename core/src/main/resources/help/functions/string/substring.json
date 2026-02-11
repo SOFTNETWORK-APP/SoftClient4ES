@@ -1,0 +1,57 @@
+{
+  "name": "SUBSTRING",
+  "category": "String",
+  "shortDescription": "Extract part of a string",
+  "syntax": [
+    "SUBSTRING(string, start [, length])",
+    "SUBSTRING(string FROM start [FOR length])"
+  ],
+  "description": "Extracts a substring from a string starting at a specified position.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "Source string",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "start",
+      "type": "INT",
+      "description": "Starting position (1-based)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "length",
+      "type": "INT",
+      "description": "Number of characters to extract",
+      "optional": true,
+      "defaultValue": "rest of string"
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Extract first 3 characters",
+      "description": "Get initials",
+      "sql": "SELECT SUBSTRING(name, 1, 3) as initials FROM users"
+    },
+    {
+      "title": "Extract from position",
+      "description": "Skip first 5 characters",
+      "sql": "SELECT SUBSTRING(code FROM 6) as suffix FROM products"
+    },
+    {
+      "title": "Extract username from email",
+      "description": "Get part before @",
+      "sql": "SELECT SUBSTRING(email, 1, POSITION('@' IN email) - 1) as username FROM users"
+    }
+  ],
+  "notes": [
+    "Positions are 1-based (first character is position 1)",
+    "If length exceeds remaining characters, returns available characters"
+  ],
+  "seeAlso": ["LEFT", "RIGHT", "POSITION", "LENGTH"],
+  "aliases": ["SUBSTR"]
+}

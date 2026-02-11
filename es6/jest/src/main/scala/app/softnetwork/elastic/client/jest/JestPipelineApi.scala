@@ -17,14 +17,16 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.jest.actions.Pipeline
-import app.softnetwork.elastic.client.{result, PipelineApi, SerializationApi}
+import app.softnetwork.elastic.client.{result, PipelineApi}
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
 
+import scala.jdk.CollectionConverters._
+
 trait JestPipelineApi extends PipelineApi with JestClientHelpers {
-  _: JestVersionApi with SerializationApi with JestClientCompanion =>
+  _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -91,4 +93,36 @@ trait JestPipelineApi extends PipelineApi with JestClientHelpers {
     }
   }
 
+  override private[client] def executeListPipelines(): result.ElasticResult[Map[String, String]] =
+    // There is no direct API to list pipelines in Jest.
+    apply().execute(Pipeline.List()) match {
+      case jestResult: JestResult if jestResult.isSucceeded =>
+        val jsonString = jestResult.getJsonString
+        if (jsonString != null && jsonString.nonEmpty) {
+          val node: JsonNode = jsonString
+          node match {
+            case objectNode: ObjectNode =>
+              val pipelines = objectNode
+                .fieldNames()
+                .asScala
+                .map { name =>
+                  val pipelineNode = objectNode.get(name)
+                  name -> pipelineNode.toString
+                }
+                .toMap
+              result.ElasticSuccess(pipelines)
+            case _ =>
+              result.ElasticSuccess(Map.empty)
+          }
+        } else {
+          result.ElasticSuccess(Map.empty)
+        }
+      case jestResult: JestResult =>
+        val errorMessage = jestResult.getErrorMessage
+        result.ElasticFailure(
+          result.ElasticError(
+            s"Failed to list pipelines: $errorMessage"
+          )
+        )
+    }
 }

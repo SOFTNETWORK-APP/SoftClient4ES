@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
-import app.softnetwork.elastic.client.{SerializationApi, TemplateApi}
+import app.softnetwork.elastic.client.TemplateApi
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
@@ -32,7 +32,7 @@ import io.searchbox.client.JestResult
 import scala.jdk.CollectionConverters._
 
 trait JestTemplateApi extends TemplateApi with JestClientHelpers {
-  _: JestVersionApi with SerializationApi with JestClientCompanion =>
+  _: JestVersionApi with JestClientCompanion =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 

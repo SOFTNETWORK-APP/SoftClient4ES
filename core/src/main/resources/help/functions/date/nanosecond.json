@@ -1,0 +1,31 @@
+{
+  "name": "NANOSECOND",
+  "category": "Date/Time",
+  "shortDescription": "Extract nanosecond from timestamp",
+  "syntax": [
+    "NANOSECOND(timestamp)"
+  ],
+  "description": "Extracts the nanosecond component from a timestamp.",
+  "parameters": [
+    {
+      "name": "timestamp",
+      "type": "TIMESTAMP",
+      "description": "Timestamp to extract nanosecond from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get nanosecond",
+      "description": "Extract nanosecond from timestamp",
+      "sql": "SELECT NANOSECOND(created_at) as ns FROM logs"
+    }
+  ],
+  "notes": [
+    "Returns 0-999999999"
+  ],
+  "seeAlso": ["MILLISECOND", "MICROSECOND"],
+  "aliases": []
+}

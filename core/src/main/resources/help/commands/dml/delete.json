@@ -1,0 +1,49 @@
+{
+  "name": "DELETE",
+  "category": "DML",
+  "shortDescription": "Remove rows from a table",
+  "syntax": [
+    "DELETE FROM table_name",
+    "[WHERE condition]"
+  ],
+  "description": "Delete documents from an Elasticsearch index that match the WHERE clause. Uses the delete_by_query API internally. Without a WHERE clause, ALL documents will be deleted (use TRUNCATE for better performance).",
+  "clauses": [
+    {
+      "name": "WHERE",
+      "description": "Filter condition to select documents to delete",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Delete by ID",
+      "description": "Delete a specific document",
+      "sql": "DELETE FROM users WHERE id = 1"
+    },
+    {
+      "title": "Delete by condition",
+      "description": "Delete documents matching criteria",
+      "sql": "DELETE FROM logs WHERE level = 'DEBUG' AND timestamp < '2024-01-01'"
+    },
+    {
+      "title": "Delete with complex condition",
+      "description": "Delete using multiple criteria",
+      "sql": "DELETE FROM sessions\nWHERE expired_at < CURRENT_TIMESTAMP\n  OR (last_activity < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 HOUR) AND NOT persistent)"
+    },
+    {
+      "title": "Delete all (not recommended)",
+      "description": "Delete all documents - use TRUNCATE instead",
+      "sql": "DELETE FROM temporary_data"
+    }
+  ],
+  "notes": [
+    "Without WHERE clause, all documents will be deleted",
+    "Use TRUNCATE TABLE for deleting all documents (more efficient)",
+    "Uses Elasticsearch delete_by_query API",
+    "Deletions are not atomic across multiple documents"
+  ],
+  "limitations": [],
+  "seeAlso": ["INSERT", "UPDATE", "TRUNCATE TABLE"],
+  "minVersion": null,
+  "aliases": []
+}

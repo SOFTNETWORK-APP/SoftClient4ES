@@ -1,0 +1,43 @@
+{
+  "name": "MIN",
+  "category": "Aggregate",
+  "shortDescription": "Find the minimum value",
+  "syntax": [
+    "MIN(column)",
+    "MIN(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Aggregate function that returns the minimum value in a column.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "ANY",
+      "description": "Column to find minimum value",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as input",
+  "examples": [
+    {
+      "title": "Minimum value",
+      "description": "Find lowest price",
+      "sql": "SELECT MIN(price) as lowest_price FROM products"
+    },
+    {
+      "title": "Minimum date",
+      "description": "Find earliest date",
+      "sql": "SELECT MIN(created_at) as first_order FROM orders"
+    },
+    {
+      "title": "Minimum by group",
+      "description": "Minimum per category",
+      "sql": "SELECT category, MIN(price) as min_price\nFROM products\nGROUP BY category"
+    }
+  ],
+  "notes": [
+    "Works with numeric, date, and string types",
+    "NULL values are ignored"
+  ],
+  "seeAlso": ["MAX", "AVG", "SUM"],
+  "aliases": []
+}

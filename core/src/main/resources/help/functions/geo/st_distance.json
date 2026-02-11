@@ -1,0 +1,50 @@
+{
+  "name": "ST_DISTANCE",
+  "category": "Geospatial",
+  "shortDescription": "Calculate distance between two points",
+  "syntax": [
+    "ST_DISTANCE(point1, point2)"
+  ],
+  "description": "Calculates the distance between two geographic points.",
+  "parameters": [
+    {
+      "name": "point1",
+      "type": "GEO_POINT",
+      "description": "First point",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "point2",
+      "type": "GEO_POINT",
+      "description": "Second point",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Distance in meters",
+      "description": "Calculate distance between two locations",
+      "sql": "SELECT ST_DISTANCE(location, POINT(2.3522, 48.8566)) as distance_m\nFROM stores"
+    },
+    {
+      "title": "Filter by distance",
+      "description": "Find nearby locations",
+      "sql": "SELECT * FROM restaurants\nWHERE ST_DISTANCE(location, POINT(2.3522, 48.8566)) BETWEEN 1 km AND 5 km"
+    },
+    {
+      "title": "Order by distance",
+      "description": "Nearest first",
+      "sql": "SELECT name, ST_DISTANCE(location, POINT(2.3522, 48.8566)) as distance\nFROM stores\nORDER BY distance ASC\nLIMIT 10"
+    }
+  ],
+  "notes": [
+    "Default unit is meters",
+    "Supported units with filters: mm (millimeters), cm (centimeters), m (meters), km (kilometers), in (inches), ft (feet), yd (yards), mi (miles), nmi (nautical miles)",
+    "Uses Haversine formula for great-circle distance"
+  ],
+  "seeAlso": ["POINT"],
+  "aliases": ["DISTANCE"]
+}

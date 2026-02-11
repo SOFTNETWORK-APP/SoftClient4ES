@@ -1,0 +1,10 @@
+[
+  "count.json",
+  "sum.json",
+  "avg.json",
+  "min.json",
+  "max.json",
+  "array_agg.json",
+  "first_value.json",
+  "last_value.json"
+]

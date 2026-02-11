@@ -1,0 +1,46 @@
+{
+  "name": "EXTRACT",
+  "category": "Date/Time",
+  "shortDescription": "Extract time field unit from date",
+  "syntax": [
+    "EXTRACT(unit FROM date)"
+  ],
+  "description": "Extracts the time field component from a date or timestamp.",
+  "parameters": [
+    {
+      "name": "unit",
+      "type": "KEYWORD",
+      "description": "Unit for result (YEAR, MONTH, DAY, WEEKDAY, YEARDAY, HOUR, MINUTE, SECOND, NANOSECOND, MICROSECOND, MILLISECOND, MILLISECOND, EPOCHDAY, OFFSET_SECONDS)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract year from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get year",
+      "description": "Extract year from date",
+      "sql": "SELECT EXTRACT(YEAR FROM created_at) as year FROM orders"
+    },
+    {
+      "title": "Filter by day of week",
+      "description": "Get records from specific day of week",
+      "sql": "SELECT * FROM events WHERE EXTRACT(WEEKDAY FROM event_date) = 1"
+    },
+    {
+      "title": "Group by year",
+      "description": "Aggregate by year",
+      "sql": "SELECT EXTRACT(YEAR FROM order_date) as year, SUM(total) as total\nFROM orders\nGROUP BY EXTRACT(YEAR FROM order_date)"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["MONTH", "DAY", "YEAR", "DATE_TRUNC"],
+  "aliases": []
+}

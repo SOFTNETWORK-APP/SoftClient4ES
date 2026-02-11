@@ -1,0 +1,43 @@
+{
+  "name": "DATETIME_PARSE",
+  "category": "Date/Time",
+  "shortDescription": "Convert string to timestamp",
+  "syntax": [
+    "DATETIME_PARSE(string, format)"
+  ],
+  "description": "Converts a string to a timestamp using format pattern.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to convert",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "format",
+      "type": "VARCHAR",
+      "description": "Format pattern for parsing",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "TIMESTAMP",
+  "examples": [
+    {
+      "title": "Convert ISO timestamp",
+      "description": "Parse standard format",
+      "sql": "SELECT DATETIME_PARSE('2024-01-15T10:30:00Z', '%Y-%m-%dT%H:%i:%s') as ts"
+    },
+    {
+      "title": "Parse custom format",
+      "description": "Specify format pattern",
+      "sql": "SELECT TO_TIMESTAMP('15/01/2024 10:30:00', '%d/%m/%Y %H:%i:%s') as ts"
+    }
+  ],
+  "notes": [
+    "Returns NULL if parsing fails"
+  ],
+  "seeAlso": ["DATE_PARSE", "DATE_FORMAT", "CAST"],
+  "aliases": ["PARSE_TIMESTAMP", "TO_TIMESTAMP", "DATETIMEPARSE"]
+}

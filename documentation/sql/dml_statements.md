@@ -353,6 +353,7 @@ SELECT * FROM dml_chain ORDER BY id ASC;
 | UPDATE           | ✔    | ✔    | ✔    | ✔    |
 | DELETE           | ✔    | ✔    | ✔    | ✔    |
 | COPY INTO        | ✔    | ✔    | ✔    | ✔    |
+| JSON             | ✔    | ✔    | ✔    | ✔    |
 | JSON_ARRAY       | ✔    | ✔    | ✔    | ✔    |
 | PARQUET          | ✔    | ✔    | ✔    | ✔    |
 | DELTA_LAKE       | ✔    | ✔    | ✔    | ✔    |

@@ -1,0 +1,49 @@
+{
+  "name": "DATETIME_SUB",
+  "category": "Date/Time",
+  "shortDescription": "Subtract interval from date",
+  "syntax": [
+    "DATETIME_SUB(date, INTERVAL n unit)",
+    "DATETIME_SUB(unit, n, date)"
+  ],
+  "description": "Subtracts a specified time interval from a timestamp.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "TIMESTAMP",
+      "description": "Base date",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "n",
+      "type": "INT",
+      "description": "Number of units to subtract",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "unit",
+      "type": "KEYWORD",
+      "description": "Time unit",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "TIMESTAMP",
+  "examples": [
+    {
+      "title": "Subtract days",
+      "description": "Get past date",
+      "sql": "SELECT DATETIME_SUB(CURRENT_DATE, INTERVAL 30 DAY) as last_month"
+    },
+    {
+      "title": "Filter recent records",
+      "description": "Get records from last week",
+      "sql": "SELECT * FROM events WHERE created_at >= DATETIME_SUB(WEEK, 1, CURRENT_DATE)"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["DATETIME_ADD", "DATE_DIFF", "INTERVAL"],
+  "aliases": ["DATETIMESUB"]
+}

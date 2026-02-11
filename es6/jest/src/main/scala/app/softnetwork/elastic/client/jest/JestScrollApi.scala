@@ -27,6 +27,7 @@ import io.searchbox.core.{ClearScroll, Search, SearchScroll}
 import io.searchbox.params.Parameters
 
 import java.io.IOException
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
@@ -38,13 +39,13 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+      .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             scrollIdOpt match {
@@ -119,13 +120,13 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[Seq[Any]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+      .unfoldAsync[Option[Seq[Any]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             searchAfterOpt match {
@@ -241,19 +242,19 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] =
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
     throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
 
   /** Extract ALL results: hits + aggregations
     */
   private def extractAllResultsFromJest(
     jsonObject: JsonObject,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): Seq[Map[String, Any]] = {
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = jsonObject.toString
     parseResponse(
       jsonString,
@@ -271,11 +272,11 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     */
   private def extractHitsOnlyFromJest(
     jsonObject: JsonObject,
-    fieldAliases: Map[String, String]
-  ): Seq[Map[String, Any]] = {
+    fieldAliases: ListMap[String, String]
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = jsonObject.toString
 
-    parseResponse(jsonString, fieldAliases, Map.empty) match {
+    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse Jest search after response: ${ex.getMessage}", ex)

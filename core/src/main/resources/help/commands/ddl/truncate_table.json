@@ -1,0 +1,27 @@
+{
+  "name": "TRUNCATE TABLE",
+  "category": "DDL",
+  "shortDescription": "Remove all data from a table while keeping its structure",
+  "syntax": [
+    "TRUNCATE TABLE table_name"
+  ],
+  "description": "Delete all documents from an Elasticsearch index while preserving the index structure, mappings, and settings. Faster than DELETE without WHERE clause.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Truncate a table",
+      "description": "Remove all data from a table",
+      "sql": "TRUNCATE TABLE temp_logs"
+    }
+  ],
+  "notes": [
+    "Faster than DELETE FROM table (no WHERE clause)",
+    "Preserves index settings and mappings",
+    "Resets document count to zero",
+    "Cannot be rolled back"
+  ],
+  "limitations": [],
+  "seeAlso": ["DELETE", "DROP TABLE"],
+  "minVersion": null,
+  "aliases": []
+}

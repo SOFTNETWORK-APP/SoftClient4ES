@@ -1,12 +1,27 @@
 package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.{IngestTimestampValue, StringValue}
+import app.softnetwork.elastic.sql.{
+  DateMathScript,
+  Identifier,
+  IngestTimestampValue,
+  IntValue,
+  ObjectValue,
+  StringValue,
+  StringValues
+}
+import app.softnetwork.elastic.sql.http._
 import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.function.FunctionWithIdentifier
+import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateSub, DateTimeFunction}
+import app.softnetwork.elastic.sql.operator.GT
+import app.softnetwork.elastic.sql.policy.EnrichPolicyType
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   mapper,
   DateIndexNameProcessor,
+  EnrichProcessor,
+  EnrichShapeRelation,
   IngestPipelineType,
   IngestProcessorType,
   PartitionDate,
@@ -14,9 +29,15 @@ import app.softnetwork.elastic.sql.schema.{
   ScriptProcessor,
   SetProcessor
 }
-import app.softnetwork.elastic.sql.time.TimeUnit
+import app.softnetwork.elastic.sql.time.TimeUnit.DAYS
+import app.softnetwork.elastic.sql.time.{CalendarInterval, TimeUnit}
+import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeUnit}
+import app.softnetwork.elastic.sql.watcher._
+import com.fasterxml.jackson.databind.JsonNode
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import scala.collection.immutable.ListMap
 
 object Queries {
   val numericalEq = "SELECT t.col1, t.col2 FROM Table AS t WHERE t.identifier = 1.0"
@@ -140,21 +161,29 @@ object Queries {
     """SELECT
       |identifier,
       |date_format(date_trunc(lastUpdated, YEAR), '%Y-%m-%d') AS y,
+      |date_format(date_trunc(YEAR, lastUpdated), '%Y-%m-%d') AS y2,
       |date_format(date_trunc(lastUpdated, QUARTER), '%Y-%m-%d') AS q,
+      |date_format(date_trunc(QUARTER, lastUpdated), '%Y-%m-%d') AS q2,
       |date_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d') AS m,
+      |date_format(date_trunc(MONTH, lastUpdated), '%Y-%m-%d') AS m2,
       |date_format(date_trunc(lastUpdated, WEEK), '%Y-%m-%d') AS w,
+      |date_format(date_trunc(WEEK, lastUpdated), '%Y-%m-%d') AS w2,
       |date_format(date_trunc(lastUpdated, DAY), '%Y-%m-%d') AS d,
+      |date_format(date_trunc(DAY, lastUpdated), '%Y-%m-%d') AS d2,
       |date_format(date_trunc(lastUpdated, HOUR), '%Y-%m-%d') AS h,
-      |date_format(date_trunc(lastUpdated, MINUTE), '%Y-%m-%d') AS m2,
-      |date_format(date_trunc(lastUpdated, SECOND), '%Y-%m-%d') AS lastSeen
+      |date_format(date_trunc(HOUR, lastUpdated), '%Y-%m-%d') AS h2,
+      |date_format(date_trunc(lastUpdated, MINUTE), '%Y-%m-%d') AS mi,
+      |date_format(date_trunc(MINUTE, lastUpdated), '%Y-%m-%d') AS mi2,
+      |date_format(date_trunc(lastUpdated, SECOND), '%Y-%m-%d') AS lastSeen,
+      |date_format(date_trunc(SECOND, lastUpdated), '%Y-%m-%d') AS lastSeen2
       |FROM Table
       |WHERE identifier2 IS NOT NULL""".stripMargin.replaceAll("\n", " ")
   val dateTimeFormat =
     "SELECT identifier, datetime_format(date_trunc(lastUpdated, MONTH), '%Y-%m-%d %H:%i:%s') AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateAdd =
-    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen, date_add(WEEK, 1, createdDate) as trigger FROM Table WHERE identifier2 is NOT null"
   val dateSub =
-    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
+    "SELECT identifier, date_sub(lastUpdated, INTERVAL 10 DAY) AS lastSeen, date_sub(MONTH, 2, createdDate) as lastMonth FROM Table WHERE identifier2 is NOT null"
   val dateTimeAdd =
     "SELECT identifier, datetime_add(lastUpdated, INTERVAL 10 DAY) AS lastSeen FROM Table WHERE identifier2 is NOT null"
   val dateTimeSub =
@@ -239,7 +268,11 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   import Queries._
 
-  "Parser" should "parse numerical EQ" in {
+  implicit def criteriaToNode: Criteria => JsonNode = _ => mapper.createObjectNode()
+
+  behavior of "Parser DQL"
+
+  it should "parse numerical EQ" in {
     val result = Parser(numericalEq)
     result.toOption
       .map(_.sql)
@@ -939,6 +972,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   // --- DDL ---
 
+  behavior of "Parser DDL with Table Statements"
+
   it should "parse CREATE TABLE if not exists" in {
     val sql =
       """CREATE TABLE IF NOT EXISTS users (
@@ -994,16 +1029,16 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         println(schema.defaultPipeline.ddl)
         val json = schema.defaultPipeline.json
         println(json)
-        json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET VALUE 'anonymous' IF ctx.name == null, age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name SET VALUE 'anonymous' IF ctx.name == null","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"description":"name SET DEFAULT 'anonymous'","field":"name","ignore_failure":true,"value":"anonymous","if":"ctx.name == null"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"description":"ingested_at SET DEFAULT _ingest.timestamp","field":"ingested_at","ignore_failure":true,"value":"{{_ingest.timestamp}}","if":"ctx.ingested_at == null"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"description":"PARTITION BY birthdate (MONTH)","field":"birthdate","date_rounding":"M","date_formats":["yyyy-MM"],"index_name_prefix":"users-","ignore_failure":true}},{"set":{"description":"PRIMARY KEY (id)","field":"_id","value":"{{id}}","ignore_failure":false,"ignore_empty_value":false}}]}"""
         val indexMappings = schema.indexMappings
         println(indexMappings)
-        indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer"},"name":{"type":"text","fields":{"raw":{"type":"keyword"}},"analyzer":"french","search_analyzer":"french"},"birthdate":{"type":"date"},"age":{"type":"integer"},"ingested_at":{"type":"date"},"profile":{"type":"object","properties":{"bio":{"type":"text"},"followers":{"type":"integer"},"join_date":{"type":"date"},"seniority":{"type":"integer"}}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"},"columns":{"age":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3"}},"profile":{"data_type":"STRUCT","not_null":"false","comment":"user profile","multi_fields":{"bio":{"data_type":"VARCHAR","not_null":"false"},"followers":{"data_type":"INT","not_null":"false"},"join_date":{"data_type":"DATE","not_null":"false"},"seniority":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3"}}}},"name":{"data_type":"VARCHAR","not_null":"false","default_value":"anonymous","multi_fields":{"raw":{"data_type":"KEYWORD","not_null":"false","comment":"sortable"}}},"ingested_at":{"data_type":"TIMESTAMP","not_null":"false","default_value":"_ingest.timestamp"},"birthdate":{"data_type":"DATE","not_null":"false"},"id":{"data_type":"INT","not_null":"true","comment":"user identifier"}}}}""".stripMargin
+        indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer"},"name":{"type":"text","fields":{"raw":{"type":"keyword"}},"analyzer":"french","search_analyzer":"french"},"birthdate":{"type":"date"},"age":{"type":"integer"},"ingested_at":{"type":"date"},"profile":{"type":"object","properties":{"bio":{"type":"text"},"followers":{"type":"integer"},"join_date":{"type":"date"},"seniority":{"type":"integer"}}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"},"columns":{"id":{"data_type":"INT","not_null":"true","comment":"user identifier"},"name":{"data_type":"VARCHAR","not_null":"false","default_value":"anonymous","multi_fields":{"raw":{"data_type":"KEYWORD","not_null":"false","comment":"sortable"}}},"birthdate":{"data_type":"DATE","not_null":"false"},"age":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3"}},"ingested_at":{"data_type":"TIMESTAMP","not_null":"false","default_value":"_ingest.timestamp"},"profile":{"data_type":"STRUCT","not_null":"false","comment":"user profile","multi_fields":{"bio":{"data_type":"VARCHAR","not_null":"false"},"followers":{"data_type":"INT","not_null":"false"},"join_date":{"data_type":"DATE","not_null":"false"},"seniority":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3"}}}}},"type":"regular","materialized_views":[]}}""".stripMargin
         val indexSettings = schema.indexSettings
         println(indexSettings)
         indexSettings.toString shouldBe """{"index":{}}"""
         val pipeline = schema.defaultPipelineNode
         println(pipeline)
-        pipeline.toString shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET VALUE 'anonymous' IF ctx.name == null, age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"field":"name","if":"ctx.name == null","description":"name SET VALUE 'anonymous' IF ctx.name == null","ignore_failure":true,"value":"anonymous"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"field":"ingested_at","if":"ctx.ingested_at == null","description":"ingested_at SET VALUE _ingest.timestamp IF ctx.ingested_at == null","ignore_failure":true,"value":"{{_ingest.timestamp}}"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"field":"birthdate","description":"PARTITION BY birthdate (MONTH)","index_name_prefix":"users-","date_formats":["yyyy-MM"],"ignore_failure":true,"date_rounding":"M"}},{"set":{"field":"_id","description":"PRIMARY KEY (id)","ignore_failure":false,"ignore_empty_value":false,"value":"{{id}}"}}]}"""
+        pipeline.toString shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"description":"name SET DEFAULT 'anonymous'","field":"name","ignore_failure":true,"value":"anonymous","if":"ctx.name == null"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"description":"ingested_at SET DEFAULT _ingest.timestamp","field":"ingested_at","ignore_failure":true,"value":"{{_ingest.timestamp}}","if":"ctx.ingested_at == null"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"description":"PARTITION BY birthdate (MONTH)","field":"birthdate","date_rounding":"M","date_formats":["yyyy-MM"],"index_name_prefix":"users-","ignore_failure":true}},{"set":{"description":"PRIMARY KEY (id)","field":"_id","value":"{{id}}","ignore_failure":false,"ignore_empty_value":false}}]}"""
         // Reconstruct EsIndex
         val mappings = mapper.createObjectNode()
         mappings.set("mappings", indexMappings)
@@ -1042,6 +1077,38 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         table.ifNotExists shouldBe false
         table.orReplace shouldBe true
         table.columns.map(_.name) should contain allOf ("id", "name")
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "parse this ddl" in {
+    val sql = """CREATE OR REPLACE TABLE orders_with_customers_mv_customers_changelog (
+                |	id INT NOT NULL COMMENT 'JOIN key from customers',
+                |	name VARCHAR FIELDS (
+                |	keyword KEYWORD COMMENT 'Keyword multi-field for aggregations'
+                |	) COMMENT 'Required for enrichment (aggregated from customers.name)',
+                |	email VARCHAR FIELDS (
+                |    keyword KEYWORD COMMENT 'Keyword multi-field for aggregations'
+                |    ) COMMENT 'Required for enrichment (aggregated from customers.email)',
+                |    department STRUCT FIELDS (
+                |		zip_code KEYWORD COMMENT 'Required for enrichment (aggregated from customers.department.zip_code)'),
+                |	_last_updated TIMESTAMP DEFAULT _ingest.timestamp NOT NULL COMMENT 'Last update timestamp',
+                |	PRIMARY KEY (id)
+                |) OPTIONS = (mappings = (_meta = (created_by = "materialized_view_generator", join_keys = ["id"], source_table = "customers", purpose = "Captures field values for enrichment via Transform", required_fields = ["name","email","department.zip_code"])), settings = (number_of_shards = "1", refresh_interval = "30s"))""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ct: CreateTable =>
+        println(ct.sql)
+        ct.table shouldBe "orders_with_customers_mv_customers_changelog"
+        ct.columns.map(_.name) should contain allOf (
+          "id",
+          "name",
+          "email",
+          "department",
+          "_last_updated"
+        )
       case _ => fail("Expected CreateTable")
     }
   }
@@ -1282,6 +1349,50 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "parse ALTER TABLE MAPPINGS" in {
+    val sql = """ALTER TABLE orders (
+                |  ADD COLUMN _last_updated TIMESTAMP DEFAULT _ingest.timestamp,
+                |  SET MAPPING _meta.materialized_views = ["orders_with_customers_mv"]
+                |)""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    println(stmt.sql)
+    stmt.sql.replaceAll("\t", "  ") shouldBe sql
+    stmt match {
+      case AlterTable("orders", _, stmts) =>
+        stmts.length shouldBe 2
+        stmts.collect { case AddColumn(c, false) => c.name } should contain("_last_updated")
+        stmts.collect { case AlterTableMapping(k, v) => (k, v) } should contain(
+          ("_meta.materialized_views", StringValues(Seq(StringValue("orders_with_customers_mv"))))
+        )
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  it should "parse ALTER TABLE SETTINGS" in {
+    val sql = """ALTER TABLE orders (
+                |  ADD COLUMN _last_updated TIMESTAMP DEFAULT _ingest.timestamp,
+                |  SET SETTING index.refresh_interval = "1s"
+                |)""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    println(stmt.sql)
+    stmt.sql.replaceAll("\t", "  ") shouldBe sql
+    stmt match {
+      case AlterTable("orders", _, stmts) =>
+        stmts.length shouldBe 2
+        stmts.collect { case AddColumn(c, false) => c.name } should contain("_last_updated")
+        stmts.collect { case AlterTableSetting(k, v) => (k, v) } should contain(
+          ("index.refresh_interval", StringValue("1s"))
+        )
+      case _ => fail("Expected AlterTable")
+    }
+  }
+
+  behavior of "Parser DDL with Pipeline Statements"
+
   it should "parse CREATE OR REPLACE PIPELINE" in {
     val sql =
       """CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
@@ -1326,6 +1437,16 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         |        ignore_failure = false,
         |        ignore_empty_value = false,
         |        value = "{{id}}"
+        |    ),
+        |    ENRICH (
+        |        description = "ENRICH WITH customers ON id = customer_id",
+        |        policy_name = "user_enrichment",
+        |        field = "user_id",
+        |        target_field = "user_info",
+        |        max_matches = 1,
+        |        ignore_missing = true,
+        |        override = false,
+        |        shape_relation = "INTERSECTS"
         |    )
         |)""".stripMargin
     val result = Parser(sql)
@@ -1339,7 +1460,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             true,
             processors
           ) =>
-        processors.size shouldBe 6
+        processors.size shouldBe 7
         processors.find(_.column == "name") match {
           case Some(
                 SetProcessor(
@@ -1437,6 +1558,24 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             cols should contain("id")
           case other => fail(s"Expected DdlPrimaryKeyProcessor for _id, got $other")
         }
+        processors.find(_.column == "user_info") match {
+          case Some(
+                EnrichProcessor(
+                  IngestPipelineType.Default,
+                  Some("ENRICH WITH customers ON id = customer_id"),
+                  "user_info",
+                  "user_enrichment",
+                  "user_id",
+                  1,
+                  false,
+                  Some(true),
+                  Some(false),
+                  Some(EnrichShapeRelation.Intersects)
+                )
+              ) =>
+          case other =>
+            fail(s"Expected DdlEnrichProcessor for user_info, got $other")
+        }
 
       case _ => fail("Expected CreatePipeline")
     }
@@ -1496,7 +1635,827 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  behavior of "Parser DDL with Watcher Statements"
+
+  val intervalTrigger: WatcherTrigger = IntervalWatcherTrigger(Delay(TransformTimeUnit.Minutes, 5))
+
+  val cronTrigger: WatcherTrigger = CronWatcherTrigger("0 */5 * * * ?")
+
+  val compareConditionWithValue: WatcherCondition = CompareWatcherCondition(
+    left = "ctx.payload.hits.total",
+    operator = GT,
+    right = Left(IntValue(10))
+  )
+
+  val dateMathScript: DateTimeFunction with FunctionWithIdentifier with DateMathScript =
+    DateSub(
+      identifier = Identifier(CurrentDate()),
+      interval = CalendarInterval(5, DAYS)
+    )
+
+  val compareConditionWithDateMathScript: WatcherCondition = CompareWatcherCondition(
+    left = "ctx.execution_time",
+    operator = GT,
+    right = Right(
+      dateMathScript.identifier.withFunctions(dateMathScript +: dateMathScript.identifier.functions)
+    )
+  )
+
+  val scriptCondition: WatcherCondition = ScriptWatcherCondition(
+    script = "ctx.payload.hits.total > params.threshold",
+    params = ListMap("threshold" -> IntValue(10))
+  )
+
+  val searchInput: WatcherInput = SearchWatcherInput(
+    index = Seq("my_index"),
+    query = None,
+    timeout = Some(Delay(TransformTimeUnit.Minutes, 2))
+  )
+
+  val simpleInput: WatcherInput = SimpleWatcherInput(
+    payload = ObjectValue(
+      ListMap("keys" -> StringValues(Seq(StringValue("value1"), StringValue("value2"))))
+    )
+  )
+
+  val httpInput: WatcherInput = HttpInput(
+    request = HttpRequest(
+      url = Url("https://www.example.com/api/data"),
+      method = Method.Get,
+      headers = Some(Headers(ListMap("Authorization" -> StringValue("Bearer token")))),
+      timeout = Some(Timeout(connection = Some(Delay(TransformTimeUnit.Seconds, 5)), read = None))
+    )
+  )
+
+  val chainInput: WatcherInput = ChainInput(
+    ListMap("search_data" -> searchInput, "http_data" -> httpInput)
+  )
+
+  val loggingAction: WatcherAction = LoggingAction(
+    LoggingActionConfig(
+      text = "Watcher triggered with {{ctx.payload.hits.total}} hits"
+    ),
+    foreach = Some("ctx.payload.hits.hits"),
+    limit = Some(500)
+  )
+
+  val webhookScriptCondition: WatcherCondition = ScriptWatcherCondition(
+    script = "ctx.payload.keys.size > params.threshold",
+    params = ListMap("threshold" -> IntValue(1))
+  )
+
+  val url: Url =
+    Url("https://example.com/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D")
+
+  val timeout: Timeout =
+    Timeout(
+      connection = Some(Delay(TransformTimeUnit.Seconds, 10)),
+      read = Some(Delay(TransformTimeUnit.Seconds, 30))
+    )
+
+  val webhookAction: WatcherAction = WebhookAction(
+    HttpRequest(
+      url = url,
+      method = Method.Post,
+      headers = Some(Headers(ListMap("Content-Type" -> StringValue("application/json")))),
+      body =
+        Some(Body(StringValue("""{"message": "Watcher triggered with {{ctx.payload._value}}"}"""))),
+      timeout = Some(timeout)
+    ),
+    foreach = Some("ctx.payload.keys"),
+    limit = Some(2)
+  )
+
+  // Tests for CreateWatcher with different combinations of conditions, actions, triggers, and inputs
+
+  it should "parses never condition with logging action, interval trigger and search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
+        | NEVER DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition shouldBe NeverWatcherCondition
+        create.trigger shouldBe intervalTrigger
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe searchInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"never":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses never condition with webhook action, interval trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | NEVER DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        |END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition shouldBe NeverWatcherCondition
+        create.trigger shouldBe intervalTrigger
+        create.input shouldBe simpleInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"never":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses always condition with logging action, interval trigger and search input" in {
+    val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM my_index WITHIN 2 MINUTES
+                | ALWAYS DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition shouldBe AlwaysWatcherCondition
+        create.trigger shouldBe intervalTrigger
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe searchInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"always":{}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses always condition with webhook action, interval trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | ALWAYS DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition shouldBe AlwaysWatcherCondition
+        create.trigger shouldBe intervalTrigger
+        create.input shouldBe simpleInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"always":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses compare condition with value, logging action, interval trigger and search input" in {
+    val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM my_index WITHIN 2 MINUTES
+                | WHEN ctx.payload.hits.total > 10
+                | DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe compareConditionWithValue.sql
+        create.trigger shouldBe intervalTrigger
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe searchInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses compare condition with value, webhook action, interval trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | WHEN ctx.payload.hits.total > 10
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe compareConditionWithValue.sql
+        create.trigger shouldBe intervalTrigger
+        create.input shouldBe simpleInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses compare condition with date math script, logging action, interval trigger and search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM my_index WITHIN 2 MINUTES
+        | WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY)
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe compareConditionWithDateMathScript.sql
+        create.trigger shouldBe intervalTrigger
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe searchInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses compare condition with date math script, webhook action, interval trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | WHEN ctx.execution_time > DATE_SUB(CURRENT_DATE, INTERVAL 5 DAY)
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe compareConditionWithDateMathScript.sql
+        create.trigger shouldBe intervalTrigger
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with logging action, interval trigger and search input" in {
+    val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM my_index WITHIN 2 MINUTES
+                | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
+                | DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe scriptCondition.sql
+        create.trigger shouldBe intervalTrigger
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe searchInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with webhook action, interval trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUT (keys = ["value1","value2"])
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger shouldBe intervalTrigger
+        create.input shouldBe simpleInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with logging action, cron trigger and search input" in {
+    val sql = """CREATE OR REPLACE WATCHER my_watcher AS
+                | AT SCHEDULE '0 */5 * * * ?'
+                | FROM my_index WITHIN 2 MINUTES
+                | WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 10) RETURNS TRUE
+                | DO
+                | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500
+                | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe scriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe searchInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}},"condition":{"script":{"source":"ctx.payload.hits.total > params.threshold","lang":"painless","params":{"threshold":10}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with webhook action, cron trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT (keys = ["value1","value2"])
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.input shouldBe simpleInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with multiple actions, cron trigger and simple input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT (keys = ["value1","value2"])
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500,
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe simpleInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with multiple actions, cron trigger and http input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUT GET PROTOCOL https HOST "www.example.com" PATH "/api/data" HEADERS ("Authorization" = "Bearer token") TIMEOUT (connection = "5s")
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500,
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe httpInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  it should "parses script condition with multiple actions, cron trigger and chain input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | AT SCHEDULE '0 */5 * * * ?'
+        | WITH INPUTS search_data AS FROM my_index WITHIN 2 MINUTES, http_data AS GET PROTOCOL https HOST "www.example.com" PATH "/api/data" HEADERS ("Authorization" = "Bearer token") TIMEOUT (connection = "5s")
+        | WHEN SCRIPT 'ctx.payload.keys.size > params.threshold' USING LANG 'painless' WITH PARAMS (threshold = 1) RETURNS TRUE
+        | DO
+        | log_action AS LOG "Watcher triggered with {{ctx.payload.hits.total}} hits" AT INFO FOREACH "ctx.payload.hits.hits" LIMIT 500,
+        | webhook_action AS WEBHOOK POST "https://example.com:443/webhook?watch_id=%7B%7Bctx.watch_id%7D%7D" HEADERS ("Content-Type" = "application/json") BODY "{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}" TIMEOUT (connection = "10s", read = "30s") FOREACH "ctx.payload.keys" LIMIT 2
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case create: CreateWatcher =>
+        create.name shouldBe "my_watcher"
+        create.condition.sql shouldBe webhookScriptCondition.sql
+        create.trigger.sql shouldBe cronTrigger.sql
+        create.actions.get("log_action") shouldBe Some(loggingAction)
+        create.input shouldBe chainInput
+        val json = create.watcher.node
+        println(json.toPrettyString)
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"chain":{"inputs":[{"search_data":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}}},{"http_data":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}}}]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+      case _ => fail("Expected CreateWatcher")
+    }
+  }
+
+  behavior of "Parser DDL with Enrich Statements"
+
+  it should "parse CREATE ENRICH POLICY without WHERE clause" in {
+    val sql =
+      """CREATE ENRICH POLICY simple_policy
+        |FROM users
+        |ON user_id
+        |ENRICH name, email
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(
+            "simple_policy",
+            EnrichPolicyType.Match,
+            Seq("users"),
+            "user_id",
+            List("name", "email"),
+            None, // ✅ Pas de WHERE
+            false, // ✅ Pas de OR REPLACE
+            false
+          ) => // success
+      case _ => fail("Expected CreateEnrichPolicy without WHERE")
+    }
+  }
+
+  it should "parse CREATE ENRICH POLICY without OR REPLACE" in {
+    val sql =
+      """CREATE ENRICH POLICY new_policy
+        |FROM users
+        |ON user_id
+        |ENRICH name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, _, _, _, _, _, orReplace, _) =>
+        orReplace shouldBe false
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE MATCH ENRICH POLICY" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+            |FROM source_index
+            |ON id
+            |ENRICH user_id, user_email
+            |WHERE active = true
+            |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateEnrichPolicy(
+            "my_policy",
+            EnrichPolicyType.Match,
+            Seq("source_index"),
+            "id",
+            List("user_id", "user_email"),
+            Some(whereClause),
+            true,
+            false
+          ) => // success
+        whereClause.sql should include("active = true")
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE GEO_MATCH ENRICH POLICY" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+        |TYPE GEO_MATCH
+        |FROM source_index
+        |ON id
+        |ENRICH user_id, user_email
+        |WHERE active = true
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateEnrichPolicy(
+            "my_policy",
+            EnrichPolicyType.GeoMatch,
+            Seq("source_index"),
+            "id",
+            List("user_id", "user_email"),
+            Some(whereClause),
+            true,
+            false
+          ) => // success
+        whereClause.sql should include("active = true")
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE RANGE ENRICH POLICY" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY my_policy
+        |TYPE RANGE
+        |FROM source_index
+        |ON id
+        |ENRICH user_id, user_email
+        |WHERE active = true
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case CreateEnrichPolicy(
+            "my_policy",
+            EnrichPolicyType.Range,
+            Seq("source_index"),
+            "id",
+            List("user_id", "user_email"),
+            Some(whereClause),
+            true,
+            false
+          ) => // success
+        whereClause.sql should include("active = true")
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE ENRICH POLICY with multiple source indices" in {
+    val sql =
+      """CREATE ENRICH POLICY multi_source_policy
+        |FROM users, customers, partners
+        |ON contact_id
+        |ENRICH name, email, company
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(
+            "multi_source_policy",
+            _,
+            Seq("users", "customers", "partners"), // ✅ 3 indices
+            "contact_id",
+            List("name", "email", "company"),
+            _,
+            _,
+            _
+          ) => // success
+      case _ => fail("Expected CreateEnrichPolicy with multiple indices")
+    }
+  }
+
+  it should "parse ENRICH without parentheses" in {
+    val sql =
+      """CREATE ENRICH POLICY policy_no_parens
+        |FROM users
+        |ON user_id
+        |ENRICH name, email, country
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, _, _, _, List("name", "email", "country"), _, _, _) =>
+      // success
+      case _ => fail("Expected CreateEnrichPolicy")
+    }
+  }
+
+  it should "generate correct SQL for CREATE ENRICH POLICY" in {
+    val policy = CreateEnrichPolicy(
+      name = "test_policy",
+      policyType = EnrichPolicyType.Match,
+      from = Seq("users"),
+      on = "user_id",
+      enrichFields = List("name", "email"),
+      where = None,
+      orReplace = true,
+      ifNotExists = false
+    )
+
+    val expectedSql =
+      """CREATE OR REPLACE ENRICH POLICY test_policy
+        |TYPE MATCH
+        |FROM users
+        |ON user_id
+        |ENRICH name, email""".stripMargin.replaceAll("\n", " ").trim
+
+    policy.sql.replaceAll("\\s+", " ").trim should include(
+      "CREATE OR REPLACE ENRICH POLICY test_policy"
+    )
+    policy.sql should include("FROM users")
+    policy.sql should include("ON user_id")
+    policy.sql should include("ENRICH name, email")
+  }
+
+  it should "round-trip parse and generate SQL" in {
+    val originalSql =
+      """CREATE ENRICH POLICY round_trip_test
+        |FROM users
+        |ON user_id
+        |ENRICH name, email
+        |WHERE active = true
+        |""".stripMargin
+
+    val parsed = Parser(originalSql).toOption.get
+    val regeneratedSql = parsed.sql
+    val reparsed = Parser(regeneratedSql)
+
+    reparsed.isRight shouldBe true
+    reparsed.toOption.get shouldBe parsed
+  }
+
+  it should "parse DROP ENRICH POLICY" in {
+    val sql = "DROP ENRICH POLICY IF EXISTS my_policy"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DropEnrichPolicy("my_policy", true) => // success
+      case _                                   => fail("Expected DropEnrichPolicy")
+    }
+  }
+
+  it should "parse DROP ENRICH POLICY without IF EXISTS" in {
+    val sql = "DROP ENRICH POLICY my_policy"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case DropEnrichPolicy("my_policy", false) => // success
+      case _                                    => fail("Expected DropEnrichPolicy")
+    }
+  }
+
+  it should "parse EXECUTE ENRICH POLICY" in {
+    val sql = "EXECUTE ENRICH POLICY my_policy"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ExecuteEnrichPolicy("my_policy") => // success
+      case _                                => fail("Expected ExecuteEnrichPolicy")
+    }
+  }
+
+  it should "parse CREATE ENRICH POLICY with complex WHERE clause" in {
+    val sql =
+      """CREATE ENRICH POLICY complex_filter
+        |FROM users
+        |ON user_id
+        |ENRICH name, email
+        |WHERE status = 'active'
+        |  AND tier IN ('premium', 'enterprise')
+        |  AND created_at > '2023-01-01'
+        |  AND (country = 'US' OR country = 'CA')
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, _, _, _, _, Some(whereClause), _, _) =>
+        whereClause.sql should include("status = 'active'")
+        whereClause.sql should include("tier IN")
+        whereClause.sql should include("created_at >")
+      case _ => fail("Expected CreateEnrichPolicy with complex WHERE")
+    }
+  }
+
+  it should "parse real-world user enrichment policy" in {
+    val sql =
+      """CREATE OR REPLACE ENRICH POLICY enrich_orders_with_user_data
+        |FROM users_index
+        |ON user_id
+        |ENRICH user_name, user_email, user_country, user_tier, subscription_end_date
+        |WHERE account_status = 'active' AND email_verified = true
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+  }
+
+  it should "parse geo enrichment policy (future)" in {
+    val sql =
+      """CREATE ENRICH POLICY enrich_with_location
+        |TYPE GEO_MATCH
+        |FROM locations
+        |ON location_field
+        |ENRICH city, region, country, timezone
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case CreateEnrichPolicy(_, EnrichPolicyType.GeoMatch, _, _, _, _, _, _) =>
+      // success
+      case _ => fail("Expected GEO_MATCH policy")
+    }
+  }
+
+  behavior of "Parser DDL with Enrich Statements - Error Cases"
+
+  it should "fail on CREATE ENRICH POLICY without FROM" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |ON user_id
+        |ENRICH name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on CREATE ENRICH POLICY without ON" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |FROM users
+        |ENRICH name
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on CREATE ENRICH POLICY without ENRICH fields" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |FROM users
+        |ON user_id
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on CREATE ENRICH POLICY with empty ENRICH list" in {
+    val sql =
+      """CREATE ENRICH POLICY invalid_policy
+        |FROM users
+        |ON user_id
+        |ENRICH
+        |""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on DROP ENRICH POLICY without policy name" in {
+    val sql = "DROP ENRICH POLICY"
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
+  it should "fail on EXECUTE ENRICH POLICY without policy name" in {
+    val sql = "EXECUTE ENRICH POLICY"
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+  }
+
   // --- DML ---
+
+  behavior of "Parser DML"
 
   it should "parse INSERT INTO ... VALUES" in {
     val sql = "INSERT INTO users (id, name) VALUES (1, 'Alice') ON CONFLICT DO NOTHING"
@@ -1533,6 +2492,32 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     stmt match {
       case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(None, false))) =>
         sel.sql should include("SELECT id, name FROM old_users ON CONFLICT DO NOTHING")
+      case _ => fail("Expected Insert with select")
+    }
+  }
+
+  it should "parse INSERT INTO ... SELECT with alias" in {
+    val sql = """INSERT INTO orders_with_customers_mv_customers_changelog AS
+                |SELECT
+                |  id,
+                |  name,
+                |  email,
+                |  department.zipcode AS department.zip_code
+                |FROM customers;
+                |""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case Insert(
+            "orders_with_customers_mv_customers_changelog",
+            Nil,
+            Left(sel: DqlStatement),
+            None
+          ) =>
+        sel.sql should include(
+          "SELECT id, name, email, department.zipcode AS department.zip_code FROM customers"
+        )
       case _ => fail("Expected Insert with select")
     }
   }
@@ -1589,4 +2574,5 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       case _ => fail("Expected Union")
     }
   }
+
 }

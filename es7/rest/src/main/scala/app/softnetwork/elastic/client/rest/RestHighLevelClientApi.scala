@@ -23,12 +23,41 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.{ObjectValue, Value}
+import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.policy.{
+  EnrichPolicy,
+  EnrichPolicyTask,
+  EnrichPolicyTaskStatus,
+  EnrichPolicyType
+}
+import app.softnetwork.elastic.sql.query.{Asc, Criteria, Desc, SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
-import app.softnetwork.elastic.sql.serialization.JacksonConfig
-import com.fasterxml.jackson.databind.node.ObjectNode
+import app.softnetwork.elastic.sql.transform.{
+  AvgTransformAggregation,
+  CardinalityTransformAggregation,
+  CountTransformAggregation,
+  Delay,
+  MaxTransformAggregation,
+  MinTransformAggregation,
+  SumTransformAggregation,
+  TermsGroupBy,
+  TopHitsTransformAggregation,
+  TransformConfig,
+  TransformState,
+  TransformStats,
+  TransformTimeInterval
+}
+import app.softnetwork.elastic.sql.serialization._
+import app.softnetwork.elastic.sql.watcher.{
+  Watcher,
+  WatcherActivationState,
+  WatcherExecutionState,
+  WatcherStatus
+}
+import app.softnetwork.elastic.utils.CronIntervalCalculator
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.google.gson.JsonParser
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.Alias
@@ -62,12 +91,18 @@ import org.elasticsearch.action.search.{
   SearchResponse,
   SearchScrollRequest
 }
-import org.elasticsearch.action.support.WriteRequest
+import org.elasticsearch.action.support.{IndicesOptions, WriteRequest}
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
 import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions, Response}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
+import org.elasticsearch.client.enrich.{
+  DeletePolicyRequest,
+  ExecutePolicyRequest,
+  GetPolicyRequest,
+  PutPolicyRequest
+}
 import org.elasticsearch.client.indices.{
   CloseIndexRequest,
   ComposableIndexTemplateExistRequest,
@@ -84,18 +119,69 @@ import org.elasticsearch.client.indices.{
   PutIndexTemplateRequest,
   PutMappingRequest
 }
+import org.elasticsearch.client.license.{
+  GetLicenseRequest,
+  GetLicenseResponse,
+  StartBasicRequest,
+  StartBasicResponse,
+  StartTrialRequest,
+  StartTrialResponse
+}
+import org.elasticsearch.client.transform.transforms.latest.LatestConfig
+import org.elasticsearch.client.transform.{
+  DeleteTransformRequest,
+  GetTransformStatsRequest,
+  PutTransformRequest,
+  StartTransformRequest,
+  StopTransformRequest
+}
+import org.elasticsearch.client.transform.transforms.pivot.{
+  AggregationConfig,
+  GroupConfig,
+  PivotConfig,
+  TermsGroupSource
+}
+import org.elasticsearch.client.transform.transforms.{
+  DestConfig,
+  QueryConfig,
+  SourceConfig,
+  TimeSyncConfig,
+  TransformConfig => ElasticTransformConfig
+}
+import org.elasticsearch.client.watcher.{
+  DeleteWatchRequest,
+  DeleteWatchResponse,
+  GetWatchRequest,
+  GetWatchResponse,
+  PutWatchRequest,
+  PutWatchResponse
+}
 import org.elasticsearch.cluster.metadata.{AliasMetadata, ComposableIndexTemplate}
 import org.elasticsearch.common.Strings
 import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.core.TimeValue
+import org.elasticsearch.index.query.{QueryBuilder, QueryBuilders}
 import org.elasticsearch.xcontent.{DeprecationHandler, ToXContent, XContentFactory, XContentType}
 import org.elasticsearch.rest.RestStatus
+import org.elasticsearch.search.aggregations.AggregatorFactories
+import org.elasticsearch.search.aggregations.metrics.{
+  AvgAggregationBuilder,
+  CardinalityAggregationBuilder,
+  MaxAggregationBuilder,
+  MinAggregationBuilder,
+  SumAggregationBuilder,
+  TopHitsAggregationBuilder,
+  ValueCountAggregationBuilder
+}
+import org.elasticsearch.search.aggregations.pipeline.BucketSelectorPipelineAggregationBuilder
 import org.elasticsearch.search.builder.{PointInTimeBuilder, SearchSourceBuilder}
 import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
 import org.json4s.jackson.JsonMethods
 import org.json4s.DefaultFormats
 
 import java.io.IOException
+import java.time.ZonedDateTime
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.language.implicitConversions
@@ -121,13 +207,17 @@ trait RestHighLevelClientApi
     with RestHighLevelClientVersionApi
     with RestHighLevelClientPipelineApi
     with RestHighLevelClientTemplateApi
+    with RestHighLevelClientEnrichPolicyApi
+    with RestHighLevelClientTransformApi
+    with RestHighLevelClientWatcherApi
+    with RestHighLevelClientLicenseApi
 
 /** Version API implementation for RestHighLevelClient
   * @see
   *   [[VersionApi]] for generic API documentation
   */
 trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientCompanion =>
 
   override private[client] def executeVersion(): ElasticResult[String] =
     executeRestLowLevelAction[String](
@@ -597,6 +687,32 @@ trait RestHighLevelClientMappingApi extends MappingApi with RestHighLevelClientH
       }
     })
 
+  override private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]] =
+    executeRestAction[
+      GetMappingsRequest,
+      org.elasticsearch.client.indices.GetMappingsResponse,
+      Map[String, String]
+    ](
+      operation = "getAllMappings",
+      index = None,
+      retryable = true
+    )(
+      request = new GetMappingsRequest()
+        .indices(indices: _*)
+        .indicesOptions(IndicesOptions.STRICT_EXPAND_OPEN_CLOSED)
+    )(
+      executor = req => apply().indices().getMapping(req, RequestOptions.DEFAULT)
+    )(response => {
+      response
+        .mappings()
+        .asScala
+        .map { case (index, mappings) =>
+          (index, mappings.source().toString)
+        }
+        .toMap
+    })
 }
 
 /** Refresh API implementation for RestHighLevelClient
@@ -682,7 +798,7 @@ trait RestHighLevelClientCountApi extends CountApi with RestHighLevelClientHelpe
   *   [[IndexApi]] for generic API documentation
   */
 trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion =>
   override private[client] def executeIndex(
     index: String,
     id: String,
@@ -750,7 +866,7 @@ trait RestHighLevelClientIndexApi extends IndexApi with RestHighLevelClientHelpe
   *   [[UpdateApi]] for generic API documentation
   */
 trait RestHighLevelClientUpdateApi extends UpdateApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientSettingsApi with RestHighLevelClientCompanion =>
   override private[client] def executeUpdate(
     index: String,
     id: String,
@@ -881,7 +997,7 @@ trait RestHighLevelClientDeleteApi extends DeleteApi with RestHighLevelClientHel
   *   [[GetApi]] for generic API documentation
   */
 trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientCompanion =>
   override private[client] def executeGet(
     index: String,
     id: String
@@ -928,12 +1044,13 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
   *   [[SearchApi]] for generic API documentation
   */
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
-  _: ElasticConversion with RestHighLevelClientCompanion with SerializationApi =>
+  _: ElasticConversion with RestHighLevelClientCompanion =>
 
-  override implicit def sqlSearchRequestToJsonQuery(sqlSearch: SingleSearch)(implicit
-    timestamp: Long
+  override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
   ): String =
-    implicitly[ElasticSearchRequest](sqlSearch).query
+    implicitly[ElasticSearchRequest](singleSearch).query
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
@@ -1311,13 +1428,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   override private[client] def scrollClassic(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[String], Seq[Map[String, Any]]](None) { scrollIdOpt =>
+      .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             scrollIdOpt match {
@@ -1415,13 +1532,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   override private[client] def searchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
-      .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+      .unfoldAsync[Option[Array[Object]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
         retryWithBackoff(config.retryConfig) {
           Future {
             searchAfterOpt match {
@@ -1527,10 +1644,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
-    fieldAliases: Map[String, String],
+    fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[Map[String, Any], NotUsed] = {
+  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
 
     // Open PIT
@@ -1544,7 +1661,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
           )
 
           Source
-            .unfoldAsync[Option[Array[Object]], Seq[Map[String, Any]]](None) { searchAfterOpt =>
+            .unfoldAsync[Option[Array[Object]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
               retryWithBackoff(config.retryConfig) {
                 Future {
                   searchAfterOpt match {
@@ -1708,9 +1825,9 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   private def extractAllResults(
     response: SearchResponse,
-    fieldAliases: Map[String, String],
-    aggregations: Map[String, SQLAggregation]
-  ): Seq[Map[String, Any]] = {
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation]
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = response.toString
 
     parseResponse(
@@ -1731,11 +1848,11 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   private def extractHitsOnly(
     response: SearchResponse,
-    fieldAliases: Map[String, String]
-  ): Seq[Map[String, Any]] = {
+    fieldAliases: ListMap[String, String]
+  ): Seq[ListMap[String, Any]] = {
     val jsonString = response.toString
 
-    parseResponse(jsonString, fieldAliases, Map.empty) match {
+    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)
@@ -1756,7 +1873,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 }
 
 trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
@@ -1766,11 +1883,17 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
       operation = "createPipeline",
       retryable = false
     )(
-      request = new PutPipelineRequest(
-        pipelineName,
-        new BytesArray(pipelineDefinition),
-        XContentType.JSON
-      )
+      request = {
+        val req = new PutPipelineRequest(
+          pipelineName,
+          new BytesArray(pipelineDefinition),
+          XContentType.JSON
+        )
+        logger.info(
+          s"Creating Ingest Pipeline '$pipelineName':\n${Strings.toString(req, true, true)}"
+        )
+        req
+      }
     )(
       executor = req => apply().ingest().putPipeline(req, RequestOptions.DEFAULT)
     )
@@ -1790,9 +1913,9 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
   }
 
   override private[client] def executeGetPipeline(
-    pipelineName: JSONQuery
-  ): ElasticResult[Option[JSONQuery]] = {
-    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[JSONQuery]](
+    pipelineName: String
+  ): ElasticResult[Option[String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Option[String]](
       operation = "getPipeline",
       retryable = true
     )(
@@ -1805,7 +1928,6 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
         if (pipelines.nonEmpty) {
           val pipeline = pipelines.head
           val config = pipeline.getConfigAsMap
-          val mapper = JacksonConfig.objectMapper
           Some(mapper.writeValueAsString(config))
         } else {
           None
@@ -1813,10 +1935,32 @@ trait RestHighLevelClientPipelineApi extends PipelineApi with RestHighLevelClien
       }
     )
   }
+
+  override private[client] def executeListPipelines(): ElasticResult[Map[String, String]] = {
+    executeRestAction[GetPipelineRequest, GetPipelineResponse, Map[String, String]](
+      operation = "listPipelines",
+      retryable = true
+    )(
+      request = new GetPipelineRequest()
+    )(
+      executor = req => apply().ingest().getPipeline(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        resp
+          .pipelines()
+          .asScala
+          .map { pipeline =>
+            val config = pipeline.getConfigAsMap
+            pipeline.getId -> mapper.writeValueAsString(config)
+          }
+          .toMap
+      }
+    )
+  }
 }
 
 trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClientHelpers {
-  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion with SerializationApi =>
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
 
   // ==================== COMPOSABLE TEMPLATES (ES 7.8+) ====================
 
@@ -2164,5 +2308,771 @@ trait RestHighLevelClientTemplateApi extends TemplateApi with RestHighLevelClien
         logger.warn(s"Failed to convert AliasMetadata to JSON: ${e.getMessage}", e)
         "{}"
     }
+  }
+}
+
+// ==================== ENRICH POLICY API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientEnrichPolicyApi extends EnrichPolicyApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateEnrichPolicy(
+    policy: EnrichPolicy
+  ): result.ElasticResult[Boolean] =
+    executeRestAction(
+      operation = "CreateEnrichPolicy",
+      retryable = false
+    )(
+      request = {
+        val req = new PutPolicyRequest(
+          policy.name,
+          policy.policyType.name.toLowerCase,
+          policy.indices.asJava,
+          policy.matchField,
+          policy.enrichFields.asJava
+        )
+        policy.criteria.foreach { criteria =>
+          implicit val timestamp: Long = System.currentTimeMillis()
+          val queryJson: String = implicitly[JsonNode](criteria)
+          val queryBuilder = parseQueryFromJson(queryJson)
+          req.setQuery(queryBuilder)
+        }
+        logger.info(s"Creating Enrich Policy ${policy.name}:\n${Strings.toString(req, true, true)}")
+        req
+      }
+    )(
+      executor = req => apply().enrich().putPolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+
+  override private[client] def executeDeleteEnrichPolicy(
+    policyName: String
+  ): result.ElasticResult[Boolean] =
+    executeRestAction(
+      operation = "DeleteEnrichPolicy",
+      retryable = false
+    )(
+      request = new DeletePolicyRequest(policyName)
+    )(
+      executor = req => apply().enrich().deletePolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+
+  override private[client] def executeExecuteEnrichPolicy(
+    policyName: String
+  ): ElasticResult[EnrichPolicyTask] = {
+    val startTime = ZonedDateTime.now()
+    executeRestAction(
+      operation = "ExecuteEnrichPolicy",
+      retryable = false
+    )(
+      request = {
+        val req = new ExecutePolicyRequest(policyName)
+        req.setWaitForCompletion(true)
+        req
+      }
+    )(
+      executor = req => apply().enrich().executePolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val endTime = ZonedDateTime.now()
+        val status = EnrichPolicyTaskStatus(resp.getExecutionStatus.getPhase)
+        logger.info(
+          s"Enrich Policy '$policyName' executed in ${endTime.toInstant.toEpochMilli - startTime.toInstant.toEpochMilli} ms with status: ${status.name}"
+        )
+        EnrichPolicyTask(
+          policyName = policyName,
+          taskId = resp.getTaskId,
+          status = status,
+          startTime = Some(startTime),
+          endTime = Some(endTime)
+        )
+      }
+    )
+  }
+
+  override private[client] def executeGetEnrichPolicy(
+    policyName: String
+  ): ElasticResult[Option[EnrichPolicy]] =
+    executeRestAction(
+      operation = "GetEnrichPolicy",
+      retryable = true
+    )(
+      request = new GetPolicyRequest(policyName)
+    )(
+      executor = req => apply().enrich().getPolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val policies = resp.getPolicies
+        if (policies != null && !policies.isEmpty) {
+          policies.asScala.find(_.getName == policyName) match {
+            case Some(policy) =>
+              Some(
+                EnrichPolicy(
+                  name = policy.getName,
+                  policyType = EnrichPolicyType(policy.getType.toUpperCase),
+                  indices = policy.getIndices.asScala.toSeq,
+                  matchField = policy.getMatchField,
+                  enrichFields = policy.getEnrichFields.asScala.toList,
+                  query = Option(policy.getQuery).map(_.utf8ToString())
+                )
+              )
+            case _ => None
+          }
+        } else {
+          None
+        }
+      }
+    )
+
+  override private[client] def executeListEnrichPolicies(): ElasticResult[Seq[EnrichPolicy]] =
+    executeRestAction(
+      operation = "ListEnrichPolicies",
+      retryable = true
+    )(
+      request = new GetPolicyRequest()
+    )(
+      executor = req => apply().enrich().getPolicy(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val policies = resp.getPolicies
+        if (policies != null) {
+          policies.asScala.map { policy =>
+            EnrichPolicy(
+              name = policy.getName,
+              policyType = EnrichPolicyType(policy.getType.toUpperCase),
+              indices = policy.getIndices.asScala.toSeq,
+              matchField = policy.getMatchField,
+              enrichFields = policy.getEnrichFields.asScala.toList,
+              query = Option(policy.getQuery).map(_.utf8ToString())
+            )
+          }.toSeq
+        } else {
+          Seq.empty
+        }
+      }
+    )
+
+  /** Parse JSON query string into QueryBuilder
+    */
+  private def parseQueryFromJson(queryJson: String): QueryBuilder = {
+    val parser = XContentType.JSON
+      .xContent()
+      .createParser(
+        this.namedXContentRegistry,
+        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+        queryJson
+      )
+
+    try {
+      parser.nextToken() // Move to first token
+      org.elasticsearch.index.query.AbstractQueryBuilder.parseInnerQueryBuilder(parser)
+    } finally {
+      parser.close()
+    }
+  }
+}
+
+// ==================== TRANSFORM API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateTransform(
+    config: TransformConfig,
+    start: Boolean
+  ): result.ElasticResult[Boolean] = {
+    /*executeRestAction(
+      operation = "createTransform",
+      retryable = false
+    )(request = {
+      implicit val timestamp: Long = System.currentTimeMillis()
+      implicit val context: PainlessContextType = PainlessContextType.Transform
+      val json: String = config.node
+      logger.info(s"Creating transform: ${config.id} with definition:\n$json")
+      val req = new Request(
+        "PUT",
+        s"/_transform/${config.id}"
+      )
+      req.setJsonEntity(json)
+      req
+    })(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp =>
+        resp.getStatusLine.getStatusCode match {
+          case 200 | 201 =>
+            true
+
+          case code =>
+            logger.error(s"❌ Unexpected response code for [${config.id}]: $code")
+            false
+        }
+    )*/
+    executeRestAction(
+      operation = "createTransform",
+      retryable = false
+    )(
+      request = {
+        implicit val timestamp: Long = System.currentTimeMillis()
+        implicit val context: PainlessContextType = PainlessContextType.Transform
+        val conf = convertToElasticTransformConfig(config)
+        val req = new PutTransformRequest(conf)
+        req.setDeferValidation(false)
+        logger.info(s"Creating Transform ${config.id} :\n${Strings.toString(conf, true, true)}")
+        req
+      }
+    )(
+      executor = req => apply().transform().putTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  private def convertToElasticTransformConfig(
+    config: TransformConfig
+  )(implicit criteriaToNode: Criteria => JsonNode): ElasticTransformConfig = {
+    val builder = ElasticTransformConfig.builder()
+
+    // Set ID
+    builder.setId(config.id)
+
+    // Set description
+    builder.setDescription(config.description)
+
+    // Set source
+    val sourceConfig = SourceConfig
+      .builder()
+      .setIndex(config.source.index: _*)
+
+    config.source.query.foreach { criteria =>
+      // Convert Criteria to QueryBuilder
+      val node: JsonNode = criteria
+      val queryJson = mapper.writeValueAsString(node)
+      sourceConfig.setQueryConfig(
+        new QueryConfig(QueryBuilders.wrapperQuery(queryJson))
+      )
+    }
+    builder.setSource(sourceConfig.build())
+
+    // Set destination
+    val destConfig = DestConfig
+      .builder()
+      .setIndex(config.dest.index)
+    config.dest.pipeline.foreach(destConfig.setPipeline)
+    builder.setDest(destConfig.build())
+
+    // Set frequency
+    builder.setFrequency(
+      org.elasticsearch.core.TimeValue.parseTimeValue(
+        config.frequency.toTransformFormat,
+        "frequency"
+      )
+    )
+
+    // Set sync (if present)
+    config.sync.foreach { sync =>
+      val syncConfig = TimeSyncConfig
+        .builder()
+        .setField(sync.time.field)
+        .setDelay(
+          org.elasticsearch.core.TimeValue.parseTimeValue(
+            sync.time.delay.toTransformFormat,
+            "delay"
+          )
+        )
+        .build()
+      builder.setSyncConfig(syncConfig)
+    }
+
+    // Set pivot (if present)
+    config.pivot.foreach { pivot =>
+      val pivotConfig = PivotConfig.builder()
+
+      // Group by
+      val groupConfig = GroupConfig.builder()
+      pivot.groupBy.foreach { case (name, gb) =>
+        gb match {
+          case TermsGroupBy(field) =>
+            groupConfig
+              .groupBy(name, TermsGroupSource.builder().setField(field).build())
+        }
+      }
+      pivotConfig.setGroups(groupConfig.build())
+
+      // Aggregations
+      val aggBuilder = AggregatorFactories.builder()
+      pivot.aggregations.foreach { case (name, agg) =>
+        agg match {
+          case MaxTransformAggregation(field) =>
+            aggBuilder.addAggregator(new MaxAggregationBuilder(name).field(field))
+          case MinTransformAggregation(field) =>
+            aggBuilder.addAggregator(new MinAggregationBuilder(name).field(field))
+          case SumTransformAggregation(field) =>
+            aggBuilder.addAggregator(new SumAggregationBuilder(name).field(field))
+          case AvgTransformAggregation(field) =>
+            aggBuilder.addAggregator(new AvgAggregationBuilder(name).field(field))
+          case CountTransformAggregation(field) =>
+            aggBuilder.addAggregator(new ValueCountAggregationBuilder(name).field(field))
+          case CardinalityTransformAggregation(field) =>
+            aggBuilder.addAggregator(new CardinalityAggregationBuilder(name).field(field))
+          case TopHitsTransformAggregation(fields, size, sortFields) =>
+            val topHitsBuilder = new TopHitsAggregationBuilder(name)
+              .size(size)
+              .fetchSource(fields.toArray, Array.empty[String])
+            sortFields.foreach { sortField =>
+              val sortOrder = sortField.order.getOrElse(Desc) match {
+                case Asc  => SortOrder.ASC
+                case Desc => SortOrder.DESC
+                case _    => SortOrder.DESC
+              }
+              topHitsBuilder.sort(sortField.name, sortOrder)
+            }
+            aggBuilder.addAggregator(topHitsBuilder)
+          case _ =>
+            throw new UnsupportedOperationException(s"Unsupported aggregation: $agg")
+        }
+      }
+      pivot.bucketSelector foreach { bs =>
+        val bucketSelector = new BucketSelectorPipelineAggregationBuilder(
+          bs.name,
+          bs.bucketsPath.asJava,
+          new org.elasticsearch.script.Script(bs.script)
+        )
+        aggBuilder.addPipelineAggregator(bucketSelector)
+      }
+      pivotConfig.setAggregationConfig(new AggregationConfig(aggBuilder))
+      builder.setPivotConfig(pivotConfig.build())
+    }
+
+    config.latest.foreach { latest =>
+      val latestConfig = LatestConfig
+        .builder()
+        .setUniqueKey(latest.uniqueKey.asJava)
+        .setSort(latest.sort)
+        .build()
+
+      builder.setLatestConfig(latestConfig)
+    }
+
+    builder.setMetadata(config.metadata.asJava)
+
+    builder.build()
+  }
+
+  override private[client] def executeDeleteTransform(
+    transformId: String,
+    force: Boolean
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "deleteTransform",
+      retryable = false
+    )(
+      request = {
+        val req = new DeleteTransformRequest(transformId)
+        req.setForce(force)
+        req
+      }
+    )(
+      executor = req => apply().transform().deleteTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeStartTransform(
+    transformId: String
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "startTransform",
+      retryable = false
+    )(
+      request = new StartTransformRequest(transformId)
+    )(
+      executor = req => apply().transform().startTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeStopTransform(
+    transformId: String,
+    force: Boolean,
+    waitForCompletion: Boolean
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "stopTransform",
+      retryable = false
+    )(
+      request = {
+        val req = new StopTransformRequest(transformId)
+        req.setWaitForCheckpoint(!force)
+        req.setWaitForCompletion(waitForCompletion)
+        req
+      }
+    )(
+      executor = req => apply().transform().stopTransform(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeGetTransformStats(
+    transformId: String
+  ): result.ElasticResult[Option[TransformStats]] = {
+    executeRestAction(
+      operation = "getTransformStats",
+      retryable = true
+    )(
+      request = new GetTransformStatsRequest(transformId)
+    )(
+      executor = req => apply().transform().getTransformStats(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        val statsArray = resp.getTransformsStats.asScala
+        statsArray.headOption.map { stats =>
+          TransformStats(
+            id = stats.getId,
+            state = TransformState(stats.getState.value()),
+            documentsProcessed = stats.getIndexerStats.getDocumentsProcessed,
+            documentsIndexed = stats.getIndexerStats.getDocumentsIndexed,
+            indexFailures = stats.getIndexerStats.getIndexFailures,
+            searchFailures = stats.getIndexerStats.getSearchFailures,
+            lastCheckpoint = Option(stats.getCheckpointingInfo)
+              .flatMap(c => Option(c.getLast))
+              .map(_.getCheckpoint),
+            operationsBehind = Option(stats.getCheckpointingInfo)
+              .flatMap(info => Option(info.getOperationsBehind))
+              .getOrElse(0L),
+            processingTimeMs = stats.getIndexerStats.getProcessingTime
+          )
+        }
+      }
+    )
+  }
+
+  override private[client] def executeScheduleTransformNow(
+    transformId: String
+  ): result.ElasticResult[Boolean] = {
+    executeRestAction(
+      operation = "scheduleNow",
+      retryable = false
+    )(
+      request = {
+        val req = new Request(
+          "POST",
+          s"/_transform/$transformId/_schedule_now"
+        )
+        req.setJsonEntity("{}")
+        req
+      }
+    )(
+      executor = req => apply().getLowLevelClient.performRequest(req)
+    )(
+      transformer = resp =>
+        resp.getStatusLine.getStatusCode match {
+          case 200 | 201 =>
+            logger.info(s"✅ Transform [$transformId] scheduled for immediate execution")
+            true
+
+          case 409 =>
+            logger.warn(s"⚠️ Transform [$transformId] is already running")
+            true
+
+          case code =>
+            logger.error(s"❌ Unexpected response code for [$transformId]: $code")
+            false
+        }
+    )
+  }
+}
+
+// ==================== WATCHER API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientWatcherApi extends WatcherApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientVersionApi with RestHighLevelClientCompanion =>
+
+  override private[client] def executeCreateWatcher(
+    watcher: Watcher,
+    active: Boolean
+  ): result.ElasticResult[Boolean] =
+    executeRestAction[PutWatchRequest, PutWatchResponse, Boolean](
+      operation = "createWatcher",
+      index = None,
+      retryable = false
+    )(
+      request = {
+        implicit val timestamp: Long = System.currentTimeMillis()
+        val json = watcher.node
+        logger.info(s"Creating Watcher ${watcher.id} :\n${sanitizeWatcherJson(json)}")
+        val req = new PutWatchRequest(
+          watcher.id,
+          new BytesArray(json),
+          XContentType.JSON
+        )
+        req.setActive(active)
+        req
+      }
+    )(
+      executor = req => apply().watcher().putWatch(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isCreated
+    )
+
+  override private[client] def executeDeleteWatcher(id: JSONQuery): ElasticResult[Boolean] =
+    executeRestAction[DeleteWatchRequest, DeleteWatchResponse, Boolean](
+      operation = "deleteWatcher",
+      index = None,
+      retryable = false
+    )(
+      request = new DeleteWatchRequest(id)
+    )(
+      executor = req => apply().watcher().deleteWatch(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isFound
+    )
+
+  override private[client] def executeGetWatcherStatus(
+    id: String
+  ): result.ElasticResult[Option[WatcherStatus]] =
+    executeRestAction[GetWatchRequest, GetWatchResponse, Option[WatcherStatus]](
+      operation = "getWatcher",
+      index = None,
+      retryable = true
+    )(
+      request = new GetWatchRequest(id)
+    )(
+      executor = req => apply().watcher().getWatch(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => {
+        if (resp.isFound) {
+          val source = resp.getSourceAsMap
+          val interval: Option[TransformTimeInterval] = {
+            source.get("trigger") match {
+              case triggerMap: java.util.Map[String, _] =>
+                triggerMap.asScala.get("schedule") match {
+                  case Some(scheduleMap: java.util.Map[String, _]) =>
+                    scheduleMap.asScala.get("interval") match {
+                      case Some(interval: String) =>
+                        TransformTimeInterval(interval) match {
+                          case Some(ti) => Some(ti)
+                          case _ =>
+                            logger.warn(
+                              s"Watcher [$id] has invalid interval: $interval"
+                            )
+                            None
+                        }
+                      case _ =>
+                        scheduleMap.asScala.get("cron") match {
+                          case Some(cron: String) =>
+                            CronIntervalCalculator.validateAndCalculate(cron) match {
+                              case Right(interval) =>
+                                val tuple = TransformTimeInterval.fromSeconds(interval._2)
+                                Some(
+                                  Delay(
+                                    timeUnit = tuple._1,
+                                    interval = tuple._2
+                                  )
+                                )
+                              case _ =>
+                                logger.warn(
+                                  s"Watcher [$id] has invalid cron expression: $cron"
+                                )
+                                None
+                            }
+                          case _ => None
+                        }
+                    }
+                  case _ => None
+                }
+              case _ => None
+            }
+          }
+
+          interval match {
+            case None =>
+              logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+            case Some(t) => // valid interval
+              logger.info(s"Watcher [$id] has schedule interval: $t")
+          }
+
+          Option(resp.getStatus).map { status =>
+            val version = resp.getVersion
+            val state = Option(status.state())
+            val active = state.exists(_.isActive)
+            val timestamp =
+              state.map(_.getTimestamp).getOrElse(ZonedDateTime.now())
+            val activationState =
+              WatcherActivationState(active = active, timestamp = timestamp)
+            WatcherStatus(
+              id = id,
+              version = version,
+              activationState = activationState,
+              executionState =
+                Option(status.getExecutionState).map(es => WatcherExecutionState(es.name())),
+              lastChecked = Option(status.lastChecked()),
+              lastMetCondition = Option(status.lastMetCondition()),
+              interval = interval
+            )
+          }
+        } else {
+          None
+        }
+      }
+    )
+
+  override private[client] def executeListWatchers(): ElasticResult[Seq[WatcherStatus]] =
+    executeRestLowLevelAction[Seq[WatcherStatus]](
+      operation = "listWatchers",
+      index = None,
+      retryable = true
+    )(
+      request = new Request("POST", "/_watcher/_query/watches")
+    )(
+      transformer = resp => {
+        val jsonString = EntityUtils.toString(resp.getEntity)
+        val root = mapper.readTree(jsonString)
+        if (root.has("watches")) {
+          root.get("watches") match {
+            case watchersNode: ArrayNode =>
+              logger.info(s"Found ${watchersNode.size()} watchers")
+              watchersNode.elements().asScala.toSeq.map { watcherNode: JsonNode =>
+                val id = watcherNode.get("_id").asText()
+                val watch = watcherNode.get("watch")
+                val interval: Option[TransformTimeInterval] = {
+                  watch.get("trigger") match {
+                    case triggerNode if triggerNode.has("schedule") =>
+                      val scheduleNode = triggerNode.get("schedule")
+                      if (scheduleNode.has("interval")) {
+                        val intervalStr = scheduleNode.get("interval").asText()
+                        TransformTimeInterval(intervalStr) match {
+                          case Some(ti) => Some(ti)
+                          case _ =>
+                            logger.warn(
+                              s"Watcher [$id] has invalid interval: $intervalStr"
+                            )
+                            None
+                        }
+                      } else if (scheduleNode.has("cron")) {
+                        val cronExpr = scheduleNode.get("cron").asText()
+                        CronIntervalCalculator.validateAndCalculate(cronExpr) match {
+                          case Right(interval) =>
+                            val tuple = TransformTimeInterval.fromSeconds(interval._2)
+                            Some(
+                              Delay(
+                                timeUnit = tuple._1,
+                                interval = tuple._2
+                              )
+                            )
+                          case _ =>
+                            logger.warn(
+                              s"Watcher [$id] has invalid cron expression: $cronExpr"
+                            )
+                            None
+                        }
+                      } else {
+                        None
+                      }
+                    case _ => None
+                  }
+                }
+
+                interval match {
+                  case None =>
+                    logger.warn(s"Watcher [$id] does not have a valid schedule interval")
+                  case Some(t) => // valid interval
+                    logger.info(s"Watcher [$id] has schedule interval: $t")
+                }
+
+                val status = watcherNode.get("status")
+                val state = Option(status.get("state"))
+                val active = state.exists(_.get("active").asBoolean())
+                val timestamp = state
+                  .flatMap(s => Option(s.get("timestamp")))
+                  .map(_.asText())
+                  .flatMap { ts =>
+                    try {
+                      Some(ZonedDateTime.parse(ts))
+                    } catch {
+                      case e: Exception =>
+                        logger.warn(
+                          s"Failed to parse timestamp '$ts' for watcher [$id]: ${e.getMessage}"
+                        )
+                        None
+                    }
+                  }
+                val activationState = WatcherActivationState(
+                  active = active,
+                  timestamp = timestamp.getOrElse(ZonedDateTime.now())
+                )
+                val version = Option(watcherNode.get("version")).map(_.asLong()).getOrElse(-1L)
+                WatcherStatus(
+                  id = id,
+                  version = version,
+                  activationState = activationState,
+                  executionState = None,
+                  lastChecked = None,
+                  lastMetCondition = None,
+                  interval = interval
+                )
+              }
+            case _ =>
+              logger.warn(
+                s"Unexpected 'watches' node type: ${root.get("watches").getClass.getName}"
+              )
+              Seq.empty
+          }
+        } else {
+          Seq.empty
+        }
+      }
+    )
+
+}
+
+// ==================== LICENSE API IMPLEMENTATION FOR REST HIGH LEVEL CLIENT ====================
+
+trait RestHighLevelClientLicenseApi extends LicenseApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+
+  override private[client] def executeLicenseInfo: ElasticResult[Option[String]] = {
+    executeRestAction[GetLicenseRequest, GetLicenseResponse, Option[String]](
+      operation = "licenseInfo",
+      retryable = true
+    )(
+      request = new GetLicenseRequest()
+    )(
+      executor = req => apply().license().getLicense(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => Option(resp.getLicenseDefinition)
+    )
+  }
+
+  override private[client] def executeEnableBasicLicense(): ElasticResult[Boolean] = {
+    executeRestAction[StartBasicRequest, StartBasicResponse, Boolean](
+      operation = "enableBasicLicense",
+      retryable = false
+    )(
+      request = new StartBasicRequest(true)
+    )(
+      executor = req => apply().license().startBasic(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
+  }
+
+  override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] = {
+    executeRestAction[StartTrialRequest, StartTrialResponse, Boolean](
+      operation = "enableTrialLicense",
+      retryable = false
+    )(
+      request = new StartTrialRequest(true)
+    )(
+      executor = req => apply().license().startTrial(req, RequestOptions.DEFAULT)
+    )(
+      transformer = resp => resp.isAcknowledged
+    )
   }
 }

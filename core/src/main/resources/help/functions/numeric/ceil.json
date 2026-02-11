@@ -1,0 +1,30 @@
+{
+  "name": "CEIL",
+  "category": "Numeric",
+  "shortDescription": "Round up to nearest integer",
+  "syntax": [
+    "CEIL(number)",
+    "CEILING(number)"
+  ],
+  "description": "Rounds a number up to the nearest integer.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Number to round up",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Round up",
+      "description": "Calculate pages needed",
+      "sql": "SELECT CEIL(total_items / 10.0) as pages FROM listings"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["FLOOR", "ROUND"],
+  "aliases": ["CEILING"]
+}

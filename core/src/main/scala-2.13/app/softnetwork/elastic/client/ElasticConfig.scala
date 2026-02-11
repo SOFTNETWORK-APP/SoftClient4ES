@@ -44,7 +44,8 @@ case class ElasticConfig(
   discovery: DiscoveryConfig,
   connectionTimeout: Duration,
   socketTimeout: Duration,
-  metrics: MetricsConfig
+  metrics: MetricsConfig,
+  watcher: ElasticCredentials
 )
 
 object ElasticConfig extends StrictLogging {

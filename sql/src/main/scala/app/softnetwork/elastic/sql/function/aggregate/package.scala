@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.function
 
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.query.{Bucket, BucketPath, Field, Limit, OrderBy, SingleSearch}
 import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
@@ -88,7 +89,7 @@ package object aggregate {
       aggregations.map(_.bucketPath).distinct.sortBy(_.length).reverse.headOption.getOrElse("")
 
     override def update(request: SingleSearch): BucketScriptAggregation = {
-      val identifiers = FunctionUtils.aggregateIdentifiers(identifier)
+      val identifiers = FunctionUtils.funIdentifiers(identifier)
       val params = identifiers.flatMap {
         case identifier: Identifier =>
           val name = identifier.metricName.getOrElse(identifier.aliasOrName)
@@ -226,6 +227,10 @@ package object aggregate {
     partitionBy: Seq[Identifier] = Seq.empty,
     fields: Seq[Field] = Seq.empty
   ) extends WindowFunction {
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    def isCardinality: Boolean = identifier.distinct
+
     override def limit: Option[Limit] = None
 
     override def orderBy: Option[OrderBy] = None

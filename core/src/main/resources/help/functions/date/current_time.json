@@ -1,0 +1,25 @@
+{
+  "name": "CURRENT_TIME",
+  "category": "Date/Time",
+  "shortDescription": "Get current time of day",
+  "syntax": [
+    "CURRENT_TIME",
+    "CURRENT_TIME()"
+  ],
+  "description": "Returns the current time of day.",
+  "parameters": [],
+  "returnType": "TIME",
+  "examples": [
+    {
+      "title": "Get current time",
+      "description": "Use in query",
+      "sql": "SELECT CURRENT_TIME as ct"
+    }
+  ],
+  "notes": [
+    "Returns current time in UTC timezone",
+    "Parentheses are optional"
+  ],
+  "seeAlso": ["CURRENT_DATE","CURRENT_TIMESTAMP", "NOW", "TODAY"],
+  "aliases": ["CURTIME"]
+}

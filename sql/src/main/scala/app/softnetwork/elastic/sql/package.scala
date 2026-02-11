@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic
 
+import app.softnetwork.elastic.schema.NamingUtils
 import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
@@ -24,8 +25,8 @@ import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.Column
 import com.fasterxml.jackson.databind.JsonNode
 
-import java.security.MessageDigest
 import scala.annotation.tailrec
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe._
 import scala.util.Try
@@ -136,6 +137,7 @@ package object sql {
   case object PainlessContextType {
     case object Processor extends PainlessContextType
     case object Query extends PainlessContextType
+    case object Transform extends PainlessContextType
   }
 
   /** Context for painless scripts
@@ -154,10 +156,13 @@ package object sql {
 
     def isProcessor: Boolean = context == PainlessContextType.Processor
 
+    def isTransform: Boolean = context == PainlessContextType.Transform
+
     lazy val timestamp: String = {
       context match {
         case PainlessContextType.Processor => CurrentFunction.processorTimestamp
-        case PainlessContextType.Query     => CurrentFunction.queryTimestamp
+        case PainlessContextType.Query | PainlessContextType.Transform =>
+          CurrentFunction.queryTimestamp
       }
     }
 
@@ -171,9 +176,19 @@ package object sql {
     def addParam(token: Token): Option[String] = {
       token match {
         case identifier: Identifier if isProcessor =>
-          addParam(
-            LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
-          )
+          if (identifier.name.nonEmpty)
+            addParam(
+              LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
+            )
+          else
+            None
+        case identifier: Identifier if isTransform =>
+          if (identifier.name.nonEmpty)
+            addParam(
+              LiteralParam(identifier.transformParamName, identifier.transformCheckNotNull)
+            )
+          else
+            None
         case param: PainlessParam
             if param.param.nonEmpty && (param.isInstanceOf[LiteralParam] || param.nullable) =>
           get(param) match {
@@ -198,6 +213,10 @@ package object sql {
       token match {
         case identifier: Identifier if isProcessor =>
           get(LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ ))
+        case identifier: Identifier if isTransform =>
+          get(
+            LiteralParam(identifier.transformParamName, None /*identifier.transformCheckNotNull*/ )
+          )
         case param: PainlessParam =>
           if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
           else None
@@ -323,7 +342,7 @@ package object sql {
         case f: Float    => FloatValue(f)
         case d: Double   => DoubleValue(d)
         case a: Array[T] => apply(a.toSeq)
-        case a: Seq[T] =>
+        case a: Seq[T] if a.nonEmpty =>
           val values = a.map(apply)
           values.headOption match {
             case Some(_: StringValue) =>
@@ -350,9 +369,10 @@ package object sql {
               ).asInstanceOf[Values[R, T]]
             case _ => throw new IllegalArgumentException("Unsupported Values type")
           }
+        case _: Seq[T] => EmptyValues().asInstanceOf[Values[R, T]]
         case o: Map[_, _] =>
-          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }
-          ObjectValue(map)
+          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }.toList
+          ObjectValue(ListMap(map: _*))
         case other => StringValue(other.toString)
       }
     }
@@ -398,7 +418,7 @@ package object sql {
 
   case class Removed(name: String) extends Diff
 
-  case class ObjectValue(override val value: Map[String, Value[_]])
+  case class ObjectValue(override val value: ListMap[String, Value[_]])
       extends Value[Map[String, Value[_]]](value) {
     override def sql: String = value
       .map { case (k, v) => s"""$k = ${v.sql}""" }
@@ -518,7 +538,7 @@ package object sql {
   object ObjectValue {
     import app.softnetwork.elastic.sql.serialization._
 
-    def empty: ObjectValue = ObjectValue(Map.empty)
+    def empty: ObjectValue = ObjectValue(ListMap.empty)
 
     def fromJson(jsonNode: JsonNode): ObjectValue = jsonNode
 
@@ -612,6 +632,12 @@ package object sql {
   case object PiValue extends Value[Double](Math.PI) with TokenRegex {
     override def sql: String = "PI"
     override def painless(context: Option[PainlessContext]): String = "Math.PI"
+    override def baseType: SQLNumeric = SQLTypes.Double
+  }
+
+  case object RandomValue extends Value[Double](Math.random()) with TokenRegex {
+    override def sql: String = "RANDOM"
+    override def painless(context: Option[PainlessContext]): String = "Math.random()"
     override def baseType: SQLNumeric = SQLTypes.Double
   }
 
@@ -768,6 +794,11 @@ package object sql {
     def toJson: JsonNode = this
   }
 
+  case class EmptyValues() extends Values[Any, Null](Seq.empty) {
+    override def sql: String = "()"
+    override def nullable: Boolean = true
+  }
+
   def toRegex(value: String): String = {
     value.replaceAll("%", ".*").replaceAll("_", ".")
   }
@@ -793,21 +824,7 @@ package object sql {
         acc.replace(k, s"_${v}_")
       }
       // Nettoyer pour obtenir un identifiant valide
-      val normalized = replaced
-        .replaceAll("[^a-zA-Z0-9_]", "_") // caractères invalides -> "_"
-        .replaceAll("_+", "_") // compacter plusieurs "_"
-        .stripPrefix("_")
-        .stripSuffix("_")
-        .toLowerCase
-
-      // Tronquer si nécessaire
-      if (normalized.length > MaxAliasLength) {
-        val digest = MessageDigest.getInstance("MD5").digest(normalized.getBytes("UTF-8"))
-        val hash = digest.map("%02x".format(_)).mkString.take(8) // suffix court
-        normalized.take(MaxAliasLength - hash.length - 1) + "_" + hash
-      } else {
-        normalized
-      }
+      NamingUtils.normalizeObjectName(replaced, MaxAliasLength).replaceAll("\\.", "_")
     }
   }
 
@@ -990,7 +1007,23 @@ package object sql {
     lazy val processCheckNotNull: Option[String] =
       if (path.isEmpty || !nullable) None
       else
-        Option(s"(ctx.$path == null ? $nullValue : ctx.$path${painlessMethods.mkString("")})")
+        Option(
+          s"($processParamName == null ? $nullValue : $processParamName${painlessMethods.mkString("")})"
+        )
+
+    lazy val transformParamName: String =
+      if (isAggregation && functions.size == 1) s"params.${metricName.getOrElse(aliasOrName)}"
+      else if (aliasOrName.nonEmpty)
+        s"doc['$aliasOrName'].value"
+      else ""
+
+    lazy val transformCheckNotNull: Option[String] =
+      if (aliasOrName.isEmpty || !nullable) None
+      else
+        Option(
+          s"(doc['$aliasOrName'].size() == 0 ? $nullValue : doc['$aliasOrName'].value${painlessMethods
+            .mkString("")})"
+        )
 
     def originalType: SQLType =
       if (name.trim.nonEmpty) SQLTypes.Any
@@ -1074,6 +1107,14 @@ package object sql {
 
     def isWindowing: Boolean = windows.exists(_.partitionBy.nonEmpty)
 
+    def painlessScriptRequired: Boolean = functions.nonEmpty && !hasAggregation && bucket.isEmpty
+
+    def isObject: Boolean = {
+      out match {
+        case SQLTypes.Struct => true
+        case _               => name.contains(".")
+      }
+    }
   }
 
   object Identifier {
@@ -1126,7 +1167,7 @@ package object sql {
         }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
-      val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._2)
+      val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
       if (table.nonEmpty) {
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>

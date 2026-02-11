@@ -344,6 +344,29 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
     }
   }
 
+  def pipelines(): ElasticResult[Seq[IngestPipeline]] = {
+    executeListPipelines() match {
+      case ElasticSuccess(pipelines) =>
+        logger.info(s"✅ Successfully retrieved list of ${pipelines.size} pipelines")
+        ElasticResult.attempt(
+          pipelines.toSeq.map { case (name, json) =>
+            IngestPipeline(name = name, json = json)
+          }
+        ) match {
+          case success @ ElasticSuccess(_) =>
+            success
+          case ElasticFailure(error) =>
+            logger.error(s"❌ Failed to parse pipelines: ${error.message}")
+            ElasticResult.failure(
+              error.copy(operation = Some("pipelines"))
+            )
+        }
+      case failure @ ElasticFailure(error) =>
+        logger.error(s"❌ Failed to retrieve list of pipelines: ${error.message}")
+        failure
+    }
+  }
+
   // ========================================================================
   // METHODS TO IMPLEMENT
   // ========================================================================
@@ -360,4 +383,5 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
 
   private[client] def executeGetPipeline(pipelineName: String): ElasticResult[Option[String]]
 
+  private[client] def executeListPipelines(): ElasticResult[Map[String, String]]
 }

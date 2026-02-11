@@ -36,6 +36,8 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 
+import scala.collection.immutable.ListMap
+
 case object Select extends Expr("SELECT") with TokenRegex
 
 case class Field(
@@ -47,9 +49,11 @@ case class Field(
     with DateMathScript {
   def tableAlias: Option[String] = identifier.tableAlias
   def table: Option[String] = identifier.table
-  def isScriptField: Boolean =
-    functions.nonEmpty && !hasAggregation && identifier.bucket.isEmpty
+  def isScriptField: Boolean = identifier.painlessScriptRequired
   override def sql: String = s"$identifier${asString(fieldAlias)}"
+
+  override lazy val dependencies: Seq[Identifier] = identifier.dependencies
+
   lazy val sourceField: String = {
     if (identifier.nested) {
       tableAlias
@@ -107,6 +111,8 @@ case class Field(
   lazy val path: String = identifier.path
 
   def isBucketScript: Boolean = !isAggregation && hasAggregation
+
+  def isObject: Boolean = identifier.isObject
 }
 
 case object Except extends Expr("except") with TokenRegex
@@ -123,9 +129,15 @@ case class Select(
 ) extends Updateable {
   override def sql: String =
     s"$Select ${fields.mkString(", ")}${except.getOrElse("")}"
-  lazy val fieldAliases: Map[String, String] = fields.flatMap { field =>
-    field.fieldAlias.map(a => field.identifier.identifierName -> a.alias)
-  }.toMap
+  lazy val fieldAliases: ListMap[String, String] = ListMap(fields.flatMap { field =>
+    field.fieldAlias
+      .map(a => field.identifier.identifierName -> a.alias)
+  /*.orElse(field.identifier.name match {
+      case name if name.nonEmpty => Some(name -> name)
+      case _                    => None
+    })*/
+  }: _*)
+  lazy val aliasesToMap: ListMap[String, String] = fieldAliases.map(_.swap)
   def update(request: SingleSearch): Select =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))
 

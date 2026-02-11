@@ -1,0 +1,52 @@
+{
+  "name": "POSITION",
+  "category": "String",
+  "shortDescription": "Find substring position",
+  "syntax": [
+    "POSITION(substring IN string [FROM start])",
+    "LOCATE(substring, string [, start])"
+  ],
+  "description": "Returns the position of the first occurrence of a substring.",
+  "parameters": [
+    {
+      "name": "substring",
+      "type": "VARCHAR",
+      "description": "Substring to find",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to search in",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "start",
+      "type": "INT",
+      "description": "Starting position",
+      "optional": true,
+      "defaultValue": "1"
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Find @ in email",
+      "description": "Get position of @ symbol",
+      "sql": "SELECT POSITION('@' IN email) as at_pos FROM users"
+    },
+    {
+      "title": "Using LOCATE",
+      "description": "Alternative syntax",
+      "sql": "SELECT LOCATE('@', email) as at_pos FROM users"
+    }
+  ],
+  "notes": [
+    "Returns 0 if substring is not found",
+    "Positions are 1-based"
+  ],
+  "seeAlso": ["SUBSTRING", "REPLACE"],
+  "aliases": ["LOCATE"]
+}

@@ -1,0 +1,49 @@
+{
+  "name": "NULLIF",
+  "category": "Conditional",
+  "shortDescription": "Return NULL if values are equal",
+  "syntax": [
+    "NULLIF(expression1, expression2)"
+  ],
+  "description": "Returns NULL if the two expressions are equal, otherwise returns the first expression.",
+  "parameters": [
+    {
+      "name": "expression1",
+      "type": "ANY",
+      "description": "Value to return (if not equal to expression2)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "expression2",
+      "type": "ANY",
+      "description": "Value to compare against",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Same as expression1",
+  "examples": [
+    {
+      "title": "Avoid division by zero",
+      "description": "Return NULL instead of error",
+      "sql": "SELECT total / NULLIF(count, 0) as average FROM stats"
+    },
+    {
+      "title": "Treat empty as NULL",
+      "description": "Convert empty strings to NULL",
+      "sql": "SELECT NULLIF(email, '') as email FROM users"
+    },
+    {
+      "title": "Treat sentinel values as NULL",
+      "description": "Convert -1 to NULL",
+      "sql": "SELECT NULLIF(status_code, -1) as status FROM records"
+    }
+  ],
+  "notes": [
+    "Useful for preventing division by zero",
+    "Useful for treating special values as NULL"
+  ],
+  "seeAlso": ["COALESCE", "CASE"],
+  "aliases": []
+}

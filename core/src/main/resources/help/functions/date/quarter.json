@@ -1,0 +1,36 @@
+{
+  "name": "QUARTER",
+  "category": "Date/Time",
+  "shortDescription": "Extract quarter from date",
+  "syntax": [
+    "QUARTER(date)"
+  ],
+  "description": "Returns the quarter (1-4) for a date.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract quarter from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get quarter",
+      "description": "Extract fiscal quarter",
+      "sql": "SELECT QUARTER(order_date) as quarter FROM orders"
+    },
+    {
+      "title": "Quarterly report",
+      "description": "Aggregate by quarter",
+      "sql": "SELECT YEAR(date) as year, QUARTER(date) as quarter, SUM(revenue) as total\nFROM sales\nGROUP BY YEAR(date), QUARTER(date)"
+    }
+  ],
+  "notes": [
+    "Returns 1-4 (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)"
+  ],
+  "seeAlso": ["YEAR", "MONTH", "DATE_TRUNC"],
+  "aliases": []
+}

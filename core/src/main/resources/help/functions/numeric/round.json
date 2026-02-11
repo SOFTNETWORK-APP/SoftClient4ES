@@ -1,0 +1,44 @@
+{
+  "name": "ROUND",
+  "category": "Numeric",
+  "shortDescription": "Round to specified decimal places",
+  "syntax": [
+    "ROUND(number)",
+    "ROUND(number, decimals)"
+  ],
+  "description": "Rounds a number to the specified number of decimal places.",
+  "parameters": [
+    {
+      "name": "number",
+      "type": "NUMERIC",
+      "description": "Number to round",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "decimals",
+      "type": "INT",
+      "description": "Number of decimal places",
+      "optional": true,
+      "defaultValue": "0"
+    }
+  ],
+  "returnType": "NUMERIC",
+  "examples": [
+    {
+      "title": "Round to integer",
+      "description": "Round to nearest whole number",
+      "sql": "SELECT ROUND(price) as rounded_price FROM products"
+    },
+    {
+      "title": "Round to 2 decimals",
+      "description": "Format currency",
+      "sql": "SELECT ROUND(amount, 2) as formatted FROM transactions"
+    }
+  ],
+  "notes": [
+    "Uses banker's rounding (round half to even)"
+  ],
+  "seeAlso": ["FLOOR", "CEIL"],
+  "aliases": []
+}

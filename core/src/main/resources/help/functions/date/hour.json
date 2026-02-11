@@ -1,0 +1,36 @@
+{
+  "name": "HOUR",
+  "category": "Date/Time",
+  "shortDescription": "Extract hour from timestamp",
+  "syntax": [
+    "HOUR(timestamp)"
+  ],
+  "description": "Extracts the hour component (0-23) from a timestamp.",
+  "parameters": [
+    {
+      "name": "timestamp",
+      "type": "TIMESTAMP",
+      "description": "Timestamp to extract hour from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get hour",
+      "description": "Extract hour from timestamp",
+      "sql": "SELECT HOUR(created_at) as hour FROM logs"
+    },
+    {
+      "title": "Peak hours",
+      "description": "Count events by hour",
+      "sql": "SELECT HOUR(timestamp) as hour, COUNT(*) as count\nFROM events\nGROUP BY HOUR(timestamp)"
+    }
+  ],
+  "notes": [
+    "Returns 0-23 (24-hour format)"
+  ],
+  "seeAlso": ["MINUTE", "SECOND", "DAY"],
+  "aliases": []
+}

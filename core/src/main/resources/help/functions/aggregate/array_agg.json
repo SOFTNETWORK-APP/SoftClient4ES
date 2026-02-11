@@ -1,0 +1,32 @@
+{
+  "name": "ARRAY_AGG",
+  "category": "Aggregate",
+  "shortDescription": "Aggregate values into an array",
+  "syntax": [
+    "ARRAY_AGG(column) OVER ([PARTITION BY partition_expr, ...]  [ORDER BY order_expr [ASC|DESC], ...])"
+  ],
+  "description": "Aggregate function that collects values into an array for each partition.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "ANY",
+      "description": "Column to aggregate",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "ARRAY",
+  "examples": [
+    {
+      "title": "Collect values",
+      "description": "Collect employee names per department (sorted and limited)",
+      "sql": "SELECT department,\n  ARRAY_AGG(name) OVER (PARTITION BY department ORDER BY hire_date ASC LIMIT 100) AS employees\nFROM emp;"
+    }
+  ],
+  "notes": [
+    "Returns an array of values",
+    "Can use with window functions"
+  ],
+  "seeAlso": ["COUNT", "FIRST_VALUE"],
+  "aliases": []
+}

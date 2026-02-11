@@ -1,0 +1,32 @@
+{
+  "name": "DAY",
+  "category": "Date/Time",
+  "shortDescription": "Extract day of month from date",
+  "syntax": [
+    "DAY(date)",
+    "DAYOFMONTH(date)"
+  ],
+  "description": "Extracts the day of month (1-31) from a date or timestamp.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract day from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get day",
+      "description": "Extract day of month",
+      "sql": "SELECT DAY(created_at) as day FROM orders"
+    }
+  ],
+  "notes": [
+    "Returns 1-31"
+  ],
+  "seeAlso": ["YEAR", "MONTH", "WEEKDAY", "YEARDAY"],
+  "aliases": ["DAYOFMONTH"]
+}

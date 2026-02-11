@@ -1,0 +1,41 @@
+{
+  "name": "YEAR",
+  "category": "Date/Time",
+  "shortDescription": "Extract year from date",
+  "syntax": [
+    "YEAR(date)"
+  ],
+  "description": "Extracts the year component from a date or timestamp.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract year from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get year",
+      "description": "Extract year from date",
+      "sql": "SELECT YEAR(created_at) as year FROM orders"
+    },
+    {
+      "title": "Filter by year",
+      "description": "Get records from specific year",
+      "sql": "SELECT * FROM events WHERE YEAR(event_date) = 2024"
+    },
+    {
+      "title": "Group by year",
+      "description": "Aggregate by year",
+      "sql": "SELECT YEAR(order_date) as year, SUM(total) as total\nFROM orders\nGROUP BY YEAR(order_date)"
+    }
+  ],
+  "notes": [
+    "Returns 4-digit year"
+  ],
+  "seeAlso": ["MONTH", "DAY", "QUARTER", "DATE_TRUNC"],
+  "aliases": []
+}

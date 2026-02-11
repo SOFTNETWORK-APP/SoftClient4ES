@@ -32,32 +32,49 @@ import app.softnetwork.elastic.client.result.{
   SQLResult,
   TableResult
 }
+import app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
+  AlterTableSetting,
   CopyInto,
+  CreateEnrichPolicy,
   CreatePipeline,
   CreateTable,
+  CreateWatcher,
   DdlStatement,
   Delete,
   DescribePipeline,
   DescribeTable,
   DmlStatement,
   DqlStatement,
+  DropEnrichPolicy,
+  DropPipeline,
   DropTable,
+  DropWatcher,
+  EnrichPolicyStatement,
+  ExecuteEnrichPolicy,
   Insert,
   MultiSearch,
   PipelineStatement,
+  SearchStatement,
   SelectStatement,
   ShowCreatePipeline,
   ShowCreateTable,
+  ShowEnrichPolicies,
+  ShowEnrichPolicy,
   ShowPipeline,
+  ShowPipelines,
   ShowTable,
+  ShowTables,
+  ShowWatcherStatus,
+  ShowWatchers,
   SingleSearch,
   Statement,
   TableStatement,
   TruncateTable,
-  Update
+  Update,
+  WatcherStatement
 }
 import app.softnetwork.elastic.sql.schema.{
   Impossible,
@@ -72,6 +89,7 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.serialization._
 import org.slf4j.Logger
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
 
 trait Executor[T <: Statement] {
@@ -80,10 +98,11 @@ trait Executor[T <: Statement] {
   ): Future[ElasticResult[QueryResult]]
 }
 
-class DqlExecutor(api: ScrollApi with SearchApi, logger: Logger) extends Executor[DqlStatement] {
+class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
+    extends Executor[SearchStatement] {
 
   override def execute(
-    statement: DqlStatement
+    statement: SearchStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
@@ -116,21 +135,20 @@ class DqlExecutor(api: ScrollApi with SearchApi, logger: Logger) extends Executo
       // SingleSearch → SCROLL
       // ============================
       case single: SingleSearch =>
-        single.limit match {
-          case Some(l) if l.offset.map(_.offset).getOrElse(0) > 0 =>
-            logger.info(s"▶ Executing classic search on index ${single.from.tables.mkString(",")}")
-            api.searchAsync(single) map {
-              case ElasticSuccess(results) =>
-                logger.info(s"✅ Search returned ${results.results.size} hits.")
-                ElasticSuccess(QueryStructured(results))
-              case ElasticFailure(err) =>
-                ElasticFailure(err.copy(operation = Some("dql")))
-            }
-          case _ =>
-            logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
-            Future.successful(
-              ElasticSuccess(QueryStream(api.scroll(single)))
-            )
+        if (single.limit.isDefined || single.fields.isEmpty) {
+          logger.info(s"▶ Executing classic search on index ${single.from.tables.mkString(",")}")
+          api.searchAsync(single) map {
+            case ElasticSuccess(results) =>
+              logger.info(s"✅ Search returned ${results.results.size} hits.")
+              ElasticSuccess(QueryStructured(results))
+            case ElasticFailure(err) =>
+              ElasticFailure(err.copy(operation = Some("dql")))
+          }
+        } else {
+          logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
+          Future.successful(
+            ElasticSuccess(QueryStream(api.scroll(single)))
+          )
         }
 
       // ============================
@@ -237,12 +255,199 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
 
 trait DdlExecutor[T <: DdlStatement] extends Executor[T]
 
-class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[PipelineStatement] {
+class EnrichPolicyExecutor(
+  api: EnrichPolicyApi,
+  logger: Logger
+) extends Executor[EnrichPolicyStatement] {
+  override def execute(
+    statement: EnrichPolicyStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // handle ENRICH POLICY statement
+    statement match {
+      case ShowEnrichPolicies =>
+        api.listEnrichPolicies() match {
+          case ElasticSuccess(policies) =>
+            logger.info(s"✅ Retrieved ${policies.size} enrich policies.")
+            Future.successful(
+              ElasticResult.success(QueryRows(policies.map(_.toMap)))
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+      case show: ShowEnrichPolicy =>
+        api.getEnrichPolicy(show.name) match {
+          case ElasticSuccess(policy) =>
+            policy match {
+              case None =>
+                val error = ElasticError(
+                  message = s"Enrich policy ${show.name} not found.",
+                  statusCode = Some(404),
+                  operation = Some("enrich_policy")
+                )
+                logger.error(s"❌ ${error.message}")
+                Future.successful(ElasticFailure(error))
+              case Some(policy) =>
+                logger.info(s"✅ Retrieved enrich policy ${policy.name}.")
+                Future.successful(ElasticResult.success(QueryRows(Seq(policy.toMap))))
+            }
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+      case create: CreateEnrichPolicy =>
+        api.createEnrichPolicy(create.policy) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Created enrich policy ${create.policy.name}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+
+      case execute: ExecuteEnrichPolicy =>
+        api.executeEnrichPolicy(execute.name) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Executed enrich policy ${execute.name}.")
+            Future.successful(ElasticResult.success(QueryRows(Seq(result.toMap))))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+
+      case drop: DropEnrichPolicy =>
+        api.deleteEnrichPolicy(drop.name) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Deleted enrich policy ${drop.name}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("enrich_policy"))
+              )
+            )
+        }
+    }
+  }
+}
+
+class WatcherExecutor(api: WatcherApi, logger: Logger) extends Executor[WatcherStatement] {
+  override def execute(
+    statement: WatcherStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // handle WATCHER statement
+    statement match {
+      case ShowWatchers =>
+        api.listWatchers() match {
+          case ElasticSuccess(watchers) =>
+            logger.info(s"✅ Retrieved ${watchers.size} watchers.")
+            Future.successful(
+              ElasticResult.success(QueryRows(watchers.map(_.toMap)))
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+      case status: ShowWatcherStatus =>
+        api.getWatcherStatus(status.name) match {
+          case ElasticSuccess(stats) =>
+            stats match {
+              case None =>
+                val error = ElasticError(
+                  message = s"Watcher ${status.name} not found.",
+                  statusCode = Some(404),
+                  operation = Some("watcher")
+                )
+                logger.error(s"❌ ${error.message}")
+                Future.successful(ElasticFailure(error))
+              case Some(status) =>
+                logger.info(s"✅ Retrieved watcher status for ${status.id}.")
+                Future.successful(ElasticResult.success(QueryRows(Seq(status.toMap))))
+            }
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+
+      case create: CreateWatcher =>
+        api.createWatcher(create.watcher) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Created watcher ${create.watcher.id}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+
+      case drop: DropWatcher =>
+        api.deleteWatcher(drop.name) match {
+          case ElasticSuccess(result) =>
+            logger.info(s"✅ Deleted watcher ${drop.name}.")
+            Future.successful(ElasticResult.success(DdlResult(result)))
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("watcher"))
+              )
+            )
+        }
+    }
+  }
+}
+
+class PipelineExecutor(api: PipelineApi, logger: Logger) extends Executor[PipelineStatement] {
   override def execute(
     statement: PipelineStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
     statement match {
+      case ShowPipelines =>
+        // handle SHOW PIPELINES statement
+        api.pipelines() match {
+          case ElasticSuccess(pipelines) =>
+            logger.info(s"✅ Retrieved all pipelines.")
+            Future.successful(
+              ElasticResult.success(
+                QueryRows(
+                  pipelines.map { pipeline =>
+                    ListMap(
+                      "name"             -> pipeline.name,
+                      "processors_count" -> pipeline.processors.size
+                    )
+                  }.toSeq
+                )
+              )
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("pipelines"))
+              )
+            )
+        }
       case show: ShowPipeline =>
         // handle SHOW PIPELINE statement
         api.loadPipeline(show.name) match {
@@ -262,7 +467,7 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
           case ElasticSuccess(pipeline) =>
             logger.info(s"✅ Retrieved pipeline ${showCreate.name}.")
             Future.successful(
-              ElasticResult.success(SQLResult(pipeline.sql))
+              ElasticResult.success(SQLResult(pipeline.ddl))
             )
           case ElasticFailure(elasticError) =>
             Future.successful(
@@ -277,7 +482,7 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
           case ElasticSuccess(pipeline) =>
             logger.info(s"✅ Retrieved pipeline ${describe.name}.")
             Future.successful(
-              ElasticResult.success(QueryRows(pipeline.processors.map(_.properties)))
+              ElasticResult.success(QueryRows(pipeline.describe))
             )
           case ElasticFailure(elasticError) =>
             Future.successful(
@@ -309,7 +514,7 @@ class PipelineExecutor(api: PipelineApi, logger: Logger) extends DdlExecutor[Pip
 class TableExecutor(
   api: IndicesApi with PipelineApi with TemplateApi with SettingsApi with MappingApi with AliasApi,
   logger: Logger
-) extends DdlExecutor[TableStatement] {
+) extends Executor[TableStatement] {
   override def execute(
     statement: TableStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
@@ -317,6 +522,33 @@ class TableExecutor(
     // handle TABLE statement
     statement match {
       // handle SHOW TABLE statement
+      case tables: ShowTables =>
+        api.allMappings(tables.indices) match {
+          case ElasticSuccess(mappings) =>
+            logger.info("✅ Retrieved all tables.")
+            Future.successful(
+              ElasticResult.success(
+                QueryRows(
+                  mappings.map { case (index, mappings) =>
+                    ListMap(
+                      "name" -> index,
+                      "type" -> mappings.tableType.name.toUpperCase,
+                      "pk"   -> mappings.primaryKey.mkString(","),
+                      "partitioned" -> mappings.partitionBy
+                        .map(p => s"PARTITION BY ${p.column} (${p.granularity})")
+                        .getOrElse("")
+                    )
+                  }.toSeq
+                )
+              )
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("tables"))
+              )
+            )
+        }
       case show: ShowTable =>
         api.loadSchema(show.table) match {
           case ElasticSuccess(schema) =>
@@ -348,7 +580,7 @@ class TableExecutor(
         api.loadSchema(describe.table) match {
           case ElasticSuccess(schema) =>
             logger.info(s"✅ Retrieved schema for index ${describe.table}.")
-            Future.successful(ElasticResult.success(QueryRows(schema.columns.flatMap(_.asMap))))
+            Future.successful(ElasticResult.success(QueryRows(schema.describe)))
           case ElasticFailure(elasticError) =>
             Future.successful(
               ElasticFailure(
@@ -408,7 +640,6 @@ class TableExecutor(
           // 4) Index not exists → creation
           case ElasticSuccess(false) =>
             // proceed with creation
-            logger.info(s"✅ Creating index $indexName.")
             createNonExistentIndex(indexName, create, partitioned, single)
 
           // 5) Error on indexExists
@@ -648,8 +879,8 @@ class TableExecutor(
                     - "creation_date"
                     - "provided_name"
                     - "version"
-                    - "default_pipeline"
-                    - "final_pipeline"
+//                    - "default_pipeline"
+//                    - "final_pipeline"
                 ),
                 diff
               ) match {
@@ -915,7 +1146,6 @@ class TableExecutor(
       ) match {
         case success @ ElasticSuccess(true) =>
           // index created successfully
-          logger.info(s"✅ Index $indexName created successfully.")
           success
         case ElasticSuccess(_) =>
           // index creation failed
@@ -940,10 +1170,11 @@ class TableExecutor(
     existingPipelineName: Option[String]
   ): ElasticResult[Option[List[PipelineDiff]]] = {
     updatedPipelineName match {
-      case Some(pipelineName) if pipelineName != existingPipelineName.getOrElse("") =>
-        logger.info(
-          s"🔄 ${pipelineType.name} ingesting pipeline for index ${table.name} has been updated to $pipelineName."
-        )
+      case Some(pipelineName) =>
+        if (pipelineName != existingPipelineName.getOrElse(""))
+          logger.info(
+            s"🔄 ${pipelineType.name} ingesting pipeline for index ${table.name} has been updated to $pipelineName."
+          )
         // load new pipeline
         api.getPipeline(pipelineName) match {
           case ElasticSuccess(maybePipeline) if maybePipeline.isDefined =>
@@ -1049,101 +1280,331 @@ class TableExecutor(
     diff: TableDiff
   ): Either[ElasticError, Boolean] = {
 
+    // create temporary index name
     val tmpIndex = s"${indexName}_tmp_${System.currentTimeMillis()}"
 
+    // handle all steps for migration
+    var steps = collection.mutable.Seq[() => Either[ElasticError, Boolean]]()
+
+    // handle tmp schema settings updates
+    var updatingSchema = newSchema
+
+    // handle target schema settings updates
+    var alterTableSettings: Seq[AlterTableSetting] = Seq()
+
+    // handle target schema pipelines creation
+    var createOrReplaceTablePipelines: collection.mutable.Seq[() => Either[ElasticError, Boolean]] =
+      collection.mutable.Seq()
+
+    // handle target schema pipelines deletion
+    var dropTmpPipelines: collection.mutable.Seq[() => Either[ElasticError, Boolean]] =
+      collection.mutable.Seq()
+
+    val (tmpDefaultPipelineName, tmpDefaultPipeline) =
+      migratePipeline(
+        indexName,
+        tmpIndex,
+        oldSchema.defaultPipeline,
+        newSchema.defaultPipeline,
+        diff
+      )
+
+    tmpDefaultPipelineName match {
+      case Some(pipelineName) =>
+        updatingSchema = updatingSchema.setDefaultPipelineName(pipelineName)
+        if (newSchema.defaultPipeline.processors.nonEmpty) {
+          alterTableSettings :+=
+            AlterTableSetting(
+              "default_pipeline",
+              sql.StringValue(newSchema.defaultPipeline.name)
+            )
+          createOrReplaceTablePipelines :+= { () =>
+            api
+              .pipeline(
+                CreatePipeline(
+                  name = newSchema.defaultPipeline.name,
+                  pipelineType = newSchema.defaultPipeline.pipelineType,
+                  ifNotExists = false,
+                  orReplace = true,
+                  processors = newSchema.defaultPipeline.processors
+                )
+              )
+              .toEither
+          }
+          dropTmpPipelines :+= { () =>
+            api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
+          }
+        }
+      case None => // do Nothing
+    }
+
+    val (tmpFinalPipelineName, tmpFinalPipeline) =
+      migratePipeline(
+        indexName,
+        tmpIndex,
+        oldSchema.finalPipeline,
+        newSchema.finalPipeline,
+        diff
+      )
+
+    tmpFinalPipelineName match {
+      case Some(pipelineName) =>
+        updatingSchema = updatingSchema.setFinalPipelineName(pipelineName)
+        if (newSchema.finalPipeline.processors.nonEmpty) {
+          alterTableSettings :+=
+            AlterTableSetting(
+              "final_pipeline",
+              sql.StringValue(newSchema.finalPipeline.name)
+            )
+          createOrReplaceTablePipelines :+= { () =>
+            api
+              .pipeline(
+                CreatePipeline(
+                  name = newSchema.finalPipeline.name,
+                  pipelineType = newSchema.finalPipeline.pipelineType,
+                  ifNotExists = false,
+                  orReplace = true,
+                  processors = newSchema.finalPipeline.processors
+                )
+              )
+              .toEither
+          }
+          dropTmpPipelines :+= { () =>
+            api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
+          }
+        }
+      case None => // do Nothing
+    }
+
     // migrate index with updated schema
-    val migrate: ElasticResult[Boolean] =
-      api.performMigration(
-        index = indexName,
-        tempIndex = tmpIndex,
-        mapping = newSchema.indexMappings,
-        settings = newSchema.indexSettings,
-        aliases = newSchema.indexAliases
-      ) match {
-        case ElasticFailure(err) =>
-          logger.error(s"❌ Failed to perform migration for index $indexName: ${err.message}")
-          api.rollbackMigration(
+    val migrate: () => Either[ElasticError, Boolean] =
+      () =>
+        {
+          api.performMigration(
             index = indexName,
             tempIndex = tmpIndex,
-            originalMapping = oldSchema.indexMappings,
-            originalSettings = oldSchema.indexSettings,
-            originalAliases = oldSchema.indexAliases
+            mapping = updatingSchema.indexMappings,
+            settings = updatingSchema.indexSettings,
+            aliases = updatingSchema.indexAliases
           ) match {
-            case ElasticSuccess(_) =>
-              logger.info(s"✅ Rollback of migration for index $indexName completed successfully.")
-              ElasticFailure(err.copy(operation = Some("schema")))
-            case ElasticFailure(rollbackErr) =>
-              logger.error(
-                s"❌ Failed to rollback migration for index $indexName: ${rollbackErr.message}"
+            case ElasticFailure(err) =>
+              logger.error(s"❌ Failed to perform migration for index $indexName: ${err.message}")
+              api.rollbackMigration(
+                index = indexName,
+                tempIndex = tmpIndex,
+                originalMapping = oldSchema.indexMappings,
+                originalSettings = oldSchema.indexSettings,
+                originalAliases = oldSchema.indexAliases
+              ) match {
+                case ElasticSuccess(_) =>
+                  logger.info(
+                    s"✅ Rollback of migration for index $indexName completed successfully."
+                  )
+                  ElasticFailure(err.copy(operation = Some("schema")))
+                case ElasticFailure(rollbackErr) =>
+                  logger.error(
+                    s"❌ Failed to rollback migration for index $indexName: ${rollbackErr.message}"
+                  )
+                  ElasticFailure(
+                    ElasticError(
+                      message =
+                        s"Migration failed: ${err.message}. Rollback failed: ${rollbackErr.message}",
+                      statusCode = Some(500),
+                      operation = Some("schema")
+                    )
+                  )
+              }
+
+            case success @ ElasticSuccess(_) =>
+              logger.info(
+                s"🔄 Migration performed successfully for index $indexName to temporary index $tmpIndex."
               )
-              ElasticFailure(
+              success
+          }
+        }.toEither
+
+    val updateTableSettings =
+      () => {
+        if (alterTableSettings.nonEmpty) {
+          logger.info(
+            s"🔧 Applying $indexName new pipeline settings [${alterTableSettings.map(_.sql).mkString(", ")}]."
+          )
+          val schema = updatingSchema.merge(alterTableSettings)
+          api
+            .updateSettings(
+              indexName,
+              schema
+                .copy(settings = schema.settings - "number_of_shards" - "number_of_replicas")
+                .indexSettings
+            )
+            .toEither
+        } else Right(false)
+      }
+
+    steps ++= Seq(
+      tmpDefaultPipeline,
+      tmpFinalPipeline,
+      migrate
+    ) ++ (createOrReplaceTablePipelines :+ updateTableSettings) ++ dropTmpPipelines
+
+    steps.foldLeft(Right(true): Either[ElasticError, Boolean]) {
+      case (Left(err), _) => Left(err)
+      case (_, step)      => step()
+    }
+  }
+
+  private def migratePipeline(
+    indexName: String,
+    tmpIndexName: String,
+    oldPipeline: IngestPipeline,
+    newPipeline: IngestPipeline,
+    diff: TableDiff
+  ): (Option[String], () => Either[ElasticError, Boolean]) = {
+    if (oldPipeline.pipelineType != newPipeline.pipelineType) {
+      logger.error(
+        s"❌ Cannot change pipeline type from ${oldPipeline.pipelineType.name} to ${newPipeline.pipelineType.name} for index $indexName."
+      )
+      return (
+        None,
+        () =>
+          Left(
+            ElasticError(
+              message =
+                s"Cannot change pipeline type from ${oldPipeline.pipelineType.name} to ${newPipeline.pipelineType.name} for index $indexName.",
+              statusCode = Some(400),
+              operation = Some("schema")
+            )
+          )
+      )
+    }
+    if (oldPipeline.name != newPipeline.name) {
+      logger.info(
+        s"🔄 ${oldPipeline.pipelineType.name} Ingesting pipeline for index $indexName has been updated to ${newPipeline.name}."
+      )
+      // create updated default pipeline
+      val step: () => Either[ElasticError, Boolean] = { () =>
+        api
+          .pipeline(
+            CreatePipeline(
+              name = newPipeline.name,
+              pipelineType = newPipeline.pipelineType,
+              ifNotExists = false,
+              orReplace = true,
+              processors = newPipeline.processors
+            )
+          )
+          .toEither
+          .flatMap { result =>
+            if (result) {
+              logger.info(
+                s"🔧 Created updated ${oldPipeline.pipelineType.name} ingesting pipeline ${newPipeline.name} for index $tmpIndexName."
+              )
+              Right(result)
+            } else {
+              val error =
                 ElasticError(
                   message =
-                    s"Migration failed: ${err.message}. Rollback failed: ${rollbackErr.message}",
+                    s"Failed to create ${oldPipeline.pipelineType.name} ingesting pipeline ${newPipeline.name}.",
                   statusCode = Some(500),
                   operation = Some("schema")
                 )
-              )
+              logger.error(s"❌ ${error.message}")
+              Left(error)
+            }
           }
-
-        case success @ ElasticSuccess(_) =>
-          logger.info(
-            s"🔄 Migration performed successfully for index $indexName to temporary index $tmpIndex."
-          )
-          success
       }
+      (None, step)
+    } else {
+      diff.alterPipeline(oldPipeline.name, oldPipeline.pipelineType) match {
+        case Some(alterPipeline) =>
+          val tmpDefaultPipeline =
+            s"${tmpIndexName}_ddl_${oldPipeline.pipelineType.name.toLowerCase}_pipeline"
+          logger.warn(
+            s"⚠️ Default ingesting pipeline ${oldPipeline.name} for index $indexName has been updated. Creating a temporary pipeline $tmpDefaultPipeline that will be used for reindex."
+          )
+          val step = () => {
+            // create updated default pipeline
+            val mergedDefaultPipeline = oldPipeline.merge(alterPipeline.statements)
+            api
+              .pipeline(
+                CreatePipeline(
+                  name = tmpDefaultPipeline,
+                  pipelineType = oldPipeline.pipelineType,
+                  ifNotExists = false,
+                  orReplace = true,
+                  processors = mergedDefaultPipeline.processors
+                )
+              )
+              .toEither
+              .flatMap { result =>
+                if (result) {
+                  logger.info(
+                    s"🔧 Created updated ${oldPipeline.pipelineType.name} ingesting pipeline $tmpDefaultPipeline for index $tmpIndexName."
+                  )
+                  Right(result)
+                } else {
+                  val error =
+                    ElasticError(
+                      message =
+                        s"Failed to create ${oldPipeline.pipelineType.name} ingesting pipeline $tmpDefaultPipeline.",
+                      statusCode = Some(500),
+                      operation = Some("schema")
+                    )
+                  logger.error(s"❌ ${error.message}")
+                  Left(error)
+                }
+              }
+          }
+          (Some(tmpDefaultPipeline), step)
+        case _ => // no changes to default pipeline
+          (None, () => Right(false))
+      }
+    }
+  }
+}
 
-    val defaultPipelineCreateOrUpdate: ElasticResult[Boolean] =
-      if (diff.defaultPipeline.nonEmpty) {
-        newSchema.defaultPipelineName match {
-          case Some(pipelineName) =>
-            logger.info(
-              s"🔧 Updating default ingesting pipeline for index $indexName to $pipelineName."
-            )
-            api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Default))
-          case None =>
-            val pipelineName = newSchema.defaultPipeline.name
-            api.pipeline(
-              diff.createPipeline(pipelineName, IngestPipelineType.Default)
-            )
-        }
-      } else ElasticSuccess(true)
+class DqlRouterExecutor(
+  searchExec: SearchExecutor,
+  pipelineExec: PipelineExecutor,
+  tableExec: TableExecutor,
+  watcherExec: WatcherExecutor,
+  policyExec: EnrichPolicyExecutor
+) extends Executor[DqlStatement] {
 
-    val finalPipelineCreateOrUpdate: ElasticResult[Boolean] =
-      if (diff.finalPipeline.nonEmpty) {
-        newSchema.finalPipelineName match {
-          case Some(pipelineName) =>
-            logger.info(
-              s"🔧 Updating final ingesting pipeline for index $indexName to $pipelineName."
-            )
-            api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Final))
-          case None =>
-            val pipelineName = newSchema.finalPipeline.name
-            api.pipeline(
-              diff.createPipeline(pipelineName, IngestPipelineType.Final)
-            )
-        }
-      } else ElasticSuccess(true)
+  override def execute(
+    statement: DqlStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = statement match {
 
-    for {
-      _    <- migrate.toEither
-      _    <- defaultPipelineCreateOrUpdate.toEither
-      last <- finalPipelineCreateOrUpdate.toEither
-    } yield last
+    case s: SearchStatement       => searchExec.execute(s)
+    case p: PipelineStatement     => pipelineExec.execute(p)
+    case t: TableStatement        => tableExec.execute(t)
+    case w: WatcherStatement      => watcherExec.execute(w)
+    case e: EnrichPolicyStatement => policyExec.execute(e)
+
+    case _ =>
+      Future.successful(
+        ElasticFailure(
+          ElasticError(s"Unsupported DQL statement: $statement", statusCode = Some(400))
+        )
+      )
   }
 }
 
 class DdlRouterExecutor(
   pipelineExec: PipelineExecutor,
-  tableExec: TableExecutor
+  tableExec: TableExecutor,
+  watcherExec: WatcherExecutor,
+  policyExec: EnrichPolicyExecutor
 ) extends Executor[DdlStatement] {
 
   override def execute(
     statement: DdlStatement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = statement match {
 
-    case p: PipelineStatement => pipelineExec.execute(p)
-    case t: TableStatement    => tableExec.execute(t)
+    case p: PipelineStatement     => pipelineExec.execute(p)
+    case t: TableStatement        => tableExec.execute(t)
+    case w: WatcherStatement      => watcherExec.execute(w)
+    case e: EnrichPolicyStatement => policyExec.execute(e)
 
     case _ =>
       Future.successful(
@@ -1155,17 +1616,9 @@ class DdlRouterExecutor(
 }
 
 trait GatewayApi extends ElasticClientHelpers {
-  _: IndicesApi
-    with PipelineApi
-    with MappingApi
-    with SettingsApi
-    with AliasApi
-    with TemplateApi
-    with SearchApi
-    with ScrollApi
-    with VersionApi =>
+  self: ElasticClientApi =>
 
-  lazy val dqlExecutor = new DqlExecutor(
+  lazy val searchExecutor = new SearchExecutor(
     api = this,
     logger = logger
   )
@@ -1185,9 +1638,29 @@ trait GatewayApi extends ElasticClientHelpers {
     logger = logger
   )
 
+  lazy val watcherExecutor = new WatcherExecutor(
+    api = this,
+    logger = logger
+  )
+
+  lazy val policyExecutor = new EnrichPolicyExecutor(
+    api = this,
+    logger = logger
+  )
+
+  lazy val dqlExecutor = new DqlRouterExecutor(
+    searchExec = searchExecutor,
+    pipelineExec = pipelineExecutor,
+    tableExec = tableExecutor,
+    watcherExec = watcherExecutor,
+    policyExec = policyExecutor
+  )
+
   lazy val ddlExecutor = new DdlRouterExecutor(
     pipelineExec = pipelineExecutor,
-    tableExec = tableExecutor
+    tableExec = tableExecutor,
+    watcherExec = watcherExecutor,
+    policyExec = policyExecutor
   )
 
   // ========================================================================
@@ -1255,29 +1728,38 @@ trait GatewayApi extends ElasticClientHelpers {
   def run(
     statement: Statement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
-    statement match {
+    implicit val ec: ExecutionContext = system.dispatcher
 
-      case dql: DqlStatement =>
-        dqlExecutor.execute(dql)
+    // ✅ TRY EXTENSIONS FIRST
+    extensionRegistry.findHandler(statement) match {
+      case Some(extension) =>
+        logger.info(s"🔌 Routing to extension: ${extension.extensionName}")
+        extension.execute(statement, self) // ✅ Pass full client API
 
-      // handle DML statements
-      case dml: DmlStatement =>
-        dmlExecutor.execute(dml)
+      case None =>
+        // ✅ FALLBACK TO STANDARD EXECUTORS
+        statement match {
+          case dql: DqlStatement =>
+            logger.debug("🔧 Executing DQL with base executor")
+            dqlExecutor.execute(dql)
 
-      // handle DDL statements
-      case ddl: DdlStatement =>
-        ddlExecutor.execute(ddl)
+          case dml: DmlStatement =>
+            logger.debug("🔧 Executing DML with base executor")
+            dmlExecutor.execute(dml)
 
-      case _ =>
-        // unsupported SQL statement
-        val error =
-          ElasticError(
-            message = s"Unsupported SQL statement: $statement",
-            statusCode = Some(400),
-            operation = Some("schema")
-          )
-        logger.error(s"❌ ${error.message}")
-        Future.successful(ElasticFailure(error))
+          case ddl: DdlStatement =>
+            logger.debug("🔧 Executing DDL with base executor")
+            ddlExecutor.execute(ddl)
+
+          case _ =>
+            val error = ElasticError(
+              message = s"Unsupported SQL statement: $statement",
+              statusCode = Some(400),
+              operation = Some("schema")
+            )
+            logger.error(s"❌ ${error.message}")
+            Future.successful(ElasticFailure(error))
+        }
     }
   }
 

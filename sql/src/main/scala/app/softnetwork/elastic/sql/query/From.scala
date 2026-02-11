@@ -16,17 +16,20 @@
 
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.operator.{AND, EQ}
 import app.softnetwork.elastic.sql.{
   asString,
   Alias,
   Expr,
   Identifier,
   Source,
+  Token,
   TokenRegex,
   Updateable
 }
 
 import scala.annotation.tailrec
+import scala.collection.immutable.ListMap
 
 case object From extends Expr("FROM") with TokenRegex
 
@@ -44,9 +47,99 @@ case object CrossJoin extends Expr("CROSS") with JoinType
 
 case object On extends Expr("ON") with TokenRegex
 
+case class JoinKey(table: String, tableAlias: String, field: String) extends Token {
+  def sql: String = s"$tableAlias.$field"
+  lazy val key: String = s"${table}_$field"
+}
+
+object JoinKey {
+  def apply(identifier: Identifier): Option[JoinKey] = {
+    identifier.table match {
+      case Some(ta) if identifier.name.nonEmpty =>
+        Some(JoinKey(ta, identifier.tableAlias.getOrElse(ta), identifier.name))
+      case _ => None
+    }
+  }
+}
+
+case class JoinKeyMatch(left: JoinKey, right: JoinKey) extends Token {
+  def sql: String = s"${left.sql} = ${right.sql}"
+
+  lazy val joinKeys: Seq[JoinKey] = Seq(left, right)
+}
+
+object JoinKeyMatch {
+  def apply(expression: Expression): Option[JoinKeyMatch] = {
+    if (expression.operator != EQ) return None
+    (expression.identifier, expression.maybeValue) match {
+      case (leftId: Identifier, Some(rightId: Identifier)) =>
+        (JoinKey(leftId), JoinKey(rightId)) match {
+          case (Some(leftKey), Some(rightKey)) =>
+            Some(JoinKeyMatch(leftKey, rightKey))
+          case _ => None
+        }
+      case _ => None
+    }
+  }
+}
+
 case class On(criteria: Criteria) extends Updateable {
   override def sql: String = s" $On $criteria"
   def update(request: SingleSearch): On = this.copy(criteria = criteria.update(request))
+
+  private def extractJoinKeyMatches(criteria: Criteria): Seq[JoinKeyMatch] = {
+    criteria match {
+      case e: Expression if e.operator == EQ => JoinKeyMatch(e).toSeq
+      case p: Predicate if p.operator == AND =>
+        extractJoinKeyMatches(p.leftCriteria) ++ extractJoinKeyMatches(p.rightCriteria)
+      case _ => Seq.empty
+    }
+  }
+
+  /* Extracted join keys from the ON criteria */
+  lazy val joinKeyMatches: Seq[JoinKeyMatch] = extractJoinKeyMatches(criteria)
+
+  private def validateOnCriteria(criteria: Criteria): Either[String, Unit] = {
+    criteria match {
+      case e: Expression if e.operator == EQ =>
+        if (e.identifier.name.isEmpty) Left(s"ON clause $this identifier cannot be empty")
+        else if (e.identifier.functions.nonEmpty)
+          Left(s"ON clause $this cannot use functions in equality expressions")
+        else if (e.maybeNot.isDefined)
+          Left(s"ON clause $this cannot use NOT operator in equality expressions")
+        else if (e.maybeValue.isEmpty)
+          Left(s"ON clause $this equality expressions must compare two identifiers")
+        else {
+          e.maybeValue.get match {
+            case id: Identifier =>
+              if (id.name.isEmpty)
+                Left(s"ON clause $this identifier cannot be empty")
+              else if (id.functions.nonEmpty)
+                Left(s"ON clause $this cannot use functions in equality expressions")
+              else Right(())
+            case _ => Left(s"ON clause $this equality expressions must compare two identifiers")
+          }
+        }
+      case p: Predicate =>
+        p.operator match {
+          case AND =>
+            for {
+              _ <- validateOnCriteria(p.leftCriteria)
+              _ <- validateOnCriteria(p.rightCriteria)
+            } yield ()
+          case _ => Left(s"ON clause $this must use AND predicate operator")
+        }
+      case _ => Left(s"ON clause $this must use either equality operator or AND predicate")
+    }
+  }
+
+  override def validate(): Either[String, Unit] = {
+    for {
+      _ <- super.validate()
+      _ <- criteria.validate()
+      _ <- validateOnCriteria(criteria)
+    } yield ()
+  }
 }
 
 case object Join extends Expr("JOIN") with TokenRegex
@@ -57,7 +150,7 @@ sealed trait Join extends Updateable {
   def on: Option[On]
   def alias: Option[Alias]
   override def sql: String =
-    s" ${asString(joinType)} $Join $source${asString(on)}${asString(alias)}"
+    s" ${asString(joinType)} $Join $source${asString(alias)}${asString(on)}"
 
   override def update(request: SingleSearch): Join
 
@@ -136,6 +229,36 @@ case class Unnest(
 
 }
 
+case class StandardJoin(
+  source: Source,
+  joinType: Option[JoinType], // INNER JOIN by default
+  on: Option[On],
+  alias: Option[Alias] = None
+) extends Join {
+  override def update(request: SingleSearch): StandardJoin = {
+    val updated = this.copy(
+      source = source.update(request),
+      on = on.map(_.update(request))
+    )
+    updated
+  }
+
+  override def validate(): Either[String, Unit] = {
+    for {
+      _ <- joinType match {
+        case Some(InnerJoin | LeftJoin) => Right(())
+        case None                       => Right(()) // by default INNER JOIN
+        case _ => Left(s"Standard JOIN $this requires an INNER (default) or LEFT JOIN type")
+      }
+      _ <- on match {
+        case Some(o) => o.validate()
+        case None    => Left(s"Standard JOIN $this requires an ON clause")
+      }
+      _ <- super.validate()
+    } yield ()
+  }
+}
+
 case class Table(name: String, tableAlias: Option[Alias] = None, joins: Seq[Join] = Nil)
     extends Source {
   override def sql: String = s"$name${asString(tableAlias)} ${joins.map(_.sql).mkString(" ")}".trim
@@ -153,38 +276,62 @@ case class Table(name: String, tableAlias: Option[Alias] = None, joins: Seq[Join
         case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
       }
     } yield ()
+
+  lazy val joinedTables: Seq[String] = joins.collect { case sj: StandardJoin =>
+    sj.source.name
+  }
+
+  lazy val enrichmentRequired: Boolean = joinedTables.nonEmpty
+
 }
 
 case class From(tables: Seq[Table]) extends Updateable {
   override def sql: String = s" $From ${tables.map(_.sql).mkString(",")}"
-  lazy val unnests: Seq[Unnest] = tables
-    .map(_.joins)
-    .collect { case j =>
-      j.collect { case u: Unnest => u }
-    }
-    .flatten
+  lazy val unnests: Seq[Unnest] = joins.collect { case u: Unnest => u }
 
-  lazy val tableAliases: Map[String, String] = tables
-    .flatMap((table: Table) =>
-      table.tableAlias match {
-        case Some(alias) if alias.alias.nonEmpty => Some(table.name -> alias.alias)
-        case _                                   => Some(table.name -> table.name)
-      }
-    )
-    .toMap ++ unnestAliases.map(unnest => unnest._2._1 -> unnest._1)
+  lazy val tableAliases: ListMap[String, String] = ListMap(
+    tables
+      .flatMap((table: Table) =>
+        table.tableAlias match {
+          case Some(alias) if alias.alias.nonEmpty => Some(table.name -> alias.alias)
+          case _                                   => Some(table.name -> table.name)
+        }
+      ): _*
+  ) ++ unnestAliases.map(unnest => unnest._2._1 -> unnest._1) ++ joinAliases.map(join =>
+    join._2._1 -> join._1
+  )
 
-  lazy val unnestAliases: Map[String, (String, Option[Limit])] = unnests
-    .map(u => // extract unnest info
-      (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
-    )
-    .toMap
+  lazy val aliasesToTable: ListMap[String, String] = tableAliases.map(_.swap)
+
+  lazy val joins: Seq[Join] = tables.flatMap(_.joins)
+
+  lazy val joinAliases: ListMap[String, (String, Option[On])] = ListMap(
+    joins.collect { case sj: StandardJoin =>
+      (
+        sj.alias
+          .map(_.alias)
+          .getOrElse(
+            sj.source.name
+          ),
+        (sj.source.name, sj.on)
+      )
+    }: _*
+  )
+
+  lazy val unnestAliases: ListMap[String, (String, Option[Limit])] = ListMap(
+    unnests
+      .map(u => // extract unnest info
+        (u.alias.map(_.alias).getOrElse(u.name), (u.name, u.limit))
+      ): _*
+  )
+
   def update(request: SingleSearch): From =
     this.copy(tables = tables.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = {
     if (tables.isEmpty) {
       Left("At least one table is required in FROM clause")
-    } else if (tables.filter(_.joins.nonEmpty).size > 1) {
+    } else if (tables.count(_.joins.nonEmpty) > 1) {
       Left("Only one table with joins is supported in FROM clause")
     } else {
       for {
@@ -197,6 +344,10 @@ case class From(tables: Seq[Table]) extends Updateable {
   }
 
   lazy val mainTable: Table = tables.head
+
+  lazy val joinedTables: Seq[String] = tables.flatMap(_.joinedTables)
+
+  lazy val enrichmentRequired: Boolean = joinedTables.nonEmpty
 }
 
 case class NestedElement(

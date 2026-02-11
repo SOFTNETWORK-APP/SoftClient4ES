@@ -93,4 +93,29 @@ object Pipeline {
       result
     }
   }
+
+  case class List() extends AbstractAction[JestResult] {
+
+    override def getRestMethodName: String = "GET"
+
+    override def getURI(elasticsearchVersion: ElasticsearchVersion): String =
+      "/_ingest/pipeline"
+
+    override def createNewElasticSearchResult(
+      json: String,
+      statusCode: Int,
+      reasonPhrase: String,
+      gson: Gson
+    ): JestResult = {
+      val result = new JestResult(gson)
+      result.setResponseCode(statusCode)
+      result.setSucceeded(statusCode == 200 || statusCode == 201 || statusCode == 404)
+      if (statusCode != 404) {
+        Option(json).foreach(result.setJsonString)
+      }
+      Option(reasonPhrase).foreach(result.setErrorMessage)
+      result
+    }
+  }
+
 }

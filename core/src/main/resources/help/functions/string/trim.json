@@ -1,0 +1,31 @@
+{
+  "name": "TRIM",
+  "category": "String",
+  "shortDescription": "Remove leading/trailing whitespace",
+  "syntax": [
+    "TRIM(string)"
+  ],
+  "description": "Removes leading and/or trailing whitespace from a string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to trim",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "VARCHAR",
+  "examples": [
+    {
+      "title": "Trim whitespace",
+      "description": "Remove leading/trailing spaces",
+      "sql": "SELECT TRIM(name) as clean_name FROM users"
+    }
+  ],
+  "notes": [
+    "Removes both leading and trailing whitespace"
+  ],
+  "seeAlso": ["LTRIM", "RTRIM", "REPLACE"],
+  "aliases": []
+}

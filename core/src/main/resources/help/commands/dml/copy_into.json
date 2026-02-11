@@ -1,0 +1,73 @@
+{
+  "name": "COPY INTO",
+  "category": "DML",
+  "shortDescription": "Load data from a file into a table",
+  "syntax": [
+    "COPY INTO table_name",
+    "FROM 'file_path'",
+    "[FILE_FORMAT = {PARQUET | JSON | JSON_ARRAY | DELTA_LAKE}]",
+    "[ON CONFLICT DO {NOTHING | UPDATE}]"
+  ],
+  "description": "Bulk load data from a file into an Elasticsearch index. Supports JSON Lines (JSONL), JSON arrays, and CSV formats. The file format is auto-detected from extension if not specified.",
+  "clauses": [
+    {
+      "name": "FROM",
+      "description": "Path to the source file (local filesystem)",
+      "optional": false
+    },
+    {
+      "name": "FILE_FORMAT",
+      "description": "Format of the source file",
+      "optional": true,
+      "variants": ["JSONL (default for .jsonl)", "JSON_ARRAY (default for .json)", "CSV (default for .csv)"]
+    },
+    {
+      "name": "ON CONFLICT DO NOTHING",
+      "description": "Skip documents with duplicate IDs",
+      "optional": true
+    },
+    {
+      "name": "ON CONFLICT DO UPDATE",
+      "description": "Update documents with duplicate IDs (upsert)",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Load PARQUET file",
+      "description": "Load PARQUET file",
+      "sql": "COPY INTO users FROM '/data/users.parquet' FILE_FORMAT = PARQUET"
+    },
+    {
+      "title": "Load JSONL file",
+      "description": "Load JSON Lines file (one JSON per line)",
+      "sql": "COPY INTO users FROM '/data/users.jsonl'"
+    },
+    {
+      "title": "Load JSON array",
+      "description": "Load file containing JSON array",
+      "sql": "COPY INTO products FROM '/data/products.json' FILE_FORMAT = JSON_ARRAY"
+    },
+    {
+      "title": "Load with upsert",
+      "description": "Load and update existing documents",
+      "sql": "COPY INTO inventory\nFROM '/data/stock_update.jsonl'\nON CONFLICT DO UPDATE"
+    },
+    {
+      "title": "Load DELTA_LAKE",
+      "description": "Load data from a Delta Lake table (experimental)",
+      "sql": "COPY INTO employees FROM '/data/delta-timetravel' FILE_FORMAT = DELTA_LAKE"
+    }
+  ],
+  "notes": [
+    "File path must be accessible from the server",
+    "Large files are processed in batches for efficiency",
+    "Document IDs are determined by PRIMARY KEY if defined"
+  ],
+  "limitations": [
+    "Only local file paths supported (no URLs)"
+  ],
+  "seeAlso": ["INSERT"],
+  "minVersion": null,
+  "aliases": []
+}

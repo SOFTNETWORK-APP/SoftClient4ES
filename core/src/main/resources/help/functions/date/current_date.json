@@ -1,0 +1,30 @@
+{
+  "name": "CURRENT_DATE",
+  "category": "Date/Time",
+  "shortDescription": "Get current date",
+  "syntax": [
+    "CURRENT_DATE",
+    "CURRENT_DATE()"
+  ],
+  "description": "Returns the current date (without time) in UTC.",
+  "parameters": [],
+  "returnType": "DATE",
+  "examples": [
+    {
+      "title": "Get today's date",
+      "description": "Use in query",
+      "sql": "SELECT CURRENT_DATE as today"
+    },
+    {
+      "title": "Filter by today",
+      "description": "Get today's records",
+      "sql": "SELECT * FROM events WHERE event_date = CURRENT_DATE"
+    }
+  ],
+  "notes": [
+    "Returns date in UTC timezone",
+    "Parentheses are optional"
+  ],
+  "seeAlso": ["CURRENT_TIMESTAMP", "NOW", "TODAY"],
+  "aliases": ["CURDATE"]
+}

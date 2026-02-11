@@ -1,0 +1,24 @@
+{
+  "name": "SHOW PIPELINE",
+  "category": "DQL",
+  "shortDescription": "Display pipeline details",
+  "syntax": [
+    "SHOW PIPELINE pipeline_name"
+  ],
+  "description": "Display detailed information about an ingest pipeline including all processors.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show pipeline details",
+      "description": "Display pipeline processors",
+      "sql": "SHOW PIPELINE user_pipeline"
+    }
+  ],
+  "notes": [
+    "Shows all processors in execution order"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW PIPELINES", "SHOW CREATE PIPELINE", "CREATE PIPELINE"],
+  "minVersion": null,
+  "aliases": []
+}

@@ -1,0 +1,38 @@
+{
+  "name": "LENGTH",
+  "category": "String",
+  "shortDescription": "Get string length",
+  "syntax": [
+    "LENGTH(string)",
+    "LEN(string)"
+  ],
+  "description": "Returns the number of characters in a string.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "String to measure",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get length",
+      "description": "Check string length",
+      "sql": "SELECT LENGTH(name) as name_length FROM users"
+    },
+    {
+      "title": "Filter by length",
+      "description": "Find long descriptions",
+      "sql": "SELECT * FROM products WHERE LENGTH(description) > 100"
+    }
+  ],
+  "notes": [
+    "Returns 0 for empty string",
+    "Returns NULL for NULL input"
+  ],
+  "seeAlso": ["SUBSTRING", "TRIM"],
+  "aliases": ["LEN"]
+}

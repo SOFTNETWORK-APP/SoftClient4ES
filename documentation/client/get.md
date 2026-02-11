@@ -16,7 +16,6 @@ The **Get API** provides methods to retrieve documents from Elasticsearch by the
 - **Logging integration** for debugging and monitoring
 
 **Dependencies:**
-- Requires `SerializationApi` for JSON conversion
 - Requires `ElasticClientHelpers` for validation utilities
 
 ---

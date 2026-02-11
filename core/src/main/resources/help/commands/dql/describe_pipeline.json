@@ -1,0 +1,30 @@
+{
+  "name": "DESCRIBE PIPELINE",
+  "category": "DQL",
+  "shortDescription": "List columns and their properties",
+  "syntax": [
+    "DESCRIBE PIPELINE table_name",
+    "DESC PIPELINE table_name"
+  ],
+  "description": "Display a tabular list of all processors in a pipeline with their properties.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Describe a pipeline",
+      "description": "List all processors",
+      "sql": "DESCRIBE PIPELINE users"
+    },
+    {
+      "title": "Short form",
+      "description": "Using DESC alias",
+      "sql": "DESC PIPELINE users"
+    }
+  ],
+  "notes": [
+    "Returns: processor_type, description, field, ignore_failure, options"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW PIPELINE", "SHOW PIPELINES"],
+  "minVersion": null,
+  "aliases": ["DESC PIPELINE"]
+}

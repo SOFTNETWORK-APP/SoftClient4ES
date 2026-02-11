@@ -1,0 +1,23 @@
+[
+  "abs.json",
+  "ceil.json",
+  "floor.json",
+  "round.json",
+  "sqrt.json",
+  "pow.json",
+  "exp.json",
+  "log.json",
+  "log10.json",
+  "sign.json",
+  "sin.json",
+  "cos.json",
+  "tan.json",
+  "asin.json",
+  "acos.json",
+  "atan.json",
+  "atan2.json",
+  "degrees.json",
+  "radians.json",
+  "pi.json",
+  "random.json"
+]

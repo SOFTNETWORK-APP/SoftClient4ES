@@ -32,4 +32,14 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
 
   def nestedElements: Seq[NestedElement] =
     criteria.map(_.nestedElements).getOrElse(Seq.empty).groupBy(_.path).map(_._2.head).toList
+
+  def script: Option[String] = criteria.flatMap { criteria =>
+    val fullScript = MetricSelectorScript
+      .metricSelector(criteria)
+      .replaceAll("1 == 1 &&", "")
+      .replaceAll("&& 1 == 1", "")
+      .replaceAll("1 == 1", "")
+      .trim
+    if (fullScript.nonEmpty) Some(fullScript) else None
+  }
 }

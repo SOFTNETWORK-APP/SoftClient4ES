@@ -1,0 +1,36 @@
+{
+  "name": "DROP ENRICH POLICY",
+  "category": "DDL",
+  "shortDescription": "Delete an enrich policy",
+  "syntax": [
+    "DROP ENRICH POLICY [IF EXISTS] policy_name"
+  ],
+  "description": "Delete an enrich policy and its associated enrich index. Pipelines using this policy will fail.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Don't raise an error if the policy doesn't exist",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Drop a policy",
+      "description": "Delete an enrich policy",
+      "sql": "DROP ENRICH POLICY old_policy"
+    },
+    {
+      "title": "Drop if exists",
+      "description": "Safely drop a policy",
+      "sql": "DROP ENRICH POLICY IF EXISTS temporary_policy"
+    }
+  ],
+  "notes": [
+    "Associated enrich index is also deleted",
+    "Pipelines using this policy will fail until updated"
+  ],
+  "limitations": [],
+  "seeAlso": ["CREATE ENRICH POLICY", "EXECUTE ENRICH POLICY"],
+  "minVersion": "7.5",
+  "aliases": []
+}

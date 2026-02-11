@@ -1,0 +1,24 @@
+{
+  "name": "SHOW PIPELINES",
+  "category": "DQL",
+  "shortDescription": "List all ingest pipelines",
+  "syntax": [
+    "SHOW PIPELINES"
+  ],
+  "description": "List all Elasticsearch ingest pipelines in the cluster.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show all pipelines",
+      "description": "List all ingest pipelines",
+      "sql": "SHOW PIPELINES"
+    }
+  ],
+  "notes": [
+    "Includes both user-created and table-generated pipelines"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW PIPELINE", "CREATE PIPELINE"],
+  "minVersion": null,
+  "aliases": []
+}

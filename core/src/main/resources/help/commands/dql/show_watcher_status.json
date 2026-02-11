@@ -1,0 +1,24 @@
+{
+  "name": "SHOW WATCHER STATUS",
+  "category": "DQL",
+  "shortDescription": "Display watcher execution status",
+  "syntax": [
+    "SHOW WATCHER STATUS watcher_name"
+  ],
+  "description": "Display the current status and health of a watcher.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show watcher status",
+      "description": "Check watcher health",
+      "sql": "SHOW WATCHER STATUS error_monitor"
+    }
+  ],
+  "notes": [
+    "Returns: id, is_healthy, is_operational, last_execution, etc."
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW WATCHERS", "CREATE WATCHER"],
+  "minVersion": null,
+  "aliases": []
+}

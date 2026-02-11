@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.bridge
 
+import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.operator.AND
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
@@ -45,7 +46,10 @@ case class ElasticBridge(filter: ElasticFilter) {
   def query(
     innerHitsNames: Set[String] = Set.empty,
     currentQuery: Option[ElasticBoolQuery]
-  )(implicit timestamp: Long): Query = {
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
     filter match {
       case boolQuery: ElasticBoolQuery =>
         import boolQuery._

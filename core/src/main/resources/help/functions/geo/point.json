@@ -1,0 +1,49 @@
+{
+  "name": "POINT",
+  "category": "Geospatial",
+  "shortDescription": "Create a geographic point",
+  "syntax": [
+    "POINT(longitude, latitude)"
+  ],
+  "description": "Creates a geographic point from longitude and latitude coordinates.",
+  "parameters": [
+    {
+      "name": "longitude",
+      "type": "DOUBLE",
+      "description": "Longitude (-180 to 180)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "latitude",
+      "type": "DOUBLE",
+      "description": "Latitude (-90 to 90)",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "GEO_POINT",
+  "examples": [
+    {
+      "title": "Create point",
+      "description": "Paris coordinates",
+      "sql": "SELECT POINT(2.3522, 48.8566) as paris_location"
+    },
+    {
+      "title": "Use in distance calculation",
+      "description": "Distance from Paris",
+      "sql": "SELECT name, ST_DISTANCE(location, POINT(2.3522, 48.8566)) as distance_from_paris\nFROM cities"
+    },
+    {
+      "title": "Insert geo point",
+      "description": "Store location",
+      "sql": "INSERT INTO stores (name, location) VALUES ('Store A', POINT(-73.9857, 40.7484))"
+    }
+  ],
+  "notes": [
+    "Longitude is first, latitude is second (GeoJSON order)",
+    "Coordinates use WGS84 (EPSG:4326) reference system"
+  ],
+  "seeAlso": ["ST_DISTANCE", "ST_WITHIN", "GEO_BOUNDING_BOX"],
+  "aliases": []
+}

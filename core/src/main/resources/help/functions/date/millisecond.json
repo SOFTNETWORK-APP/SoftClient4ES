@@ -1,0 +1,31 @@
+{
+  "name": "MILLISECOND",
+  "category": "Date/Time",
+  "shortDescription": "Extract millisecond from timestamp",
+  "syntax": [
+    "MILLISECOND(timestamp)"
+  ],
+  "description": "Extracts the millisecond component (0-999) from a timestamp.",
+  "parameters": [
+    {
+      "name": "timestamp",
+      "type": "TIMESTAMP",
+      "description": "Timestamp to extract millisecond from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get millisecond",
+      "description": "Extract millisecond from timestamp",
+      "sql": "SELECT MILLISECOND(created_at) as ms FROM logs"
+    }
+  ],
+  "notes": [
+    "Returns 0-999"
+  ],
+  "seeAlso": ["SECOND", "MICROSECOND", "NANOSECOND"],
+  "aliases": []
+}

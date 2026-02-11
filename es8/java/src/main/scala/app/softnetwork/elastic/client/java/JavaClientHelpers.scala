@@ -16,15 +16,12 @@
 
 package app.softnetwork.elastic.client.java
 
-import app.softnetwork.elastic.client.{ElasticClientHelpers, SerializationApi}
+import app.softnetwork.elastic.client.ElasticClientHelpers
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
 
 import scala.util.{Failure, Success, Try}
 
-trait JavaClientHelpers
-    extends ElasticClientHelpers
-    with JavaClientConversion
-    with SerializationApi {
+trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
   _: JavaClientCompanion =>
 
   // ========================================================================
@@ -95,7 +92,7 @@ trait JavaClientHelpers
         val message =
           s"Elasticsearch error during $operation: ${errorType.getOrElse("unknown")} - ${reason
             .getOrElse(ex.getMessage)}"
-        logger.error(s"$message$indexStr", ex)
+        logger.warn(s"$message$indexStr")
 
         ElasticResult.failure(
           ElasticError(
@@ -139,7 +136,7 @@ trait JavaClientHelpers
             ElasticError(
               message = s"Failed to transform result: ${ex.getMessage}",
               cause = Some(ex),
-              statusCode = None,
+              statusCode = Some(500),
               operation = Some(operation)
             )
           )

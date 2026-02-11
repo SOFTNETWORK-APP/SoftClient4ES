@@ -1,0 +1,102 @@
+{
+  "name": "CREATE PIPELINE",
+  "category": "DDL",
+  "shortDescription": "Create an ingest pipeline for document processing",
+  "syntax": [
+    "CREATE [OR REPLACE] PIPELINE [IF NOT EXISTS] pipeline_name",
+    "WITH PROCESSORS (",
+    "  processor_definition,",
+    "  ...",
+    ")",
+    "",
+    "-- Processor types:",
+    "SET (field = 'name', value = 'value', [if = 'condition'], [ignore_failure = true])",
+    "SCRIPT (source = 'code', lang = 'painless', [params = (...)])",
+    "DATE_INDEX_NAME (field = 'date_field', index_name_prefix = 'prefix-', date_rounding = 'M')",
+    "REMOVE (field = 'field_name')",
+    "RENAME (field = 'old_name', target_field = 'new_name')",
+    "ENRICH (policy_name = 'policy', field = 'match_field', target_field = 'enriched')",
+    "... (refer to documentation for full list of processors and syntax)"
+  ],
+  "description": "Create an Elasticsearch ingest pipeline that processes documents before indexing. Pipelines can transform, enrich, and validate data.",
+  "clauses": [
+    {
+      "name": "OR REPLACE",
+      "description": "Replace existing pipeline if it exists",
+      "optional": true
+    },
+    {
+      "name": "IF NOT EXISTS",
+      "description": "Only create if pipeline doesn't exist",
+      "optional": true
+    },
+    {
+      "name": "SET",
+      "description": "Set a field value (static or dynamic)",
+      "optional": true
+    },
+    {
+      "name": "SCRIPT",
+      "description": "Execute Painless script for complex transformations",
+      "optional": true
+    },
+    {
+      "name": "DATE_INDEX_NAME",
+      "description": "Route documents to time-based indices",
+      "optional": true
+    },
+    {
+      "name": "REMOVE",
+      "description": "Remove a field from the document",
+      "optional": true
+    },
+    {
+      "name": "RENAME",
+      "description": "Rename a field",
+      "optional": true
+    },
+    {
+      "name": "ENRICH",
+      "description": "Enrich document with data from lookup index (requires Elasticsearch version 7.5+)",
+      "optional": true
+    },
+    {
+      "name": "Any other processor type",
+      "description": "Refer to documentation for specific processor syntax and behavior and ensure it is supported in your Elasticsearch version",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Simple pipeline with SET",
+      "description": "Set default values and timestamps",
+      "sql": "CREATE PIPELINE default_values\nWITH PROCESSORS (\n  SET (field = 'status', value = 'active', if = 'ctx.status == null'),\n  SET (field = 'created_at', value = '_ingest.timestamp')\n)"
+    },
+    {
+      "title": "Pipeline with script",
+      "description": "Compute derived fields",
+      "sql": "CREATE PIPELINE age_calculator\nWITH PROCESSORS (\n  SCRIPT (\n    lang = 'painless',\n    source = 'ctx.age = ChronoUnit.YEARS.between(ctx.birthdate, ZonedDateTime.now())',\n    ignore_failure = true\n  )\n)"
+    },
+    {
+      "title": "Date-based routing",
+      "description": "Route logs to monthly indices",
+      "sql": "CREATE PIPELINE log_router\nWITH PROCESSORS (\n  DATE_INDEX_NAME (\n    field = 'timestamp',\n    index_name_prefix = 'logs-',\n    date_formats = ['yyyy-MM'],\n    date_rounding = 'M'\n  )\n)"
+    },
+    {
+      "title": "Data enrichment",
+      "description": "Enrich with user data",
+      "sql": "CREATE PIPELINE user_enrichment\nWITH PROCESSORS (\n  ENRICH (\n    policy_name = 'user_policy',\n    field = 'user_id',\n    target_field = 'user_info'\n  )\n)"
+    }
+  ],
+  "notes": [
+    "Processors execute in order",
+    "Use ignore_failure = true for optional processing",
+    "Pipelines are associated with tables automatically when using CREATE TABLE",
+    "Scripts have access to ctx (document) and _ingest (metadata)",
+    "Enrich policies must be created separately using CREATE ENRICH POLICY and executed to populate the lookup index"
+  ],
+  "limitations": [],
+  "seeAlso": ["ALTER PIPELINE", "DROP PIPELINE", "SHOW PIPELINE", "CREATE ENRICH POLICY"],
+  "minVersion": null,
+  "aliases": []
+}

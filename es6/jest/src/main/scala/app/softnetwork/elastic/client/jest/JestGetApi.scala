@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client.jest
 
 import app.softnetwork.elastic.client.result.ElasticResult
-import app.softnetwork.elastic.client.{result, GetApi, SerializationApi}
+import app.softnetwork.elastic.client.{result, GetApi}
 import io.searchbox.core.Get
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -27,7 +27,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   [[GetApi]] for generic API documentation
   */
 trait JestGetApi extends GetApi with JestClientHelpers {
-  _: JestClientCompanion with SerializationApi =>
+  _: JestClientCompanion =>
 
   /** Get a document by id.
     * @see

@@ -1,0 +1,31 @@
+{
+  "name": "COS",
+  "category": "Numeric",
+  "shortDescription": "Calculate cosine",
+  "syntax": [
+    "COS(angle)"
+  ],
+  "description": "Returns the cosine of an angle in radians.",
+  "parameters": [
+    {
+      "name": "angle",
+      "type": "DOUBLE",
+      "description": "Angle in radians",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Calculate cosine",
+      "description": "Cos of 0 degrees",
+      "sql": "SELECT COS(0) as cos_0"
+    }
+  ],
+  "notes": [
+    "Input must be in radians"
+  ],
+  "seeAlso": ["SIN", "TAN", "ACOS"],
+  "aliases": []
+}

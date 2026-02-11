@@ -1,0 +1,24 @@
+{
+  "name": "SHOW ENRICH POLICIES",
+  "category": "DQL",
+  "shortDescription": "List all enrich policies",
+  "syntax": [
+    "SHOW ENRICH POLICIES"
+  ],
+  "description": "List all Elasticsearch enrich policies in the cluster.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show all policies",
+      "description": "List all enrich policies",
+      "sql": "SHOW ENRICH POLICIES"
+    }
+  ],
+  "notes": [
+    "Requires Elasticsearch 7.5+"
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW ENRICH POLICY", "CREATE ENRICH POLICY"],
+  "minVersion": "7.5",
+  "aliases": []
+}

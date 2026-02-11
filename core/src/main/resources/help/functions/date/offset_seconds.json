@@ -1,0 +1,29 @@
+{
+  "name": "OFFSET_SECONDS",
+  "category": "Date/Time",
+  "shortDescription": "Extract Timezone offset in seconds",
+  "syntax": [
+    "OFFSET_SECONDS(date)"
+  ],
+  "description": "Extracts the Timezone offset in seconds for a date.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract timezone offset from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Get Timezone offset in seconds",
+      "description": "Extract timezone offset in seconds from date/timestamp",
+      "sql": "SELECT OFFSET_SECONDS(created_at) as offset FROM events"
+    }
+  ],
+  "notes": [],
+  "seeAlso": ["HOUR", "MINUTE", "MILLISECOND", "SECOND"],
+  "aliases": []
+}

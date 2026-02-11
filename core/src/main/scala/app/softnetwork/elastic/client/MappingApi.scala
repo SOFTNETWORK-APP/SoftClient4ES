@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.schema.IndexMappings
 import app.softnetwork.elastic.sql.schema.TableAlias
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
@@ -152,6 +153,22 @@ trait MappingApi extends ElasticClientHelpers {
     logger.debug(s"Getting mapping for index '$index'")
 
     executeGetMapping(index)
+  }
+
+  /** Get the mappings of all indices.
+    * @param indices
+    *   - optional list of index names to filter by (if empty, retrieves mappings for all indices)
+    * @return
+    *   a map of index names to their mappings
+    */
+  def allMappings(indices: Seq[String] = Seq.empty): ElasticResult[Map[String, IndexMappings]] = {
+    // Get mappings for all indices
+    executeGetAllMappings(indices.map(_.replaceAll("%", "*"))).map { mappingsMap =>
+      mappingsMap.map { case (index, mappingJson) =>
+        val indexMappings = IndexMappings(mappingJson)
+        (index, indexMappings)
+      }
+    }
   }
 
   /** Get the mapping properties of an index.
@@ -392,4 +409,8 @@ trait MappingApi extends ElasticClientHelpers {
   private[client] def executeSetMapping(index: String, mapping: String): ElasticResult[Boolean]
 
   private[client] def executeGetMapping(index: String): ElasticResult[String]
+
+  private[client] def executeGetAllMappings(
+    indices: Seq[String]
+  ): ElasticResult[Map[String, String]]
 }

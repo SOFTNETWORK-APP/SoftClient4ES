@@ -1,21 +1,13 @@
 package app.softnetwork.elastic.client
 
-import org.json4s.ext.{JavaTimeSerializers, JavaTypesSerializers, JodaTimeSerializers}
-import org.json4s.jackson.Serialization
-import org.json4s.{Formats, NoTypeHints}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 import java.time.ZonedDateTime
+import scala.collection.immutable.ListMap
 import scala.util.{Failure, Success}
 
 class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConversion {
-
-  implicit val formats: Formats =
-    Serialization.formats(NoTypeHints) ++
-    JodaTimeSerializers.all ++
-    JavaTypesSerializers.all ++
-    JavaTimeSerializers.all
 
   "elastic conversion" should "parse simple hits" in {
     val results =
@@ -51,7 +43,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         |  }
         |}""".stripMargin
 
-    parseResponse(results, Map.empty, Map.empty) match {
+    parseResponse(results, ListMap.empty, ListMap.empty) match {
       case Success(rows) =>
         rows.foreach(println)
       // Map(name -> Laptop, price -> 999.99, category -> Electronics, tags -> List(computer, portable), _id -> 1, _index -> products, _score -> 1.0)
@@ -87,8 +79,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         |}""".stripMargin
     parseResponse(
       results,
-      Map.empty,
-      Map.empty
+      ListMap.empty,
+      ListMap.empty
     ) match {
       case Success(rows) =>
         rows.foreach(println)
@@ -183,8 +175,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
 
     parseResponse(
       results,
-      Map.empty,
-      Map(
+      ListMap.empty,
+      ListMap(
         "top_products" -> ClientAggregation(
           "top_products",
           aggType = AggregationType.ArrayAgg,
@@ -290,7 +282,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |    }
                     |  }
                     |}""".stripMargin
-    parseResponse(results, Map.empty, Map.empty) match {
+    parseResponse(results, ListMap.empty, ListMap.empty) match {
       case Success(rows) =>
         rows.foreach(println)
         // Map(country -> France, country_doc_count -> 100, city -> Paris, city_doc_count -> 60, product -> Laptop, product_doc_count -> 30, total_sales -> 29997.0, avg_price -> 999.9)
@@ -337,7 +329,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
                     |    }
                     |  }
                     |}""".stripMargin
-    parseResponse(results, Map.empty, Map.empty) match {
+    parseResponse(results, ListMap.empty, ListMap.empty) match {
       case Success(rows) =>
         rows.foreach(println)
         // Map(date -> 2024-01-01T00:00:00.000Z, doc_count -> 100, total_sales -> 50000.0)
@@ -638,8 +630,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
 
     parseResponse(
       results,
-      Map.empty,
-      Map(
+      ListMap.empty,
+      ListMap(
         "employees" -> ClientAggregation(
           aggName = "employees",
           aggType = AggregationType.ArrayAgg,
@@ -1012,7 +1004,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         }
       }"""
     val aggregations =
-      Map(
+      ListMap(
         "first_in_dept_loc" -> ClientAggregation(
           aggName = "first_in_dept_loc",
           aggType = AggregationType.FirstValue,
@@ -1052,7 +1044,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
       )
     parseResponse(
       results,
-      Map.empty,
+      ListMap.empty,
       aggregations
     ) match {
       case Success(results) =>
@@ -1466,7 +1458,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         }
         """
     val aggregations =
-      Map(
+      ListMap(
         "first_salary_dept_loc" -> ClientAggregation(
           aggName = "first_salary_dept_loc",
           aggType = AggregationType.FirstValue,
@@ -1497,7 +1489,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
       )
     parseResponse(
       results,
-      Map.empty,
+      ListMap.empty,
       aggregations
     ) match {
       case Success(results) =>

@@ -86,11 +86,11 @@ trait WhereParser {
     IsNotNullExpr(i)
   }
 
-  private def eq: PackratParser[ComparisonOperator] = EQ.sql ^^ (_ => EQ)
+  def eq: PackratParser[ComparisonOperator] = EQ.sql ^^ (_ => EQ)
 
-  private def ne: PackratParser[ComparisonOperator] = NE.sql ^^ (_ => NE)
+  def ne: PackratParser[ComparisonOperator] = NE.sql ^^ (_ => NE)
 
-  private def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
+  def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   private def any_identifier: PackratParser[Identifier] =
     identifierWithArithmeticExpression |
@@ -117,16 +117,16 @@ trait WhereParser {
       GenericExpression(i, RLIKE, v, n)
     }
 
-  private def ge: PackratParser[ComparisonOperator] = GE.sql ^^ (_ => GE)
+  def ge: PackratParser[ComparisonOperator] = GE.sql ^^ (_ => GE)
 
   def gt: PackratParser[ComparisonOperator] = GT.sql ^^ (_ => GT)
 
-  private def le: PackratParser[ComparisonOperator] = LE.sql ^^ (_ => LE)
+  def le: PackratParser[ComparisonOperator] = LE.sql ^^ (_ => LE)
 
   def lt: PackratParser[ComparisonOperator] = LT.sql ^^ (_ => LT)
 
   private def comparison: PackratParser[GenericExpression] =
-    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | geo_distance | long | literal | any_identifier) ^^ {
+    not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | random | geo_distance | long | literal | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 

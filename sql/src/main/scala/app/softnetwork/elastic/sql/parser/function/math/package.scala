@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.function.math.{
   Atan2,
   Ceil,
   Cos,
+  Degrees,
   Exp,
   Floor,
   Log,
@@ -33,6 +34,7 @@ import app.softnetwork.elastic.sql.function.math.{
   MathematicalFunction,
   MathematicalFunctionWithOp,
   Pow,
+  Radians,
   Round,
   Sign,
   Sin,
@@ -79,13 +81,17 @@ package object math {
 
     private[this] def atan2: PackratParser[Trigonometric] = Atan2.regex ^^ (_ => Atan2)
 
+    private[this] def degrees: PackratParser[Trigonometric] = Degrees.regex ^^ (_ => Degrees)
+
+    private[this] def radians: PackratParser[Trigonometric] = Radians.regex ^^ (_ => Radians)
+
     def atan2_function: PackratParser[MathematicalFunction] =
       atan2 ~ start ~ (double | valueExpr) ~ separator ~ (double | valueExpr) ~ end ^^ {
         case _ ~ _ ~ y ~ _ ~ x ~ _ => Atan2(y, x)
       }
 
     def trigonometric_function: PackratParser[MathematicalFunction] =
-      atan2_function | ((sin | asin | cos | acos | tan | atan) ~ start ~ valueExpr ~ end ^^ {
+      atan2_function | ((sin | asin | cos | acos | tan | atan | degrees | radians) ~ start ~ valueExpr ~ end ^^ {
         case op ~ _ ~ v ~ _ => MathematicalFunctionWithOp(op, v)
       })
 

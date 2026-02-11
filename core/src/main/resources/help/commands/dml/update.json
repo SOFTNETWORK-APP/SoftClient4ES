@@ -1,0 +1,62 @@
+{
+  "name": "UPDATE",
+  "category": "DML",
+  "shortDescription": "Modify existing rows in a table",
+  "syntax": [
+    "UPDATE table_name",
+    "SET column1 = value1 [, column2 = value2, ...]",
+    "[WHERE condition]"
+  ],
+  "description": "Update documents in an Elasticsearch index that match the WHERE clause. Uses the update_by_query API internally. Without a WHERE clause, ALL documents will be updated.",
+  "clauses": [
+    {
+      "name": "SET",
+      "description": "Column-value pairs to update. Values can be literals or expressions.",
+      "optional": false
+    },
+    {
+      "name": "WHERE",
+      "description": "Filter condition to select documents to update",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Update single field",
+      "description": "Update one column",
+      "sql": "UPDATE users\nSET status = 'active'\nWHERE id = 1"
+    },
+    {
+      "title": "Update multiple fields",
+      "description": "Update several columns at once",
+      "sql": "UPDATE products\nSET price = price * 1.1, updated_at = CURRENT_TIMESTAMP\nWHERE category = 'Electronics'"
+    },
+    {
+      "title": "Update with expression",
+      "description": "Use calculated values",
+      "sql": "UPDATE orders\nSET total = quantity * unit_price\nWHERE total IS NULL"
+    },
+    {
+      "title": "Update nested field",
+      "description": "Update field in nested object",
+      "sql": "UPDATE users\nSET profile.verified = true\nWHERE email_confirmed = true"
+    },
+    {
+      "title": "Update with complex condition",
+      "description": "Update matching multiple criteria",
+      "sql": "UPDATE accounts\nSET status = 'inactive', deactivated_at = CURRENT_TIMESTAMP\nWHERE last_login < DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR)\n  AND status = 'active'"
+    }
+  ],
+  "notes": [
+    "Without WHERE clause, all documents will be updated",
+    "Uses Elasticsearch update_by_query API",
+    "Changes are not atomic across multiple documents",
+    "Large updates may take significant time"
+  ],
+  "limitations": [
+    "Cannot update PRIMARY KEY fields"
+  ],
+  "seeAlso": ["INSERT", "DELETE", "SELECT"],
+  "minVersion": null,
+  "aliases": []
+}

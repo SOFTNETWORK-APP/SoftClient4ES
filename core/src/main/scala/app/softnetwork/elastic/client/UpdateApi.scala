@@ -30,7 +30,7 @@ import scala.util.{Failure, Success}
 
 /** Update Management API
   */
-trait UpdateApi extends ElasticClientHelpers { _: SettingsApi with SerializationApi =>
+trait UpdateApi extends ElasticClientHelpers { _: SettingsApi =>
 
   // ========================================================================
   // PUBLIC METHODS

@@ -1,0 +1,151 @@
+{
+  "name": "CREATE TABLE",
+  "category": "DDL",
+  "shortDescription": "Create a new table (Elasticsearch index)",
+  "syntax": [
+    "CREATE [OR REPLACE] TABLE [IF NOT EXISTS] table_name (",
+    "  column_name data_type [NOT NULL] [DEFAULT value] [COMMENT 'text']",
+    "    [FIELDS (subfield_name subfield_type [OPTIONS (...)])]",
+    "    [OPTIONS (option = value, ...)]",
+    "    [SCRIPT AS (expression)],",
+    "  ...",
+    "  [PRIMARY KEY (column, ...)]",
+    ")",
+    "[PARTITIONED BY (column granularity)]",
+    "[OPTIONS (",
+    "  [settings = (setting = value, ...)],",
+    "  [mappings = (mapping = value, ...)],",
+    "  [aliases = (alias = value, ...)],",
+    ")]",
+    "",
+    "-- Or create from SELECT:",
+    "CREATE [OR REPLACE] TABLE table_name AS SELECT ..."
+  ],
+  "description": "Create a new Elasticsearch index with the specified schema. Automatically generates mappings, settings, and ingest pipeline based on column definitions. Supports complex types like STRUCT and ARRAY<STRUCT> for nested documents.",
+  "clauses": [
+    {
+      "name": "OR REPLACE",
+      "description": "Drop existing table before creating. If the table exists, it will be deleted first.",
+      "optional": true
+    },
+    {
+      "name": "IF NOT EXISTS",
+      "description": "Only create if table doesn't exist. No error if table already exists.",
+      "optional": true
+    },
+    {
+      "name": "NOT NULL",
+      "description": "Column cannot contain null values. Enforced at ingest time.",
+      "optional": true
+    },
+    {
+      "name": "DEFAULT",
+      "description": "Default value if column is not provided. Can be a literal, expression, or special value like _ingest.timestamp.",
+      "optional": true
+    },
+    {
+      "name": "COMMENT",
+      "description": "Documentation comment for the column.",
+      "optional": true
+    },
+    {
+      "name": "FIELDS",
+      "description": "Define multi-fields for text analysis (e.g., raw keyword field for a text field).",
+      "optional": true
+    },
+    {
+      "name": "OPTIONS",
+      "description": "Elasticsearch field mapping options (analyzer, fielddata, etc.).",
+      "optional": true
+    },
+    {
+      "name": "SCRIPT AS",
+      "description": "Computed column using a Painless expression. Calculated at ingest time.",
+      "optional": true
+    },
+    {
+      "name": "PRIMARY KEY",
+      "description": "Define document _id field(s). Composite keys are concatenated.",
+      "optional": true
+    },
+    {
+      "name": "PARTITIONED BY",
+      "description": "Create time-based index template. Granularity: YEAR, MONTH, WEEK, DAY.",
+      "optional": true
+    },
+    {
+      "name": "OPTIONS (settings)",
+      "description": "Elasticsearch index settings (number_of_shards, number_of_replicas, etc.).",
+      "optional": true
+    },
+    {
+      "name": "OPTIONS (mappings)",
+      "description": "Elasticsearch mapping settings (dynamic, date_detection, etc.).",
+      "optional": true
+    },
+    {
+      "name": "OPTIONS (aliases)",
+      "description": "Elasticsearch aliases associated to this index.",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Simple table",
+      "description": "Create a basic users table with primary key",
+      "sql": "CREATE TABLE users (\n  id INT NOT NULL,\n  name VARCHAR,\n  email VARCHAR,\n  PRIMARY KEY (id)\n)"
+    },
+    {
+      "title": "Table with defaults and comments",
+      "description": "Create table with default values and documentation",
+      "sql": "CREATE TABLE IF NOT EXISTS products (\n  sku KEYWORD NOT NULL COMMENT 'Product SKU',\n  name VARCHAR NOT NULL,\n  price DOUBLE DEFAULT 0.0,\n  in_stock BOOLEAN DEFAULT true,\n  created_at TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (sku)\n)"
+    },
+    {
+      "title": "Table with multi-fields",
+      "description": "Create table with text field having a keyword sub-field for sorting",
+      "sql": "CREATE TABLE articles (\n  id INT NOT NULL,\n  title VARCHAR FIELDS (\n    raw KEYWORD COMMENT 'For sorting and aggregations'\n  ) OPTIONS (analyzer = 'english'),\n  content VARCHAR OPTIONS (analyzer = 'english'),\n  PRIMARY KEY (id)\n)"
+    },
+    {
+      "title": "Table with nested struct",
+      "description": "Create table with embedded object",
+      "sql": "CREATE TABLE users (\n  id INT NOT NULL,\n  name VARCHAR,\n  profile STRUCT FIELDS (\n    bio VARCHAR,\n    website VARCHAR,\n    followers INT DEFAULT 0\n  ),\n  PRIMARY KEY (id)\n)"
+    },
+    {
+      "title": "Table with nested array",
+      "description": "Create table with array of nested documents",
+      "sql": "CREATE TABLE orders (\n  id INT NOT NULL,\n  customer_id INT,\n  items ARRAY<STRUCT> FIELDS (\n    product_id INT,\n    quantity INT,\n    price DOUBLE\n  ) OPTIONS (include_in_parent = false),\n  PRIMARY KEY (id)\n)"
+    },
+    {
+      "title": "Table with computed column",
+      "description": "Create table with script-based computed field",
+      "sql": "CREATE TABLE employees (\n  id INT NOT NULL,\n  birthdate DATE,\n  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),\n  hire_date DATE,\n  tenure INT SCRIPT AS (DATEDIFF(hire_date, CURRENT_DATE, DAY)),\n  PRIMARY KEY (id)\n)"
+    },
+    {
+      "title": "Partitioned table",
+      "description": "Create time-partitioned table for logs",
+      "sql": "CREATE TABLE logs (\n  id INT NOT NULL,\n  level KEYWORD,\n  message VARCHAR,\n  timestamp TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (id)\n) PARTITIONED BY (timestamp MONTH)"
+    },
+    {
+      "title": "Table with full options",
+      "description": "Create table with all options specified",
+      "sql": "CREATE OR REPLACE TABLE events (\n  id INT NOT NULL COMMENT 'Event ID',\n  event_type KEYWORD NOT NULL,\n  payload STRUCT FIELDS (\n    user_id INT,\n    action VARCHAR\n  ),\n  created_at TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (id)\n) PARTITIONED BY (created_at MONTH)\nOPTIONS (\n  settings = (\n    number_of_shards = 3,\n    number_of_replicas = 1\n  ),\n  mappings = (dynamic = false)\n)"
+    },
+    {
+      "title": "Create from SELECT",
+      "description": "Create table from existing data",
+      "sql": "CREATE TABLE active_users AS\nSELECT id, name, email\nFROM users\nWHERE status = 'active'"
+    }
+  ],
+  "notes": [
+    "Data types are automatically mapped to Elasticsearch field types",
+    "STRUCT creates an 'object' type, ARRAY<STRUCT> creates a 'nested' type",
+    "PRIMARY KEY generates a SET processor in the default pipeline",
+    "SCRIPT columns generate SCRIPT processors in the default pipeline",
+    "DEFAULT values generate SET processors with conditional execution",
+    "If no PRIMARY KEY is specified, an auto-generated ID field is created"
+  ],
+  "limitations": [],
+  "seeAlso": ["ALTER TABLE", "DROP TABLE", "TRUNCATE TABLE", "SHOW TABLE", "DESCRIBE TABLE"],
+  "minVersion": null,
+  "aliases": ["CREATE INDEX"]
+}

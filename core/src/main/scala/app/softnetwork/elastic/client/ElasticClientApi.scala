@@ -17,14 +17,9 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.common.ClientCompanion
-import app.softnetwork.elastic.sql.serialization.JacksonConfig
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.typesafe.config.{Config, ConfigFactory}
-import org.json4s.jackson
-import org.json4s.jackson.Serialization
 import org.slf4j.Logger
 
-import java.io.Closeable
 import scala.language.{implicitConversions, postfixOps, reflectiveCalls}
 
 /** Created by smanciot on 28/06/2018.
@@ -46,9 +41,13 @@ trait ElasticClientApi
     with RefreshApi
     with FlushApi
     with VersionApi
-    with SerializationApi
     with PipelineApi
     with TemplateApi
+    with EnrichPolicyApi
+    with TransformApi
+    with LicenseApi
+    with WatcherApi
+    with ExtensionApi
     with GatewayApi
     with ClientCompanion {
 
@@ -57,10 +56,4 @@ trait ElasticClientApi
   def config: Config = ConfigFactory.load()
 
   final lazy val elasticConfig: ElasticConfig = ElasticConfig(config)
-}
-
-trait SerializationApi {
-  implicit val serialization: Serialization.type = jackson.Serialization
-  val mapper: ObjectMapper = JacksonConfig.objectMapper
-
 }

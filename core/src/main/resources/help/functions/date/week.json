@@ -1,0 +1,38 @@
+{
+  "name": "WEEK",
+  "category": "Date/Time",
+  "shortDescription": "Extract week of year from date",
+  "syntax": [
+    "WEEK(date)",
+    "WEEKOFYEAR(date)"
+  ],
+  "description": "Returns the ISO week number (1-53) for a date.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to extract week from",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "INT",
+  "examples": [
+    {
+      "title": "Get week number",
+      "description": "Extract ISO week",
+      "sql": "SELECT WEEK(order_date) as week_num FROM orders"
+    },
+    {
+      "title": "Group by week",
+      "description": "Aggregate by week",
+      "sql": "SELECT YEAR(date) as year, WEEK(date) as week, SUM(amount) as total\nFROM sales\nGROUP BY YEAR(date), WEEK(date)"
+    }
+  ],
+  "notes": [
+    "Returns ISO week number (1-53)",
+    "Week 1 is the first week with at least 4 days"
+  ],
+  "seeAlso": ["WEEKDAY", "YEARDAY", "YEAR"],
+  "aliases": ["WEEKOFYEAR"]
+}

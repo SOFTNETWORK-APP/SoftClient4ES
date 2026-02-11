@@ -48,4 +48,11 @@ object Versions {
 
   val gson = "2.8.9"
 
+  val delta = "3.3.2"
+
+  val cron4s = "0.8.2"
+
+  val jline = "3.30.6"
+
+  val fansi = "0.5.1"
 }

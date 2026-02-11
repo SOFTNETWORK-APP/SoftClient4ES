@@ -1,0 +1,32 @@
+{
+  "name": "ASIN",
+  "category": "Numeric",
+  "shortDescription": "Calculate arc sine (inverse sine)",
+  "syntax": [
+    "ASIN(value)"
+  ],
+  "description": "Returns the arc sine (inverse sine) in radians. Input must be between -1 and 1.",
+  "parameters": [
+    {
+      "name": "value",
+      "type": "DOUBLE",
+      "description": "Value between -1 and 1",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Calculate arc sine",
+      "description": "Inverse of sin(90°)",
+      "sql": "SELECT DEGREES(ASIN(1)) as angle_degrees"
+    }
+  ],
+  "notes": [
+    "Returns value in radians between -π/2 and π/2",
+    "Returns NULL if input outside [-1, 1]"
+  ],
+  "seeAlso": ["SIN", "ACOS", "ATAN"],
+  "aliases": []
+}
