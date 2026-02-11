@@ -163,7 +163,7 @@ list_available_versions() {
     if [[ -z "$response" ]]; then
         error "Failed to fetch versions from repository"
         error "Artifact: $ARTIFACT_NAME"
-        exit 1
+        #exit 1
     fi
 
     # Parse JSON response to extract version folders
@@ -229,7 +229,8 @@ resolve_latest_version() {
 
     if [[ -z "$response" ]]; then
         error "Failed to fetch versions from repository"
-        exit 1
+        error "Artifact: $ARTIFACT_NAME"
+        #exit 1
     fi
 
     # Parse and get latest non-snapshot version, fallback to any latest
@@ -245,7 +246,7 @@ resolve_latest_version() {
 
     if [[ -z "$latest" ]]; then
         error "Could not determine latest version"
-        exit 1
+        #exit 1
     fi
 
     echo "$latest"
@@ -319,8 +320,9 @@ create_directories() {
     mkdir -p "$TARGET_DIR/bin"
     mkdir -p "$TARGET_DIR/conf"
     mkdir -p "$TARGET_DIR/lib"
+    mkdir -p "$TARGET_DIR/logs"
 
-    success "Created $TARGET_DIR/{bin,conf,lib}"
+    success "Created $TARGET_DIR/{bin,conf,lib,logs}"
 }
 
 # =============================================================================
@@ -365,7 +367,7 @@ download_jar() {
             error "Failed to download JAR from $DOWNLOAD_URL"
             error "Please check that version '$SOFT_VERSION' exists."
             error "Run with --list-versions to see available versions."
-            exit 1
+            #exit 1
         fi
     else
         if ! wget -q --show-progress -O "$dest" "$DOWNLOAD_URL"; then
@@ -502,11 +504,16 @@ BASE_DIR="\$(dirname "\$SCRIPT_DIR")"
 
 JAR_FILE="\$BASE_DIR/lib/$JAR_NAME"
 CONFIG_FILE="\$BASE_DIR/conf/application.conf"
+LOGBACK_FILE="$BASE_DIR/conf/logback.xml"
+LOG_DIR="$BASE_DIR/logs"
 
 if [[ ! -f "\$JAR_FILE" ]]; then
     echo "Error: JAR file not found: \$JAR_FILE" >&2
     exit 1
 fi
+
+# Create logs directory if it doesn't exist
+mkdir -p "$LOG_DIR"
 
 # Check Java version
 check_java() {
@@ -535,8 +542,16 @@ check_java
 # Default JVM options
 JAVA_OPTS="\${JAVA_OPTS:--Xmx512m}"
 
+# Logback configuration
+LOGBACK_OPTS=""
+if [[ -f "$LOGBACK_FILE" ]]; then
+    LOGBACK_OPTS="-Dlogback.configurationFile=$LOGBACK_FILE"
+fi
+
 exec java \$JAVA_OPTS \\
     -Dconfig.file="\$CONFIG_FILE" \\
+    -Dlog.dir="$LOG_DIR" \
+    $LOGBACK_OPTS \
     -jar "\$JAR_FILE" \\
     "\$@"
 EOF
@@ -544,6 +559,58 @@ EOF
     chmod +x "$TARGET_DIR/bin/softclient4es"
 
     success "Created $TARGET_DIR/bin/softclient4es"
+}
+
+# =============================================================================
+# Create Logback Configuration
+# =============================================================================
+
+create_logback_config() {
+    info "Creating logback configuration..."
+
+    cat > "$TARGET_DIR/conf/logback.xml" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <variable name="LOG_DIR" value="${log.dir:-logs}" />
+    <variable name="LOG_FILE" value="softclient4es" />
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/${LOG_FILE}.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/${LOG_FILE}-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%date{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>8192</queueSize>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="FILE" />
+    </appender>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%date{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="app.softnetwork.elastic" level="INFO" />
+    <logger name="org.apache.http" level="WARN" />
+    <logger name="org.elasticsearch" level="WARN" />
+
+    <root level="INFO">
+        <appender-ref ref="ASYNC" />
+    </root>
+
+</configuration>
+EOF
+
+    success "Created $TARGET_DIR/conf/logback.xml"
 }
 
 # =============================================================================
@@ -615,9 +682,12 @@ print_summary() {
     echo "    ├── bin/"
     echo "    │   └── softclient4es"
     echo "    ├── conf/"
-    echo "    │   └── application.conf"
+    echo "    │   ├── application.conf"
+    echo "    │   └── logback.xml"
     echo "    ├── lib/"
     echo "    │   └── $JAR_NAME"
+    echo "    ├── logs/"
+    echo "    │   └── softclient4es.log # (created at runtime)
     echo "    ├── LICENSE"
     echo "    ├── README.md"
     echo "    ├── VERSION"
@@ -657,6 +727,7 @@ main() {
     download_jar
     download_docs
     create_config
+    create_logback_config
     create_launcher
     create_uninstaller
     create_version_info

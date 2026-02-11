@@ -186,17 +186,20 @@ After installation:
 ```
 softclient4es/
 ├── bin/
-│   ├── softclient4es       # Linux/Mac launcher
-│   ├── softclient4es.bat   # Windows batch launcher
-│   └── softclient4es.ps1   # Windows PowerShell launcher
+│   ├── softclient4es           # Linux/Mac launcher
+│   ├── softclient4es.bat       # Windows batch launcher
+│   └── softclient4es.ps1       # Windows PowerShell launcher
 ├── conf/
-│   └── application.conf    # Configuration file
+│   ├── application.conf        # Application configuration
+│   └── logback.xml             # Logging configuration
 ├── lib/
 │   └── softclient4es8-cli_2.13-x.y.z-assembly.jar
-├── LICENSE                 # License file
-├── README.md               # Documentation
-├── VERSION                 # Installation info
-└── uninstall.sh            # or uninstall.ps1 on Windows
+├── logs/                       # Log files directory
+│   └── softclient4es.log       # (created at runtime)
+├── LICENSE
+├── README.md
+├── VERSION
+└── uninstall.sh
 ```
 
 ### Add to PATH
@@ -360,7 +363,7 @@ The file can contain multiple statements separated by semicolons:
 -- setup.sql
 CREATE TABLE IF NOT EXISTS users (
   id INT NOT NULL,
-  name VARCHAR,
+  name KEYWORD,
   PRIMARY KEY (id)
 );
 

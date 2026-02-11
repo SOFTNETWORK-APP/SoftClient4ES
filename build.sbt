@@ -293,6 +293,12 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       organization := "app.softnetwork.elastic",
       name := projectName,
 
+      libraryDependencies ++= Seq(
+        "ch.qos.logback" % "logback-classic" % Versions.logback,
+        "ch.qos.logback" % "logback-core"    % Versions.logback,
+        "org.slf4j"      % "slf4j-api"       % Versions.slf4j
+      ),
+
       // Main class
       Compile / mainClass := Some("app.softnetwork.elastic.client.Cli"),
 

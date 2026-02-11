@@ -413,12 +413,17 @@ set SCRIPT_DIR=%~dp0
 set BASE_DIR=%SCRIPT_DIR%..
 set JAR_FILE=%BASE_DIR%\lib\$JAR_NAME
 set CONFIG_FILE=%BASE_DIR%\conf\application.conf
+set LOGBACK_FILE=%BASE_DIR%\conf\logback.xml
+set LOG_DIR=%BASE_DIR%\logs
 set REQUIRED_JAVA=$REQUIRED_JAVA_VERSION
 
 if not exist "%JAR_FILE%" (
     echo Error: JAR file not found: %JAR_FILE% >&2
     exit /b 1
 )
+
+REM Create logs directory if it doesn't exist
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 REM Check Java
 java -version >nul 2>&1
@@ -429,7 +434,11 @@ if errorlevel 1 (
 
 if "%JAVA_OPTS%"=="" set JAVA_OPTS=-Xmx512m
 
-java %JAVA_OPTS% -Dconfig.file="%CONFIG_FILE%" -jar "%JAR_FILE%" %*
+REM Logback configuration
+set LOGBACK_OPTS=
+if exist "%LOGBACK_FILE%" set LOGBACK_OPTS=-Dlogback.configurationFile=%LOGBACK_FILE%
+
+java %JAVA_OPTS% -Dconfig.file="%CONFIG_FILE%" -Dlog.dir="%LOG_DIR%" %LOGBACK_OPTS% -jar "%JAR_FILE%" %*
 
 endlocal
 "@
@@ -448,11 +457,18 @@ endlocal
 `$BaseDir = Split-Path -Parent `$ScriptDir
 `$JarFile = "`$BaseDir\lib\$JAR_NAME"
 `$ConfigFile = "`$BaseDir\conf\application.conf"
+`$LogbackFile = "`$BaseDir\conf\logback.xml"
+`$LogDir = "`$BaseDir\logs"
 `$RequiredJava = $REQUIRED_JAVA_VERSION
 
 if (-not (Test-Path `$JarFile)) {
     Write-Error "JAR file not found: `$JarFile"
     exit 1
+}
+
+# Create logs directory if it doesn't exist
+if (-not (Test-Path `$LogDir)) {
+    New-Item -ItemType Directory -Path $LogDir | Out-Null
 }
 
 # Check Java
@@ -480,8 +496,13 @@ catch {
 
 `$JavaOpts = if (`$env:JAVA_OPTS) { `$env:JAVA_OPTS } else { "-Xmx512m" }
 
-& java `$JavaOpts "-Dconfig.file=`$ConfigFile" -jar `$JarFile `$args
-"@
+# Logback configuration
+`$LogbackOpts = @()
+if (Test-Path `$LogbackFile) {
+    `$LogbackOpts = @("-Dlogback.configurationFile=`$LogbackFile")
+}
+
+& java `$JavaOpts "-Dconfig.file=`$ConfigFile" "-Dlog.dir=`$LogDir" @LogbackOpts -jar `$JarFile `$args"@
 
     $psContent | Out-File -FilePath "$Target\bin\softclient4es.ps1" -Encoding UTF8
 
