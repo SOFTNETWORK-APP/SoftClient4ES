@@ -530,7 +530,14 @@ class TableExecutor(
               ElasticResult.success(
                 QueryRows(
                   mappings.map { case (index, mappings) =>
-                    ListMap("name" -> index, "type" -> mappings.tableType.name.toUpperCase)
+                    ListMap(
+                      "name" -> index,
+                      "type" -> mappings.tableType.name.toUpperCase,
+                      "pk"   -> mappings.primaryKey.mkString(","),
+                      "partitioned" -> mappings.partitionBy
+                        .map(p => s"PARTITION BY ${p.column} (${p.granularity})")
+                        .getOrElse("")
+                    )
                   }.toSeq
                 )
               )

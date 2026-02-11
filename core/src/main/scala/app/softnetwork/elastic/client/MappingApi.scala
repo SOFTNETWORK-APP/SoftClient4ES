@@ -163,7 +163,7 @@ trait MappingApi extends ElasticClientHelpers {
     */
   def allMappings(indices: Seq[String] = Seq.empty): ElasticResult[Map[String, IndexMappings]] = {
     // Get mappings for all indices
-    executeGetAllMappings(indices).map { mappingsMap =>
+    executeGetAllMappings(indices.map(_.replaceAll("%", "*"))).map { mappingsMap =>
       mappingsMap.map { case (index, mappingJson) =>
         val indexMappings = IndexMappings(mappingJson)
         (index, indexMappings)

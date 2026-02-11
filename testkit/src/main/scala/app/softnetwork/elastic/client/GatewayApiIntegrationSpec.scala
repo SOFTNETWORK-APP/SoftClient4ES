@@ -110,15 +110,15 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
   // Helper: assert SELECT result type
   // -------------------------------------------------------------------------
 
-  private def normalizeRow(row: Map[String, Any]): Map[String, Any] = {
+  private def normalizeRow(row: ListMap[String, Any]): ListMap[String, Any] = {
     val updated = row - "_id" - "_index" - "_score" - "_version" - "_sort"
     updated.map(entry =>
       entry._2 match {
-        case m: Map[_, _] =>
-          entry._1 -> normalizeRow(m.asInstanceOf[Map[String, Any]])
+        case m: ListMap[_, _] =>
+          entry._1 -> normalizeRow(m.asInstanceOf[ListMap[String, Any]])
         case seq: Seq[_] if seq.nonEmpty && seq.head.isInstanceOf[Map[_, _]] =>
           entry._1 -> seq
-            .asInstanceOf[Seq[Map[String, Any]]]
+            .asInstanceOf[Seq[ListMap[String, Any]]]
             .map(m => normalizeRow(m))
         case other => entry._1 -> other
       }
@@ -131,15 +131,19 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     rows: Seq[Map[String, Any]] = Seq.empty,
     nbResults: Option[Int] = None
   ): Unit = {
-    renderResults(startTime, res)
+    if (!res.isSuccess) {
+      renderResults(startTime, res)
+    }
     res.isSuccess shouldBe true
     res.toOption.get match {
       case QueryStream(stream) =>
-        val sink = Sink.fold[Seq[Map[String, Any]], (Map[String, Any], ScrollMetrics)](Seq.empty) {
-          case (acc, (row, _)) =>
-            acc :+ normalizeRow(row)
-        }
+        val sink =
+          Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
+            case (acc, (row, _)) =>
+              acc :+ normalizeRow(row)
+          }
         val results = stream.runWith(sink).futureValue
+        renderResults(startTime, ElasticSuccess(QueryRows(results)))
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
           results should contain theSameElementsAs rows
@@ -149,6 +153,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
           log.info(s"Rows: $results")
         }
       case QueryStructured(response) =>
+        renderResults(startTime, res)
         val results =
           response.results.map(normalizeRow)
         if (rows.nonEmpty) {
@@ -160,6 +165,7 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
           log.info(s"Rows: $results")
         }
       case q: QueryRows =>
+        renderResults(startTime, res)
         val results = q.rows.map(normalizeRow)
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
@@ -169,7 +175,9 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
         } else {
           log.info(s"Rows: $results")
         }
-      case other => fail(s"Unexpected QueryResult type for SELECT: $other")
+      case other =>
+        renderResults(startTime, res)
+        fail(s"Unexpected QueryResult type for SELECT: $other")
     }
   }
 
@@ -283,11 +291,11 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     ddl should include("PRIMARY KEY (id)")
 
     var rows =
-      assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE 'show_*'").futureValue)
+      assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE 'show_%'").futureValue)
     rows.size should be >= 1
     rows.exists(_("name") == "show_users") shouldBe true
 
-    rows = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE '.*'").futureValue)
+    rows = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE '.%'").futureValue)
     rows.size shouldBe 0
   }
 
@@ -1690,16 +1698,6 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     row.get("is_healthy") shouldBe Some(true)
     row.get("is_operational") shouldBe Some(true)
 
-    if (supportsQueryWatchers) {
-      rows = assertQueryRows(System.nanoTime(), client.run("SHOW WATCHERS").futureValue)
-      rows.find(row => row.get("id").contains("my_watcher_interval")) match {
-        case Some(row) =>
-          row.get("is_healthy") shouldBe Some(true)
-          row.get("is_operational") shouldBe Some(true)
-        case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
-      }
-    }
-
     val createWatcherWithCron =
       """CREATE OR REPLACE WATCHER my_watcher_cron AS
         | AT SCHEDULE '* * * * * ?'
@@ -1721,8 +1719,19 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
     row.get("is_healthy") shouldBe Some(true)
     row.get("is_operational") shouldBe Some(true)
 
+    if (supportsQueryWatchers) {
+      rows = assertQueryRows(System.nanoTime(), client.run("SHOW WATCHERS").futureValue)
+      rows.find(row => row.get("id").contains("my_watcher_interval")) match {
+        case Some(row) =>
+          row.get("is_healthy") shouldBe Some(true)
+          row.get("is_operational") shouldBe Some(true)
+        case None => fail("Watcher my_watcher_interval not found in SHOW WATCHERS")
+      }
+    }
+
     val dropWatcher = "DROP WATCHER IF EXISTS my_watcher_interval;"
     assertDdl(System.nanoTime(), client.run(dropWatcher).futureValue)
+
   }
 
   // ===========================================================================

@@ -5,7 +5,7 @@
 ## Introduction
 
 The SQL Gateway provides a full Data Definition Language (DDL) layer on top of Elasticsearch.  
-It allows defining tables, schemas, pipelines, mappings, and settings using a relational syntax while generating the appropriate Elasticsearch structures:
+It allows defining tables, schemas, pipelines, mappings, settings, watchers, enrich policies using a relational syntax while generating the appropriate Elasticsearch structures:
 
 - **indices** (for non-partitioned tables)
 - **index templates** (for partitioned tables)
@@ -20,7 +20,35 @@ The DDL engine is:
 - **version-aware** (ES6 → ES9)
 - **client-agnostic** (Jest, RHLC, Java Client)
 - **schema-driven**
-- **round-trip safe** (DESCRIBE returns normalized SQL)
+- **round-trip safe** (SHOW CREATE returns normalized SQL)
+
+---
+
+## Table of Contents
+
+- [Table Model](#table-model)
+- [Column Types & Mapping](#column-types--mapping)
+- [Constraints & Column Options](#constraints--column-options)
+- [Partitioning](#partitioning)
+- [CREATE TABLE](#create-table)
+- [CREATE TABLE AS SELECT](#create-table-as-select)
+- [ALTER TABLE](#alter-table)
+- [DROP TABLE](#drop-table)
+- [TRUNCATE TABLE](#truncate-table)
+- [CREATE PIPELINE](#create-pipeline)
+- [ALTER PIPELINE](#alter-pipeline)
+- [DROP PIPELINE](#drop-pipeline)
+- [WATCHERS](#watchers)
+- [CREATE WATCHER](#create-watcher)
+- [DROP WATCHER](#drop-watcher)
+- [ENRICH POLICIES](#enrich-policies)
+- [CREATE ENRICH POLICY](#create-enrich-policy)
+- [EXECUTE ENRICH POLICY](#execute-enrich-policy)
+- [DROP ENRICH POLICY](#drop-enrich-policy)
+- [USING ENRICH POLICIES IN PIPELINES](#using-enrich-policies-in-pipelines)
+- [Index Migration Workflow](#index-migration-workflow)
+- [VERSION COMPATIBILITY](#version-compatibility)
+- [QUICK REFERENCE](#quick-reference)
 
 ---
 
@@ -254,7 +282,122 @@ Partitioning routes documents to time-based indices using `date_index_name`.
 
 ---
 
-## Pipelines in DDL
+## CREATE TABLE
+
+### Basic Example
+
+```sql
+CREATE TABLE users (
+  id INT,
+  name VARCHAR DEFAULT 'anonymous',
+  birthdate DATE,
+  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
+  PRIMARY KEY (id)
+);
+```
+
+### Partitioned Example
+
+```sql
+CREATE TABLE users (
+  id INT,
+  birthdate DATE,
+  PRIMARY KEY (id)
+)
+PARTITIONED BY (birthdate MONTH);
+```
+
+---
+
+## CREATE TABLE AS SELECT
+
+```sql
+CREATE TABLE new_users AS
+SELECT id, name FROM users;
+```
+
+The gateway:
+
+- infers the schema
+- generates mappings
+- creates index or template
+- **populates data using the Bulk API**
+
+---
+
+## ALTER TABLE
+
+**Supported statements:**
+
+- `ADD COLUMN [IF NOT EXISTS] column_definition`
+- `DROP COLUMN [IF EXISTS] column_name`
+- `RENAME COLUMN old_name TO new_name`
+- `ALTER COLUMN column_name SET SCRIPT AS (sql)`
+- `ALTER COLUMN column_name DROP SCRIPT`
+- `ALTER COLUMN column_name SET|ADD OPTION (key = value)`
+- `ALTER COLUMN column_name DROP OPTION key`
+- `ALTER COLUMN column_name SET COMMENT 'comment'`
+- `ALTER COLUMN column_name DROP COMMENT`
+- `ALTER COLUMN column_name SET DEFAULT value`
+- `ALTER COLUMN column_name DROP DEFAULT`
+- `ALTER COLUMN column_name SET NOT NULL`
+- `ALTER COLUMN column_name DROP NOT NULL`
+- `ALTER COLUMN column_name SET DATA TYPE new_type`
+- `ALTER COLUMN column_name SET|ADD FIELD field_definition`
+- `ALTER COLUMN column_name DROP FIELD field_name`
+- `ALTER COLUMN column_name SET FIELDS (...)`
+- `SET|ADD MAPPING (key = value)`
+- `DROP MAPPING key`
+- `SET|ADD SETTING (key = value)`
+- `DROP SETTING key`
+
+### Type Changes and Safety
+
+When applying `ALTER COLUMN column_name SET DATA TYPE new_type`, the SQL Gateway computes a structural diff between the current schema and the target schema.
+
+Type changes fall into two categories:
+
+- **Convertible types** (`SQLTypeUtils.canConvert(from, to) = true`)  
+	The change is allowed but requires a full **reindex** of the underlying data.  
+	The Gateway automatically performs the reindex operation and swaps aliases when complete.  
+	These changes are classified as `UnsafeReindex`.
+
+- **Incompatible types** (`SQLTypeUtils.canConvert(from, to) = false`)  
+	The change is **not allowed** and the `ALTER TABLE` statement fails.  
+	These changes are classified as `Impossible`.
+
+This is the only case where an `ALTER TABLE` operation can be rejected for safety reasons.  
+All other ALTER operations (adding/dropping columns, renaming, modifying options, modifying nested fields, etc.) are allowed.
+
+---
+
+## DROP TABLE
+
+```sql
+DROP TABLE IF EXISTS users;
+```
+
+Deletes:
+
+- index (non-partitioned)
+- template (partitioned)
+
+---
+
+## TRUNCATE TABLE
+
+```sql
+TRUNCATE TABLE users;
+```
+
+Deletes all documents while keeping:
+
+- mapping
+- settings
+- pipeline
+- template (if any)
+
+---
 
 ## CREATE PIPELINE
 
@@ -304,45 +447,6 @@ ALTER PIPELINE IF EXISTS user_pipeline (
     ),
     DROP PROCESSOR SET (_id)
 );
-```
-
----
-
-## SHOW PIPELINE
-
-```sql
-SHOW PIPELINE pipeline_name;
-```
-
-**Description**
-
-- Returns a high‑level view of the pipeline processors
-
-**Example**
-
-```sql
-SHOW PIPELINE user_pipeline;
-```
-
----
-
-## DESCRIBE PIPELINE
-
-```sql
-DESCRIBE PIPELINE pipeline_name;
-```
-
-**Description**
-
-- Returns the full, normalized definition of the pipeline:
-	- processors in execution order
-	- full configuration of each processor (`SET`, `SCRIPT`, `REMOVE`, `RENAME`, `DATE_INDEX_NAME`, etc.)
-	- flags such as `ignore_failure`, `if`, `description`
-
-**Example**
-
-```sql
-DESCRIBE PIPELINE user_pipeline;
 ```
 
 ---
@@ -953,26 +1057,6 @@ DROP WATCHER IF EXISTS high_error_rate;
 
 ---
 
-## SHOW WATCHER STATUS
-
-```sql
-SHOW WATCHER STATUS watcher_name;
-```
-
-Returns:
-- Activation state (active/inactive)
-- Last execution time
-- Last condition met time
-- Execution statistics
-
-**Example:**
-
-```sql
-SHOW WATCHER STATUS high_error_rate;
-```
-
----
-
 ## Enrich Policies
 
 Enrich policies allow you to add data from existing indices to incoming documents during ingest.  
@@ -1191,27 +1275,6 @@ DROP ENRICH POLICY IF EXISTS user_enrichment;
 
 ---
 
-## SHOW ENRICH POLICY
-
-```sql
-SHOW ENRICH POLICY policy_name;
-```
-
-Returns:
-- Policy configuration
-- Source index
-- Match field
-- Enrich fields
-- Policy type
-
-**Example:**
-
-```sql
-SHOW ENRICH POLICY user_enrichment;
-```
-
----
-
 ## Using Enrich Policies in Pipelines
 
 Once an enrich policy is created and executed, use it in an ingest pipeline with the `ENRICH` processor.
@@ -1330,159 +1393,7 @@ The document is enriched with user data:
 
 ---
 
-## CREATE TABLE
-
-### Basic Example
-
-```sql
-CREATE TABLE users (
-  id INT,
-  name VARCHAR DEFAULT 'anonymous',
-  birthdate DATE,
-  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
-  PRIMARY KEY (id)
-);
-```
-
-### Partitioned Example
-
-```sql
-CREATE TABLE users (
-  id INT,
-  birthdate DATE,
-  PRIMARY KEY (id)
-)
-PARTITIONED BY (birthdate MONTH);
-```
-
----
-
-## ALTER TABLE
-
-**Supported statements:**
-
-- `ADD COLUMN [IF NOT EXISTS] column_definition`
-- `DROP COLUMN [IF EXISTS] column_name`
-- `RENAME COLUMN old_name TO new_name`
-- `ALTER COLUMN column_name SET SCRIPT AS (sql)`
-- `ALTER COLUMN column_name DROP SCRIPT`
-- `ALTER COLUMN column_name SET|ADD OPTION (key = value)`
-- `ALTER COLUMN column_name DROP OPTION key`
-- `ALTER COLUMN column_name SET COMMENT 'comment'`
-- `ALTER COLUMN column_name DROP COMMENT`
-- `ALTER COLUMN column_name SET DEFAULT value`
-- `ALTER COLUMN column_name DROP DEFAULT`
-- `ALTER COLUMN column_name SET NOT NULL`
-- `ALTER COLUMN column_name DROP NOT NULL`
-- `ALTER COLUMN column_name SET DATA TYPE new_type`
-- `ALTER COLUMN column_name SET|ADD FIELD field_definition`
-- `ALTER COLUMN column_name DROP FIELD field_name`
-- `ALTER COLUMN column_name SET FIELDS (...)`
-- `SET|ADD MAPPING (key = value)`
-- `DROP MAPPING key`
-- `SET|ADD SETTING (key = value)`
-- `DROP SETTING key`
-
-### Type Changes and Safety
-
-When applying `ALTER COLUMN column_name SET DATA TYPE new_type`, the SQL Gateway computes a structural diff between the current schema and the target schema.
-
-Type changes fall into two categories:
-
-- **Convertible types** (`SQLTypeUtils.canConvert(from, to) = true`)  
-	The change is allowed but requires a full **reindex** of the underlying data.  
-	The Gateway automatically performs the reindex operation and swaps aliases when complete.  
-	These changes are classified as `UnsafeReindex`.
-
-- **Incompatible types** (`SQLTypeUtils.canConvert(from, to) = false`)  
-	The change is **not allowed** and the `ALTER TABLE` statement fails.  
-	These changes are classified as `Impossible`.
-
-This is the only case where an `ALTER TABLE` operation can be rejected for safety reasons.  
-All other ALTER operations (adding/dropping columns, renaming, modifying options, modifying nested fields, etc.) are allowed.
-
----
-
-## DROP TABLE
-
-```sql
-DROP TABLE IF EXISTS users;
-```
-
-Deletes:
-
-- index (non-partitioned)
-- template (partitioned)
-
----
-
-## TRUNCATE TABLE
-
-```sql
-TRUNCATE TABLE users;
-```
-
-Deletes all documents while keeping:
-
-- mapping
-- settings
-- pipeline
-- template (if any)
-
----
-
-## SHOW TABLE
-
-```sql
-SHOW TABLE users;
-```
-
-Returns:
-
-- index or template metadata
-- primary key
-- partitioning
-- pipeline
-- mapping summary
-
----
-
-## DESCRIBE TABLE
-
-```sql
-DESCRIBE TABLE users;
-```
-
-Returns the **normalized SQL schema**, including:
-
-- columns
-- types
-- defaults
-- scripts
-- STRUCT fields
-- PK
-- options
-- comments
-
----
-
-## CREATE TABLE AS SELECT (CTAS)
-
-```sql
-CREATE TABLE new_users AS
-SELECT id, name FROM users;
-```
-
-The gateway:
-
-- infers the schema
-- generates mappings
-- creates index or template
-- **populates data using the Bulk API**
-
----
-
-## 🔄 Index Migration Workflow
+## Index Migration Workflow
 
 ### Initial Creation
 

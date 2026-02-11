@@ -19,7 +19,7 @@ package app.softnetwork.elastic.client.help
 /** CLI for generating documentation
   */
 object GenerateDocumentation extends App {
-  val outputDir = if (args.nonEmpty) args(0) else "documentation/sql"
+  val outputDir = if (args.nonEmpty) args(0) else "help/sql"
 
   println(s"Generating documentation to: $outputDir")
   MarkdownGenerator.generateAll(outputDir)
