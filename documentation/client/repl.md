@@ -22,7 +22,8 @@ It provides:
 
 ## Table of Contents
 
-- [Getting Started](#getting-started)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
 - [Connection](#connection)
 - [Basic Usage](#basic-usage)
 - [Statement Execution](#statement-execution)
@@ -35,18 +36,28 @@ It provides:
 
 ---
 
-## Getting Started
+## Prerequisites
 
-### Installation
+### Java Requirements
 
-#### Prerequisites
+| Elasticsearch Version | Minimum Java Version |
+|-----------------------|----------------------|
+| ES 6                  | Java 8+              |
+| ES 7                  | Java 8+              |
+| ES 8                  | Java 8+              |
+| ES 9                  | Java 17+             |
 
-- **Java 11** or higher
-- Network access to JFrog repository
+### Network Requirements
 
-#### Quick Install
+- Network access to JFrog repository (`softnetwork.jfrog.io`)
 
-##### Linux / macOS
+---
+
+## Installation
+
+### Quick Install
+
+#### Linux / macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/softclient4es/main/install.sh | bash
@@ -60,7 +71,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-##### Windows (PowerShell)
+#### Windows (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/SOFTNETWORK-APP/softclient4es/main/install.ps1 | iex
@@ -73,50 +84,102 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/SOFTNETWORK-APP/softcli
 .\install.ps1
 ```
 
-#### Installation Options
+### List Available Versions
 
-| Option            | Linux/Mac              | Windows               | Default                       |
-|-------------------|------------------------|-----------------------|-------------------------------|
-| Target directory  | `-t, --target <dir>`   | `-Target <dir>`       | `$HOME/softclient4es`         |
-| ES version        | `-e, --es-version <n>` | `-EsVersion <n>`      | `8`                           |
-| Software version  | `-v, --version <ver>`  | `-Version <ver>`      | `0.1.0-SNAPSHOT`              |
-| Scala version     | `-s, --scala <ver>`    | `-ScalaVersion <ver>` | `2.13`                        |
+Before installing, you can list all available versions for a specific Elasticsearch version:
 
-#### Examples
-
-##### Linux / macOS
+#### Linux / macOS
 
 ```bash
-# Default installation
+./install.sh --list-versions --es-version 8
+```
+
+#### Windows
+
+```powershell
+.\install.ps1 -ListVersions -EsVersion 8
+```
+
+**Example output:**
+
+```
+═══════════════════════════════════════════════════════════════
+  Available SoftClient4ES Versions for Elasticsearch 8
+═══════════════════════════════════════════════════════════════
+
+  Artifact: softclient4es8-cli_2.13
+  Java required: 8+
+
+  Versions:
+
+    • 0.16.0-SNAPSHOT
+    • 0.16.0
+
+  Total: 2 version(s)
+
+  To install a specific version:
+    ./install.sh --es-version 8 --version <version>
+```
+
+### Installation Options
+
+| Option            | Linux/Mac                | Windows               | Default                       |
+|-------------------|--------------------------|-----------------------|-------------------------------|
+| Target directory  | `-t, --target <dir>`     | `-Target <dir>`       | `$HOME/softclient4es`         |
+| ES version        | `-e, --es-version <n>`   | `-EsVersion <n>`      | `8`                           |
+| Software version  | `-v, --version <ver>`    | `-Version <ver>`      | `latest`                      |
+| Scala version     | `-s, --scala <ver>`      | `-ScalaVersion <ver>` | `2.13`                        |
+| List versions     | `-l, --list-versions`    | `-ListVersions`       | —                             |
+
+### Installation Examples
+
+#### Linux / macOS
+
+```bash
+# Default installation (latest version for ES8)
 ./install.sh
+
+# List available versions first
+./install.sh --list-versions --es-version 8
+
+# Install specific version
+./install.sh --es-version 8 --version 0.16.0
+
+# Install for Elasticsearch 9 (requires Java 17+)
+./install.sh --es-version 9
 
 # Custom installation directory
 ./install.sh --target /opt/softclient4es
 
-# Install for Elasticsearch 7
-./install.sh --es-version 7
-
 # Full custom installation
-./install.sh --target ~/tools/softclient4es --es-version 8 --version 1.0.0
+./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.16.0
 ```
 
-##### Windows
+#### Windows
 
 ```powershell
-# Default installation
+# Default installation (latest version for ES8)
 .\install.ps1
+
+# List available versions first
+.\install.ps1 -ListVersions -EsVersion 8
+
+# Install specific version
+.\install.ps1 -EsVersion 8 -Version 0.16.0
+
+# Install for Elasticsearch 9 (requires Java 17+)
+.\install.ps1 -EsVersion 9
 
 # Custom installation directory
 .\install.ps1 -Target "C:\tools\softclient4es"
 
-# Install for Elasticsearch 7
-.\install.ps1 -EsVersion 7
-
 # Full custom installation
-.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 8 -Version 0.16-SNAPSHOT
+.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.16.0
 ```
 
-#### Directory Structure
+---
+
+### Directory Structure
 
 After installation:
 
@@ -133,9 +196,9 @@ softclient4es/
 └── uninstall.sh            # or uninstall.ps1 on Windows
 ```
 
-#### Add to PATH
+### Add to PATH
 
-##### Linux / macOS
+#### Linux / macOS
 
 Add to `~/.bashrc` or `~/.zshrc`:
 
@@ -143,7 +206,7 @@ Add to `~/.bashrc` or `~/.zshrc`:
 export PATH="$PATH:$HOME/softclient4es/bin"
 ```
 
-##### Windows
+#### Windows
 
 ```powershell
 # Temporary (current session)
@@ -153,47 +216,18 @@ $env:PATH += ";$env:USERPROFILE\softclient4es\bin"
 [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$env:USERPROFILE\softclient4es\bin", "User")
 ```
 
-#### Uninstall
+### Uninstall
 
-##### Linux / macOS
+#### Linux / macOS
 
 ```bash
 ~/softclient4es/uninstall.sh
 ```
 
-##### Windows
+#### Windows
 
 ```powershell
 ~\softclient4es\uninstall.ps1
-```
-
-#### Environment Variables
-
-The configuration file supports environment variable overrides:
-
-| Variable              | Description                  |
-|-----------------------|------------------------------|
-| `ELASTIC_SCHEME`      | Connection scheme            |
-| `ELASTIC_HOST`        | Elasticsearch host           |
-| `ELASTIC_PORT`        | Elasticsearch port           |
-| `ELASTIC_USERNAME`    | Username for authentication  |
-| `ELASTIC_PASSWORD`    | Password for authentication  |
-| `ELASTIC_API_KEY`     | API key for authentication   |
-| `ELASTIC_BEARER_TOKEN`| Bearer token for auth        |
-| `JAVA_OPTS`           | JVM options (default: -Xmx512m)|
-
----
-
-### Launch
-
-```bash
-./bin/softclient4es
-```
-
-Or with connection parameters:
-
-```bash
-./bin/softclient4es --host localhost --port 9200
 ```
 
 ---
@@ -208,15 +242,43 @@ The REPL reads default connection settings from `conf/application.conf`:
 elastic {
   credentials {
     scheme       = "http"
+    scheme       = ${?ELASTIC_SCHEME}
+
     host         = "localhost"
+    host         = ${?ELASTIC_HOST}
+
     port         = 9200
+    port         = ${?ELASTIC_PORT}
+
     username     = ""
+    username     = ${?ELASTIC_USERNAME}
+
     password     = ""
+    password     = ${?ELASTIC_PASSWORD}
+
     api-key      = ""
+    api-key      = ${?ELASTIC_API_KEY}
+
     bearer-token = ""
+    bearer-token = ${?ELASTIC_BEARER_TOKEN}
   }
 }
 ```
+
+### Environment Variables
+
+The configuration file supports environment variable overrides:
+
+| Variable              | Description                  |
+|-----------------------|------------------------------|
+| `ELASTIC_SCHEME`      | Connection scheme            |
+| `ELASTIC_HOST`        | Elasticsearch host           |
+| `ELASTIC_PORT`        | Elasticsearch port           |
+| `ELASTIC_USERNAME`    | Username for authentication  |
+| `ELASTIC_PASSWORD`    | Password for authentication  |
+| `ELASTIC_API_KEY`     | API key for authentication   |
+| `ELASTIC_BEARER_TOKEN`| Bearer token for auth        |
+| `JAVA_OPTS`           | JVM options (default: -Xmx512m)|
 
 ### Command-Line Options
 
@@ -245,32 +307,32 @@ The REPL supports multiple authentication methods:
 | API Key          | `-k`                         | Elasticsearch API key       |
 | Bearer Token     | `-b`                         | OAuth/JWT token             |
 
-### Examples
+### Connection Examples
 
 ```bash
 # Local connection (uses defaults from application.conf)
-./bin/softclient4es
+softclient4es
 
 # Override host and port
-./bin/softclient4es -h es.example.com -p 9200
+softclient4es -h es.example.com -p 9200
 
 # HTTPS with basic authentication
-./bin/softclient4es -s https -h es.example.com -p 9243 -u admin -P secret
+softclient4es -s https -h es.example.com -p 9243 -u admin -P secret
 
 # Using API key
-./bin/softclient4es -s https -h es.example.com -k "your-api-key"
+softclient4es -s https -h es.example.com -k "your-api-key"
 
 # Using bearer token
-./bin/softclient4es -s https -h es.example.com -b "your-bearer-token"
+softclient4es -s https -h es.example.com -b "your-bearer-token"
 
 # Execute a single command and exit
-./bin/softclient4es -c "SHOW TABLES"
+softclient4es -c "SHOW TABLES"
 
 # Execute SQL from a file and exit
-./bin/softclient4es -f /path/to/script.sql
+softclient4es -f /path/to/script.sql
 
 # Combine options
-./bin/softclient4es -h es.example.com -u admin -P secret -c "SELECT * FROM users LIMIT 10"
+softclient4es -h es.example.com -u admin -P secret -c "SELECT * FROM users LIMIT 10"
 ```
 
 ### Non-Interactive Mode
@@ -280,13 +342,13 @@ The REPL can run in non-interactive mode using `-c` or `-f`:
 #### Execute a single command
 
 ```bash
-./bin/softclient4es -c "SELECT COUNT(*) FROM users"
+softclient4es -c "SELECT COUNT(*) FROM users"
 ```
 
 #### Execute SQL from a file
 
 ```bash
-./bin/softclient4es -f setup.sql
+softclient4es -f setup.sql
 ```
 
 The file can contain multiple statements separated by semicolons:

@@ -12,10 +12,11 @@ set -e
 
 DEFAULT_TARGET_DIR="$HOME/softclient4es"
 DEFAULT_ES_VERSION="8"
-DEFAULT_SOFT_VERSION="0.16-SNAPSHOT"
+DEFAULT_SOFT_VERSION="latest"
 DEFAULT_SCALA_VERSION="2.13"
 
 JFROG_REPO_URL="https://softnetwork.jfrog.io/artifactory/releases/app/softnetwork/elastic"
+JFROG_API_URL="https://softnetwork.jfrog.io/artifactory/api/storage/releases/app/softnetwork/elastic"
 
 # =============================================================================
 # Colors and Output
@@ -25,6 +26,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -45,13 +47,19 @@ Usage: $0 [OPTIONS]
 Options:
   -t, --target <dir>       Installation directory (default: $DEFAULT_TARGET_DIR)
   -e, --es-version <ver>   Elasticsearch major version: 6, 7, 8, 9 (default: $DEFAULT_ES_VERSION)
-  -v, --version <ver>      SoftClient4ES version (default: $DEFAULT_SOFT_VERSION)
+  -v, --version <ver>      SoftClient4ES version (default: latest)
   -s, --scala <ver>        Scala version (default: $DEFAULT_SCALA_VERSION)
+  -l, --list-versions      List available versions for the specified ES version
   -h, --help               Show this help message
+
+Java Requirements:
+  ES 6, 7, 8  →  Java 8 or higher
+  ES 9        →  Java 17 or higher
 
 Examples:
   $0
-  $0 --target /opt/softclient4es --es-version 8 --version 1.0.0
+  $0 --list-versions --es-version 8
+  $0 --target /opt/softclient4es --es-version 8 --version 0.16-SNAPSHOT
   $0 -t ~/tools/softclient4es -e 7 -v 0.2.0
 
 EOF
@@ -66,6 +74,7 @@ TARGET_DIR="$DEFAULT_TARGET_DIR"
 ES_VERSION="$DEFAULT_ES_VERSION"
 SOFT_VERSION="$DEFAULT_SOFT_VERSION"
 SCALA_VERSION="$DEFAULT_SCALA_VERSION"
+LIST_VERSIONS=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -84,6 +93,10 @@ while [[ $# -gt 0 ]]; do
         -s|--scala)
             SCALA_VERSION="$2"
             shift 2
+            ;;
+        -l|--list-versions)
+            LIST_VERSIONS=true
+            shift
             ;;
         -h|--help)
             show_help
@@ -109,6 +122,136 @@ fi
 # =============================================================================
 
 ARTIFACT_NAME="softclient4es${ES_VERSION}-cli_${SCALA_VERSION}"
+
+# =============================================================================
+# Get Required Java Version
+# =============================================================================
+
+get_required_java_version() {
+    local es_ver="$1"
+    if [[ "$es_ver" == "9" ]]; then
+        echo 17
+    else
+        echo 8
+    fi
+}
+
+REQUIRED_JAVA_VERSION=$(get_required_java_version "$ES_VERSION")
+
+# =============================================================================
+# List Available Versions
+# =============================================================================
+
+list_available_versions() {
+    info "Fetching available versions for ES$ES_VERSION..."
+
+    local api_url="${JFROG_API_URL}/${ARTIFACT_NAME}"
+
+    if command -v curl &> /dev/null; then
+        local response=$(curl -fsSL "$api_url" 2>/dev/null)
+    elif command -v wget &> /dev/null; then
+        local response=$(wget -qO- "$api_url" 2>/dev/null)
+    else
+        error "curl or wget is required"
+        exit 1
+    fi
+
+    if [[ -z "$response" ]]; then
+        error "Failed to fetch versions from repository"
+        error "Artifact: $ARTIFACT_NAME"
+        exit 1
+    fi
+
+    # Parse JSON response to extract version folders
+    local versions=$(echo "$response" | grep -oP '"uri"\s*:\s*"/\K[^"]+' | grep -v '^\.' | sort -V)
+
+    if [[ -z "$versions" ]]; then
+        error "No versions found for $ARTIFACT_NAME"
+        exit 1
+    fi
+
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  Available SoftClient4ES Versions for Elasticsearch $ES_VERSION${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Artifact:${NC} $ARTIFACT_NAME"
+    echo -e "  ${YELLOW}Java required:${NC} $REQUIRED_JAVA_VERSION+"
+    echo ""
+    echo -e "  ${GREEN}Versions:${NC}"
+    echo ""
+
+    # Display versions
+    local count=0
+    while IFS= read -r version; do
+        if [[ -n "$version" ]]; then
+            echo "    • $version"
+            ((count++))
+        fi
+    done <<< "$versions"
+
+    echo ""
+    echo -e "  ${BLUE}Total: $count version(s)${NC}"
+    echo ""
+    echo "  To install a specific version:"
+    echo -e "    ${CYAN}$0 --es-version $ES_VERSION --version <version>${NC}"
+    echo ""
+
+    exit 0
+}
+
+# Run list versions if requested
+if [[ "$LIST_VERSIONS" == true ]]; then
+    list_available_versions
+fi
+
+# =============================================================================
+# Resolve Latest Version
+# =============================================================================
+
+resolve_latest_version() {
+    info "Resolving latest version..."
+
+    local api_url="${JFROG_API_URL}/${ARTIFACT_NAME}"
+
+    if command -v curl &> /dev/null; then
+        local response=$(curl -fsSL "$api_url" 2>/dev/null)
+    elif command -v wget &> /dev/null; then
+        local response=$(wget -qO- "$api_url" 2>/dev/null)
+    else
+        error "curl or wget is required"
+        exit 1
+    fi
+
+    if [[ -z "$response" ]]; then
+        error "Failed to fetch versions from repository"
+        exit 1
+    fi
+
+    # Parse and get latest non-snapshot version, fallback to any latest
+    local versions=$(echo "$response" | grep -oP '"uri"\s*:\s*"/\K[^"]+' | grep -v '^\.' | sort -V)
+
+    # Prefer non-snapshot versions
+    local latest=$(echo "$versions" | grep -v 'SNAPSHOT' | tail -1)
+
+    # Fallback to any version if no release found
+    if [[ -z "$latest" ]]; then
+        latest=$(echo "$versions" | tail -1)
+    fi
+
+    if [[ -z "$latest" ]]; then
+        error "Could not determine latest version"
+        exit 1
+    fi
+
+    echo "$latest"
+}
+
+if [[ "$SOFT_VERSION" == "latest" ]]; then
+    SOFT_VERSION=$(resolve_latest_version)
+    success "Resolved latest version: $SOFT_VERSION"
+fi
+
 JAR_NAME="${ARTIFACT_NAME}-${SOFT_VERSION}-assembly.jar"
 DOWNLOAD_URL="${JFROG_REPO_URL}/${ARTIFACT_NAME}/${SOFT_VERSION}/${JAR_NAME}"
 
@@ -121,16 +264,34 @@ check_prerequisites() {
 
     # Check Java
     if ! command -v java &> /dev/null; then
-        error "Java is not installed. Please install Java 11 or higher."
+        error "Java is not installed."
+        error "ES$ES_VERSION requires Java $REQUIRED_JAVA_VERSION or higher."
         exit 1
     fi
 
-    JAVA_VERSION=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-    if [[ "$JAVA_VERSION" -lt 11 ]]; then
-        error "Java 11 or higher is required. Found: Java $JAVA_VERSION"
-        exit 1
+    # Get Java version
+    local java_version_output=$(java -version 2>&1 | head -n 1)
+    local java_version
+
+    # Handle both old (1.8.x) and new (11.x, 17.x) version formats
+    if echo "$java_version_output" | grep -q '"1\.[0-9]'; then
+        # Old format: "1.8.0_xxx"
+        java_version=$(echo "$java_version_output" | grep -oP '1\.(\d+)' | cut -d'.' -f2)
+    else
+        # New format: "11.x.x", "17.x.x", etc.
+        java_version=$(echo "$java_version_output" | grep -oP '"(\d+)' | tr -d '"')
     fi
-    success "Java $JAVA_VERSION found"
+
+    if [[ -z "$java_version" ]]; then
+        warn "Could not determine Java version"
+    else
+        if [[ "$java_version" -lt "$REQUIRED_JAVA_VERSION" ]]; then
+            error "Java $REQUIRED_JAVA_VERSION or higher is required for ES$ES_VERSION."
+            error "Found: Java $java_version"
+            exit 1
+        fi
+        success "Java $java_version found (required: $REQUIRED_JAVA_VERSION+)"
+    fi
 
     # Check curl or wget
     if command -v curl &> /dev/null; then
@@ -171,11 +332,15 @@ download_jar() {
     if [[ "$DOWNLOADER" == "curl" ]]; then
         if ! curl -fSL --progress-bar -o "$dest" "$DOWNLOAD_URL"; then
             error "Failed to download JAR from $DOWNLOAD_URL"
+            error "Please check that version '$SOFT_VERSION' exists."
+            error "Run with --list-versions to see available versions."
             exit 1
         fi
     else
         if ! wget -q --show-progress -O "$dest" "$DOWNLOAD_URL"; then
             error "Failed to download JAR from $DOWNLOAD_URL"
+            error "Please check that version '$SOFT_VERSION' exists."
+            error "Run with --list-versions to see available versions."
             exit 1
         fi
     fi
@@ -234,6 +399,8 @@ create_launcher() {
 #!/usr/bin/env bash
 #
 # SoftClient4ES Launcher
+# Elasticsearch version: $ES_VERSION
+# Required Java: $REQUIRED_JAVA_VERSION+
 #
 
 SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
@@ -246,6 +413,30 @@ if [[ ! -f "\$JAR_FILE" ]]; then
     echo "Error: JAR file not found: \$JAR_FILE" >&2
     exit 1
 fi
+
+# Check Java version
+check_java() {
+    if ! command -v java &> /dev/null; then
+        echo "Error: Java is not installed. Java $REQUIRED_JAVA_VERSION+ is required." >&2
+        exit 1
+    fi
+
+    local java_version_output=\$(java -version 2>&1 | head -n 1)
+    local java_version
+
+    if echo "\$java_version_output" | grep -q '"1\.[0-9]'; then
+        java_version=\$(echo "\$java_version_output" | grep -oP '1\.(\d+)' | cut -d'.' -f2)
+    else
+        java_version=\$(echo "\$java_version_output" | grep -oP '"\d+' | tr -d '"')
+    fi
+
+    if [[ -n "\$java_version" ]] && [[ "\$java_version" -lt $REQUIRED_JAVA_VERSION ]]; then
+        echo "Error: Java $REQUIRED_JAVA_VERSION+ is required. Found: Java \$java_version" >&2
+        exit 1
+    fi
+}
+
+check_java
 
 # Default JVM options
 JAVA_OPTS="\${JAVA_OPTS:--Xmx512m}"
@@ -292,6 +483,25 @@ EOF
 }
 
 # =============================================================================
+# Create Version Info File
+# =============================================================================
+
+create_version_info() {
+    cat > "$TARGET_DIR/VERSION" << EOF
+SoftClient4ES Installation Info
+================================
+Installed:          $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+Elasticsearch:      $ES_VERSION
+Version:            $SOFT_VERSION
+Scala:              $SCALA_VERSION
+Java Required:      $REQUIRED_JAVA_VERSION+
+Artifact:           $ARTIFACT_NAME
+EOF
+
+    success "Created $TARGET_DIR/VERSION"
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 
@@ -304,6 +514,7 @@ print_summary() {
     echo "  Installation directory: $TARGET_DIR"
     echo "  Elasticsearch version:  $ES_VERSION"
     echo "  SoftClient4ES version:  $SOFT_VERSION"
+    echo "  Java required:          $REQUIRED_JAVA_VERSION+"
     echo ""
     echo "  Directory structure:"
     echo "    $TARGET_DIR/"
@@ -313,6 +524,7 @@ print_summary() {
     echo "    │   └── application.conf"
     echo "    ├── lib/"
     echo "    │   └── $JAR_NAME"
+    echo "    ├── VERSION"
     echo "    └── uninstall.sh"
     echo ""
     echo "  To start the REPL:"
@@ -347,6 +559,7 @@ main() {
     create_config
     create_launcher
     create_uninstaller
+    create_version_info
     print_summary
 }
 
