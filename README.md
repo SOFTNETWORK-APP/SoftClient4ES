@@ -34,11 +34,14 @@ softclient4es --host localhost --port 9200
 ```sql
 -- Create a table (index)
 CREATE TABLE users (
-  id KEYWORD PRIMARY KEY,
-  name TEXT,
+  id KEYWORD,
+  name TEXT FIELDS(
+    raw KEYWORD
+  ) OPTIONS (fielddata = true),
   email KEYWORD,
   age INTEGER,
-  created_at DATE
+  created_at DATE,
+  PRIMARY KEY (id)
 );
 
 -- Insert data
@@ -46,13 +49,13 @@ INSERT INTO users (id, name, email, age)
 VALUES ('1', 'Alice', 'alice@example.com', 30);
 
 -- Query with SQL
-SELECT name, email FROM users WHERE age > 25 ORDER BY name;
+SELECT name, email, age FROM users WHERE age > 25 ORDER BY name;
 
 -- Update records
 UPDATE users SET age = 31 WHERE id = '1';
 
 -- Show tables
-SHOW TABLES;
+SHOW TABLES LIKE 'user%';
 ```
 
 📖 **[Full REPL Documentation](documentation/client/repl.md)**
@@ -78,13 +81,18 @@ SHOW TABLES;
 
 ```sql
 CREATE TABLE products (
-  id KEYWORD PRIMARY KEY,
-  name TEXT,
+  id KEYWORD,
+  name TEXT FIELDS(
+    raw KEYWORD
+  ) OPTIONS (fielddata = true),
+  email KEYWORD,
   price DOUBLE,
-  tags KEYWORD[]
+  tags KEYWORD,
+  PRIMARY KEY (id)
 );
 
 ALTER TABLE products ADD COLUMN stock INTEGER;
+DESCRIBE TABLE products;
 DROP TABLE old_products;
 TRUNCATE TABLE logs;
 ```

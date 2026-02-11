@@ -679,7 +679,7 @@ class TableExecutor(
             logger.info(s"♻️ Alter index $indexName.")
             alterExistingIndex(indexName, alter)
 
-          // 5) Error on indexExists
+          // 4) Error on indexExists
           case ElasticFailure(elasticError) =>
             Future.successful(
               ElasticFailure(elasticError.copy(operation = Some("schema")))

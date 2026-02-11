@@ -40,7 +40,7 @@ case class LoggingActionConfig(
   level: Option[LoggingLevel] = Some(LoggingLevel.INFO)
 ) extends DdlToken {
 
-  def sql: String = s"\"$text\"" + level.map(l => s" AT $l").getOrElse("")
+  def sql: String = s""""$text"${level.map(l => s" AT $l").getOrElse("")}"""
 
   def node: JsonNode = {
     val node = mapper.createObjectNode()
@@ -98,7 +98,7 @@ case class LoggingAction(
 ) extends WatcherAction {
 
   def sql: String = s"LOG $logging" +
-    foreach.map(f => s" FOREACH \"$f\"").getOrElse("") +
+    foreach.map(f => s""" FOREACH "$f"""").getOrElse("") +
     limit.map(mi => s" LIMIT $mi").getOrElse("")
 
   override def node: JsonNode = {
@@ -128,7 +128,7 @@ case class WebhookAction(
   limit: Option[Int] = None
 ) extends WatcherAction {
   def sql: String = s"WEBHOOK $webhook" +
-    foreach.map(f => s" FOREACH \"$f\"").getOrElse("") +
+    foreach.map(f => s""" FOREACH "$f"""").getOrElse("") +
     limit.map(mi => s" LIMIT $mi").getOrElse("")
 
   override def node: JsonNode = {
