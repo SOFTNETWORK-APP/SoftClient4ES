@@ -81,7 +81,7 @@ object HelpRenderer {
     // See Also
     if (cmd.seeAlso.nonEmpty) {
       sb.append(
-        s"${bold("See Also:")} ${cmd.seeAlso.map(s => yellow(s".help $s")).mkString(", ")}\n"
+        s"${bold("See Also:")} ${cmd.seeAlso.map(s => yellow(s"help $s")).mkString(", ")}\n"
       )
     }
 
@@ -139,7 +139,7 @@ object HelpRenderer {
     // See Also
     if (fn.seeAlso.nonEmpty) {
       sb.append(
-        s"${bold("See Also:")} ${fn.seeAlso.map(s => yellow(s".help $s")).mkString(", ")}\n"
+        s"${bold("See Also:")} ${fn.seeAlso.map(s => yellow(s"help $s")).mkString(", ")}\n"
       )
     }
 
@@ -176,9 +176,9 @@ object HelpRenderer {
     }
 
     sb.append(
-      s"${gray("Type")} ${yellow(".help <topic>")} ${gray("for detailed help on a specific topic.")}\n"
+      s"${gray("Type")} ${yellow("help <topic>")} ${gray("for detailed help on a specific topic.")}\n"
     )
-    sb.append(s"${gray("Example:")} ${yellow(".help SELECT")}  ${yellow(".help CURRENT_DATE")}\n")
+    sb.append(s"${gray("Example:")} ${yellow("help SELECT")}  ${yellow("help CURRENT_DATE")}\n")
 
     sb.toString()
   }
@@ -190,7 +190,7 @@ object HelpRenderer {
 
     if (results.isEmpty) {
       sb.append(s"${gray("No results found.")}\n")
-      sb.append(s"${gray("Try")} ${yellow(".help")} ${gray("to see all available topics.")}\n")
+      sb.append(s"${gray("Try")} ${yellow("help")} ${gray("to see all available topics.")}\n")
     } else {
       results.foreach { entry =>
         val typeColor = entry match {

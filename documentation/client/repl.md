@@ -429,14 +429,14 @@ Continue typing on the next line until you enter the semicolon:
 
 ```
 sql> CREATE TABLE users (
-   |   id INT NOT NULL,
-   |   name VARCHAR,
-   |   birthdate DATE,
-   |   PRIMARY KEY (id)
-   | );
+   ->   id INT NOT NULL,
+   ->   name VARCHAR,
+   ->   birthdate DATE,
+   ->   PRIMARY KEY (id)
+   -> );
 ```
 
-The prompt changes to `|` to indicate continuation mode.
+The prompt changes to `->` to indicate continuation mode.
 
 ---
 

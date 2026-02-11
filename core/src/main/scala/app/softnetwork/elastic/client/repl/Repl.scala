@@ -101,15 +101,24 @@ class Repl(
   }
 
   private def handleLine(line: String): Unit = {
-    line match {
-      // Empty line
-      case "" if multilineBuffer.isEmpty =>
+    val trimmed = line.trim
+    // Empty line
+    if (trimmed.isEmpty) {
       // Do nothing
-
+      return
+    }
+    val firstWord = trimmed.split("\\s+")(0).toLowerCase
+    val firstChar = trimmed.charAt(0).toInt
+    trimmed match {
       // Meta commands (execute immediately, clear buffer first)
-      case cmd if metaCommands.exists(meta => cmd.startsWith(meta)) || cmd.startsWith("\\") =>
+      case _ if metaCommands.contains(firstWord) =>
         multilineBuffer.clear()
-        handleMetaCommand(cmd)
+        handleMetaCommand(trimmed)
+
+      // Backslash commands: \h, \q, \t, etc.
+      case _ if firstChar == 104 =>
+        multilineBuffer.clear()
+        handleBackslashCommand(trimmed)
 
       // SQL statement (complete or partial)
       case sql =>
@@ -194,92 +203,47 @@ class Repl(
   // ==================== Meta Commands ====================
 
   private lazy val metaCommands: Set[String] = Set(
-    "help", "quit", "exit",
-    "tables", "pipelines", "watchers", "policies",
-    "history", "clear", "timing", "format", "timeout",
+    "help",
+    "quit",
+    "exit",
+    "tables",
+    "pipelines",
+    "watchers",
+    "policies",
+    "history",
+    "clear",
+    "timing",
+    "format",
+    "timeout",
     // Stream commands
-    "consume", "stream", "cancel"
+    "consume",
+    "stream",
+    "cancel"
   )
 
   private def handleMetaCommand(cmd: String): Unit = {
     val parts = cmd.split("\\s+", 2)
-    val command = parts(0)
+    val command = parts(0).toLowerCase
     val args = if (parts.length > 1) parts(1) else ""
 
     command match {
-      case "help" | "\\h" =>
+      case "help" =>
         handleHelp(args)
 
-      case "quit" | "exit" | "\\q" =>
+      case "quit" | "exit" =>
         running = false
 
-      case "tables" | "\\t" =>
+      case "tables" =>
         executeStatementDirect("SHOW TABLES")
 
-      case "\\st" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW TABLE $args")
-        } else {
-          printError("Usage: \\st <table_name>")
-        }
-
-      case "\\ct" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW CREATE TABLE $args")
-        } else {
-          printError("Usage: \\ct <table_name>")
-        }
-
-      case "\\dt" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"DESCRIBE TABLE $args")
-        } else {
-          printError("Usage: describe <table_name>")
-        }
-
-      case "pipelines" | "\\p" =>
+      case "pipelines" =>
         executeStatementDirect("SHOW PIPELINES")
 
-      case "\\sp" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW PIPELINE $args")
-        } else {
-          printError("Usage: \\sp <pipeline_name>")
-        }
-
-      case "\\cp" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW CREATE PIPELINE $args")
-        } else {
-          printError("Usage: \\cp <pipeline_name>")
-        }
-
-      case "\\dp" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"DESCRIBE PIPELINE $args")
-        } else {
-          printError("Usage: \\dp <pipeline_name>")
-        }
-
-      case "watchers" | "\\w" =>
+      case "watchers" =>
         executeStatementDirect("SHOW WATCHERS")
 
-      case "\\sw" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW WATCHER STATUS $args")
-        } else {
-          printError("Usage: \\sw <watcher_name>")
-        }
-
-      case "policies" | "\\pol" =>
+      case "policies" =>
         executeStatementDirect("SHOW ENRICH POLICIES")
-
-      case "\\spol" =>
-        if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW ENRICH POLICY $args")
-        } else {
-          printError("Usage: \\spol <policy_name>")
-        }
 
       case "history" =>
         printHistory()
@@ -312,17 +276,133 @@ class Repl(
 
       // ==================== Stream Commands ====================
 
-      case "consume" | "\\c" =>
+      case "consume" =>
         handleConsumeStream(args)
 
-      case "stream" | "\\s" =>
+      case "stream" =>
         handleStreamStatus()
 
-      case "cancel" | "\\x" =>
+      case "cancel" =>
         handleCancelStream()
 
       case unknown =>
         printError(s"Unknown command: $unknown (type help for available commands)")
+    }
+  }
+
+  // Backslash commands separately
+  private val backslashCommands: Set[String] = Set(
+    "h",
+    "q",
+    "t",
+    "st",
+    "ct",
+    "dt",
+    "p",
+    "sp",
+    "cp",
+    "dp",
+    "w",
+    "sw",
+    "pol",
+    "spol",
+    "c",
+    "s",
+    "x"
+  )
+
+  private def handleBackslashCommand(cmd: String): Unit = {
+    // Remove leading backslash and split
+    val parts = cmd.split("\\s+", 2)
+    val command = parts(0).toLowerCase
+    val args = if (parts.length > 1) parts(1) else ""
+
+    command match {
+      case "h" | "help" =>
+        handleHelp(args)
+
+      case "q" | "quit" =>
+        running = false
+
+      case "t" | "tables" =>
+        executeStatementDirect("SHOW TABLES")
+
+      case "st" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW TABLE $args")
+        } else {
+          printError("Usage: \\st <table_name>")
+        }
+
+      case "ct" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW CREATE TABLE $args")
+        } else {
+          printError("Usage: \\ct <table_name>")
+        }
+
+      case "dt" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"DESCRIBE TABLE $args")
+        } else {
+          printError("Usage: \\dt <table_name>")
+        }
+
+      case "p" | "pipelines" =>
+        executeStatementDirect("SHOW PIPELINES")
+
+      case "sp" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW PIPELINE $args")
+        } else {
+          printError("Usage: \\sp <pipeline_name>")
+        }
+
+      case "cp" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW CREATE PIPELINE $args")
+        } else {
+          printError("Usage: \\cp <pipeline_name>")
+        }
+
+      case "dp" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"DESCRIBE PIPELINE $args")
+        } else {
+          printError("Usage: \\dp <pipeline_name>")
+        }
+
+      case "w" | "watchers" =>
+        executeStatementDirect("SHOW WATCHERS")
+
+      case "sw" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW WATCHER STATUS $args")
+        } else {
+          printError("Usage: \\sw <watcher_name>")
+        }
+
+      case "pol" | "policies" =>
+        executeStatementDirect("SHOW ENRICH POLICIES")
+
+      case "spol" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW ENRICH POLICY $args")
+        } else {
+          printError("Usage: \\spol <policy_name>")
+        }
+
+      case "c" | "consume" =>
+        handleConsumeStream(args)
+
+      case "s" | "stream" =>
+        handleStreamStatus()
+
+      case "x" | "cancel" =>
+        handleCancelStream()
+
+      case _ =>
+        printError(s"Unknown command: \\$command")
     }
   }
 
@@ -356,7 +436,7 @@ class Repl(
             println(HelpRenderer.renderSearchResults(args, results.take(5)))
           } else {
             printError(s"No help available for '$args'")
-            println(s"Type ${yellow(".help")} to see available topics.")
+            println(s"Type ${yellow("help")} to see available topics.")
           }
       }
     }
@@ -430,8 +510,8 @@ class Repl(
   private def handleStreamStatus(): Unit = {
     if (executor.hasActiveStream) {
       println(s"${emoji("🌊")} ${cyan("Active stream available")}")
-      println(s"  Use ${yellow(".consume [batch_size] [max_rows]")} to fetch results")
-      println(s"  Use ${yellow(".cancel")} to cancel the stream")
+      println(s"  Use ${yellow("consume [batch_size] [max_rows]")} to fetch results")
+      println(s"  Use ${yellow("cancel")} to cancel the stream")
     } else {
       println(s"${emoji("ℹ️")} ${gray("No active stream")}")
     }
@@ -451,8 +531,8 @@ class Repl(
   private def printWelcomeBanner(): Unit = {
     val name = s"║  ${formatLigne(bold(cyan("SoftClient4ES CLI")), 56)} ║"
     val ver = s"║  ${formatLigne(gray(s"Version $version"), 56)} ║"
-    val help = s"║  ${formatLigne(s"Type ${yellow(".help")} for available commands", 56)} ║"
-    val quit = s"║  ${formatLigne(s"Type ${yellow(".quit")} to exit", 56)} ║"
+    val help = s"║  ${formatLigne(s"Type ${yellow("help")} for available commands", 56)} ║"
+    val quit = s"║  ${formatLigne(s"Type ${yellow("quit")} to exit", 56)} ║"
     println(
       s"""
          |╔═══════════════════════════════════════════════════════════╗
@@ -488,24 +568,23 @@ class Repl(
     println(
       s"""
          |${bold(cyan("Meta Commands:"))}
-         |  ${yellow(".help")}              Show this help
-         |  ${yellow(".help <topic>")}      Show help for SQL command or function
-         |  ${yellow(".quit")}              Exit the REPL
-         |  ${yellow(".tables")}            List all tables
-         |  ${yellow(".describe <table>")}  Show table schema
-         |  ${yellow(".pipelines")}         List all pipelines
-         |  ${yellow(".watchers")}          List all watchers
-         |  ${yellow(".policies")}          List all enrich policies
-         |  ${yellow(".history")}           Show command history
-         |  ${yellow(".clear")}             Clear screen
-         |  ${yellow(".timing")}            Toggle timing display
-         |  ${yellow(".format <type>")}     Set output format (ascii|json|csv)
-         |  ${yellow(".timeout <seconds>")} Set query timeout
+         |  ${yellow("help")}              Show this help
+         |  ${yellow("help <topic>")}      Show help for SQL command or function
+         |  ${yellow("quit")}              Exit the REPL
+         |  ${yellow("tables")}            List all tables
+         |  ${yellow("pipelines")}         List all pipelines
+         |  ${yellow("watchers")}          List all watchers
+         |  ${yellow("policies")}          List all enrich policies
+         |  ${yellow("history")}           Show command history
+         |  ${yellow("clear")}             Clear screen
+         |  ${yellow("timing")}            Toggle timing display
+         |  ${yellow("format <type>")}     Set output format (ascii|json|csv)
+         |  ${yellow("timeout <seconds>")} Set query timeout
          |
          |${bold(cyan("Stream Commands:"))}
-         |  ${yellow(".stream")}            Show stream status
-         |  ${yellow(".consume [n] [max]")} Consume stream (batch size n, max rows)
-         |  ${yellow(".cancel")}            Cancel active stream
+         |  ${yellow("stream")}            Show stream status
+         |  ${yellow("consume [n] [max]")} Consume stream (batch size n, max rows)
+         |  ${yellow("cancel")}            Cancel active stream
          |
          |${bold(cyan("SQL Commands:"))}
          |  ${green("SELECT")} * FROM table WHERE ...
@@ -518,10 +597,10 @@ class Repl(
          |  ${green("SHOW")} TABLES | PIPELINES | WATCHERS
          |
          |${bold(cyan("Tips:"))}
-         |  • Type ${yellow(".help SELECT")} for SELECT syntax help
-         |  • Type ${yellow(".help CURRENT_DATE")} for function help
+         |  • Type ${yellow("help SELECT")} for SELECT syntax help
+         |  • Type ${yellow("help CURRENT_DATE")} for function help
          |  • Streaming queries return a stream handle
-         |  • Use ${yellow(".consume")} to fetch stream results
+         |  • Use ${yellow("consume")} to fetch stream results
          |  • Press ${yellow("Ctrl+C")} to cancel current operation
          |""".stripMargin
     )
