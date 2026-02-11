@@ -163,7 +163,7 @@ list_available_versions() {
     if [[ -z "$response" ]]; then
         error "Failed to fetch versions from repository"
         error "Artifact: $ARTIFACT_NAME"
-        #exit 1
+        exit 1
     fi
 
     # Parse JSON response to extract version folders
@@ -230,7 +230,7 @@ resolve_latest_version() {
     if [[ -z "$response" ]]; then
         error "Failed to fetch versions from repository"
         error "Artifact: $ARTIFACT_NAME"
-        #exit 1
+        exit 1
     fi
 
     # Parse and get latest non-snapshot version, fallback to any latest
@@ -246,7 +246,7 @@ resolve_latest_version() {
 
     if [[ -z "$latest" ]]; then
         error "Could not determine latest version"
-        #exit 1
+        exit 1
     fi
 
     echo "$latest"
