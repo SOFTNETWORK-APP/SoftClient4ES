@@ -1,0 +1,50 @@
+version: "3.8"
+
+
+volumes:
+  certs:
+    driver: local
+  elasticsearch-data:
+    driver: local
+
+networks:
+  default:
+    name: elastic
+    external: false
+
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: elasticsearch-${STACK_VERSION}
+    healthcheck:
+      test: [ "CMD", "curl",  "--fail" , "http://elasticsearch:9200/_cluster/health?wait_for_status=green&timeout=1s", "||", "exit", "1" ]
+      interval: 5s
+      timeout: 3s
+    labels:
+      co.elastic.logs/module: elasticsearch
+    volumes:
+      - ${ES_DATA_PATH:-./data}:/usr/share/elasticsearch/data
+    ports:
+      - ${HTTP_PORT}:9200
+    environment:
+      - cluster.name=${CLUSTER_NAME}
+      - node.name=es01
+      - network.host=${NETWORK_HOST}
+  #    - http.port=${HTTP_PORT}
+  #    - transport.port=${TRANSPORT_PORT}
+      - discovery.type=${DISCOVERY_TYPE}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.security.enabled=${XPACK_SECURITY_ENABLED}
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - xpack.license.self_generated.type=${LICENSE}
+      - xpack.watcher.enabled=${WATCHER_ENABLED}
+      - xpack.watcher.encrypt_sensitive_data=false
+      - xpack.watcher.execution.default_throttle_period=5s
+      - bootstrap.memory_lock=${BOOTSTRAP_MEMORY_LOCK}
+      - ES_JAVA_OPTS=${JAVA_OPTS}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
