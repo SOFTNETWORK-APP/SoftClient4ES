@@ -173,10 +173,40 @@ object Cli extends App {
         |  softclient4es -c "SELECT * FROM users LIMIT 10"
         |
         |Interactive Commands:
-        |  .help                     Show available commands
-        |  .tables                   List all tables
-        |  .describe <table>         Show table schema
-        |  .quit                     Exit
+        | help (\h)       Display help information
+        | quit (\q)       Exit the REPL
+        | exit (\q)       Exit the REPL
+        | history         Display command history
+        | clear           Clear the screen
+        | timing          Toggle timing display ON/OFF
+        | format          Set or show output format
+        | timeout         Set or show query timeout
+        |
+        |
+        |Table Commands:
+        | tables (\t)     List all tables
+        | \st <table>     Show table details
+        | \ct <table>     Show table ddl
+        | \dt <table>     Describe table schema
+        |
+        |Pipeline Commands:
+        | pipelines (\p)  List all pipelines
+        | \sp <pipeline>  Show pipeline details
+        | \cp <pipeline>  Show pipeline ddl
+        | \dp <pipeline>  Describe pipeline schema
+        |
+        |Watcher Commands:
+        | watchers (\w)   List all watchers
+        | \sw <watcher>   Show watcher status
+        |
+        |Policy Commands:
+        | policies (\pol)   List all enrich policies
+        | \sl <policy>    Show enrich policy details
+        |
+        |Stream Commands:
+        | consume (\c)    Consume streaming results from last query
+        | stream (\s)     Show stream status
+        | cancel (\x)     Cancel active stream
         |""".stripMargin
     )
   }

@@ -77,9 +77,9 @@ object ResultRenderer {
         s"""${emoji("🌊")} ${cyan(s"Streaming result$sizeInfo")}
            |
            |${bold("Commands:")}
-           |  ${yellow(".consume [batch] [max]")} - Fetch results (default batch: 100)
-           |  ${yellow(".consume 50 1000")}       - Fetch max 1000 rows in batches of 50
-           |  ${yellow(".cancel")}                - Cancel the stream
+           |  ${yellow("consume [batch] [max]")} - Fetch results (default batch: 100)
+           |  ${yellow("consume 50 1000")}       - Fetch max 1000 rows in batches of 50
+           |  ${yellow("cancel")}                - Cancel the stream
            |
            |${gray(s"(${executionTime.toMillis}ms to initialize)")}""".stripMargin
     }
@@ -317,7 +317,7 @@ object ResultRenderer {
   }
 
   private def renderStreamInfo(): String = {
-    s"${emoji("🌊")} ${cyan("Streaming result")} ${gray("(use .consume to fetch)")}"
+    s"${emoji("🌊")} ${cyan("Streaming result")} ${gray("(use \\consume to fetch)")}"
   }
 
   // ==================== Syntax Highlighting ====================

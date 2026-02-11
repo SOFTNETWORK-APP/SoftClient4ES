@@ -20,3 +20,4 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [Aggregations](aggregations.md)
 - [Template Management](templates.md)
 - [SQL Gateway Usage](gateway.md)
+- [REPL Client](repl.md)

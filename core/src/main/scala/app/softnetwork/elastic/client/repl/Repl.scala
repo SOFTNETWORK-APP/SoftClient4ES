@@ -107,7 +107,7 @@ class Repl(
       // Do nothing
 
       // Meta commands (execute immediately, clear buffer first)
-      case cmd if cmd.startsWith(".") =>
+      case cmd if metaCommands.exists(meta => cmd.startsWith(meta)) || cmd.startsWith("\\") =>
         multilineBuffer.clear()
         handleMetaCommand(cmd)
 
@@ -193,65 +193,106 @@ class Repl(
 
   // ==================== Meta Commands ====================
 
+  private lazy val metaCommands: Set[String] = Set(
+    "help", "quit", "exit",
+    "tables", "pipelines", "watchers", "policies",
+    "history", "clear", "timing", "format", "timeout",
+    // Stream commands
+    "consume", "stream", "cancel"
+  )
+
   private def handleMetaCommand(cmd: String): Unit = {
     val parts = cmd.split("\\s+", 2)
     val command = parts(0)
     val args = if (parts.length > 1) parts(1) else ""
 
     command match {
-      case ".help" | ".h" | "/h" =>
+      case "help" | "\\h" =>
         handleHelp(args)
 
-      case ".quit" | ".exit" | ".q" | "/q" =>
+      case "quit" | "exit" | "\\q" =>
         running = false
 
-      case ".tables" | ".t" | "/t" =>
+      case "tables" | "\\t" =>
+        executeStatementDirect("SHOW TABLES")
+
+      case "\\st" =>
         if (args.nonEmpty) {
           executeStatementDirect(s"SHOW TABLE $args")
         } else {
-          executeStatementDirect("SHOW TABLES")
+          printError("Usage: \\st <table_name>")
         }
 
-      case ".describe" | ".desc" | ".d" | "/dt" =>
+      case "\\ct" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW CREATE TABLE $args")
+        } else {
+          printError("Usage: \\ct <table_name>")
+        }
+
+      case "\\dt" =>
         if (args.nonEmpty) {
           executeStatementDirect(s"DESCRIBE TABLE $args")
         } else {
-          printError("Usage: .describe <table_name>")
+          printError("Usage: describe <table_name>")
         }
 
-      case ".pipelines" | ".p" | "/p" =>
+      case "pipelines" | "\\p" =>
+        executeStatementDirect("SHOW PIPELINES")
+
+      case "\\sp" =>
         if (args.nonEmpty) {
           executeStatementDirect(s"SHOW PIPELINE $args")
         } else {
-          executeStatementDirect("SHOW PIPELINES")
+          printError("Usage: \\sp <pipeline_name>")
         }
 
-      case ".watchers" | ".w" | "/w" =>
+      case "\\cp" =>
         if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW WATCHER $args")
+          executeStatementDirect(s"SHOW CREATE PIPELINE $args")
         } else {
-          executeStatementDirect("SHOW WATCHERS")
+          printError("Usage: \\cp <pipeline_name>")
         }
 
-      case ".enrich" | ".e" | "/e" =>
+      case "\\dp" =>
         if (args.nonEmpty) {
-          executeStatementDirect(s"SHOW ENRICH POLICY STATUS $args")
+          executeStatementDirect(s"DESCRIBE PIPELINE $args")
         } else {
-          executeStatementDirect("SHOW ENRICH POLICIES")
+          printError("Usage: \\dp <pipeline_name>")
         }
 
-      case ".history" =>
+      case "watchers" | "\\w" =>
+        executeStatementDirect("SHOW WATCHERS")
+
+      case "\\sw" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW WATCHER STATUS $args")
+        } else {
+          printError("Usage: \\sw <watcher_name>")
+        }
+
+      case "policies" | "\\pol" =>
+        executeStatementDirect("SHOW ENRICH POLICIES")
+
+      case "\\spol" =>
+        if (args.nonEmpty) {
+          executeStatementDirect(s"SHOW ENRICH POLICY $args")
+        } else {
+          printError("Usage: \\spol <policy_name>")
+        }
+
+      case "history" =>
         printHistory()
 
-      case ".clear" =>
+      case "clear" =>
         terminal.puts(org.jline.utils.InfoCmp.Capability.clear_screen)
         terminal.flush()
 
-      case ".timing" =>
+      case "timing" =>
         config.showTiming = !config.showTiming
         println(s"Timing: ${if (config.showTiming) "ON" else "OFF"}")
 
-      case ".format" =>
+      case "format" =>
         args.toLowerCase match {
           case "ascii" => config.format = OutputFormat.Ascii
           case "json"  => config.format = OutputFormat.Json
@@ -260,7 +301,7 @@ class Repl(
           case other   => printError(s"Unknown format: $other")
         }
 
-      case ".timeout" =>
+      case "timeout" =>
         Try(args.toInt) match {
           case Success(seconds) if seconds > 0 =>
             config.timeout = seconds.seconds
@@ -271,17 +312,17 @@ class Repl(
 
       // ==================== Stream Commands ====================
 
-      case ".consume" | ".c" =>
+      case "consume" | "\\c" =>
         handleConsumeStream(args)
 
-      case ".stream" | ".s" =>
+      case "stream" | "\\s" =>
         handleStreamStatus()
 
-      case ".cancel" =>
+      case "cancel" | "\\x" =>
         handleCancelStream()
 
       case unknown =>
-        printError(s"Unknown command: $unknown (type .help for available commands)")
+        printError(s"Unknown command: $unknown (type help for available commands)")
     }
   }
 
