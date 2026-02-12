@@ -199,7 +199,7 @@ object ResultRenderer {
     if (success) {
       s"${emoji("✅")} ${green("Success")} ${gray(s"(${executionTime.toMillis}ms)")}"
     } else {
-      s"${emoji("❌")} ${red("Failed")} ${gray(s"(${executionTime.toMillis}ms)")}"
+      s"${emoji("ℹ️")} ${gray("No changes")} ${gray(s"(${executionTime.toMillis}ms)")}"
     }
   }
 

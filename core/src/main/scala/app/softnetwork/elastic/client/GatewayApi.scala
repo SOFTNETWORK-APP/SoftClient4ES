@@ -1181,7 +1181,7 @@ class TableExecutor(
             val pipeline = IngestPipeline(
               name = pipelineName,
               json = maybePipeline.get,
-              pipelineType = Some(IngestPipelineType.Default)
+              pipelineType = Some(pipelineType)
             )
             // compute diff for pipeline update
             val pipelineDiff: List[PipelineDiff] = pipeline.diff(table.defaultPipeline)
@@ -1438,7 +1438,7 @@ class TableExecutor(
                 .indexSettings
             )
             .toEither
-        } else Right(false)
+        } else Right(true)
       }
 
     steps ++= Seq(
