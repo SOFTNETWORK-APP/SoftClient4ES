@@ -33,10 +33,93 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-success() { echo -e "${GREEN}[OK]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+# IMPORTANT: All logging goes to stderr so it doesn't pollute function return values
+info()    { echo -e "${BLUE}[INFO]${NC} $1" >&2; }
+success() { echo -e "${GREEN}[OK]${NC} $1" >&2; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 error()   { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+# =============================================================================
+# Detect OS
+# =============================================================================
+
+detect_os() {
+    case "$OSTYPE" in
+        linux*)   echo "linux" ;;
+        darwin*)  echo "macos" ;;
+        msys*)    echo "windows" ;;
+        cygwin*)  echo "windows" ;;
+        *)        echo "unknown" ;;
+    esac
+}
+
+OS_TYPE=$(detect_os)
+
+# =============================================================================
+# Portable Version Sort
+# =============================================================================
+
+# Sort versions portably (works on both GNU and BSD)
+sort_versions() {
+    # Try sort -V first (GNU sort)
+    if echo "1.0.0" | sort -V &>/dev/null; then
+        sort -V
+    else
+        # Fallback: numeric sort by version components
+        sort -t. -k1,1n -k2,2n -k3,3n -k4,4n
+    fi
+}
+
+# =============================================================================
+# Portable JSON URI Extraction
+# =============================================================================
+
+# Extract URIs from JFrog API JSON response
+# Works on both GNU grep (Linux) and BSD grep (macOS)
+# Filters out hidden files (starting with .) and maven-metadata.xml
+extract_uris_from_json() {
+    # Use sed which is portable across Linux and macOS
+    # Pattern: "uri" : "/version" -> extract version
+    sed -n 's/.*"uri"[[:space:]]*:[[:space:]]*"\/\([^"]*\)".*/\1/p' \
+        | grep -v '^\.' \
+        | grep -v '^maven-metadata' \
+        | grep -v '\.xml$' \
+        | grep -v '\.md5$' \
+        | grep -v '\.sha'
+}
+
+# =============================================================================
+# Portable Java Version Detection
+# =============================================================================
+
+# Get Java major version (works on Linux and macOS)
+get_java_version() {
+    local java_version_output
+    java_version_output=$(java -version 2>&1 | head -n 1)
+
+    local java_version=""
+
+    # Extract the version string between quotes
+    # Examples: "1.8.0_292", "11.0.11", "17.0.1", "21"
+    local version_string
+    version_string=$(echo "$java_version_output" | sed 's/.*"\(.*\)".*/\1/')
+
+    if [[ -z "$version_string" ]]; then
+        echo ""
+        return
+    fi
+
+    # Check if it starts with "1." (old format like 1.8)
+    if [[ "$version_string" == 1.* ]]; then
+        # Old format: 1.8.0_xxx -> extract 8
+        java_version=$(echo "$version_string" | cut -d'.' -f2)
+    else
+        # New format: 11.0.11, 17.0.1, 21 -> extract first number
+        java_version=$(echo "$version_string" | cut -d'.' -f1)
+    fi
+
+    echo "$java_version"
+}
 
 # =============================================================================
 # Help
@@ -65,6 +148,8 @@ Examples:
   $0 --list-versions --es-version 8
   $0 --target /opt/softclient4es --es-version 8 --version 0.16-SNAPSHOT
   $0 -t ~/tools/softclient4es -e 7 -v 0.2.0
+
+Detected OS: $OS_TYPE
 
 EOF
     exit 0
@@ -143,31 +228,42 @@ get_required_java_version() {
 REQUIRED_JAVA_VERSION=$(get_required_java_version "$ES_VERSION")
 
 # =============================================================================
+# Fetch Versions from Repository
+# =============================================================================
+
+fetch_versions() {
+    local api_url="${JFROG_API_URL}/${ARTIFACT_NAME}"
+    local response=""
+
+    if command -v curl &> /dev/null; then
+        response=$(curl -fsSL "$api_url" 2>/dev/null)
+    elif command -v wget &> /dev/null; then
+        response=$(wget -qO- "$api_url" 2>/dev/null)
+    else
+        error "curl or wget is required"
+        return 1
+    fi
+
+    if [[ -z "$response" ]]; then
+        error "Failed to fetch versions from repository"
+        error "URL: $api_url"
+        error "Artifact: $ARTIFACT_NAME"
+        return 1
+    fi
+
+    # Parse JSON response and extract clean version list
+    echo "$response" | extract_uris_from_json | sort_versions
+}
+
+# =============================================================================
 # List Available Versions
 # =============================================================================
 
 list_available_versions() {
     info "Fetching available versions for ES$ES_VERSION..."
 
-    local api_url="${JFROG_API_URL}/${ARTIFACT_NAME}"
-
-    if command -v curl &> /dev/null; then
-        local response=$(curl -fsSL "$api_url" 2>/dev/null)
-    elif command -v wget &> /dev/null; then
-        local response=$(wget -qO- "$api_url" 2>/dev/null)
-    else
-        error "curl or wget is required"
-        exit 1
-    fi
-
-    if [[ -z "$response" ]]; then
-        error "Failed to fetch versions from repository"
-        error "Artifact: $ARTIFACT_NAME"
-        exit 1
-    fi
-
-    # Parse JSON response to extract version folders
-    local versions=$(echo "$response" | grep -oP '"uri"\s*:\s*"/\K[^"]+' | grep -v '^\.' | sort -V)
+    local versions
+    versions=$(fetch_versions)
 
     if [[ -z "$versions" ]]; then
         error "No versions found for $ARTIFACT_NAME"
@@ -216,28 +312,18 @@ fi
 resolve_latest_version() {
     info "Resolving latest version..."
 
-    local api_url="${JFROG_API_URL}/${ARTIFACT_NAME}"
+    local versions
+    versions=$(fetch_versions)
 
-    if command -v curl &> /dev/null; then
-        local response=$(curl -fsSL "$api_url" 2>/dev/null)
-    elif command -v wget &> /dev/null; then
-        local response=$(wget -qO- "$api_url" 2>/dev/null)
-    else
-        error "curl or wget is required"
-        exit 1
+    if [[ -z "$versions" ]]; then
+        error "Could not fetch versions"
+        echo ""
+        return 1
     fi
-
-    if [[ -z "$response" ]]; then
-        error "Failed to fetch versions from repository"
-        error "Artifact: $ARTIFACT_NAME"
-        exit 1
-    fi
-
-    # Parse and get latest non-snapshot version, fallback to any latest
-    local versions=$(echo "$response" | grep -oP '"uri"\s*:\s*"/\K[^"]+' | grep -v '^\.' | sort -V)
 
     # Prefer non-snapshot versions
-    local latest=$(echo "$versions" | grep -v 'SNAPSHOT' | tail -1)
+    local latest
+    latest=$(echo "$versions" | grep -v 'SNAPSHOT' | tail -1)
 
     # Fallback to any version if no release found
     if [[ -z "$latest" ]]; then
@@ -246,14 +332,22 @@ resolve_latest_version() {
 
     if [[ -z "$latest" ]]; then
         error "Could not determine latest version"
-        exit 1
+        echo ""
+        return 1
     fi
 
+    # Return ONLY the version string (no other output)
     echo "$latest"
 }
 
 if [[ "$SOFT_VERSION" == "latest" ]]; then
     SOFT_VERSION=$(resolve_latest_version)
+    if [[ -z "$SOFT_VERSION" ]]; then
+        error "Failed to resolve latest version"
+        error "Try specifying a version manually with --version"
+        error "Or run with --list-versions to see available versions"
+        exit 1
+    fi
     success "Resolved latest version: $SOFT_VERSION"
 fi
 
@@ -266,29 +360,30 @@ DOWNLOAD_URL="${JFROG_REPO_URL}/${ARTIFACT_NAME}/${SOFT_VERSION}/${JAR_NAME}"
 
 check_prerequisites() {
     info "Checking prerequisites..."
+    info "Detected OS: $OS_TYPE"
 
     # Check Java
     if ! command -v java &> /dev/null; then
         error "Java is not installed."
         error "ES$ES_VERSION requires Java $REQUIRED_JAVA_VERSION or higher."
+        case "$OS_TYPE" in
+            macos)
+                error "Install with: brew install openjdk@$REQUIRED_JAVA_VERSION"
+                ;;
+            linux)
+                error "Install with: sudo apt install openjdk-$REQUIRED_JAVA_VERSION-jdk"
+                error "         or: sudo yum install java-$REQUIRED_JAVA_VERSION-openjdk"
+                ;;
+        esac
         exit 1
     fi
 
-    # Get Java version
-    local java_version_output=$(java -version 2>&1 | head -n 1)
+    # Get Java version (portable)
     local java_version
-
-    # Handle both old (1.8.x) and new (11.x, 17.x) version formats
-    if echo "$java_version_output" | grep -q '"1\.[0-9]'; then
-        # Old format: "1.8.0_xxx"
-        java_version=$(echo "$java_version_output" | grep -oP '1\.(\d+)' | cut -d'.' -f2)
-    else
-        # New format: "11.x.x", "17.x.x", etc.
-        java_version=$(echo "$java_version_output" | grep -oP '"(\d+)' | tr -d '"')
-    fi
+    java_version=$(get_java_version)
 
     if [[ -z "$java_version" ]]; then
-        warn "Could not determine Java version"
+        warn "Could not determine Java version. Proceeding anyway..."
     else
         if [[ "$java_version" -lt "$REQUIRED_JAVA_VERSION" ]]; then
             error "Java $REQUIRED_JAVA_VERSION or higher is required for ES$ES_VERSION."
@@ -367,7 +462,7 @@ download_jar() {
             error "Failed to download JAR from $DOWNLOAD_URL"
             error "Please check that version '$SOFT_VERSION' exists."
             error "Run with --list-versions to see available versions."
-            #exit 1
+            exit 1
         fi
     else
         if ! wget -q --show-progress -O "$dest" "$DOWNLOAD_URL"; then
@@ -491,7 +586,7 @@ EOF
 create_launcher() {
     info "Creating launcher script..."
 
-    cat > "$TARGET_DIR/bin/softclient4es" << EOF
+    cat > "$TARGET_DIR/bin/softclient4es" << LAUNCHER_EOF
 #!/usr/bin/env bash
 #
 # SoftClient4ES Launcher
@@ -504,8 +599,10 @@ BASE_DIR="\$(dirname "\$SCRIPT_DIR")"
 
 JAR_FILE="\$BASE_DIR/lib/$JAR_NAME"
 CONFIG_FILE="\$BASE_DIR/conf/application.conf"
-LOGBACK_FILE="$BASE_DIR/conf/logback.xml"
-LOG_DIR="$BASE_DIR/logs"
+LOGBACK_FILE="\$BASE_DIR/conf/logback.xml"
+LOG_DIR="\$BASE_DIR/logs"
+
+REQUIRED_JAVA=$REQUIRED_JAVA_VERSION
 
 if [[ ! -f "\$JAR_FILE" ]]; then
     echo "Error: JAR file not found: \$JAR_FILE" >&2
@@ -513,26 +610,34 @@ if [[ ! -f "\$JAR_FILE" ]]; then
 fi
 
 # Create logs directory if it doesn't exist
-mkdir -p "$LOG_DIR"
+mkdir -p "\$LOG_DIR"
 
-# Check Java version
+# Check Java version (portable - works on Linux and macOS)
 check_java() {
     if ! command -v java &> /dev/null; then
-        echo "Error: Java is not installed. Java $REQUIRED_JAVA_VERSION+ is required." >&2
+        echo "Error: Java is not installed. Java \$REQUIRED_JAVA+ is required." >&2
         exit 1
     fi
 
-    local java_version_output=\$(java -version 2>&1 | head -n 1)
-    local java_version
+    local java_version_output
+    java_version_output=\$(java -version 2>&1 | head -n 1)
 
-    if echo "\$java_version_output" | grep -q '"1\.[0-9]'; then
-        java_version=\$(echo "\$java_version_output" | grep -oP '1\.(\d+)' | cut -d'.' -f2)
+    # Extract version string between quotes
+    local version_string
+    version_string=\$(echo "\$java_version_output" | sed 's/.*"\(.*\)".*/\1/')
+
+    local java_version=""
+
+    if [[ "\$version_string" == 1.* ]]; then
+        # Old format: 1.8.0_xxx -> extract 8
+        java_version=\$(echo "\$version_string" | cut -d'.' -f2)
     else
-        java_version=\$(echo "\$java_version_output" | grep -oP '"\d+' | tr -d '"')
+        # New format: 11.0.11, 17.0.1, 21 -> extract first number
+        java_version=\$(echo "\$version_string" | cut -d'.' -f1)
     fi
 
-    if [[ -n "\$java_version" ]] && [[ "\$java_version" -lt $REQUIRED_JAVA_VERSION ]]; then
-        echo "Error: Java $REQUIRED_JAVA_VERSION+ is required. Found: Java \$java_version" >&2
+    if [[ -n "\$java_version" ]] && [[ "\$java_version" -lt "\$REQUIRED_JAVA" ]]; then
+        echo "Error: Java \$REQUIRED_JAVA+ is required. Found: Java \$java_version" >&2
         exit 1
     fi
 }
@@ -544,17 +649,17 @@ JAVA_OPTS="\${JAVA_OPTS:--Xmx512m}"
 
 # Logback configuration
 LOGBACK_OPTS=""
-if [[ -f "$LOGBACK_FILE" ]]; then
-    LOGBACK_OPTS="-Dlogback.configurationFile=$LOGBACK_FILE"
+if [[ -f "\$LOGBACK_FILE" ]]; then
+    LOGBACK_OPTS="-Dlogback.configurationFile=\$LOGBACK_FILE"
 fi
 
 exec java \$JAVA_OPTS \\
     -Dconfig.file="\$CONFIG_FILE" \\
-    -Dlog.dir="$LOG_DIR" \
-    $LOGBACK_OPTS \
+    -Dlog.dir="\$LOG_DIR" \\
+    \$LOGBACK_OPTS \\
     -jar "\$JAR_FILE" \\
     "\$@"
-EOF
+LAUNCHER_EOF
 
     chmod +x "$TARGET_DIR/bin/softclient4es"
 
@@ -620,7 +725,7 @@ EOF
 create_uninstaller() {
     info "Creating uninstall script..."
 
-    cat > "$TARGET_DIR/uninstall.sh" << EOF
+    cat > "$TARGET_DIR/uninstall.sh" << UNINSTALL_EOF
 #!/usr/bin/env bash
 #
 # SoftClient4ES Uninstaller
@@ -628,15 +733,18 @@ create_uninstaller() {
 
 TARGET_DIR="$TARGET_DIR"
 
-read -p "This will remove \$TARGET_DIR. Continue? [y/N] " -n 1 -r
+echo "This will remove SoftClient4ES from: \$TARGET_DIR"
+read -p "Continue? [y/N] " -n 1 -r
 echo
 if [[ \$REPLY =~ ^[Yy]$ ]]; then
     rm -rf "\$TARGET_DIR"
     echo "SoftClient4ES has been uninstalled."
+    echo ""
+    echo "Don't forget to remove the PATH entry from your shell config if you added one."
 else
     echo "Uninstall cancelled."
 fi
-EOF
+UNINSTALL_EOF
 
     chmod +x "$TARGET_DIR/uninstall.sh"
 
@@ -657,6 +765,7 @@ Version:            $SOFT_VERSION
 Scala:              $SCALA_VERSION
 Java Required:      $REQUIRED_JAVA_VERSION+
 Artifact:           $ARTIFACT_NAME
+OS:                 $OS_TYPE
 EOF
 
     success "Created $TARGET_DIR/VERSION"
@@ -676,6 +785,7 @@ print_summary() {
     echo "  Elasticsearch version:  $ES_VERSION"
     echo "  SoftClient4ES version:  $SOFT_VERSION"
     echo "  Java required:          $REQUIRED_JAVA_VERSION+"
+    echo "  OS detected:            $OS_TYPE"
     echo ""
     echo "  Directory structure:"
     echo "    $TARGET_DIR/"
@@ -687,26 +797,61 @@ print_summary() {
     echo "    ├── lib/"
     echo "    │   └── $JAR_NAME"
     echo "    ├── logs/"
-    echo "    │   └── softclient4es.log # (created at runtime)"
+    echo "    │   └── softclient4es.log  (created at runtime)"
     echo "    ├── LICENSE"
     echo "    ├── README.md"
     echo "    ├── VERSION"
     echo "    └── uninstall.sh"
     echo ""
-    echo "  To start the REPL:"
+    echo -e "  ${CYAN}Quick Start:${NC}"
+    echo ""
+    echo "    # Start the REPL (interactive mode)"
     echo -e "    ${BLUE}$TARGET_DIR/bin/softclient4es${NC}"
     echo ""
-    echo "  Or add to your PATH:"
-    echo -e "    ${BLUE}export PATH=\"\$PATH:$TARGET_DIR/bin\"${NC}"
+    echo "    # Or add to your PATH first:"
+    case "$OS_TYPE" in
+        macos)
+            echo -e "    ${BLUE}echo 'export PATH=\"\$PATH:$TARGET_DIR/bin\"' >> ~/.zshrc${NC}"
+            echo -e "    ${BLUE}source ~/.zshrc${NC}"
+            ;;
+        linux)
+            echo -e "    ${BLUE}echo 'export PATH=\"\$PATH:$TARGET_DIR/bin\"' >> ~/.bashrc${NC}"
+            echo -e "    ${BLUE}source ~/.bashrc${NC}"
+            ;;
+        *)
+            echo -e "    ${BLUE}export PATH=\"\$PATH:$TARGET_DIR/bin\"${NC}"
+            ;;
+    esac
     echo ""
-    echo "  Documentation:"
-    echo -e "    ${BLUE}cat $TARGET_DIR/README.md${NC}"
+    echo "    # Then simply run:"
+    echo -e "    ${BLUE}softclient4es${NC}"
     echo ""
-    echo "  Configuration:"
+    echo -e "  ${CYAN}Connection Examples:${NC}"
+    echo ""
+    echo "    # Connect to local Elasticsearch"
+    echo -e "    ${BLUE}softclient4es${NC}"
+    echo ""
+    echo "    # Connect to remote Elasticsearch"
+    echo -e "    ${BLUE}softclient4es --host es.example.com --port 9200${NC}"
+    echo ""
+    echo "    # Connect with authentication"
+    echo -e "    ${BLUE}softclient4es --host es.example.com --username admin --password secret${NC}"
+    echo ""
+    echo "    # Connect with SSL"
+    echo -e "    ${BLUE}softclient4es --host es.example.com --scheme https${NC}"
+    echo ""
+    echo "    # Execute a single command"
+    echo -e "    ${BLUE}softclient4es -c \"SHOW TABLES\"${NC}"
+    echo ""
+    echo -e "  ${CYAN}Configuration:${NC}"
     echo "    Edit $TARGET_DIR/conf/application.conf"
-    echo "    Or use command-line options (run with --help)"
+    echo "    Or use environment variables (ELASTIC_HOST, ELASTIC_PORT, etc.)"
     echo ""
-    echo "  To uninstall:"
+    echo -e "  ${CYAN}Documentation:${NC}"
+    echo -e "    ${BLUE}cat $TARGET_DIR/README.md${NC}"
+    echo "    https://github.com/SOFTNETWORK-APP/SoftClient4ES"
+    echo ""
+    echo -e "  ${CYAN}To uninstall:${NC}"
     echo -e "    ${BLUE}$TARGET_DIR/uninstall.sh${NC}"
     echo ""
 }
@@ -723,6 +868,7 @@ main() {
     echo ""
 
     check_prerequisites
+    echo ""
     create_directories
     download_jar
     download_docs
