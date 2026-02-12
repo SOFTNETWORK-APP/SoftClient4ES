@@ -138,8 +138,8 @@ class Repl(
         multilineBuffer.clear()
         handleMetaCommand(trimmed)
 
-      // Backslash commands: \h, \q, \t, etc.
-      case _ if firstChar == 104 =>
+      // Backslash commands: JLine strips the leading \ and delivers just the letter(s)
+      case _ if backslashCommands.contains(firstWord) =>
         multilineBuffer.clear()
         handleBackslashCommand(trimmed)
 
@@ -572,16 +572,19 @@ class Repl(
   private def formatLigne(value: String, size: Int): String = {
     // Supprime les espaces en début et fin de ligne
     val trimmedValue = value.trim
+    val visibleLength = stripAnsi(trimmedValue).length
 
     // Vérifie la longueur du texte
-    if (trimmedValue.length > size) {
+    if (visibleLength > size) {
       // Si le texte est trop long, le tronquer avec '...'
       trimmedValue.take(size - 3) + "..."
     } else {
       // Sinon, on complète avec des espaces
-      trimmedValue + " " * (size - trimmedValue.length)
+      trimmedValue + " " * (size - visibleLength)
     }
   }
+
+  private def stripAnsi(s: String): String = s.replaceAll("\u001B\\[[;\\d]*m", "")
 
   private def printGoodbyeBanner(): Unit = {
     println(s"\n${emoji("👋")} ${cyan("Goodbye!")}\n")

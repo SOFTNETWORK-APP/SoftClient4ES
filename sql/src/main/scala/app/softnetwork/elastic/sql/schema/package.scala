@@ -1237,7 +1237,10 @@ package object schema {
   }
 
   case class ColumnNotFound(column: String, table: String)
-      extends Exception(s"Column $column  does not exist in table $table")
+      extends Exception(s"Column $column does not exist in table $table")
+
+  case class ColumnAlreadyExists(column: String, table: String)
+      extends Exception(s"Column $column already exists in table $table")
 
   case class TableAlias(
     table: String,
@@ -1522,7 +1525,7 @@ package object schema {
               if (ifNotExists && table.cols.contains(column.name)) table
               else if (!table.cols.contains(column.name))
                 table.copy(columns = table.columns :+ column)
-              else throw ColumnNotFound(column.name, table.name)
+              else throw ColumnAlreadyExists(column.name, table.name)
             case DropColumn(columnName, ifExists) =>
               if (ifExists && !table.cols.contains(columnName)) table
               else if (table.cols.contains(columnName))
