@@ -122,7 +122,7 @@ object HelpJsonLoader {
         } else {
           None
         }
-      }.toOption.flatten
+      }.getOrElse(None)
     }
   }
 
