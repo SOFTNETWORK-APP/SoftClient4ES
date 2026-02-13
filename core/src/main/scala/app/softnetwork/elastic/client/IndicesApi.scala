@@ -39,6 +39,8 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import org.apache.hadoop.conf.Configuration
 
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 
@@ -52,6 +54,11 @@ import scala.jdk.CollectionConverters._
   */
 trait IndicesApi extends ElasticClientHelpers {
   _: RefreshApi with PipelineApi with BulkApi with ScrollApi with VersionApi with TemplateApi =>
+
+  // Schema cache TTL in milliseconds. Override in subclass to change (default: 5 minutes).
+  protected def schemaCacheTtlMs: Long = 5 * 60 * 1000L
+
+  private val schemaCache = new ConcurrentHashMap[String, (Schema, Long)]()
 
   // ========================================================================
   // PUBLIC METHODS
@@ -199,13 +206,44 @@ trait IndicesApi extends ElasticClientHelpers {
     }
   }
 
-  /** Load the schema for the provided index.
+  /** Load the schema for the provided index, with caching.
     * @param index
     *   - the name of the index to load the schema for
     * @return
     *   the schema if the index exists, an error otherwise
     */
   def loadSchema(index: String): ElasticResult[Schema] = {
+    val now = System.currentTimeMillis()
+    Option(schemaCache.get(index)) match {
+      case Some((schema, cachedAt)) if now - cachedAt < schemaCacheTtlMs =>
+        logger.debug(s"📦 Schema cache hit for '$index'")
+        ElasticSuccess(schema)
+      case _ =>
+        fetchSchemaFromES(index) match {
+          case success @ ElasticSuccess(schema) =>
+            schemaCache.put(index, (schema, now))
+            success
+          case failure => failure
+        }
+    }
+  }
+
+  def updateSchema(index: String, schema: Schema): Unit = {
+    schemaCache.put(index, (schema, System.currentTimeMillis()))
+    logger.debug(s"📦 Schema cache updated for '$index'")
+  }
+
+  def invalidateSchema(index: String): Unit = {
+    schemaCache.remove(index)
+    logger.info(s"🗑️ Schema cache invalidated for '$index'")
+  }
+
+  def invalidateAllSchemas(): Unit = {
+    schemaCache.clear()
+    logger.info("🗑️ All schema caches invalidated")
+  }
+
+  private def fetchSchemaFromES(index: String): ElasticResult[Schema] = {
     getIndex(index) match {
       case ElasticSuccess(Some(idx)) =>
         ElasticSuccess(idx.schema)

@@ -243,6 +243,9 @@ class MetricsElasticClient(
       delegate.loadSchema(index)
     }
 
+  override def invalidateSchema(index: String): Unit = delegate.invalidateSchema(index)
+  override def invalidateAllSchemas(): Unit = delegate.invalidateAllSchemas()
+
   // ==================== AliasApi ====================
 
   override def addAlias(index: String, alias: String): ElasticResult[Boolean] = {

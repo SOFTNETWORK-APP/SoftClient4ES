@@ -241,7 +241,9 @@ class Repl(
     // Stream commands
     "consume",
     "stream",
-    "cancel"
+    "cancel",
+    // Schema cache
+    "refresh"
   )
 
   private def handleMetaCommand(cmd: String): Unit = {
@@ -307,6 +309,15 @@ class Repl(
 
       case "cancel" =>
         handleCancelStream()
+
+      case "refresh" =>
+        if (args.nonEmpty) {
+          executor.invalidateSchema(args.trim)
+          println(s"Schema cache cleared for '${args.trim}'")
+        } else {
+          executor.invalidateAllSchemas()
+          println("All schema caches cleared")
+        }
 
       case unknown =>
         printError(s"Unknown command: $unknown (type help for available commands)")
