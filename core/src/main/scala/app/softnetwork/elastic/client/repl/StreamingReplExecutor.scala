@@ -148,4 +148,7 @@ class StreamingReplExecutor(gateway: GatewayApi)(implicit
   /** Check if there's an active stream
     */
   def hasActiveStream: Boolean = activeStream.isDefined
+
+  def invalidateSchema(index: String): Unit = gateway.invalidateSchema(index)
+  def invalidateAllSchemas(): Unit = gateway.invalidateAllSchemas()
 }

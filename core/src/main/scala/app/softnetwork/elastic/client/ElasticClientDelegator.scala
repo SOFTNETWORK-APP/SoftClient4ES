@@ -248,6 +248,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def loadSchema(index: String): ElasticResult[Schema] =
     delegate.loadSchema(index)
 
+  override def invalidateSchema(index: String): Unit = delegate.invalidateSchema(index)
+  override def invalidateAllSchemas(): Unit = delegate.invalidateAllSchemas()
+
   override private[client] def executeCreateIndex(
     index: String,
     settings: String,
