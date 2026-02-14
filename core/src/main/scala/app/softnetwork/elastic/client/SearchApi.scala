@@ -58,6 +58,15 @@ import scala.util.{Failure, Success, Try}
 //format:on
 trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
+  /** Extract output field names from a SingleSearch in SQL SELECT order. For each field, uses the
+    * alias if present, otherwise the source field name. Returns empty Seq for SELECT * queries.
+    */
+  protected def extractOutputFieldNames(single: SingleSearch): Seq[String] = {
+    val fields = single.select.fields
+    if (fields.size == 1 && fields.head.identifier.identifierName == "*") Seq.empty
+    else fields.map(f => f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
+  }
+
   // ========================================================================
   // PUBLIC METHODS
   // ========================================================================
@@ -105,7 +114,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
           searchWithWindowEnrichment(single)
         else
-          singleSearch(elasticQuery, single.fieldAliases, single.sqlAggregations)
+          singleSearch(
+            elasticQuery,
+            single.fieldAliases,
+            single.sqlAggregations,
+            extractOutputFieldNames(single)
+          )
 
       case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
@@ -117,7 +131,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           }.toList,
           sql = Some(query)
         )
-        multiSearch(elasticQueries, multiple.fieldAliases, multiple.sqlAggregations)
+        multiSearch(
+          elasticQueries,
+          multiple.fieldAliases,
+          multiple.sqlAggregations,
+          multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty)
+        )
 
       case _ =>
         logger.error(
@@ -146,7 +165,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   def singleSearch(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   ): ElasticResult[ElasticResponse] = {
     validateJson("search", elasticQuery.query) match {
       case Some(error) =>
@@ -175,7 +195,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed search for query \n$elasticQuery\nin indices '$indices'"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs, fields)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
               s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
@@ -239,7 +259,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   def multiSearch(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   ): ElasticResult[ElasticResponse] = {
     elasticQueries.queries.flatMap { elasticQuery =>
       validateJson("search", elasticQuery.query).map(error =>
@@ -273,7 +294,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed multi-search for query \n$elasticQueries"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs, fields)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
               s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
@@ -369,7 +390,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
           Future.successful(searchWithWindowEnrichment(single))
         else
-          singleSearchAsync(elasticQuery, single.fieldAliases, single.sqlAggregations)
+          singleSearchAsync(
+            elasticQuery,
+            single.fieldAliases,
+            single.sqlAggregations,
+            extractOutputFieldNames(single)
+          )
 
       case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
@@ -380,7 +406,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             )
           }.toList
         )
-        multiSearchAsync(elasticQueries, multiple.fieldAliases, multiple.sqlAggregations)
+        multiSearchAsync(
+          elasticQueries,
+          multiple.fieldAliases,
+          multiple.sqlAggregations,
+          multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty)
+        )
 
       case _ =>
         val query = statement.sql
@@ -412,7 +443,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   def singleSearchAsync(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
@@ -425,7 +457,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed asynchronous search for query \n$elasticQuery\nin indices '$indices'"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs, fields)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
               s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
@@ -495,7 +527,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   def multiSearchAsync(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   )(implicit
     ec: ExecutionContext
   ): Future[ElasticResult[ElasticResponse]] = {
@@ -510,7 +543,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"✅ Successfully executed asynchronous multi-search for query \n$elasticQueries"
         )
         val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
-        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs)) match {
+        ElasticResult.fromTry(parseResponse(response, fieldAliases, aggs, fields)) match {
           case success @ ElasticSuccess(_) =>
             logger.info(
               s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
@@ -1215,7 +1248,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       aggResponse <- singleSearch(
         elasticQuery,
         aggRequest.fieldAliases,
-        aggRequest.sqlAggregations
+        aggRequest.sqlAggregations,
+        extractOutputFieldNames(aggRequest)
       )
 
       // Parse aggregation results into cache
@@ -1293,7 +1327,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         sql = Some(baseQuery.sql)
       ),
       baseQuery.fieldAliases,
-      baseQuery.sqlAggregations
+      baseQuery.sqlAggregations,
+      extractOutputFieldNames(baseQuery)
     )
   }
 

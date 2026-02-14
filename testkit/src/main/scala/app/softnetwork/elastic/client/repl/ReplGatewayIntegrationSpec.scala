@@ -642,6 +642,8 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
       Seq(
         Map(
           "id" -> 1,
+          "items.product"  -> null,
+          "items.quantity" -> null,
           "items" -> Seq(
             Map("product" -> "A", "quantity" -> 2, "price" -> 10.0),
             Map("product" -> "B", "quantity" -> 1, "price" -> 20.0)

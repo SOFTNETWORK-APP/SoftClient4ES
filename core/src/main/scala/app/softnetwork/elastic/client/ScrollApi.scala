@@ -161,7 +161,8 @@ trait ScrollApi extends ElasticClientHelpers {
           single.fieldAliases,
           single.sqlAggregations,
           config,
-          single.sorts.nonEmpty
+          single.sorts.nonEmpty,
+          extractOutputFieldNames(single)
         )
 
       // Multi search
@@ -307,14 +308,17 @@ trait ScrollApi extends ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig,
-    hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+    hasSorts: Boolean = false,
+    fields: Seq[String] = Seq.empty
+  )(implicit
+    system: ActorSystem
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
 
     val metricsPromise = Promise[ScrollMetrics]()
 
-    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts)
+    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts, fields)
       .take(config.maxDocuments.getOrElse(Long.MaxValue))
       .grouped(config.scrollSize)
       .statefulMapConcat { () =>
@@ -373,7 +377,8 @@ trait ScrollApi extends ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig,
-    hasSorts: Boolean
+    hasSorts: Boolean,
+    fields: Seq[String]
   )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
     val strategy = determineScrollStrategy(elasticQuery, aggregations)
 
@@ -381,7 +386,7 @@ trait ScrollApi extends ElasticClientHelpers {
       s"Using scroll strategy: $strategy for query \n$elasticQuery"
     )
 
-    strategy match {
+    val source = strategy match {
       case UseScroll =>
         logger.info("Using classic scroll (supports aggregations)")
         scrollClassic(elasticQuery, fieldAliases, aggregations, config)
@@ -397,6 +402,18 @@ trait ScrollApi extends ElasticClientHelpers {
       case _ =>
         logger.info("Falling back to classic scroll")
         scrollClassic(elasticQuery, fieldAliases, aggregations, config)
+    }
+
+    // Normalize rows to ensure all requested fields are present in the original SQL SELECT order
+    if (fields.nonEmpty) {
+      val requestedSet = fields.toSet
+      source.map { row =>
+        val ordered = fields.map(f => f -> row.getOrElse(f, null))
+        val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
+        ListMap(ordered: _*) ++ extra
+      }
+    } else {
+      source
     }
   }
 

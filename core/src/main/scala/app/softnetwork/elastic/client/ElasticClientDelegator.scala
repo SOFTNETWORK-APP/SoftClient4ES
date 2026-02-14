@@ -1135,9 +1135,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def singleSearch(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   ): ElasticResult[ElasticResponse] =
-    delegate.singleSearch(elasticQuery, fieldAliases, aggregations)
+    delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields)
 
   /** Multi-search with Elasticsearch queries.
     *
@@ -1153,9 +1154,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def multiSearch(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   ): ElasticResult[ElasticResponse] =
-    delegate.multiSearch(elasticQueries, fieldAliases, aggregations)
+    delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields)
 
   /** Asynchronous search for documents / aggregations matching the SQL query.
     *
@@ -1182,9 +1184,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def singleSearchAsync(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
-    delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations)
+    delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields)
 
   /** Asynchronous multi-search with Elasticsearch queries.
     *
@@ -1200,9 +1203,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def multiSearchAsync(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
-    delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations)
+    delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields)
 
   /** Searches and converts results into typed entities from an SQL query.
     *

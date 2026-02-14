@@ -844,20 +844,22 @@ class MetricsElasticClient(
   override def singleSearch(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   ): ElasticResult[ElasticResponse] = {
     measureResult("search", Some(elasticQuery.indices.mkString(","))) {
-      delegate.singleSearch(elasticQuery, fieldAliases, aggregations)
+      delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields)
     }
   }
 
   override def multiSearch(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   ): ElasticResult[ElasticResponse] = {
     measureResult("multisearch") {
-      delegate.multiSearch(elasticQueries, fieldAliases, aggregations)
+      delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields)
     }
   }
 
@@ -875,10 +877,11 @@ class MetricsElasticClient(
   override def singleSearchAsync(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync", Some(elasticQuery.indices.mkString(","))) {
-      delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations).asInstanceOf
+      delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields).asInstanceOf
     }
 
   /** Asynchronous multi-search with Elasticsearch queries.
@@ -895,10 +898,11 @@ class MetricsElasticClient(
   override def multiSearchAsync(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty
   )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
     measureAsync("multisearchAsync") {
-      delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations).asInstanceOf
+      delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields).asInstanceOf
     }
 
   /** Searches and converts results into typed entities.
