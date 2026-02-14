@@ -51,11 +51,17 @@ trait ElasticConversion {
 
   /** main entry point : parse json response from elasticsearch Handles both single search and
     * multi-search (msearch/UNION ALL) responses
+    *
+    * @param fields
+    *   all requested fields in their original SQL SELECT order (output column names after alias
+    *   resolution). When non-empty, rows are normalized to include all fields (with null for
+    *   missing ones) and ordered to match the SQL SELECT order.
     */
   def parseResponse(
     results: String,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty
   ): Try[Seq[ListMap[String, Any]]] = {
     var json = mapper.readTree(results)
     if (json.has("responses")) {
@@ -63,10 +69,10 @@ trait ElasticConversion {
     }
     // Check if it's a multi-search response (array of responses)
     if (json.isArray) {
-      parseMultiSearchResponse(json, fieldAliases, aggregations)
+      parseMultiSearchResponse(json, fieldAliases, aggregations, fields)
     } else {
       // Single search response
-      parseSingleSearchResponse(json, fieldAliases, aggregations)
+      parseSingleSearchResponse(json, fieldAliases, aggregations, fields)
     }
   }
 
@@ -75,7 +81,8 @@ trait ElasticConversion {
   def parseMultiSearchResponse(
     jsonArray: JsonNode,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty
   ): Try[Seq[ListMap[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
@@ -95,7 +102,7 @@ trait ElasticConversion {
         // Parse each response and combine all rows
         val allRows = responses.flatMap { response =>
           if (!response.has("error")) {
-            jsonToRows(response, fieldAliases, aggregations)
+            jsonToRows(response, fieldAliases, aggregations, fields)
           } else {
             Seq.empty
           }
@@ -109,7 +116,8 @@ trait ElasticConversion {
   def parseSingleSearchResponse(
     json: JsonNode,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty
   ): Try[Seq[ListMap[String, Any]]] =
     Try {
       // check if it is an error response
@@ -119,7 +127,7 @@ trait ElasticConversion {
           .getOrElse("Unknown Elasticsearch error")
         throw new Exception(s"Elasticsearch error: $errorMsg")
       } else {
-        jsonToRows(json, fieldAliases, aggregations)
+        jsonToRows(json, fieldAliases, aggregations, fields)
       }
     }
 
@@ -128,7 +136,8 @@ trait ElasticConversion {
   def jsonToRows(
     json: JsonNode,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty
   ): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
@@ -140,7 +149,7 @@ trait ElasticConversion {
     (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
-        parseSimpleHits(hits, fieldAliases)
+        parseSimpleHits(hits, fieldAliases, fields)
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
@@ -173,7 +182,7 @@ trait ElasticConversion {
           extractAllTopHits(aggs, fieldAliases, aggregations),
           aggregations
         )
-        parseSimpleHits(hits, fieldAliases).map { row =>
+        parseSimpleHits(hits, fieldAliases, fields).map { row =>
           globalMetrics ++ allTopHits ++ row
         }
       /*hits.map { hit =>
@@ -212,10 +221,16 @@ trait ElasticConversion {
   }
 
   /** Parse simple hits (without aggregations)
+    *
+    * @param requestedFields
+    *   all requested fields in their original SQL SELECT order (output column names). When
+    *   non-empty, each row is normalized to include all requested fields (with null for missing
+    *   ones) and ordered to match the SQL SELECT order.
     */
   def parseSimpleHits(
     hits: List[JsonNode],
-    fieldAliases: ListMap[String, String]
+    fieldAliases: ListMap[String, String],
+    requestedFields: Seq[String] = Seq.empty
   ): Seq[ListMap[String, Any]] = {
     hits.map { hit =>
       var source = extractSource(hit, fieldAliases)
@@ -234,7 +249,29 @@ trait ElasticConversion {
       val fields = fieldsNode
         .map(jsonNodeToMap(_, fieldAliases))
         .getOrElse(ListMap.empty)
-      source ++ metadata ++ innerHits ++ fields
+      val row = source ++ metadata ++ innerHits ++ fields
+      normalizeRow(row, requestedFields)
+    }
+  }
+
+  /** Normalize a row to ensure all requested fields are present in the original SQL SELECT order.
+    * Fields missing from the row are added with null value. Extra fields (metadata like _id,
+    * _index, etc.) are appended after the requested fields.
+    */
+  private def normalizeRow(
+    row: ListMap[String, Any],
+    requestedFields: Seq[String]
+  ): ListMap[String, Any] = {
+    if (requestedFields.isEmpty) row
+    else {
+      // Build ordered entries for requested fields, with null for missing ones
+      val ordered = requestedFields.map { f =>
+        f -> row.getOrElse(f, null)
+      }
+      // Append any extra fields from the row that aren't in the requested fields list
+      val requestedSet = requestedFields.toSet
+      val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
+      ListMap(ordered: _*) ++ extra
     }
   }
 
