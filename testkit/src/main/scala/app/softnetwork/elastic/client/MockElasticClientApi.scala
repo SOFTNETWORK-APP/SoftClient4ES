@@ -341,7 +341,10 @@ trait MockElasticClientApi extends NopeClientApi {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] =
     Source.single(elasticDocuments.getAll).mapConcat(_.values.toList)
 
   override private[client] def searchAfter(
@@ -349,7 +352,10 @@ trait MockElasticClientApi extends NopeClientApi {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] =
     scrollClassic(
       elasticQuery,
       fieldAliases,

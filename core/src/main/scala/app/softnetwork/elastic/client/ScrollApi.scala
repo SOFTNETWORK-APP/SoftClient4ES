@@ -30,7 +30,6 @@ import app.softnetwork.elastic.client.scroll.{
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
-  DqlStatement,
   MultiSearch,
   SQLAggregation,
   SearchStatement,
@@ -127,7 +126,10 @@ trait ScrollApi extends ElasticClientHelpers {
   def scroll(
     statement: SearchStatement,
     config: ScrollConfig = ScrollConfig()
-  )(implicit system: ActorSystem): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     implicit def timestamp: Long = System.currentTimeMillis()
     statement match {
       // Select statement
@@ -155,14 +157,20 @@ trait ScrollApi extends ElasticClientHelpers {
           return scrollWithWindowEnrichment(single, config)
 
         val elasticQuery =
-          ElasticQuery(single, collection.immutable.Seq(single.sources: _*))
+          ElasticQuery(
+            single,
+            collection.immutable.Seq(single.sources: _*),
+            sql = Some(single.sql),
+            explodeNested = single.explodeNested
+          )
         scrollWithMetrics(
           elasticQuery,
           single.fieldAliases,
           single.sqlAggregations,
           config,
           single.sorts.nonEmpty,
-          extractOutputFieldNames(single)
+          extractOutputFieldNames(single),
+          single.nestedHitsMappings
         )
 
       // Multi search
@@ -185,7 +193,7 @@ trait ScrollApi extends ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed]
+  )(implicit system: ActorSystem, context: ConversionContext): Source[ListMap[String, Any], NotUsed]
 
   /** Search After (only for hits, more efficient)
     */
@@ -194,14 +202,14 @@ trait ScrollApi extends ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed]
+  )(implicit system: ActorSystem, context: ConversionContext): Source[ListMap[String, Any], NotUsed]
 
   private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed]
+  )(implicit system: ActorSystem, context: ConversionContext): Source[ListMap[String, Any], NotUsed]
 
   /** Typed scroll source converting results into typed entities from an SQL query
     *
@@ -261,7 +269,8 @@ trait ScrollApi extends ElasticClientHelpers {
     m: Manifest[T],
     formats: Formats
   ): Source[(T, ScrollMetrics), NotUsed] = {
-    scroll(sql, config).map { row =>
+    implicit val context: ConversionContext = EntityContext
+    scroll(sql.withoutNestedExplosion, config).map { row =>
       (convertTo[T](row._1)(m, formats), row._2)
     }
   }
@@ -309,16 +318,18 @@ trait ScrollApi extends ElasticClientHelpers {
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean = false,
-    fields: Seq[String] = Seq.empty
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
   )(implicit
-    system: ActorSystem
+    system: ActorSystem,
+    context: ConversionContext
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
 
     val metricsPromise = Promise[ScrollMetrics]()
 
-    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts, fields)
+    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts, fields, nestedHits)
       .take(config.maxDocuments.getOrElse(Long.MaxValue))
       .grouped(config.scrollSize)
       .statefulMapConcat { () =>
@@ -378,8 +389,12 @@ trait ScrollApi extends ElasticClientHelpers {
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig,
     hasSorts: Boolean,
-    fields: Seq[String]
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
+    fields: Seq[String],
+    nestedHits: Map[String, Seq[(String, String)]]
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = {
     val strategy = determineScrollStrategy(elasticQuery, aggregations)
 
     logger.info(
@@ -404,16 +419,30 @@ trait ScrollApi extends ElasticClientHelpers {
         scrollClassic(elasticQuery, fieldAliases, aggregations, config)
     }
 
-    // Normalize rows to ensure all requested fields are present in the original SQL SELECT order
-    if (fields.nonEmpty) {
+    // Normalize rows to ensure all requested fields are present (only if context is native) in the original SQL SELECT order
+    // and flatten inner hits into individual rows
+    val normalized = if (fields.nonEmpty) {
       val requestedSet = fields.toSet
       source.map { row =>
-        val ordered = fields.map(f => f -> row.getOrElse(f, null))
+        val ordered =
+          context match {
+            case EntityContext => fields.flatMap(f => row.get(f).map(v => f -> v))
+            case _             => fields.map(f => f -> row.getOrElse(f, null))
+          }
         val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
         ListMap(ordered: _*) ++ extra
       }
     } else {
       source
+    }
+
+    // Flatten inner hits into individual rows (only when explodeNested is enabled)
+    if (nestedHits.nonEmpty && elasticQuery.explodeNested) {
+      normalized.mapConcat { row =>
+        flattenInnerHits(Seq(row), nestedHits)
+      }
+    } else {
+      normalized
     }
   }
 
@@ -428,7 +457,8 @@ trait ScrollApi extends ElasticClientHelpers {
     config: ScrollConfig
   )(implicit
     system: ActorSystem,
-    timestamp: Long
+    timestamp: Long,
+    context: ConversionContext
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
 
     implicit val ec: ExecutionContext = system.dispatcher
@@ -456,11 +486,14 @@ trait ScrollApi extends ElasticClientHelpers {
               baseQuery.fieldAliases,
               baseQuery.sqlAggregations,
               config,
-              baseQuery.sorts.nonEmpty
+              baseQuery.sorts.nonEmpty,
+              extractOutputFieldNames(baseQuery),
+              baseQuery.nestedHitsMappings
             )
               .map { case (doc, metrics) =>
                 val enrichedDoc = enrichDocumentWithWindowValues(doc, cache, request)
-                (enrichedDoc, metrics)
+                val normalizedDoc = normalizeRow(enrichedDoc, extractOutputFieldNames(request))
+                (normalizedDoc, metrics)
               }
 
           case ElasticFailure(error) =>

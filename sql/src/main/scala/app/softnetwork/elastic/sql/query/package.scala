@@ -58,7 +58,10 @@ package object query {
 
   sealed trait DqlStatement extends Statement
 
-  sealed trait SearchStatement extends DqlStatement
+  sealed trait SearchStatement extends DqlStatement {
+    def explodeNested: Boolean
+    def withoutNestedExplosion: SearchStatement
+  }
 
   /** Select Statement wrapper
     * @param query
@@ -66,13 +69,19 @@ package object query {
     * @param score
     *   - optional minimum score for the elasticsearch query
     */
-  case class SelectStatement(query: SQL, score: Option[Double] = None) extends SearchStatement {
+  case class SelectStatement(
+    query: SQL,
+    score: Option[Double] = None,
+    explodeNested: Boolean = true
+  ) extends SearchStatement {
     import app.softnetwork.elastic.sql.SQLImplicits._
 
-    lazy val statement: Option[DqlStatement] = {
+    override def withoutNestedExplosion: SelectStatement = this.copy(explodeNested = false)
+
+    lazy val statement: Option[SearchStatement] = {
       queryToStatement(query) match {
-        case Some(s: DqlStatement) => Some(s)
-        case _                     => None
+        case Some(s: SearchStatement) => Some(if (!explodeNested) s.withoutNestedExplosion else s)
+        case _                        => None
       }
     }
 
@@ -97,10 +106,13 @@ package object query {
     deleteByQuery: Boolean = false,
     updateByQuery: Boolean = false,
     onConflict: Option[OnConflict] = None,
-    schema: Option[Schema] = None
+    schema: Option[Schema] = None,
+    explodeNested: Boolean = true
   ) extends SearchStatement {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
+
+    override def withoutNestedExplosion: SingleSearch = this.copy(explodeNested = false)
 
     lazy val fieldAliases: ListMap[String, String] = select.fieldAliases
     lazy val tableAliases: ListMap[String, String] = from.tableAliases
@@ -147,6 +159,18 @@ package object query {
     // nested fields that are not part of where, having or group by clauses
     lazy val nestedElementsWithoutCriteria: Seq[NestedElement] =
       nested.filter(n => nestedFieldsWithoutCriteria.keys.toSeq.contains(n.innerHitsName))
+
+    /** Mapping from inner hit name to (subFieldName, outputFieldName) pairs. Used to flatten inner
+      * hits into individual rows (UNNEST row explosion).
+      */
+    lazy val nestedHitsMappings: Map[String, Seq[(String, String)]] =
+      nestedFields.map { case (innerHitsName, fields) =>
+        innerHitsName -> fields.map { f =>
+          val subField = f.sourceField.stripPrefix(innerHitsName + ".")
+          val outputName = f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+          (subField, outputName)
+        }
+      }
 
     def toNestedElement(u: Unnest): NestedElement = {
       val updated = unnests.getOrElse(u.alias.map(_.alias).getOrElse(u.name), u)
@@ -277,8 +301,13 @@ package object query {
 
   }
 
-  case class MultiSearch(requests: Seq[SingleSearch]) extends SearchStatement {
+  case class MultiSearch(requests: Seq[SingleSearch], explodeNested: Boolean = true)
+      extends SearchStatement {
     override def sql: String = s"${requests.map(_.sql).mkString(" UNION ALL ")}"
+
+    override def withoutNestedExplosion: MultiSearch = {
+      this.copy(explodeNested = false, requests = requests.map(_.withoutNestedExplosion))
+    }
 
     def update(): MultiSearch = this.copy(requests = requests.map(_.update()))
 

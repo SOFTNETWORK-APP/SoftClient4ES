@@ -1118,7 +1118,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     * @return
     *   the Elasticsearch response
     */
-  override def search(statement: SearchStatement): ElasticResult[ElasticResponse] =
+  override def search(statement: SearchStatement)(implicit
+    context: ConversionContext
+  ): ElasticResult[ElasticResponse] =
     delegate.search(statement)
 
   /** Search for documents / aggregations matching the Elasticsearch query.
@@ -1136,9 +1138,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  ): ElasticResult[ElasticResponse] =
-    delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields)
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
+    delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
 
   /** Multi-search with Elasticsearch queries.
     *
@@ -1155,9 +1158,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  ): ElasticResult[ElasticResponse] =
-    delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields)
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
+    delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
 
   /** Asynchronous search for documents / aggregations matching the SQL query.
     *
@@ -1167,7 +1171,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     *   a Future containing the Elasticsearch response
     */
   override def searchAsync(statement: SearchStatement)(implicit
-    ec: ExecutionContext
+    ec: ExecutionContext,
+    context: ConversionContext
   ): Future[ElasticResult[ElasticResponse]] = delegate.searchAsync(statement)
 
   /** Asynchronous search for documents / aggregations matching the Elasticsearch query.
@@ -1185,9 +1190,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
-    delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields)
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] =
+    delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
 
   /** Asynchronous multi-search with Elasticsearch queries.
     *
@@ -1204,9 +1213,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
-    delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields)
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] =
+    delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
 
   /** Searches and converts results into typed entities from an SQL query.
     *
@@ -1381,7 +1394,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   /** Create a scrolling source with automatic strategy selection
     */
   override def scroll(statement: SearchStatement, config: ScrollConfig)(implicit
-    system: ActorSystem
+    system: ActorSystem,
+    context: ConversionContext
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
 
   /** Scroll and convert results into typed entities from an SQL query.
@@ -1415,7 +1429,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = {
     delegate.scrollClassic(elasticQuery, fieldAliases, aggregations, config)
   }
 
@@ -1424,7 +1441,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = {
     delegate.searchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 
@@ -1433,7 +1453,7 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem) = {
+  )(implicit system: ActorSystem, context: ConversionContext) = {
     delegate.pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 

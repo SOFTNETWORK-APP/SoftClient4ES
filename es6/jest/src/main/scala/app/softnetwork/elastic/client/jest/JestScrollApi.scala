@@ -19,7 +19,13 @@ package app.softnetwork.elastic.client.jest
 import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
-import app.softnetwork.elastic.client.{retryWithBackoff, ClientAggregation, ElasticQuery, ScrollApi}
+import app.softnetwork.elastic.client.{
+  retryWithBackoff,
+  ClientAggregation,
+  ConversionContext,
+  ElasticQuery,
+  ScrollApi
+}
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
@@ -42,7 +48,10 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
@@ -71,7 +80,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
                 // Extract ALL results (hits + aggregations)
                 val results =
-                  extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
+                  extractAllResults(result.getJsonObject.toString, fieldAliases, aggregations)
 
                 logger.info(
                   s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
@@ -95,12 +104,12 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 }
                 val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
                 val results =
-                  extractAllResultsFromJest(result.getJsonObject, fieldAliases, aggregations)
+                  extractAllResults(result.getJsonObject.toString, fieldAliases, aggregations)
 
                 logger.debug(s"Scroll returned ${results.size} results")
 
                 if (results.isEmpty) {
-                  clearJestScroll(scrollId)
+                  clearScroll(scrollId)
                   None
                 } else {
                   Some((Some(newScrollId), results))
@@ -109,7 +118,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
           }
         }(system, logger).recover { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
-          scrollIdOpt.foreach(clearJestScroll)
+          scrollIdOpt.foreach(clearScroll)
           None
         }
       }
@@ -123,7 +132,10 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[Seq[Any]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
@@ -192,7 +204,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               throw new IOException(s"Search after failed: ${result.getErrorMessage}")
             }
             // Extract ONLY hits (no aggregations)
-            val hits = extractHitsOnlyFromJest(result.getJsonObject, fieldAliases)
+            val hits = extractHitsOnly(result.getJsonObject.toString, fieldAliases)
 
             if (hits.isEmpty) {
               None
@@ -245,17 +257,19 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] =
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] =
     throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
 
   /** Extract ALL results: hits + aggregations
     */
-  private def extractAllResultsFromJest(
-    jsonObject: JsonObject,
+  private def extractAllResults(
+    jsonString: String,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation]
-  ): Seq[ListMap[String, Any]] = {
-    val jsonString = jsonObject.toString
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     parseResponse(
       jsonString,
       fieldAliases,
@@ -270,11 +284,10 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
   /** Extract ONLY hits (for search_after)
     */
-  private def extractHitsOnlyFromJest(
-    jsonObject: JsonObject,
+  private def extractHitsOnly(
+    jsonString: String,
     fieldAliases: ListMap[String, String]
-  ): Seq[ListMap[String, Any]] = {
-    val jsonString = jsonObject.toString
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
 
     parseResponse(jsonString, fieldAliases, ListMap.empty) match {
       case Success(rows) => rows
@@ -284,7 +297,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     }
   }
 
-  private def clearJestScroll(scrollId: String): Unit = {
+  private def clearScroll(scrollId: String): Unit = {
     Try {
       logger.debug(s"Clearing Jest scroll: $scrollId")
       val clearScroll = new ClearScroll.Builder()

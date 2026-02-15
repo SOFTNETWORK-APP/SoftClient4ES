@@ -9,6 +9,8 @@ import scala.util.{Failure, Success}
 
 class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConversion {
 
+  implicit val context: ConversionContext = NativeContext
+
   "elastic conversion" should "parse simple hits" in {
     val results =
       """{
