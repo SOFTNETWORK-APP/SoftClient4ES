@@ -128,6 +128,7 @@ trait SingleValueAggregateApi
         }
       }
       // Execute the search
+      implicit val context: ConversionContext = NativeContext
       search(sqlQuery)
         .flatMap { response =>
           val results = response.results

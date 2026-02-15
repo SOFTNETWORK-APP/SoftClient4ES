@@ -107,6 +107,8 @@ class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
 
     implicit val ec: ExecutionContext = system.dispatcher
 
+    implicit val context: ConversionContext = NativeContext
+
     statement match {
 
       // ============================

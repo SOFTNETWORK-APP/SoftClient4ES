@@ -1143,6 +1143,7 @@ trait IndicesApi extends ElasticClientHelpers {
 
         // INSERT … AS SELECT
         case Left(single: SingleSearch) =>
+          implicit val context: ConversionContext = NativeContext
           Right(
             scroll(single).map { case (row, _) =>
               val jsonNode: JsonNode = row - "_id" - "_index" - "_score" - "_sort"

@@ -2568,7 +2568,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case MultiSearch(Seq(left: DqlStatement, right: DqlStatement)) =>
+      case MultiSearch(Seq(left: DqlStatement, right: DqlStatement), _) =>
         left.sql should include("SELECT id, name FROM dql_users WHERE age > 30")
         right.sql should include("SELECT id, name FROM dql_users WHERE age <= 30")
       case _ => fail("Expected Union")

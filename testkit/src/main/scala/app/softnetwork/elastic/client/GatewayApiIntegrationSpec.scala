@@ -1144,19 +1144,20 @@ trait GatewayApiIntegrationSpec extends AnyFlatSpecLike with Matchers with Scala
       Seq(
         Map(
           "id"             -> 1,
-          "items.product"  -> null,
-          "items.quantity" -> null,
-          "items" -> Seq(
-            Map("product" -> "A", "quantity" -> 2, "price" -> 10.0),
-            Map("product" -> "B", "quantity" -> 1, "price" -> 20.0)
-          ),
-          "total_price" -> 40.0
+          "items.product"  -> "A",
+          "items.quantity" -> 2,
+          "total_price"    -> 40.0
+        ),
+        Map(
+          "id"             -> 1,
+          "items.product"  -> "B",
+          "items.quantity" -> 1,
+          "total_price"    -> 40.0
         ),
         Map(
           "id"             -> 2,
-          "items.product"  -> null,
-          "items.quantity" -> null,
-          "items"          -> Seq(Map("product" -> "C", "quantity" -> 3, "price" -> 5.0)),
+          "items.product"  -> "C",
+          "items.quantity" -> 3,
           "total_price"    -> 15.0
         )
       )

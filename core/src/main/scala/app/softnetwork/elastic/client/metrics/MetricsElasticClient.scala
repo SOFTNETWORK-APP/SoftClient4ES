@@ -20,6 +20,7 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.{
+  ConversionContext,
   ElasticClientApi,
   ElasticClientDelegator,
   ElasticQueries,
@@ -785,7 +786,9 @@ class MetricsElasticClient(
     * @return
     *   the Elasticsearch response
     */
-  override def search(statement: SearchStatement): ElasticResult[ElasticResponse] =
+  override def search(
+    statement: SearchStatement
+  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
     measureResult("search") {
       delegate.search(statement)
     }
@@ -799,7 +802,10 @@ class MetricsElasticClient(
     */
   override def searchAsync(
     statement: SearchStatement
-  )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
+  )(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync") {
       delegate.searchAsync(statement)
     }
@@ -845,10 +851,11 @@ class MetricsElasticClient(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  ): ElasticResult[ElasticResponse] = {
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     measureResult("search", Some(elasticQuery.indices.mkString(","))) {
-      delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields)
+      delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
     }
   }
 
@@ -856,10 +863,11 @@ class MetricsElasticClient(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  ): ElasticResult[ElasticResponse] = {
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     measureResult("multisearch") {
-      delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields)
+      delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
     }
   }
 
@@ -878,10 +886,16 @@ class MetricsElasticClient(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync", Some(elasticQuery.indices.mkString(","))) {
-      delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields).asInstanceOf
+      delegate
+        .singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+        .asInstanceOf
     }
 
   /** Asynchronous multi-search with Elasticsearch queries.
@@ -899,10 +913,16 @@ class MetricsElasticClient(
     elasticQueries: ElasticQueries,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    fields: Seq[String] = Seq.empty
-  )(implicit ec: ExecutionContext): Future[ElasticResult[ElasticResponse]] =
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] =
     measureAsync("multisearchAsync") {
-      delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields).asInstanceOf
+      delegate
+        .multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
+        .asInstanceOf
     }
 
   /** Searches and converts results into typed entities.
@@ -1036,7 +1056,8 @@ class MetricsElasticClient(
   /** Create a scrolling source with automatic strategy selection
     */
   override def scroll(statement: SearchStatement, config: ScrollConfig)(implicit
-    system: ActorSystem
+    system: ActorSystem,
+    context: ConversionContext
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
