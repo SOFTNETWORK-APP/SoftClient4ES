@@ -51,22 +51,30 @@ trait ElasticConversion {
 
   /** main entry point : parse json response from elasticsearch Handles both single search and
     * multi-search (msearch/UNION ALL) responses
+    *
+    * @param fields
+    *   all requested fields in their original SQL SELECT order (output column names after alias
+    *   resolution). When non-empty, rows are normalized to include all fields (with null for
+    *   missing ones) and ordered to match the SQL SELECT order.
     */
   def parseResponse(
     results: String,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
-  ): Try[Seq[ListMap[String, Any]]] = {
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    explodeNested: Boolean = true
+  )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] = {
     var json = mapper.readTree(results)
     if (json.has("responses")) {
       json = json.get("responses")
     }
     // Check if it's a multi-search response (array of responses)
     if (json.isArray) {
-      parseMultiSearchResponse(json, fieldAliases, aggregations)
+      parseMultiSearchResponse(json, fieldAliases, aggregations, fields, nestedHits, explodeNested)
     } else {
       // Single search response
-      parseSingleSearchResponse(json, fieldAliases, aggregations)
+      parseSingleSearchResponse(json, fieldAliases, aggregations, fields, nestedHits, explodeNested)
     }
   }
 
@@ -75,8 +83,11 @@ trait ElasticConversion {
   def parseMultiSearchResponse(
     jsonArray: JsonNode,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
-  ): Try[Seq[ListMap[String, Any]]] =
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    explodeNested: Boolean = true
+  )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
 
@@ -95,7 +106,7 @@ trait ElasticConversion {
         // Parse each response and combine all rows
         val allRows = responses.flatMap { response =>
           if (!response.has("error")) {
-            jsonToRows(response, fieldAliases, aggregations)
+            jsonToRows(response, fieldAliases, aggregations, fields, nestedHits, explodeNested)
           } else {
             Seq.empty
           }
@@ -109,8 +120,11 @@ trait ElasticConversion {
   def parseSingleSearchResponse(
     json: JsonNode,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
-  ): Try[Seq[ListMap[String, Any]]] =
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    explodeNested: Boolean = true
+  )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       // check if it is an error response
       if (json.has("error")) {
@@ -119,7 +133,7 @@ trait ElasticConversion {
           .getOrElse("Unknown Elasticsearch error")
         throw new Exception(s"Elasticsearch error: $errorMsg")
       } else {
-        jsonToRows(json, fieldAliases, aggregations)
+        jsonToRows(json, fieldAliases, aggregations, fields, nestedHits, explodeNested)
       }
     }
 
@@ -128,8 +142,11 @@ trait ElasticConversion {
   def jsonToRows(
     json: JsonNode,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
-  ): Seq[ListMap[String, Any]] = {
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    explodeNested: Boolean = true
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
       .map(_.elements().asScala.toList)
@@ -137,10 +154,12 @@ trait ElasticConversion {
     val aggsNode = Option(json.path("aggregations"))
       .filter(!_.isMissingNode)
 
-    (hitsNode, aggsNode) match {
+    val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
-        parseSimpleHits(hits, fieldAliases)
+        val parsed = parseSimpleHits(hits, fieldAliases, fields)
+        if (explodeNested) flattenInnerHits(parsed, nestedHits)
+        else parsed
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
@@ -173,33 +192,19 @@ trait ElasticConversion {
           extractAllTopHits(aggs, fieldAliases, aggregations),
           aggregations
         )
-        parseSimpleHits(hits, fieldAliases).map { row =>
+        val parsed = parseSimpleHits(hits, fieldAliases, fields)
+        val flattened =
+          if (explodeNested) flattenInnerHits(parsed, nestedHits)
+          else parsed
+        flattened.map { row =>
           globalMetrics ++ allTopHits ++ row
         }
-      /*hits.map { hit =>
-          var source = extractSource(hit, fieldAliases)
-          fieldAliases.foreach(entry => {
-            val key = entry._1
-            if (!source.contains(key)) {
-              findKeyValue(key, source) match {
-                case Some(value) => source += (entry._2 -> value)
-                case None        =>
-              }
-            }
-          })
-          val metadata = extractHitMetadata(hit)
-          val innerHits = extractInnerHits(hit, fieldAliases)
-          val fieldsNode = Option(hit.path("fields"))
-            .filter(!_.isMissingNode)
-          val fields = fieldsNode
-            .map(jsonNodeToMap(_, fieldAliases))
-            .getOrElse(Map.empty)
-          globalMetrics ++ allTopHits ++ source ++ metadata ++ innerHits ++ fields
-        }*/
-
       case _ =>
         Seq.empty
     }
+
+    // Normalize all rows at the end, after all transformations (flattening, aggregation merging)
+    rows.map(row => normalizeRow(row, fields))
   }
 
   def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
@@ -212,11 +217,17 @@ trait ElasticConversion {
   }
 
   /** Parse simple hits (without aggregations)
+    *
+    * @param requestedFields
+    *   all requested fields in their original SQL SELECT order (output column names). When
+    *   non-empty, each row is normalized to include all requested fields (with null for missing
+    *   ones) and ordered to match the SQL SELECT order.
     */
   def parseSimpleHits(
     hits: List[JsonNode],
-    fieldAliases: ListMap[String, String]
-  ): Seq[ListMap[String, Any]] = {
+    fieldAliases: ListMap[String, String],
+    requestedFields: Seq[String] = Seq.empty
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     hits.map { hit =>
       var source = extractSource(hit, fieldAliases)
       fieldAliases.foreach(entry => {
@@ -235,6 +246,73 @@ trait ElasticConversion {
         .map(jsonNodeToMap(_, fieldAliases))
         .getOrElse(ListMap.empty)
       source ++ metadata ++ innerHits ++ fields
+    }
+  }
+
+  /** Normalize a row to ensure all requested fields are present in the original SQL SELECT order.
+    * Fields missing from the row are added with null value. Extra fields (metadata like _id,
+    * _index, etc.) are appended after the requested fields.
+    */
+  protected def normalizeRow(
+    row: ListMap[String, Any],
+    requestedFields: Seq[String]
+  )(implicit context: ConversionContext): ListMap[String, Any] = {
+    if (requestedFields.isEmpty) row
+    else {
+      // Build ordered entries for requested fields, with null for missing ones
+      val ordered =
+        context match {
+          case EntityContext => requestedFields.flatMap(f => row.get(f).map(v => f -> v))
+          case _             => requestedFields.map(f => f -> row.getOrElse(f, null))
+        }
+      // Append any extra fields from the row that aren't in the requested fields list
+      val requestedSet = requestedFields.toSet
+      val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
+      ListMap(ordered: _*) ++ extra
+    }
+  }
+
+  /** Flatten inner hits arrays into individual rows. Each inner hit element produces its own row
+    * with parent fields duplicated. Recursive for multi-level nesting.
+    */
+  protected def flattenInnerHits(
+    rows: Seq[ListMap[String, Any]],
+    nestedHits: Map[String, Seq[(String, String)]]
+  ): Seq[ListMap[String, Any]] = {
+    if (nestedHits.isEmpty) rows
+    else rows.flatMap(row => explodeRow(row, nestedHits))
+  }
+
+  private def explodeRow(
+    row: ListMap[String, Any],
+    nestedHits: Map[String, Seq[(String, String)]]
+  ): Seq[ListMap[String, Any]] = {
+    // Find first inner hit array in the row that matches nestedHits keys
+    nestedHits.find { case (hitName, _) =>
+      row.get(hitName).exists(_.isInstanceOf[List[_]])
+    } match {
+      case Some((hitName, fieldMappings)) =>
+        val innerHitsList = row(hitName).asInstanceOf[List[ListMap[String, Any]]]
+        val baseRow = row - hitName // Remove inner hits array from row
+        val remainingNestedHits = nestedHits - hitName
+
+        if (innerHitsList.isEmpty) Seq(baseRow)
+        else
+          innerHitsList.flatMap { innerHitElement =>
+            // Map sub-fields to output field names
+            val mappedFields = fieldMappings.map { case (subField, outputName) =>
+              outputName -> innerHitElement.getOrElse(subField, null)
+            }
+            // Carry forward any nested inner hit arrays from this element for recursive processing
+            val subInnerHits = remainingNestedHits.keys.flatMap { subHitName =>
+              innerHitElement.get(subHitName).map(subHitName -> _)
+            }
+            val newRow = baseRow ++ ListMap(mappedFields: _*) ++ subInnerHits
+            // Recurse for deeper nesting levels
+            explodeRow(newRow, remainingNestedHits)
+          }
+
+      case None => Seq(row) // No more inner hits to explode
     }
   }
 
@@ -688,14 +766,14 @@ trait ElasticConversion {
           if (!value.has("buckets") && value.has("value")) {
             val metricValue = value.get("value")
             if (!metricValue.isNull) {
-              val numericValue = if (metricValue.isIntegralNumber) {
+              val value = if (metricValue.isIntegralNumber) {
                 metricValue.asLong()
               } else if (metricValue.isFloatingPointNumber) {
                 metricValue.asDouble()
               } else {
                 metricValue.asText()
               }
-              entries ++= Seq(name -> numericValue)
+              entries ++= Seq(name -> value)
             }
           }
         }

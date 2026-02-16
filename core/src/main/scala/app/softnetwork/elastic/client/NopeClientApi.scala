@@ -173,7 +173,10 @@ trait NopeClientApi extends ElasticClientApi {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = Source.empty
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = Source.empty
 
   /** Search After (only for hits, more efficient)
     */
@@ -182,14 +185,20 @@ trait NopeClientApi extends ElasticClientApi {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = Source.empty
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = Source.empty
 
   override private[client] def pitSearchAfter(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = Source.empty
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = Source.empty
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery

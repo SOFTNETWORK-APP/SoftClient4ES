@@ -107,6 +107,8 @@ class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
 
     implicit val ec: ExecutionContext = system.dispatcher
 
+    implicit val context: ConversionContext = NativeContext
+
     statement match {
 
       // ============================
@@ -730,6 +732,7 @@ class TableExecutor(
               case ElasticSuccess(true) =>
                 // index deleted successfully
                 logger.info(s"✅ Index $indexName deleted successfully.")
+                api.invalidateSchema(indexName)
                 Future.successful(ElasticResult.success(DdlResult(true)))
               case ElasticSuccess(false) =>
                 // index deletion failed
@@ -860,7 +863,9 @@ class TableExecutor(
             case Safe =>
               logger.info(s"🔧 Applying SAFE ALTER TABLE changes on $indexName.")
               applyUpdatesInPlace(indexName, updatedTable, diff) match {
-                case Right(result) => Future.successful(ElasticSuccess(DdlResult(result)))
+                case Right(result) =>
+                  if (result) api.updateSchema(indexName, updatedTable)
+                  Future.successful(ElasticSuccess(DdlResult(result)))
                 case Left(error) =>
                   Future.successful(ElasticFailure(error.copy(operation = Some("schema"))))
               }
@@ -884,7 +889,9 @@ class TableExecutor(
                 ),
                 diff
               ) match {
-                case Right(result) => Future.successful(ElasticSuccess(DdlResult(result)))
+                case Right(result) =>
+                  if (result) api.updateSchema(indexName, updatedTable)
+                  Future.successful(ElasticSuccess(DdlResult(result)))
                 case Left(error) =>
                   Future.successful(ElasticFailure(error.copy(operation = Some("schema"))))
               }
@@ -1615,7 +1622,7 @@ class DdlRouterExecutor(
   }
 }
 
-trait GatewayApi extends ElasticClientHelpers {
+trait GatewayApi extends IndicesApi with ElasticClientHelpers {
   self: ElasticClientApi =>
 
   lazy val searchExecutor = new SearchExecutor(

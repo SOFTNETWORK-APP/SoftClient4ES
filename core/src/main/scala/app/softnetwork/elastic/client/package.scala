@@ -249,22 +249,32 @@ package object client extends SerializationApi {
     *   - the target indices
     * @param types
     *   - the target types @deprecated types are deprecated in ES 7+
+    * @param sql
+    *   - the optional SQL query for reference
+    * @param explodeNested
+    *   - whether to explode nested fields in the results
     */
   case class ElasticQuery(
     query: JSONQuery,
     indices: Seq[String],
     types: Seq[String] = Seq.empty,
-    sql: Option[String] = None
+    sql: Option[String] = None,
+    explodeNested: Boolean = true
   ) {
     override def toString: String = s"""ElasticQuery:
         |  Indices: ${indices.mkString(",")}
         |  Types: ${types.mkString(",")}
         |  SQL: ${sql.getOrElse("")}
         |  Query: $query
+        |  Explode Nested: $explodeNested
         |""".stripMargin
   }
 
-  case class ElasticQueries(queries: List[ElasticQuery], sql: Option[String] = None) {
+  case class ElasticQueries(
+    queries: List[ElasticQuery],
+    sql: Option[String] = None,
+    explodeNested: Boolean = true
+  ) {
     val multiQuery: String = queries.map(_.query).mkString("\n")
 
     val sqlQuery: String = sql
@@ -387,4 +397,10 @@ package object client extends SerializationApi {
       agg.bucketRoot
     )
   }
+
+  sealed trait ConversionContext
+
+  case object NativeContext extends ConversionContext
+
+  case object EntityContext extends ConversionContext
 }

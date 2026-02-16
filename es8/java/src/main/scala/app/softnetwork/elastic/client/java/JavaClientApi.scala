@@ -1336,7 +1336,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
-  )(implicit system: ActorSystem): scaladsl.Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): scaladsl.Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
     Source
       .unfoldAsync[Option[String], Seq[ListMap[String, Any]]](None) { scrollIdOpt =>
@@ -1436,7 +1439,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): scaladsl.Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): scaladsl.Source[ListMap[String, Any], NotUsed] = {
     pitSearchAfter(elasticQuery, fieldAliases, config, hasSorts)
   }
 
@@ -1456,7 +1462,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     fieldAliases: ListMap[String, String],
     config: ScrollConfig,
     hasSorts: Boolean = false
-  )(implicit system: ActorSystem): Source[ListMap[String, Any], NotUsed] = {
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): Source[ListMap[String, Any], NotUsed] = {
     implicit val ec: ExecutionContext = system.dispatcher
 
     // Step 1: Open PIT
@@ -1685,7 +1694,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     response: Either[SearchResponse[JMap[String, Object]], ScrollResponse[JMap[String, Object]]],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation]
-  ): Seq[ListMap[String, Any]] = {
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val jsonString =
       response match {
         case Left(l)  => convertToJson(l)
@@ -1711,7 +1720,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
   private def extractHitsOnly(
     response: SearchResponse[JMap[String, Object]],
     fieldAliases: ListMap[String, String]
-  ): Seq[ListMap[String, Any]] = {
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val jsonString = convertToJson(response)
 
     parseResponse(jsonString, fieldAliases, ListMap.empty) match {
