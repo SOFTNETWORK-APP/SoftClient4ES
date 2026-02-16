@@ -5,6 +5,7 @@
 A list of reserved words recognized by the parser for this engine.
 
 ## Main clauses
+COPY
 SELECT  
 INSERT  
 UPDATE  
@@ -22,6 +23,17 @@ HAVING
 ORDER BY  
 OFFSET  
 LIMIT
+ON
+CONFLICT
+DO
+SHOW
+DESCRIBE
+EVERY
+AT
+NEVER
+ALWAYS
+FOREACH
+WITHIN
 
 ## Aliases and type conversion
 AS  

@@ -18,3 +18,5 @@ es9/bridge
 es9/testkit
 testkit/target*
 *.sc
+_bmad*
+docker/data
