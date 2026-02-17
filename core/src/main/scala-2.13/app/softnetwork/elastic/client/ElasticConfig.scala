@@ -37,6 +37,8 @@ import java.time.Duration
   *   Socket operation timeout
   * @param metrics
   *   Metrics and monitoring configuration
+  * @param watcher
+  *   Credentials for the watcher component (if applicable)
   */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),

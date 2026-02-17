@@ -64,14 +64,16 @@ SHOW TABLES LIKE 'user%';
 
 ## 🎯 Why SoftClient4ES?
 
-| Feature                  | Benefit                                                      |
-|--------------------------|--------------------------------------------------------------|
-| 🗣️ **SQL Interface**    | Use familiar SQL syntax — no need to learn Elasticsearch DSL |
-| 🔄 **Version Agnostic**  | Single codebase for Elasticsearch 6, 7, 8, and 9             |
-| ⚡ **Interactive REPL**   | Auto-completion, syntax highlighting, persistent history     |
-| 🔒 **Type Safe**         | Compile-time SQL validation for Scala applications           |
-| 🚀 **Stream Powered**    | Akka Streams for high-performance bulk operations            |
-| 🛡️ **Production Ready** | Built-in error handling, validation, and rollback            |
+| Feature                   | Benefit                                                      |
+|---------------------------|--------------------------------------------------------------|
+| 🗣️ **SQL Interface**     | Use familiar SQL syntax — no need to learn Elasticsearch DSL |
+| 🔄 **Version Agnostic**   | Single codebase for Elasticsearch 6, 7, 8, and 9             |
+| ⚡ **Interactive REPL**    | Auto-completion, syntax highlighting, persistent history     |
+| 🔌 **JDBC Driver**        | Connect from DBeaver, Tableau, or any JDBC-compatible tool   |
+| 🔒 **Type Safe**          | Compile-time SQL validation for Scala applications           |
+| 🚀 **Stream Powered**     | Akka Streams for high-performance bulk operations            |
+| 🛡️ **Production Ready**  | Built-in error handling, validation, and rollback            |
+| 📊 **Materialized Views** | Precomputed, auto-refreshed JOINs and aggregations           |
 
 ---
 
@@ -126,6 +128,72 @@ LIMIT 100;
 
 📖 **[DQL Documentation](documentation/sql/dql_statements.md)**
 
+### Materialized Views
+
+Precomputed, automatically refreshed query results stored as Elasticsearch indices — ideal for denormalizing JOINs, precomputing aggregations, and enriching data across indices.
+
+```sql
+CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
+REFRESH EVERY 10 SECONDS
+WITH (delay = '2s', user_latency = '1s')
+AS
+SELECT
+  o.id,
+  o.amount,
+  c.name AS customer_name,
+  c.email,
+  UPPER(c.name) AS customer_name_upper
+FROM orders AS o
+JOIN customers AS c ON o.customer_id = c.id
+WHERE o.status = 'completed';
+
+-- Query like a regular table
+SELECT * FROM orders_with_customers_mv WHERE customer_name = 'Alice';
+
+-- Inspect
+DESCRIBE MATERIALIZED VIEW orders_with_customers_mv;
+SHOW CREATE MATERIALIZED VIEW orders_with_customers_mv;
+SHOW MATERIALIZED VIEW STATUS orders_with_customers_mv;
+```
+
+Under the hood, materialized views orchestrate Elasticsearch transforms, enrich policies, ingest pipelines, and watchers — all generated from a single SQL statement.
+
+📖 **[Materialized Views Documentation](documentation/sql/materialized_views.md)**
+
+---
+
+## 🔌 JDBC Driver
+
+Connect to Elasticsearch from any JDBC-compatible tool — **DBeaver**, **Tableau**, **DataGrip**, **DbVisualizer**, or any Java/Scala application.
+
+### Driver Setup
+
+Download the self-contained fat JAR for your Elasticsearch version:
+
+| Elasticsearch Version | Artifact                                    |
+|-----------------------|---------------------------------------------|
+| ES 6.x                | `softclient4es6-community-driver-0.1.0.jar` |
+| ES 7.x                | `softclient4es7-community-driver-0.1.0.jar` |
+| ES 8.x                | `softclient4es8-community-driver-0.1.0.jar` |
+| ES 9.x                | `softclient4es9-community-driver-0.1.0.jar` |
+
+```text
+JDBC URL:    jdbc:elastic://localhost:9200
+Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
+```
+
+### Maven / Gradle / sbt
+
+```xml
+<dependency>
+  <groupId>app.softnetwork.elastic</groupId>
+  <artifactId>softclient4es8-community-driver</artifactId>
+  <version>0.1.0</version>
+</dependency>
+```
+
+The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
+
 ---
 
 ## 🛠️ Scala Library Integration
@@ -137,7 +205,9 @@ For programmatic access, add SoftClient4ES to your project:
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.16.0"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.17.1"
+// Add the community extensions for materialized views (optional)
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-community-extensions" % "0.1.0"
 ```
 
 ```scala
@@ -204,19 +274,68 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 
 ## 📚 Documentation
 
-| Topic             | Link                                               |
-|-------------------|----------------------------------------------------|
-| **REPL Client**   | [📖 Documentation](documentation/client/repl.md)   |
-| **SQL Reference** | [📖 Documentation](documentation/sql/README.md)    |
-| **API Reference** | [📖 Documentation](documentation/client/README.md) |
+| Topic                  | Link                                                        |
+|------------------------|-------------------------------------------------------------|
+| **REPL Client**        | [📖 Documentation](documentation/client/repl.md)            |
+| **SQL Reference**      | [📖 Documentation](documentation/sql/README.md)             |
+| **API Reference**      | [📖 Documentation](documentation/client/README.md)          |
+| **Materialized Views** | [📖 Documentation](documentation/sql/materialized_views.md) |
+| **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)     |
+
+---
+
+## 📦 Editions and Licensing
+
+SoftClient4ES is available in two editions:
+
+### Community Edition (Open Source)
+
+Licensed under the **Apache License 2.0**. Includes the core SQL engine, REPL client, Scala library, and the community extensions library with limited materialized views support:
+
+| Feature                                                            | Community   |
+|--------------------------------------------------------------------|-------------|
+| Full SQL DDL (CREATE, ALTER, DROP TABLE)                           | Yes         |
+| Full SQL DML (INSERT, UPDATE, DELETE, COPY INTO)                   | Yes         |
+| Full SQL DQL (SELECT, JOIN UNNEST, aggregations, window functions) | Yes         |
+| Pipelines, Watchers, Enrich Policies                               | Yes         |
+| Interactive REPL client                                            | Yes         |
+| Scala library (Akka Streams)                                       | Yes         |
+| Community extensions library (Scala)                               | Yes         |
+| Materialized Views (CREATE, REFRESH, DESCRIBE)                     | Yes (max 3) |
+| Elasticsearch 6, 7, 8, 9 support                                   | Yes         |
+
+### Pro / Enterprise Edition (Commercial)
+
+Adds the **JDBC driver** (which includes the community extensions) and raises materialized view limits:
+
+| Feature                              | Community | Pro     | Enterprise |
+|--------------------------------------|-----------|---------|------------|
+| Everything in Community              | Yes       | Yes     | Yes        |
+| JDBC driver (DBeaver, Tableau, etc.) | -         | Yes     | Yes        |
+| Maximum materialized views           | 3         | Limited | Unlimited  |
+| Priority support                     | -         | -       | Yes        |
+
+### Elasticsearch License Requirements
+
+The JDBC driver and materialized views work on **free/basic Elasticsearch clusters** with the following exception:
+
+| Elasticsearch Feature                       | Required ES License               |
+|---------------------------------------------|-----------------------------------|
+| Transforms (continuous data sync)           | Free / Basic (ES 7.5+)            |
+| Enrich Policies (JOIN enrichment)           | Free / Basic (ES 7.5+)            |
+| **Watchers** (auto-refresh enrich policies) | **Platinum / Enterprise / Trial** |
+
+Materialized views with JOINs rely on **Elasticsearch Watchers** to automatically re-execute enrich policies when lookup table data changes. Without a Platinum ES license, this automation is unavailable — but an external scheduler (cron, Kubernetes CronJob, Airflow) can be used as a workaround. See the [Materialized Views documentation](documentation/sql/materialized_views.md#watcher-dependency-and-elasticsearch-licensing) for details.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] JDBC connector for Elasticsearch
+- [x] JDBC driver for Elasticsearch
+- [x] Materialized views with JOINs and aggregations
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
+- [ ] ES|QL bridge
 
 ---
 
@@ -228,7 +347,9 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 ## 📄 License
 
-Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) for details.
+The core SQL engine and REPL client are licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) for details.
+
+The JDBC driver and Materialized Views extension are available under a commercial license. Contact us for pricing information.
 
 ---
 
@@ -243,4 +364,3 @@ Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) for details
 <p align="center">
   <strong>Built with ❤️ by the SoftNetwork team</strong>
 </p>
-```

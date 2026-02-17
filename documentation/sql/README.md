@@ -17,3 +17,4 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [DDL Support](ddl_statements.md)
 - [DML Support](dml_statements.md)
 - [DQL Support](dql_statements.md)
+- [Materialized Views](materialized_views.md)
