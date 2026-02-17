@@ -1478,8 +1478,11 @@ Steps:
 | ARRAY\<STRUCT>       | ✔    | ✔    | ✔    | ✔    |
 | Watchers             | ✔    | ✔    | ✔    | ✔    |
 | Enrich Policies      | ✖    | ✔*   | ✔    | ✔    |
+| Materialized Views   | ✖    | ✔*   | ✔    | ✔    |
 
-\* Enrich policies require ES 7.5+
+\* Enrich policies and materialized views require ES 7.5+
+
+See [Materialized Views](materialized_views.md) for full documentation on materialized views.
 
 ---
 

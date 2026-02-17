@@ -37,6 +37,8 @@ import java.time.Duration
   *   Socket operation timeout
   * @param metrics
   *   Metrics and monitoring configuration
+ * @param watcher
+ *   Credentials for the watcher component (if applicable)
   */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
@@ -44,7 +46,8 @@ case class ElasticConfig(
   discovery: DiscoveryConfig,
   connectionTimeout: Duration,
   socketTimeout: Duration,
-  metrics: MetricsConfig)
+  metrics: MetricsConfig,
+  watcher: ElasticCredentials)
 
 object ElasticConfig extends StrictLogging {
   def apply(config: Config): ElasticConfig = {

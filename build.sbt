@@ -20,7 +20,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.17.0"
+ThisBuild / version := "0.17.1"
 
 ThisBuild / scalaVersion := scala213
 
