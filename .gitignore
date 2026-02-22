@@ -20,3 +20,4 @@ testkit/target*
 *.sc
 _bmad*
 docker/data
+.claude

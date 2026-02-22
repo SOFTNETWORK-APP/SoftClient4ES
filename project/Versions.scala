@@ -16,7 +16,7 @@ object Versions {
 
   val scalaLogging = "3.9.2"
 
-  val logback = "1.2.3"
+  val logback = "1.5.32"
 
   val slf4j = "1.7.36"
 
