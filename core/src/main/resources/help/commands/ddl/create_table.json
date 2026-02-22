@@ -11,7 +11,7 @@
     "  ...",
     "  [PRIMARY KEY (column, ...)]",
     ")",
-    "[PARTITIONED BY (column granularity)]",
+    "[PARTITIONED BY column (granularity)]",
     "[OPTIONS (",
     "  [settings = (setting = value, ...)],",
     "  [mappings = (mapping = value, ...)],",

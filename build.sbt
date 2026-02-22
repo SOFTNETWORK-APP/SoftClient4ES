@@ -69,7 +69,7 @@ ThisBuild / javaOptions ++= Seq(
   "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
 )
 
-Test / javaOptions ++= (javaOptions.value)
+Test / javaOptions ++= javaOptions.value
 
 ThisBuild / resolvers ++= Seq(
   "Softnetwork Server" at "https://softnetwork.jfrog.io/artifactory/releases/",
