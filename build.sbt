@@ -20,7 +20,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.17.1"
+ThisBuild / version := "0.17.2"
 
 ThisBuild / scalaVersion := scala213
 
@@ -222,7 +222,10 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
         //  "org.apache.logging.log4j" % "log4j-slf4j-impl"  % Versions.log4j,
         "org.apache.logging.log4j" % "log4j-core" % Versions.log4j,
         "app.softnetwork.persistence" %% "persistence-core-testkit" % Versions.genericPersistence,
-        "org.testcontainers" % "testcontainers-elasticsearch" % Versions.testContainers excludeAll (jacksonExclusions: _*)
+        "org.testcontainers" % "testcontainers-elasticsearch" % Versions.testContainers excludeAll (jacksonExclusions: _*),
+        "org.testcontainers" % "testcontainers-minio"         % Versions.testContainers,
+        // Required at test runtime for COPY INTO ... FROM 's3a://...' tests via MinioTestKit
+        // "org.apache.hadoop" % "hadoop-aws" % Versions.hadoop % Test excludeAll (excludeSlf4jAndLog4j: _*)
       ),
       Compile / compile := (Compile / compile).dependsOn(copyTestkit(esVersion)).value
     )

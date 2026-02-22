@@ -1260,7 +1260,7 @@ trait IndicesApi extends ElasticClientHelpers {
         suffixDateKey = suffixKey,
         suffixDatePattern = suffixPattern,
         update = Some(doUpdate),
-        hadoopConf = hadoopConf
+        hadoopConf = Some(hadoopConf.getOrElse(file.HadoopConfigurationFactory.forPath(source)))
       )(BulkOptions(defaultIndex = target), system)
 
     } yield bulkResult

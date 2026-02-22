@@ -34,7 +34,20 @@ val mockito = Seq(
 val avro = Seq(
   "org.apache.parquet" % "parquet-avro" % "1.15.2" excludeAll (excludeSlf4jAndLog4j *),
   "org.apache.avro" % "avro" % "1.11.4" excludeAll (excludeSlf4jAndLog4j *),
-  "org.apache.hadoop" % "hadoop-client" % "3.4.2" excludeAll (excludeSlf4jAndLog4j *)
+  "org.apache.hadoop" % "hadoop-client" % Versions.hadoop excludeAll (excludeSlf4jAndLog4j *)
+)
+
+// Cloud storage connectors — provided: must be added to the classpath at runtime / assembly.
+// Each connector activates the corresponding URI scheme in HadoopConfigurationFactory:
+//   s3a://   → hadoop-aws    (+ AWS credentials via AWS_* env vars)
+//   abfs://  → hadoop-azure  (+ Azure credentials via AZURE_* env vars)
+//   gs://    → gcs-connector (+ GCP credentials via GOOGLE_APPLICATION_CREDENTIALS)
+val cloudConnectors = Seq(
+  "org.apache.hadoop" % "hadoop-aws"   % Versions.hadoop        % Provided excludeAll (excludeSlf4jAndLog4j *),
+  "org.apache.hadoop" % "hadoop-azure" % Versions.hadoop        % Provided excludeAll (excludeSlf4jAndLog4j *),
+  "com.google.cloud.bigdataoss" % "gcs-connector" % Versions.gcsConnector % Provided
+    exclude ("com.google.guava", "guava")
+    excludeAll (excludeSlf4jAndLog4j *)
 )
 
 val repl = Seq(
@@ -49,7 +62,7 @@ val repl = Seq(
 )
 
 libraryDependencies ++= akka ++ typesafeConfig ++ http ++
-json4s ++ mockito ++ avro ++ repl :+ "com.google.code.gson" % "gson" % Versions.gson :+
+json4s ++ mockito ++ avro ++ cloudConnectors ++ repl :+ "com.google.code.gson" % "gson" % Versions.gson :+
 "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
 "io.delta" %% "delta-standalone" % Versions.delta :+
 "org.scalatest" %% "scalatest" % Versions.scalatest % Test

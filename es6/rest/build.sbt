@@ -5,7 +5,10 @@ organization := "app.softnetwork.elastic"
 name := s"softclient4es${elasticSearchMajorVersion(elasticSearchVersion.value)}-rest-client"
 
 libraryDependencies ++= restClientDependencies(elasticSearchVersion.value) ++
-  elastic4sDependencies(elasticSearchVersion.value)
+  elastic4sDependencies(elasticSearchVersion.value) ++ Seq(
+  // Required at test runtime for COPY INTO ... FROM 's3a://...' tests via MinioTestKit
+  "org.apache.hadoop" % "hadoop-aws" % Versions.hadoop % Test excludeAll (excludeSlf4jAndLog4j *)
+)
 
 val testJavaOptions = {
   val heapSize = sys.env.getOrElse("HEAP_SIZE", "1g")
