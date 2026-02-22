@@ -57,6 +57,7 @@ object Versions {
   val fansi = "0.5.1"
 
   // Cloud storage connectors (provided scope — must be on classpath at runtime)
-  val hadoop = "3.4.2"          // must match hadoop-client in core/build.sbt
+  val hadoop = "3.4.2" // must match hadoop-client in core/build.sbt
+
   val gcsConnector = "hadoop3-2.2.24"
 }
