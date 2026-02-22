@@ -1164,6 +1164,13 @@ package object file {
 
     private val factoryLogger: Logger = LoggerFactory.getLogger("HadoopConfigurationFactory")
 
+    /** Returns the value of env var `name`, falling back to the JVM system property of the same
+      * name. This allows test harnesses to inject credentials via `System.setProperty(...)` when
+      * environment variables cannot be mutated at runtime.
+      */
+    private def envOrProp(name: String): Option[String] =
+      sys.env.get(name).orElse(Option(System.getProperty(name)))
+
     /** Returns a [[Configuration]] appropriate for the URI scheme embedded in `path`. */
     def forPath(path: String): Configuration = {
       val scheme = Try(new java.net.URI(path).getScheme).getOrElse(null)
@@ -1211,11 +1218,11 @@ package object file {
       conf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
       conf.set("fs.AbstractFileSystem.s3a.impl", "org.apache.hadoop.fs.s3a.S3A")
 
-      val hasStaticCreds = sys.env.contains("AWS_ACCESS_KEY_ID")
+      val hasStaticCreds = envOrProp("AWS_ACCESS_KEY_ID").isDefined
       if (hasStaticCreds) {
-        sys.env.get("AWS_ACCESS_KEY_ID").foreach(conf.set("fs.s3a.access.key", _))
-        sys.env.get("AWS_SECRET_ACCESS_KEY").foreach(conf.set("fs.s3a.secret.key", _))
-        sys.env.get("AWS_SESSION_TOKEN").foreach(conf.set("fs.s3a.session.token", _))
+        envOrProp("AWS_ACCESS_KEY_ID").foreach(conf.set("fs.s3a.access.key", _))
+        envOrProp("AWS_SECRET_ACCESS_KEY").foreach(conf.set("fs.s3a.secret.key", _))
+        envOrProp("AWS_SESSION_TOKEN").foreach(conf.set("fs.s3a.session.token", _))
       } else {
         conf.set(
           "fs.s3a.aws.credentials.provider",
@@ -1223,12 +1230,11 @@ package object file {
         )
       }
 
-      sys.env
-        .get("AWS_REGION")
-        .orElse(sys.env.get("AWS_DEFAULT_REGION"))
+      envOrProp("AWS_REGION")
+        .orElse(envOrProp("AWS_DEFAULT_REGION"))
         .foreach(conf.set("fs.s3a.endpoint.region", _))
 
-      sys.env.get("AWS_ENDPOINT_URL").foreach { url =>
+      envOrProp("AWS_ENDPOINT_URL").foreach { url =>
         conf.set("fs.s3a.endpoint", url)
         conf.setBoolean("fs.s3a.path.style.access", true)
       }
