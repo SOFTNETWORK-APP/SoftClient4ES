@@ -1607,9 +1607,9 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
               Some((nextSearchAfter, hits))
             }
           }
-        }(system, logger).recover { case ex: Exception =>
+        }(system, logger).recoverWith { case ex: Exception =>
           logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
-          None
+          Future.failed(ex)
         }
       }
       .mapConcat(identity)
