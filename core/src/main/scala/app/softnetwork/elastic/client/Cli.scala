@@ -75,6 +75,7 @@ object Cli extends App {
     var bearerToken: Option[String] = None
     var executeFile: Option[String] = None
     var executeCommand: Option[String] = None
+    var promptPassword = false
 
     var i = 0
     while (i < args.length) {
@@ -98,6 +99,10 @@ object Cli extends App {
         case "-P" | "--password" =>
           password = Some(args(i + 1))
           i += 2
+
+        case "-W" =>
+          promptPassword = true
+          i += 1
 
         case "-k" | "--api-key" =>
           apiKey = Some(args(i + 1))
@@ -124,6 +129,17 @@ object Cli extends App {
           printUsage()
           System.exit(1)
       }
+    }
+
+    if (promptPassword) {
+      val console = System.console()
+      if (console == null) {
+        System.err.println("Error: -W requires an interactive terminal")
+        System.exit(1)
+      }
+      System.err.print("Enter password: ")
+      System.err.flush()
+      password = Some(new String(console.readPassword()))
     }
 
     CliConfig(
@@ -153,6 +169,7 @@ object Cli extends App {
         |  -p, --port <port>          Elasticsearch port (default: 9200)
         |  -u, --username <user>      Username for authentication
         |  -P, --password <pass>      Password for authentication
+        |  -W                         Prompt for password interactively (input not echoed)
         |  -k, --api-key <key>        API key for authentication
         |  -b, --bearer-token <token> Bearer token for authentication
         |  -f, --file <path>          Execute SQL from file and exit
