@@ -148,7 +148,7 @@ package object file {
       checkIsFile: Boolean = true
     )(implicit conf: Configuration): Unit = {
       val path = new Path(filePath)
-      val fs = FileSystem.get(conf)
+      val fs = FileSystem.get(path.toUri, conf)
 
       if (!fs.exists(path)) {
         throw new IllegalArgumentException(s"File does not exist: $filePath")
@@ -1140,6 +1140,231 @@ package object file {
             s"Unsupported file format: $filePath. Supported: .parquet, .parq, .json, .jsonl, .ndjson"
           )
         case format => format
+      }
+    }
+  }
+
+  /** Builds a Hadoop [[Configuration]] suited to the URI scheme of a given path.
+    *
+    * Supported schemes:
+    *   - `s3a://`, `s3://` → AWS S3 via S3AFileSystem (reads `AWS_*` env vars)
+    *   - `abfs://`, `abfss://` → Azure ADLS Gen2 (reads `AZURE_*` env vars)
+    *   - `wasb://`, `wasbs://` → Azure Blob Storage (reads `AZURE_*` env vars)
+    *   - `gs://` → Google Cloud Storage (reads `GOOGLE_*` env vars)
+    *   - `hdfs://` → HDFS (auto-loads `HADOOP_CONF_DIR` XML files)
+    *   - anything else / no scheme → local filesystem
+    *
+    * Additionally, any `*.xml` files found in `~/.softclient4es/` are loaded on top of the
+    * auto-detected configuration, allowing per-user overrides.
+    *
+    * Cloud connector JARs (`hadoop-aws`, `hadoop-azure`, `gcs-connector`) must be present in the
+    * classpath at runtime (declared as `provided` dependencies in the build).
+    */
+  object HadoopConfigurationFactory {
+
+    private val factoryLogger: Logger = LoggerFactory.getLogger("HadoopConfigurationFactory")
+
+    /** Returns a [[Configuration]] appropriate for the URI scheme embedded in `path`. */
+    def forPath(path: String): Configuration = {
+      val scheme = Try(new java.net.URI(path).getScheme).getOrElse(null)
+      val conf = scheme match {
+        case "s3a" | "s3"                        => s3aConf()
+        case "abfs" | "abfss" | "wasb" | "wasbs" => azureConf()
+        case "gs"                                => gcsConf()
+        case "hdfs"                              => hdfsConf()
+        case _                                   => localConf()
+      }
+      loadUserXmlConf(conf)
+      conf
+    }
+
+    // -------------------------------------------------------------------------
+    // Private builders
+    // -------------------------------------------------------------------------
+
+    private def base(): Configuration = {
+      val conf = new Configuration()
+      conf.setBoolean("parquet.avro.readInt96AsFixed", true)
+      conf.setInt("io.file.buffer.size", 65536)
+      conf.setBoolean("fs.automatic.close", true)
+      conf
+    }
+
+    private def localConf(): Configuration = {
+      val conf = base()
+      conf.set("fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem")
+      conf
+    }
+
+    /** AWS S3 via S3AFileSystem.
+      *
+      * Reads (in priority order):
+      *   - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`
+      *   - `AWS_REGION` or `AWS_DEFAULT_REGION`
+      *   - `AWS_ENDPOINT_URL` for S3-compatible stores (MinIO, LocalStack, …)
+      *
+      * Falls back to `DefaultAWSCredentialsProviderChain` (IAM roles, `~/.aws/credentials`, …) when
+      * no explicit credentials are found.
+      */
+    private def s3aConf(): Configuration = {
+      val conf = base()
+      conf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      conf.set("fs.AbstractFileSystem.s3a.impl", "org.apache.hadoop.fs.s3a.S3A")
+
+      val hasStaticCreds = sys.env.contains("AWS_ACCESS_KEY_ID")
+      if (hasStaticCreds) {
+        sys.env.get("AWS_ACCESS_KEY_ID").foreach(conf.set("fs.s3a.access.key", _))
+        sys.env.get("AWS_SECRET_ACCESS_KEY").foreach(conf.set("fs.s3a.secret.key", _))
+        sys.env.get("AWS_SESSION_TOKEN").foreach(conf.set("fs.s3a.session.token", _))
+      } else {
+        conf.set(
+          "fs.s3a.aws.credentials.provider",
+          "com.amazonaws.auth.DefaultAWSCredentialsProviderChain"
+        )
+      }
+
+      sys.env
+        .get("AWS_REGION")
+        .orElse(sys.env.get("AWS_DEFAULT_REGION"))
+        .foreach(conf.set("fs.s3a.endpoint.region", _))
+
+      sys.env.get("AWS_ENDPOINT_URL").foreach { url =>
+        conf.set("fs.s3a.endpoint", url)
+        conf.setBoolean("fs.s3a.path.style.access", true)
+      }
+
+      factoryLogger.info("Configured S3A filesystem")
+      conf
+    }
+
+    /** Azure ADLS Gen2 (`abfs`/`abfss`) and Azure Blob Storage (`wasb`/`wasbs`).
+      *
+      * Authentication is resolved in this order:
+      *   1. Shared-key: `AZURE_STORAGE_ACCOUNT_NAME` + `AZURE_STORAGE_ACCOUNT_KEY` 2. OAuth2
+      *      service principal: `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `AZURE_TENANT_ID` 3. SAS
+      *      token: `AZURE_STORAGE_ACCOUNT_NAME` + `AZURE_STORAGE_SAS_TOKEN`
+      */
+    private def azureConf(): Configuration = {
+      val conf = base()
+      conf.set("fs.abfs.impl", "org.apache.hadoop.fs.azurebfs.AzureBlobFileSystem")
+      conf.set("fs.abfss.impl", "org.apache.hadoop.fs.azurebfs.SecureAzureBlobFileSystem")
+      conf.set("fs.wasb.impl", "org.apache.hadoop.fs.azure.NativeAzureFileSystem")
+      conf.set("fs.wasbs.impl", "org.apache.hadoop.fs.azure.NativeAzureFileSystem$Secure")
+
+      val accountName = sys.env.get("AZURE_STORAGE_ACCOUNT_NAME")
+
+      // 1. Shared-key
+      for {
+        account <- accountName
+        key     <- sys.env.get("AZURE_STORAGE_ACCOUNT_KEY")
+      } {
+        conf.set(s"fs.azure.account.key.$account.dfs.core.windows.net", key)
+        conf.set(s"fs.azure.account.key.$account.blob.core.windows.net", key)
+      }
+
+      // 2. OAuth2 service principal
+      for {
+        clientId     <- sys.env.get("AZURE_CLIENT_ID")
+        clientSecret <- sys.env.get("AZURE_CLIENT_SECRET")
+        tenantId     <- sys.env.get("AZURE_TENANT_ID")
+        account      <- accountName
+      } {
+        conf.set(s"fs.azure.account.auth.type.$account.dfs.core.windows.net", "OAuth")
+        conf.set(
+          s"fs.azure.account.oauth.provider.type.$account.dfs.core.windows.net",
+          "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider"
+        )
+        conf.set(
+          s"fs.azure.account.oauth2.client.endpoint.$account.dfs.core.windows.net",
+          s"https://login.microsoftonline.com/$tenantId/oauth2/token"
+        )
+        conf.set(
+          s"fs.azure.account.oauth2.client.id.$account.dfs.core.windows.net",
+          clientId
+        )
+        conf.set(
+          s"fs.azure.account.oauth2.client.secret.$account.dfs.core.windows.net",
+          clientSecret
+        )
+      }
+
+      // 3. SAS token
+      for {
+        account  <- accountName
+        sasToken <- sys.env.get("AZURE_STORAGE_SAS_TOKEN")
+      } {
+        conf.set(s"fs.azure.sas.$account.blob.core.windows.net", sasToken)
+      }
+
+      factoryLogger.info("Configured Azure filesystem (ADLS Gen2 / Blob Storage)")
+      conf
+    }
+
+    /** Google Cloud Storage via the GCS Hadoop connector.
+      *
+      * Reads:
+      *   - `GOOGLE_APPLICATION_CREDENTIALS` → path to a service-account JSON key file
+      *   - `GOOGLE_CLOUD_PROJECT` → GCS project id (optional)
+      *
+      * Falls back to Application Default Credentials (ADC) when no env var is set.
+      */
+    private def gcsConf(): Configuration = {
+      val conf = base()
+      conf.set("fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+      conf.set("fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+
+      sys.env.get("GOOGLE_APPLICATION_CREDENTIALS") match {
+        case Some(keyFile) =>
+          conf.set("google.cloud.auth.service.account.enable", "true")
+          conf.set("google.cloud.auth.service.account.json.keyfile", keyFile)
+        case None =>
+          // Use Application Default Credentials (Workload Identity, gcloud auth, …)
+          conf.set("google.cloud.auth.type", "APPLICATION_DEFAULT")
+      }
+
+      sys.env.get("GOOGLE_CLOUD_PROJECT").foreach(conf.set("fs.gs.project.id", _))
+
+      factoryLogger.info("Configured GCS filesystem")
+      conf
+    }
+
+    /** HDFS — the namenode is encoded in the path URI itself (`hdfs://namenode:port/…`).
+      *
+      * Also loads `core-site.xml` and `hdfs-site.xml` from `HADOOP_CONF_DIR` when available, and
+      * propagates `HADOOP_USER_NAME` as a system property.
+      */
+    private def hdfsConf(): Configuration = {
+      val conf = base()
+
+      sys.env.get("HADOOP_USER_NAME").foreach(System.setProperty("HADOOP_USER_NAME", _))
+
+      sys.env.get("HADOOP_CONF_DIR").foreach { dir =>
+        Seq("core-site.xml", "hdfs-site.xml").foreach { xml =>
+          val f = new java.io.File(dir, xml)
+          if (f.exists()) {
+            factoryLogger.info(s"Loading HDFS config: ${f.getAbsolutePath}")
+            conf.addResource(new Path(f.getAbsolutePath))
+          }
+        }
+      }
+
+      factoryLogger.info("Configured HDFS filesystem")
+      conf
+    }
+
+    /** Loads every `*.xml` file found in `~/.softclient4es/` on top of the given configuration.
+      * This lets users override or extend any property set by the auto-detection logic.
+      */
+    private def loadUserXmlConf(conf: Configuration): Unit = {
+      val userConfDir = new java.io.File(System.getProperty("user.home"), ".softclient4es")
+      if (userConfDir.isDirectory) {
+        val xmlFiles = userConfDir.listFiles(f => f.isFile && f.getName.endsWith(".xml"))
+        if (xmlFiles != null) {
+          xmlFiles.foreach { f =>
+            factoryLogger.info(s"Loading user Hadoop config override: ${f.getAbsolutePath}")
+            conf.addResource(new Path(f.getAbsolutePath))
+          }
+        }
       }
     }
   }

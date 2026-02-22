@@ -324,6 +324,75 @@ ON CONFLICT (uuid) DO UPDATE;
 
 ---
 
+### Remote File System Support
+
+`COPY INTO` transparently supports remote file systems by auto-detecting the URI scheme in the `FROM` path.
+No SQL syntax change is required — simply use the appropriate URI scheme.
+
+| URI scheme | File system | Required JAR |
+| --- | --- | --- |
+| `s3a://` or `s3://` | AWS S3 | `hadoop-aws` |
+| `abfs://`, `abfss://`, `wasb://`, `wasbs://` | Azure ADLS Gen2 / Blob Storage | `hadoop-azure` |
+| `gs://` | Google Cloud Storage | `gcs-connector-hadoop3` |
+| `hdfs://` | HDFS | _(bundled with hadoop-client)_ |
+| _(no scheme / local path)_ | Local filesystem | _(no extra JAR needed)_ |
+
+> **Important:** Cloud connector JARs are declared as `provided` dependencies and are **not bundled** in the library.
+> They must be present in the runtime classpath (e.g. added to the CLI assembly or the application's fat-jar).
+
+#### Credentials configuration
+
+Authentication is resolved automatically from standard environment variables:
+
+**AWS S3**
+```
+AWS_ACCESS_KEY_ID         # access key (falls back to DefaultAWSCredentialsProviderChain)
+AWS_SECRET_ACCESS_KEY     # secret key
+AWS_SESSION_TOKEN         # session token (optional)
+AWS_REGION                # region (or AWS_DEFAULT_REGION)
+AWS_ENDPOINT_URL          # custom endpoint for S3-compatible stores (MinIO, LocalStack, …)
+```
+
+**Azure ADLS Gen2 / Blob Storage**
+```
+AZURE_STORAGE_ACCOUNT_NAME   # storage account name
+AZURE_STORAGE_ACCOUNT_KEY    # shared key (Option 1)
+AZURE_CLIENT_ID              # service principal client ID   (Option 2 — OAuth2)
+AZURE_CLIENT_SECRET          # service principal secret      (Option 2 — OAuth2)
+AZURE_TENANT_ID              # Azure tenant ID               (Option 2 — OAuth2)
+AZURE_STORAGE_SAS_TOKEN      # SAS token                     (Option 3)
+```
+
+**Google Cloud Storage**
+```
+GOOGLE_APPLICATION_CREDENTIALS   # path to service-account JSON key file
+GOOGLE_CLOUD_PROJECT             # GCS project ID (optional)
+```
+Falls back to Application Default Credentials (Workload Identity, `gcloud auth`, …) when the variable is absent.
+
+**HDFS**
+```
+HADOOP_CONF_DIR    # directory containing core-site.xml and hdfs-site.xml
+HADOOP_USER_NAME   # Hadoop user name (optional)
+```
+
+#### Per-user Hadoop overrides
+
+Any `*.xml` file placed in `~/.softclient4es/` is loaded on top of the auto-detected configuration.
+This allows fine-grained property overrides without changing environment variables.
+
+```xml
+<!-- ~/.softclient4es/s3a-override.xml -->
+<configuration>
+  <property>
+    <name>fs.s3a.connection.maximum</name>
+    <value>200</value>
+  </property>
+</configuration>
+```
+
+---
+
 ## DML Lifecycle Example
 
 ```sql
