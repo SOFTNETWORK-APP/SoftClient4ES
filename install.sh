@@ -76,11 +76,16 @@ sort_versions() {
 
 # Extract URIs from JFrog API JSON response
 # Works on both GNU grep (Linux) and BSD grep (macOS)
+# Works on both compact (single-line) and pretty-printed JSON
 # Filters out hidden files (starting with .) and maven-metadata.xml
 extract_uris_from_json() {
-    # Use sed which is portable across Linux and macOS
-    # Pattern: "uri" : "/version" -> extract version
-    sed -n 's/.*"uri"[[:space:]]*:[[:space:]]*"\/\([^"]*\)".*/\1/p' \
+    # grep -oE prints each match on its own line, handles any JSON format
+    # Step 1: extract "uri" : "/..." substrings (path URIs starting with /)
+    # Step 2: extract the /value part
+    # Step 3: strip the leading /
+    grep -oE '"uri"[[:space:]]*:[[:space:]]*"/[^"]+"' \
+        | grep -oE '/[^"]+' \
+        | cut -c2- \
         | grep -v '^\.' \
         | grep -v '^maven-metadata' \
         | grep -v '\.xml$' \
@@ -286,7 +291,7 @@ list_available_versions() {
     while IFS= read -r version; do
         if [[ -n "$version" ]]; then
             echo "    • $version"
-            ((count++))
+            (( ++count ))
         fi
     done <<< "$versions"
 
