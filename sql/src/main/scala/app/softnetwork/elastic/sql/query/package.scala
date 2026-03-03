@@ -833,11 +833,15 @@ package object query {
       case None => Nil
     }
 
-    lazy val tableType: TableType = (options.get("type") match {
-      case Some(value) =>
-        value match {
-          case s: StringValue => Some(TableType(s.value))
-          case _              => None
+    lazy val tableType: TableType = (mappings.get("_meta") match {
+      case Some(meta) =>
+        meta match {
+          case o: ObjectValue =>
+            o.value.get("type") match {
+              case Some(s: StringValue) => Some(TableType(s.value))
+              case _                    => None
+            }
+          case _ => None
         }
       case None => None
     }).getOrElse(TableType.Regular)

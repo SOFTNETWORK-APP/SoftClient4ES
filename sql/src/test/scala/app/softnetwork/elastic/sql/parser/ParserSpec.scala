@@ -2,10 +2,12 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.{
+  BooleanValue,
   DateMathScript,
   Identifier,
   IngestTimestampValue,
   IntValue,
+  Null,
   ObjectValue,
   StringValue,
   StringValues
@@ -19,6 +21,7 @@ import app.softnetwork.elastic.sql.policy.EnrichPolicyType
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{
   mapper,
+  Column,
   DateIndexNameProcessor,
   EnrichProcessor,
   EnrichShapeRelation,
@@ -27,7 +30,9 @@ import app.softnetwork.elastic.sql.schema.{
   PartitionDate,
   PrimaryKeyProcessor,
   ScriptProcessor,
-  SetProcessor
+  SetProcessor,
+  Table,
+  TableType
 }
 import app.softnetwork.elastic.sql.time.TimeUnit.DAYS
 import app.softnetwork.elastic.sql.time.{CalendarInterval, TimeUnit}
@@ -1032,7 +1037,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         json shouldBe """{"description":"CREATE OR REPLACE PIPELINE users_ddl_default_pipeline WITH PROCESSORS (name SET DEFAULT 'anonymous', age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)), ingested_at SET DEFAULT _ingest.timestamp, profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)), PARTITION BY birthdate (MONTH), PRIMARY KEY (id))","processors":[{"set":{"description":"name SET DEFAULT 'anonymous'","field":"name","ignore_failure":true,"value":"anonymous","if":"ctx.name == null"}},{"script":{"description":"age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))","lang":"painless","source":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3","ignore_failure":true}},{"set":{"description":"ingested_at SET DEFAULT _ingest.timestamp","field":"ingested_at","ignore_failure":true,"value":"{{_ingest.timestamp}}","if":"ctx.ingested_at == null"}},{"script":{"description":"profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))","lang":"painless","source":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3","ignore_failure":true}},{"date_index_name":{"description":"PARTITION BY birthdate (MONTH)","field":"birthdate","date_rounding":"M","date_formats":["yyyy-MM"],"index_name_prefix":"users-","ignore_failure":true}},{"set":{"description":"PRIMARY KEY (id)","field":"_id","value":"{{id}}","ignore_failure":false,"ignore_empty_value":false}}]}"""
         val indexMappings = schema.indexMappings
         println(indexMappings)
-        indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer"},"name":{"type":"text","fields":{"raw":{"type":"keyword"}},"analyzer":"french","search_analyzer":"french"},"birthdate":{"type":"date"},"age":{"type":"integer"},"ingested_at":{"type":"date"},"profile":{"type":"object","properties":{"bio":{"type":"text"},"followers":{"type":"integer"},"join_date":{"type":"date"},"seniority":{"type":"integer"}}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"},"columns":{"id":{"data_type":"INT","not_null":"true","comment":"user identifier"},"name":{"data_type":"VARCHAR","not_null":"false","default_value":"anonymous","multi_fields":{"raw":{"data_type":"KEYWORD","not_null":"false","comment":"sortable"}}},"birthdate":{"data_type":"DATE","not_null":"false"},"age":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3"}},"ingested_at":{"data_type":"TIMESTAMP","not_null":"false","default_value":"_ingest.timestamp"},"profile":{"data_type":"STRUCT","not_null":"false","comment":"user profile","multi_fields":{"bio":{"data_type":"VARCHAR","not_null":"false"},"followers":{"data_type":"INT","not_null":"false"},"join_date":{"data_type":"DATE","not_null":"false"},"seniority":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3"}}}}},"type":"regular","materialized_views":[]}}""".stripMargin
+        indexMappings.toString shouldBe """{"properties":{"id":{"type":"integer"},"name":{"type":"text","fields":{"raw":{"type":"keyword"}},"analyzer":"french","search_analyzer":"french"},"birthdate":{"type":"date"},"age":{"type":"integer"},"ingested_at":{"type":"date"},"profile":{"type":"object","properties":{"bio":{"type":"text"},"followers":{"type":"integer"},"join_date":{"type":"date"},"seniority":{"type":"integer"}}}},"dynamic":false,"_meta":{"primary_key":["id"],"partition_by":{"column":"birthdate","granularity":"M"},"columns":{"id":{"data_type":"INT","not_null":"true","comment":"user identifier"},"name":{"data_type":"VARCHAR","not_null":"false","default_value":"anonymous","multi_fields":{"raw":{"data_type":"KEYWORD","not_null":"false","comment":"sortable"}}},"birthdate":{"data_type":"DATE","not_null":"false"},"age":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(birthdate, CURRENT_DATE, YEAR)","column":"age","painless":"def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.YEARS.between(param1, param2)); ctx.age = (param1 == null) ? null : param3"}},"ingested_at":{"data_type":"TIMESTAMP","not_null":"false","default_value":"_ingest.timestamp"},"profile":{"data_type":"STRUCT","not_null":"false","comment":"user profile","multi_fields":{"bio":{"data_type":"VARCHAR","not_null":"false"},"followers":{"data_type":"INT","not_null":"false"},"join_date":{"data_type":"DATE","not_null":"false"},"seniority":{"data_type":"INT","not_null":"false","script":{"sql":"DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)","column":"profile.seniority","painless":"def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); def param3 = Long.valueOf(ChronoUnit.DAYS.between(param1, param2)); ctx.profile.seniority = (param1 == null) ? null : param3"}}}}},"type":"regular"}}""".stripMargin
         val indexSettings = schema.indexSettings
         println(indexSettings)
         indexSettings.toString shouldBe """{"index":{}}"""
@@ -1094,7 +1099,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
                 |		zip_code KEYWORD COMMENT 'Required for enrichment (aggregated from customers.department.zip_code)'),
                 |	_last_updated TIMESTAMP DEFAULT _ingest.timestamp NOT NULL COMMENT 'Last update timestamp',
                 |	PRIMARY KEY (id)
-                |) OPTIONS = (mappings = (_meta = (created_by = "materialized_view_generator", join_keys = ["id"], source_table = "customers", purpose = "Captures field values for enrichment via Transform", required_fields = ["name","email","department.zip_code"])), settings = (number_of_shards = "1", refresh_interval = "30s"))""".stripMargin
+                |) OPTIONS (mappings = (_meta = (created_by = "materialized_view_generator", join_keys = ["id"], source_table = "customers", purpose = "Captures field values for enrichment via Transform", required_fields = ["name","email","department.zip_code"])), settings = (number_of_shards = "1", refresh_interval = "30s"))""".stripMargin
     val result = Parser(sql)
     result.isRight shouldBe true
     val stmt = result.toOption.get
@@ -1110,6 +1115,200 @@ class ParserSpec extends AnyFlatSpec with Matchers {
           "_last_updated"
         )
       case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "preserve tableType through sql round-trip" in {
+    val tableTypes = Seq(
+      TableType.MaterializedView,
+      TableType.Changelog,
+      TableType.Enrichment,
+      TableType.View,
+      TableType.External
+    )
+    tableTypes.foreach { expectedType =>
+      val table = Table(
+        name = "test_table",
+        columns = List(
+          Column("id", SQLTypes.Int),
+          Column("name", SQLTypes.Varchar)
+        ),
+        primaryKey = List("id"),
+        tableType = expectedType
+      ).update()
+
+      // verify _meta contains the type
+      table.mappings.get("_meta") match {
+        case Some(ObjectValue(meta)) =>
+          meta.get("type") match {
+            case Some(StringValue(t)) => t shouldBe expectedType.name
+            case other =>
+              fail(s"Expected StringValue(${expectedType.name}) in _meta.type, got $other")
+          }
+        case other => fail(s"Expected ObjectValue for _meta, got $other")
+      }
+
+      // round-trip through Index (ES indexMappings JSON → schema reconstruction)
+      val indexMappings = table.indexMappings
+      val indexSettings = table.indexSettings
+      val mappingsNode = mapper.createObjectNode()
+      mappingsNode.set("mappings", indexMappings)
+      val settingsNode = mapper.createObjectNode()
+      settingsNode.set("settings", indexSettings)
+      val esIndex = Index(
+        name = "test_table",
+        mappings = mappingsNode,
+        settings = settingsNode
+      )
+      val reconstructed = esIndex.schema
+      reconstructed.tableType shouldBe expectedType
+    }
+  }
+
+  it should "parse tableType from _meta in DDL OPTIONS" in {
+    val tableTypes = Seq(
+      ("materialized_view", TableType.MaterializedView),
+      ("changelog", TableType.Changelog),
+      ("enrichment", TableType.Enrichment),
+      ("view", TableType.View),
+      ("external", TableType.External)
+    )
+    tableTypes.foreach { case (typeName, expectedType) =>
+      val sql =
+        s"""CREATE OR REPLACE TABLE test_table (
+           |	id INT,
+           |	name VARCHAR,
+           |	PRIMARY KEY (id)
+           |) OPTIONS (mappings = (_meta = (type = "$typeName", created_by = "test")))""".stripMargin
+      val result = Parser(sql)
+      result match {
+        case Right(ct: CreateTable) =>
+          ct.tableType shouldBe expectedType
+          ct.schema.tableType shouldBe expectedType
+        case Right(other) =>
+          fail(s"Expected CreateTable for $typeName, got ${other.getClass.getSimpleName}")
+        case Left(err) =>
+          fail(s"Failed to parse SQL for $typeName: $err")
+      }
+    }
+  }
+
+  it should "default tableType to Regular when _meta has no type" in {
+    val sql =
+      """CREATE OR REPLACE TABLE test_table (
+        |	id INT,
+        |	name VARCHAR
+        |) OPTIONS (mappings = (_meta = (created_by = "test")))""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case ct: CreateTable =>
+        ct.tableType shouldBe TableType.Regular
+        ct.schema.tableType shouldBe TableType.Regular
+      case _ => fail("Expected CreateTable")
+    }
+  }
+
+  it should "preserve tableType through full DDL round-trip" in {
+    // painless script with double-quotes inside (reproduces the MV computed fields bug)
+    val painlessWithQuotes =
+      """def param1 = ctx.createdAt; def param2 = LocalDate.parse("2025-09-11", DateTimeFormatter.ofPattern("yyyy-MM-dd")); ctx.effective_date = param1"""
+    val table = Table(
+      name = "orders_with_customers_mv",
+      columns = List(
+        Column("id", SQLTypes.Int, notNull = true),
+        Column("amount", SQLTypes.Double),
+        Column("customer_name", SQLTypes.Varchar),
+        Column("email", SQLTypes.Varchar),
+        Column("customer_zip", SQLTypes.Keyword),
+        Column(
+          "effective_date",
+          SQLTypes.Date,
+          script = Some(
+            ScriptProcessor(
+              script =
+                "COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE)",
+              column = "effective_date",
+              dataType = SQLTypes.Date,
+              source = painlessWithQuotes
+            )
+          )
+        ),
+        Column("status", SQLTypes.Keyword)
+      ),
+      primaryKey = List("id"),
+      tableType = TableType.MaterializedView
+    ).update()
+
+    table.tableType shouldBe TableType.MaterializedView
+
+    val ddl = table.sql
+    println(s"Generated DDL:\n$ddl")
+
+    val result = Parser(ddl)
+    result match {
+      case Right(ct: CreateTable) =>
+        println(s"Parsed tableType: ${ct.tableType}")
+        println(s"Parsed mappings keys: ${ct.mappings.keys}")
+        ct.tableType shouldBe TableType.MaterializedView
+        // verify the script value round-trips correctly
+        ct.mappings.get("_meta") match {
+          case Some(meta: ObjectValue) =>
+            meta.value.get("columns") match {
+              case Some(cols: ObjectValue) =>
+                cols.value.get("effective_date") match {
+                  case Some(colMeta: ObjectValue) =>
+                    colMeta.value.get("script") match {
+                      case Some(scriptObj: ObjectValue) =>
+                        val painless = scriptObj.value.get("painless")
+                        painless match {
+                          case Some(sv: StringValue) =>
+                            sv.value shouldBe painlessWithQuotes
+                          case other =>
+                            fail(s"Expected StringValue for painless, got $other")
+                        }
+                      case other => fail(s"Expected script ObjectValue, got $other")
+                    }
+                  case other => fail(s"Expected effective_date column, got $other")
+                }
+              case other => fail(s"Expected columns ObjectValue, got $other")
+            }
+          case other => fail(s"Expected _meta ObjectValue, got $other")
+        }
+      case Right(other) =>
+        fail(s"Expected CreateTable, got ${other.getClass.getSimpleName}")
+      case Left(err) =>
+        fail(s"Failed to parse generated DDL: $err")
+    }
+  }
+
+  it should "parse OPTIONS with NULL values and empty arrays" in {
+    val sql =
+      """CREATE OR REPLACE TABLE orders_with_customers_mv (
+        |	id INT,
+        |	name VARCHAR,
+        |	PRIMARY KEY (id)
+        |) OPTIONS (mappings = (_meta = (group_by = NULL, aggregations = [], has_where = true, query = "SELECT * FROM orders", type = "materialized_view")))""".stripMargin
+    val result = Parser(sql)
+    result match {
+      case Right(ct: CreateTable) =>
+        ct.tableType shouldBe TableType.MaterializedView
+        ct.mappings.get("_meta") match {
+          case Some(meta: ObjectValue) =>
+            meta.value.get("group_by") match {
+              case Some(Null) => // expected
+              case other      => fail(s"Expected Null for group_by, got $other")
+            }
+            meta.value.get("has_where") match {
+              case Some(BooleanValue(true)) => // expected
+              case other => fail(s"Expected BooleanValue(true) for has_where, got $other")
+            }
+          case other => fail(s"Expected _meta ObjectValue, got $other")
+        }
+      case Right(other) =>
+        fail(s"Expected CreateTable, got ${other.getClass.getSimpleName}")
+      case Left(err) =>
+        fail(s"Failed to parse SQL: $err")
     }
   }
 
@@ -1772,7 +1971,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"never":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"never":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1820,7 +2019,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"always":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"always":{}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1870,7 +2069,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.payload.hits.total":{"gt":10}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1920,7 +2119,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.trigger shouldBe intervalTrigger
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"compare":{"ctx.execution_time":{"gt":"now-5d/d"}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -1970,7 +2169,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"interval":"5m"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -2020,7 +2219,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -2047,7 +2246,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe simpleInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -2074,7 +2273,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe httpInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }
@@ -2101,7 +2300,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         create.input shouldBe chainInput
         val json = create.watcher.node
         println(json.toPrettyString)
-        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"chain":{"inputs":[{"search_data":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}}},{"http_data":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}}}]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\\\"message\\\": \\\"Watcher triggered with {{ctx.payload._value}}\\\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
+        json.toString shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"chain":{"inputs":[{"search_data":{"search":{"request":{"indices":["my_index"],"body":{"query":{"match_all":{}}}},"timeout":"2m"}}},{"http_data":{"http":{"request":{"scheme":"https","host":"www.example.com","port":443,"method":"get","path":"/api/data","headers":{"Authorization":"Bearer token"},"connection_timeout":"5s"}}}}]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"log_action":{"foreach":"ctx.payload.hits.hits","max_iterations":500,"logging":{"text":"Watcher triggered with {{ctx.payload.hits.total}} hits","level":"info"}},"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
       case _ => fail("Expected CreateWatcher")
     }
   }

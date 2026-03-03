@@ -1094,7 +1094,7 @@ trait Parser
   val endStruct: Parser[String] = "}"
 
   def objectValue: PackratParser[ObjectValue] =
-    lparen ~> rep1sep(option, comma) <~ rparen ^^ { opts =>
+    lparen ~> repsep(option, comma) <~ rparen ^^ { opts =>
       ObjectValue(ListMap(opts: _*))
     }
 
