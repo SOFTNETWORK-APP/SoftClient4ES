@@ -205,7 +205,7 @@ For programmatic access, add SoftClient4ES to your project:
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.17.2"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.17.3"
 // Add the community extensions for materialized views (optional)
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-community-extensions" % "0.1.0"
 ```

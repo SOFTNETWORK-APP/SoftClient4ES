@@ -24,6 +24,7 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   LongValue,
   LongValues,
+  Null,
   ParamValue,
   PiValue,
   RandomValue,
@@ -38,9 +39,11 @@ package object `type` {
   trait TypeParser { self: Parser =>
 
     def literal: PackratParser[StringValue] =
-      (("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") | ("'" ~> """([^'\\]|\\.)*""".r <~ "'")) ^^ { str =>
-        StringValue(str)
-      }
+      (("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") ^^ { str =>
+        StringValue(str.replace("\\\"", "\"").replace("\\\\", "\\"))
+      }) | (("'" ~> """([^'\\]|\\.)*""".r <~ "'") ^^ { str =>
+        StringValue(str.replace("\\'", "'").replace("\\\\", "\\"))
+      })
 
     def long: PackratParser[LongValue] =
       """(-)?(0|[1-9]\d*)""".r ^^ (str => LongValue(str.toLong))
@@ -58,6 +61,9 @@ package object `type` {
 
     def param: PackratParser[ParamValue.type] =
       "?" ^^ (_ => ParamValue)
+
+    def nullValue: PackratParser[Null.type] =
+      "(?i)NULL\\b".r ^^ (_ => Null)
 
     def literals: PackratParser[Value[_]] = "[" ~> repsep(literal, ",") <~ "]" ^^ { list =>
       StringValues(list)
@@ -78,7 +84,7 @@ package object `type` {
     def array: PackratParser[Value[_]] = literals | longs | doubles | booleans
 
     def value: PackratParser[Value[_]] =
-      literal | pi | random | double | long | boolean | param | array
+      literal | pi | random | double | long | boolean | nullValue | param | array
 
     def identifierWithValue: Parser[Identifier] = (value ^^ functionAsIdentifier) >> cast
 

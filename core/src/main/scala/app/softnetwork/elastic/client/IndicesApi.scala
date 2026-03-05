@@ -443,6 +443,7 @@ trait IndicesApi extends ElasticClientHelpers {
 
     executeDeleteIndex(index) match {
       case success @ ElasticSuccess(true) =>
+        invalidateSchema(index)
         logger.info(s"✅ Index '$index' deleted successfully")
         success
       case success @ ElasticSuccess(_) =>

@@ -206,6 +206,29 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
   }
 
   // -------------------------------------------------------------------------
+  // Helper: collect rows from any QueryResult type (QueryRows or QueryStream)
+  // -------------------------------------------------------------------------
+
+  def collectRows(startTime: Long, res: ElasticResult[QueryResult]): Seq[Map[String, Any]] = {
+    renderResults(startTime, res)
+    res.isSuccess shouldBe true
+    res.toOption.get match {
+      case QueryStream(stream) =>
+        val sink =
+          Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
+            case (acc, (row, _)) => acc :+ normalizeRow(row)
+          }
+        stream.runWith(sink).futureValue
+      case q: QueryRows =>
+        q.rows.map(normalizeRow)
+      case QueryStructured(response) =>
+        response.results.map(normalizeRow)
+      case other =>
+        fail(s"Unexpected QueryResult type for SELECT: $other")
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Helper: assert SHOW TABLE result type
   // -------------------------------------------------------------------------
 

@@ -436,6 +436,35 @@ package object schema {
 
   }
 
+  object ScriptProcessor {
+    def fromScript(
+      column: String,
+      script: PainlessScript,
+      dataType: Option[SQLType] = None,
+      pipelineType: IngestPipelineType = IngestPipelineType.Default
+    ): ScriptProcessor = {
+      val ctx = PainlessContext(PainlessContextType.Processor)
+      val scr = script.painless(Some(ctx))
+      val painless = s"$ctx$scr"
+      val source = painless.split(";") match {
+        case Array(single) if single.trim.startsWith("return ") =>
+          val stripped = single.trim.stripPrefix("return ").trim
+          s"ctx.$column = $stripped"
+        case parts =>
+          val last = parts.last.trim
+          val updated = parts.dropRight(1) :+ s" ctx.$column = $last"
+          updated.mkString(";")
+      }
+      ScriptProcessor(
+        pipelineType = pipelineType,
+        script = script.sql,
+        column = column,
+        dataType = dataType.getOrElse(script.out),
+        source = source
+      )
+    }
+  }
+
   case class RenameProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     description: Option[String] = None,
@@ -908,29 +937,43 @@ package object schema {
             )
           )
         }
-        .map("script" -> _) ++ ListMap(
-        "multi_fields" -> ObjectValue(
-          ListMap(multiFields.map(field => field.name -> ObjectValue(field._meta)): _*)
-        )
-      ) ++ (if (lineage.nonEmpty) {
-              // ✅ Lineage as map of paths
-              ListMap(
-                "lineage" -> ObjectValue(
-                  lineage.map { case (pathId, chain) =>
-                    pathId -> ObjectValues(
-                      chain.map { case (table, column) =>
-                        ObjectValue(
-                          ListMap(
-                            "table"  -> StringValue(table),
-                            "column" -> StringValue(column)
-                          )
-                        )
-                      }
-                    )
-                  }
-                )
-              )
-            } else ListMap.empty)
+        .map("script" -> _) ++ (if (multiFields.nonEmpty)
+                                  ListMap(
+                                    "multi_fields" -> ObjectValue(
+                                      ListMap(
+                                        multiFields.map(field =>
+                                          field.name -> ObjectValue(field._meta)
+                                        ): _*
+                                      )
+                                    )
+                                  )
+                                else ListMap.empty[String, Value[_]]) ++ (if (lineage.nonEmpty) {
+                                                                            // ✅ Lineage as map of paths
+                                                                            ListMap(
+                                                                              "lineage" -> ObjectValue(
+                                                                                lineage.map { case (pathId, chain) =>
+                                                                                  pathId -> ObjectValues(
+                                                                                    chain.map {
+                                                                                      case (
+                                                                                            table,
+                                                                                            column
+                                                                                          ) =>
+                                                                                        ObjectValue(
+                                                                                          ListMap(
+                                                                                            "table" -> StringValue(
+                                                                                              table
+                                                                                            ),
+                                                                                            "column" -> StringValue(
+                                                                                              column
+                                                                                            )
+                                                                                          )
+                                                                                        )
+                                                                                    }
+                                                                                  )
+                                                                                }
+                                                                              )
+                                                                            )
+                                                                          } else ListMap.empty)
     }
 
     def updateStruct(): Column = {
@@ -1443,9 +1486,11 @@ package object schema {
         "columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) })
       ) ++ ListMap(
         "type" -> StringValue(tableType.name)
-      ) ++ ListMap(
-        "materialized_views" -> StringValues(materializedViews.map(StringValue))
-      )
+      ) ++ (if (materializedViews.nonEmpty)
+              ListMap(
+                "materialized_views" -> StringValues(materializedViews.map(StringValue))
+              )
+            else ListMap.empty[String, Value[_]])
 
     def update(): Table = {
       val updated =
@@ -1490,7 +1535,7 @@ package object schema {
               ""
             }
           val separator = if (partitionBy.nonEmpty) "," else ""
-          s"$separator\nOPTIONS = ${Seq(
+          s"$separator\nOPTIONS ${Seq(
             mappingOpts,
             settingsOpts,
             aliasesOpts

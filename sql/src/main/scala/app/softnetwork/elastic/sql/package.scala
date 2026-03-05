@@ -573,7 +573,7 @@ package object sql {
     override def sql: String = s"""'$value'"""
     override def baseType: SQLType = SQLTypes.Varchar
 
-    override def ddl: String = s""""$value""""
+    override def ddl: String = s""""${value.replace("\\", "\\\\").replace("\"", "\\\"")}""""
   }
 
   case object IdValue extends Value[String]("_id") with TokenRegex {
