@@ -453,20 +453,31 @@ package object query {
     }
   }
 
-  case class Update(table: String, values: ListMap[String, Value[_]], where: Option[Where])
+  case class Update(table: String, values: ListMap[String, PainlessScript], where: Option[Where])
       extends DmlStatement {
     override def sql: String = s"UPDATE $table SET ${values
-      .map { case (k, v) => s"$k = ${v.value}" }
-      .mkString(", ")}${where.map(w => s" ${w.sql}").getOrElse("")}"
+      .map { case (k, v) =>
+        v match {
+          case value: Value[_] => s"$k = ${value.value}"
+          case painlessScript  => s"$k = ${painlessScript.sql}"
+        }
+      }
+      .mkString(", ")}${where.map(w => s"${w.sql}").getOrElse("")}"
 
     lazy val customPipeline: IngestPipeline = IngestPipeline(
-      s"update-$table-${Instant.now}",
+      s"update-$table-${Instant.now.toEpochMilli}",
       IngestPipelineType.Custom,
       values.map { case (k, v) =>
-        SetProcessor(
-          column = k,
-          value = v
-        )
+        v match {
+          case value: Value[_] =>
+            SetProcessor(
+              pipelineType = IngestPipelineType.Custom,
+              column = k,
+              value = value
+            )
+          case script =>
+            ScriptProcessor.fromScript(k, script, pipelineType = IngestPipelineType.Custom)
+        }
       }.toSeq
     )
 

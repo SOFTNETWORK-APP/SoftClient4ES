@@ -10,7 +10,8 @@ import app.softnetwork.elastic.sql.{
   Null,
   ObjectValue,
   StringValue,
-  StringValues
+  StringValues,
+  Value
 }
 import app.softnetwork.elastic.sql.http._
 import app.softnetwork.elastic.sql.`type`.SQLTypes
@@ -2740,9 +2741,49 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val stmt = result.toOption.get
     stmt match {
       case Update("users", values, Some(where)) =>
-        values("name").value shouldBe "Bob"
-        values("age").value shouldBe 42
+        values("name").asInstanceOf[Value[_]].value shouldBe "Bob"
+        values("age").asInstanceOf[Value[_]].value shouldBe 42
         where.sql should include("id = 1")
+      case _ => fail("Expected Update")
+    }
+  }
+
+  it should "parse UPDATE with scripts" in {
+    val sql =
+      "UPDATE products SET price = price * 1.1, updated_at = CURRENT_TIMESTAMP WHERE category = 'Electronics'"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case u @ Update("products", values, Some(where)) =>
+        // CURRENT_TIMESTAMP must not be captured as a plain Value[_]
+        values("price") should not be a[Value[_]]
+        values("updated_at") should not be a[Value[_]]
+        // SQL representation
+        values("price").sql shouldBe "price * 1.1"
+        values("updated_at").sql shouldBe "CURRENT_TIMESTAMP"
+        where.sql should include("category = 'Electronics'")
+        // SQL round-trip
+        u.sql shouldBe sql
+        // Painless pipeline
+        val pipeline = u.customPipeline
+        pipeline.name should startWith("update-products-")
+        pipeline.processors should have size 2
+        pipeline.processors.foreach(_ shouldBe a[ScriptProcessor])
+        pipeline.processors.find(_.column == "price") match {
+          case Some(priceProc) =>
+            priceProc
+              .asInstanceOf[ScriptProcessor]
+              .source shouldBe "def param1 = ctx.price; ctx.price = (param1 == null) ? null : (param1 * 1.1)"
+          case None => fail("Expected processor for price")
+        }
+        pipeline.processors.find(_.column == "updated_at") match {
+          case Some(updatedAtProc) =>
+            updatedAtProc
+              .asInstanceOf[ScriptProcessor]
+              .source shouldBe "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')); ctx.updated_at = param1"
+          case None => fail("Expected processor for updated_at")
+        }
       case _ => fail("Expected Update")
     }
   }

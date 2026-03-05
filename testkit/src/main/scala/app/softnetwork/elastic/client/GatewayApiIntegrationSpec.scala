@@ -598,6 +598,65 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   // ---------------------------------------------------------------------------
+  // UPDATE with scripts
+  // ---------------------------------------------------------------------------
+
+  it should "update rows using scripted SET clauses and return a DmlResult" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS dml_products (
+        |  id INT NOT NULL,
+        |  name KEYWORD,
+        |  price DOUBLE,
+        |  category KEYWORD,
+        |  updated_at DATETIME
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val insert =
+      """INSERT INTO dml_products (id, name, price, category) VALUES
+        |  (1, 'Laptop',  1000.00, 'Electronics'),
+        |  (2, 'T-Shirt',   25.00, 'Clothing'),
+        |  (3, 'Phone',    800.00, 'Electronics');""".stripMargin
+
+    assertDml(System.nanoTime(), client.run(insert).futureValue)
+
+    val update =
+      """UPDATE dml_products
+        |SET price = price * 1.1, updated_at = CURRENT_TIMESTAMP
+        |WHERE category = 'Electronics';""".stripMargin
+
+    val res = client.run(update).futureValue
+    assertDml(System.nanoTime(), res)
+
+    val dml = res.toOption.get.asInstanceOf[DmlResult]
+    dml.updated should be >= 1L
+
+    // Verify via SELECT that prices were increased and updated_at is set
+    val select =
+      """SELECT id, price, updated_at
+        |FROM dml_products
+        |WHERE category = 'Electronics'
+        |ORDER BY id ASC;""".stripMargin
+
+    val rows = collectRows(System.nanoTime(), client.run(select).futureValue)
+    rows should have size 2
+
+    // id=1 Laptop: 1000.0 * 1.1 = 1100.0 — id=3 Phone: 800.0 * 1.1 = 880.0
+    rows.zipWithIndex.foreach { case (row, i) =>
+      val price = row("price") match {
+        case d: Double => d
+        case n: Number => n.doubleValue()
+      }
+      val originalPrice = if (i == 0) 1000.0 else 800.0
+      price shouldBe (originalPrice * 1.1) +- 0.01
+
+      // updated_at must be set by the CURRENT_TIMESTAMP script
+      row.get("updated_at") shouldBe defined
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // DELETE
   // ---------------------------------------------------------------------------
 

@@ -436,6 +436,35 @@ package object schema {
 
   }
 
+  object ScriptProcessor {
+    def fromScript(
+      column: String,
+      script: PainlessScript,
+      dataType: Option[SQLType] = None,
+      pipelineType: IngestPipelineType = IngestPipelineType.Default
+    ): ScriptProcessor = {
+      val ctx = PainlessContext(PainlessContextType.Processor)
+      val scr = script.painless(Some(ctx))
+      val painless = s"$ctx$scr"
+      val source = painless.split(";") match {
+        case Array(single) if single.trim.startsWith("return ") =>
+          val stripped = single.trim.stripPrefix("return ").trim
+          s"ctx.$column = $stripped"
+        case parts =>
+          val last = parts.last.trim
+          val updated = parts.dropRight(1) :+ s" ctx.$column = $last"
+          updated.mkString(";")
+      }
+      ScriptProcessor(
+        pipelineType = pipelineType,
+        script = script.sql,
+        column = column,
+        dataType = dataType.getOrElse(script.out),
+        source = source
+      )
+    }
+  }
+
   case class RenameProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     description: Option[String] = None,

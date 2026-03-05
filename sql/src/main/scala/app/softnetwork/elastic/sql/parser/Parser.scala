@@ -16,7 +16,6 @@
 
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.PainlessContextType.Processor
 import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.function.time.DateTimeFunction
 import app.softnetwork.elastic.sql.function._
@@ -230,11 +229,13 @@ object Parser
       case None        => None
     }
 
-  def script: PackratParser[PainlessScript] =
-    ("SCRIPT" ~ "AS") ~ start ~ (identifierWithArithmeticExpression |
+  def scriptValue: PackratParser[PainlessScript] = identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithIntervalFunction |
-    identifierWithFunction) ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
+    identifierWithFunction
+
+  def script: PackratParser[PainlessScript] =
+    ("SCRIPT" ~ "AS") ~ start ~ scriptValue ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
 
   def column: PackratParser[Column] =
     ident ~ extension_type ~ (script | multiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
@@ -242,30 +243,10 @@ object Parser
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
       mfs match {
         case script: PainlessScript =>
-          val ctx = PainlessContext(Processor)
-          val scr = script.painless(Some(ctx))
-          val temp = s"$ctx$scr"
-          val ret =
-            temp.split(";") match {
-              case Array(single) if single.trim.startsWith("return ") =>
-                val stripReturn = single.trim.stripPrefix("return ").trim
-                s"ctx.$name = $stripReturn"
-              case multiple =>
-                val last = multiple.last.trim
-                val temp = multiple.dropRight(1) :+ s" ctx.$name = $last"
-                temp.mkString(";")
-            }
           Column(
             name,
             dt,
-            Some(
-              ScriptProcessor(
-                script = script.sql,
-                column = name,
-                dataType = dt,
-                source = ret
-              )
-            ),
+            Some(ScriptProcessor.fromScript(name, script, Some(dt))),
             Nil,
             dv,
             nn,
@@ -521,27 +502,9 @@ object Parser
 
   def alterColumnScript: PackratParser[AlterColumnScript] =
     alterColumnIfExists ~ ident ~ "SET" ~ script ^^ { case ie ~ name ~ _ ~ ns =>
-      val ctx = PainlessContext(Processor)
-      val scr = ns.painless(Some(ctx))
-      val temp = s"$ctx$scr"
-      val ret =
-        temp.split(";") match {
-          case Array(single) if single.trim.startsWith("return ") =>
-            val stripReturn = single.trim.stripPrefix("return ").trim
-            s"ctx.$name = $stripReturn"
-          case multiple =>
-            val last = multiple.last.trim
-            val temp = multiple.dropRight(1) :+ s" ctx.$name = $last"
-            temp.mkString(";")
-        }
       AlterColumnScript(
         name,
-        ScriptProcessor(
-          script = ns.sql,
-          column = name,
-          dataType = ns.out,
-          source = ret
-        ),
+        ScriptProcessor.fromScript(name, ns, Some(ns.out)),
         ifExists = ie
       )
     }
@@ -1025,10 +988,12 @@ object Parser
 
   /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...] */
   def update: PackratParser[Update] =
-    ("UPDATE" ~> ident) ~ ("SET" ~> repsep(ident ~ "=" ~ value, separator)) ~ where.? ^^ {
-      case table ~ assigns ~ w =>
-        val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
-        Update(table, values, w)
+    ("UPDATE" ~> ident) ~ ("SET" ~> repsep(
+      ident ~ "=" ~ (value | scriptValue),
+      separator
+    )) ~ where.? ^^ { case table ~ assigns ~ w =>
+      val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
+      Update(table, values, w)
     }
 
   /** DELETE FROM table [WHERE ...] */
