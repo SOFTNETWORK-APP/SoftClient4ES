@@ -329,13 +329,13 @@ ON CONFLICT (uuid) DO UPDATE;
 `COPY INTO` transparently supports remote file systems by auto-detecting the URI scheme in the `FROM` path.
 No SQL syntax change is required — simply use the appropriate URI scheme.
 
-| URI scheme | File system | Required JAR |
-| --- | --- | --- |
-| `s3a://` or `s3://` | AWS S3 | `hadoop-aws` |
-| `abfs://`, `abfss://`, `wasb://`, `wasbs://` | Azure ADLS Gen2 / Blob Storage | `hadoop-azure` |
-| `gs://` | Google Cloud Storage | `gcs-connector-hadoop3` |
-| `hdfs://` | HDFS | _(bundled with hadoop-client)_ |
-| _(no scheme / local path)_ | Local filesystem | _(no extra JAR needed)_ |
+| URI scheme                                   | File system                    | Required JAR                   |
+|----------------------------------------------|--------------------------------|--------------------------------|
+| `s3a://` or `s3://`                          | AWS S3                         | `hadoop-aws`                   |
+| `abfs://`, `abfss://`, `wasb://`, `wasbs://` | Azure ADLS Gen2 / Blob Storage | `hadoop-azure`                 |
+| `gs://`                                      | Google Cloud Storage           | `gcs-connector-hadoop3`        |
+| `hdfs://`                                    | HDFS                           | _(bundled with hadoop-client)_ |
+| _(no scheme / local path)_                   | Local filesystem               | _(no extra JAR needed)_        |
 
 > **Important:** Cloud connector JARs are declared as `provided` dependencies and are **not bundled** in the library.
 > They must be present in the runtime classpath (e.g. added to the CLI assembly or the application's fat-jar).
