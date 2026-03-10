@@ -32,5 +32,5 @@ case class OperationMetrics(
   def successRate: Double =
     if (totalOperations > 0) (successCount.toDouble / totalOperations) * 100 else 0.0
 
-  def failureRate: Double = 100.0 - successRate
+  def failureRate: Double = if (totalOperations > 0) 100.0 - successRate else 0.0
 }
