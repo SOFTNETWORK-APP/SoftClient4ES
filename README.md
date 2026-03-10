@@ -170,12 +170,12 @@ Connect to Elasticsearch from any JDBC-compatible tool — **DBeaver**, **Tablea
 
 Download the self-contained fat JAR for your Elasticsearch version:
 
-| Elasticsearch Version | Artifact                                    |
-|-----------------------|---------------------------------------------|
-| ES 6.x                | `softclient4es6-community-driver-0.1.0.jar` |
-| ES 7.x                | `softclient4es7-community-driver-0.1.0.jar` |
-| ES 8.x                | `softclient4es8-community-driver-0.1.0.jar` |
-| ES 9.x                | `softclient4es9-community-driver-0.1.0.jar` |
+| Elasticsearch Version | Artifact                               |
+|-----------------------|----------------------------------------|
+| ES 6.x                | `softclient4es6-jdbc-driver-0.1.0.jar` |
+| ES 7.x                | `softclient4es7-jdbc-driver-0.1.0.jar` |
+| ES 8.x                | `softclient4es8-jdbc-driver-0.1.0.jar` |
+| ES 9.x                | `softclient4es9-jdbc-driver-0.1.0.jar` |
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200
@@ -187,7 +187,7 @@ Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 ```xml
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
-  <artifactId>softclient4es8-community-driver</artifactId>
+  <artifactId>softclient4es8-jdbc-driver</artifactId>
   <version>0.1.0</version>
 </dependency>
 ```
@@ -207,7 +207,7 @@ resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases
 // Choose your Elasticsearch version
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.17.3"
 // Add the community extensions for materialized views (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-community-extensions" % "0.1.0"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.1.1"
 ```
 
 ```scala
@@ -280,7 +280,7 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 | **SQL Reference**      | [📖 Documentation](documentation/sql/README.md)             |
 | **API Reference**      | [📖 Documentation](documentation/client/README.md)          |
 | **Materialized Views** | [📖 Documentation](documentation/sql/materialized_views.md) |
-| **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)     |
+| **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)    |
 
 ---
 
