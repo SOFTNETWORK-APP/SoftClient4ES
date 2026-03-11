@@ -166,24 +166,28 @@ trait ElasticConversion {
         val ret = parseAggregations(aggs, ListMap.empty, fieldAliases, aggregations)
         val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
           ret.groupBy(_.getOrElse("bucket_root", "").toString)
-        groupedRows.values.foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
-          for {
-            accMap   <- acc
-            groupMap <- group
-          } yield accMap ++ groupMap
-        }
+        groupedRows.values
+          .foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
+            for {
+              accMap   <- acc
+              groupMap <- group
+            } yield accMap ++ groupMap
+          }
+          .map(_ - "bucket_root")
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
         val ret = parseAggregations(aggs, ListMap.empty, fieldAliases, aggregations)
         val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
           ret.groupBy(_.getOrElse("bucket_root", "").toString)
-        groupedRows.values.foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
-          for {
-            accMap   <- acc
-            groupMap <- group
-          } yield accMap ++ groupMap
-        }
+        groupedRows.values
+          .foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
+            for {
+              accMap   <- acc
+              groupMap <- group
+            } yield accMap ++ groupMap
+          }
+          .map(_ - "bucket_root")
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations + top_hits aggregations
@@ -204,7 +208,9 @@ trait ElasticConversion {
     }
 
     // Normalize all rows at the end, after all transformations (flattening, aggregation merging)
-    rows.map(row => normalizeRow(row, fields))
+    // Filter out "*" from fields — it is an artifact of COUNT(*) and not a real column
+    val effectiveFields = fields.filterNot(_ == "*")
+    rows.map(row => normalizeRow(row, effectiveFields))
   }
 
   def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
