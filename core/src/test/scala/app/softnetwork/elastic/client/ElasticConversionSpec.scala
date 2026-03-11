@@ -655,6 +655,54 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     }
   }
 
+  it should "parse global aggregation COUNT(*) without GROUP BY" in {
+    // Simulates: SELECT COUNT(*) FROM ecommerce
+    // ES response for a global value_count aggregation (no buckets, no GROUP BY)
+    val results =
+      """{
+        |  "took": 3,
+        |  "timed_out": false,
+        |  "hits": { "total": { "value": 20, "relation": "eq" }, "hits": [] },
+        |  "aggregations": {
+        |    "COUNT(*)" : {
+        |      "value": 20
+        |    }
+        |  }
+        |}""".stripMargin
+
+    val aggregations = ListMap(
+      "COUNT(*)" -> ClientAggregation(
+        aggName = "COUNT(*)",
+        aggType = AggregationType.Count,
+        distinct = false,
+        sourceField = "*",
+        windowing = false,
+        bucketPath = "",
+        bucketRoot = ""
+      )
+    )
+
+    // fields as produced by the SQL parser: "*" (artifact) + "COUNT(*)" (actual column)
+    val fields = Seq("*", "COUNT(*)")
+
+    parseResponse(results, ListMap.empty, aggregations, fields) match {
+      case Success(rows) =>
+        rows.foreach(println)
+        rows.size shouldBe 1
+        val row = rows.head
+        // Issue #002: bucket_root must not leak into the output
+        row.keys should not contain "bucket_root"
+        // Issue #003: "*" must not appear as a column
+        row.keys should not contain "*"
+        // Only the aggregation column should be present
+        row.keys should contain("COUNT(*)")
+        row("COUNT(*)") shouldBe 20L
+        row.size shouldBe 1
+      case Failure(error) =>
+        throw error
+    }
+  }
+
   it should "parse window results with distinct partitions" in {
     val results =
       """

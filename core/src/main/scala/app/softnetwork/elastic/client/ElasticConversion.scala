@@ -208,7 +208,9 @@ trait ElasticConversion {
     }
 
     // Normalize all rows at the end, after all transformations (flattening, aggregation merging)
-    rows.map(row => normalizeRow(row, fields))
+    // Filter out "*" from fields — it is an artifact of COUNT(*) and not a real column
+    val effectiveFields = fields.filterNot(_ == "*")
+    rows.map(row => normalizeRow(row, effectiveFields))
   }
 
   def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
