@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.repl
 
-import app.softnetwork.elastic.client.result.{DmlResult, OutputFormat, QueryRows}
+import app.softnetwork.elastic.client.result.{DmlResult, OutputFormat, QueryRows, QueryStructured}
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 
 import java.time.LocalDate
@@ -702,6 +702,29 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |ORDER BY COUNT(*) DESC""".stripMargin
 
     assertSelectResult(System.nanoTime(), executeSync(sql))
+  }
+
+  it should "not leak internal _doc_count columns in GROUP BY results" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       COUNT(*) AS cnt,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(*) >= 1""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    rows.foreach { row =>
+      row.keys.filter(_.endsWith("_doc_count")) shouldBe empty
+    }
   }
 
   it should "support arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE" in {
