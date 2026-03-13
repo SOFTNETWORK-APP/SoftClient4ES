@@ -91,7 +91,7 @@ case class Bucket(
 
   lazy val name: String = identifier.fieldAlias.getOrElse(path)
 
-  lazy val path: String = sourceBucket.replace(".", "_")
+  lazy val path: String = sourceBucket
 
   lazy val nestedPath: String = {
     identifier.nestedElement match {

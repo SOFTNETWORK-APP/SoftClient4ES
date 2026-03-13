@@ -163,14 +163,21 @@ package object query {
     /** Mapping from inner hit name to (subFieldName, outputFieldName) pairs. Used to flatten inner
       * hits into individual rows (UNNEST row explosion).
       */
-    lazy val nestedHitsMappings: Map[String, Seq[(String, String)]] =
+    lazy val nestedHitsMappings: Map[String, Seq[(String, String)]] = {
+      val computedAliasMap = select.fieldsWithComputedAliases
+        .flatMap(f => f.fieldAlias.map(a => f.identifier.identifierName -> a.alias))
+        .toMap
       nestedFields.map { case (innerHitsName, fields) =>
         innerHitsName -> fields.map { f =>
           val subField = f.sourceField.stripPrefix(innerHitsName + ".")
-          val outputName = f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+          val outputName = f.fieldAlias
+            .map(_.alias)
+            .orElse(computedAliasMap.get(f.identifier.identifierName))
+            .getOrElse(f.sourceField)
           (subField, outputName)
         }
       }
+    }
 
     def toNestedElement(u: Unnest): NestedElement = {
       val updated = unnests.getOrElse(u.alias.map(_.alias).getOrElse(u.name), u)
@@ -216,7 +223,7 @@ package object query {
       if (aggregates.nonEmpty)
         Seq.empty
       else
-        select.fields.filter(_.isScriptField)
+        select.fieldsWithComputedAliases.filter(_.isScriptField)
     }
 
     lazy val fields: Seq[String] = {
@@ -232,12 +239,13 @@ package object query {
         Seq.empty
     }
 
-    lazy val windowFields: Seq[Field] = select.fields.filter(_.identifier.hasWindow)
+    lazy val windowFields: Seq[Field] =
+      select.fieldsWithComputedAliases.filter(_.identifier.hasWindow)
 
     lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
     lazy val aggregates: Seq[Field] =
-      select.fields
+      select.fieldsWithComputedAliases
         .filter(f => f.isAggregation || f.isBucketScript)
         .filterNot(_.identifier.hasWindow) ++ windowFields
 
@@ -281,9 +289,7 @@ package object query {
             val nonAggregatedFields =
               select.fields.filterNot(f => f.hasAggregation)
             val invalidFields = nonAggregatedFields.filterNot(f =>
-              buckets.exists(b =>
-                b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField.replace(".", "_"))
-              )
+              buckets.exists(b => b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
             )
             if (invalidFields.nonEmpty) {
               Left(

@@ -747,6 +747,30 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     rows should not be empty
   }
 
+  it should "generate computed aliases for unnamed expression columns" in {
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*),
+        |       AVG(age)
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Verify computed aliases are used as column names
+    val firstRow = rows.head
+    firstRow.keys should contain("profile.city")
+    firstRow.keys should contain("__c2") // COUNT(*)
+    firstRow.keys should contain("__c3") // AVG(age)
+  }
+
   it should "support arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE" in {
     val sql =
       """SELECT id,

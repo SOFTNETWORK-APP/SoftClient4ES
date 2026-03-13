@@ -2896,4 +2896,76 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // ── Computed aliases for unnamed expression columns (Issue #001) ───────────
+
+  it should "generate computed aliases for aggregate functions without explicit alias" in {
+    val sql = """SELECT COUNT(*), SUM(quantity) FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        // SQL round-trip: no AS __cN injected
+        stmt.sql shouldBe sql
+        // computed aliases via fieldsWithComputedAliases
+        val computed = ss.select.fieldsWithComputedAliases
+        computed(0).fieldAlias.map(_.alias) shouldBe Some("__c1")
+        computed(1).fieldAlias.map(_.alias) shouldBe Some("__c2")
+        // original fields unchanged
+        ss.select.fields(0).fieldAlias shouldBe None
+        ss.select.fields(1).fieldAlias shouldBe None
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "preserve explicit aliases and only compute for unnamed expressions" in {
+    val sql = """SELECT name, COUNT(*) AS total FROM t GROUP BY name"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        stmt.sql shouldBe sql
+        val computed = ss.select.fieldsWithComputedAliases
+        // name: simple column, no computed alias
+        computed(0).fieldAlias shouldBe None
+        // COUNT(*) AS total: explicit alias preserved
+        computed(1).fieldAlias.map(_.alias) shouldBe Some("total")
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "generate computed alias for unnamed expression but not for named columns" in {
+    val sql = """SELECT name, COUNT(*) FROM t GROUP BY name"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        stmt.sql shouldBe sql
+        val computed = ss.select.fieldsWithComputedAliases
+        // name: simple column, no alias
+        computed(0).fieldAlias shouldBe None
+        // COUNT(*): expression, gets __c2
+        computed(1).fieldAlias.map(_.alias) shouldBe Some("__c2")
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "generate computed alias for arithmetic expression" in {
+    val sql = """SELECT unit_price * quantity FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        stmt.sql shouldBe sql
+        val computed = ss.select.fieldsWithComputedAliases
+        computed(0).fieldAlias.map(_.alias) shouldBe Some("__c1")
+        // original unchanged
+        ss.select.fields(0).fieldAlias shouldBe None
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
 }
