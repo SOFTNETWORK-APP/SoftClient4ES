@@ -771,6 +771,73 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     firstRow.keys should contain("__c3") // AVG(age)
   }
 
+  // Issue #006 — Result column order must match SELECT clause order
+  it should "preserve SELECT column order: aggregation first, bucket second" in {
+    val sql =
+      """SELECT COUNT(*),
+        |       profile.city
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Column order must match SELECT: __c1 (COUNT(*)), then profile.city
+    val columnOrder = rows.head.keys.toSeq
+    columnOrder.indexOf("__c1") should be < columnOrder.indexOf("profile.city")
+  }
+
+  it should "preserve SELECT column order: bucket first, aliased aggregation second" in {
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*) AS cnt
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Column order must match SELECT: profile.city, then cnt
+    val columnOrder = rows.head.keys.toSeq
+    columnOrder.indexOf("profile.city") should be < columnOrder.indexOf("cnt")
+  }
+
+  it should "preserve SELECT column order: multiple buckets and mixed aggregations" in {
+    // Need a table with two groupable columns — use dql_users with name + profile.city
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*) AS cnt,
+        |       AVG(age)
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Column order must match SELECT: profile.city, cnt, __c3
+    val columnOrder = rows.head.keys.toSeq
+    columnOrder.indexOf("profile.city") should be < columnOrder.indexOf("cnt")
+    columnOrder.indexOf("cnt") should be < columnOrder.indexOf("__c3")
+  }
+
   it should "support arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE" in {
     val sql =
       """SELECT id,
