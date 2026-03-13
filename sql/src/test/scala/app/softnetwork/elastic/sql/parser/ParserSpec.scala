@@ -2826,4 +2826,74 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // ── Double-quoted identifiers (ANSI SQL-92) ──────────────────────────────
+
+  it should "parse Superset query with double-quoted alias and ORDER BY" in {
+    val sql =
+      """SELECT country AS country, sum(total_price) AS "Revenue" FROM ecommerce GROUP BY country ORDER BY "Revenue" DESC LIMIT 10"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        val fields = ss.select.fields
+        fields should have size 2
+        fields(1).fieldAlias.map(_.alias) shouldBe Some("Revenue")
+        ss.orderBy.get.sorts.head.field.aliasOrName shouldBe "Revenue"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse Superset query with double-quoted alias containing spaces" in {
+    val sql =
+      """SELECT customer_name AS customer_name, sum(total_price) AS "Total Spend", COUNT(*) AS "Orders" FROM ecommerce GROUP BY customer_name ORDER BY "Total Spend" DESC LIMIT 10"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        val fields = ss.select.fields
+        fields(1).fieldAlias.map(_.alias) shouldBe Some("Total Spend")
+        fields(2).fieldAlias.map(_.alias) shouldBe Some("Orders")
+        ss.orderBy.get.sorts.head.field.aliasOrName shouldBe "Total Spend"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse double-quoted identifier in SELECT" in {
+    val sql = """SELECT "col" FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.select.fields.head.identifier.name shouldBe "col"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse double-quoted identifier in WHERE" in {
+    val sql = """SELECT * FROM t WHERE "col" > 10"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+  }
+
+  it should "parse double-quoted identifier in GROUP BY" in {
+    val sql = """SELECT "col", count(*) AS cnt FROM t GROUP BY "col""""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+  }
+
+  it should "parse reserved word as double-quoted identifier" in {
+    val sql = """SELECT "select" FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.select.fields.head.identifier.name shouldBe "select"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
 }

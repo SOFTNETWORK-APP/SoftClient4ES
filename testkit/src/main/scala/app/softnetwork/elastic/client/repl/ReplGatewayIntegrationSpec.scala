@@ -727,6 +727,26 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     }
   }
 
+  it should "support double-quoted identifiers (ANSI SQL-92, Superset compatibility)" in {
+    val sql =
+      """SELECT profile.city AS "City",
+        |       COUNT(*) AS "Total",
+        |       AVG(age) AS "Avg Age"
+        |FROM dql_users
+        |GROUP BY profile.city
+        |ORDER BY "Total" DESC""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+  }
+
   it should "support arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE" in {
     val sql =
       """SELECT id,

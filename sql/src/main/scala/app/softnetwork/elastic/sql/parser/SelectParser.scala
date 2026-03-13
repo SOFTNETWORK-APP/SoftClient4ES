@@ -22,13 +22,14 @@ trait SelectParser {
   self: Parser with WhereParser =>
 
   def field: PackratParser[Field] =
-    (identifierWithArithmeticExpression |
+    (quotedIdentifier |
+    identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithWindowFunction |
     identifierWithAggregation |
     identifierWithIntervalFunction |
     identifierWithFunction |
-    identifier) ~ alias.? ^^ { case i ~ a =>
+    identifier) ~ (quotedAlias | alias).? ^^ { case i ~ a =>
       Field(i, a)
     }
 

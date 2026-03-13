@@ -23,6 +23,7 @@ trait GroupByParser {
   self: Parser with WhereParser =>
 
   def bucketWithFunction: PackratParser[Identifier] =
+    quotedIdentifier |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithWindowFunction |

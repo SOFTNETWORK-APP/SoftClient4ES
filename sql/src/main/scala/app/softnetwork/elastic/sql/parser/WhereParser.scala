@@ -78,13 +78,15 @@ import app.softnetwork.elastic.sql.query.{
 trait WhereParser {
   self: Parser with GroupByParser with OrderByParser =>
 
-  def isNull: PackratParser[Criteria] = identifier ~ IS_NULL.regex ^^ { case i ~ _ =>
-    IsNullExpr(i)
+  def isNull: PackratParser[Criteria] = (quotedIdentifier | identifier) ~ IS_NULL.regex ^^ {
+    case i ~ _ =>
+      IsNullExpr(i)
   }
 
-  def isNotNull: PackratParser[Criteria] = identifier ~ IS_NOT_NULL.regex ^^ { case i ~ _ =>
-    IsNotNullExpr(i)
-  }
+  def isNotNull: PackratParser[Criteria] =
+    (quotedIdentifier | identifier) ~ IS_NOT_NULL.regex ^^ { case i ~ _ =>
+      IsNotNullExpr(i)
+    }
 
   def eq: PackratParser[ComparisonOperator] = EQ.sql ^^ (_ => EQ)
 
@@ -93,6 +95,7 @@ trait WhereParser {
   def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   private def any_identifier: PackratParser[Identifier] =
+    quotedIdentifier |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithWindowFunction |
