@@ -1591,6 +1591,17 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "parse DESC TABLE statement" in {
+    val sql = "DESC TABLE users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DescribeTable("users") =>
+      case _                      => fail("Expected DescTable")
+    }
+  }
+
   behavior of "Parser DDL with Pipeline Statements"
 
   it should "parse CREATE OR REPLACE PIPELINE" in {
