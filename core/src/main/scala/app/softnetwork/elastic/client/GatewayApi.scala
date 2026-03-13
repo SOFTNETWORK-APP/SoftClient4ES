@@ -1675,6 +1675,7 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
   // ========================================================================
 
   def run(sql: String)(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    logger.info(s"📥 SQL: $sql")
     val normalizedQuery =
       sql
         .split("\n")
