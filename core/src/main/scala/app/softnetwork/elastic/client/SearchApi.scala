@@ -61,7 +61,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * alias if present, otherwise the source field name. Returns empty Seq for SELECT * queries.
     */
   protected def extractOutputFieldNames(single: SingleSearch): Seq[String] = {
-    val fields = single.select.fields
+    val fields = single.select.fieldsWithComputedAliases
     if (fields.size == 1 && fields.head.identifier.identifierName == "*") Seq.empty
     else fields.map(f => f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
   }

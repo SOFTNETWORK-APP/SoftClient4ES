@@ -2486,7 +2486,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 % 2)"
       |      }
       |    },
-      |    "identifier_mul_identifier2_minus_10": {
+      |    "__c7": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); def lv0 = ((param1 == null || param2 == null) ? null : (param1 * param2)); (lv0 == null) ? null : (lv0 - 10)"
@@ -2546,109 +2546,109 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    }
       |  },
       |  "script_fields": {
-      |    "abs_identifier_plus_1_0_mul_2": {
+      |    "__c2": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); ((param1 == null) ? null : Double.valueOf(Math.abs(param1)) + 1.0) * ((double) 2)"
       |      }
       |    },
-      |    "ceil_identifier": {
+      |    "__c3": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.ceil(param1))"
       |      }
       |    },
-      |    "floor_identifier": {
+      |    "__c4": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.floor(param1))"
       |      }
       |    },
-      |    "sqrt_identifier": {
+      |    "__c5": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1))"
       |      }
       |    },
-      |    "exp_identifier": {
+      |    "__c6": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.exp(param1))"
       |      }
       |    },
-      |    "log_identifier": {
+      |    "__c7": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log(param1))"
       |      }
       |    },
-      |    "log10_identifier": {
+      |    "__c8": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log10(param1))"
       |      }
       |    },
-      |    "pow_identifier_3": {
+      |    "__c9": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.pow(param1, 3))"
       |      }
       |    },
-      |    "round_identifier": {
+      |    "__c10": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
       |      }
       |    },
-      |    "round_identifier_2": {
+      |    "__c11": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
       |      }
       |    },
-      |    "sign_identifier": {
+      |    "__c12": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 > 0 ? 1 : (param1 < 0 ? -1 : 0))"
       |      }
       |    },
-      |    "cos_identifier": {
+      |    "__c13": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.cos(param1))"
       |      }
       |    },
-      |    "acos_identifier": {
+      |    "__c14": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.acos(param1))"
       |      }
       |    },
-      |    "sin_identifier": {
+      |    "__c15": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sin(param1))"
       |      }
       |    },
-      |    "asin_identifier": {
+      |    "__c16": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.asin(param1))"
       |      }
       |    },
-      |    "tan_identifier": {
+      |    "__c17": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.tan(param1))"
       |      }
       |    },
-      |    "atan_identifier": {
+      |    "__c18": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.atan(param1))"
       |      }
       |    },
-      |    "atan2_identifier_3_0": {
+      |    "__c19": {
       |      "script": {
       |        "lang": "painless",
       |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.atan2(param1, 3.0))"

@@ -31,6 +31,7 @@ trait OrderByParser {
     """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
 
   def fieldWithFunction: PackratParser[Identifier] =
+    quotedIdentifier |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithWindowFunction |

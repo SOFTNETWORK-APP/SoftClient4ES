@@ -1591,6 +1591,17 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "parse DESC TABLE statement" in {
+    val sql = "DESC TABLE users"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DescribeTable("users") =>
+      case _                      => fail("Expected DescTable")
+    }
+  }
+
   behavior of "Parser DDL with Pipeline Statements"
 
   it should "parse CREATE OR REPLACE PIPELINE" in {
@@ -2812,6 +2823,148 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         left.sql should include("SELECT id, name FROM dql_users WHERE age > 30")
         right.sql should include("SELECT id, name FROM dql_users WHERE age <= 30")
       case _ => fail("Expected Union")
+    }
+  }
+
+  // ── Double-quoted identifiers (ANSI SQL-92) ──────────────────────────────
+
+  it should "parse Superset query with double-quoted alias and ORDER BY" in {
+    val sql =
+      """SELECT country AS country, sum(total_price) AS "Revenue" FROM ecommerce GROUP BY country ORDER BY "Revenue" DESC LIMIT 10"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        val fields = ss.select.fields
+        fields should have size 2
+        fields(1).fieldAlias.map(_.alias) shouldBe Some("Revenue")
+        ss.orderBy.get.sorts.head.field.aliasOrName shouldBe "Revenue"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse Superset query with double-quoted alias containing spaces" in {
+    val sql =
+      """SELECT customer_name AS customer_name, sum(total_price) AS "Total Spend", COUNT(*) AS "Orders" FROM ecommerce GROUP BY customer_name ORDER BY "Total Spend" DESC LIMIT 10"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        val fields = ss.select.fields
+        fields(1).fieldAlias.map(_.alias) shouldBe Some("Total Spend")
+        fields(2).fieldAlias.map(_.alias) shouldBe Some("Orders")
+        ss.orderBy.get.sorts.head.field.aliasOrName shouldBe "Total Spend"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse double-quoted identifier in SELECT" in {
+    val sql = """SELECT "col" FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.select.fields.head.identifier.name shouldBe "col"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse double-quoted identifier in WHERE" in {
+    val sql = """SELECT * FROM t WHERE "col" > 10"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+  }
+
+  it should "parse double-quoted identifier in GROUP BY" in {
+    val sql = """SELECT "col", count(*) AS cnt FROM t GROUP BY "col""""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+  }
+
+  it should "parse reserved word as double-quoted identifier" in {
+    val sql = """SELECT "select" FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.select.fields.head.identifier.name shouldBe "select"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  // ── Computed aliases for unnamed expression columns (Issue #001) ───────────
+
+  it should "generate computed aliases for aggregate functions without explicit alias" in {
+    val sql = """SELECT COUNT(*), SUM(quantity) FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        // SQL round-trip: no AS __cN injected
+        stmt.sql shouldBe sql
+        // computed aliases via fieldsWithComputedAliases
+        val computed = ss.select.fieldsWithComputedAliases
+        computed(0).fieldAlias.map(_.alias) shouldBe Some("__c1")
+        computed(1).fieldAlias.map(_.alias) shouldBe Some("__c2")
+        // original fields unchanged
+        ss.select.fields(0).fieldAlias shouldBe None
+        ss.select.fields(1).fieldAlias shouldBe None
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "preserve explicit aliases and only compute for unnamed expressions" in {
+    val sql = """SELECT name, COUNT(*) AS total FROM t GROUP BY name"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        stmt.sql shouldBe sql
+        val computed = ss.select.fieldsWithComputedAliases
+        // name: simple column, no computed alias
+        computed(0).fieldAlias shouldBe None
+        // COUNT(*) AS total: explicit alias preserved
+        computed(1).fieldAlias.map(_.alias) shouldBe Some("total")
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "generate computed alias for unnamed expression but not for named columns" in {
+    val sql = """SELECT name, COUNT(*) FROM t GROUP BY name"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        stmt.sql shouldBe sql
+        val computed = ss.select.fieldsWithComputedAliases
+        // name: simple column, no alias
+        computed(0).fieldAlias shouldBe None
+        // COUNT(*): expression, gets __c2
+        computed(1).fieldAlias.map(_.alias) shouldBe Some("__c2")
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "generate computed alias for arithmetic expression" in {
+    val sql = """SELECT unit_price * quantity FROM t"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        stmt.sql shouldBe sql
+        val computed = ss.select.fieldsWithComputedAliases
+        computed(0).fieldAlias.map(_.alias) shouldBe Some("__c1")
+        // original unchanged
+        ss.select.fields(0).fieldAlias shouldBe None
+      case _ => fail("Expected SingleSearch")
     }
   }
 

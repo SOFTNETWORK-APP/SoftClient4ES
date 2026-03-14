@@ -172,10 +172,10 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch Version | Artifact                               |
 |-----------------------|----------------------------------------|
-| ES 6.x                | `softclient4es6-jdbc-driver-0.1.0.jar` |
-| ES 7.x                | `softclient4es7-jdbc-driver-0.1.0.jar` |
-| ES 8.x                | `softclient4es8-jdbc-driver-0.1.0.jar` |
-| ES 9.x                | `softclient4es9-jdbc-driver-0.1.0.jar` |
+| ES 6.x                | `softclient4es6-jdbc-driver-0.1.1.jar` |
+| ES 7.x                | `softclient4es7-jdbc-driver-0.1.1.jar` |
+| ES 8.x                | `softclient4es8-jdbc-driver-0.1.1.jar` |
+| ES 9.x                | `softclient4es9-jdbc-driver-0.1.1.jar` |
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200
@@ -184,12 +184,26 @@ Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 
 ### Maven / Gradle / sbt
 
+**Maven:**
+
 ```xml
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
+```
+
+**Gradle:**
+
+```groovy
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.1.1'
+```
+
+**sbt:**
+
+```scala
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.1.1"
 ```
 
 The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
@@ -198,16 +212,30 @@ The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix
 
 ## 🛠️ Scala Library Integration
 
-For programmatic access, add SoftClient4ES to your project:
+For programmatic access, add SoftClient4ES to your project.
+
+### Client Library Matrix
+
+| Elasticsearch  | Artifact                     | Scala      | JDK  |
+|----------------|------------------------------|------------|------|
+| 6.x            | `softclient4es6-jest-client` | 2.12, 2.13 | 8+   |
+| 6.x            | `softclient4es6-rest-client` | 2.12, 2.13 | 8+   |
+| 7.x            | `softclient4es7-rest-client` | 2.12, 2.13 | 8+   |
+| 8.x            | `softclient4es8-java-client` | 2.12, 2.13 | 8+   |
+| 9.x            | `softclient4es9-java-client` | 2.13 only  | 17+  |
+
+### sbt Setup
 
 ```scala
 // build.sbt
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.17.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.18.0"
 // Add the community extensions for materialized views (optional)
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.1.1"
+// Add the JDBC driver if you want to use it from Scala (optional)
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.1.1"
 ```
 
 ```scala
@@ -286,34 +314,25 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 
 ## 📦 Editions and Licensing
 
-SoftClient4ES is available in two editions:
+SoftClient4ES uses a dual-license model:
 
-### Community Edition (Open Source)
+- **Core** (SQL engine, REPL client, Scala library) — **Apache License 2.0** (open source)
+- **JDBC Driver** and **Materialized Views** — **Elastic License 2.0** (free to use, not open source)
 
-Licensed under the **Apache License 2.0**. Includes the core SQL engine, REPL client, Scala library, and the community extensions library with limited materialized views support:
+### Feature Matrix
 
-| Feature                                                            | Community   |
-|--------------------------------------------------------------------|-------------|
-| Full SQL DDL (CREATE, ALTER, DROP TABLE)                           | Yes         |
-| Full SQL DML (INSERT, UPDATE, DELETE, COPY INTO)                   | Yes         |
-| Full SQL DQL (SELECT, JOIN UNNEST, aggregations, window functions) | Yes         |
-| Pipelines, Watchers, Enrich Policies                               | Yes         |
-| Interactive REPL client                                            | Yes         |
-| Scala library (Akka Streams)                                       | Yes         |
-| Community extensions library (Scala)                               | Yes         |
-| Materialized Views (CREATE, REFRESH, DESCRIBE)                     | Yes (max 3) |
-| Elasticsearch 6, 7, 8, 9 support                                   | Yes         |
-
-### Pro / Enterprise Edition (Commercial)
-
-Adds the **JDBC driver** (which includes the community extensions) and raises materialized view limits:
-
-| Feature                              | Community | Pro     | Enterprise |
-|--------------------------------------|-----------|---------|------------|
-| Everything in Community              | Yes       | Yes     | Yes        |
-| JDBC driver (DBeaver, Tableau, etc.) | -         | Yes     | Yes        |
-| Maximum materialized views           | 3         | Limited | Unlimited  |
-| Priority support                     | -         | -       | Yes        |
+| Feature                                                            | Community | Pro     | Enterprise |
+|--------------------------------------------------------------------|-----------|---------|------------|
+| Full SQL DDL (CREATE, ALTER, DROP TABLE)                           | Yes       | Yes     | Yes        |
+| Full SQL DML (INSERT, UPDATE, DELETE, COPY INTO)                   | Yes       | Yes     | Yes        |
+| Full SQL DQL (SELECT, JOIN UNNEST, aggregations, window functions) | Yes       | Yes     | Yes        |
+| Pipelines, Watchers, Enrich Policies                               | Yes       | Yes     | Yes        |
+| Interactive REPL client                                            | Yes       | Yes     | Yes        |
+| Scala library (Akka Streams)                                       | Yes       | Yes     | Yes        |
+| Elasticsearch 6, 7, 8, 9 support                                   | Yes       | Yes     | Yes        |
+| JDBC driver (DBeaver, Tableau, etc.)                               | Yes       | Yes     | Yes        |
+| Materialized Views (CREATE, REFRESH, DESCRIBE)                     | Max 3     | Limited | Unlimited  |
+| Priority support                                                   | -         | -       | Yes        |
 
 ### Elasticsearch License Requirements
 
@@ -349,7 +368,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 The core SQL engine and REPL client are licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) for details.
 
-The JDBC driver and Materialized Views extension are available under a commercial license. Contact us for pricing information.
+The JDBC driver and Materialized Views extension are licensed under the **Elastic License 2.0** — free to use, not open source.
 
 ---
 

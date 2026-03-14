@@ -1108,6 +1108,7 @@ trait Parser
     identifierWithTransformation | // transformations applied to an identifier
     identifierWithIntervalFunction |
     identifierWithFunction | // fonctions applied to an identifier
+    quotedIdentifier | // double-quoted identifiers (ANSI SQL-92 delimited identifiers)
     identifierWithValue |
     identifier
   }
@@ -1278,6 +1279,15 @@ trait Parser
 
   val identifierRegex: Regex = identifierRegexStr.r // scala.util.matching.Regex
 
+  def quotedIdentifier: PackratParser[Identifier] =
+    ("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") ^^ { str =>
+      GenericIdentifier(
+        str.replace("\\\"", "\"").replace("\\\\", "\\"),
+        None,
+        distinct = false
+      )
+    }
+
   def identifier: PackratParser[Identifier] =
     (Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>
       GenericIdentifier(
@@ -1317,5 +1327,10 @@ trait Parser
     s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_.]*""".stripMargin
 
   def alias: PackratParser[Alias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => Alias(b) }
+
+  def quotedAlias: PackratParser[Alias] =
+    Alias.regex.? ~ ("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") ^^ { case _ ~ b =>
+      Alias(b.replace("\\\"", "\"").replace("\\\\", "\\"))
+    }
 
 }

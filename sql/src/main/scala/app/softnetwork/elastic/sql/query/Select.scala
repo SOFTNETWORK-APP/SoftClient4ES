@@ -129,14 +129,16 @@ case class Select(
 ) extends Updateable {
   override def sql: String =
     s"$Select ${fields.mkString(", ")}${except.getOrElse("")}"
-  lazy val fieldAliases: ListMap[String, String] = ListMap(fields.flatMap { field =>
-    field.fieldAlias
-      .map(a => field.identifier.identifierName -> a.alias)
-  /*.orElse(field.identifier.name match {
-      case name if name.nonEmpty => Some(name -> name)
-      case _                    => None
-    })*/
-  }: _*)
+  lazy val fieldsWithComputedAliases: Seq[Field] = fields.zipWithIndex.map {
+    case (f, i) if f.fieldAlias.isEmpty && f.identifier.functions.nonEmpty =>
+      f.copy(fieldAlias = Some(Alias(s"__c${i + 1}")))
+    case (f, _) => f
+  }
+  lazy val fieldAliases: ListMap[String, String] = ListMap(
+    fieldsWithComputedAliases.flatMap { field =>
+      field.fieldAlias.map(a => field.identifier.identifierName -> a.alias)
+    }: _*
+  )
   lazy val aliasesToMap: ListMap[String, String] = fieldAliases.map(_.swap)
   def update(request: SingleSearch): Select =
     this.copy(fields = fields.map(_.update(request)), except = except.map(_.update(request)))

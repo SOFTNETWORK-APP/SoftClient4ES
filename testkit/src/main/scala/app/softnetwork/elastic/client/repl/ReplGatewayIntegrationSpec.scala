@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.repl
 
-import app.softnetwork.elastic.client.result.{DmlResult, OutputFormat, QueryRows}
+import app.softnetwork.elastic.client.result.{DmlResult, OutputFormat, QueryRows, QueryStructured}
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 
 import java.time.LocalDate
@@ -702,6 +702,140 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |ORDER BY COUNT(*) DESC""".stripMargin
 
     assertSelectResult(System.nanoTime(), executeSync(sql))
+  }
+
+  it should "not leak internal _doc_count columns in GROUP BY results" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       COUNT(*) AS cnt,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(*) >= 1""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    rows.foreach { row =>
+      row.keys.filter(_.endsWith("_doc_count")) shouldBe empty
+    }
+  }
+
+  it should "support double-quoted identifiers (ANSI SQL-92, Superset compatibility)" in {
+    val sql =
+      """SELECT profile.city AS "City",
+        |       COUNT(*) AS "Total",
+        |       AVG(age) AS "Avg Age"
+        |FROM dql_users
+        |GROUP BY profile.city
+        |ORDER BY "Total" DESC""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+  }
+
+  it should "generate computed aliases for unnamed expression columns" in {
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*),
+        |       AVG(age)
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Verify computed aliases are used as column names
+    val firstRow = rows.head
+    firstRow.keys should contain("profile.city")
+    firstRow.keys should contain("__c2") // COUNT(*)
+    firstRow.keys should contain("__c3") // AVG(age)
+  }
+
+  // Issue #006 — Result column order must match SELECT clause order
+  it should "preserve SELECT column order: aggregation first, bucket second" in {
+    val sql =
+      """SELECT COUNT(*),
+        |       profile.city
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Column order must match SELECT: __c1 (COUNT(*)), then profile.city
+    val columnOrder = rows.head.keys.toSeq
+    columnOrder.indexOf("__c1") should be < columnOrder.indexOf("profile.city")
+  }
+
+  it should "preserve SELECT column order: bucket first, aliased aggregation second" in {
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*) AS cnt
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Column order must match SELECT: profile.city, then cnt
+    val columnOrder = rows.head.keys.toSeq
+    columnOrder.indexOf("profile.city") should be < columnOrder.indexOf("cnt")
+  }
+
+  it should "preserve SELECT column order: multiple buckets and mixed aggregations" in {
+    // Need a table with two groupable columns — use dql_users with name + profile.city
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*) AS cnt,
+        |       AVG(age)
+        |FROM dql_users
+        |GROUP BY profile.city""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Column order must match SELECT: profile.city, cnt, __c3
+    val columnOrder = rows.head.keys.toSeq
+    columnOrder.indexOf("profile.city") should be < columnOrder.indexOf("cnt")
+    columnOrder.indexOf("cnt") should be < columnOrder.indexOf("__c3")
   }
 
   it should "support arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE" in {

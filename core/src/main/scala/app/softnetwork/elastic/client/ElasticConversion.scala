@@ -449,16 +449,7 @@ trait ElasticConversion {
       wrapperAggs.flatMap { entry =>
         val aggName = normalizeAggregationKey(entry.getKey)
         val aggValue = entry.getValue
-        val docCount = Option(aggValue.get("doc_count"))
-          .map(_.asLong())
-          .getOrElse(0L)
-
-        // Add the doc_count to the context if necessary
-        val currentContext = if (docCount > 0) {
-          parentContext + (s"${aggName}_doc_count" -> docCount)
-        } else {
-          parentContext
-        }
+        val currentContext = parentContext
 
         // Extract subaggregations (excluding doc_count)
         val subAggsNode = mapper.createObjectNode()
@@ -502,13 +493,9 @@ trait ElasticConversion {
           val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
 
           val bucketKey = extractBucketKey(bucket)
-          val docCount = Option(bucket.get("doc_count"))
-            .map(_.asLong())
-            .getOrElse(0L)
 
           val currentContext = parentContext ++ ListMap(
-            aggName                 -> bucketKey,
-            s"${aggName}_doc_count" -> docCount
+            aggName -> bucketKey
           ) ++ metrics ++ allTopHits
 
           // Check for sub-aggregations
