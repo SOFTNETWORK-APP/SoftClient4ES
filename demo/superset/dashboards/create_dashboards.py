@@ -102,7 +102,7 @@ def create_all_charts(session, dataset_id):
     charts = []
 
     # 1. Revenue by Country — horizontal bar
-    cid = create_chart(session, dataset_id, "Revenue by Country", "echarts_bar", {
+    cid = create_chart(session, dataset_id, "Revenue by Country", "echarts_timeseries_bar", {
         "x_axis": "country",
         "metrics": [simple_metric("total_price", "SUM", "Revenue")],
         "groupby": [],
@@ -144,7 +144,7 @@ def create_all_charts(session, dataset_id):
         charts.append(cid)
 
     # 4. Avg Order Value by Payment Method — bar
-    cid = create_chart(session, dataset_id, "Avg Order Value by Payment", "echarts_bar", {
+    cid = create_chart(session, dataset_id, "Avg Order Value by Payment", "echarts_timeseries_bar", {
         "x_axis": "payment_method",
         "metrics": [simple_metric("total_price", "AVG", "Avg Order Value")],
         "groupby": [],
@@ -157,7 +157,7 @@ def create_all_charts(session, dataset_id):
         charts.append(cid)
 
     # 5. Revenue by Category — bar
-    cid = create_chart(session, dataset_id, "Revenue by Category", "echarts_bar", {
+    cid = create_chart(session, dataset_id, "Revenue by Category", "echarts_timeseries_bar", {
         "x_axis": "category",
         "metrics": [simple_metric("total_price", "SUM", "Revenue")],
         "groupby": [],
