@@ -176,6 +176,7 @@ def create_all_charts(session, dataset_id):
         "metrics": [simple_metric("total_price", "SUM", "Total Spend"), count_star_metric()],
         "groupby": ["customer_name", "country"],
         "order_desc": True,
+        "timeseries_limit_metric": simple_metric("total_price", "SUM", "Total Spend"),
         "row_limit": 10,
         "all_columns": [],
         "include_time": False,
