@@ -121,6 +121,9 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
         |# Set default throttle period to 5s to allow frequent executions during tests
         |xpack.watcher.execution.default_throttle_period: 5s
         |
+        |# Script compilation rate limit (default 75/5m can be exhausted during tests)
+        |script.max_compilations_rate: 10000/5m
+        |
         |# Performance
         |bootstrap.memory_lock: false
         |""".stripMargin
