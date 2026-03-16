@@ -111,6 +111,7 @@ object ElasticAggregation {
       bucketsDirection
         .get(identifier.identifierName)
         .orElse(bucketsDirection.get(identifier.aliasOrName))
+        .orElse(fieldAlias.flatMap(a => bucketsDirection.get(a.alias)))
 
     val field = fieldAlias match {
       case Some(alias) => alias.alias

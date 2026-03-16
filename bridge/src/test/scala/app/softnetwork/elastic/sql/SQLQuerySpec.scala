@@ -3834,9 +3834,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s+", "")
   }
 
-  // === Issue #008: HAVING COUNT(*) without alias ===
+  // === Issue #50: HAVING COUNT(*) without alias ===
 
-  it should "handle HAVING COUNT(*) without alias (issue #008)" in {
+  it should "handle HAVING COUNT(*) without alias (issue #50)" in {
     val select: ElasticSearchRequest =
       SelectStatement(
         """SELECT Country, City, COUNT(*)
@@ -4002,6 +4002,94 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+  }
+
+  // === Issue #52: ORDER BY on aggregation alias ===
+
+  it should "handle ORDER BY on aggregation alias (issue #52)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, SUM(age) AS "Total Age", COUNT(*) AS "Orders"
+          |FROM Customers
+          |GROUP BY Country
+          |ORDER BY "Total Age" DESC
+          |LIMIT 10""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "size": 10,
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "Total Age": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "Total Age": {
+        |          "sum": {
+        |            "field": "age"
+        |          }
+        |        },
+        |        "Orders": {
+        |          "value_count": {
+        |            "field": "_index"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("(?m)^\\s+", "")
+      .replaceAll("\\n", "")
+      .replaceAll(":\\s+", ":")
+      .replaceAll(",\\s+", ",")
+  }
+
+  it should "handle ORDER BY on aggregation not in SELECT (issue #52)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country
+          |FROM Customers
+          |GROUP BY Country
+          |ORDER BY COUNT(*) DESC""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "count_all": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "count_all": {
+        |          "value_count": {
+        |            "field": "_index"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
   }
 
   it should "handle HAVING COUNT(DISTINCT *) without alias" in {

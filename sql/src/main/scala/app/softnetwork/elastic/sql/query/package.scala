@@ -259,7 +259,10 @@ package object query {
         .flatMap(_.criteria)
         .map(_.extractAggregationFields)
         .getOrElse(Seq.empty)
-      val extraAggs = (havingAggs ++ whereAggs)
+      val orderByAggs = orderBy
+        .map(_.sorts.flatMap(_.extractAggregationFields))
+        .getOrElse(Seq.empty)
+      val extraAggs = (havingAggs ++ whereAggs ++ orderByAggs)
         .filterNot(f =>
           f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
           selectAggNames.contains(f.identifier.identifierName)

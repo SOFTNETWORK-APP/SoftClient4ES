@@ -2896,7 +2896,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // ── Computed aliases for unnamed expression columns (Issue #001) ───────────
+  // ── Computed aliases for unnamed expression columns (Issue #41) ────────────
 
   it should "generate computed aliases for aggregate functions without explicit alias" in {
     val sql = """SELECT COUNT(*), SUM(quantity) FROM t"""

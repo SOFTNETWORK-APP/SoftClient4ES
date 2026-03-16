@@ -727,9 +727,9 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     }
   }
 
-  // === Issue #008: HAVING COUNT(*) without alias ===
+  // === Issue #50: HAVING COUNT(*) without alias ===
 
-  it should "support HAVING COUNT(*) without alias (issue #008)" in {
+  it should "support HAVING COUNT(*) without alias (issue #50)" in {
     val sql =
       """SELECT profile.city,
         |       COUNT(*),
@@ -762,6 +762,55 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |HAVING COUNT(DISTINCT *) >= 1""".stripMargin
 
     assertSelectResult(System.nanoTime(), executeSync(sql))
+  }
+
+  // === Issue #52: ORDER BY on aggregation alias ===
+
+  it should "support ORDER BY on aggregation alias (issue #52)" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       COUNT(*) AS "Total",
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |ORDER BY "Total" DESC""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Verify ordering: rows should be sorted by Total descending
+    val totals = rows.map(r => r.getOrElse("Total", "0").toString.toDouble)
+    totals shouldBe totals.sortWith(_ > _)
+  }
+
+  it should "support ORDER BY on aggregation not in SELECT (issue #52)" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |ORDER BY COUNT(*) DESC""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // NOTE: count_all leaks into results even though it's not in SELECT (see issue #55)
+    rows.foreach { row =>
+      row.keys should contain("city")
+      row.keys should contain("avg_age")
+    }
   }
 
   it should "support double-quoted identifiers (ANSI SQL-92, Superset compatibility)" in {
@@ -808,7 +857,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     firstRow.keys should contain("__c3") // AVG(age)
   }
 
-  // Issue #006 — Result column order must match SELECT clause order
+  // Issue #47 — Result column order must match SELECT clause order
   it should "preserve SELECT column order: aggregation first, bucket second" in {
     val sql =
       """SELECT COUNT(*),
