@@ -244,10 +244,29 @@ package object query {
 
     lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
-    lazy val aggregates: Seq[Field] =
-      select.fieldsWithComputedAliases
+    lazy val aggregates: Seq[Field] = {
+      val selectAggs = select.fieldsWithComputedAliases
         .filter(f => f.isAggregation || f.isBucketScript)
         .filterNot(_.identifier.hasWindow) ++ windowFields
+      // Include aggregations referenced only in HAVING or WHERE clauses
+      val selectAggNames = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet ++
+        selectAggs.map(_.identifier.identifierName).toSet
+      val havingAggs = having
+        .flatMap(_.criteria)
+        .map(_.extractAggregationFields)
+        .getOrElse(Seq.empty)
+      val whereAggs = where
+        .flatMap(_.criteria)
+        .map(_.extractAggregationFields)
+        .getOrElse(Seq.empty)
+      val extraAggs = (havingAggs ++ whereAggs)
+        .filterNot(f =>
+          f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
+          selectAggNames.contains(f.identifier.identifierName)
+        )
+        .distinctBy(_.fieldAlias.map(_.alias))
+      selectAggs ++ extraAggs
+    }
 
     lazy val sqlAggregations: ListMap[String, SQLAggregation] =
       ListMap(

@@ -727,6 +727,43 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     }
   }
 
+  // === Issue #008: HAVING COUNT(*) without alias ===
+
+  it should "support HAVING COUNT(*) without alias (issue #008)" in {
+    val sql =
+      """SELECT profile.city,
+        |       COUNT(*),
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(*) >= 1
+        |ORDER BY COUNT(*) DESC""".stripMargin
+
+    assertSelectResult(System.nanoTime(), executeSync(sql))
+  }
+
+  it should "support HAVING COUNT(*) only in HAVING clause not in SELECT" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(*) >= 1""".stripMargin
+
+    assertSelectResult(System.nanoTime(), executeSync(sql))
+  }
+
+  it should "support HAVING COUNT(DISTINCT *) only in HAVING clause not in SELECT" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(DISTINCT *) >= 1""".stripMargin
+
+    assertSelectResult(System.nanoTime(), executeSync(sql))
+  }
+
   it should "support double-quoted identifiers (ANSI SQL-92, Superset compatibility)" in {
     val sql =
       """SELECT profile.city AS "City",

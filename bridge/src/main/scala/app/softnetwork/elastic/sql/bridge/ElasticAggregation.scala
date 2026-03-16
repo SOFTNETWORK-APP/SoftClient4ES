@@ -131,15 +131,16 @@ object ElasticAggregation {
     val aggName = {
       if (fieldAlias.isDefined)
         field
-      else if (distinct)
-        s"${aggType}_distinct_${sourceField.replace(".", "_")}"
       else {
         aggType match {
+          case COUNT if sourceField == "*" =>
+            if (distinct) "count_distinct_all" else "count_all"
+          case _ if distinct =>
+            s"${aggType}_distinct_${sourceField.replace(".", "_")}"
           case th: WindowFunction =>
             s"${th.window.sql.toLowerCase}_${sourceField.replace(".", "_")}"
           case _ =>
             s"${aggType}_${sourceField.replace(".", "_")}"
-
         }
       }
     }
