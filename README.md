@@ -172,10 +172,10 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch Version | Artifact                               |
 |-----------------------|----------------------------------------|
-| ES 6.x                | `softclient4es6-jdbc-driver-0.1.1.jar` |
-| ES 7.x                | `softclient4es7-jdbc-driver-0.1.1.jar` |
-| ES 8.x                | `softclient4es8-jdbc-driver-0.1.1.jar` |
-| ES 9.x                | `softclient4es9-jdbc-driver-0.1.1.jar` |
+| ES 6.x                | `softclient4es6-jdbc-driver-0.1.3.jar` |
+| ES 7.x                | `softclient4es7-jdbc-driver-0.1.3.jar` |
+| ES 8.x                | `softclient4es8-jdbc-driver-0.1.3.jar` |
+| ES 9.x                | `softclient4es9-jdbc-driver-0.1.3.jar` |
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200
@@ -190,20 +190,20 @@ Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.3</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.1.1'
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.1.3'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.1.1"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.1.3"
 ```
 
 The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
@@ -231,11 +231,11 @@ For programmatic access, add SoftClient4ES to your project.
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.18.0"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.19.0"
 // Add the community extensions for materialized views (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.1.1"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.1.3"
 // Add the JDBC driver if you want to use it from Scala (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.1.1"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.1.3"
 ```
 
 ```scala

@@ -63,6 +63,13 @@ trait JestWatcherApi extends WatcherApi with JestClientHelpers {
         result.ElasticSuccess(true)
       case jestResult: JestResult =>
         val errorMessage = jestResult.getErrorMessage
+        // FIXME: diagnostic logging for CI watcher creation failures — remove once root cause is identified
+        val responseBody = Option(jestResult.getJsonString).getOrElse("")
+        val statusCode = jestResult.getResponseCode
+        logger.error(
+          s"Failed to create watcher '${watcher.id}': $errorMessage (status: $statusCode). Response: $responseBody"
+        )
+        // end FIXME
         result.ElasticFailure(
           result.ElasticError(
             s"Failed to create watcher '${watcher.id}': $errorMessage"

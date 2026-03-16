@@ -690,9 +690,9 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         rows.foreach(println)
         rows.size shouldBe 1
         val row = rows.head
-        // Issue #002: bucket_root must not leak into the output
+        // Issue #42: bucket_root must not leak into the output
         row.keys should not contain "bucket_root"
-        // Issue #003: "*" must not appear as a column
+        // Issue #43: "*" must not appear as a column
         row.keys should not contain "*"
         // Only the aggregation column should be present
         row.keys should contain("COUNT(*)")

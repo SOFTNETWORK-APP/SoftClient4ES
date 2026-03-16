@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
-import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.{Alias, Expr, Identifier, TokenRegex, Updateable}
 
 case object OrderBy extends Expr("ORDER BY") with TokenRegex
 
@@ -42,6 +42,12 @@ case class FieldSort(
   def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
 
   def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation
+
+  def extractAggregationFields: Seq[Field] =
+    if (field.aggregations.nonEmpty)
+      field.metricName.map(name => Field(field, Some(Alias(name)))).toSeq
+    else
+      Seq.empty
 }
 
 case class OrderBy(sorts: Seq[FieldSort]) extends Updateable {

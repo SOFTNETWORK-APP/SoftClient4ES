@@ -7,5 +7,5 @@ import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 class JavaClient8ReplGatewayIntegrationSpec
     extends ReplGatewayIntegrationSpec
     with ElasticDockerTestKit {
-  override def gateway: GatewayApi = new JavaClientSpi().client(elasticConfig)
+  override lazy val gateway: GatewayApi = new JavaClientSpi().client(elasticConfig)
 }

@@ -17,7 +17,12 @@
 package app.softnetwork.elastic
 
 import app.softnetwork.elastic.schema.NamingUtils
-import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, COUNT, WindowFunction}
+import app.softnetwork.elastic.sql.function.aggregate.{
+  AggregateFunction,
+  COUNT,
+  CountAgg,
+  WindowFunction
+}
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
@@ -925,7 +930,7 @@ package object sql {
       aggregateFunction match {
         case Some(af) =>
           af match {
-            case COUNT =>
+            case COUNT | _: CountAgg =>
               aliasOrName match {
                 case "*" =>
                   if (distinct) {

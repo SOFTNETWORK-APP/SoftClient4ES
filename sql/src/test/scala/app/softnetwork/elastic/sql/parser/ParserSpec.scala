@@ -1602,6 +1602,39 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "parse DESC without TABLE keyword" in {
+    val sql = "DESC ecommerce"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DescribeTable("ecommerce") =>
+      case _                          => fail("Expected DescribeTable")
+    }
+  }
+
+  it should "parse DESCRIBE without TABLE keyword" in {
+    val sql = "DESCRIBE ecommerce"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DescribeTable("ecommerce") =>
+      case _                          => fail("Expected DescribeTable")
+    }
+  }
+
+  it should "still parse DESC PIPELINE correctly" in {
+    val sql = "DESC PIPELINE mypipe"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case DescribePipeline("mypipe") =>
+      case _                          => fail("Expected DescribePipeline")
+    }
+  }
+
   behavior of "Parser DDL with Pipeline Statements"
 
   it should "parse CREATE OR REPLACE PIPELINE" in {
@@ -2896,7 +2929,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // ── Computed aliases for unnamed expression columns (Issue #001) ───────────
+  // ── Computed aliases for unnamed expression columns (Issue #41) ────────────
 
   it should "generate computed aliases for aggregate functions without explicit alias" in {
     val sql = """SELECT COUNT(*), SUM(quantity) FROM t"""

@@ -73,6 +73,27 @@ sealed trait Criteria extends Updateable with PainlessScript {
       case _                         => Map.empty
     }
 
+  /** Extracts aggregation fields from criteria expressions (e.g. HAVING COUNT(*) > 1). Used to
+    * ensure aggregations referenced only in HAVING/WHERE are included in the query. Note: returned
+    * Fields are not updated against SingleSearch — they carry only the identifier and a computed
+    * alias (metricName), which is sufficient for metric aggregation creation via
+    * SQLAggregation.fromField.
+    */
+  def extractAggregationFields: Seq[Field] =
+    this match {
+      case Predicate(left, _, right, _, _) =>
+        left.extractAggregationFields ++ right.extractAggregationFields
+      case relation: ElasticRelation => relation.criteria.extractAggregationFields
+      case e: Expression =>
+        val identifiers = Seq(e.identifier) ++ e.maybeValue.collect { case id: Identifier => id }
+        identifiers
+          .filter(_.aggregations.nonEmpty)
+          .flatMap { id =>
+            id.metricName.map(name => Field(id, Some(Alias(name))))
+          }
+      case _ => Seq.empty
+    }
+
   def includes(
     bucket: Bucket,
     not: Boolean,

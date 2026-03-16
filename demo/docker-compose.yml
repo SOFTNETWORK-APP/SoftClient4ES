@@ -1,0 +1,193 @@
+networks:
+  elastic-demo:
+    name: elastic-demo
+
+volumes:
+  elasticsearch-data:
+  superset-db:
+  superset-home:
+
+x-common-env: &common-env
+  ELASTIC_HOST: elasticsearch
+  ELASTIC_PORT: "9200"
+  ELASTIC_AUTH_METHOD: noauth
+
+services:
+
+  # ──────────────────────────────────────────────
+  # Base services (always started)
+  # ──────────────────────────────────────────────
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION:-8.18.3}
+    container_name: es-demo
+    environment:
+      - cluster.name=demo
+      - node.name=es01
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - xpack.license.self_generated.type=trial
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/_cluster/health?wait_for_status=green&timeout=1s"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+
+  es-init:
+    image: curlimages/curl:latest
+    container_name: es-init
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - ./init:/init:ro
+    entrypoint: ["/bin/sh", "/init/load-ecommerce-data.sh"]
+    environment:
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
+    networks:
+      - elastic-demo
+
+  # ──────────────────────────────────────────────
+  # Profile: superset-flight
+  # ──────────────────────────────────────────────
+
+  flight-sql-superset:
+    image: softnetwork/softclient4es${ES_MAJOR_VERSION:-8}-arrow-flight-sql:latest
+    pull_policy: always
+    container_name: flight-sql-superset
+    profiles: ["superset-flight"]
+    depends_on:
+      es-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+    ports:
+      - "32010:32010"
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/32010'"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+
+  superset-db:
+    image: postgres:16-alpine
+    container_name: superset-db
+    profiles: ["superset-flight"]
+    environment:
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: superset
+      POSTGRES_DB: superset
+    volumes:
+      - superset-db:/var/lib/postgresql/data
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superset"]
+      interval: 5s
+      timeout: 3s
+
+  superset:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    container_name: superset
+    profiles: ["superset-flight"]
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      flight-sql-superset:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: "demo-secret-key-change-in-production"
+      SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://superset:superset@superset-db:5432/superset"
+      FLIGHT_SQL_HOST: flight-sql-superset
+      FLIGHT_SQL_PORT: "32010"
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset-home:/app/superset_home
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+
+  superset-init:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    container_name: superset-init
+    profiles: ["superset-flight"]
+    depends_on:
+      superset:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: "demo-secret-key-change-in-production"
+      SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://superset:superset@superset-db:5432/superset"
+      FLIGHT_SQL_HOST: flight-sql-superset
+      FLIGHT_SQL_PORT: "32010"
+    volumes:
+      - ./superset/init-superset.sh:/init-superset.sh:ro
+      - ./superset/dashboards:/dashboards:ro
+      - superset-home:/app/superset_home
+    entrypoint: ["/bin/sh", "/init-superset.sh"]
+    networks:
+      - elastic-demo
+
+  # ──────────────────────────────────────────────
+  # Profile: duckdb
+  # ──────────────────────────────────────────────
+
+  flight-sql-duckdb:
+    image: softnetwork/softclient4es${ES_MAJOR_VERSION:-8}-arrow-flight-sql:latest
+    pull_policy: always
+    container_name: flight-sql-duckdb
+    profiles: ["duckdb"]
+    depends_on:
+      es-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/32010'"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+
+  duckdb:
+    build:
+      context: ./duckdb
+      dockerfile: Dockerfile
+    container_name: duckdb-demo
+    profiles: ["duckdb"]
+    depends_on:
+      flight-sql-duckdb:
+        condition: service_healthy
+    volumes:
+      - ./duckdb/demo.py:/demo/demo.py:ro
+    environment:
+      FLIGHT_SQL_HOST: flight-sql-duckdb
+      FLIGHT_SQL_PORT: "32010"
+    networks:
+      - elastic-demo

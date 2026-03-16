@@ -244,15 +244,49 @@ package object query {
 
     lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
-    lazy val aggregates: Seq[Field] =
+    private lazy val selectAggs: Seq[Field] =
       select.fieldsWithComputedAliases
         .filter(f => f.isAggregation || f.isBucketScript)
         .filterNot(_.identifier.hasWindow) ++ windowFields
 
-    lazy val sqlAggregations: ListMap[String, SQLAggregation] =
+    // Aggregations referenced only in HAVING, WHERE, or ORDER BY clauses (not in SELECT)
+    private lazy val auxiliaryAggs: Seq[Field] = {
+      val selectAggNames = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet ++
+        selectAggs.map(_.identifier.identifierName).toSet
+      val havingAggs = having
+        .flatMap(_.criteria)
+        .map(_.extractAggregationFields)
+        .getOrElse(Seq.empty)
+      val whereAggs = where
+        .flatMap(_.criteria)
+        .map(_.extractAggregationFields)
+        .getOrElse(Seq.empty)
+      val orderByAggs = orderBy
+        .map(_.sorts.flatMap(_.extractAggregationFields))
+        .getOrElse(Seq.empty)
+      (havingAggs ++ whereAggs ++ orderByAggs)
+        .filterNot(f =>
+          f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
+          selectAggNames.contains(f.identifier.identifierName)
+        )
+        .groupBy(_.fieldAlias.map(_.alias))
+        .map(_._2.head)
+        .toSeq
+    }
+
+    lazy val aggregates: Seq[Field] = selectAggs ++ auxiliaryAggs
+
+    lazy val sqlAggregations: ListMap[String, SQLAggregation] = {
+      val auxiliaryAggNames = auxiliaryAggs
+        .flatMap(f => SQLAggregation.fromField(f, this))
+        .map(_.aggName)
+        .toSet
       ListMap(
-        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a): _*
+        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map { a =>
+          a.aggName -> (if (auxiliaryAggNames.contains(a.aggName)) a.copy(auxiliary = true) else a)
+        }: _*
       )
+    }
 
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 

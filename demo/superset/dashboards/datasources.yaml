@@ -1,0 +1,4 @@
+databases:
+  - database_name: "Elasticsearch (Flight SQL)"
+    sqlalchemy_uri: "elastiq://flight-sql-superset:32010?insecure=true"
+    extra: '{"allows_virtual_table_explore": true}'

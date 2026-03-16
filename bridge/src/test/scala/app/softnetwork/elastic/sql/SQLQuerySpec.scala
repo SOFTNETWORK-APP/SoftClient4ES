@@ -3834,4 +3834,363 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s+", "")
   }
 
+  // === Issue #50: HAVING COUNT(*) without alias ===
+
+  it should "handle HAVING COUNT(*) without alias (issue #50)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, City, COUNT(*)
+          |FROM Customers
+          |GROUP BY Country, City
+          |HAVING COUNT(*) > 1
+          |ORDER BY COUNT(*) DESC""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1
+        |      },
+        |      "aggs": {
+        |        "City": {
+        |          "terms": {
+        |            "field": "City",
+        |            "min_doc_count": 1,
+        |            "order": {
+        |              "__c3": "desc"
+        |            }
+        |          },
+        |          "aggs": {
+        |            "__c3": {
+        |              "value_count": {
+        |                "field": "_index"
+        |              }
+        |            },
+        |            "having_filter": {
+        |              "bucket_selector": {
+        |                "buckets_path": {
+        |                  "__c3": "__c3"
+        |                },
+        |                "script": {
+        |                  "source": "params.__c3 > 1"
+        |                }
+        |              }
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
+  it should "handle HAVING COUNT(*) without alias combined with aliased aggregation" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, COUNT(*), AVG(age) AS avg_age
+          |FROM Customers
+          |GROUP BY Country
+          |HAVING COUNT(*) >= 1 AND AVG(age) > 25""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1
+        |      },
+        |      "aggs": {
+        |        "__c2": {
+        |          "value_count": {
+        |            "field": "_index"
+        |          }
+        |        },
+        |        "avg_age": {
+        |          "avg": {
+        |            "field": "age"
+        |          }
+        |        },
+        |        "having_filter": {
+        |          "bucket_selector": {
+        |            "buckets_path": {
+        |              "__c2": "__c2",
+        |              "avg_age": "avg_age"
+        |            },
+        |            "script": {
+        |              "source": "params.__c2 >= 1 && params.avg_age > 25"
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">=", " >= ")
+      .replaceAll("(?<!>)>(?!=)", " > ")
+  }
+
+  it should "handle HAVING COUNT(*) only in HAVING clause not in SELECT" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, SUM(age) AS total
+          |FROM Customers
+          |GROUP BY Country
+          |HAVING COUNT(*) > 1""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1
+        |      },
+        |      "aggs": {
+        |        "total": {
+        |          "sum": {
+        |            "field": "age"
+        |          }
+        |        },
+        |        "count_all": {
+        |          "value_count": {
+        |            "field": "_index"
+        |          }
+        |        },
+        |        "having_filter": {
+        |          "bucket_selector": {
+        |            "buckets_path": {
+        |              "count_all": "count_all"
+        |            },
+        |            "script": {
+        |              "source": "params.count_all > 1"
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
+  // === Issue #52: ORDER BY on aggregation alias ===
+
+  it should "handle ORDER BY on aggregation alias (issue #52)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, SUM(age) AS "Total Age", COUNT(*) AS "Orders"
+          |FROM Customers
+          |GROUP BY Country
+          |ORDER BY "Total Age" DESC
+          |LIMIT 10""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "size": 10,
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "Total Age": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "Total Age": {
+        |          "sum": {
+        |            "field": "age"
+        |          }
+        |        },
+        |        "Orders": {
+        |          "value_count": {
+        |            "field": "_index"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("(?m)^\\s+", "")
+      .replaceAll("\\n", "")
+      .replaceAll(":\\s+", ":")
+      .replaceAll(",\\s+", ",")
+  }
+
+  it should "handle ORDER BY on aggregation not in SELECT (issue #52)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country
+          |FROM Customers
+          |GROUP BY Country
+          |ORDER BY COUNT(*) DESC""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1,
+        |        "order": {
+        |          "count_all": "desc"
+        |        }
+        |      },
+        |      "aggs": {
+        |        "count_all": {
+        |          "value_count": {
+        |            "field": "_index"
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+  }
+
+  it should "handle HAVING COUNT(DISTINCT *) without alias" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, COUNT(DISTINCT *)
+          |FROM Customers
+          |GROUP BY Country
+          |HAVING COUNT(DISTINCT *) > 1""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1
+        |      },
+        |      "aggs": {
+        |        "__c2": {
+        |          "cardinality": {
+        |            "field": "_index"
+        |          }
+        |        },
+        |        "having_filter": {
+        |          "bucket_selector": {
+        |            "buckets_path": {
+        |              "__c2": "__c2"
+        |            },
+        |            "script": {
+        |              "source": "params.__c2 > 1"
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
+  it should "handle HAVING COUNT(DISTINCT *) only in HAVING clause not in SELECT" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT Country, SUM(age) AS total
+          |FROM Customers
+          |GROUP BY Country
+          |HAVING COUNT(DISTINCT *) > 1""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": {
+        |    "match_all": {}
+        |  },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "Country": {
+        |      "terms": {
+        |        "field": "Country",
+        |        "min_doc_count": 1
+        |      },
+        |      "aggs": {
+        |        "total": {
+        |          "sum": {
+        |            "field": "age"
+        |          }
+        |        },
+        |        "count_distinct_all": {
+        |          "cardinality": {
+        |            "field": "_index"
+        |          }
+        |        },
+        |        "having_filter": {
+        |          "bucket_selector": {
+        |            "buckets_path": {
+        |              "count_distinct_all": "count_distinct_all"
+        |            },
+        |            "script": {
+        |              "source": "params.count_distinct_all > 1"
+        |            }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replaceAll("==", " == ")
+      .replaceAll("&&", " && ")
+      .replaceAll(">", " > ")
+  }
+
 }
