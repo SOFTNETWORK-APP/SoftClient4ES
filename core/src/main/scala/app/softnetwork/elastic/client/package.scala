@@ -364,7 +364,8 @@ package object client extends SerializationApi {
     sourceField: String,
     windowing: Boolean,
     bucketPath: String,
-    bucketRoot: String
+    bucketRoot: String,
+    auxiliary: Boolean = false
   ) {
     def multivalued: Boolean = aggType == AggregationType.ArrayAgg
     def singleValued: Boolean = !multivalued
@@ -394,7 +395,8 @@ package object client extends SerializationApi {
       agg.sourceField,
       agg.aggType.isWindowing,
       agg.bucketPath,
-      agg.bucketRoot
+      agg.bucketRoot,
+      agg.auxiliary
     )
   }
 

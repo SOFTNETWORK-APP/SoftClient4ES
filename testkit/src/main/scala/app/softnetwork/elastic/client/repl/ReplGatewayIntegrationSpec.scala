@@ -742,7 +742,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     assertSelectResult(System.nanoTime(), executeSync(sql))
   }
 
-  it should "support HAVING COUNT(*) only in HAVING clause not in SELECT" in {
+  it should "support HAVING COUNT(*) only in HAVING clause not in SELECT (issue #55)" in {
     val sql =
       """SELECT profile.city AS city,
         |       AVG(age) AS avg_age
@@ -750,10 +750,22 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |GROUP BY profile.city
         |HAVING COUNT(*) >= 1""".stripMargin
 
-    assertSelectResult(System.nanoTime(), executeSync(sql))
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Auxiliary aggregation COUNT(*) should not leak into result columns
+    rows.foreach { row =>
+      row.keys.toSet shouldBe Set("city", "avg_age")
+    }
   }
 
-  it should "support HAVING COUNT(DISTINCT *) only in HAVING clause not in SELECT" in {
+  it should "support HAVING COUNT(DISTINCT *) only in HAVING clause not in SELECT (issue #55)" in {
     val sql =
       """SELECT profile.city AS city,
         |       AVG(age) AS avg_age
@@ -761,7 +773,19 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |GROUP BY profile.city
         |HAVING COUNT(DISTINCT *) >= 1""".stripMargin
 
-    assertSelectResult(System.nanoTime(), executeSync(sql))
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Auxiliary aggregation COUNT(DISTINCT *) should not leak into result columns
+    rows.foreach { row =>
+      row.keys.toSet shouldBe Set("city", "avg_age")
+    }
   }
 
   // === Issue #52: ORDER BY on aggregation alias ===
@@ -806,10 +830,9 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
       case other              => fail(s"Unexpected result type: $other")
     }
     rows should not be empty
-    // NOTE: count_all leaks into results even though it's not in SELECT (see issue #55)
+    // Auxiliary aggregation COUNT(*) should not leak into result columns (issue #55)
     rows.foreach { row =>
-      row.keys should contain("city")
-      row.keys should contain("avg_age")
+      row.keys.toSet shouldBe Set("city", "avg_age")
     }
   }
 

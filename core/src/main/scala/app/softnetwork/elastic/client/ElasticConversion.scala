@@ -644,7 +644,9 @@ trait ElasticConversion {
               }
             } match {
             case Some(m) =>
-              metrics ++= Seq(m._1 -> m._2)
+              // Skip auxiliary aggregations (from HAVING/WHERE/ORDER BY only, not in SELECT)
+              val isAuxiliary = aggregations.get(m._1).exists(_.auxiliary)
+              if (!isAuxiliary) metrics ++= Seq(m._1 -> m._2)
             case _ =>
           }
         }

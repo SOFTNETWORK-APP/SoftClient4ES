@@ -159,6 +159,7 @@ case class SQLAggregation(
   field: String,
   sourceField: String,
   distinct: Boolean = false,
+  auxiliary: Boolean = false,
   aggType: AggregateFunction,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None,

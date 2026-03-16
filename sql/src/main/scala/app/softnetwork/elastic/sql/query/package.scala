@@ -244,11 +244,13 @@ package object query {
 
     lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
-    lazy val aggregates: Seq[Field] = {
-      val selectAggs = select.fieldsWithComputedAliases
+    private lazy val selectAggs: Seq[Field] =
+      select.fieldsWithComputedAliases
         .filter(f => f.isAggregation || f.isBucketScript)
         .filterNot(_.identifier.hasWindow) ++ windowFields
-      // Include aggregations referenced only in HAVING or WHERE clauses
+
+    // Aggregations referenced only in HAVING, WHERE, or ORDER BY clauses (not in SELECT)
+    private lazy val auxiliaryAggs: Seq[Field] = {
       val selectAggNames = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet ++
         selectAggs.map(_.identifier.identifierName).toSet
       val havingAggs = having
@@ -262,19 +264,29 @@ package object query {
       val orderByAggs = orderBy
         .map(_.sorts.flatMap(_.extractAggregationFields))
         .getOrElse(Seq.empty)
-      val extraAggs = (havingAggs ++ whereAggs ++ orderByAggs)
+      (havingAggs ++ whereAggs ++ orderByAggs)
         .filterNot(f =>
           f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
           selectAggNames.contains(f.identifier.identifierName)
         )
-        .distinctBy(_.fieldAlias.map(_.alias))
-      selectAggs ++ extraAggs
+        .groupBy(_.fieldAlias.map(_.alias))
+        .map(_._2.head)
+        .toSeq
     }
 
-    lazy val sqlAggregations: ListMap[String, SQLAggregation] =
+    lazy val aggregates: Seq[Field] = selectAggs ++ auxiliaryAggs
+
+    lazy val sqlAggregations: ListMap[String, SQLAggregation] = {
+      val auxiliaryAggNames = auxiliaryAggs
+        .flatMap(f => SQLAggregation.fromField(f, this))
+        .map(_.aggName)
+        .toSet
       ListMap(
-        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map(a => a.aggName -> a): _*
+        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map { a =>
+          a.aggName -> (if (auxiliaryAggNames.contains(a.aggName)) a.copy(auxiliary = true) else a)
+        }: _*
       )
+    }
 
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
