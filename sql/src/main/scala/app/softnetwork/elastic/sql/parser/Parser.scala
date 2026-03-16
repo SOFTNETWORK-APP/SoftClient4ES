@@ -351,7 +351,7 @@ object Parser
     }
 
   def describeTable: PackratParser[DescribeTable] =
-    (("DESCRIBE" | "DESC") ~ "TABLE") ~ ident ^^ { case _ ~ table =>
+    (("DESCRIBE" | "DESC") ~ opt("TABLE")) ~ ident ^^ { case _ ~ table =>
       DescribeTable(table)
     }
 
@@ -907,7 +907,6 @@ object Parser
     showTables |
     showTable |
     showCreateTable |
-    describeTable |
     showPipelines |
     showPipeline |
     showCreatePipeline |
@@ -917,6 +916,7 @@ object Parser
     showMaterializedView |
     showCreateMaterializedView |
     describeMaterializedView |
+    describeTable |
     showWatchers |
     showWatcherStatus |
     showEnrichPolicy |

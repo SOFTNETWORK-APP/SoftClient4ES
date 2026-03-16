@@ -93,6 +93,18 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     rows.exists(_("Field") == "profile.city") shouldBe true
   }
 
+  it should "describe a table using DESC without TABLE keyword" in {
+    val rows = assertQueryRows(System.nanoTime(), executeSync("DESC desc_users"))
+    rows.size shouldBe 6
+    rows.exists(row =>
+      row("Field") == "id" &&
+      row("Null") == "no" &&
+      row("Key") == "PRI"
+    ) shouldBe true
+    rows.exists(_("Field") == "name") shouldBe true
+    rows.exists(_("Field") == "profile.city") shouldBe true
+  }
+
   // =========================================================================
   // 2. DDL — CREATE TABLE, ALTER TABLE, DROP TABLE, TRUNCATE TABLE
   // =========================================================================
@@ -836,6 +848,54 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     }
   }
 
+  it should "not leak different auxiliary aggs from combined HAVING + ORDER BY (issue #55)" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(*) >= 1
+        |ORDER BY MIN(age) ASC""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // Both COUNT(*) and MIN(age) are auxiliary — neither should appear in results
+    rows.foreach { row =>
+      row.keys.toSet shouldBe Set("city", "avg_age")
+    }
+  }
+
+  it should "keep aggregation in results when it appears in both SELECT and HAVING (issue #55)" in {
+    val sql =
+      """SELECT profile.city AS city,
+        |       COUNT(*) AS cnt,
+        |       AVG(age) AS avg_age
+        |FROM dql_users
+        |GROUP BY profile.city
+        |HAVING COUNT(*) >= 1""".stripMargin
+
+    val res = executeSync(sql)
+    renderResults(System.nanoTime(), res)
+    res shouldBe a[ExecutionSuccess]
+    val rows = res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows       => q.rows
+      case q: QueryStructured => q.response.results
+      case other              => fail(s"Unexpected result type: $other")
+    }
+    rows should not be empty
+    // COUNT(*) is in SELECT as cnt — it must NOT be marked auxiliary
+    rows.foreach { row =>
+      row.keys.toSet shouldBe Set("city", "cnt", "avg_age")
+    }
+  }
+
   it should "support double-quoted identifiers (ANSI SQL-92, Superset compatibility)" in {
     val sql =
       """SELECT profile.city AS "City",
@@ -1265,7 +1325,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     assertDml(System.nanoTime(), executeSync(insert))
 
     // Wait for indexing
-    Thread.sleep(1000)
+    // Thread.sleep(1000)
 
     val createPolicy =
       """CREATE OR REPLACE ENRICH POLICY my_policy
