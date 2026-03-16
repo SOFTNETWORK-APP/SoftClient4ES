@@ -4,5 +4,5 @@ import app.softnetwork.elastic.client.spi.JestClientSpi
 import app.softnetwork.elastic.scalatest.EmbeddedElasticTestKit
 
 class JestClientPipelineApiSpec extends PipelineApiSpec with EmbeddedElasticTestKit {
-  override def client: PipelineApi = new JestClientSpi().client(elasticConfig)
+  override lazy val client: PipelineApi = new JestClientSpi().client(elasticConfig)
 }

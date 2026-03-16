@@ -6,7 +6,7 @@ import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 
 class JestReplGatewayIntegrationSpec extends ReplGatewayIntegrationSpec with ElasticDockerTestKit {
 
-  override def gateway: GatewayApi = new JestClientSpi().client(elasticConfig)
+  override lazy val gateway: GatewayApi = new JestClientSpi().client(elasticConfig)
 
   override def elasticVersion: String = "6.7.2"
 }
