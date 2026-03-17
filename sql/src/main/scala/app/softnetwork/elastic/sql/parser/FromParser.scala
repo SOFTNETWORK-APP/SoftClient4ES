@@ -73,9 +73,15 @@ trait FromParser {
       }
   }
 
-  def table: PackratParser[Table] = identifierRegex ~ alias.? ~ rep(join) ^^ { case i ~ a ~ js =>
-    Table(i, a, js)
-  }
+  // Optional quoted schema prefix: "schema". (ignored — Elasticsearch has no schema concept)
+  // Only quoted schemas are stripped; unquoted dots are part of ES index names (e.g. logs-2025.03)
+  private def quotedSchemaPrefix: PackratParser[String] =
+    ("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") <~ "."
+
+  def table: PackratParser[Table] =
+    opt(quotedSchemaPrefix) ~ identifierRegex ~ alias.? ~ rep(join) ^^ { case _ ~ i ~ a ~ js =>
+      Table(i, a, js)
+    }
 
   def from: PackratParser[From] = From.regex ~ rep1sep(table, separator) ^^ { case _ ~ tables =>
     From(tables)

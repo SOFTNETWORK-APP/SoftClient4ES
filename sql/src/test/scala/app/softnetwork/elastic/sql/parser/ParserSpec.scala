@@ -976,6 +976,58 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       .getOrElse("") shouldBe whereFiltersAccordingToScope
   }
 
+  // ── Schema-qualified table names (Issue #57) ────────────────────────────────
+
+  it should "parse schema-qualified table name with quoted schema" in {
+    val sql = """SELECT * FROM "default".ecommerce"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.from.mainTable.name shouldBe "ecommerce"
+        ss.sources shouldBe Seq("ecommerce")
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "preserve dots in unquoted table names (ES index names can contain dots)" in {
+    val sql = "SELECT * FROM myschema.ecommerce"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.from.mainTable.name shouldBe "myschema.ecommerce"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "parse schema-qualified table name with alias" in {
+    val sql = """SELECT e.field FROM "default".ecommerce AS e"""
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.from.mainTable.name shouldBe "ecommerce"
+        ss.from.mainTable.tableAlias.map(_.alias) shouldBe Some("e")
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
+  it should "still parse table name without schema prefix" in {
+    val sql = "SELECT * FROM ecommerce"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val stmt = result.toOption.get
+    stmt match {
+      case ss: SingleSearch =>
+        ss.from.mainTable.name shouldBe "ecommerce"
+      case _ => fail("Expected SingleSearch")
+    }
+  }
+
   // --- DDL ---
 
   behavior of "Parser DDL with Table Statements"
