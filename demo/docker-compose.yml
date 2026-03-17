@@ -81,7 +81,7 @@ services:
     networks:
       - elastic-demo
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/32010'"]
+      test: ["CMD-SHELL", "bash -c '>/dev/tcp/localhost/32010'"]
       interval: 5s
       timeout: 3s
       start_period: 15s
@@ -170,7 +170,7 @@ services:
     networks:
       - elastic-demo
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/32010'"]
+      test: ["CMD-SHELL", "bash -c '>/dev/tcp/localhost/32010'"]
       interval: 5s
       timeout: 3s
       start_period: 15s
