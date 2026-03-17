@@ -111,6 +111,7 @@ object ElasticAggregation {
       bucketsDirection
         .get(identifier.identifierName)
         .orElse(bucketsDirection.get(identifier.aliasOrName))
+        .orElse(fieldAlias.flatMap(a => bucketsDirection.get(a.alias)))
 
     val field = fieldAlias match {
       case Some(alias) => alias.alias
@@ -131,10 +132,12 @@ object ElasticAggregation {
     val aggName = {
       if (fieldAlias.isDefined)
         field
-      else if (distinct)
-        s"${aggType}_distinct_${sourceField.replace(".", "_")}"
       else {
         aggType match {
+          case COUNT if sourceField == "*" =>
+            if (distinct) "count_distinct_all" else "count_all"
+          case _ if distinct =>
+            s"${aggType}_distinct_${sourceField.replace(".", "_")}"
           case th: WindowFunction =>
             s"${th.window.sql.toLowerCase}_${sourceField.replace(".", "_")}"
           case _ =>
