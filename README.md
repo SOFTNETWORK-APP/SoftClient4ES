@@ -358,6 +358,16 @@ Materialized views with JOINs rely on **Elasticsearch Watchers** to automaticall
 
 ---
 
+## 📝 Blog Posts
+
+- [Stop Rewriting Your Elasticsearch Code Every Version Upgrade](https://medium.com/@stephane.manciot_83064/stop-rewriting-your-elasticsearch-code-every-version-upgrade-641d4aabecaa)
+- [Elasticsearch Queries That Never Break in Production](https://medium.com/@stephane.manciot_83064/elasticsearch-queries-that-never-break-in-production-35f25a7550b8)
+- [It's 3 AM. Production Is Down. Your Only Tool Is curl.](https://medium.com/@stephane.manciot_83064/its-3-am-production-is-down-your-only-tool-is-curl-92aed0a26413)
+- [Elasticsearch Schema Management Was Hell. Then Someone Typed SQL.](https://medium.com/@stephane.manciot_83064/elasticsearch-schema-management-was-hell-then-someone-typed-sql-41d9d3d37ed9)
+- [A 47-Line curl Script to Insert One Document. Seriously.](https://medium.com/@stephane.manciot_83064/a-47-line-curl-script-to-insert-one-document-seriously-76f14c99f8e0)
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
