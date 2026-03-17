@@ -174,7 +174,7 @@ def create_all_charts(session, dataset_id):
     # 6. Top Customers — table
     cid = create_chart(session, dataset_id, "Top Customers by Spend", "table", {
         "metrics": [simple_metric("total_price", "SUM", "Total Spend"), count_star_metric()],
-        "groupby": ["customer_name", "country"],
+        "groupby": ["customer_name"],
         "order_desc": True,
         "timeseries_limit_metric": simple_metric("total_price", "SUM", "Total Spend"),
         "row_limit": 10,
