@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: Elasticsearch (Flight SQL)
+    type: influxdata-flightsql-datasource
+    access: proxy
+    uid: es-flightsql
+    isDefault: true
+    editable: true
+    jsonData:
+      host: flight-sql-grafana:32010
+      secure: false
+      metadata:
+        - key: database
+          value: elasticsearch

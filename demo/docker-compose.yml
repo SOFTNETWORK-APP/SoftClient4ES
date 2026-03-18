@@ -6,6 +6,7 @@ volumes:
   elasticsearch-data:
   superset-db:
   superset-home:
+  grafana-data:
 
 x-common-env: &common-env
   ELASTIC_HOST: elasticsearch
@@ -191,3 +192,54 @@ services:
       FLIGHT_SQL_PORT: "32010"
     networks:
       - elastic-demo
+
+  # ──────────────────────────────────────────────
+  # Profile: grafana
+  # ──────────────────────────────────────────────
+
+  flight-sql-grafana:
+    image: softnetwork/softclient4es${ES_MAJOR_VERSION:-8}-arrow-flight-sql:latest
+    pull_policy: always
+    container_name: flight-sql-grafana
+    profiles: ["grafana"]
+    depends_on:
+      es-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+    ports:
+      - "32010:32010"
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '>/dev/tcp/localhost/32010'"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: grafana
+    profiles: ["grafana"]
+    depends_on:
+      flight-sql-grafana:
+        condition: service_healthy
+    environment:
+      GF_INSTALL_PLUGINS: "influxdata-flightsql-datasource"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "influxdata-flightsql-datasource"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ecommerce.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - elastic-demo
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s

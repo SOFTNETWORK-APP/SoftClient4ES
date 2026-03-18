@@ -1,0 +1,362 @@
+{
+  "uid": "ecommerce-flightsql",
+  "title": "E-Commerce Analytics (Flight SQL)",
+  "tags": ["elasticsearch", "flight-sql", "demo"],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Orders",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT COUNT(*) as total_orders FROM ecommerce",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Total Revenue",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT SUM(total_price) as total_revenue FROM ecommerce",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Average Order Value",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT AVG(total_price) as avg_order_value FROM ecommerce",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "orange", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Unique Customers",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT COUNT(DISTINCT customer_name) as unique_customers FROM ecommerce",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "purple", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Revenue by Country",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 10 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT country, SUM(total_price) as revenue FROM ecommerce GROUP BY country ORDER BY revenue DESC LIMIT 10",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "barWidth": 0.8,
+        "groupWidth": 0.7
+      }
+    },
+    {
+      "id": 6,
+      "title": "Orders by Category",
+      "type": "piechart",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 10 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT category, COUNT(*) as orders FROM ecommerce GROUP BY category ORDER BY orders DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "pie",
+        "displayLabels": ["name", "percent"],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["value"]
+        },
+        "tooltip": {
+          "mode": "single"
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": "/^orders$/"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Revenue by Category",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 10 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT category, SUM(total_price) as revenue FROM ecommerce GROUP BY category ORDER BY revenue DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "barWidth": 0.8,
+        "groupWidth": 0.7
+      }
+    },
+    {
+      "id": 8,
+      "title": "Order Status",
+      "type": "piechart",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 10 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT status, COUNT(*) as orders FROM ecommerce GROUP BY status ORDER BY orders DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": ["name", "value"],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["value"]
+        },
+        "tooltip": {
+          "mode": "single"
+        },
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": "/^orders$/"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Avg Order Value by Payment Method",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 10 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT payment_method, AVG(total_price) as avg_value FROM ecommerce GROUP BY payment_method ORDER BY avg_value DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "barWidth": 0.8,
+        "groupWidth": 0.7
+      }
+    },
+    {
+      "id": 10,
+      "title": "Top Customers by Spend",
+      "type": "table",
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 10 },
+      "datasource": { "uid": "es-flightsql" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawEditor": true,
+          "queryText": "SELECT customer_name, SUM(total_price) as total_spend, COUNT(*) as orders FROM ecommerce GROUP BY customer_name ORDER BY total_spend DESC LIMIT 10",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "total_spend" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "total_spend", "desc": true }],
+        "footer": {
+          "show": false
+        }
+      }
+    }
+  ]
+}

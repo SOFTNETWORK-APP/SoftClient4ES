@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="1" dy="2" stdDeviation="3" flood-opacity="0.15"/>
+    </filter>
+    <linearGradient id="esGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FEC514"/>
+      <stop offset="100%" stop-color="#F0B400"/>
+    </linearGradient>
+    <linearGradient id="flightGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4FC3F7"/>
+      <stop offset="100%" stop-color="#0288D1"/>
+    </linearGradient>
+    <linearGradient id="duckGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF176"/>
+      <stop offset="100%" stop-color="#FDD835"/>
+    </linearGradient>
+    <linearGradient id="grafanaGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF8F2E"/>
+      <stop offset="100%" stop-color="#F46800"/>
+    </linearGradient>
+    <linearGradient id="supersetGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5AC8FA"/>
+      <stop offset="100%" stop-color="#20A6C9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="720" height="420" rx="12" fill="#F8FAFC"/>
+
+  <!-- Elasticsearch box -->
+  <rect x="240" y="30" width="240" height="70" rx="10" fill="url(#esGrad)" filter="url(#shadow)"/>
+  <text x="360" y="60" text-anchor="middle" font-size="15" font-weight="600" fill="#1A1A1A">Elasticsearch</text>
+  <text x="360" y="80" text-anchor="middle" font-size="11" fill="#5C4A00">Data Store</text>
+
+  <!-- Arrow from ES to Flight SQL -->
+  <line x1="360" y1="100" x2="360" y2="150" stroke="#78909C" stroke-width="2.5" marker-end="url(#arrowhead)"/>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#78909C"/>
+    </marker>
+  </defs>
+
+  <!-- Arrow Flight SQL Server box -->
+  <rect x="195" y="155" width="330" height="70" rx="10" fill="url(#flightGrad)" filter="url(#shadow)"/>
+  <text x="360" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#FFFFFF">Arrow Flight SQL Server</text>
+  <text x="360" y="205" text-anchor="middle" font-size="11" fill="#E1F5FE">gRPC · Port 32010</text>
+
+  <!-- Arrows from Flight SQL to clients -->
+  <line x1="260" y1="225" x2="140" y2="300" stroke="#78909C" stroke-width="2.5" marker-end="url(#arrowhead)"/>
+  <line x1="360" y1="225" x2="360" y2="300" stroke="#78909C" stroke-width="2.5" marker-end="url(#arrowhead)"/>
+  <line x1="460" y1="225" x2="580" y2="300" stroke="#78909C" stroke-width="2.5" marker-end="url(#arrowhead)"/>
+
+  <!-- DuckDB box -->
+  <rect x="50" y="305" width="180" height="80" rx="10" fill="url(#duckGrad)" filter="url(#shadow)"/>
+  <text x="140" y="338" text-anchor="middle" font-size="15" font-weight="600" fill="#1A1A1A">DuckDB</text>
+  <text x="140" y="358" text-anchor="middle" font-size="11" fill="#5D4E00">In-Process Analytics</text>
+  <text x="140" y="374" text-anchor="middle" font-size="10" fill="#7D6E20">ADBC Driver</text>
+
+  <!-- Grafana box -->
+  <rect x="270" y="305" width="180" height="80" rx="10" fill="url(#grafanaGrad)" filter="url(#shadow)"/>
+  <text x="360" y="338" text-anchor="middle" font-size="15" font-weight="600" fill="#FFFFFF">Grafana</text>
+  <text x="360" y="358" text-anchor="middle" font-size="11" fill="#FFF3E0">Monitoring &amp; Dashboards</text>
+  <text x="360" y="374" text-anchor="middle" font-size="10" fill="#FFE0B2">Flight SQL Plugin</text>
+
+  <!-- Superset box -->
+  <rect x="490" y="305" width="180" height="80" rx="10" fill="url(#supersetGrad)" filter="url(#shadow)"/>
+  <text x="580" y="338" text-anchor="middle" font-size="15" font-weight="600" fill="#FFFFFF">Superset</text>
+  <text x="580" y="358" text-anchor="middle" font-size="11" fill="#E0F7FA">BI Dashboarding</text>
+  <text x="580" y="374" text-anchor="middle" font-size="10" fill="#B2EBF2">SQLAlchemy Dialect</text>
+
+  <!-- Protocol labels on arrows -->
+  <text x="172" y="272" text-anchor="middle" font-size="9" fill="#78909C" transform="rotate(-30, 172, 272)">ADBC</text>
+  <text x="375" y="270" text-anchor="start" font-size="9" fill="#78909C">gRPC</text>
+  <text x="540" y="272" text-anchor="middle" font-size="9" fill="#78909C" transform="rotate(30, 540, 272)">gRPC</text>
+</svg>
