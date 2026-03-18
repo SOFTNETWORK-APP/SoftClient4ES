@@ -433,6 +433,7 @@ The JDBC driver, Arrow Flight SQL server, ADBC driver, and Materialized Views ex
 
 - 🐛 [GitHub Issues](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues)
 - 💬 [GitHub Discussions](https://github.com/SOFTNETWORK-APP/SoftClient4ES/discussions)
+- 💼 [LinkedIn](https://www.linkedin.com/company/softnetwork-app/)
 - 📧 admin@softnetwork.fr
 
 ---
