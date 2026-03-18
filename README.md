@@ -412,6 +412,7 @@ Materialized views with JOINs rely on **Elasticsearch Watchers** to automaticall
 - [It's 3 AM. Production Is Down. Your Only Tool Is curl.](https://medium.com/@stephane.manciot_83064/its-3-am-production-is-down-your-only-tool-is-curl-92aed0a26413)
 - [Elasticsearch Schema Management Was Hell. Then Someone Typed SQL.](https://medium.com/@stephane.manciot_83064/elasticsearch-schema-management-was-hell-then-someone-typed-sql-41d9d3d37ed9)
 - [A 47-Line curl Script to Insert One Document. Seriously.](https://medium.com/@stephane.manciot_83064/a-47-line-curl-script-to-insert-one-document-seriously-76f14c99f8e0)
+- [Connect DBeaver to Elasticsearch. Yes, Really.](https://medium.com/@stephane.manciot_83064/connect-dbeaver-to-elasticsearch-yes-really-eff74342896c)
 
 ---
 
