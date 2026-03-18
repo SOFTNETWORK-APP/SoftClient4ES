@@ -70,6 +70,7 @@ SHOW TABLES LIKE 'user%';
 | 🔄 **Version Agnostic**   | Single codebase for Elasticsearch 6, 7, 8, and 9             |
 | ⚡ **Interactive REPL**    | Auto-completion, syntax highlighting, persistent history     |
 | 🔌 **JDBC Driver**        | Connect from DBeaver, Tableau, or any JDBC-compatible tool   |
+| 🏹 **Arrow Flight SQL**   | Zero-copy columnar access for DuckDB, Python, Apache Superset |
 | 🔒 **Type Safe**          | Compile-time SQL validation for Scala applications           |
 | 🚀 **Stream Powered**     | Akka Streams for high-performance bulk operations            |
 | 🛡️ **Production Ready**  | Built-in error handling, validation, and rollback            |
@@ -210,6 +211,47 @@ The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix
 
 ---
 
+## 🏹 Arrow Flight SQL
+
+Zero-copy columnar access to Elasticsearch over gRPC — for DuckDB, Python, Apache Superset, and any Arrow Flight SQL client.
+
+### Server Setup (Docker)
+
+```bash
+docker run -p 32010:32010 \
+  -e ES_HOST=elasticsearch \
+  -e ES_PORT=9200 \
+  -e ES_USER=elastic \
+  -e ES_PASSWORD=changeme \
+  softnetwork/softclient4es8-arrow-flight-sql:latest
+```
+
+### Python + DuckDB
+
+```python
+import adbc_driver_flightsql.dbapi as flight_sql
+import duckdb
+
+conn = flight_sql.connect("grpc://localhost:32010")
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM ecommerce")
+table = cursor.fetch_arrow_table()   # zero-copy Arrow table
+
+duckdb.sql("SELECT category, SUM(total_price) AS revenue FROM table GROUP BY category")
+```
+
+### Live Demo
+
+```bash
+docker compose --profile duckdb up          # DuckDB + Python pipeline
+docker compose --profile superset-flight up # Apache Superset BI dashboards
+```
+
+📖 **[Arrow Flight SQL Documentation](documentation/client/arrow_flight_sql.md)**
+📖 **[ADBC Driver Documentation](documentation/client/adbc_driver.md)**
+
+---
+
 ## 🛠️ Scala Library Integration
 
 For programmatic access, add SoftClient4ES to your project.
@@ -308,7 +350,9 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 | **SQL Reference**      | [📖 Documentation](documentation/sql/README.md)             |
 | **API Reference**      | [📖 Documentation](documentation/client/README.md)          |
 | **Materialized Views** | [📖 Documentation](documentation/sql/materialized_views.md) |
-| **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)    |
+| **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)     |
+| **Arrow Flight SQL**   | [📖 Documentation](documentation/client/arrow_flight_sql.md) |
+| **ADBC Driver**        | [📖 Documentation](documentation/client/adbc_driver.md)     |
 
 ---
 
@@ -317,7 +361,7 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 SoftClient4ES uses a dual-license model:
 
 - **Core** (SQL engine, REPL client, Scala library) — **Apache License 2.0** (open source)
-- **JDBC Driver** and **Materialized Views** — **Elastic License 2.0** (free to use, not open source)
+- **JDBC Driver**, **Arrow Flight SQL**, **ADBC Driver**, and **Materialized Views** — **Elastic License 2.0** (free to use, not open source)
 
 ### Feature Matrix
 
@@ -331,6 +375,7 @@ SoftClient4ES uses a dual-license model:
 | Scala library (Akka Streams)                                       | Yes       | Yes     | Yes        |
 | Elasticsearch 6, 7, 8, 9 support                                   | Yes       | Yes     | Yes        |
 | JDBC driver (DBeaver, Tableau, etc.)                               | Yes       | Yes     | Yes        |
+| Arrow Flight SQL server + ADBC driver                              | Yes       | Yes     | Yes        |
 | Materialized Views (CREATE, REFRESH, DESCRIBE)                     | Max 3     | Limited | Unlimited  |
 | Priority support                                                   | -         | -       | Yes        |
 
@@ -352,6 +397,8 @@ Materialized views with JOINs rely on **Elasticsearch Watchers** to automaticall
 
 - [x] JDBC driver for Elasticsearch
 - [x] Materialized views with JOINs and aggregations
+- [x] Arrow Flight SQL server (gRPC, Docker)
+- [x] ADBC driver (in-process, columnar)
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge
@@ -378,7 +425,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 The core SQL engine and REPL client are licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) for details.
 
-The JDBC driver and Materialized Views extension are licensed under the **Elastic License 2.0** — free to use, not open source.
+The JDBC driver, Arrow Flight SQL server, ADBC driver, and Materialized Views extension are licensed under the **Elastic License 2.0** — free to use, not open source.
 
 ---
 
