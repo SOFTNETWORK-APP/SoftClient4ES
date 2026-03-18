@@ -242,17 +242,20 @@ duckdb.sql("SELECT category, SUM(total_price) AS revenue FROM table GROUP BY cat
 
 ### Live Demo
 
-**DuckDB + Python pipeline**
+#### DuckDB + Python pipeline
+
 ```bash
 docker compose --profile duckdb up
 ```
 
-**Apache Superset BI dashboards**
+#### Apache Superset BI dashboards
+
 ```bash
 docker compose --profile superset-flight up
 ```
 
-**Grafana dashboards**
+#### Grafana dashboards
+
 ```bash
 docker compose --profile grafana up
 ```
