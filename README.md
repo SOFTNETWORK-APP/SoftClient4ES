@@ -242,12 +242,26 @@ duckdb.sql("SELECT category, SUM(total_price) AS revenue FROM table GROUP BY cat
 
 ### Live Demo
 
+**DuckDB + Python pipeline**
 ```bash
-docker compose --profile duckdb up          # DuckDB + Python pipeline
-docker compose --profile superset-flight up # Apache Superset BI dashboards
+docker compose --profile duckdb up
 ```
 
-📖 **[Arrow Flight SQL Documentation](documentation/client/arrow_flight_sql.md)**
+**Apache Superset BI dashboards**
+```bash
+docker compose --profile superset-flight up
+```
+
+**Grafana dashboards**
+```bash
+docker compose --profile grafana up
+```
+
+| Apache Superset                          | Grafana                               |
+|------------------------------------------|---------------------------------------|
+| ![Superset dashboard](demo/superset.png) | ![Grafana dashboard](demo/grafana.png) |
+
+📖 **[Arrow Flight SQL Documentation](documentation/client/arrow_flight_sql.md)**  
 📖 **[ADBC Driver Documentation](documentation/client/adbc_driver.md)**
 
 ---
