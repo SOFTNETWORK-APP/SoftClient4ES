@@ -219,10 +219,10 @@ WHERE condition;
 **Behavior**
 
 - `UPDATE` is implemented using Elasticsearch `update-by-query`.
+- Expressions are supported in SET clauses (e.g. `SET x = x + 1`).
+- `SET field = NULL` removes the field from the document (Elasticsearch does not store SQL NULL).
 - Only top-level scalar fields or entire nested objects can be replaced.
 - Updating a specific element inside an `ARRAY<STRUCT>` is not supported.
-- `SET field = NULL` removes the field from the document (Elasticsearch does not store SQL NULL).
-- Expressions such as `SET x = x + 1` are not supported (no script-based incremental updates).
 - Fields not present in the mapping cannot be added unless dynamic mapping is enabled.
 
 ---
