@@ -225,17 +225,15 @@ WHERE items.quantity >= 1
 ORDER BY o.id ASC;
 ```
 
-`JOIN UNNEST` is intended to behave like a standard SQL UNNEST operation, where each element of an `ARRAY<STRUCT>` becomes a logical row that can participate in expressions, filters, and window functions.
-
-⚠️ **Current status:**  
-The SQL Gateway already supports reading and filtering nested array elements through `JOIN UNNEST`, and supports parent-level aggregations using window functions.  
-However, **full row-level expansion (one output row per array element)** is **not implemented yet**.
+`JOIN UNNEST` behaves like a standard SQL UNNEST operation: each element of an `ARRAY<STRUCT>` becomes a separate output row, with parent fields duplicated — exactly like a relational unnest.
 
 This means:
+
 - expressions such as `items.price` and `items.quantity` are fully usable
 - window functions over `PARTITION BY parent_id` work
 - parent-level aggregations can be computed
-- but the final output still returns **one row per parent**, not one row per item
+- **full row-level expansion** produces one output row per array element
+- multi-level nesting is handled recursively
 
 ---
 
@@ -269,7 +267,7 @@ ORDER BY COUNT(*) DESC;
 
 ## Parent-Level Aggregations on Nested Arrays
 
-The SQL Gateway supports computing aggregations **over nested arrays** (e.g., `ARRAY<STRUCT>`) **without exploding them into multiple rows**.
+The SQL Gateway supports computing aggregations **over nested arrays** (e.g., `ARRAY<STRUCT>`) while keeping one row per parent document (the original nested array is preserved).
 
 This pattern:
 
@@ -716,7 +714,7 @@ Notes:
 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
-- No traditional SQL joins (only `JOIN UNNEST` on `ARRAY<STRUCT>`)
+- Traditional SQL joins are supported only through the use of Materialized Views (only `JOIN UNNEST` on `ARRAY<STRUCT>` is available natively)
 - No correlated subqueries
 - No arbitrary subqueries in `SELECT` or `WHERE` (except `INSERT ... AS SELECT` in DML)
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
