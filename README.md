@@ -7,6 +7,10 @@
 
 **SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — through an interactive **REPL client** or as a **Scala library**.
 
+## 🏗️ Architecture
+
+![SoftClient4ES Architecture — Application layer, client interfaces (REPL, JDBC, ADBC, Flight SQL), unified GatewayApi, SQL Engine core, and ES 6/7/8/9 version-specific adapters](architecture.svg)
+
 ---
 
 ## ⚡ Quick Start — REPL Client
