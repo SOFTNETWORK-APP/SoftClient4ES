@@ -195,6 +195,7 @@ Drops the materialized view and all associated artifacts:
 - Intermediate indices
 - Ingest pipelines
 - Enrich policies
+- Watchers (enrich policy auto-refresh)
 
 **Example:**
 
