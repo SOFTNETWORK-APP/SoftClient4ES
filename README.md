@@ -5,7 +5,7 @@
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/1c13d6eb7d6c4a1495cd47e457c132dc)](https://app.codacy.com/gh/SOFTNETWORK-APP/elastic/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![License](https://img.shields.io/github/license/SOFTNETWORK-APP/elastic)](https://github.com/SOFTNETWORK-APP/elastic/blob/main/LICENSE)
 
-🌐 **Website:** [softnetwork-app.github.io/softclient4es-web](https://softnetwork-app.github.io/softclient4es-web/)
+🌐 **Website:** [softclient4es.dev/](https://softclient4es.dev/)
 
 **SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — through an interactive **REPL client**, a **JDBC driver**, an **Arrow Flight SQL** server, or as a **Scala library**.
 
