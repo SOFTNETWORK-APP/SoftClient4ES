@@ -149,6 +149,7 @@ trait RestHighLevelClientApi
     with RestHighLevelClientScrollApi
     with RestHighLevelClientCompanion
     with RestHighLevelClientVersionApi
+    with RestHighLevelClientClusterApi
     with RestHighLevelClientPipelineApi
     with RestHighLevelClientTemplateApi
     with RestHighLevelClientEnrichPolicyApi
@@ -177,6 +178,27 @@ trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientH
         (json \ "version" \ "number").extract[String]
       }
     )
+}
+
+trait RestHighLevelClientClusterApi extends ClusterApi with RestHighLevelClientHelpers {
+  _: RestHighLevelClientCompanion =>
+
+  override private[client] def executeGetClusterName(): ElasticResult[String] =
+    executeRestLowLevelAction[String](
+      operation = "cluster_name",
+      index = None,
+      retryable = true
+    )(
+      request = new Request("GET", "/")
+    )(
+      transformer = resp => {
+        val jsonString = EntityUtils.toString(resp.getEntity)
+        implicit val formats: DefaultFormats.type = DefaultFormats
+        val json = JsonMethods.parse(jsonString)
+        (json \ "cluster_name").extract[String]
+      }
+    )
+
 }
 
 /** Indices management API for RestHighLevelClient

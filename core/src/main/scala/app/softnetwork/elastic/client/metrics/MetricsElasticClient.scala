@@ -97,6 +97,13 @@ class MetricsElasticClient(
       delegate.version
     }
 
+  // ==================== ClusterApi ====================
+
+  override def clusterName: ElasticResult[String] =
+    measureResult("cluster_name") {
+      delegate.clusterName
+    }
+
   // ==================== IndicesApi ====================
 
   override def createIndex(

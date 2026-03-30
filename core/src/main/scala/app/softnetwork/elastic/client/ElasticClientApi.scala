@@ -41,6 +41,7 @@ trait ElasticClientApi
     with RefreshApi
     with FlushApi
     with VersionApi
+    with ClusterApi
     with PipelineApi
     with TemplateApi
     with EnrichPolicyApi

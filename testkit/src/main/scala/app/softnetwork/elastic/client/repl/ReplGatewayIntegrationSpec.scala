@@ -1412,4 +1412,17 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     // Reset to ASCII
     testRepl.setFormat(OutputFormat.Ascii)
   }
+
+  // =========================================================================
+  // 10. SHOW CLUSTER NAME tests
+  // =========================================================================
+
+  behavior of "REPL - SHOW CLUSTER NAME"
+
+  it should "return the cluster name using SHOW CLUSTER NAME" in {
+    val rows = assertQueryRows(System.nanoTime(), executeSync("SHOW CLUSTER NAME"))
+    rows should have size 1
+    rows.head should contain key "name"
+    rows.head("name") shouldBe "docker-cluster"
+  }
 }

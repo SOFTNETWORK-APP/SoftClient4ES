@@ -902,6 +902,11 @@ object Parser
       ShowEnrichPolicies
     }
 
+  def showClusterName: PackratParser[ShowClusterName.type] =
+    ("(?i)SHOW\\b".r ~ "(?i)CLUSTER\\b".r ~ "(?i)NAME\\b".r) ^^ { _ =>
+      ShowClusterName
+    }
+
   def dqlStatement: PackratParser[DqlStatement] = {
     searchStatement |
     showTables |
@@ -920,7 +925,8 @@ object Parser
     showWatchers |
     showWatcherStatus |
     showEnrichPolicy |
-    showEnrichPolicies
+    showEnrichPolicies |
+    showClusterName
   }
 
   def ddlStatement: PackratParser[DdlStatement] =

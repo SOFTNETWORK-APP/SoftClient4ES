@@ -89,6 +89,11 @@ trait MockElasticClientApi extends NopeClientApi {
   override private[client] def executeVersion(): ElasticResult[String] =
     ElasticResult.success(elasticVersion)
 
+  // ==================== ClusterApi ====================
+
+  override private[client] def executeGetClusterName(): ElasticResult[String] =
+    ElasticResult.success("test-cluster")
+
   // ==================== IndicesApi ====================
 
   override private[client] def executeCreateIndex(
