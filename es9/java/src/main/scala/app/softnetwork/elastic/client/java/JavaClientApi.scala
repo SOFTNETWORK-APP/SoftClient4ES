@@ -140,6 +140,7 @@ trait JavaClientApi
     with JavaClientScrollApi
     with JavaClientCompanion
     with JavaClientVersionApi
+    with JavaClientClusterApi
     with JavaClientPipelineApi
     with JavaClientTemplateApi
     with JavaClientEnrichPolicyApi
@@ -162,6 +163,20 @@ trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
       apply().info()
     ) { response =>
       response.version().number()
+    }
+}
+
+trait JavaClientClusterApi extends ClusterApi with JavaClientHelpers {
+  _: JavaClientCompanion =>
+  override private[client] def executeGetClusterName(): ElasticResult[String] =
+    executeJavaAction(
+      operation = "cluster_name",
+      index = None,
+      retryable = true
+    )(
+      apply().info()
+    ) { response =>
+      response.clusterName()
     }
 }
 

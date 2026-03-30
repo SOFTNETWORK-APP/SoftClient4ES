@@ -46,6 +46,7 @@ DQL supports:
 - [SHOW WATCHER STATUS](#show-watcher-status)
 - [SHOW ENRICH POLICIES](#show-enrich-policies)
 - [SHOW ENRICH POLICY](#show-enrich-policy)
+- [SHOW CLUSTER NAME](#show-cluster-name)
 
 ---
 
@@ -1279,6 +1280,27 @@ SHOW ENRICH POLICY my_policy;
 |-----------|-------|-----------|-------------|-------------------|---------------------------------------------------|
 | my_policy | match | dql_users | id          | name,profile.city | {"bool":{"filter":[{"range":{"age":{"gt":10}}}]}} |
 📊 1 row(s) (4ms)
+
+---
+
+## SHOW CLUSTER NAME
+
+```sql
+SHOW CLUSTER NAME;
+```
+
+Returns the name of the Elasticsearch cluster. The cluster name is cached after the first call.
+
+**Example:**
+
+```sql
+SHOW CLUSTER NAME;
+```
+
+| name           |
+|----------------|
+| docker-cluster |
+📊 1 row(s) (3ms)
 
 ---
 

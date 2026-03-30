@@ -85,6 +85,17 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def executeVersion(): ElasticResult[String] =
     delegate.executeVersion()
 
+  /** Get Elasticsearch cluster name.
+    *
+    * @return
+    *   the Elasticsearch cluster name
+    */
+  override def clusterName: ElasticResult[String] =
+    delegate.clusterName
+
+  override private[client] def executeGetClusterName(): ElasticResult[String] =
+    delegate.executeGetClusterName()
+
   // ==================== IndicesApi ====================
 
   /** Create an index with the provided name and settings.

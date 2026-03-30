@@ -1284,4 +1284,14 @@ package object query {
   case object ShowEnrichPolicies extends EnrichPolicyStatement with DqlStatement {
     override def sql: String = s"SHOW ENRICH POLICIES"
   }
+
+  // ========================================================================
+  // Cluster statements
+  // ========================================================================
+
+  sealed trait ClusterStatement extends Statement
+
+  case object ShowClusterName extends ClusterStatement with DqlStatement {
+    override def sql: String = "SHOW CLUSTER NAME"
+  }
 }

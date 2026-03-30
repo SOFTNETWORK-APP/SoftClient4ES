@@ -37,6 +37,7 @@ import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
   AlterTableSetting,
+  ClusterStatement,
   CopyInto,
   CreateEnrichPolicy,
   CreatePipeline,
@@ -59,6 +60,7 @@ import app.softnetwork.elastic.sql.query.{
   PipelineStatement,
   SearchStatement,
   SelectStatement,
+  ShowClusterName,
   ShowCreatePipeline,
   ShowCreateTable,
   ShowEnrichPolicies,
@@ -1570,12 +1572,38 @@ class TableExecutor(
   }
 }
 
+class ClusterExecutor(
+  api: ClusterApi,
+  logger: Logger
+) extends Executor[ClusterStatement] {
+  override def execute(
+    statement: ClusterStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    statement match {
+      case ShowClusterName =>
+        api.clusterName match {
+          case ElasticSuccess(name) =>
+            Future.successful(
+              ElasticResult.success(QueryRows(Seq(ListMap("name" -> name))))
+            )
+          case ElasticFailure(elasticError) =>
+            Future.successful(
+              ElasticFailure(
+                elasticError.copy(operation = Some("cluster"))
+              )
+            )
+        }
+    }
+  }
+}
+
 class DqlRouterExecutor(
   searchExec: SearchExecutor,
   pipelineExec: PipelineExecutor,
   tableExec: TableExecutor,
   watcherExec: WatcherExecutor,
-  policyExec: EnrichPolicyExecutor
+  policyExec: EnrichPolicyExecutor,
+  clusterExec: ClusterExecutor
 ) extends Executor[DqlStatement] {
 
   override def execute(
@@ -1587,6 +1615,7 @@ class DqlRouterExecutor(
     case t: TableStatement        => tableExec.execute(t)
     case w: WatcherStatement      => watcherExec.execute(w)
     case e: EnrichPolicyStatement => policyExec.execute(e)
+    case c: ClusterStatement      => clusterExec.execute(c)
 
     case _ =>
       Future.successful(
@@ -1655,12 +1684,18 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     logger = logger
   )
 
+  lazy val clusterExecutor = new ClusterExecutor(
+    api = this,
+    logger = logger
+  )
+
   lazy val dqlExecutor = new DqlRouterExecutor(
     searchExec = searchExecutor,
     pipelineExec = pipelineExecutor,
     tableExec = tableExecutor,
     watcherExec = watcherExecutor,
-    policyExec = policyExecutor
+    policyExec = policyExecutor,
+    clusterExec = clusterExecutor
   )
 
   lazy val ddlExecutor = new DdlRouterExecutor(

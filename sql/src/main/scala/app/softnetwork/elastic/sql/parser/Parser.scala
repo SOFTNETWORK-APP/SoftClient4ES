@@ -124,7 +124,9 @@ object Parser
     }
 
   def createOrReplacePipeline: PackratParser[CreatePipeline] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "PIPELINE") ~ ident ~ ("WITH" ~ "PROCESSORS") ~ start ~ repsep(
+    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
+      "PIPELINE"
+    )) ~ ident ~ (keyword("WITH") ~ keyword("PROCESSORS")) ~ start ~ repsep(
       processor,
       separator
     ) ~ end ^^ { case _ ~ name ~ _ ~ _ ~ proc ~ _ =>
@@ -132,7 +134,9 @@ object Parser
     }
 
   def createPipeline: PackratParser[CreatePipeline] =
-    ("CREATE" ~ "PIPELINE") ~ ifNotExists ~ ident ~ ("WITH" ~ "PROCESSORS" ~ start) ~ repsep(
+    (keyword("CREATE") ~ keyword("PIPELINE")) ~ ifNotExists ~ ident ~ (keyword("WITH") ~ keyword(
+      "PROCESSORS"
+    ) ~ start) ~ repsep(
       processor,
       separator
     ) <~ end ^^ { case _ ~ ine ~ name ~ _ ~ proc =>
@@ -140,45 +144,48 @@ object Parser
     }
 
   def dropPipeline: PackratParser[DropPipeline] =
-    ("DROP" ~ "PIPELINE") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+    (keyword("DROP") ~ keyword("PIPELINE")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropPipeline(name, ifExists = ie)
     }
 
   def showPipeline: PackratParser[ShowPipeline] =
-    ("SHOW" ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
+    (keyword("SHOW") ~ keyword("PIPELINE")) ~ ident ^^ { case _ ~ pipeline =>
       ShowPipeline(pipeline)
     }
 
   def showPipelines: PackratParser[ShowPipelines.type] =
-    ("SHOW" ~ "PIPELINES") ^^ { _ =>
+    (keyword("SHOW") ~ keyword("PIPELINES")) ^^ { _ =>
       ShowPipelines
     }
 
   def showCreatePipeline: PackratParser[ShowCreatePipeline] =
-    ("SHOW" ~ "CREATE" ~ "PIPELINE") ~ ident ^^ { case _ ~ _ ~ _ ~ pipeline =>
-      ShowCreatePipeline(pipeline)
+    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("PIPELINE")) ~ ident ^^ {
+      case _ ~ _ ~ _ ~ pipeline =>
+        ShowCreatePipeline(pipeline)
     }
 
   def describePipeline: PackratParser[DescribePipeline] =
-    (("DESCRIBE" | "DESC") ~ "PIPELINE") ~ ident ^^ { case _ ~ pipeline =>
-      DescribePipeline(pipeline)
+    ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("PIPELINE")) ~ ident ^^ {
+      case _ ~ pipeline =>
+        DescribePipeline(pipeline)
     }
 
   def addProcessor: PackratParser[AddPipelineProcessor] =
-    ("ADD" ~ "PROCESSOR") ~ processor ^^ { case _ ~ proc =>
+    (keyword("ADD") ~ keyword("PROCESSOR")) ~ processor ^^ { case _ ~ proc =>
       AddPipelineProcessor(proc)
     }
 
   def dropProcessor: PackratParser[DropPipelineProcessor] =
-    ("DROP" ~ "PROCESSOR") ~ processorType ~ start ~ ident ~ end ^^ { case _ ~ pt ~ _ ~ name ~ _ =>
-      DropPipelineProcessor(pt, name)
+    (keyword("DROP") ~ keyword("PROCESSOR")) ~ processorType ~ start ~ ident ~ end ^^ {
+      case _ ~ pt ~ _ ~ name ~ _ =>
+        DropPipelineProcessor(pt, name)
     }
 
   def alterPipelineStatement: PackratParser[AlterPipelineStatement] =
     addProcessor | dropProcessor
 
   def alterPipeline: PackratParser[AlterPipeline] =
-    ("ALTER" ~ "PIPELINE") ~ ifExists ~ ident ~ start.? ~ repsep(
+    (keyword("ALTER") ~ keyword("PIPELINE")) ~ ifExists ~ ident ~ start.? ~ repsep(
       alterPipelineStatement,
       separator
     ) ~ end.? ^^ { case _ ~ ie ~ pipeline ~ s ~ stmts ~ e =>
@@ -193,22 +200,22 @@ object Parser
     }
 
   def multiFields: PackratParser[List[Column]] =
-    "FIELDS" ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols) | success(Nil)
+    keyword("FIELDS") ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols) | success(Nil)
 
   def ifExists: PackratParser[Boolean] =
-    opt("IF" ~ "EXISTS") ^^ {
+    opt(keyword("IF") ~ keyword("EXISTS")) ^^ {
       case Some(_) => true
       case None    => false
     }
 
   def ifNotExists: PackratParser[Boolean] =
-    opt("IF" ~ "NOT" ~ "EXISTS") ^^ {
+    opt(keyword("IF") ~ keyword("NOT") ~ keyword("EXISTS")) ^^ {
       case Some(_) => true
       case None    => false
     }
 
   def notNull: PackratParser[Boolean] =
-    opt("NOT" ~ "NULL") ^^ {
+    opt(keyword("NOT") ~ keyword("NULL")) ^^ {
       case Some(_) => true
       case None    => false
     }
@@ -218,13 +225,13 @@ object Parser
   def ingest_timestamp: PackratParser[Value[_]] = "_ingest.timestamp" ^^ (_ => IngestTimestampValue)
 
   def defaultVal: PackratParser[Option[Value[_]]] =
-    opt("DEFAULT" ~ (value | ingest_id | ingest_timestamp)) ^^ {
+    opt(keyword("DEFAULT") ~ (value | ingest_id | ingest_timestamp)) ^^ {
       case Some(_ ~ v) => Some(v)
       case None        => None
     }
 
   def comment: PackratParser[Option[String]] =
-    opt("COMMENT" ~ literal) ^^ {
+    opt(keyword("COMMENT") ~ literal) ^^ {
       case Some(_ ~ v) => Some(v.value)
       case None        => None
     }
@@ -235,7 +242,7 @@ object Parser
     identifierWithFunction
 
   def script: PackratParser[PainlessScript] =
-    ("SCRIPT" ~ "AS") ~ start ~ scriptValue ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
+    (keyword("SCRIPT") ~ keyword("AS")) ~ start ~ scriptValue ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
 
   def column: PackratParser[Column] =
     ident ~ extension_type ~ (script | multiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
@@ -262,21 +269,21 @@ object Parser
     start ~ repsep(column, separator) ~ end ^^ { case _ ~ cols ~ _ => cols }
 
   def primaryKey: PackratParser[List[String]] =
-    separator ~ "PRIMARY" ~ "KEY" ~ start ~ repsep(ident, separator) ~ end ^^ {
+    separator ~ keyword("PRIMARY") ~ keyword("KEY") ~ start ~ repsep(ident, separator) ~ end ^^ {
       case _ ~ _ ~ _ ~ _ ~ keys ~ _ =>
         keys
     } | success(Nil)
 
   def granularity: PackratParser[TimeUnit] = start ~
-    (("YEAR" ^^^ TimeUnit.YEARS) |
-    ("MONTH" ^^^ TimeUnit.MONTHS) |
-    ("DAY" ^^^ TimeUnit.DAYS) |
-    ("HOUR" ^^^ TimeUnit.HOURS) |
-    ("MINUTE" ^^^ TimeUnit.MINUTES) |
-    ("SECOND" ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
+    ((keyword("YEAR") ^^^ TimeUnit.YEARS) |
+    (keyword("MONTH") ^^^ TimeUnit.MONTHS) |
+    (keyword("DAY") ^^^ TimeUnit.DAYS) |
+    (keyword("HOUR") ^^^ TimeUnit.HOURS) |
+    (keyword("MINUTE") ^^^ TimeUnit.MINUTES) |
+    (keyword("SECOND") ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
 
   def partitionBy: PackratParser[Option[PartitionDate]] =
-    opt("PARTITION" ~ "BY" ~ ident ~ opt(granularity)) ^^ {
+    opt(keyword("PARTITION") ~ keyword("BY") ~ ident ~ opt(granularity)) ^^ {
       case Some(_ ~ _ ~ pb ~ gf) => Some(PartitionDate(pb, gf.getOrElse(TimeUnit.DAYS)))
       case None                  => None
     }
@@ -293,7 +300,9 @@ object Parser
     }
 
   def createOrReplaceTable: PackratParser[CreateTable] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "TABLE") ~ ident ~ (columnsWithPartitionBy | ("AS" ~> searchStatement)) ^^ {
+    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
+      "TABLE"
+    )) ~ ident ~ (columnsWithPartitionBy | (keyword("AS") ~> searchStatement)) ^^ {
       case _ ~ name ~ lr =>
         lr match {
           case (
@@ -317,7 +326,9 @@ object Parser
     }
 
   def createTable: PackratParser[CreateTable] =
-    ("CREATE" ~ "TABLE") ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | ("AS" ~> searchStatement)) ^^ {
+    (keyword("CREATE") ~ keyword(
+      "TABLE"
+    )) ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | (keyword("AS") ~> searchStatement)) ^^ {
       case _ ~ ine ~ name ~ lr =>
         lr match {
           case (
@@ -331,56 +342,61 @@ object Parser
         }
     }
 
-  def patterns: PackratParser[List[String]] = "LIKE" ~> repsep(literal, comma) ^^ { patterns =>
-    patterns.map(_.value)
+  def patterns: PackratParser[List[String]] = keyword("LIKE") ~> repsep(literal, comma) ^^ {
+    patterns =>
+      patterns.map(_.value)
   }
 
   def showTables: PackratParser[ShowTables] =
-    ("SHOW" ~ "TABLES") ~> opt(patterns) ^^ { indices =>
+    (keyword("SHOW") ~ keyword("TABLES")) ~> opt(patterns) ^^ { indices =>
       ShowTables(indices.getOrElse(Seq.empty))
     }
 
   def showTable: PackratParser[ShowTable] =
-    ("SHOW" ~ "TABLE") ~ ident ^^ { case _ ~ table =>
+    (keyword("SHOW") ~ keyword("TABLE")) ~ ident ^^ { case _ ~ table =>
       ShowTable(table)
     }
 
   def showCreateTable: PackratParser[ShowCreateTable] =
-    ("SHOW" ~ "CREATE" ~ "TABLE") ~ ident ^^ { case _ ~ _ ~ _ ~ table =>
+    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("TABLE")) ~ ident ^^ { case _ ~ _ ~ _ ~ table =>
       ShowCreateTable(table)
     }
 
   def describeTable: PackratParser[DescribeTable] =
-    (("DESCRIBE" | "DESC") ~ opt("TABLE")) ~ ident ^^ { case _ ~ table =>
+    ((keyword("DESCRIBE") | keyword("DESC")) ~ opt(keyword("TABLE"))) ~ ident ^^ { case _ ~ table =>
       DescribeTable(table)
     }
 
   def dropTable: PackratParser[DropTable] =
-    ("DROP" ~ ("TABLE" | "INDEX")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
-      DropTable(name, ifExists = ie)
+    (keyword("DROP") ~ (keyword("TABLE") | keyword("INDEX"))) ~ ifExists ~ ident ^^ {
+      case _ ~ ie ~ name =>
+        DropTable(name, ifExists = ie)
     }
 
   def truncateTable: PackratParser[TruncateTable] =
-    ("TRUNCATE" ~ "TABLE") ~ ident ^^ { case _ ~ name =>
+    (keyword("TRUNCATE") ~ keyword("TABLE")) ~ ident ^^ { case _ ~ name =>
       TruncateTable(name)
     }
 
   def frequency: PackratParser[Frequency] =
-    ("REFRESH" ~ "EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
-      str =>
-        val parts = str.trim.split("\\s+")
-        Frequency(TransformTimeUnit(parts(1)), parts(0).toLong)
+    (keyword("REFRESH") ~ keyword(
+      "EVERY"
+    )) ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ { str =>
+      val parts = str.trim.split("\\s+")
+      Frequency(TransformTimeUnit(parts(1)), parts(0).toLong)
     }
 
   def withOptions: PackratParser[ListMap[String, Value[_]]] =
-    ("WITH" ~ lparen) ~> repsep(option, separator) <~ rparen ^^ { opts =>
+    (keyword("WITH") ~ lparen) ~> repsep(option, separator) <~ rparen ^^ { opts =>
       ListMap(opts: _*)
     }
 
   def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ~ opt(frequency) ~ opt(
+    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("MATERIALIZED") ~ keyword(
+      "VIEW"
+    )) ~ ident ~ opt(frequency) ~ opt(
       withOptions
-    ) ~ ("AS" ~> searchStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
+    ) ~ (keyword("AS") ~> searchStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
       CreateMaterializedView(
         view,
         dql,
@@ -392,11 +408,11 @@ object Parser
     }
 
   def createMaterializedView: PackratParser[CreateMaterializedView] =
-    ("CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ifNotExists ~ ident ~ opt(
+    (keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifNotExists ~ ident ~ opt(
       frequency
     ) ~ opt(
       withOptions
-    ) ~ ("AS" ~> searchStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
+    ) ~ (keyword("AS") ~> searchStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
       CreateMaterializedView(
         view,
         dql,
@@ -408,100 +424,113 @@ object Parser
     }
 
   def dropMaterializedView: PackratParser[DropMaterializedView] =
-    ("DROP" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
-      DropMaterializedView(name, ifExists = ie)
+    (keyword("DROP") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ ident ^^ {
+      case _ ~ ie ~ name =>
+        DropMaterializedView(name, ifExists = ie)
     }
 
   def refreshMaterializedView: PackratParser[RefreshMaterializedView] =
-    ("REFRESH" ~ "MATERIALIZED" ~ "VIEW") ~ ifExists ~ ident ~ opt("WITH" ~ "SCHEDULE" ~ "NOW") ^^ {
-      case _ ~ ie ~ view ~ wn =>
-        RefreshMaterializedView(view, ifExists = ie, scheduleNow = wn.isDefined)
+    (keyword("REFRESH") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ ident ~ opt(
+      keyword("WITH") ~ keyword("SCHEDULE") ~ keyword("NOW")
+    ) ^^ { case _ ~ ie ~ view ~ wn =>
+      RefreshMaterializedView(view, ifExists = ie, scheduleNow = wn.isDefined)
     }
 
   def showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
-    ("SHOW" ~ "MATERIALIZED" ~ "VIEW" ~ "STATUS") ~ ident ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
-      ShowMaterializedViewStatus(view)
+    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW") ~ keyword("STATUS")) ~ ident ^^ {
+      case _ ~ _ ~ _ ~ _ ~ view =>
+        ShowMaterializedViewStatus(view)
     }
 
   def showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
-    ("SHOW" ~ "CREATE" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
-      ShowCreateMaterializedView(view)
+    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ident ^^ {
+      case _ ~ _ ~ _ ~ _ ~ view =>
+        ShowCreateMaterializedView(view)
     }
 
   def showMaterializedView: PackratParser[ShowMaterializedView] =
-    ("SHOW" ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ view =>
+    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ident ^^ { case _ ~ _ ~ view =>
       ShowMaterializedView(view)
     }
 
   def showMaterializedViews: PackratParser[ShowMaterializedViews.type] =
-    ("SHOW" ~ "MATERIALIZED" ~ "VIEWS") ^^ { _ =>
+    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEWS")) ^^ { _ =>
       ShowMaterializedViews
     }
 
   def describeMaterializedView: PackratParser[DescribeMaterializedView] =
-    (("DESCRIBE" | "DESC") ~ "MATERIALIZED" ~ "VIEW") ~ ident ^^ { case _ ~ _ ~ _ ~ view =>
+    ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("MATERIALIZED") ~ keyword(
+      "VIEW"
+    )) ~ ident ^^ { case _ ~ _ ~ _ ~ view =>
       DescribeMaterializedView(view)
     }
 
   def addColumn: PackratParser[AddColumn] =
-    ("ADD" ~ "COLUMN") ~ ifNotExists ~ column ^^ { case _ ~ ine ~ col =>
+    (keyword("ADD") ~ keyword("COLUMN")) ~ ifNotExists ~ column ^^ { case _ ~ ine ~ col =>
       AddColumn(col, ifNotExists = ine)
     }
 
   def dropColumn: PackratParser[DropColumn] =
-    ("DROP" ~ "COLUMN") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+    (keyword("DROP") ~ keyword("COLUMN")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropColumn(name, ifExists = ie)
     }
 
   def renameColumn: PackratParser[RenameColumn] =
-    ("RENAME" ~ "COLUMN") ~ ident ~ ("TO" ~> ident) ^^ { case _ ~ oldName ~ newName =>
-      RenameColumn(oldName, newName)
+    (keyword("RENAME") ~ keyword("COLUMN")) ~ ident ~ (keyword("TO") ~> ident) ^^ {
+      case _ ~ oldName ~ newName =>
+        RenameColumn(oldName, newName)
     }
 
   def alterColumnIfExists: PackratParser[Boolean] =
-    ("ALTER" ~ "COLUMN") ~ ifExists ^^ { case _ ~ ie =>
+    (keyword("ALTER") ~ keyword("COLUMN")) ~ ifExists ^^ { case _ ~ ie =>
       ie
     }
 
   def alterColumnOptions: PackratParser[AlterColumnOptions] =
-    alterColumnIfExists ~ ident ~ "SET" ~ options ^^ { case ie ~ col ~ _ ~ opts =>
+    alterColumnIfExists ~ ident ~ keyword("SET") ~ options ^^ { case ie ~ col ~ _ ~ opts =>
       AlterColumnOptions(col, opts, ifExists = ie)
     }
 
   def alterColumnOption: PackratParser[AlterColumnOption] =
-    alterColumnIfExists ~ ident ~ (("SET" | "ADD") ~ "OPTION") ~ start ~ option ~ end ^^ {
-      case ie ~ col ~ _ ~ _ ~ opt ~ _ =>
-        AlterColumnOption(col, opt._1, opt._2, ifExists = ie)
+    alterColumnIfExists ~ ident ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
+      "OPTION"
+    )) ~ start ~ option ~ end ^^ { case ie ~ col ~ _ ~ _ ~ opt ~ _ =>
+      AlterColumnOption(col, opt._1, opt._2, ifExists = ie)
     }
 
   def dropColumnOption: PackratParser[DropColumnOption] =
-    alterColumnIfExists ~ ident ~ ("DROP" ~ "OPTION") ~ ident ^^ { case ie ~ col ~ _ ~ optionName =>
-      DropColumnOption(col, optionName, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("OPTION")) ~ ident ^^ {
+      case ie ~ col ~ _ ~ optionName =>
+        DropColumnOption(col, optionName, ifExists = ie)
     }
 
   def alterColumnFields: PackratParser[AlterColumnFields] =
-    alterColumnIfExists ~ ident ~ "SET" ~ multiFields ^^ { case ie ~ col ~ _ ~ fields =>
+    alterColumnIfExists ~ ident ~ keyword("SET") ~ multiFields ^^ { case ie ~ col ~ _ ~ fields =>
       AlterColumnFields(col, fields, ifExists = ie)
     }
 
   def alterColumnField: PackratParser[AlterColumnField] =
-    alterColumnIfExists ~ ident ~ (("SET" | "ADD") ~ "FIELD") ~ column ^^ {
-      case ie ~ col ~ _ ~ field =>
-        AlterColumnField(col, field, ifExists = ie)
+    alterColumnIfExists ~ ident ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
+      "FIELD"
+    )) ~ column ^^ { case ie ~ col ~ _ ~ field =>
+      AlterColumnField(col, field, ifExists = ie)
     }
 
   def dropColumnField: PackratParser[DropColumnField] =
-    alterColumnIfExists ~ ident ~ ("DROP" ~ "FIELD") ~ ident ^^ { case ie ~ col ~ _ ~ fieldName =>
-      DropColumnField(col, fieldName, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("FIELD")) ~ ident ^^ {
+      case ie ~ col ~ _ ~ fieldName =>
+        DropColumnField(col, fieldName, ifExists = ie)
     }
 
   def alterColumnType: PackratParser[AlterColumnType] =
-    alterColumnIfExists ~ ident ~ ("SET" ~ "DATA" ~ "TYPE") ~ extension_type ^^ {
-      case ie ~ name ~ _ ~ newType => AlterColumnType(name, newType, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("DATA") ~ keyword(
+      "TYPE"
+    )) ~ extension_type ^^ { case ie ~ name ~ _ ~ newType =>
+      AlterColumnType(name, newType, ifExists = ie)
     }
 
   def alterColumnScript: PackratParser[AlterColumnScript] =
-    alterColumnIfExists ~ ident ~ "SET" ~ script ^^ { case ie ~ name ~ _ ~ ns =>
+    alterColumnIfExists ~ ident ~ keyword("SET") ~ script ^^ { case ie ~ name ~ _ ~ ns =>
       AlterColumnScript(
         name,
         ScriptProcessor.fromScript(name, ns, Some(ns.out)),
@@ -510,63 +539,67 @@ object Parser
     }
 
   def dropColumnScript: PackratParser[DropColumnScript] =
-    alterColumnIfExists ~ ident ~ ("DROP" ~ "SCRIPT") ^^ { case ie ~ name ~ _ =>
+    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("SCRIPT")) ^^ { case ie ~ name ~ _ =>
       DropColumnScript(name, ifExists = ie)
     }
 
   def alterColumnDefault: PackratParser[AlterColumnDefault] =
-    alterColumnIfExists ~ ident ~ ("SET" ~ "DEFAULT") ~ value ^^ { case ie ~ name ~ _ ~ dv =>
-      AlterColumnDefault(name, dv, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("DEFAULT")) ~ value ^^ {
+      case ie ~ name ~ _ ~ dv =>
+        AlterColumnDefault(name, dv, ifExists = ie)
     }
 
   def dropColumnDefault: PackratParser[DropColumnDefault] =
-    alterColumnIfExists ~ ident ~ ("DROP" ~ "DEFAULT") ^^ { case ie ~ name ~ _ =>
+    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("DEFAULT")) ^^ { case ie ~ name ~ _ =>
       DropColumnDefault(name, ifExists = ie)
     }
 
   def alterColumnNotNull: PackratParser[AlterColumnNotNull] =
-    alterColumnIfExists ~ ident ~ ("SET" ~ "NOT" ~ "NULL") ^^ { case ie ~ name ~ _ =>
-      AlterColumnNotNull(name, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
+      case ie ~ name ~ _ =>
+        AlterColumnNotNull(name, ifExists = ie)
     }
 
   def dropColumnNotNull: PackratParser[DropColumnNotNull] =
-    alterColumnIfExists ~ ident ~ ("DROP" ~ "NOT" ~ "NULL") ^^ { case ie ~ name ~ _ =>
-      DropColumnNotNull(name, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
+      case ie ~ name ~ _ =>
+        DropColumnNotNull(name, ifExists = ie)
     }
 
   def alterColumnComment: PackratParser[AlterColumnComment] =
-    alterColumnIfExists ~ ident ~ ("SET" ~ "COMMENT") ~ literal ^^ { case ie ~ name ~ _ ~ c =>
-      AlterColumnComment(name, c.value, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("COMMENT")) ~ literal ^^ {
+      case ie ~ name ~ _ ~ c =>
+        AlterColumnComment(name, c.value, ifExists = ie)
     }
 
   def dropColumnComment: PackratParser[DropColumnComment] =
-    alterColumnIfExists ~ ident ~ ("DROP" ~ "COMMENT") ^^ { case ie ~ name ~ _ =>
+    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("COMMENT")) ^^ { case ie ~ name ~ _ =>
       DropColumnComment(name, ifExists = ie)
     }
 
   def alterTableMapping: PackratParser[AlterTableMapping] =
-    (("SET" | "ADD") ~ "MAPPING") ~ option ^^ { case _ ~ opt =>
+    ((keyword("SET") | keyword("ADD")) ~ keyword("MAPPING")) ~ option ^^ { case _ ~ opt =>
       AlterTableMapping(opt._1, opt._2)
     }
 
   def dropTableMapping: PackratParser[DropTableMapping] =
-    ("DROP" ~ "MAPPING") ~> ident ^^ { m => DropTableMapping(m) }
+    (keyword("DROP") ~ keyword("MAPPING")) ~> ident ^^ { m => DropTableMapping(m) }
 
   def alterTableSetting: PackratParser[AlterTableSetting] =
-    (("SET" | "ADD") ~ "SETTING") ~ option ^^ { case _ ~ opt =>
+    ((keyword("SET") | keyword("ADD")) ~ keyword("SETTING")) ~ option ^^ { case _ ~ opt =>
       AlterTableSetting(opt._1, opt._2)
     }
 
   def dropTableSetting: PackratParser[DropTableSetting] =
-    ("DROP" ~ "SETTING") ~> ident ^^ { m => DropTableSetting(m) }
+    (keyword("DROP") ~ keyword("SETTING")) ~> ident ^^ { m => DropTableSetting(m) }
 
   def alterTableAlias: PackratParser[AlterTableAlias] =
-    (("SET" | "ADD") ~ "ALIAS") ~ option ^^ { case _ ~ opt =>
+    ((keyword("SET") | keyword("ADD")) ~ keyword("ALIAS")) ~ option ^^ { case _ ~ opt =>
       AlterTableAlias(opt._1, opt._2)
     }
 
   def dropTableAlias: PackratParser[DropTableAlias] =
-    ("DROP" ~ "ALIAS") ~> ident ^^ { m => DropTableAlias(m) }
+    (keyword("DROP") ~ keyword("ALIAS")) ~> ident ^^ { m => DropTableAlias(m) }
 
   def alterTableStatement: PackratParser[AlterTableStatement] =
     addColumn |
@@ -595,7 +628,7 @@ object Parser
     dropTableAlias
 
   def alterTable: PackratParser[AlterTable] =
-    ("ALTER" ~ "TABLE") ~ ifExists ~ ident ~ start.? ~ repsep(
+    (keyword("ALTER") ~ keyword("TABLE")) ~ ifExists ~ ident ~ start.? ~ repsep(
       alterTableStatement,
       separator
     ) ~ end.? ^^ { case _ ~ ie ~ table ~ s ~ stmts ~ e =>
@@ -613,10 +646,10 @@ object Parser
 
   // Watcher condition parsers
   def alwaysWatcherCondition: PackratParser[AlwaysWatcherCondition.type] =
-    "ALWAYS" ^^ { _ => AlwaysWatcherCondition }
+    keyword("ALWAYS") ^^ { _ => AlwaysWatcherCondition }
 
   def neverWatcherCondition: PackratParser[NeverWatcherCondition.type] =
-    "NEVER" ^^ { _ => NeverWatcherCondition }
+    keyword("NEVER") ^^ { _ => NeverWatcherCondition }
 
   private def comparison_operator: PackratParser[ComparisonOperator] =
     eq | ne | diff | gt | ge | lt | le
@@ -626,7 +659,7 @@ object Parser
     date_add | datetime_add | date_sub | datetime_sub
 
   def compareWatcherCondition: PackratParser[CompareWatcherCondition] =
-    "WHEN" ~> opt(not) ~ ident ~ comparison_operator ~ opt(value) ~ opt(
+    keyword("WHEN") ~> opt(not) ~ ident ~ comparison_operator ~ opt(value) ~ opt(
       dateMathScript
     ) ^^ { case n ~ field ~ op ~ v ~ fun =>
       val target_op =
@@ -658,14 +691,17 @@ object Parser
     }
 
   private def scriptParams: PackratParser[ListMap[String, Value[_]]] =
-    ("WITH" ~ "PARAMS") ~> lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ opts ~ _ =>
-      ListMap(opts: _*)
+    (keyword("WITH") ~ keyword("PARAMS")) ~> lparen ~ repsep(option, comma) ~ rparen ^^ {
+      case _ ~ opts ~ _ =>
+        ListMap(opts: _*)
     }
 
   def scriptWatcherCondition: PackratParser[ScriptWatcherCondition] =
-    ("WHEN" ~ "SCRIPT") ~> literal ~ opt("USING" ~ "LANG" ~> literal) ~ opt(
+    (keyword("WHEN") ~ keyword("SCRIPT")) ~> literal ~ opt(
+      keyword("USING") ~ keyword("LANG") ~> literal
+    ) ~ opt(
       scriptParams
-    ) ~ opt("RETURNS" ~ "TRUE") ^^ { case scr ~ lang ~ p ~ _ =>
+    ) ~ opt(keyword("RETURNS") ~ keyword("TRUE")) ^^ { case scr ~ lang ~ p ~ _ =>
       ScriptWatcherCondition(
         scr.value,
         lang.map(_.value).getOrElse("painless"),
@@ -678,13 +714,14 @@ object Parser
 
   // Watcher trigger parsers
   def triggerWatcherEveryInterval: PackratParser[IntervalWatcherTrigger] =
-    "EVERY" ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ { str =>
-      val parts = str.trim.split("\\s+")
-      IntervalWatcherTrigger(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
+    keyword("EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
+      str =>
+        val parts = str.trim.split("\\s+")
+        IntervalWatcherTrigger(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
     }
 
   def triggerWatcherAtSchedule: PackratParser[CronWatcherTrigger] =
-    ("AT" ~ "SCHEDULE") ~> literal ^^ { cronExpr =>
+    (keyword("AT") ~ keyword("SCHEDULE")) ~> literal ^^ { cronExpr =>
       CronWatcherTrigger(cronExpr.value)
     }
 
@@ -693,12 +730,15 @@ object Parser
 
   // Watcher input parsers
   def simpleWatcherInput: PackratParser[SimpleWatcherInput] =
-    opt("WITH" ~ "INPUT") ~> start ~ repsep(option, comma) ~ end ^^ { case _ ~ opts ~ _ =>
-      SimpleWatcherInput(payload = ObjectValue(ListMap(opts: _*)))
+    opt(keyword("WITH") ~ keyword("INPUT")) ~> start ~ repsep(option, comma) ~ end ^^ {
+      case _ ~ opts ~ _ =>
+        SimpleWatcherInput(payload = ObjectValue(ListMap(opts: _*)))
     }
 
   def withinTimeout: PackratParser[Option[Delay]] =
-    opt("WITHIN" ~> """(\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?)""".r) ^^ {
+    opt(
+      keyword("WITHIN") ~> """(\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?)""".r
+    ) ^^ {
       case Some(str) =>
         val parts = str.trim.split("\\s+")
         Some(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
@@ -715,17 +755,17 @@ object Parser
     }
 
   def httpInput: PackratParser[HttpInput] =
-    opt("WITH" ~ "INPUT") ~> httpRequest ^^ { req =>
+    opt(keyword("WITH") ~ keyword("INPUT")) ~> httpRequest ^^ { req =>
       HttpInput(req)
     }
 
   def chainInput: PackratParser[(String, WatcherInput)] =
-    ident ~ opt("AS") ~ watcherInput ^^ { case name ~ _ ~ input =>
+    ident ~ opt(keyword("AS")) ~ watcherInput ^^ { case name ~ _ ~ input =>
       (name, input)
     }
 
   def chainInputs: PackratParser[WatcherInput] =
-    ("WITH" ~ "INPUTS") ~> rep1sep(
+    (keyword("WITH") ~ keyword("INPUTS")) ~> rep1sep(
       chainInput,
       comma
     ) ^^ { inputs =>
@@ -746,13 +786,13 @@ object Parser
 
   // action foreach limit parser
   def foreachWithLimit: PackratParser[(String, Int)] =
-    ("FOREACH" ~> literal) ~ ("LIMIT" ~> """\d+""".r) ^^ { case fe ~ l =>
+    (keyword("FOREACH") ~> literal) ~ (keyword("LIMIT") ~> """\d+""".r) ^^ { case fe ~ l =>
       (fe.value, l.toInt)
     }
 
   // simple logging action parser
   def loggingAction: PackratParser[Option[LoggingAction]] =
-    ("LOG" ~> literal) ~ opt("AT" ~> loggingLevel) ~ opt(foreachWithLimit) ^^ {
+    (keyword("LOG") ~> literal) ~ opt(keyword("AT") ~> loggingLevel) ~ opt(foreachWithLimit) ^^ {
       case text ~ levelOpt ~ feOpt =>
         val foreach = feOpt.map(_._1)
         val limit = feOpt.map(_._2)
@@ -761,14 +801,14 @@ object Parser
 
   // webhook action parser
   def webhookAction: PackratParser[Option[WebhookAction]] =
-    "WEBHOOK" ~> httpRequest ~ opt(foreachWithLimit) ^^ { case req ~ feOpt =>
+    keyword("WEBHOOK") ~> httpRequest ~ opt(foreachWithLimit) ^^ { case req ~ feOpt =>
       val foreach = feOpt.map(_._1)
       val limit = feOpt.map(_._2)
       Some(WebhookAction(req, foreach, limit))
     }
 
   def watcherAction: PackratParser[(String, WatcherAction)] =
-    ident ~ opt("AS") ~ (loggingAction | webhookAction) ^^ { case name ~ _ ~ wa =>
+    ident ~ opt(keyword("AS")) ~ (loggingAction | webhookAction) ^^ { case name ~ _ ~ wa =>
       wa match {
         case Some(wa) => (name, wa)
         case _ =>
@@ -787,9 +827,11 @@ object Parser
     }
 
   def createOrReplaceWatcher: PackratParser[CreateWatcher] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "WATCHER") ~> ident ~ opt(
-      "AS"
-    ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ ("DO" ~> watcherActions <~ "END") ^^ {
+    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("WATCHER")) ~> ident ~ opt(
+      keyword("AS")
+    ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ (keyword(
+      "DO"
+    ) ~> watcherActions <~ keyword("END")) ^^ {
       case name ~ _ ~ trigger ~ input ~ condition ~ actions =>
         CreateWatcher(
           name = name,
@@ -803,9 +845,11 @@ object Parser
     }
 
   def createWatcher: PackratParser[CreateWatcher] =
-    ("CREATE" ~ "WATCHER") ~ ifNotExists ~ ident ~ opt(
-      "AS"
-    ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ ("DO" ~> watcherActions <~ "END") ^^ {
+    (keyword("CREATE") ~ keyword("WATCHER")) ~ ifNotExists ~ ident ~ opt(
+      keyword("AS")
+    ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ (keyword(
+      "DO"
+    ) ~> watcherActions <~ keyword("END")) ^^ {
       case _ ~ _ ~ ine ~ name ~ _ ~ trigger ~ input ~ condition ~ actions =>
         CreateWatcher(
           name = name,
@@ -819,28 +863,28 @@ object Parser
     }
 
   def showWatcherStatus: PackratParser[ShowWatcherStatus] =
-    ("SHOW" ~ "WATCHER" ~ "STATUS") ~> ident ^^ { name =>
+    (keyword("SHOW") ~ keyword("WATCHER") ~ keyword("STATUS")) ~> ident ^^ { name =>
       ShowWatcherStatus(name)
     }
 
   def showWatchers: PackratParser[ShowWatchers.type] =
-    ("SHOW" ~ "WATCHERS") ^^ { _ =>
+    (keyword("SHOW") ~ keyword("WATCHERS")) ^^ { _ =>
       ShowWatchers
     }
 
   def dropWatcher: PackratParser[DropWatcher] =
-    ("DROP" ~ "WATCHER") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+    (keyword("DROP") ~ keyword("WATCHER")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
       DropWatcher(name, ifExists = ie)
     }
 
   def createEnrichPolicy: PackratParser[CreateEnrichPolicy] =
-    ("CREATE" ~ "ENRICH" ~ "POLICY") ~
+    (keyword("CREATE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~
     ifNotExists ~
     ident ~
-    opt("TYPE" ~> ("MATCH" | "GEO_MATCH" | "RANGE")) ~
-    ("FROM" ~> repsep(ident, separator)) ~
-    ("ON" ~> ident) ~
-    ("ENRICH" ~> repsep(ident, separator)) ~
+    opt(keyword("TYPE") ~> (keyword("MATCH") | keyword("GEO_MATCH") | keyword("RANGE"))) ~
+    (keyword("FROM") ~> repsep(ident, separator)) ~
+    (keyword("ON") ~> ident) ~
+    (keyword("ENRICH") ~> repsep(ident, separator)) ~
     opt(where) ^^ { case _ ~ ine ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
       val policyType = policyTypeOpt match {
         case Some(value) => EnrichPolicyType(value)
@@ -858,12 +902,14 @@ object Parser
     }
 
   def createOrReplaceEnrichPolicy: PackratParser[CreateEnrichPolicy] =
-    ("CREATE" ~ "OR" ~ "REPLACE" ~ "ENRICH" ~ "POLICY") ~
+    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("ENRICH") ~ keyword(
+      "POLICY"
+    )) ~
     ident ~
-    opt("TYPE" ~> ("MATCH" | "GEO_MATCH" | "RANGE")) ~
-    ("FROM" ~> repsep(ident, separator)) ~
-    ("ON" ~> ident) ~
-    ("ENRICH" ~> repsep(ident, separator)) ~
+    opt(keyword("TYPE") ~> (keyword("MATCH") | keyword("GEO_MATCH") | keyword("RANGE"))) ~
+    (keyword("FROM") ~> repsep(ident, separator)) ~
+    (keyword("ON") ~> ident) ~
+    (keyword("ENRICH") ~> repsep(ident, separator)) ~
     opt(where) ^^ { case _ ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
       val policyType = policyTypeOpt match {
         case Some("MATCH")     => EnrichPolicyType.Match
@@ -883,23 +929,29 @@ object Parser
     }
 
   def executeEnrichPolicy: PackratParser[ExecuteEnrichPolicy] =
-    ("EXECUTE" ~ "ENRICH" ~ "POLICY") ~> ident ^^ { name =>
+    (keyword("EXECUTE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> ident ^^ { name =>
       ExecuteEnrichPolicy(name)
     }
 
   def dropEnrichPolicy: PackratParser[DropEnrichPolicy] =
-    ("DROP" ~ "ENRICH" ~ "POLICY") ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
-      DropEnrichPolicy(name, ifExists = ie)
+    (keyword("DROP") ~ keyword("ENRICH") ~ keyword("POLICY")) ~ ifExists ~ ident ^^ {
+      case _ ~ ie ~ name =>
+        DropEnrichPolicy(name, ifExists = ie)
     }
 
   def showEnrichPolicy: PackratParser[ShowEnrichPolicy] =
-    ("SHOW" ~ "ENRICH" ~ "POLICY") ~> ident ^^ { name =>
+    (keyword("SHOW") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> ident ^^ { name =>
       ShowEnrichPolicy(name)
     }
 
   def showEnrichPolicies: PackratParser[ShowEnrichPolicies.type] =
-    ("SHOW" ~ "ENRICH" ~ "POLICIES") ^^ { _ =>
+    (keyword("SHOW") ~ keyword("ENRICH") ~ keyword("POLICIES")) ^^ { _ =>
       ShowEnrichPolicies
+    }
+
+  def showClusterName: PackratParser[ShowClusterName.type] =
+    (keyword("SHOW") ~ keyword("CLUSTER") ~ keyword("NAME")) ^^ { _ =>
+      ShowClusterName
     }
 
   def dqlStatement: PackratParser[DqlStatement] = {
@@ -920,7 +972,8 @@ object Parser
     showWatchers |
     showWatcherStatus |
     showEnrichPolicy |
-    showEnrichPolicies
+    showEnrichPolicies |
+    showClusterName
   }
 
   def ddlStatement: PackratParser[DdlStatement] =
@@ -946,9 +999,10 @@ object Parser
     dropEnrichPolicy
 
   def onConflict: PackratParser[OnConflict] =
-    ("ON" ~ "CONFLICT" ~> opt(conflictTarget) <~ "DO") ~ ("UPDATE" | "NOTHING") ^^ {
-      case target ~ action =>
-        OnConflict(target, action == "UPDATE")
+    (keyword("ON") ~ keyword("CONFLICT") ~> opt(conflictTarget) <~ keyword("DO")) ~ (keyword(
+      "UPDATE"
+    ) | keyword("NOTHING")) ^^ { case target ~ action =>
+      OnConflict(target, action == "UPDATE")
     }
 
   def conflictTarget: PackratParser[List[String]] =
@@ -956,9 +1010,9 @@ object Parser
 
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
   def insert: PackratParser[Insert] =
-    ("INSERT" ~ "INTO") ~ ident ~ opt(lparen ~> repsep(ident, comma) <~ rparen) ~
-    (("VALUES" ~> rows) ^^ { vs => Right(vs) }
-    | "AS".? ~> searchStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
+    (keyword("INSERT") ~ keyword("INTO")) ~ ident ~ opt(lparen ~> repsep(ident, comma) <~ rparen) ~
+    ((keyword("VALUES") ~> rows) ^^ { vs => Right(vs) }
+    | keyword("AS").? ~> searchStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
       case _ ~ table ~ colsOpt ~ vals ~ conflict =>
         conflict match {
           case Some(c) => Insert(table, colsOpt.getOrElse(Nil), vals, Some(c))
@@ -972,23 +1026,24 @@ object Parser
     }
 
   def fileFormat: PackratParser[FileFormat] =
-    ("FILE_FORMAT" ~> (
-      ("PARQUET" ^^^ Parquet) |
-      ("JSON" ^^^ Json) |
-      ("JSON_ARRAY" ^^^ JsonArray) |
-      ("DELTA_LAKE" ^^^ Delta)
+    (keyword("FILE_FORMAT") ~> (
+      (keyword("PARQUET") ^^^ Parquet) |
+      (keyword("JSON_ARRAY") ^^^ JsonArray) |
+      (keyword("JSON") ^^^ Json) |
+      (keyword("DELTA_LAKE") ^^^ Delta)
     )) ^^ { ff => ff }
 
   /** COPY INTO table FROM source */
   def copy: PackratParser[CopyInto] =
-    ("COPY" ~ "INTO") ~ ident ~ ("FROM" ~> literal) ~ opt(fileFormat) ~ opt(onConflict) ^^ {
-      case _ ~ table ~ source ~ format ~ conflict =>
-        CopyInto(source.value, table, fileFormat = format, onConflict = conflict)
+    (keyword("COPY") ~ keyword("INTO")) ~ ident ~ (keyword("FROM") ~> literal) ~ opt(
+      fileFormat
+    ) ~ opt(onConflict) ^^ { case _ ~ table ~ source ~ format ~ conflict =>
+      CopyInto(source.value, table, fileFormat = format, onConflict = conflict)
     }
 
   /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...] */
   def update: PackratParser[Update] =
-    ("UPDATE" ~> ident) ~ ("SET" ~> repsep(
+    (keyword("UPDATE") ~> ident) ~ (keyword("SET") ~> repsep(
       ident ~ "=" ~ (value | scriptValue),
       separator
     )) ~ where.? ^^ { case table ~ assigns ~ w =>
@@ -998,7 +1053,7 @@ object Parser
 
   /** DELETE FROM table [WHERE ...] */
   def delete: PackratParser[Delete] =
-    ("DELETE" ~ "FROM") ~> ident ~ where.? ^^ { case table ~ w =>
+    (keyword("DELETE") ~ keyword("FROM")) ~> ident ~ where.? ^^ { case table ~ w =>
       Delete(Table(table), w)
     }
 
@@ -1048,6 +1103,8 @@ trait Parser
     with TypeParser
     with HttpParser { _: WhereParser with OrderByParser with LimitParser =>
 
+  protected def keyword(word: String): Parser[String] = s"(?i)$word\\b".r ^^ (_ => word)
+
   def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_.]*""".r
 
   val lparen: Parser[String] = "("
@@ -1077,7 +1134,7 @@ trait Parser
     }
 
   def options: PackratParser[ListMap[String, Value[_]]] =
-    "OPTIONS" ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
+    keyword("OPTIONS") ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
       ListMap(opts: _*)
     }
 

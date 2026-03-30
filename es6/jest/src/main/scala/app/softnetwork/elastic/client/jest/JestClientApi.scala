@@ -44,6 +44,7 @@ trait JestClientApi
     with JestScrollApi
     with JestBulkApi
     with JestVersionApi
+    with JestClusterApi
     with JestPipelineApi
     with JestTemplateApi
     with JestEnrichPolicyApi

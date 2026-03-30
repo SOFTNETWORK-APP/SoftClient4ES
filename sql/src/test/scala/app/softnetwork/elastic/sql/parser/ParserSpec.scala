@@ -3053,4 +3053,30 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  behavior of "Parser Cluster"
+
+  it should "parse SHOW CLUSTER NAME" in {
+    val result = Parser("SHOW CLUSTER NAME")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe ShowClusterName
+    result.toOption.get.sql shouldBe "SHOW CLUSTER NAME"
+  }
+
+  it should "parse show cluster name (lowercase)" in {
+    val result = Parser("show cluster name")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe ShowClusterName
+  }
+
+  it should "parse Show Cluster Name (mixed case)" in {
+    val result = Parser("Show Cluster Name")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe ShowClusterName
+  }
+
+  it should "fail to parse SHOW CLUSTER alone" in {
+    val result = Parser("SHOW CLUSTER")
+    result.isLeft shouldBe true
+  }
+
 }
