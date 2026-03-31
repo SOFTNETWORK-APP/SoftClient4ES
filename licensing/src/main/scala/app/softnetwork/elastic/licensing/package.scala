@@ -43,12 +43,16 @@ package object licensing {
     case object OdbcDriver extends Feature
     case object UnlimitedResults extends Feature
     case object AdvancedAggregations extends Feature
+    case object FlightSql extends Feature
+    case object Federation extends Feature
     def values: Seq[Feature] = Seq(
       MaterializedViews,
       JdbcDriver,
       OdbcDriver,
       UnlimitedResults,
-      AdvancedAggregations
+      AdvancedAggregations,
+      FlightSql,
+      Federation
     )
   }
 
@@ -63,26 +67,30 @@ package object licensing {
   case class Quota(
     maxMaterializedViews: Option[Int], // None = unlimited
     maxQueryResults: Option[Int], // None = unlimited
-    maxConcurrentQueries: Option[Int]
+    maxConcurrentQueries: Option[Int],
+    maxClusters: Option[Int] = Some(2) // None = unlimited
   )
 
   object Quota {
     val Community: Quota = Quota(
       maxMaterializedViews = Some(3),
       maxQueryResults = Some(10000),
-      maxConcurrentQueries = Some(5)
+      maxConcurrentQueries = Some(5),
+      maxClusters = Some(2)
     )
 
     val Pro: Quota = Quota(
       maxMaterializedViews = Some(50),
       maxQueryResults = Some(1000000),
-      maxConcurrentQueries = Some(50)
+      maxConcurrentQueries = Some(50),
+      maxClusters = Some(5)
     )
 
     val Enterprise: Quota = Quota(
       maxMaterializedViews = None, // Unlimited
       maxQueryResults = None,
-      maxConcurrentQueries = None
+      maxConcurrentQueries = None,
+      maxClusters = None
     )
   }
 

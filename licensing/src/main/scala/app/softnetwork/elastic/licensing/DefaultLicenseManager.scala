@@ -37,7 +37,8 @@ class DefaultLicenseManager extends LicenseManager {
           features = Set(
             Feature.MaterializedViews,
             Feature.JdbcDriver,
-            Feature.UnlimitedResults
+            Feature.UnlimitedResults,
+            Feature.FlightSql
           ),
           expiresAt = None
         )
@@ -52,7 +53,10 @@ class DefaultLicenseManager extends LicenseManager {
             Feature.MaterializedViews,
             Feature.JdbcDriver,
             Feature.OdbcDriver,
-            Feature.UnlimitedResults
+            Feature.UnlimitedResults,
+            Feature.AdvancedAggregations,
+            Feature.FlightSql,
+            Feature.Federation
           ),
           expiresAt = None
         )
