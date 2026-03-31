@@ -37,7 +37,11 @@ class LicenseKeyVerifierSpec extends AnyFlatSpec with Matchers {
     // Tamper: create a new JWT with a different subject but the same signature
     val tampered = new SignedJWT(
       signed.getHeader.toBase64URL,
-      new JWTClaimsSet.Builder(signed.getJWTClaimsSet).subject("tampered").build().toPayload.toBase64URL,
+      new JWTClaimsSet.Builder(signed.getJWTClaimsSet)
+        .subject("tampered")
+        .build()
+        .toPayload
+        .toBase64URL,
       signed.getSignature
     )
     LicenseKeyVerifier.verify(tampered, JwtTestHelper.publicKey) shouldBe false

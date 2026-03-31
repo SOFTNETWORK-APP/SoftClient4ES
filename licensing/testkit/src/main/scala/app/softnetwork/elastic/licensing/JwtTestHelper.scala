@@ -25,8 +25,8 @@ import java.util.Date
 
 object JwtTestHelper {
 
-  /** Static test key pair — the private key is used to sign test JWTs.
-    * The corresponding public key is in testkit/src/main/resources/keys/softclient4es-test.jwk
+  /** Static test key pair — the private key is used to sign test JWTs. The corresponding public key
+    * is in testkit/src/main/resources/keys/softclient4es-test.jwk
     */
   private val keyPairJson: String =
     """{"kty":"OKP","d":"AanRaois6uVjNOdq46JyJ57LJdrVX3Q-r4KIGwkm37Y","crv":"Ed25519","kid":"softclient4es-test","x":"EGBuSwTrahLvXcMhjr042wzUc4Wm0FTrTALpb56PLNg"}"""
@@ -62,14 +62,16 @@ object JwtTestHelper {
           "flight_sql"
         )
       )
-      .claim("quotas", {
-        val m = new java.util.LinkedHashMap[String, AnyRef]()
-        m.put("max_materialized_views", Integer.valueOf(50))
-        m.put("max_result_rows", Integer.valueOf(1000000))
-        m.put("max_concurrent_queries", Integer.valueOf(50))
-        m.put("max_clusters", Integer.valueOf(5))
-        m
-      })
+      .claim(
+        "quotas", {
+          val m = new java.util.LinkedHashMap[String, AnyRef]()
+          m.put("max_materialized_views", Integer.valueOf(50))
+          m.put("max_result_rows", Integer.valueOf(1000000))
+          m.put("max_concurrent_queries", Integer.valueOf(50))
+          m.put("max_clusters", Integer.valueOf(5))
+          m
+        }
+      )
       .claim("org_name", "Acme Corp")
       .jwtID("lic-001")
       .claim("trial", false)
@@ -94,10 +96,12 @@ object JwtTestHelper {
           "federation"
         )
       )
-      .claim("quotas", {
-        val m = new java.util.LinkedHashMap[String, AnyRef]()
-        m
-      })
+      .claim(
+        "quotas", {
+          val m = new java.util.LinkedHashMap[String, AnyRef]()
+          m
+        }
+      )
       .claim("org_name", "BigCorp Inc")
       .jwtID("lic-002")
       .expirationTime(expiresAt)
@@ -113,14 +117,16 @@ object JwtTestHelper {
         "features",
         java.util.Arrays.asList("materialized_views", "jdbc_driver")
       )
-      .claim("quotas", {
-        val m = new java.util.LinkedHashMap[String, AnyRef]()
-        m.put("max_materialized_views", Integer.valueOf(3))
-        m.put("max_result_rows", Integer.valueOf(10000))
-        m.put("max_concurrent_queries", Integer.valueOf(5))
-        m.put("max_clusters", Integer.valueOf(2))
-        m
-      })
+      .claim(
+        "quotas", {
+          val m = new java.util.LinkedHashMap[String, AnyRef]()
+          m.put("max_materialized_views", Integer.valueOf(3))
+          m.put("max_result_rows", Integer.valueOf(10000))
+          m.put("max_concurrent_queries", Integer.valueOf(5))
+          m.put("max_clusters", Integer.valueOf(2))
+          m
+        }
+      )
       .claim("org_name", "Free User")
       .jwtID("lic-003")
       .expirationTime(expiresAt)

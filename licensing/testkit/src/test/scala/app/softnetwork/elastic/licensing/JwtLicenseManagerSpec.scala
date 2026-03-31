@@ -22,6 +22,7 @@ import com.nimbusds.jwt.JWTClaimsSet
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.time.Duration
 import java.util.Date
 
 class JwtLicenseManagerSpec extends AnyFlatSpec with Matchers {
@@ -60,13 +61,16 @@ class JwtLicenseManagerSpec extends AnyFlatSpec with Matchers {
 
   it should "have JWT-embedded quotas (not tier defaults)" in {
     val m = manager
-    val claims = JwtTestHelper.proClaimsBuilder()
-      .claim("quotas", {
-        val q = new java.util.LinkedHashMap[String, AnyRef]()
-        q.put("max_result_rows", Integer.valueOf(500000))
-        q.put("max_clusters", Integer.valueOf(3))
-        q
-      })
+    val claims = JwtTestHelper
+      .proClaimsBuilder()
+      .claim(
+        "quotas", {
+          val q = new java.util.LinkedHashMap[String, AnyRef]()
+          q.put("max_result_rows", Integer.valueOf(500000))
+          q.put("max_clusters", Integer.valueOf(3))
+          q
+        }
+      )
       .build()
     val jwt = JwtTestHelper.signJwt(claims)
     m.validate(jwt)
@@ -213,17 +217,90 @@ class JwtLicenseManagerSpec extends AnyFlatSpec with Matchers {
   "JwtLicenseManager quota mapping" should "map null/missing to None (unlimited)" in {
     val m = manager
     val claims = new JWTClaimsSet.Builder(JwtTestHelper.proClaimsBuilder().build())
-      .claim("quotas", {
-        val q = new java.util.LinkedHashMap[String, AnyRef]()
-        q.put("max_result_rows", null)
-        q.put("max_clusters", Integer.valueOf(10))
-        q
-      })
+      .claim(
+        "quotas", {
+          val q = new java.util.LinkedHashMap[String, AnyRef]()
+          q.put("max_result_rows", null)
+          q.put("max_clusters", Integer.valueOf(10))
+          q
+        }
+      )
       .build()
     val jwt = JwtTestHelper.signJwt(claims)
     m.validate(jwt)
     m.quotas.maxQueryResults shouldBe None
     m.quotas.maxClusters shouldBe Some(10)
     m.quotas.maxMaterializedViews shouldBe None
+  }
+
+  // --- validateWithGracePeriod tests ---
+
+  "validateWithGracePeriod with non-expired JWT" should "return Right (same as validate)" in {
+    val m = manager
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder().build())
+    val result = m.validateWithGracePeriod(jwt, Duration.ofDays(14))
+    result shouldBe a[Right[_, _]]
+    result.toOption.get.licenseType shouldBe LicenseType.Pro
+  }
+
+  "validateWithGracePeriod with expired JWT within grace" should "return Right (grace mode)" in {
+    val m = manager
+    val expDate = new Date(System.currentTimeMillis() - 3600000L) // 1 hour ago
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder(expDate).build())
+    // Grace period of 14 days — 1 hour ago is well within
+    val result = m.validateWithGracePeriod(jwt, Duration.ofDays(14))
+    result shouldBe a[Right[_, _]]
+    result.toOption.get.licenseType shouldBe LicenseType.Pro
+  }
+
+  "validateWithGracePeriod with expired JWT beyond grace" should "return Left(ExpiredLicense)" in {
+    val m = manager
+    val expDate = new Date(System.currentTimeMillis() - 30L * 24 * 3600000L) // 30 days ago
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder(expDate).build())
+    val result = m.validateWithGracePeriod(jwt, Duration.ofDays(14))
+    result shouldBe a[Left[_, _]]
+    result.left.toOption.get shouldBe an[ExpiredLicense]
+  }
+
+  "validateWithGracePeriod with zero grace" should "reject all expired JWTs" in {
+    val m = manager
+    val expDate = new Date(System.currentTimeMillis() - 1000L) // 1 second ago
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder(expDate).build())
+    val result = m.validateWithGracePeriod(jwt, Duration.ZERO)
+    result shouldBe a[Left[_, _]]
+    result.left.toOption.get shouldBe an[ExpiredLicense]
+  }
+
+  "validateWithGracePeriod with 365-day grace" should "accept recently expired JWTs" in {
+    val m = manager
+    val expDate = new Date(System.currentTimeMillis() - 60L * 24 * 3600000L) // 60 days ago
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder(expDate).build())
+    val result = m.validateWithGracePeriod(jwt, Duration.ofDays(365))
+    result shouldBe a[Right[_, _]]
+    result.toOption.get.licenseType shouldBe LicenseType.Pro
+  }
+
+  // --- resetToCommunity tests ---
+
+  "resetToCommunity after Pro validation" should "revert to Community tier and quotas" in {
+    val m = manager
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder().build())
+    m.validate(jwt)
+    m.licenseType shouldBe LicenseType.Pro
+
+    m.resetToCommunity()
+    m.licenseType shouldBe LicenseType.Community
+    m.quotas shouldBe Quota.Community
+  }
+
+  "resetToCommunity then re-validate" should "update state to Pro again" in {
+    val m = manager
+    val jwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder().build())
+    m.validate(jwt)
+    m.resetToCommunity()
+    m.licenseType shouldBe LicenseType.Community
+
+    m.validate(jwt)
+    m.licenseType shouldBe LicenseType.Pro
   }
 }

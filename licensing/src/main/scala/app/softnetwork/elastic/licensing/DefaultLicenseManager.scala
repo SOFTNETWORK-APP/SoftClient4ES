@@ -18,15 +18,7 @@ package app.softnetwork.elastic.licensing
 
 class DefaultLicenseManager extends LicenseManager {
 
-  private var currentLicense: LicenseKey = LicenseKey(
-    id = "community",
-    licenseType = LicenseType.Community,
-    features = Set(
-      Feature.MaterializedViews,
-      Feature.JdbcDriver
-    ),
-    expiresAt = None
-  )
+  private var currentLicense: LicenseKey = LicenseKey.Community
 
   override def validate(key: String): Either[LicenseError, LicenseKey] = {
     key match {

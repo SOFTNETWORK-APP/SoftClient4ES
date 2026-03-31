@@ -91,6 +91,15 @@ package object licensing {
     metadata: Map[String, String] = Map.empty
   )
 
+  object LicenseKey {
+    val Community: LicenseKey = LicenseKey(
+      id = "community",
+      licenseType = LicenseType.Community,
+      features = Set(Feature.MaterializedViews, Feature.JdbcDriver),
+      expiresAt = None
+    )
+  }
+
   case class Quota(
     maxMaterializedViews: Option[Int], // None = unlimited
     maxQueryResults: Option[Int], // None = unlimited

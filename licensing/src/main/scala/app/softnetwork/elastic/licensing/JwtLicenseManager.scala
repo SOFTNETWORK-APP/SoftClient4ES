@@ -19,7 +19,7 @@ package app.softnetwork.elastic.licensing
 import com.nimbusds.jose.jwk.OctetKeyPair
 import com.nimbusds.jwt.SignedJWT
 
-import java.time.Instant
+import java.time.{Duration, Instant}
 import java.util.concurrent.atomic.AtomicReference
 import scala.collection.JavaConverters._
 import scala.util.Try
@@ -32,30 +32,20 @@ class JwtLicenseManager(
   private case class LicenseState(licenseKey: LicenseKey, quota: Quota)
 
   private val state: AtomicReference[LicenseState] = new AtomicReference(
-    LicenseState(
-      LicenseKey(
-        id = "community",
-        licenseType = LicenseType.Community,
-        features = Set(Feature.MaterializedViews, Feature.JdbcDriver),
-        expiresAt = None
-      ),
-      Quota.Community
-    )
+    LicenseState(LicenseKey.Community, Quota.Community)
   )
 
-  override def validate(jwt: String): Either[LicenseError, LicenseKey] = {
-    for {
-      signed    <- parseJwt(jwt)
-      publicKey <- resolvePublicKey(signed)
-      _         <- verifySignature(signed, publicKey)
-      _         <- validateIssuer(signed)
-      key       <- extractLicenseKey(signed)
-    } yield {
-      val quota = extractQuota(signed)
-      state.set(LicenseState(key, quota))
-      key
-    }
-  }
+  override def validate(jwt: String): Either[LicenseError, LicenseKey] =
+    doValidate(jwt, gracePeriod = None)
+
+  def validateWithGracePeriod(
+    jwt: String,
+    gracePeriod: Duration
+  ): Either[LicenseError, LicenseKey] =
+    doValidate(jwt, gracePeriod = Some(gracePeriod))
+
+  def resetToCommunity(): Unit =
+    state.set(LicenseState(LicenseKey.Community, Quota.Community))
 
   override def hasFeature(feature: Feature): Boolean =
     state.get().licenseKey.features.contains(feature)
@@ -63,6 +53,22 @@ class JwtLicenseManager(
   override def quotas: Quota = state.get().quota
 
   override def licenseType: LicenseType = state.get().licenseKey.licenseType
+
+  private def doValidate(
+    jwt: String,
+    gracePeriod: Option[Duration]
+  ): Either[LicenseError, LicenseKey] =
+    for {
+      signed    <- parseJwt(jwt)
+      publicKey <- resolvePublicKey(signed)
+      _         <- verifySignature(signed, publicKey)
+      _         <- validateIssuer(signed)
+      key       <- extractLicenseKey(signed, gracePeriod)
+    } yield {
+      val quota = extractQuota(signed)
+      state.set(LicenseState(key, quota))
+      key
+    }
 
   private def parseJwt(jwt: String): Either[LicenseError, SignedJWT] =
     Try(SignedJWT.parse(jwt)).toEither.left.map(_ => InvalidLicense("Malformed JWT"))
@@ -90,7 +96,10 @@ class JwtLicenseManager(
     else Left(InvalidLicense(s"Invalid issuer: $iss"))
   }
 
-  private def extractLicenseKey(signed: SignedJWT): Either[LicenseError, LicenseKey] = {
+  private def extractLicenseKey(
+    signed: SignedJWT,
+    gracePeriod: Option[Duration]
+  ): Either[LicenseError, LicenseKey] = {
     val claims = signed.getJWTClaimsSet
 
     val tierStr = Option(claims.getStringClaim("tier"))
@@ -102,29 +111,45 @@ class JwtLicenseManager(
 
     val expiresAt = Option(claims.getExpirationTime).map(_.toInstant)
 
-    // Check expiry
+    // Check expiry with optional grace period
     expiresAt match {
       case Some(exp: Instant) if exp.isBefore(Instant.now()) =>
-        Left(ExpiredLicense(exp))
+        gracePeriod match {
+          case Some(grace) if exp.plus(grace).isAfter(Instant.now()) =>
+            // Within grace period — allow
+            buildLicenseKey(claims, tier, features, expiresAt)
+          case _ =>
+            Left(ExpiredLicense(exp))
+        }
       case _ =>
-        val sub = Option(claims.getSubject).getOrElse("unknown")
-
-        val metadata = Map.newBuilder[String, String]
-        Option(claims.getStringClaim("org_name")).foreach(v => metadata += ("org_name" -> v))
-        Option(claims.getJWTID).foreach(v => metadata += ("jti" -> v))
-        Try(Option(claims.getBooleanClaim("trial"))).getOrElse(None)
-          .foreach(v => metadata += ("trial" -> v.toString))
-
-        Right(
-          LicenseKey(
-            id = sub,
-            licenseType = tier,
-            features = features,
-            expiresAt = expiresAt,
-            metadata = metadata.result()
-          )
-        )
+        buildLicenseKey(claims, tier, features, expiresAt)
     }
+  }
+
+  private def buildLicenseKey(
+    claims: com.nimbusds.jwt.JWTClaimsSet,
+    tier: LicenseType,
+    features: Set[Feature],
+    expiresAt: Option[Instant]
+  ): Either[LicenseError, LicenseKey] = {
+    val sub = Option(claims.getSubject).getOrElse("unknown")
+
+    val metadata = Map.newBuilder[String, String]
+    Option(claims.getStringClaim("org_name")).foreach(v => metadata += ("org_name" -> v))
+    Option(claims.getJWTID).foreach(v => metadata += ("jti" -> v))
+    Try(Option(claims.getBooleanClaim("trial")))
+      .getOrElse(None)
+      .foreach(v => metadata += ("trial" -> v.toString))
+
+    Right(
+      LicenseKey(
+        id = sub,
+        licenseType = tier,
+        features = features,
+        expiresAt = expiresAt,
+        metadata = metadata.result()
+      )
+    )
   }
 
   private def extractQuota(signed: SignedJWT): Quota = {
