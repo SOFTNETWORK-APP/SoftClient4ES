@@ -33,6 +33,12 @@ package object licensing {
       case Pro        => Enterprise
       case Enterprise => Enterprise
     }
+
+    def fromString(s: String): LicenseType = s.trim.toLowerCase match {
+      case "pro"        => Pro
+      case "enterprise" => Enterprise
+      case _            => Community
+    }
   }
 
   sealed trait Feature
@@ -54,6 +60,27 @@ package object licensing {
       FlightSql,
       Federation
     )
+
+    def fromString(s: String): Option[Feature] = s.trim.toLowerCase match {
+      case "materialized_views"    => Some(MaterializedViews)
+      case "jdbc_driver"           => Some(JdbcDriver)
+      case "odbc_driver"           => Some(OdbcDriver)
+      case "unlimited_results"     => Some(UnlimitedResults)
+      case "advanced_aggregations" => Some(AdvancedAggregations)
+      case "flight_sql"            => Some(FlightSql)
+      case "federation"            => Some(Federation)
+      case _                       => None
+    }
+
+    def toSnakeCase(f: Feature): String = f match {
+      case MaterializedViews    => "materialized_views"
+      case JdbcDriver           => "jdbc_driver"
+      case OdbcDriver           => "odbc_driver"
+      case UnlimitedResults     => "unlimited_results"
+      case AdvancedAggregations => "advanced_aggregations"
+      case FlightSql            => "flight_sql"
+      case Federation           => "federation"
+    }
   }
 
   case class LicenseKey(
