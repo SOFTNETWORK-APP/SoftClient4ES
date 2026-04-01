@@ -211,12 +211,13 @@ class ApiKeyClientSpec extends AnyFlatSpec with Matchers {
   // --- Timeout ---
 
   "ApiKeyClient with slow server" should "return InvalidLicense on timeout" in {
+    val timeout = 100
     withServer { (server, port) =>
       server.createContext(
         ApiKeyClient.TokenPath,
         new HttpHandler {
           def handle(exchange: HttpExchange): Unit = {
-            Thread.sleep(5000)
+            Thread.sleep(timeout * 2)
             val bytes = "{}".getBytes("UTF-8")
             exchange.sendResponseHeaders(200, bytes.length)
             exchange.getResponseBody.write(bytes)
@@ -228,7 +229,7 @@ class ApiKeyClientSpec extends AnyFlatSpec with Matchers {
       val client = new ApiKeyClient(
         baseUrl = s"http://localhost:$port",
         instanceId = "test",
-        readTimeoutMs = 1000
+        readTimeoutMs = timeout
       )
       val result = client.fetchJwt("sk-test")
       result.isLeft shouldBe true
