@@ -75,7 +75,8 @@ class ApiKeyClientSpec extends AnyFlatSpec with Matchers {
           def handle(exchange: HttpExchange): Unit = {
             capturedAuth = exchange.getRequestHeaders.getFirst("Authorization")
             capturedContentType = exchange.getRequestHeaders.getFirst("Content-Type")
-            capturedBody = scala.io.Source.fromInputStream(exchange.getRequestBody, "UTF-8").mkString
+            capturedBody =
+              scala.io.Source.fromInputStream(exchange.getRequestBody, "UTF-8").mkString
             val response =
               """{"jwt": "eyJhbGciOiJFZERTQSJ9.test.sig", "expires_in": 86400, "message": null}"""
             val bytes = response.getBytes("UTF-8")
@@ -86,7 +87,8 @@ class ApiKeyClientSpec extends AnyFlatSpec with Matchers {
         }
       )
 
-      val client = new ApiKeyClient(baseUrl = s"http://localhost:$port", instanceId = "test-instance")
+      val client =
+        new ApiKeyClient(baseUrl = s"http://localhost:$port", instanceId = "test-instance")
       val result = client.fetchJwt("sk-test-key")
 
       result shouldBe Right("eyJhbGciOiJFZERTQSJ9.test.sig")

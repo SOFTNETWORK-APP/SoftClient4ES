@@ -86,14 +86,15 @@ class ApiKeyClient(
 
           case 401 =>
             val errorBody = readStream(conn.getErrorStream)
-            val message = try {
-              val tree = mapper.readTree(errorBody)
-              val msgNode = tree.get("message")
-              if (msgNode != null && msgNode.isTextual) msgNode.asText()
-              else "API key rejected (HTTP 401)"
-            } catch {
-              case _: Exception => "API key rejected (HTTP 401)"
-            }
+            val message =
+              try {
+                val tree = mapper.readTree(errorBody)
+                val msgNode = tree.get("message")
+                if (msgNode != null && msgNode.isTextual) msgNode.asText()
+                else "API key rejected (HTTP 401)"
+              } catch {
+                case _: Exception => "API key rejected (HTTP 401)"
+              }
             logger.error(message)
             Left(InvalidLicense(message))
 
