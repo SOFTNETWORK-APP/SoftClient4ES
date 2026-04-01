@@ -8,6 +8,7 @@ libraryDependencies ++= Seq(
   "com.google.crypto.tink"      % "tink"            % Versions.tink,
   "com.typesafe"                % "config"          % Versions.typesafeConfig,
   "com.typesafe.scala-logging" %% "scala-logging"   % Versions.scalaLogging,
+  "com.fasterxml.jackson.core"  % "jackson-databind" % Versions.jackson,
   "org.scalatest"              %% "scalatest"       % Versions.scalatest % Test
 )
 

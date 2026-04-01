@@ -46,8 +46,16 @@ class LicenseResolver(
       apiKeyFetcher.foreach { fetcher =>
         fetcher(apiKey) match {
           case Right(jwt) =>
+            val oldTier = jwtLicenseManager.licenseType
             jwtLicenseManager.validate(jwt) match {
               case Right(key) =>
+                val newTier = key.licenseType
+                if (newTier != oldTier) {
+                  val direction =
+                    if (newTier.ordinal > oldTier.ordinal) "upgraded"
+                    else "downgraded"
+                  logger.info(s"License $direction from $oldTier to $newTier")
+                }
                 return key
               case Left(err) =>
                 logger.error(s"Fetched JWT is invalid: ${err.message}")

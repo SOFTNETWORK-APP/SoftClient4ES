@@ -22,6 +22,11 @@ package object licensing {
     def isPaid: Boolean = this != LicenseType.Community
     def isEnterprise: Boolean = this == LicenseType.Enterprise
     def isPro: Boolean = this == LicenseType.Pro
+    def ordinal: Int = this match {
+      case LicenseType.Community  => 0
+      case LicenseType.Pro        => 1
+      case LicenseType.Enterprise => 2
+    }
   }
 
   object LicenseType {

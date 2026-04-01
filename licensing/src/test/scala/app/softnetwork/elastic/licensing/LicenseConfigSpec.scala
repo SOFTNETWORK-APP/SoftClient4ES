@@ -39,6 +39,7 @@ class LicenseConfigSpec extends AnyFlatSpec with Matchers {
     cfg.refreshInterval shouldBe 24.hours
     cfg.telemetryEnabled shouldBe true
     cfg.gracePeriod shouldBe 14.days
+    cfg.apiUrl shouldBe "https://license.softclient4es.com"
     cfg.cacheDir should include(".softclient4es")
   }
 
@@ -89,6 +90,11 @@ class LicenseConfigSpec extends AnyFlatSpec with Matchers {
     cfg.gracePeriod shouldBe 7.days
   }
 
+  "custom api-url" should "be parsed correctly" in {
+    val cfg = configFrom("""softclient4es.license.api-url = "https://custom.example.com" """)
+    cfg.apiUrl shouldBe "https://custom.example.com"
+  }
+
   "custom cache-dir" should "be parsed correctly" in {
     val cfg = configFrom("""softclient4es.license.cache-dir = "/tmp/test-cache" """)
     cfg.cacheDir shouldBe "/tmp/test-cache"
@@ -105,11 +111,13 @@ class LicenseConfigSpec extends AnyFlatSpec with Matchers {
         }
         telemetry.enabled = false
         grace-period = 30d
+        api-url = "https://staging.license.softclient4es.com"
         cache-dir = "/opt/licenses"
       }
     """)
     cfg.key shouldBe Some("eyJ.test.jwt")
     cfg.apiKey shouldBe Some("sk-custom")
+    cfg.apiUrl shouldBe "https://staging.license.softclient4es.com"
     cfg.refreshEnabled shouldBe false
     cfg.refreshInterval shouldBe 6.hours
     cfg.telemetryEnabled shouldBe false

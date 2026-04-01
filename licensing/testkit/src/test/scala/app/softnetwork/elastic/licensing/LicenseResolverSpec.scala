@@ -35,6 +35,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     LicenseConfig(
       key = licenseKey,
       apiKey = apiKey,
+      apiUrl = "https://license.softclient4es.com",
       refreshEnabled = true,
       refreshInterval = 24.hours,
       telemetryEnabled = true,
@@ -55,7 +56,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
   "LicenseResolver with valid static JWT" should "resolve to that JWT's tier" in {
     val m = manager
     val resolver = new LicenseResolver(
-      config = defaultConfig(licenseKey =Some(validProJwt)),
+      config = defaultConfig(licenseKey = Some(validProJwt)),
       jwtLicenseManager = m
     )
     val key = resolver.resolve()
@@ -70,7 +71,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
       Right(validProJwt)
     }
     val resolver = new LicenseResolver(
-      config = defaultConfig(licenseKey =Some(validProJwt), apiKey = Some("sk-test")),
+      config = defaultConfig(licenseKey = Some(validProJwt), apiKey = Some("sk-test")),
       jwtLicenseManager = m,
       apiKeyFetcher = Some(fetcher)
     )
@@ -83,7 +84,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     val m = manager
     val jwt = expiredJwt(1) // expired 1 day ago, grace = 14 days
     val resolver = new LicenseResolver(
-      config = defaultConfig(licenseKey =Some(jwt)),
+      config = defaultConfig(licenseKey = Some(jwt)),
       jwtLicenseManager = m
     )
     val key = resolver.resolve()
@@ -98,7 +99,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     val freshJwt = validProJwt
     val fetcher: String => Either[LicenseError, String] = { _ => Right(freshJwt) }
     val resolver = new LicenseResolver(
-      config = defaultConfig(licenseKey =Some(jwt), apiKey = Some("sk-test")),
+      config = defaultConfig(licenseKey = Some(jwt), apiKey = Some("sk-test")),
       jwtLicenseManager = m,
       apiKeyFetcher = Some(fetcher)
     )
@@ -118,7 +119,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
       Right(validProJwt)
     }
     val resolver = new LicenseResolver(
-      config = defaultConfig(licenseKey =Some(tampered), apiKey = Some("sk-test")),
+      config = defaultConfig(licenseKey = Some(tampered), apiKey = Some("sk-test")),
       jwtLicenseManager = m,
       apiKeyFetcher = Some(fetcher)
     )
@@ -139,7 +140,7 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     key.licenseType shouldBe LicenseType.Community
   }
 
-  "LicenseResolver with no static JWT + API key fetch succeeds" should "resolve to fetched JWT" in {
+  "LicenseResolver with no static JWT + API key fetch succeeds" should "resolve to fetched JWT and store in manager" in {
     val m = manager
     val fetcher: String => Either[LicenseError, String] = { _ => Right(validProJwt) }
     val resolver = new LicenseResolver(
@@ -149,6 +150,9 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     )
     val key = resolver.resolve()
     key.licenseType shouldBe LicenseType.Pro
+    // AC #8: JWT stored in memory for per-request enforcement
+    m.licenseType shouldBe LicenseType.Pro
+    m.quotas shouldBe Quota.Pro
   }
 
   // --- Step 2 → Step 3 fallthrough ---
@@ -234,11 +238,102 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
 
   // --- resetToCommunity on re-resolution ---
 
+  // --- Tier change logging (AC #7) ---
+
+  "LicenseResolver cold start upgrade (Community -> Pro)" should "resolve to Pro with correct manager state" in {
+    val m = manager
+    // Fresh manager defaults to Community
+    m.licenseType shouldBe LicenseType.Community
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(validProJwt) }
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher)
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.licenseType shouldBe LicenseType.Pro
+    m.quotas shouldBe Quota.Pro
+  }
+
+  "LicenseResolver upgrade (Pro -> Enterprise)" should "resolve to Enterprise" in {
+    val m = manager
+    // First resolve with Pro via static key
+    val proJwt = validProJwt
+    val resolver1 = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(proJwt)),
+      jwtLicenseManager = m
+    )
+    resolver1.resolve()
+    m.licenseType shouldBe LicenseType.Pro
+
+    // Second resolve with Enterprise via API key fetcher
+    val entJwt = JwtTestHelper.signJwt(JwtTestHelper.enterpriseClaimsBuilder().build())
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(entJwt) }
+    val resolver2 = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher)
+    )
+    val key = resolver2.resolve()
+    key.licenseType shouldBe LicenseType.Enterprise
+    m.licenseType shouldBe LicenseType.Enterprise
+  }
+
+  "LicenseResolver downgrade (Pro -> Community)" should "resolve to Community" in {
+    val m = manager
+    // First resolve with Pro via static key
+    val resolver1 = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(validProJwt)),
+      jwtLicenseManager = m
+    )
+    resolver1.resolve()
+    m.licenseType shouldBe LicenseType.Pro
+
+    // Second resolve with Community via API key fetcher
+    val communityJwt = JwtTestHelper.signJwt(JwtTestHelper.communityClaimsBuilder().build())
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(communityJwt) }
+    val resolver2 = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher)
+    )
+    val key = resolver2.resolve()
+    key.licenseType shouldBe LicenseType.Community
+    m.licenseType shouldBe LicenseType.Community
+    m.quotas shouldBe Quota.Community
+  }
+
+  "LicenseResolver same tier (Pro -> Pro)" should "resolve to Pro without tier change" in {
+    val m = manager
+    // First resolve with Pro via static key
+    val resolver1 = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(validProJwt)),
+      jwtLicenseManager = m
+    )
+    resolver1.resolve()
+    m.licenseType shouldBe LicenseType.Pro
+
+    // Second resolve with different Pro JWT via API key fetcher
+    val anotherProJwt = JwtTestHelper.signJwt(JwtTestHelper.proClaimsBuilder().build())
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(anotherProJwt) }
+    val resolver2 = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher)
+    )
+    val key = resolver2.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.licenseType shouldBe LicenseType.Pro
+  }
+
+  // --- resetToCommunity on re-resolution ---
+
   "LicenseResolver degrading to Community" should "reset manager state from prior Pro" in {
     val m = manager
     // First, resolve with a valid Pro JWT
     val resolver1 = new LicenseResolver(
-      config = defaultConfig(licenseKey =Some(validProJwt)),
+      config = defaultConfig(licenseKey = Some(validProJwt)),
       jwtLicenseManager = m
     )
     resolver1.resolve()

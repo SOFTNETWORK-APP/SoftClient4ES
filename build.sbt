@@ -103,9 +103,12 @@ Test / parallelExecution := false
 lazy val licensing = project
   .in(file("licensing"))
   .configs(IntegrationTest)
+  .enablePlugins(BuildInfoPlugin)
   .settings(
     Defaults.itSettings,
-    moduleSettings
+    app.softnetwork.Info.infoSettings,
+    moduleSettings,
+    buildInfoObject := "LicensingBuildInfo"
   )
 
 lazy val licensingTestkit = Project(id = "softclient4es-licensing-testkit", base = file("licensing/testkit"))

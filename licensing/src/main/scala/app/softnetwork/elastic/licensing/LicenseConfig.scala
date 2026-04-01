@@ -23,6 +23,7 @@ import scala.concurrent.duration._
 case class LicenseConfig(
   key: Option[String],
   apiKey: Option[String],
+  apiUrl: String,
   refreshEnabled: Boolean,
   refreshInterval: FiniteDuration,
   telemetryEnabled: Boolean,
@@ -50,11 +51,14 @@ object LicenseConfig {
 
     val gracePeriod = license.getDuration("grace-period").toMillis.millis
 
+    val apiUrl = license.getString("api-url")
+
     val cacheDir = license.getString("cache-dir")
 
     LicenseConfig(
       key = key,
       apiKey = apiKey,
+      apiUrl = apiUrl,
       refreshEnabled = refreshEnabled,
       refreshInterval = refreshInterval,
       telemetryEnabled = telemetryEnabled,
