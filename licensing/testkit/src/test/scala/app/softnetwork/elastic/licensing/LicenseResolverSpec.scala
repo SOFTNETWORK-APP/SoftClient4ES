@@ -19,6 +19,7 @@ package app.softnetwork.elastic.licensing
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.nio.file.Files
 import java.util.Date
 import scala.concurrent.duration._
 
@@ -347,5 +348,187 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     resolver2.resolve()
     m.licenseType shouldBe LicenseType.Community
     m.quotas shouldBe Quota.Community
+  }
+
+  // --- Cache writer/invalidator (Story 5.5) ---
+
+  "LicenseResolver cache writer on API key fetch success" should "write JWT to cache" in {
+    val m = manager
+    var cachedJwt: Option[String] = None
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(validProJwt) }
+    val writer: String => Unit = { jwt => cachedJwt = Some(jwt) }
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheWriter = Some(writer)
+    )
+    resolver.resolve()
+    cachedJwt shouldBe Some(validProJwt)
+  }
+
+  "LicenseResolver cache writer on static JWT success" should "not write to cache" in {
+    val m = manager
+    var cacheWriteCalled = false
+    val writer: String => Unit = { _ => cacheWriteCalled = true }
+    val resolver = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(validProJwt)),
+      jwtLicenseManager = m,
+      cacheWriter = Some(writer)
+    )
+    resolver.resolve()
+    cacheWriteCalled shouldBe false
+  }
+
+  "LicenseResolver cache invalidator on stale cached JWT" should "delete cache file" in {
+    val m = manager
+    var invalidateCalled = false
+    val invalidator: () => Unit = () => { invalidateCalled = true }
+    val staleJwt = expiredJwt(30) // expired beyond 14-day grace
+    val fetcher: String => Either[LicenseError, String] = { _ =>
+      Left(InvalidLicense("Network error"))
+    }
+    val reader: () => Option[String] = () => Some(staleJwt)
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheReader = Some(reader),
+      cacheInvalidator = Some(invalidator)
+    )
+    resolver.resolve()
+    invalidateCalled shouldBe true
+  }
+
+  "LicenseResolver cache invalidator on successful resolution" should "not be called" in {
+    val m = manager
+    var invalidateCalled = false
+    val invalidator: () => Unit = () => { invalidateCalled = true }
+    val cachedJwt = validProJwt
+    val fetcher: String => Either[LicenseError, String] = { _ =>
+      Left(InvalidLicense("Network error"))
+    }
+    val reader: () => Option[String] = () => Some(cachedJwt)
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheReader = Some(reader),
+      cacheInvalidator = Some(invalidator)
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    invalidateCalled shouldBe false
+  }
+
+  "LicenseResolver cache round-trip" should "use cached JWT when API key fetch fails on second resolve" in {
+    val m = manager
+    var cachedJwt: Option[String] = None
+    val proJwt = validProJwt
+
+    // First resolve: API key succeeds, writes to cache
+    var fetchSucceeds = true
+    val fetcher: String => Either[LicenseError, String] = { _ =>
+      if (fetchSucceeds) Right(proJwt)
+      else Left(InvalidLicense("Network error"))
+    }
+    val writer: String => Unit = { jwt => cachedJwt = Some(jwt) }
+    val reader: () => Option[String] = () => cachedJwt
+
+    val resolver1 = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheReader = Some(reader),
+      cacheWriter = Some(writer)
+    )
+    resolver1.resolve().licenseType shouldBe LicenseType.Pro
+    cachedJwt shouldBe Some(proJwt)
+
+    // Second resolve: API key fails, falls back to cache
+    fetchSucceeds = false
+    val resolver2 = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheReader = Some(reader),
+      cacheWriter = Some(writer)
+    )
+    resolver2.resolve().licenseType shouldBe LicenseType.Pro
+  }
+
+  "LicenseResolver cache writer failure" should "still resolve successfully" in {
+    val m = manager
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(validProJwt) }
+    val writer: String => Unit = { _ => throw new RuntimeException("Disk full") }
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheWriter = Some(writer)
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+  }
+
+  "LicenseResolver with real LicenseCache" should "write and delete cache file" in {
+    val m = manager
+    val tempDir = Files.createTempDirectory("license-resolver-cache-test")
+    try {
+      val cache = new LicenseCache(tempDir.toString)
+      val proJwt = validProJwt
+
+      // First resolve: API key succeeds -> writes to disk
+      val fetcher: String => Either[LicenseError, String] = { _ => Right(proJwt) }
+      val resolver1 = new LicenseResolver(
+        config = defaultConfig(apiKey = Some("sk-test")),
+        jwtLicenseManager = m,
+        apiKeyFetcher = Some(fetcher),
+        cacheReader = Some(() => cache.read()),
+        cacheWriter = Some(jwt => cache.write(jwt)),
+        cacheInvalidator = Some(() => cache.delete())
+      )
+      resolver1.resolve().licenseType shouldBe LicenseType.Pro
+      val cacheFile = tempDir.resolve(LicenseCache.CacheFileName)
+      Files.exists(cacheFile) shouldBe true
+      cache.read() shouldBe Some(proJwt)
+
+      // Second resolve: stale cache -> invalidated
+      val staleJwt = expiredJwt(30)
+      cache.write(staleJwt)
+      val failingFetcher: String => Either[LicenseError, String] = { _ =>
+        Left(InvalidLicense("Network error"))
+      }
+      val resolver2 = new LicenseResolver(
+        config = defaultConfig(apiKey = Some("sk-test")),
+        jwtLicenseManager = m,
+        apiKeyFetcher = Some(failingFetcher),
+        cacheReader = Some(() => cache.read()),
+        cacheWriter = Some(jwt => cache.write(jwt)),
+        cacheInvalidator = Some(() => cache.delete())
+      )
+      resolver2.resolve().licenseType shouldBe LicenseType.Community
+      Files.exists(cacheFile) shouldBe false
+    } finally {
+      val stream = Files.list(tempDir)
+      try { stream.forEach(f => Files.deleteIfExists(f)) }
+      finally { stream.close() }
+      Files.deleteIfExists(tempDir)
+    }
+  }
+
+  "LicenseResolver cache fallback without API key" should "use cached JWT when static JWT is invalid" in {
+    val m = manager
+    val cachedJwt = validProJwt
+    val tampered = validProJwt.split("\\.")(0) + "." + validProJwt.split("\\.")(1) + "." +
+      validProJwt.split("\\.")(2).reverse
+    val reader: () => Option[String] = () => Some(cachedJwt)
+    val resolver = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(tampered)),
+      jwtLicenseManager = m,
+      cacheReader = Some(reader)
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
   }
 }

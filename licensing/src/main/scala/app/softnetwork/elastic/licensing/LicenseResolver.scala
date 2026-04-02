@@ -22,7 +22,9 @@ class LicenseResolver(
   config: LicenseConfig,
   jwtLicenseManager: JwtLicenseManager,
   apiKeyFetcher: Option[String => Either[LicenseError, String]] = None,
-  cacheReader: Option[() => Option[String]] = None
+  cacheReader: Option[() => Option[String]] = None,
+  cacheWriter: Option[String => Unit] = None,
+  cacheInvalidator: Option[() => Unit] = None
 ) extends LazyLogging {
 
   private val gracePeriod: java.time.Duration =
@@ -56,6 +58,14 @@ class LicenseResolver(
                     else "downgraded"
                   logger.info(s"License $direction from $oldTier to $newTier")
                 }
+                // Write to disk cache for offline fallback
+                cacheWriter.foreach { writer =>
+                  try { writer(jwt) }
+                  catch {
+                    case e: Exception =>
+                      logger.warn(s"Could not write license to cache: ${e.getMessage}")
+                  }
+                }
                 return key
               case Left(err) =>
                 logger.error(s"Fetched JWT is invalid: ${err.message}")
@@ -73,7 +83,15 @@ class LicenseResolver(
           case Right(key) =>
             logger.warn("Using cached license")
             return key
-          case Left(_) => // fall through
+          case Left(_) =>
+            // Cached JWT is invalid or expired beyond grace — delete it
+            cacheInvalidator.foreach { invalidate =>
+              try { invalidate() }
+              catch {
+                case e: Exception =>
+                  logger.warn(s"Could not invalidate license cache: ${e.getMessage}")
+              }
+            }
         }
       }
     }
