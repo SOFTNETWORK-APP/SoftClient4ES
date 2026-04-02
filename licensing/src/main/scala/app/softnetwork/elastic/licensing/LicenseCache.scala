@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.licensing
 
 import java.nio.file.{Files, Paths, StandardCopyOption}
+import java.nio.file.attribute.PosixFilePermissions
 
 import com.typesafe.scalalogging.LazyLogging
 
@@ -50,10 +51,29 @@ class LicenseCache(cacheDir: String) extends LazyLogging {
     try {
       val dir = Paths.get(cacheDir)
       if (!Files.exists(dir)) {
-        Files.createDirectories(dir)
+        try {
+          Files.createDirectories(
+            dir,
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))
+          )
+        } catch {
+          case _: UnsupportedOperationException =>
+            Files.createDirectories(dir)
+        }
       }
       val target = dir.resolve(CacheFileName)
-      val tmp = Files.createTempFile(dir, ".license-cache", ".tmp")
+      val tmp =
+        try {
+          Files.createTempFile(
+            dir,
+            ".license-cache",
+            ".tmp",
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
+          )
+        } catch {
+          case _: UnsupportedOperationException =>
+            Files.createTempFile(dir, ".license-cache", ".tmp")
+        }
       try {
         Files.write(tmp, jwt.getBytes("UTF-8"))
         try {

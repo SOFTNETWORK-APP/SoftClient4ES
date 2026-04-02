@@ -135,6 +135,13 @@ package object licensing {
     )
   }
 
+  sealed trait GraceStatus
+  object GraceStatus {
+    case object NotInGrace extends GraceStatus
+    case class EarlyGrace(daysExpired: Long) extends GraceStatus
+    case class MidGrace(daysExpired: Long, daysRemaining: Long) extends GraceStatus
+  }
+
   trait LicenseManager {
 
     /** Validate license key */
@@ -148,6 +155,15 @@ package object licensing {
 
     /** Get license type */
     def licenseType: LicenseType
+
+    /** Get current grace status */
+    def graceStatus: GraceStatus = GraceStatus.NotInGrace
+
+    /** Whether the license was degraded to Community due to expiry/failure */
+    def wasDegraded: Boolean = false
+
+    /** Log a warning if the license is in mid-grace period (per-request use) */
+    def warnIfInGrace(): Unit = ()
   }
 
   sealed trait LicenseError {

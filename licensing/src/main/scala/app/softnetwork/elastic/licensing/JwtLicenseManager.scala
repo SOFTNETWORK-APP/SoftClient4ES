@@ -18,18 +18,26 @@ package app.softnetwork.elastic.licensing
 
 import com.nimbusds.jose.jwk.OctetKeyPair
 import com.nimbusds.jwt.SignedJWT
+import com.typesafe.scalalogging.LazyLogging
 
 import java.time.{Duration, Instant}
 import java.util.concurrent.atomic.AtomicReference
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 class JwtLicenseManager(
   publicKeyOverride: Option[OctetKeyPair] = None,
   expectedIssuer: String = "https://license.softclient4es.com"
-) extends LicenseManager {
+) extends LicenseManager
+    with LazyLogging {
 
-  private case class LicenseState(licenseKey: LicenseKey, quota: Quota)
+  private case class LicenseState(
+    licenseKey: LicenseKey,
+    quota: Quota,
+    graceStatus: GraceStatus = GraceStatus.NotInGrace,
+    gracePeriodDays: Option[Long] = None,
+    degraded: Boolean = false
+  )
 
   private val state: AtomicReference[LicenseState] = new AtomicReference(
     LicenseState(LicenseKey.Community, Quota.Community)
@@ -45,7 +53,15 @@ class JwtLicenseManager(
     doValidate(jwt, gracePeriod = Some(gracePeriod))
 
   def resetToCommunity(): Unit =
-    state.set(LicenseState(LicenseKey.Community, Quota.Community))
+    state.set(
+      LicenseState(
+        LicenseKey.Community,
+        Quota.Community,
+        GraceStatus.NotInGrace,
+        None,
+        degraded = true
+      )
+    )
 
   override def hasFeature(feature: Feature): Boolean =
     state.get().licenseKey.features.contains(feature)
@@ -53,6 +69,31 @@ class JwtLicenseManager(
   override def quotas: Quota = state.get().quota
 
   override def licenseType: LicenseType = state.get().licenseKey.licenseType
+
+  override def graceStatus: GraceStatus = state.get().graceStatus
+
+  override def wasDegraded: Boolean = state.get().degraded
+
+  // Per-request warning — only fires during MidGrace (second half of grace period).
+  // EarlyGrace startup warnings are handled by LicenseResolver.logGraceWarning().
+  // Re-computes days from Instant.now() so warnings stay accurate between validate() calls.
+  override def warnIfInGrace(): Unit = {
+    val s = state.get()
+    s.licenseKey.expiresAt.foreach { exp =>
+      if (exp.isBefore(Instant.now())) {
+        s.gracePeriodDays.foreach { gpDays =>
+          val daysSinceExpiry = Duration.between(exp, Instant.now()).toDays
+          val earlyThreshold = gpDays / 2
+          if (daysSinceExpiry >= earlyThreshold && daysSinceExpiry <= gpDays) {
+            val daysRemaining = math.max(0L, gpDays - daysSinceExpiry)
+            logger.warn(
+              s"License expired $daysSinceExpiry days ago. Service will degrade to Community in $daysRemaining days."
+            )
+          }
+        }
+      }
+    }
+  }
 
   private def doValidate(
     jwt: String,
@@ -66,8 +107,31 @@ class JwtLicenseManager(
       key       <- extractLicenseKey(signed, gracePeriod)
     } yield {
       val quota = extractQuota(signed)
-      state.set(LicenseState(key, quota))
+      val gs = computeGraceStatus(key.expiresAt, gracePeriod)
+      val gpDays = gracePeriod.map(_.toDays)
+      state.set(LicenseState(key, quota, gs, gpDays, degraded = false))
       key
+    }
+
+  private def computeGraceStatus(
+    expiresAt: Option[Instant],
+    gracePeriod: Option[Duration]
+  ): GraceStatus =
+    expiresAt match {
+      case Some(exp) if exp.isBefore(Instant.now()) =>
+        gracePeriod match {
+          case Some(grace) =>
+            val daysSinceExpiry = Duration.between(exp, Instant.now()).toDays
+            val graceDays = grace.toDays
+            val earlyThreshold = graceDays / 2
+            if (daysSinceExpiry < earlyThreshold)
+              GraceStatus.EarlyGrace(daysSinceExpiry)
+            else
+              GraceStatus.MidGrace(daysSinceExpiry, math.max(0L, graceDays - daysSinceExpiry))
+          case None =>
+            GraceStatus.NotInGrace
+        }
+      case _ => GraceStatus.NotInGrace
     }
 
   private def parseJwt(jwt: String): Either[LicenseError, SignedJWT] =

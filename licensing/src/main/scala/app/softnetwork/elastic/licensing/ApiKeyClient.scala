@@ -23,7 +23,7 @@ import com.typesafe.scalalogging.LazyLogging
 import java.io.IOException
 import java.net.{HttpURLConnection, SocketTimeoutException, URL}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 class ApiKeyClient(
   baseUrl: String,

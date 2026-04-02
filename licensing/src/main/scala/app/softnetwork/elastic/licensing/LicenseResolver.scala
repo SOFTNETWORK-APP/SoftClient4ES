@@ -33,8 +33,13 @@ class LicenseResolver(
   def resolve(): LicenseKey = {
     // Step 1: Static JWT
     config.key.foreach { jwt =>
+      val wasDegraded = jwtLicenseManager.wasDegraded
       jwtLicenseManager.validateWithGracePeriod(jwt, gracePeriod) match {
         case Right(key) =>
+          if (wasDegraded && key.licenseType.isPaid) {
+            logger.info(s"License restored to ${key.licenseType}")
+          }
+          logGraceWarning(jwtLicenseManager.graceStatus)
           return key
         case Left(ExpiredLicense(exp)) =>
           logger.warn(s"Static JWT expired at $exp (beyond ${config.gracePeriod} grace period)")
@@ -48,11 +53,16 @@ class LicenseResolver(
       apiKeyFetcher.foreach { fetcher =>
         fetcher(apiKey) match {
           case Right(jwt) =>
+            // After degradation, oldTier is Community (from resetToCommunity).
+            // wasDegraded distinguishes this from a cold start.
             val oldTier = jwtLicenseManager.licenseType
+            val wasDegraded = jwtLicenseManager.wasDegraded
             jwtLicenseManager.validate(jwt) match {
               case Right(key) =>
                 val newTier = key.licenseType
-                if (newTier != oldTier) {
+                if (wasDegraded && newTier.isPaid) {
+                  logger.info(s"License restored to $newTier")
+                } else if (newTier != oldTier) {
                   val direction =
                     if (newTier.ordinal > oldTier.ordinal) "upgraded"
                     else "downgraded"
@@ -82,6 +92,7 @@ class LicenseResolver(
         jwtLicenseManager.validateWithGracePeriod(jwt, gracePeriod) match {
           case Right(key) =>
             logger.warn("Using cached license")
+            logGraceWarning(jwtLicenseManager.graceStatus)
             return key
           case Left(_) =>
             // Cached JWT is invalid or expired beyond grace — delete it
@@ -100,11 +111,24 @@ class LicenseResolver(
     if (config.apiKey.isDefined) {
       logger.error("Could not fetch license — falling back to Community mode")
     } else if (config.key.isDefined) {
-      logger.error("License invalid or expired — falling back to Community mode")
+      logger.error("License expired or invalid — running in Community mode.")
     } else {
       logger.info("Running in Community mode")
     }
     jwtLicenseManager.resetToCommunity()
     LicenseKey.Community
+  }
+
+  private def logGraceWarning(status: GraceStatus): Unit = status match {
+    case GraceStatus.EarlyGrace(days) =>
+      logger.warn(
+        s"License expired $days days ago. Renew at https://portal.softclient4es.com"
+      )
+    case GraceStatus.MidGrace(days, remaining) =>
+      logger.warn(
+        s"License expired $days days ago. Service will degrade to Community in $remaining days."
+      )
+    case GraceStatus.NotInGrace =>
+    // No warning needed
   }
 }

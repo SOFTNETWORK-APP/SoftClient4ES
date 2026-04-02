@@ -115,7 +115,10 @@ lazy val licensingTestkit = Project(id = "softclient4es-licensing-testkit", base
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
-    moduleSettings
+    moduleSettings,
+    libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % Versions.logback % Test
+    )
   )
   .dependsOn(
     licensing % "compile->compile"

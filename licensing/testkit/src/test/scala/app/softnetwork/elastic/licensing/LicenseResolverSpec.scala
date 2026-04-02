@@ -517,6 +517,117 @@ class LicenseResolverSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // --- Grace status at startup (AC #1, #2, #3) ---
+
+  "LicenseResolver with early grace static JWT" should "resolve with full access" in {
+    val m = manager
+    val jwt = expiredJwt(3) // 3 days ago, grace = 14d, earlyThreshold = 7d
+    val resolver = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(jwt)),
+      jwtLicenseManager = m
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.graceStatus shouldBe a[GraceStatus.EarlyGrace]
+  }
+
+  "LicenseResolver with mid-grace static JWT" should "resolve with full access" in {
+    val m = manager
+    val jwt = expiredJwt(10) // 10 days ago, grace = 14d
+    val resolver = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(jwt)),
+      jwtLicenseManager = m
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.graceStatus shouldBe a[GraceStatus.MidGrace]
+  }
+
+  "LicenseResolver with beyond-grace static JWT and no API key" should "degrade to Community" in {
+    val m = manager
+    val jwt = expiredJwt(30) // 30 days ago, grace = 14d
+    val resolver = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(jwt)),
+      jwtLicenseManager = m
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Community
+    m.wasDegraded shouldBe true
+  }
+
+  "LicenseResolver with mid-grace cached JWT" should "resolve with full access and correct grace status" in {
+    val m = manager
+    val jwt = expiredJwt(10)
+    val fetcher: String => Either[LicenseError, String] = { _ =>
+      Left(InvalidLicense("Network error"))
+    }
+    val reader: () => Option[String] = () => Some(jwt)
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher),
+      cacheReader = Some(reader)
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.graceStatus shouldBe a[GraceStatus.MidGrace]
+  }
+
+  // --- Restoration detection (AC #4) ---
+
+  "LicenseResolver restoration after degradation" should "log restored when renewed via API key" in {
+    val m = manager
+    // Simulate degradation: resolve with expired JWT, no API key
+    val expJwt = expiredJwt(30)
+    val resolver1 = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(expJwt)),
+      jwtLicenseManager = m
+    )
+    resolver1.resolve().licenseType shouldBe LicenseType.Community
+    m.wasDegraded shouldBe true
+
+    // Restore via API key
+    val freshJwt = validProJwt
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(freshJwt) }
+    val resolver2 = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher)
+    )
+    val key = resolver2.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.wasDegraded shouldBe false
+  }
+
+  "LicenseResolver restoration after degradation" should "log restored when renewed via static JWT" in {
+    val m = manager
+    // Degrade
+    m.resetToCommunity()
+    m.wasDegraded shouldBe true
+
+    // Restore via static JWT
+    val resolver = new LicenseResolver(
+      config = defaultConfig(licenseKey = Some(validProJwt)),
+      jwtLicenseManager = m
+    )
+    val key = resolver.resolve()
+    key.licenseType shouldBe LicenseType.Pro
+    m.wasDegraded shouldBe false
+  }
+
+  "LicenseResolver cold start" should "not report restoration" in {
+    val m = manager
+    m.wasDegraded shouldBe false
+    val fetcher: String => Either[LicenseError, String] = { _ => Right(validProJwt) }
+    val resolver = new LicenseResolver(
+      config = defaultConfig(apiKey = Some("sk-test")),
+      jwtLicenseManager = m,
+      apiKeyFetcher = Some(fetcher)
+    )
+    resolver.resolve().licenseType shouldBe LicenseType.Pro
+    m.wasDegraded shouldBe false
+  }
+
   "LicenseResolver cache fallback without API key" should "use cached JWT when static JWT is invalid" in {
     val m = manager
     val cachedJwt = validProJwt
