@@ -180,7 +180,9 @@ class GraceStatusSpec extends AnyFlatSpec with Matchers {
       m.warnIfInGrace()
       m.graceStatus shouldBe GraceStatus.NotInGrace
       val degradationWarnings = appender.list.asScala
-        .filter(e => e.getLevel == Level.WARN && e.getFormattedMessage.contains(degradationMessagePattern))
+        .filter(e =>
+          e.getLevel == Level.WARN && e.getFormattedMessage.contains(degradationMessagePattern)
+        )
       degradationWarnings shouldBe empty
     }
   }
@@ -193,7 +195,9 @@ class GraceStatusSpec extends AnyFlatSpec with Matchers {
       m.warnIfInGrace()
       m.graceStatus shouldBe a[GraceStatus.EarlyGrace]
       val degradationWarnings = appender.list.asScala
-        .filter(e => e.getLevel == Level.WARN && e.getFormattedMessage.contains(degradationMessagePattern))
+        .filter(e =>
+          e.getLevel == Level.WARN && e.getFormattedMessage.contains(degradationMessagePattern)
+        )
       degradationWarnings shouldBe empty
     }
   }
@@ -206,7 +210,9 @@ class GraceStatusSpec extends AnyFlatSpec with Matchers {
       m.warnIfInGrace()
       m.graceStatus shouldBe a[GraceStatus.MidGrace]
       val degradationWarnings = appender.list.asScala
-        .filter(e => e.getLevel == Level.WARN && e.getFormattedMessage.contains(degradationMessagePattern))
+        .filter(e =>
+          e.getLevel == Level.WARN && e.getFormattedMessage.contains(degradationMessagePattern)
+        )
       degradationWarnings should not be empty
     }
   }
