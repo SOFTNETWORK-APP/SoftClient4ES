@@ -25,9 +25,8 @@ import scala.jdk.CollectionConverters._
 
 /** Factory for creating and caching LicenseRefreshStrategy instances.
   *
-  * Owns the full strategy lifecycle: SPI discovery -> build -> initialize -> cache. The
-  * LicenseMode is derived from configuration (`refreshEnabled=true` -> LongRunning, else ->
-  * Driver).
+  * Owns the full strategy lifecycle: SPI discovery -> build -> initialize -> cache. The LicenseMode
+  * is derived from configuration (`refreshEnabled=true` -> LongRunning, else -> Driver).
   *
   * Thread-safe: all AtomicReference mutations use compareAndSet.
   */
@@ -74,8 +73,8 @@ object LicenseManagerFactory extends LazyLogging {
     else Some(LicenseMode.Driver)
   }
 
-  /** Resolve strategy via SPI, initialize it, and cache it. Uses CAS to ensure only one strategy
-    * is created in concurrent scenarios.
+  /** Resolve strategy via SPI, initialize it, and cache it. Uses CAS to ensure only one strategy is
+    * created in concurrent scenarios.
     */
   private def resolveStrategy(config: Config): LicenseRefreshStrategy =
     _strategy.get() match {

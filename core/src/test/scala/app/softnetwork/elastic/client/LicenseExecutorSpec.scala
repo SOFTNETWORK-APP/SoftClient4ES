@@ -214,8 +214,11 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     val executor = new LicenseExecutor(
       strategy = mkStrategy(
         communityManager,
-        refreshResult =
-          Left(InvalidLicense("No API key configured — license loaded from static JWT or Community default"))
+        refreshResult = Left(
+          InvalidLicense(
+            "No API key configured — license loaded from static JWT or Community default"
+          )
+        )
       )
     )
     val row = executeRefresh(executor)
