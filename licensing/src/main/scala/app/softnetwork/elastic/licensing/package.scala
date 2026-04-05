@@ -164,6 +164,12 @@ package object licensing {
 
     /** Log a warning if the license is in mid-grace period (per-request use) */
     def warnIfInGrace(): Unit = ()
+
+    /** Refresh the license (re-resolve from backend/cache/config). Returns Right(LicenseKey) on
+      * success, Left(LicenseError) on failure. Default: returns Right(LicenseKey.Community) (no-op
+      * for stub implementations).
+      */
+    def refresh(): Either[LicenseError, LicenseKey] = Left(RefreshNotSupported)
   }
 
   sealed trait LicenseError {
@@ -186,5 +192,13 @@ package object licensing {
   case class QuotaExceeded(quota: String, current: Int, max: Int) extends LicenseError {
     def message: String = s"Quota exceeded: $quota ($current/$max)"
   }
+
+  case object RefreshNotSupported extends LicenseError {
+    def message: String = "License refresh is not supported in Community mode"
+    override def statusCode: Int = 501
+  }
+
+  @deprecated("Use CommunityLicenseManager", "0.20.0")
+  type DefaultLicenseManager = CommunityLicenseManager
 
 }

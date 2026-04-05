@@ -60,10 +60,4 @@ object Versions {
   val hadoop = "3.4.2" // must match hadoop-client in core/build.sbt
 
   val gcsConnector = "hadoop3-2.2.24"
-
-  val nimbusJoseJwt = "10.3"
-
-  val bouncyCastle = "1.80"
-
-  val tink = "1.16.0"
 }

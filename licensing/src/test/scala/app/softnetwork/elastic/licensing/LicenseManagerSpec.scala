@@ -21,111 +21,84 @@ import org.scalatest.matchers.should.Matchers
 
 class LicenseManagerSpec extends AnyFlatSpec with Matchers {
 
-  "DefaultLicenseManager with Community license" should "include MaterializedViews" in {
-    val manager = new DefaultLicenseManager
+  "CommunityLicenseManager" should "include MaterializedViews" in {
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.MaterializedViews) shouldBe true
   }
 
   it should "include JdbcDriver" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.JdbcDriver) shouldBe true
   }
 
   it should "not include FlightSql" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.FlightSql) shouldBe false
   }
 
   it should "not include Federation" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.Federation) shouldBe false
   }
 
   it should "not include OdbcDriver" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.OdbcDriver) shouldBe false
   }
 
   it should "not include UnlimitedResults" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.UnlimitedResults) shouldBe false
   }
 
   it should "not include AdvancedAggregations" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.AdvancedAggregations) shouldBe false
   }
 
   it should "return Community quotas" in {
-    val manager = new DefaultLicenseManager
+    val manager = new CommunityLicenseManager
     manager.quotas shouldBe Quota.Community
   }
 
-  "DefaultLicenseManager with Pro license" should "include FlightSql" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("PRO-test-key")
-    manager.hasFeature(Feature.FlightSql) shouldBe true
+  it should "always be Community type" in {
+    val manager = new CommunityLicenseManager
+    manager.licenseType shouldBe LicenseType.Community
   }
 
-  it should "include MaterializedViews" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("PRO-test-key")
-    manager.hasFeature(Feature.MaterializedViews) shouldBe true
+  it should "reject any key validation" in {
+    val manager = new CommunityLicenseManager
+    manager.validate("PRO-test-key") shouldBe a[Left[_, _]]
+    manager.validate("ENT-test-key") shouldBe a[Left[_, _]]
+    manager.validate("anything") shouldBe a[Left[_, _]]
+    // State remains Community after rejected validation
+    manager.licenseType shouldBe LicenseType.Community
+    manager.quotas shouldBe Quota.Community
   }
 
-  it should "include JdbcDriver" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("PRO-test-key")
-    manager.hasFeature(Feature.JdbcDriver) shouldBe true
-  }
-
-  it should "include UnlimitedResults" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("PRO-test-key")
-    manager.hasFeature(Feature.UnlimitedResults) shouldBe true
-  }
-
-  it should "not include Federation" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("PRO-test-key")
-    manager.hasFeature(Feature.Federation) shouldBe false
-  }
-
-  it should "return Pro quotas" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("PRO-test-key")
-    manager.quotas shouldBe Quota.Pro
-  }
-
-  "DefaultLicenseManager with Enterprise license" should "include FlightSql" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("ENT-test-key")
-    manager.hasFeature(Feature.FlightSql) shouldBe true
-  }
-
-  it should "include Federation" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("ENT-test-key")
-    manager.hasFeature(Feature.Federation) shouldBe true
-  }
-
-  it should "include all features" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("ENT-test-key")
-    Feature.values.foreach { feature =>
-      manager.hasFeature(feature) shouldBe true
-    }
-  }
-
-  it should "return Enterprise quotas" in {
-    val manager = new DefaultLicenseManager
-    manager.validate("ENT-test-key")
-    manager.quotas shouldBe Quota.Enterprise
+  it should "return Left(RefreshNotSupported) on refresh" in {
+    val manager = new CommunityLicenseManager
+    manager.refresh() shouldBe Left(RefreshNotSupported)
   }
 
   "LicenseManager trait" should "be source-compatible" in {
-    val manager: LicenseManager = new DefaultLicenseManager
+    val manager: LicenseManager = new CommunityLicenseManager
     manager.licenseType shouldBe LicenseType.Community
     manager.quotas shouldBe Quota.Community
+  }
+
+  it should "default refresh to Left(RefreshNotSupported)" in {
+    val stub = new LicenseManager {
+      def validate(key: String): Either[LicenseError, LicenseKey] = Left(InvalidLicense("stub"))
+      def hasFeature(feature: Feature): Boolean = false
+      def quotas: Quota = Quota.Community
+      def licenseType: LicenseType = LicenseType.Community
+    }
+    stub.refresh() shouldBe Left(RefreshNotSupported)
+  }
+
+  "DefaultLicenseManager" should "be a deprecated alias for CommunityLicenseManager" in {
+    val manager: DefaultLicenseManager = new CommunityLicenseManager
+    manager shouldBe a[CommunityLicenseManager]
   }
 }

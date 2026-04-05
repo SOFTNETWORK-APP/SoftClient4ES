@@ -111,19 +111,6 @@ lazy val licensing = project
     buildInfoObject := "LicensingBuildInfo"
   )
 
-lazy val licensingTestkit = Project(id = "softclient4es-licensing-testkit", base = file("licensing/testkit"))
-  .configs(IntegrationTest)
-  .settings(
-    Defaults.itSettings,
-    moduleSettings,
-    libraryDependencies ++= Seq(
-      "ch.qos.logback" % "logback-classic" % Versions.logback % Test
-    )
-  )
-  .dependsOn(
-    licensing % "compile->compile"
-  )
-
 lazy val sql = project
   .in(file("sql"))
   .configs(IntegrationTest)
@@ -586,7 +573,6 @@ lazy val root = project
   )
   .aggregate(
     licensing,
-    licensingTestkit,
     sql,
     bridge,
     macros,
