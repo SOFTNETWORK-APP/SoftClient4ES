@@ -16,16 +16,18 @@
 
 package app.softnetwork.elastic.licensing
 
-import com.typesafe.config.Config
-
-/** Fallback SPI that provides Community-tier licensing with no external dependencies. Priority
-  * Int.MaxValue ensures any other SPI implementation takes precedence. Ignores licenseMode —
-  * Community is always Community regardless of runtime context.
+/** No-op refresh strategy for Community mode.
+  *
+  * Always returns Community defaults. Used as the fallback when no extensions JAR is on the
+  * classpath or when no LicenseManagerSpi provides a real strategy.
   */
-class CommunityLicenseManagerSpi extends LicenseManagerSpi {
-  override def priority: Int = Int.MaxValue
-  override protected def buildStrategy(
-    config: Config,
-    mode: Option[LicenseMode]
-  ): LicenseRefreshStrategy = new NopRefreshStrategy()
+class NopRefreshStrategy extends LicenseRefreshStrategy {
+
+  private val manager: LicenseManager = new CommunityLicenseManager()
+
+  override def initialize(): LicenseKey = LicenseKey.Community
+
+  override def refresh(): Either[LicenseError, LicenseKey] = Left(RefreshNotSupported)
+
+  override def licenseManager: LicenseManager = manager
 }

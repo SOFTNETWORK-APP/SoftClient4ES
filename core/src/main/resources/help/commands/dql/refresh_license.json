@@ -1,0 +1,22 @@
+{
+  "name": "REFRESH LICENSE",
+  "category": "DQL",
+  "shortDescription": "Force an immediate license refresh from the backend",
+  "syntax": ["REFRESH LICENSE"],
+  "description": "Forces an immediate license refresh from the backend (API key fetch). Returns previous and new tier information.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Refresh license",
+      "description": "Fetches a new JWT from the license server",
+      "sql": "REFRESH LICENSE"
+    }
+  ],
+  "notes": [
+    "Requires API key configuration. Without an API key, returns an informational message."
+  ],
+  "limitations": [],
+  "seeAlso": ["SHOW LICENSE"],
+  "minVersion": null,
+  "aliases": []
+}

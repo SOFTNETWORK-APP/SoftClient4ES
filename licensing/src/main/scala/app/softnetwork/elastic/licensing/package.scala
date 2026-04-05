@@ -170,6 +170,11 @@ package object licensing {
       * for stub implementations).
       */
     def refresh(): Either[LicenseError, LicenseKey] = Left(RefreshNotSupported)
+
+    /** Get the current LicenseKey (needed by SHOW LICENSE for expiresAt). Default returns
+      * Community.
+      */
+    def currentLicenseKey: LicenseKey = LicenseKey.Community
   }
 
   sealed trait LicenseError {

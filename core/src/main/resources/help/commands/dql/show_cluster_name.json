@@ -1,0 +1,20 @@
+{
+  "name": "SHOW CLUSTER NAME",
+  "category": "DQL",
+  "shortDescription": "Display the Elasticsearch cluster name",
+  "syntax": ["SHOW CLUSTER NAME"],
+  "description": "Returns the name of the Elasticsearch cluster. Used by the federation server for schema resolution.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show cluster name",
+      "description": "Returns a single row with the cluster name",
+      "sql": "SHOW CLUSTER NAME"
+    }
+  ],
+  "notes": ["The cluster name is cached after the first call"],
+  "limitations": [],
+  "seeAlso": ["SHOW TABLES"],
+  "minVersion": null,
+  "aliases": []
+}

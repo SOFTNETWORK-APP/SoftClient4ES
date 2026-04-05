@@ -47,6 +47,8 @@ DQL supports:
 - [SHOW ENRICH POLICIES](#show-enrich-policies)
 - [SHOW ENRICH POLICY](#show-enrich-policy)
 - [SHOW CLUSTER NAME](#show-cluster-name)
+- [SHOW LICENSE](#show-license)
+- [REFRESH LICENSE](#refresh-license)
 
 ---
 
@@ -1301,6 +1303,72 @@ SHOW CLUSTER NAME;
 |----------------|
 | docker-cluster |
 📊 1 row(s) (3ms)
+
+---
+
+## SHOW LICENSE
+
+```sql
+SHOW LICENSE;
+```
+
+Returns the current license type, quota values, expiration date, and grace status.
+
+**Columns returned:**
+
+| Column | Description |
+|--------|-------------|
+| `license_type` | Current license tier (Community, Pro, Enterprise). Shows "(degraded)" suffix if the license was degraded from a higher tier. |
+| `max_materialized_views` | Maximum number of materialized views allowed, or "unlimited" |
+| `max_clusters` | Maximum number of federated clusters allowed, or "unlimited" |
+| `max_result_rows` | Maximum rows returned per query, or "unlimited" |
+| `max_concurrent_queries` | Maximum concurrent queries allowed, or "unlimited" |
+| `expires_at` | License expiration timestamp, or "never" for Community |
+| `status` | "Active", or grace period details if expired |
+
+**Example:**
+
+```sql
+SHOW LICENSE;
+```
+
+| license_type | max_materialized_views | max_clusters | max_result_rows | max_concurrent_queries | expires_at | status |
+|---|---|---|---|---|---|---|
+| Community | 3 | 2 | 10000 | 5 | never | Active |
+📊 1 row(s) (1ms)
+
+---
+
+## REFRESH LICENSE
+
+```sql
+REFRESH LICENSE;
+```
+
+Forces an immediate license refresh from the backend (API key fetch). Returns the previous and new tier information.
+
+**Columns returned:**
+
+| Column | Description |
+|--------|-------------|
+| `previous_tier` | License tier before refresh |
+| `new_tier` | License tier after refresh |
+| `expires_at` | New expiration timestamp |
+| `status` | "Refreshed" on success, "Failed" on error |
+| `message` | Error details (empty on success) |
+
+**Example (no API key configured):**
+
+```sql
+REFRESH LICENSE;
+```
+
+| previous_tier | new_tier | expires_at | status | message |
+|---|---|---|---|---|
+| Community | Community | never | Failed | License refresh is not supported in Community mode |
+📊 1 row(s) (1ms)
+
+> **Note:** Requires API key configuration. Without an API key, returns an informational failure message.
 
 ---
 

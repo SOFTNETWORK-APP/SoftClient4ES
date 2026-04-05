@@ -1425,4 +1425,38 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     rows.head should contain key "name"
     rows.head("name") shouldBe "docker-cluster"
   }
+
+  // =========================================================================
+  // 11. SHOW LICENSE / REFRESH LICENSE tests
+  // =========================================================================
+
+  behavior of "REPL - SHOW LICENSE / REFRESH LICENSE"
+
+  it should "return Community license info using SHOW LICENSE" in {
+    val rows = assertQueryRows(System.nanoTime(), executeSync("SHOW LICENSE"))
+    rows should have size 1
+    val row = rows.head
+    row should contain key "license_type"
+    row("license_type") shouldBe "Community"
+    row should contain key "max_materialized_views"
+    row should contain key "max_result_rows"
+    row should contain key "max_concurrent_queries"
+    row should contain key "max_clusters"
+    row should contain key "expires_at"
+    row("expires_at") shouldBe "never"
+    row should contain key "status"
+  }
+
+  it should "return failure result using REFRESH LICENSE without strategy" in {
+    val rows = assertQueryRows(System.nanoTime(), executeSync("REFRESH LICENSE"))
+    rows should have size 1
+    val row = rows.head
+    row should contain key "status"
+    row("status") shouldBe "Failed"
+    row should contain key "message"
+    row should contain key "previous_tier"
+    row("previous_tier") shouldBe "Community"
+    row should contain key "new_tier"
+    row should contain key "expires_at"
+  }
 }

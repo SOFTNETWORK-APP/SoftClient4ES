@@ -11,5 +11,8 @@
   "show_watchers.json",
   "show_watcher_status.json",
   "show_enrich_policies.json",
-  "show_enrich_policy.json"
+  "show_enrich_policy.json",
+  "show_cluster_name.json",
+  "show_license.json",
+  "refresh_license.json"
 ]

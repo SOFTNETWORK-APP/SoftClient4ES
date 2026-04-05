@@ -16,51 +16,14 @@
 
 package app.softnetwork.elastic.client
 
-import java.util.ServiceLoader
-
-import scala.jdk.CollectionConverters._
-
-import app.softnetwork.elastic.licensing.{
-  CommunityLicenseManager,
-  LicenseManager,
-  LicenseManagerSpi,
-  LicenseMode
-}
+import app.softnetwork.elastic.licensing.{LicenseManager, LicenseManagerFactory}
 
 trait ExtensionApi { self: ElasticClientApi =>
 
-  /** Runtime context for licensing behavior. Override in concrete implementations:
-    *   - REPL/CLI: `Some(LicenseMode.LongRunning)` — auto-refresh
-    *   - JDBC/ADBC: `Some(LicenseMode.Driver)` — on-demand, no implicit calls
-    *   - Default: `None` — safe default (Driver semantics)
+  /** License manager resolved via LicenseManagerFactory. The factory uses SPI discovery and derives
+    * LicenseMode from config (refreshEnabled=true -> LongRunning, else -> Driver).
     */
-  def licenseMode: Option[LicenseMode] = None
-
-  /** License manager resolved via SPI (highest-priority LicenseManagerSpi wins). The licenseMode is
-    * passed to the SPI to wire the appropriate refresh strategy. Falls back to
-    * CommunityLicenseManager if no SPI implementation is found or if the winning SPI fails to
-    * create a manager.
-    *
-    * CONSTRAINT: SPI create() must NOT reference this ElasticClientApi instance.
-    */
-  lazy val licenseManager: LicenseManager = {
-    val loader = ServiceLoader.load(classOf[LicenseManagerSpi])
-    val spis = loader.iterator().asScala.toSeq.sortBy(_.priority)
-    spis.headOption
-      .flatMap { spi =>
-        try {
-          Some(spi.create(config, licenseMode))
-        } catch {
-          case e: Exception =>
-            logger.error(
-              s"Failed to create LicenseManager from ${spi.getClass.getName}: ${e.getMessage}",
-              e
-            )
-            None
-        }
-      }
-      .getOrElse(new CommunityLicenseManager())
-  }
+  lazy val licenseManager: LicenseManager = LicenseManagerFactory.create(config)
 
   /** Extension registry (lazy loaded) */
   lazy val extensionRegistry: ExtensionRegistry =

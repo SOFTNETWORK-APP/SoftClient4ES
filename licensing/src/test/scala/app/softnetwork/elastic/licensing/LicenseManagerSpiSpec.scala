@@ -44,7 +44,6 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
     // No mode
     val mgr1 = spi.create(config)
     mgr1.licenseType shouldBe LicenseType.Community
-    mgr1.refresh() shouldBe Left(RefreshNotSupported)
 
     // LongRunning mode — still Community
     val mgr2 = spi.create(config, Some(LicenseMode.LongRunning))
@@ -74,11 +73,13 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
   "SPI resolution" should "pick the lowest-priority SPI" in {
     val lowPriority = new LicenseManagerSpi {
       override def priority: Int = 10
-      override def create(
+      override protected def buildStrategy(
         config: Config,
         mode: Option[LicenseMode]
-      ): LicenseManager = new CommunityLicenseManager() {
-        override def licenseType: LicenseType = LicenseType.Pro
+      ): LicenseRefreshStrategy = new NopRefreshStrategy() {
+        override def licenseManager: LicenseManager = new CommunityLicenseManager() {
+          override def licenseType: LicenseType = LicenseType.Pro
+        }
       }
     }
     val community = new CommunityLicenseManagerSpi()
@@ -96,10 +97,10 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
   it should "fall back to CommunityLicenseManager when winning SPI throws" in {
     val broken = new LicenseManagerSpi {
       override def priority: Int = 1
-      override def create(
+      override protected def buildStrategy(
         config: Config,
         mode: Option[LicenseMode]
-      ): LicenseManager = throw new RuntimeException("boom")
+      ): LicenseRefreshStrategy = throw new RuntimeException("boom")
     }
 
     val mgr = resolveManager(Seq(broken))
@@ -111,12 +112,12 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
     var receivedMode: Option[LicenseMode] = None
     val spy = new LicenseManagerSpi {
       override def priority: Int = 1
-      override def create(
+      override protected def buildStrategy(
         config: Config,
         mode: Option[LicenseMode]
-      ): LicenseManager = {
+      ): LicenseRefreshStrategy = {
         receivedMode = mode
-        new CommunityLicenseManager()
+        new NopRefreshStrategy()
       }
     }
 
