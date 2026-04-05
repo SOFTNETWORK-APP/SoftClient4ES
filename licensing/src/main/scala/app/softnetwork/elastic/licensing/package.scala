@@ -22,6 +22,11 @@ package object licensing {
     def isPaid: Boolean = this != LicenseType.Community
     def isEnterprise: Boolean = this == LicenseType.Enterprise
     def isPro: Boolean = this == LicenseType.Pro
+    def ordinal: Int = this match {
+      case LicenseType.Community  => 0
+      case LicenseType.Pro        => 1
+      case LicenseType.Enterprise => 2
+    }
   }
 
   object LicenseType {
@@ -33,6 +38,12 @@ package object licensing {
       case Pro        => Enterprise
       case Enterprise => Enterprise
     }
+
+    def fromString(s: String): LicenseType = s.trim.toLowerCase match {
+      case "pro"        => Pro
+      case "enterprise" => Enterprise
+      case _            => Community
+    }
   }
 
   sealed trait Feature
@@ -43,13 +54,38 @@ package object licensing {
     case object OdbcDriver extends Feature
     case object UnlimitedResults extends Feature
     case object AdvancedAggregations extends Feature
+    case object FlightSql extends Feature
+    case object Federation extends Feature
     def values: Seq[Feature] = Seq(
       MaterializedViews,
       JdbcDriver,
       OdbcDriver,
       UnlimitedResults,
-      AdvancedAggregations
+      AdvancedAggregations,
+      FlightSql,
+      Federation
     )
+
+    def fromString(s: String): Option[Feature] = s.trim.toLowerCase match {
+      case "materialized_views"    => Some(MaterializedViews)
+      case "jdbc_driver"           => Some(JdbcDriver)
+      case "odbc_driver"           => Some(OdbcDriver)
+      case "unlimited_results"     => Some(UnlimitedResults)
+      case "advanced_aggregations" => Some(AdvancedAggregations)
+      case "flight_sql"            => Some(FlightSql)
+      case "federation"            => Some(Federation)
+      case _                       => None
+    }
+
+    def toSnakeCase(f: Feature): String = f match {
+      case MaterializedViews    => "materialized_views"
+      case JdbcDriver           => "jdbc_driver"
+      case OdbcDriver           => "odbc_driver"
+      case UnlimitedResults     => "unlimited_results"
+      case AdvancedAggregations => "advanced_aggregations"
+      case FlightSql            => "flight_sql"
+      case Federation           => "federation"
+    }
   }
 
   case class LicenseKey(
@@ -60,30 +96,50 @@ package object licensing {
     metadata: Map[String, String] = Map.empty
   )
 
+  object LicenseKey {
+    val Community: LicenseKey = LicenseKey(
+      id = "community",
+      licenseType = LicenseType.Community,
+      features = Set(Feature.MaterializedViews, Feature.JdbcDriver),
+      expiresAt = None
+    )
+  }
+
   case class Quota(
     maxMaterializedViews: Option[Int], // None = unlimited
     maxQueryResults: Option[Int], // None = unlimited
-    maxConcurrentQueries: Option[Int]
+    maxConcurrentQueries: Option[Int],
+    maxClusters: Option[Int] = Some(2) // None = unlimited
   )
 
   object Quota {
     val Community: Quota = Quota(
       maxMaterializedViews = Some(3),
       maxQueryResults = Some(10000),
-      maxConcurrentQueries = Some(5)
+      maxConcurrentQueries = Some(5),
+      maxClusters = Some(2)
     )
 
     val Pro: Quota = Quota(
       maxMaterializedViews = Some(50),
       maxQueryResults = Some(1000000),
-      maxConcurrentQueries = Some(50)
+      maxConcurrentQueries = Some(50),
+      maxClusters = Some(5)
     )
 
     val Enterprise: Quota = Quota(
       maxMaterializedViews = None, // Unlimited
       maxQueryResults = None,
-      maxConcurrentQueries = None
+      maxConcurrentQueries = None,
+      maxClusters = None
     )
+  }
+
+  sealed trait GraceStatus
+  object GraceStatus {
+    case object NotInGrace extends GraceStatus
+    case class EarlyGrace(daysExpired: Long) extends GraceStatus
+    case class MidGrace(daysExpired: Long, daysRemaining: Long) extends GraceStatus
   }
 
   trait LicenseManager {
@@ -99,6 +155,21 @@ package object licensing {
 
     /** Get license type */
     def licenseType: LicenseType
+
+    /** Get current grace status */
+    def graceStatus: GraceStatus = GraceStatus.NotInGrace
+
+    /** Whether the license was degraded to Community due to expiry/failure */
+    def wasDegraded: Boolean = false
+
+    /** Log a warning if the license is in mid-grace period (per-request use) */
+    def warnIfInGrace(): Unit = ()
+
+    /** Refresh the license (re-resolve from backend/cache/config). Returns Right(LicenseKey) on
+      * success, Left(LicenseError) on failure. Default: returns Right(LicenseKey.Community) (no-op
+      * for stub implementations).
+      */
+    def refresh(): Either[LicenseError, LicenseKey] = Left(RefreshNotSupported)
   }
 
   sealed trait LicenseError {
@@ -121,5 +192,13 @@ package object licensing {
   case class QuotaExceeded(quota: String, current: Int, max: Int) extends LicenseError {
     def message: String = s"Quota exceeded: $quota ($current/$max)"
   }
+
+  case object RefreshNotSupported extends LicenseError {
+    def message: String = "License refresh is not supported in Community mode"
+    override def statusCode: Int = 501
+  }
+
+  @deprecated("Use CommunityLicenseManager", "0.20.0")
+  type DefaultLicenseManager = CommunityLicenseManager
 
 }

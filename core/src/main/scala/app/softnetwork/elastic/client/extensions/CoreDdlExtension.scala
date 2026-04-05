@@ -31,7 +31,7 @@ import scala.concurrent.{ExecutionContext, Future}
   * {{{
   * ✅ OSS (always loaded)
   * ✅ Handles simple DDL (CREATE TABLE, DROP TABLE, etc.)
-  * ✅ Does NOT handle materialized views (premium extension)
+  * ✅ Does NOT handle materialized views (community extension)
   * }}}
   */
 //format:on
