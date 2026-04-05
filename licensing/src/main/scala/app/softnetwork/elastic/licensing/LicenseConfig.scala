@@ -24,6 +24,8 @@ case class LicenseConfig(
   key: Option[String],
   apiKey: Option[String],
   apiUrl: String,
+  connectTimeout: FiniteDuration,
+  readTimeout: FiniteDuration,
   refreshEnabled: Boolean,
   refreshInterval: FiniteDuration,
   telemetryEnabled: Boolean,
@@ -52,6 +54,8 @@ object LicenseConfig {
     val gracePeriod = license.getDuration("grace-period").toMillis.millis
 
     val apiUrl = license.getString("api-url")
+    val connectTimeout = license.getDuration("connect-timeout").toMillis.millis
+    val readTimeout = license.getDuration("read-timeout").toMillis.millis
 
     val cacheDir = license.getString("cache-dir")
 
@@ -59,6 +63,8 @@ object LicenseConfig {
       key = key,
       apiKey = apiKey,
       apiUrl = apiUrl,
+      connectTimeout = connectTimeout,
+      readTimeout = readTimeout,
       refreshEnabled = refreshEnabled,
       refreshInterval = refreshInterval,
       telemetryEnabled = telemetryEnabled,
