@@ -17,6 +17,20 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
+import app.softnetwork.elastic.licensing.{
+  CommunityLicenseManager,
+  Feature,
+  GraceStatus,
+  InvalidLicense,
+  LicenseError,
+  LicenseKey,
+  LicenseManager,
+  LicenseManagerFactory,
+  LicenseRefreshStrategy,
+  LicenseType,
+  NopRefreshStrategy,
+  Quota
+}
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
@@ -56,8 +70,10 @@ import app.softnetwork.elastic.sql.query.{
   EnrichPolicyStatement,
   ExecuteEnrichPolicy,
   Insert,
+  LicenseStatement,
   MultiSearch,
   PipelineStatement,
+  RefreshLicense,
   SearchStatement,
   SelectStatement,
   ShowClusterName,
@@ -65,6 +81,7 @@ import app.softnetwork.elastic.sql.query.{
   ShowCreateTable,
   ShowEnrichPolicies,
   ShowEnrichPolicy,
+  ShowLicense,
   ShowPipeline,
   ShowPipelines,
   ShowTable,
@@ -1597,13 +1614,79 @@ class ClusterExecutor(
   }
 }
 
+class LicenseExecutor(
+  strategy: LicenseRefreshStrategy
+) extends Executor[LicenseStatement] {
+
+  override def execute(
+    statement: LicenseStatement
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] =
+    statement match {
+      case ShowLicense    => Future.successful(executeShowLicense())
+      case RefreshLicense => Future.successful(executeRefreshLicense())
+    }
+
+  private def executeShowLicense(): ElasticResult[QueryResult] = {
+    val mgr = strategy.licenseManager
+    val key = mgr.currentLicenseKey
+    val graceStatus = mgr.graceStatus match {
+      case GraceStatus.NotInGrace => "Active"
+      case GraceStatus.EarlyGrace(days) =>
+        s"Expired ($days days ago, in grace period)"
+      case GraceStatus.MidGrace(days, remaining) =>
+        s"Expired ($days days ago, $remaining days until Community fallback)"
+    }
+    val degradedNote = if (mgr.wasDegraded) " (degraded)" else ""
+    val row = ListMap[String, Any](
+      "license_type"           -> s"${mgr.licenseType}$degradedNote",
+      "max_materialized_views" -> formatQuota(mgr.quotas.maxMaterializedViews),
+      "max_clusters"           -> formatQuota(mgr.quotas.maxClusters),
+      "max_result_rows"        -> formatQuota(mgr.quotas.maxQueryResults),
+      "max_concurrent_queries" -> formatQuota(mgr.quotas.maxConcurrentQueries),
+      "expires_at"             -> formatExpiry(key.expiresAt),
+      "status"                 -> graceStatus
+    )
+    ElasticSuccess(QueryRows(Seq(row)))
+  }
+
+  private def executeRefreshLicense(): ElasticResult[QueryResult] = {
+    val previousTier = strategy.licenseManager.licenseType
+    strategy.refresh() match {
+      case Right(key) =>
+        val row = ListMap[String, Any](
+          "previous_tier" -> previousTier.toString,
+          "new_tier"      -> key.licenseType.toString,
+          "expires_at"    -> formatExpiry(key.expiresAt),
+          "status"        -> "Refreshed",
+          "message"       -> ""
+        )
+        ElasticSuccess(QueryRows(Seq(row)))
+      case Left(err) =>
+        val row = ListMap[String, Any](
+          "previous_tier" -> previousTier.toString,
+          "new_tier"      -> previousTier.toString,
+          "expires_at"    -> formatExpiry(strategy.licenseManager.currentLicenseKey.expiresAt),
+          "status"        -> "Failed",
+          "message"       -> err.message
+        )
+        ElasticSuccess(QueryRows(Seq(row)))
+    }
+  }
+
+  private def formatQuota(q: Option[Int]): String =
+    q.map(_.toString).getOrElse("unlimited")
+  private def formatExpiry(exp: Option[java.time.Instant]): String =
+    exp.map(_.toString).getOrElse("never")
+}
+
 class DqlRouterExecutor(
   searchExec: SearchExecutor,
   pipelineExec: PipelineExecutor,
   tableExec: TableExecutor,
   watcherExec: WatcherExecutor,
   policyExec: EnrichPolicyExecutor,
-  clusterExec: ClusterExecutor
+  clusterExec: ClusterExecutor,
+  licenseExec: LicenseExecutor
 ) extends Executor[DqlStatement] {
 
   override def execute(
@@ -1616,6 +1699,7 @@ class DqlRouterExecutor(
     case w: WatcherStatement      => watcherExec.execute(w)
     case e: EnrichPolicyStatement => policyExec.execute(e)
     case c: ClusterStatement      => clusterExec.execute(c)
+    case l: LicenseStatement      => licenseExec.execute(l)
 
     case _ =>
       Future.successful(
@@ -1654,6 +1738,11 @@ class DdlRouterExecutor(
 trait GatewayApi extends IndicesApi with ElasticClientHelpers {
   self: ElasticClientApi =>
 
+  /** License refresh strategy. Resolved via LicenseManagerFactory (SPI + config-driven mode).
+    * Override in concrete implementations if custom strategy wiring is needed.
+    */
+  def licenseRefreshStrategy: LicenseRefreshStrategy = LicenseManagerFactory.currentStrategy
+
   lazy val searchExecutor = new SearchExecutor(
     api = this,
     logger = logger
@@ -1689,13 +1778,18 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     logger = logger
   )
 
+  lazy val licenseExecutor = new LicenseExecutor(
+    strategy = licenseRefreshStrategy // No longer Option — NopRefreshStrategy for Community
+  )
+
   lazy val dqlExecutor = new DqlRouterExecutor(
     searchExec = searchExecutor,
     pipelineExec = pipelineExecutor,
     tableExec = tableExecutor,
     watcherExec = watcherExecutor,
     policyExec = policyExecutor,
-    clusterExec = clusterExecutor
+    clusterExec = clusterExecutor,
+    licenseExec = licenseExecutor
   )
 
   lazy val ddlExecutor = new DdlRouterExecutor(

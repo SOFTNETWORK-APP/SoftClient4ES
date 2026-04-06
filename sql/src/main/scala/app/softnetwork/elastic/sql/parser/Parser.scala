@@ -954,6 +954,16 @@ object Parser
       ShowClusterName
     }
 
+  def showLicense: PackratParser[ShowLicense.type] =
+    (keyword("SHOW") ~ keyword("LICENSE")) ^^ { _ =>
+      ShowLicense
+    }
+
+  def refreshLicense: PackratParser[RefreshLicense.type] =
+    (keyword("REFRESH") ~ keyword("LICENSE")) ^^ { _ =>
+      RefreshLicense
+    }
+
   def dqlStatement: PackratParser[DqlStatement] = {
     searchStatement |
     showTables |
@@ -973,7 +983,9 @@ object Parser
     showWatcherStatus |
     showEnrichPolicy |
     showEnrichPolicies |
-    showClusterName
+    showLicense |
+    showClusterName |
+    refreshLicense
   }
 
   def ddlStatement: PackratParser[DdlStatement] =

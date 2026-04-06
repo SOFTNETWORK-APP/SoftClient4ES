@@ -44,6 +44,10 @@ object LicenseMode {
   * Discovered via `java.util.ServiceLoader`. The implementation with the lowest priority value
   * wins.
   *
+  * Subclasses implement `buildStrategy()` (pure construction, no initialization). The default
+  * `create()` and `createStrategy()` delegate to `buildStrategy()`. Strategy initialization and
+  * caching are handled by `LicenseManagerFactory`, not by the SPI.
+  *
   * Register implementations in:
   * `META-INF/services/app.softnetwork.elastic.licensing.LicenseManagerSpi`
   */
@@ -54,7 +58,10 @@ trait LicenseManagerSpi {
     */
   def priority: Int = 100
 
-  /** Create a LicenseManager from application configuration.
+  /** Build a LicenseRefreshStrategy for this SPI. Subclasses must implement.
+    *
+    * MUST NOT call `strategy.initialize()` — lifecycle is managed by `LicenseManagerFactory`. Each
+    * call builds a fresh strategy (no caching).
     *
     * @param config
     *   The application configuration (typically from `ConfigFactory.load()`)
@@ -63,7 +70,26 @@ trait LicenseManagerSpi {
     *   `Some(LongRunning)` = wire AutoRefreshStrategy. `Some(Driver)` = wire
     *   OnDemandRefreshStrategy with checkExpiry().
     * @return
-    *   A configured LicenseManager instance with appropriate refresh behavior
+    *   A freshly constructed (not initialized) LicenseRefreshStrategy
     */
-  def create(config: Config, mode: Option[LicenseMode] = None): LicenseManager
+  protected def buildStrategy(config: Config, mode: Option[LicenseMode]): LicenseRefreshStrategy
+
+  /** Create a LicenseManager by building a strategy and returning its licenseManager.
+    *
+    * Note: the strategy is NOT initialized here — callers who need full lifecycle management should
+    * use `LicenseManagerFactory.create()` instead.
+    */
+  def create(config: Config, mode: Option[LicenseMode] = None): LicenseManager =
+    buildStrategy(config, mode).licenseManager
+
+  /** Create a LicenseRefreshStrategy directly (not initialized, not cached).
+    *
+    * Returns the full strategy object, enabling `LicenseManagerFactory` to manage its lifecycle
+    * (initialize, cache, replace).
+    */
+  def createStrategy(
+    config: Config,
+    mode: Option[LicenseMode] = None
+  ): LicenseRefreshStrategy =
+    buildStrategy(config, mode)
 }

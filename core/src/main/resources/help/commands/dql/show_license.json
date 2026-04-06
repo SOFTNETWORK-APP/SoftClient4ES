@@ -1,0 +1,22 @@
+{
+  "name": "SHOW LICENSE",
+  "category": "DQL",
+  "shortDescription": "Display current license information",
+  "syntax": ["SHOW LICENSE"],
+  "description": "Returns the current license type, quota values, expiration date, and grace status.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show license details",
+      "description": "Returns a single row with license information",
+      "sql": "SHOW LICENSE"
+    }
+  ],
+  "notes": [
+    "Returns license type, quota values, expiration date, and grace status"
+  ],
+  "limitations": [],
+  "seeAlso": ["REFRESH LICENSE"],
+  "minVersion": null,
+  "aliases": []
+}

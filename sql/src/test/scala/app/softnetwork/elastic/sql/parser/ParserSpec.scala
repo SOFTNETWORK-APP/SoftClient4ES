@@ -3079,4 +3079,44 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isLeft shouldBe true
   }
 
+  behavior of "Parser License"
+
+  it should "parse SHOW LICENSE" in {
+    val result = Parser("SHOW LICENSE")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe ShowLicense
+    result.toOption.get.sql shouldBe "SHOW LICENSE"
+  }
+
+  it should "parse show license (lowercase)" in {
+    val result = Parser("show license")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe ShowLicense
+  }
+
+  it should "parse Show License (mixed case)" in {
+    val result = Parser("Show License")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe ShowLicense
+  }
+
+  it should "parse REFRESH LICENSE" in {
+    val result = Parser("REFRESH LICENSE")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe RefreshLicense
+    result.toOption.get.sql shouldBe "REFRESH LICENSE"
+  }
+
+  it should "parse refresh license (lowercase)" in {
+    val result = Parser("refresh license")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe RefreshLicense
+  }
+
+  it should "parse Refresh License (mixed case)" in {
+    val result = Parser("Refresh License")
+    result.isRight shouldBe true
+    result.toOption.get shouldBe RefreshLicense
+  }
+
 }

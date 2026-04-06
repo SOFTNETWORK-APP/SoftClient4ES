@@ -1294,4 +1294,18 @@ package object query {
   case object ShowClusterName extends ClusterStatement with DqlStatement {
     override def sql: String = "SHOW CLUSTER NAME"
   }
+
+  // ========================================================================
+  // License statements
+  // ========================================================================
+
+  sealed trait LicenseStatement extends Statement with DqlStatement
+
+  case object ShowLicense extends LicenseStatement {
+    override def sql: String = "SHOW LICENSE"
+  }
+
+  case object RefreshLicense extends LicenseStatement {
+    override def sql: String = "REFRESH LICENSE"
+  }
 }
