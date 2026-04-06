@@ -36,4 +36,12 @@ trait LicenseRefreshStrategy {
 
   /** Access the current LicenseManager for SHOW LICENSE and feature/quota checks. */
   def licenseManager: LicenseManager
+
+  /** Telemetry collector for this strategy. Extensions update counters via this reference. Default
+    * returns `TelemetryCollector.Noop` (zero counters, never updated).
+    */
+  def telemetryCollector: TelemetryCollector = TelemetryCollector.Noop
+
+  /** Shutdown background resources (scheduler, etc.). Default is no-op. */
+  def shutdown(): Unit = ()
 }
