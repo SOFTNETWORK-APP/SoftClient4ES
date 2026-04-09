@@ -16,6 +16,8 @@
 
 package app.softnetwork.elastic.licensing
 
+import java.time.{Duration, Instant}
+
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -83,5 +85,57 @@ class LicenseKeySpec extends AnyFlatSpec with Matchers {
       expiresAt = None
     )
     key.metadata shouldBe empty
+  }
+
+  "isTrial" should "return true when trial metadata is set" in {
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.now().plus(Duration.ofDays(30))),
+      metadata = Map("trial" -> "true")
+    )
+    key.isTrial shouldBe true
+  }
+
+  it should "return false for paid Pro" in {
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.now().plus(Duration.ofDays(365))),
+      metadata = Map("trial" -> "false")
+    )
+    key.isTrial shouldBe false
+  }
+
+  it should "return false when trial metadata is absent" in {
+    LicenseKey.Community.isTrial shouldBe false
+  }
+
+  "daysRemaining" should "compute days until expiry" in {
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.now().plus(Duration.ofDays(15))),
+      metadata = Map.empty
+    )
+    key.daysRemaining.get should (be >= 14L and be <= 15L)
+  }
+
+  it should "return None for Community (no expiry)" in {
+    LicenseKey.Community.daysRemaining shouldBe None
+  }
+
+  it should "return negative for expired keys" in {
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.now().minus(Duration.ofDays(5))),
+      metadata = Map.empty
+    )
+    key.daysRemaining.get should be < 0L
   }
 }

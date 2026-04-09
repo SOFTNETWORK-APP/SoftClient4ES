@@ -1637,13 +1637,16 @@ class LicenseExecutor(
         s"Expired ($days days ago, $remaining days until Community fallback)"
     }
     val degradedNote = if (mgr.wasDegraded) " (degraded)" else ""
+    val trialNote = if (key.isTrial) " (trial)" else ""
     val row = ListMap[String, Any](
-      "license_type"           -> s"${mgr.licenseType}$degradedNote",
+      "license_type"           -> s"${mgr.licenseType}$trialNote$degradedNote",
+      "trial"                  -> key.isTrial,
       "max_materialized_views" -> formatQuota(mgr.quotas.maxMaterializedViews),
       "max_clusters"           -> formatQuota(mgr.quotas.maxClusters),
       "max_result_rows"        -> formatQuota(mgr.quotas.maxQueryResults),
       "max_concurrent_queries" -> formatQuota(mgr.quotas.maxConcurrentQueries),
       "expires_at"             -> formatExpiry(key.expiresAt),
+      "days_remaining"         -> key.daysRemaining.getOrElse(-1L),
       "status"                 -> graceStatus
     )
     ElasticSuccess(QueryRows(Seq(row)))
@@ -1656,16 +1659,19 @@ class LicenseExecutor(
         val row = ListMap[String, Any](
           "previous_tier" -> previousTier.toString,
           "new_tier"      -> key.licenseType.toString,
+          "trial"         -> key.isTrial,
           "expires_at"    -> formatExpiry(key.expiresAt),
           "status"        -> "Refreshed",
           "message"       -> ""
         )
         ElasticSuccess(QueryRows(Seq(row)))
       case Left(err) =>
+        val currentKey = strategy.licenseManager.currentLicenseKey
         val row = ListMap[String, Any](
           "previous_tier" -> previousTier.toString,
           "new_tier"      -> previousTier.toString,
-          "expires_at"    -> formatExpiry(strategy.licenseManager.currentLicenseKey.expiresAt),
+          "trial"         -> currentKey.isTrial,
+          "expires_at"    -> formatExpiry(currentKey.expiresAt),
           "status"        -> "Failed",
           "message"       -> err.message
         )

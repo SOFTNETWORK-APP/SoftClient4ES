@@ -94,7 +94,16 @@ package object licensing {
     features: Set[Feature],
     expiresAt: Option[java.time.Instant],
     metadata: Map[String, String] = Map.empty
-  )
+  ) {
+
+    /** Whether this is a trial license (Pro trial via API key). */
+    def isTrial: Boolean = metadata.get("trial").contains("true")
+
+    /** Days remaining until expiration, or None if no expiry. */
+    def daysRemaining: Option[Long] = expiresAt.map { exp =>
+      java.time.Duration.between(java.time.Instant.now(), exp).toDays
+    }
+  }
 
   object LicenseKey {
     val Community: LicenseKey = LicenseKey(
@@ -175,6 +184,9 @@ package object licensing {
       * Community.
       */
     def currentLicenseKey: LicenseKey = LicenseKey.Community
+
+    /** Whether the current license is a trial. */
+    def isTrial: Boolean = currentLicenseKey.isTrial
   }
 
   sealed trait LicenseError {

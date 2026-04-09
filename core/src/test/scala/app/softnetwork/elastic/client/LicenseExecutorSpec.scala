@@ -75,6 +75,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
 
     row should contain key "license_type"
     row("license_type") shouldBe "Community"
+    row("trial") shouldBe false
     row should contain key "max_materialized_views"
     row("max_materialized_views") shouldBe "3"
     row should contain key "max_clusters"
@@ -85,6 +86,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("max_concurrent_queries") shouldBe "5"
     row should contain key "expires_at"
     row("expires_at") shouldBe "never"
+    row("days_remaining") shouldBe -1L
     row should contain key "status"
     row("status") shouldBe "Active"
   }
@@ -107,11 +109,13 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     val row = execute(executor, ShowLicense)
 
     row("license_type") shouldBe "Pro"
+    row("trial") shouldBe false
     row("max_materialized_views") shouldBe "50"
     row("max_clusters") shouldBe "5"
     row("max_result_rows") shouldBe "1000000"
     row("max_concurrent_queries") shouldBe "50"
     row("expires_at") shouldBe "2026-12-31T23:59:59Z"
+    row("days_remaining").asInstanceOf[Long] should be > 0L
     row("status") shouldBe "Active"
   }
 
@@ -161,6 +165,30 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("status") shouldBe "Expired (10 days ago, 4 days until Community fallback)"
   }
 
+  it should "show trial indicator for Pro trial license" in {
+    val trialManager = new LicenseManager {
+      override def validate(key: String): Either[LicenseError, LicenseKey] =
+        Left(InvalidLicense("test"))
+      override def hasFeature(feature: Feature): Boolean = true
+      override def quotas: Quota = Quota.Pro
+      override def licenseType: LicenseType = LicenseType.Pro
+      override def currentLicenseKey: LicenseKey = LicenseKey(
+        id = "test-trial",
+        licenseType = LicenseType.Pro,
+        features = Feature.values.toSet,
+        expiresAt = Some(Instant.now().plusSeconds(15 * 86400)),
+        metadata = Map("trial" -> "true")
+      )
+    }
+    val executor = new LicenseExecutor(strategy = mkStrategy(trialManager))
+    val row = execute(executor, ShowLicense)
+
+    row("license_type") shouldBe "Pro (trial)"
+    row("trial") shouldBe true
+    row("days_remaining").asInstanceOf[Long] should (be >= 14L and be <= 15L)
+    row("status") shouldBe "Active"
+  }
+
   // -------------------------------------------------------------------------
   // REFRESH LICENSE
   // -------------------------------------------------------------------------
@@ -175,6 +203,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("previous_tier") shouldBe "Community"
     row should contain key "new_tier"
     row("new_tier") shouldBe "Community"
+    row("trial") shouldBe false
     row should contain key "expires_at"
     row("expires_at") shouldBe "never"
     row should contain key "status"
@@ -204,6 +233,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
 
     row("previous_tier") shouldBe "Pro"
     row("new_tier") shouldBe "Pro"
+    row("trial") shouldBe false
     row("expires_at") shouldBe "2027-06-30T23:59:59Z"
     row("status") shouldBe "Refreshed"
     row("message") shouldBe ""
@@ -255,6 +285,32 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("message").toString should include("Network error")
     row("previous_tier") shouldBe "Pro"
     row("new_tier") shouldBe "Pro"
+    row("trial") shouldBe false
     row("expires_at") shouldBe "2026-12-31T23:59:59Z"
+  }
+
+  it should "include trial flag on successful refresh to trial key" in {
+    val proManager = new LicenseManager {
+      override def validate(key: String): Either[LicenseError, LicenseKey] =
+        Left(InvalidLicense("test"))
+      override def hasFeature(feature: Feature): Boolean = true
+      override def quotas: Quota = Quota.Pro
+      override def licenseType: LicenseType = LicenseType.Pro
+    }
+    val trialKey = LicenseKey(
+      id = "trial-pro",
+      licenseType = LicenseType.Pro,
+      features = Feature.values.toSet,
+      expiresAt = Some(Instant.parse("2026-07-08T23:59:59Z")),
+      metadata = Map("trial" -> "true")
+    )
+    val executor = new LicenseExecutor(
+      strategy = mkStrategy(proManager, refreshResult = Right(trialKey))
+    )
+    val row = executeRefresh(executor)
+
+    row("new_tier") shouldBe "Pro"
+    row("trial") shouldBe true
+    row("status") shouldBe "Refreshed"
   }
 }
