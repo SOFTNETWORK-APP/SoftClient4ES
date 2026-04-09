@@ -1318,12 +1318,14 @@ Returns the current license type, quota values, expiration date, and grace statu
 
 | Column | Description |
 |--------|-------------|
-| `license_type` | Current license tier (Community, Pro, Enterprise). Shows "(degraded)" suffix if the license was degraded from a higher tier. |
+| `license_type` | Current license tier (Community, Pro, Enterprise). Shows "(trial)" suffix for trial licenses, "(degraded)" suffix if degraded from a higher tier. |
+| `trial` | `true` if the license is a Pro trial, `false` otherwise |
 | `max_materialized_views` | Maximum number of materialized views allowed, or "unlimited" |
 | `max_clusters` | Maximum number of federated clusters allowed, or "unlimited" |
 | `max_result_rows` | Maximum rows returned per query, or "unlimited" |
 | `max_concurrent_queries` | Maximum concurrent queries allowed, or "unlimited" |
 | `expires_at` | License expiration timestamp, or "never" for Community |
+| `days_remaining` | Days until expiration, or -1 for Community (no expiry) |
 | `status` | "Active", or grace period details if expired |
 
 **Example:**
@@ -1332,9 +1334,9 @@ Returns the current license type, quota values, expiration date, and grace statu
 SHOW LICENSE;
 ```
 
-| license_type | max_materialized_views | max_clusters | max_result_rows | max_concurrent_queries | expires_at | status |
-|---|---|---|---|---|---|---|
-| Community | 3 | 2 | 10000 | 5 | never | Active |
+| license_type | trial | max_materialized_views | max_clusters | max_result_rows | max_concurrent_queries | expires_at | days_remaining | status |
+|---|---|---|---|---|---|---|---|---|
+| Community | false | 3 | 2 | 10000 | 5 | never | -1 | Active |
 📊 1 row(s) (1ms)
 
 ---
@@ -1353,6 +1355,7 @@ Forces an immediate license refresh from the backend (API key fetch). Returns th
 |--------|-------------|
 | `previous_tier` | License tier before refresh |
 | `new_tier` | License tier after refresh |
+| `trial` | `true` if the new license is a Pro trial, `false` otherwise |
 | `expires_at` | New expiration timestamp |
 | `status` | "Refreshed" on success, "Failed" on error |
 | `message` | Error details (empty on success) |
@@ -1363,9 +1366,9 @@ Forces an immediate license refresh from the backend (API key fetch). Returns th
 REFRESH LICENSE;
 ```
 
-| previous_tier | new_tier | expires_at | status | message |
-|---|---|---|---|---|
-| Community | Community | never | Failed | License refresh is not supported in Community mode |
+| previous_tier | new_tier | trial | expires_at | status | message |
+|---|---|---|---|---|---|
+| Community | Community | false | never | Failed | License refresh is not supported in Community mode |
 📊 1 row(s) (1ms)
 
 > **Note:** Requires API key configuration. Without an API key, returns an informational failure message.
