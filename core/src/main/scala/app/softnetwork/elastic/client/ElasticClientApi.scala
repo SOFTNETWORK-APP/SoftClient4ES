@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.common.ClientCompanion
+import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import com.typesafe.config.{Config, ConfigFactory}
 import org.slf4j.Logger
 
@@ -53,6 +54,8 @@ trait ElasticClientApi
     with ClientCompanion {
 
   protected def logger: Logger
+
+  def metrics: MetricsApi = MetricsApi.Noop
 
   def config: Config = ConfigFactory.load()
 

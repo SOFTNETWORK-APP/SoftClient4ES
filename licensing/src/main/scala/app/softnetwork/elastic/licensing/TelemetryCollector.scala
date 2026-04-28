@@ -16,6 +16,8 @@
 
 package app.softnetwork.elastic.licensing
 
+import app.softnetwork.elastic.licensing.metrics.{AggregatedMetrics, MetricsApi}
+
 import java.util.concurrent.atomic.AtomicLong
 
 /** Snapshot of runtime telemetry for inclusion in refresh requests. All counters are cumulative
@@ -28,43 +30,60 @@ import java.util.concurrent.atomic.AtomicLong
   */
 case class TelemetryData(
   queriesTotal: Long = 0,
-  joinsTotal: Long = 0,
   mvsActive: Int = 0,
-  clustersConnected: Int = 0
+  clustersConnected: Int = 0,
+  clusterId: Option[String] = None,
+  clusterName: Option[String] = None,
+  clusterVersion: Option[String] = None,
+  aggregatedMetrics: AggregatedMetrics = AggregatedMetrics.empty
 )
 
 /** Mutable telemetry collector with atomic counters.
   *
-  * Accessible (read-only snapshot) via `LicenseRefreshStrategy.telemetryCollector.collect()`.
-  * Extensions (e.g. CoreDqlExtension) update counters via increment/set methods through
-  * `LicenseManagerFactory.currentStrategy.telemetryCollector`.
+  * Accessible (read-only snapshot) via
+  * `LicenseRefreshStrategy.telemetryCollector.collect(metrics)`. Extensions (e.g. CoreDqlExtension)
+  * update counters via increment/set methods through
+  * `LicenseRefreshStrategyFactory.create(config).telemetryCollector`.
   *
   * Thread-safe: counters use `AtomicLong`, gauges use `@volatile`.
   */
 class TelemetryCollector {
 
   private val _queriesTotal = new AtomicLong(0L)
-  private val _joinsTotal = new AtomicLong(0L)
   @volatile private var _mvsActive: Int = 0
   @volatile private var _clustersConnected: Int = 0
+  @volatile private var _clusterId: Option[String] = None
+  @volatile private var _clusterName: Option[String] = None
+  @volatile private var _clusterVersion: Option[String] = None
 
   // --- Write methods (called by extensions) ---
 
   def incrementQueries(): Unit = { val _ = _queriesTotal.incrementAndGet() }
 
-  def incrementJoins(): Unit = { val _ = _joinsTotal.incrementAndGet() }
-
   def setMvsActive(count: Int): Unit = { _mvsActive = count }
 
   def setClustersConnected(count: Int): Unit = { _clustersConnected = count }
 
+  def setClusterInfo(
+    id: String,
+    name: Option[String],
+    version: Option[String]
+  ): Unit = {
+    _clusterId = Some(id)
+    _clusterName = name
+    _clusterVersion = version
+  }
+
   // --- Read method (called by AutoRefreshStrategy.doScheduleRefresh) ---
 
-  def collect(): TelemetryData = TelemetryData(
+  def collect(metrics: MetricsApi): TelemetryData = TelemetryData(
     queriesTotal = _queriesTotal.get(),
-    joinsTotal = _joinsTotal.get(),
     mvsActive = _mvsActive,
-    clustersConnected = _clustersConnected
+    clustersConnected = _clustersConnected,
+    clusterId = _clusterId,
+    clusterName = _clusterName,
+    clusterVersion = _clusterVersion,
+    aggregatedMetrics = metrics.getAggregatedMetrics
   )
 }
 
@@ -76,8 +95,12 @@ object TelemetryCollector {
     */
   val Noop: TelemetryCollector = new TelemetryCollector {
     override def incrementQueries(): Unit = ()
-    override def incrementJoins(): Unit = ()
     override def setMvsActive(count: Int): Unit = ()
     override def setClustersConnected(count: Int): Unit = ()
+    override def setClusterInfo(
+      id: String,
+      name: Option[String],
+      version: Option[String]
+    ): Unit = ()
   }
 }

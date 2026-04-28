@@ -17,20 +17,7 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
-import app.softnetwork.elastic.licensing.{
-  CommunityLicenseManager,
-  Feature,
-  GraceStatus,
-  InvalidLicense,
-  LicenseError,
-  LicenseKey,
-  LicenseManager,
-  LicenseManagerFactory,
-  LicenseRefreshStrategy,
-  LicenseType,
-  NopRefreshStrategy,
-  Quota
-}
+import app.softnetwork.elastic.licensing.{GraceStatus, LicenseRefreshStrategy}
 import app.softnetwork.elastic.client.result.{
   DdlResult,
   DmlResult,
@@ -1744,11 +1731,6 @@ class DdlRouterExecutor(
 trait GatewayApi extends IndicesApi with ElasticClientHelpers {
   self: ElasticClientApi =>
 
-  /** License refresh strategy. Resolved via LicenseManagerFactory (SPI + config-driven mode).
-    * Override in concrete implementations if custom strategy wiring is needed.
-    */
-  def licenseRefreshStrategy: LicenseRefreshStrategy = LicenseManagerFactory.currentStrategy
-
   lazy val searchExecutor = new SearchExecutor(
     api = this,
     logger = logger
@@ -1884,7 +1866,13 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
         statement match {
           case dql: DqlStatement =>
             logger.debug("🔧 Executing DQL with base executor")
-            dqlExecutor.execute(dql)
+            val result = dqlExecutor.execute(dql)
+            result.foreach {
+              case ElasticSuccess(_) =>
+                licenseRefreshStrategy.telemetryCollector.incrementQueries()
+              case _ =>
+            }(system.dispatcher)
+            result
 
           case dml: DmlStatement =>
             logger.debug("🔧 Executing DML with base executor")

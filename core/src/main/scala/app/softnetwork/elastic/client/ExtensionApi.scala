@@ -16,16 +16,40 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.licensing.{LicenseManager, LicenseManagerFactory}
+import app.softnetwork.elastic.client.result.ElasticSuccess
+import app.softnetwork.elastic.licensing.{
+  LicenseManager,
+  LicenseRefreshStrategy,
+  LicenseRefreshStrategyFactory
+}
 
 trait ExtensionApi { self: ElasticClientApi =>
 
-  /** License manager resolved via LicenseManagerFactory. The factory uses SPI discovery and derives
-    * LicenseMode from config (refreshEnabled=true -> LongRunning, else -> Driver).
+  /** License refresh strategy resolved via LicenseRefreshStrategyFactory. The factory uses SPI
+    * discovery and derives LicenseMode from config (refreshEnabled=true -> LongRunning, else ->
+    * Driver). Cluster info is set once during initialization.
     */
-  lazy val licenseManager: LicenseManager = LicenseManagerFactory.create(config)
+  lazy val licenseRefreshStrategy: LicenseRefreshStrategy = {
+    val ret = LicenseRefreshStrategyFactory.create(config, metrics)
+    clusterName match {
+      case ElasticSuccess(name) =>
+        ret.telemetryCollector.setClusterInfo(
+          id = name,
+          name = Some(name),
+          version = version match {
+            case ElasticSuccess(v) => Some(v)
+            case _                 => None
+          }
+        )
+      case _ =>
+    }
+    ret
+  }
+
+  /** License manager resolved from the refresh strategy. */
+  lazy val licenseManager: LicenseManager = licenseRefreshStrategy.licenseManager
 
   /** Extension registry (lazy loaded) */
   lazy val extensionRegistry: ExtensionRegistry =
-    new ExtensionRegistry(config, licenseManager)
+    new ExtensionRegistry(config, licenseRefreshStrategy)
 }

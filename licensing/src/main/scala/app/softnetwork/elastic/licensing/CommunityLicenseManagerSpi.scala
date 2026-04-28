@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.licensing
 
+import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import com.typesafe.config.Config
 
 /** Fallback SPI that provides Community-tier licensing with no external dependencies. Priority
@@ -26,6 +27,7 @@ class CommunityLicenseManagerSpi extends LicenseManagerSpi {
   override def priority: Int = Int.MaxValue
   override protected def buildStrategy(
     config: Config,
-    mode: Option[LicenseMode]
+    mode: Option[LicenseMode],
+    metrics: MetricsApi
   ): LicenseRefreshStrategy = new NopRefreshStrategy()
 }

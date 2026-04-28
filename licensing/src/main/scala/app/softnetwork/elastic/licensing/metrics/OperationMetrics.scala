@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client.metrics
+package app.softnetwork.elastic.licensing.metrics
 
 case class OperationMetrics(
   operation: String,
@@ -33,4 +33,8 @@ case class OperationMetrics(
     if (totalOperations > 0) (successCount.toDouble / totalOperations) * 100 else 0.0
 
   def failureRate: Double = if (totalOperations > 0) 100.0 - successRate else 0.0
+}
+
+object OperationMetrics {
+  val empty: OperationMetrics = OperationMetrics("", 0, 0, 0, 0, 0, 0, 0)
 }

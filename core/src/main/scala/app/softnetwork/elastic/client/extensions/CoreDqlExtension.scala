@@ -46,10 +46,10 @@ class CoreDqlExtension extends ExtensionSpi {
 
   override def initialize(
     config: Config,
-    manager: LicenseManager
+    licenseRefreshStrategy: LicenseRefreshStrategy
   ): Either[String, Unit] = {
     logger.info("🔌 Initializing Core DQL extension")
-    licenseManager = Some(manager)
+    licenseManager = Some(licenseRefreshStrategy.licenseManager)
     Right(())
   }
 

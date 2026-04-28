@@ -16,6 +16,8 @@
 
 package app.softnetwork.elastic.licensing
 
+import app.softnetwork.elastic.licensing.metrics.MetricsApi
+
 /** Strategy for license lifecycle management (initialization and refresh).
   *
   * Concrete implementations:
@@ -41,6 +43,9 @@ trait LicenseRefreshStrategy {
     * returns `TelemetryCollector.Noop` (zero counters, never updated).
     */
   def telemetryCollector: TelemetryCollector = TelemetryCollector.Noop
+
+  /** Metrics API for operation-level performance tracking. Default returns `MetricsApi.Noop`. */
+  def metrics: MetricsApi = MetricsApi.Noop
 
   /** Shutdown background resources (scheduler, etc.). Default is no-op. */
   def shutdown(): Unit = ()

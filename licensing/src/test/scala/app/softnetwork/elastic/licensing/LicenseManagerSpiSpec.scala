@@ -20,6 +20,7 @@ import java.util.ServiceLoader
 
 import scala.jdk.CollectionConverters._
 
+import app.softnetwork.elastic.licensing.{metrics => lm}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -75,7 +76,8 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
       override def priority: Int = 10
       override protected def buildStrategy(
         config: Config,
-        mode: Option[LicenseMode]
+        mode: Option[LicenseMode],
+        metrics: lm.MetricsApi
       ): LicenseRefreshStrategy = new NopRefreshStrategy() {
         override def licenseManager: LicenseManager = new CommunityLicenseManager() {
           override def licenseType: LicenseType = LicenseType.Pro
@@ -99,7 +101,8 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
       override def priority: Int = 1
       override protected def buildStrategy(
         config: Config,
-        mode: Option[LicenseMode]
+        mode: Option[LicenseMode],
+        metrics: lm.MetricsApi
       ): LicenseRefreshStrategy = throw new RuntimeException("boom")
     }
 
@@ -114,7 +117,8 @@ class LicenseManagerSpiSpec extends AnyFlatSpec with Matchers {
       override def priority: Int = 1
       override protected def buildStrategy(
         config: Config,
-        mode: Option[LicenseMode]
+        mode: Option[LicenseMode],
+        metrics: lm.MetricsApi
       ): LicenseRefreshStrategy = {
         receivedMode = mode
         new NopRefreshStrategy()
