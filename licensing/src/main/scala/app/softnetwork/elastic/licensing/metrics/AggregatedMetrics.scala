@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client.metrics
+package app.softnetwork.elastic.licensing.metrics
 
 case class AggregatedMetrics(
   totalOperations: Long,
@@ -29,4 +29,15 @@ case class AggregatedMetrics(
 
   def successRate: Double =
     if (totalOperations > 0) (successCount.toDouble / totalOperations) * 100 else 0.0
+}
+
+object AggregatedMetrics {
+  val empty: AggregatedMetrics = AggregatedMetrics(
+    totalOperations = 0,
+    successCount = 0,
+    failureCount = 0,
+    totalDuration = 0,
+    operationMetrics = Map.empty,
+    indexMetrics = Map.empty
+  )
 }

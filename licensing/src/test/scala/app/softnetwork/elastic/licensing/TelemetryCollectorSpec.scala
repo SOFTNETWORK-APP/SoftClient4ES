@@ -16,16 +16,25 @@
 
 package app.softnetwork.elastic.licensing
 
+import app.softnetwork.elastic.licensing.metrics.{AggregatedMetrics, MetricsApi}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
 
+  private val noop = MetricsApi.Noop
+
   // --- Noop collector ---
 
   "TelemetryCollector.Noop" should "return zero-valued TelemetryData" in {
-    val data = TelemetryCollector.Noop.collect()
-    data shouldBe TelemetryData(0, 0, 0, 0)
+    val data = TelemetryCollector.Noop.collect(noop)
+    data.queriesTotal shouldBe 0
+    data.mvsActive shouldBe 0
+    data.clustersConnected shouldBe 0
+    data.clusterId shouldBe None
+    data.clusterName shouldBe None
+    data.clusterVersion shouldBe None
+    data.aggregatedMetrics shouldBe AggregatedMetrics.empty
   }
 
   // --- incrementQueries ---
@@ -35,16 +44,7 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
     collector.incrementQueries()
     collector.incrementQueries()
     collector.incrementQueries()
-    collector.collect().queriesTotal shouldBe 3
-  }
-
-  // --- incrementJoins ---
-
-  it should "increment joins counter atomically" in {
-    val collector = new TelemetryCollector
-    collector.incrementJoins()
-    collector.incrementJoins()
-    collector.collect().joinsTotal shouldBe 2
+    collector.collect(noop).queriesTotal shouldBe 3
   }
 
   // --- setMvsActive ---
@@ -52,9 +52,9 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
   it should "set MVs active gauge" in {
     val collector = new TelemetryCollector
     collector.setMvsActive(5)
-    collector.collect().mvsActive shouldBe 5
+    collector.collect(noop).mvsActive shouldBe 5
     collector.setMvsActive(3)
-    collector.collect().mvsActive shouldBe 3
+    collector.collect(noop).mvsActive shouldBe 3
   }
 
   // --- setClustersConnected ---
@@ -62,7 +62,18 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
   it should "set clusters connected gauge" in {
     val collector = new TelemetryCollector
     collector.setClustersConnected(2)
-    collector.collect().clustersConnected shouldBe 2
+    collector.collect(noop).clustersConnected shouldBe 2
+  }
+
+  // --- setClusterInfo ---
+
+  it should "set cluster info" in {
+    val collector = new TelemetryCollector
+    collector.setClusterInfo("my-cluster", Some("prod-cluster-1"), Some("8.18.3"))
+    val data = collector.collect(noop)
+    data.clusterId shouldBe Some("my-cluster")
+    data.clusterName shouldBe Some("prod-cluster-1")
+    data.clusterVersion shouldBe Some("8.18.3")
   }
 
   // --- collect returns consistent snapshot ---
@@ -71,15 +82,18 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
     val collector = new TelemetryCollector
     collector.incrementQueries()
     collector.incrementQueries()
-    collector.incrementJoins()
     collector.setMvsActive(4)
     collector.setClustersConnected(1)
+    collector.setClusterInfo("test-cluster", Some("test"), Some("9.0.0"))
 
-    val data = collector.collect()
+    val data = collector.collect(noop)
     data.queriesTotal shouldBe 2
-    data.joinsTotal shouldBe 1
     data.mvsActive shouldBe 4
     data.clustersConnected shouldBe 1
+    data.clusterId shouldBe Some("test-cluster")
+    data.clusterName shouldBe Some("test")
+    data.clusterVersion shouldBe Some("9.0.0")
+    data.aggregatedMetrics shouldBe AggregatedMetrics.empty
   }
 
   // --- concurrent access ---
@@ -90,15 +104,13 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
       new Thread(() => {
         (1 to 1000).foreach { _ =>
           collector.incrementQueries()
-          collector.incrementJoins()
         }
       })
     }
     threads.foreach(_.start())
     threads.foreach(_.join())
 
-    val data = collector.collect()
+    val data = collector.collect(noop)
     data.queriesTotal shouldBe 10000
-    data.joinsTotal shouldBe 10000
   }
 }

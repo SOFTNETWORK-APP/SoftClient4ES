@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package app.softnetwork.elastic.client.metrics
+package app.softnetwork.elastic.licensing.metrics
 
 import scala.language.implicitConversions
 
@@ -253,4 +253,21 @@ trait MetricsApi {
     */
   //format:on
   def resetMetrics(): Unit
+}
+
+object MetricsApi {
+
+  val Noop: MetricsApi = new MetricsApi {
+    override def recordOperation(
+      operation: String,
+      duration: Long,
+      success: Boolean,
+      index: Option[String]
+    ): Unit = ()
+    override def getMetrics: OperationMetrics = OperationMetrics.empty
+    override def getMetricsByOperation(operation: String): Option[OperationMetrics] = None
+    override def getMetricsByIndex(index: String): Option[OperationMetrics] = None
+    override def getAggregatedMetrics: AggregatedMetrics = AggregatedMetrics.empty
+    override def resetMetrics(): Unit = ()
+  }
 }

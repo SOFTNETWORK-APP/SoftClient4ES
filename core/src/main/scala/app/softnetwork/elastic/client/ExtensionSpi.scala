@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.result._
-import app.softnetwork.elastic.licensing.LicenseManager
+import app.softnetwork.elastic.licensing.LicenseRefreshStrategy
 import app.softnetwork.elastic.sql.query.Statement
 import com.typesafe.config.Config
 
@@ -49,18 +49,18 @@ trait ExtensionSpi {
     */
   def priority: Int = 100
 
-  /** Initialize the extension with configuration and license manager.
+  /** Initialize the extension with configuration and license refresh strategy.
     *
     * @param config
     *   Extension-specific configuration
-    * @param licenseManager
-    *   License manager for checking quotas
+    * @param licenseRefreshStrategy
+    *   License refresh strategy providing licenseManager, telemetryCollector, and metrics
     * @return
     *   Success or error message
     */
   def initialize(
     config: Config,
-    licenseManager: LicenseManager
+    licenseRefreshStrategy: LicenseRefreshStrategy
   ): Either[String, Unit]
 
   /** Check if this extension can handle a given SQL statement.

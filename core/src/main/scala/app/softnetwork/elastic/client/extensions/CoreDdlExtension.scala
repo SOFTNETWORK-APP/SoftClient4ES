@@ -46,10 +46,10 @@ class CoreDdlExtension extends ExtensionSpi {
 
   override def initialize(
     config: Config,
-    manager: LicenseManager
+    licenseRefreshStrategy: LicenseRefreshStrategy
   ): Either[String, Unit] = {
     logger.info("🔌 Initializing Core DDL extension")
-    licenseManager = Some(manager)
+    licenseManager = Some(licenseRefreshStrategy.licenseManager)
     Right(())
   }
 

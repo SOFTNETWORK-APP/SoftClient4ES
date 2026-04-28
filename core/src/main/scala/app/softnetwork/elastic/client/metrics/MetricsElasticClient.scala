@@ -63,6 +63,8 @@ class MetricsElasticClient(
 ) extends ElasticClientDelegator
     with MetricsApi {
 
+  override def metrics: MetricsApi = this
+
   // Helper for measuring operations
   private def measureAsync[T](operation: String, index: Option[String] = None)(
     block: => Future[T]

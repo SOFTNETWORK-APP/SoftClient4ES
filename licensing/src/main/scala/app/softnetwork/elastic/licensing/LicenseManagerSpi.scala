@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.licensing
 
+import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import com.typesafe.config.Config
 
 /** Runtime context that determines licensing behavior.
@@ -72,24 +73,33 @@ trait LicenseManagerSpi {
     * @return
     *   A freshly constructed (not initialized) LicenseRefreshStrategy
     */
-  protected def buildStrategy(config: Config, mode: Option[LicenseMode]): LicenseRefreshStrategy
+  protected def buildStrategy(
+    config: Config,
+    mode: Option[LicenseMode],
+    metrics: MetricsApi = MetricsApi.Noop
+  ): LicenseRefreshStrategy
 
   /** Create a LicenseManager by building a strategy and returning its licenseManager.
     *
     * Note: the strategy is NOT initialized here — callers who need full lifecycle management should
     * use `LicenseManagerFactory.create()` instead.
     */
-  def create(config: Config, mode: Option[LicenseMode] = None): LicenseManager =
-    buildStrategy(config, mode).licenseManager
+  def create(
+    config: Config,
+    mode: Option[LicenseMode] = None,
+    metrics: MetricsApi = MetricsApi.Noop
+  ): LicenseManager =
+    buildStrategy(config, mode, metrics).licenseManager
 
   /** Create a LicenseRefreshStrategy directly (not initialized, not cached).
     *
-    * Returns the full strategy object, enabling `LicenseManagerFactory` to manage its lifecycle
-    * (initialize, cache, replace).
+    * Returns the full strategy object, enabling `LicenseRefreshStrategyFactory` to manage its
+    * lifecycle (initialize, cache, replace).
     */
   def createStrategy(
     config: Config,
-    mode: Option[LicenseMode] = None
+    mode: Option[LicenseMode] = None,
+    metrics: MetricsApi = MetricsApi.Noop
   ): LicenseRefreshStrategy =
-    buildStrategy(config, mode)
+    buildStrategy(config, mode, metrics)
 }

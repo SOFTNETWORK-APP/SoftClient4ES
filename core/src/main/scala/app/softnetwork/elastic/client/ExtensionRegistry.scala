@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.licensing.LicenseManager
+import app.softnetwork.elastic.licensing.LicenseRefreshStrategy
 import app.softnetwork.elastic.sql.query.Statement
 import com.typesafe.config.Config
 
@@ -24,7 +24,7 @@ import com.typesafe.config.Config
   */
 class ExtensionRegistry(
   config: Config,
-  licenseManager: LicenseManager
+  licenseRefreshStrategy: LicenseRefreshStrategy
 ) {
 
   import scala.jdk.CollectionConverters._
@@ -42,7 +42,7 @@ class ExtensionRegistry(
         s"🔌 Discovered extension: ${ext.extensionName} v${ext.version} (priority: ${ext.priority})"
       )
 
-      ext.initialize(config, licenseManager) match {
+      ext.initialize(config, licenseRefreshStrategy) match {
         case Right(_) =>
           logger.info(s"✅ Extension ${ext.extensionName} initialized successfully")
           Some(ext)
