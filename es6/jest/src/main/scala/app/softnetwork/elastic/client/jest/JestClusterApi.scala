@@ -35,4 +35,17 @@ trait JestClusterApi extends ClusterApi with JestClientHelpers {
       val json = JsonMethods.parse(jsonString)
       (json \ "cluster_name").extract[String]
     }
+
+  override private[client] def executeGetClusterUuid(): result.ElasticResult[String] =
+    executeJestAction(
+      "cluster_uuid",
+      retryable = true
+    )(
+      new GetClusterInfo.Builder().build()
+    ) { result =>
+      val jsonString = result.getJsonString
+      implicit val formats: DefaultFormats.type = DefaultFormats
+      val json = JsonMethods.parse(jsonString)
+      (json \ "cluster_uuid").extract[String]
+    }
 }

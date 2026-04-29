@@ -22,6 +22,7 @@ import com.typesafe.scalalogging.LazyLogging
 
 import java.util.ServiceLoader
 import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 /** Factory for creating and caching LicenseRefreshStrategy instances.
@@ -91,9 +92,11 @@ object LicenseRefreshStrategyFactory extends LazyLogging {
     else Some(LicenseMode.Driver)
   }
 
-  /** Resolve strategy via SPI, initialize it, and cache it. Synchronized to prevent concurrent
-    * creation of duplicate strategies (which would leak resources like Akka schedulers).
+  /** Resolve strategy via SPI, initialize it, and cache it via CAS. If two threads race, only one
+    * will successfully CAS; the loser shuts down its unused strategy and retries to pick up the
+    * winner's cached instance.
     */
+  @tailrec
   private def resolveStrategy(
     config: Config,
     metrics: MetricsApi
@@ -101,43 +104,30 @@ object LicenseRefreshStrategyFactory extends LazyLogging {
     _strategy.get() match {
       case Some(s) => s
       case None =>
-        synchronized {
-          // Double-check after acquiring lock
-          _strategy.get() match {
-            case Some(s) => s
-            case None =>
-              val mode = resolveMode(config)
-              val loader = ServiceLoader.load(classOf[LicenseManagerSpi])
-              val spis = loader.iterator().asScala.toSeq.sortBy(_.priority)
-              val strategy = spis.headOption
-                .map { spi =>
-                  try {
-                    val s = spi.createStrategy(config, mode, metrics)
-                    s.initialize()
-                    logger.info(
-                      s"License strategy initialized: ${s.getClass.getSimpleName} " +
-                      s"(mode=${mode.getOrElse("default")}, type=${s.licenseManager.licenseType})"
-                    )
-                    s
-                  } catch {
-                    case e: Exception =>
-                      logger.error(
-                        s"Failed to create license strategy from ${spi.getClass.getName}: ${e.getMessage}",
-                        e
-                      )
-                      val fallback = new NopRefreshStrategy()
-                      fallback.initialize()
-                      fallback
-                  }
-                }
-                .getOrElse {
-                  val fallback = new NopRefreshStrategy()
-                  fallback.initialize()
-                  fallback
-                }
-              _strategy.set(Some(strategy))
-              strategy
+        val mode = resolveMode(config)
+        val loader = ServiceLoader.load(classOf[LicenseManagerSpi])
+        val spis = loader.iterator().asScala.toSeq.sortBy(_.priority)
+        val strategy = spis.headOption
+          .map { spi =>
+            val s = spi.createStrategy(config, mode, metrics)
+            s.initialize()
+            logger.info(
+              s"License strategy initialized: ${s.getClass.getSimpleName} " +
+              s"(mode=${mode.getOrElse("default")}, type=${s.licenseManager.licenseType})"
+            )
+            s
           }
+          .getOrElse {
+            val fallback = new NopRefreshStrategy()
+            fallback.initialize()
+            fallback
+          }
+        if (_strategy.compareAndSet(None, Some(strategy))) {
+          strategy
+        } else {
+          // Another thread won the race — shut down ours, retry to pick up the winner's
+          strategy.shutdown()
+          resolveStrategy(config, metrics)
         }
     }
 }

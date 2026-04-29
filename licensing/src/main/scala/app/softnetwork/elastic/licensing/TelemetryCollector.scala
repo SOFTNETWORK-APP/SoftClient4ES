@@ -45,46 +45,68 @@ case class TelemetryData(
   * update counters via increment/set methods through
   * `LicenseRefreshStrategyFactory.create(config).telemetryCollector`.
   *
-  * Thread-safe: counters use `AtomicLong`, gauges use `@volatile`.
+  * Thread-safe: `queriesTotal` uses `AtomicLong` for high-frequency increments. Cluster info fields
+  * (`clusterId`, `clusterName`, `clusterVersion`) and gauges (`mvsActive`, `clustersConnected`) are
+  * guarded by `clusterInfoLock` to ensure atomic reads and writes.
   */
 class TelemetryCollector {
 
   private val _queriesTotal = new AtomicLong(0L)
-  @volatile private var _mvsActive: Int = 0
-  @volatile private var _clustersConnected: Int = 0
-  @volatile private var _clusterId: Option[String] = None
-  @volatile private var _clusterName: Option[String] = None
-  @volatile private var _clusterVersion: Option[String] = None
+  private val clusterInfoLock = new AnyRef
+  private var _mvsActive: Int = 0
+  private var _clustersConnected: Int = 0
+  private var _clusterId: Option[String] = None
+  private var _clusterName: Option[String] = None
+  private var _clusterVersion: Option[String] = None
 
   // --- Write methods (called by extensions) ---
 
   def incrementQueries(): Unit = { val _ = _queriesTotal.incrementAndGet() }
 
-  def setMvsActive(count: Int): Unit = { _mvsActive = count }
+  def setMvsActive(count: Int): Unit = clusterInfoLock.synchronized { _mvsActive = count }
 
-  def setClustersConnected(count: Int): Unit = { _clustersConnected = count }
+  def setClustersConnected(count: Int): Unit = clusterInfoLock.synchronized {
+    _clustersConnected = count
+  }
 
   def setClusterInfo(
     id: String,
     name: Option[String],
     version: Option[String]
-  ): Unit = {
+  ): Unit = clusterInfoLock.synchronized {
     _clusterId = Some(id)
     _clusterName = name
     _clusterVersion = version
   }
 
-  // --- Read method (called by AutoRefreshStrategy.doScheduleRefresh) ---
+  // --- Read methods (called by AutoRefreshStrategy.doScheduleRefresh) ---
 
-  def collect(metrics: MetricsApi): TelemetryData = TelemetryData(
-    queriesTotal = _queriesTotal.get(),
-    mvsActive = _mvsActive,
-    clustersConnected = _clustersConnected,
-    clusterId = _clusterId,
-    clusterName = _clusterName,
-    clusterVersion = _clusterVersion,
-    aggregatedMetrics = metrics.getAggregatedMetrics
-  )
+  def collect(metrics: MetricsApi): TelemetryData = clusterInfoLock.synchronized {
+    TelemetryData(
+      queriesTotal = _queriesTotal.get(),
+      mvsActive = _mvsActive,
+      clustersConnected = _clustersConnected,
+      clusterId = _clusterId,
+      clusterName = _clusterName,
+      clusterVersion = _clusterVersion,
+      aggregatedMetrics = metrics.getAggregatedMetrics
+    )
+  }
+
+  /** Collect a snapshot and atomically reset the metrics, ensuring no operations recorded between
+    * snapshot and reset are lost.
+    */
+  def collectAndReset(metrics: MetricsApi): TelemetryData = clusterInfoLock.synchronized {
+    TelemetryData(
+      queriesTotal = _queriesTotal.get(),
+      mvsActive = _mvsActive,
+      clustersConnected = _clustersConnected,
+      clusterId = _clusterId,
+      clusterName = _clusterName,
+      clusterVersion = _clusterVersion,
+      aggregatedMetrics = metrics.collectAndResetAggregatedMetrics
+    )
+  }
 }
 
 object TelemetryCollector {

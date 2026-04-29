@@ -31,11 +31,14 @@ trait ExtensionApi { self: ElasticClientApi =>
     */
   lazy val licenseRefreshStrategy: LicenseRefreshStrategy = {
     val ret = LicenseRefreshStrategyFactory.create(config, metrics)
-    clusterName match {
-      case ElasticSuccess(name) =>
+    clusterUuid match {
+      case ElasticSuccess(uuid) =>
         ret.telemetryCollector.setClusterInfo(
-          id = name,
-          name = Some(name),
+          id = uuid,
+          name = clusterName match {
+            case ElasticSuccess(n) => Some(n)
+            case _                 => None
+          },
           version = version match {
             case ElasticSuccess(v) => Some(v)
             case _                 => None

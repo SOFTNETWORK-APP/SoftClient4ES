@@ -17,14 +17,16 @@
 package app.softnetwork.elastic.client.metrics
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 import scala.jdk.CollectionConverters._
 
 class MetricsCollector extends MetricsApi {
 
-  private val metrics = new ConcurrentHashMap[String, MetricAccumulator]()
-  private val indexMetrics = new ConcurrentHashMap[String, MetricAccumulator]()
+  private val metrics =
+    new AtomicReference(new ConcurrentHashMap[String, MetricAccumulator]())
+  private val indexMetrics =
+    new AtomicReference(new ConcurrentHashMap[String, MetricAccumulator]())
 
   private class MetricAccumulator {
     val totalOps = new AtomicLong(0)
@@ -100,19 +102,20 @@ class MetricsCollector extends MetricsApi {
     index: Option[String] = None
   ): Unit = {
     // Record operation metrics
-    val accumulator = metrics.computeIfAbsent(operation, _ => new MetricAccumulator())
+    val accumulator = metrics.get().computeIfAbsent(operation, _ => new MetricAccumulator())
     accumulator.record(duration, success)
 
     // Record index metrics if provided
     index.foreach { idx =>
-      val idxAccumulator = indexMetrics.computeIfAbsent(idx, _ => new MetricAccumulator())
+      val idxAccumulator = indexMetrics.get().computeIfAbsent(idx, _ => new MetricAccumulator())
       idxAccumulator.record(duration, success)
     }
   }
 
-  override def getMetrics: OperationMetrics = {
-    val allMetrics = metrics.asScala.values.toSeq
-
+  private def computeGlobal(
+    metricsMap: ConcurrentHashMap[String, MetricAccumulator]
+  ): OperationMetrics = {
+    val allMetrics = metricsMap.asScala.values.toSeq
     if (allMetrics.isEmpty) {
       OperationMetrics("all", 0, 0, 0, 0, 0, 0, 0)
     } else {
@@ -133,32 +136,47 @@ class MetricsCollector extends MetricsApi {
     }
   }
 
-  override def getMetricsByOperation(operation: String): Option[OperationMetrics] = {
-    Option(metrics.get(operation)).map(_.toMetrics(operation))
-  }
-
-  override def getMetricsByIndex(index: String): Option[OperationMetrics] = {
-    Option(indexMetrics.get(index)).map(_.toMetrics(index))
-  }
-
-  override def getAggregatedMetrics: AggregatedMetrics = {
-    val globalMetrics = getMetrics
+  private def buildAggregated(
+    opsMap: ConcurrentHashMap[String, MetricAccumulator],
+    idxMap: ConcurrentHashMap[String, MetricAccumulator]
+  ): AggregatedMetrics = {
+    val globalMetrics = computeGlobal(opsMap)
     AggregatedMetrics(
       totalOperations = globalMetrics.totalOperations,
       successCount = globalMetrics.successCount,
       failureCount = globalMetrics.failureCount,
       totalDuration = globalMetrics.totalDuration,
-      operationMetrics = metrics.asScala.map { case (op, acc) =>
+      operationMetrics = opsMap.asScala.map { case (op, acc) =>
         op -> acc.toMetrics(op)
       }.toMap,
-      indexMetrics = indexMetrics.asScala.map { case (idx, acc) =>
+      indexMetrics = idxMap.asScala.map { case (idx, acc) =>
         idx -> acc.toMetrics(idx)
       }.toMap
     )
   }
 
+  override def getMetrics: OperationMetrics = computeGlobal(metrics.get())
+
+  override def getMetricsByOperation(operation: String): Option[OperationMetrics] =
+    Option(metrics.get().get(operation)).map(_.toMetrics(operation))
+
+  override def getMetricsByIndex(index: String): Option[OperationMetrics] =
+    Option(indexMetrics.get().get(index)).map(_.toMetrics(index))
+
+  override def getAggregatedMetrics: AggregatedMetrics =
+    buildAggregated(metrics.get(), indexMetrics.get())
+
   override def resetMetrics(): Unit = {
-    metrics.clear()
-    indexMetrics.clear()
+    metrics.set(new ConcurrentHashMap[String, MetricAccumulator]())
+    indexMetrics.set(new ConcurrentHashMap[String, MetricAccumulator]())
+  }
+
+  /** Atomically swap both maps with fresh empty ones, then build the snapshot from the old maps.
+    * Operations recorded after the swap go into the new maps and are not lost.
+    */
+  override def collectAndResetAggregatedMetrics: AggregatedMetrics = {
+    val oldMetrics = metrics.getAndSet(new ConcurrentHashMap[String, MetricAccumulator]())
+    val oldIndexMetrics = indexMetrics.getAndSet(new ConcurrentHashMap[String, MetricAccumulator]())
+    buildAggregated(oldMetrics, oldIndexMetrics)
   }
 }

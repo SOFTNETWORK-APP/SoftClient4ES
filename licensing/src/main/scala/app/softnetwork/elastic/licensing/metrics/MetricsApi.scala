@@ -253,6 +253,19 @@ trait MetricsApi {
     */
   //format:on
   def resetMetrics(): Unit
+
+  /** Atomically collect aggregated metrics and reset them in one operation. This avoids the race
+    * window between `getAggregatedMetrics` and `resetMetrics()` where concurrent `recordOperation`
+    * calls could be lost.
+    *
+    * Default implementation is non-atomic (collect then reset). Concrete implementations should
+    * override with an atomic swap.
+    */
+  def collectAndResetAggregatedMetrics: AggregatedMetrics = {
+    val result = getAggregatedMetrics
+    resetMetrics()
+    result
+  }
 }
 
 object MetricsApi {
@@ -269,5 +282,6 @@ object MetricsApi {
     override def getMetricsByIndex(index: String): Option[OperationMetrics] = None
     override def getAggregatedMetrics: AggregatedMetrics = AggregatedMetrics.empty
     override def resetMetrics(): Unit = ()
+    override def collectAndResetAggregatedMetrics: AggregatedMetrics = AggregatedMetrics.empty
   }
 }

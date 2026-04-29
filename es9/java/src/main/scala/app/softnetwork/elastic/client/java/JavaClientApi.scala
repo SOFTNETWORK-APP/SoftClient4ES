@@ -178,6 +178,17 @@ trait JavaClientClusterApi extends ClusterApi with JavaClientHelpers {
     ) { response =>
       response.clusterName()
     }
+
+  override private[client] def executeGetClusterUuid(): ElasticResult[String] =
+    executeJavaAction(
+      operation = "cluster_uuid",
+      index = None,
+      retryable = true
+    )(
+      apply().info()
+    ) { response =>
+      response.clusterUuid()
+    }
 }
 
 /** Elasticsearch client implementation of Indices API using the Java Client
