@@ -29,6 +29,9 @@ trait ClusterApi extends ElasticClientHelpers {
   // Cache cluster name (avoids calling it every time)
   private val cachedClusterName = new AtomicReference[Option[String]](None)
 
+  // Cache cluster UUID (avoids calling it every time)
+  private val cachedClusterUuid = new AtomicReference[Option[String]](None)
+
   /** Get Elasticsearch cluster name.
     * @return
     *   the Elasticsearch cluster name
@@ -50,9 +53,32 @@ trait ClusterApi extends ElasticClientHelpers {
     }
   }
 
+  /** Get Elasticsearch cluster UUID. This is a stable, unique identifier for the cluster.
+    * @return
+    *   the Elasticsearch cluster UUID
+    */
+  def clusterUuid: ElasticResult[String] = {
+    cachedClusterUuid.get match {
+      case Some(uuid) =>
+        ElasticSuccess(uuid)
+      case None =>
+        executeGetClusterUuid() match {
+          case ElasticSuccess(uuid) =>
+            logger.info(s"✅ Elasticsearch cluster uuid: $uuid")
+            cachedClusterUuid.compareAndSet(None, Some(uuid))
+            ElasticSuccess(cachedClusterUuid.get.getOrElse(uuid))
+          case failure @ ElasticFailure(error) =>
+            logger.error(s"❌ Failed to get Elasticsearch cluster UUID: ${error.message}")
+            failure
+        }
+    }
+  }
+
   // ========================================================================
   // METHODS TO IMPLEMENT
   // ========================================================================
 
   private[client] def executeGetClusterName(): ElasticResult[String]
+
+  private[client] def executeGetClusterUuid(): ElasticResult[String]
 }

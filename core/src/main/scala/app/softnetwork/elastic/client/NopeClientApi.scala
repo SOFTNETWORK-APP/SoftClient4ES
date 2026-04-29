@@ -266,6 +266,9 @@ trait NopeClientApi extends ElasticClientApi {
   override private[client] def executeGetClusterName(): ElasticResult[String] =
     ElasticResult.success("nope-cluster")
 
+  override private[client] def executeGetClusterUuid(): ElasticResult[String] =
+    ElasticResult.success("nope-uuid")
+
   override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
     ElasticResult.success(None)
 

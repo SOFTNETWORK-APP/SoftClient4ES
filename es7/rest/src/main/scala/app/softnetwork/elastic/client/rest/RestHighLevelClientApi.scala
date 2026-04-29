@@ -257,6 +257,22 @@ trait RestHighLevelClientClusterApi extends ClusterApi with RestHighLevelClientH
       }
     )
 
+  override private[client] def executeGetClusterUuid(): ElasticResult[String] =
+    executeRestLowLevelAction[String](
+      operation = "cluster_uuid",
+      index = None,
+      retryable = true
+    )(
+      request = new Request("GET", "/")
+    )(
+      transformer = resp => {
+        val jsonString = EntityUtils.toString(resp.getEntity)
+        implicit val formats: DefaultFormats.type = DefaultFormats
+        val json = JsonMethods.parse(jsonString)
+        (json \ "cluster_uuid").extract[String]
+      }
+    )
+
 }
 
 /** Indices management API for RestHighLevelClient

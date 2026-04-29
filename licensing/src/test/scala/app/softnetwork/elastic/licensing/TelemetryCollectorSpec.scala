@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.licensing
 
-import app.softnetwork.elastic.licensing.metrics.{AggregatedMetrics, MetricsApi}
+import app.softnetwork.elastic.licensing.metrics.{AggregatedMetrics, MetricsApi, OperationMetrics}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -94,6 +94,42 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
     data.clusterName shouldBe Some("test")
     data.clusterVersion shouldBe Some("9.0.0")
     data.aggregatedMetrics shouldBe AggregatedMetrics.empty
+  }
+
+  // --- collectAndReset ---
+
+  it should "atomically collect and reset aggregated metrics" in {
+    val collector = new TelemetryCollector
+    collector.incrementQueries()
+    collector.incrementQueries()
+    collector.setMvsActive(3)
+    collector.setClusterInfo("uuid-1", Some("cluster-1"), Some("8.0.0"))
+
+    // Create a mock MetricsApi that tracks reset calls
+    var resetCalled = false
+    val mockMetrics = new MetricsApi {
+      override def recordOperation(
+        operation: String,
+        duration: Long,
+        success: Boolean,
+        index: Option[String]
+      ): Unit = ()
+      override def getMetrics: OperationMetrics = OperationMetrics.empty
+      override def getMetricsByOperation(operation: String): Option[OperationMetrics] = None
+      override def getMetricsByIndex(index: String): Option[OperationMetrics] = None
+      override def getAggregatedMetrics: AggregatedMetrics = AggregatedMetrics.empty
+      override def resetMetrics(): Unit = { resetCalled = true }
+      override def collectAndResetAggregatedMetrics: AggregatedMetrics = {
+        resetCalled = true
+        AggregatedMetrics.empty
+      }
+    }
+
+    val data = collector.collectAndReset(mockMetrics)
+    data.queriesTotal shouldBe 2
+    data.mvsActive shouldBe 3
+    data.clusterId shouldBe Some("uuid-1")
+    resetCalled shouldBe true
   }
 
   // --- concurrent access ---
