@@ -21,53 +21,45 @@ import org.scalatest.matchers.should.Matchers
 
 class LicenseManagerSpec extends AnyFlatSpec with Matchers {
 
+  private val manager = new CommunityLicenseManager
+
   "CommunityLicenseManager" should "include MaterializedViews" in {
-    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.MaterializedViews) shouldBe true
   }
 
   it should "include JdbcDriver" in {
-    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.JdbcDriver) shouldBe true
   }
 
-  it should "not include FlightSql" in {
-    val manager = new CommunityLicenseManager
-    manager.hasFeature(Feature.FlightSql) shouldBe false
+  it should "include FlightSql" in {
+    manager.hasFeature(Feature.FlightSql) shouldBe true
   }
 
   it should "not include Federation" in {
-    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.Federation) shouldBe false
   }
 
   it should "not include OdbcDriver" in {
-    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.OdbcDriver) shouldBe false
   }
 
   it should "not include UnlimitedResults" in {
-    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.UnlimitedResults) shouldBe false
   }
 
   it should "not include AdvancedAggregations" in {
-    val manager = new CommunityLicenseManager
     manager.hasFeature(Feature.AdvancedAggregations) shouldBe false
   }
 
   it should "return Community quotas" in {
-    val manager = new CommunityLicenseManager
     manager.quotas shouldBe Quota.Community
   }
 
   it should "always be Community type" in {
-    val manager = new CommunityLicenseManager
     manager.licenseType shouldBe LicenseType.Community
   }
 
   it should "reject any key validation" in {
-    val manager = new CommunityLicenseManager
     manager.validate("PRO-test-key") shouldBe a[Left[_, _]]
     manager.validate("ENT-test-key") shouldBe a[Left[_, _]]
     manager.validate("anything") shouldBe a[Left[_, _]]
@@ -77,14 +69,21 @@ class LicenseManagerSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "return Left(RefreshNotSupported) on refresh" in {
-    val manager = new CommunityLicenseManager
     manager.refresh() shouldBe Left(RefreshNotSupported)
   }
 
+  it should "return LicenseKey.Community as currentLicenseKey" in {
+    manager.currentLicenseKey shouldBe LicenseKey.Community
+  }
+
+  it should "not be a trial" in {
+    manager.isTrial shouldBe false
+  }
+
   "LicenseManager trait" should "be source-compatible" in {
-    val manager: LicenseManager = new CommunityLicenseManager
-    manager.licenseType shouldBe LicenseType.Community
-    manager.quotas shouldBe Quota.Community
+    val m: LicenseManager = new CommunityLicenseManager
+    m.licenseType shouldBe LicenseType.Community
+    m.quotas shouldBe Quota.Community
   }
 
   it should "default refresh to Left(RefreshNotSupported)" in {
@@ -97,8 +96,19 @@ class LicenseManagerSpec extends AnyFlatSpec with Matchers {
     stub.refresh() shouldBe Left(RefreshNotSupported)
   }
 
+  it should "default currentLicenseKey to LicenseKey.Community" in {
+    val stub = new LicenseManager {
+      def validate(key: String): Either[LicenseError, LicenseKey] = Left(InvalidLicense("stub"))
+      def hasFeature(feature: Feature): Boolean = false
+      def quotas: Quota = Quota.Community
+      def licenseType: LicenseType = LicenseType.Community
+    }
+    stub.currentLicenseKey shouldBe LicenseKey.Community
+    stub.isTrial shouldBe false
+  }
+
   "DefaultLicenseManager" should "be a deprecated alias for CommunityLicenseManager" in {
-    val manager: DefaultLicenseManager = new CommunityLicenseManager
-    manager shouldBe a[CommunityLicenseManager]
+    val m: DefaultLicenseManager = new CommunityLicenseManager
+    m shouldBe a[CommunityLicenseManager]
   }
 }

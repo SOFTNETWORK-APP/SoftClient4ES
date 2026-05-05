@@ -138,4 +138,100 @@ class LicenseKeySpec extends AnyFlatSpec with Matchers {
     )
     key.daysRemaining.get should be < 0L
   }
+
+  "daysRemainingAt" should "be deterministic with a fixed instant" in {
+    val now = Instant.parse("2026-01-15T00:00:00Z")
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.parse("2026-01-25T00:00:00Z")),
+      metadata = Map.empty
+    )
+    key.daysRemainingAt(now) shouldBe Some(10L)
+  }
+
+  "daysSinceExpiryAt" should "return positive for expired keys" in {
+    val now = Instant.parse("2026-01-20T00:00:00Z")
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.parse("2026-01-15T00:00:00Z")),
+      metadata = Map.empty
+    )
+    key.daysSinceExpiryAt(now) shouldBe Some(5L)
+  }
+
+  it should "return negative for not-yet-expired keys" in {
+    val now = Instant.parse("2026-01-10T00:00:00Z")
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.parse("2026-01-15T00:00:00Z")),
+      metadata = Map.empty
+    )
+    key.daysSinceExpiryAt(now) shouldBe Some(-5L)
+  }
+
+  it should "be consistent with daysRemainingAt (sum to zero)" in {
+    val now = Instant.parse("2026-01-15T00:00:00Z")
+    val key = LicenseKey(
+      id = "org-123",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews),
+      expiresAt = Some(Instant.parse("2026-01-22T00:00:00Z")),
+      metadata = Map.empty
+    )
+    val remaining = key.daysRemainingAt(now).get
+    val expired = key.daysSinceExpiryAt(now).get
+    (remaining + expired) shouldBe 0L
+  }
+
+  "LicenseKey.Community" should "carry Community quota with no usage or platform" in {
+    LicenseKey.Community.quota shouldBe Some(Quota.Community)
+    LicenseKey.Community.usage shouldBe None
+    LicenseKey.Community.platform shouldBe None
+  }
+
+  "LicenseKey with all new fields" should "preserve quota, usage, and platform" in {
+    val key = LicenseKey(
+      id = "pro-key",
+      licenseType = LicenseType.Pro,
+      features = Set(Feature.MaterializedViews, Feature.Federation),
+      expiresAt = Some(Instant.now().plus(Duration.ofDays(365))),
+      metadata = Map("org_name" -> "Acme Corp"),
+      quota = Some(Quota.Pro),
+      usage = Some(LicenseUsage(totalMvsActive = 10, totalFederatedClusters = 2)),
+      platform = Some(Platform.Production)
+    )
+    key.quota shouldBe Some(Quota.Pro)
+    key.usage shouldBe Some(LicenseUsage(totalMvsActive = 10, totalFederatedClusters = 2))
+    key.platform shouldBe Some(Platform.Production)
+  }
+
+  it should "support equality with identical field values" in {
+    val now = Instant.now()
+    val usage = LicenseUsage(totalMvsActive = 5, totalFederatedClusters = 1)
+    val key1 = LicenseKey(
+      "k",
+      LicenseType.Pro,
+      Set.empty,
+      Some(now),
+      quota = Some(Quota.Pro),
+      usage = Some(usage),
+      platform = Some(Platform.Staging)
+    )
+    val key2 = LicenseKey(
+      "k",
+      LicenseType.Pro,
+      Set.empty,
+      Some(now),
+      quota = Some(Quota.Pro),
+      usage = Some(usage),
+      platform = Some(Platform.Staging)
+    )
+    key1 shouldBe key2
+  }
 }
