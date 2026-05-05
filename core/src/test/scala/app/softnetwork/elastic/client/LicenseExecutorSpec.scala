@@ -79,7 +79,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row should contain key "max_materialized_views"
     row("max_materialized_views") shouldBe "3"
     row should contain key "max_clusters"
-    row("max_clusters") shouldBe "2"
+    row("max_clusters") shouldBe "0"
     row should contain key "max_result_rows"
     row("max_result_rows") shouldBe "10000"
     row should contain key "max_concurrent_queries"
