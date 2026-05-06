@@ -177,7 +177,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
         licenseType = LicenseType.Pro,
         features = Feature.values.toSet,
         expiresAt = Some(Instant.now().plusSeconds(15 * 86400)),
-        metadata = Map("trial" -> "true")
+        trial = true
       )
     }
     val executor = new LicenseExecutor(strategy = mkStrategy(trialManager))
@@ -302,7 +302,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
       licenseType = LicenseType.Pro,
       features = Feature.values.toSet,
       expiresAt = Some(Instant.parse("2026-07-08T23:59:59Z")),
-      metadata = Map("trial" -> "true")
+      trial = true
     )
     val executor = new LicenseExecutor(
       strategy = mkStrategy(proManager, refreshResult = Right(trialKey))
