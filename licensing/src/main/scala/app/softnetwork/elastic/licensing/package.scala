@@ -102,11 +102,12 @@ package object licensing {
     metadata: Map[String, String] = Map.empty,
     quota: Option[Quota] = None,
     usage: Option[LicenseUsage] = None,
-    platform: Option[Platform] = None
+    platform: Option[Platform] = None,
+    trial: Boolean = false
   ) {
 
     /** Whether this is a trial license (Pro trial via API key). */
-    def isTrial: Boolean = metadata.get("trial").contains("true")
+    def isTrial: Boolean = trial
 
     /** Days remaining until expiration, or None if no expiry. Positive = not yet expired. */
     def daysRemaining: Option[Long] = daysRemainingAt(java.time.Instant.now())

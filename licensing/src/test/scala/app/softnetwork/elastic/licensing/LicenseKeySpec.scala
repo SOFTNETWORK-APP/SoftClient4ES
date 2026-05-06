@@ -87,13 +87,13 @@ class LicenseKeySpec extends AnyFlatSpec with Matchers {
     key.metadata shouldBe empty
   }
 
-  "isTrial" should "return true when trial metadata is set" in {
+  "isTrial" should "return true when trial field is set" in {
     val key = LicenseKey(
       id = "org-123",
       licenseType = LicenseType.Pro,
       features = Set(Feature.MaterializedViews),
       expiresAt = Some(Instant.now().plus(Duration.ofDays(30))),
-      metadata = Map("trial" -> "true")
+      trial = true
     )
     key.isTrial shouldBe true
   }
@@ -103,13 +103,12 @@ class LicenseKeySpec extends AnyFlatSpec with Matchers {
       id = "org-123",
       licenseType = LicenseType.Pro,
       features = Set(Feature.MaterializedViews),
-      expiresAt = Some(Instant.now().plus(Duration.ofDays(365))),
-      metadata = Map("trial" -> "false")
+      expiresAt = Some(Instant.now().plus(Duration.ofDays(365)))
     )
     key.isTrial shouldBe false
   }
 
-  it should "return false when trial metadata is absent" in {
+  it should "return false when trial defaults to false" in {
     LicenseKey.Community.isTrial shouldBe false
   }
 
