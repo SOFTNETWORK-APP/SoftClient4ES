@@ -27,6 +27,11 @@ package object licensing {
       case LicenseType.Pro        => 1
       case LicenseType.Enterprise => 2
     }
+    def displayName: String = this match {
+      case LicenseType.Community  => "Community"
+      case LicenseType.Pro        => "Pro"
+      case LicenseType.Enterprise => "Enterprise"
+    }
   }
 
   object LicenseType {
