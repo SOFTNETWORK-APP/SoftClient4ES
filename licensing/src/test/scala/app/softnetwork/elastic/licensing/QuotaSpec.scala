@@ -21,8 +21,12 @@ import org.scalatest.matchers.should.Matchers
 
 class QuotaSpec extends AnyFlatSpec with Matchers {
 
-  "Quota.Community" should "have maxClusters = Some(0)" in {
-    Quota.Community.maxClusters shouldBe Some(0)
+  "Quota.Community" should "have maxClusters = Some(1)" in {
+    Quota.Community.maxClusters shouldBe Some(1)
+  }
+
+  it should "have maxJoins = Some(1)" in {
+    Quota.Community.maxJoins shouldBe Some(1)
   }
 
   it should "have maxMaterializedViews = Some(3)" in {
@@ -41,6 +45,10 @@ class QuotaSpec extends AnyFlatSpec with Matchers {
     Quota.Pro.maxClusters shouldBe Some(5)
   }
 
+  it should "have maxJoins = Some(5)" in {
+    Quota.Pro.maxJoins shouldBe Some(5)
+  }
+
   it should "have maxMaterializedViews = Some(50)" in {
     Quota.Pro.maxMaterializedViews shouldBe Some(50)
   }
@@ -55,6 +63,10 @@ class QuotaSpec extends AnyFlatSpec with Matchers {
 
   "Quota.Enterprise" should "have maxClusters = None (unlimited)" in {
     Quota.Enterprise.maxClusters shouldBe None
+  }
+
+  it should "have maxJoins = None (unlimited)" in {
+    Quota.Enterprise.maxJoins shouldBe None
   }
 
   it should "have maxMaterializedViews = None (unlimited)" in {
@@ -76,5 +88,6 @@ class QuotaSpec extends AnyFlatSpec with Matchers {
       maxConcurrentQueries = Some(1)
     )
     quota.maxClusters shouldBe Some(0)
+    quota.maxJoins shouldBe Some(0)
   }
 }

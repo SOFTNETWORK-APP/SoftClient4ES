@@ -132,7 +132,8 @@ package object licensing {
     val Community: LicenseKey = LicenseKey(
       id = "community",
       licenseType = LicenseType.Community,
-      features = Set(Feature.MaterializedViews, Feature.JdbcDriver, Feature.FlightSql),
+      features =
+        Set(Feature.MaterializedViews, Feature.JdbcDriver, Feature.FlightSql, Feature.Federation),
       expiresAt = None,
       quota = Some(Quota.Community)
     )
@@ -142,7 +143,8 @@ package object licensing {
     maxMaterializedViews: Option[Int], // None = unlimited
     maxQueryResults: Option[Int], // None = unlimited
     maxConcurrentQueries: Option[Int],
-    maxClusters: Option[Int] = Some(0) // None = unlimited
+    maxClusters: Option[Int] = Some(0), // None = unlimited
+    maxJoins: Option[Int] = Some(0) // None = unlimited
   )
 
   object Quota {
@@ -150,21 +152,24 @@ package object licensing {
       maxMaterializedViews = Some(3),
       maxQueryResults = Some(10000),
       maxConcurrentQueries = Some(5),
-      maxClusters = Some(0)
+      maxClusters = Some(1),
+      maxJoins = Some(1)
     )
 
     val Pro: Quota = Quota(
       maxMaterializedViews = Some(50),
       maxQueryResults = Some(1000000),
       maxConcurrentQueries = Some(50),
-      maxClusters = Some(5)
+      maxClusters = Some(5),
+      maxJoins = Some(5)
     )
 
     val Enterprise: Quota = Quota(
       maxMaterializedViews = None, // Unlimited
       maxQueryResults = None,
       maxConcurrentQueries = None,
-      maxClusters = None
+      maxClusters = None,
+      maxJoins = None
     )
   }
 
