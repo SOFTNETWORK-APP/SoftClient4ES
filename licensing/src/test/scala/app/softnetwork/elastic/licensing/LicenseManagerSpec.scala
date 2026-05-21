@@ -35,8 +35,8 @@ class LicenseManagerSpec extends AnyFlatSpec with Matchers {
     manager.hasFeature(Feature.FlightSql) shouldBe true
   }
 
-  it should "not include Federation" in {
-    manager.hasFeature(Feature.Federation) shouldBe false
+  it should "include Federation" in {
+    manager.hasFeature(Feature.Federation) shouldBe true
   }
 
   it should "not include OdbcDriver" in {

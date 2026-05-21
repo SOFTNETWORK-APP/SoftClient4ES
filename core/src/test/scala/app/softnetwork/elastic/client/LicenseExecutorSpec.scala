@@ -79,7 +79,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row should contain key "max_materialized_views"
     row("max_materialized_views") shouldBe "3"
     row should contain key "max_clusters"
-    row("max_clusters") shouldBe "0"
+    row("max_clusters") shouldBe "1"
     row should contain key "max_result_rows"
     row("max_result_rows") shouldBe "10000"
     row should contain key "max_concurrent_queries"
@@ -89,6 +89,8 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("days_remaining") shouldBe -1L
     row should contain key "status"
     row("status") shouldBe "Active"
+    row should contain key "max_joins"
+    row("max_joins") shouldBe "1"
   }
 
   it should "return strategy license info when strategy is configured" in {
