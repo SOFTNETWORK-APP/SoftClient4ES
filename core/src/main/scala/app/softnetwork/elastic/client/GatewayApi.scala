@@ -1632,6 +1632,7 @@ class LicenseExecutor(
       "max_clusters"           -> formatQuota(mgr.quotas.maxClusters),
       "max_result_rows"        -> formatQuota(mgr.quotas.maxQueryResults),
       "max_concurrent_queries" -> formatQuota(mgr.quotas.maxConcurrentQueries),
+      "max_joins"              -> formatQuota(mgr.quotas.maxJoins),
       "expires_at"             -> formatExpiry(key.expiresAt),
       "days_remaining"         -> key.daysRemaining.getOrElse(-1L),
       "status"                 -> graceStatus
