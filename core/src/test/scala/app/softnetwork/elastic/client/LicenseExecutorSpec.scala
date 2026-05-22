@@ -76,6 +76,8 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row should contain key "license_type"
     row("license_type") shouldBe "Community"
     row("trial") shouldBe false
+    row should contain key "platform"
+    row("platform") shouldBe "PRODUCTION"
     row should contain key "max_materialized_views"
     row("max_materialized_views") shouldBe "3"
     row should contain key "max_clusters"
@@ -116,6 +118,7 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("max_clusters") shouldBe "5"
     row("max_result_rows") shouldBe "1000000"
     row("max_concurrent_queries") shouldBe "50"
+    row("platform") shouldBe "PRODUCTION"
     row("expires_at") shouldBe "2026-12-31T23:59:59Z"
     row("days_remaining").asInstanceOf[Long] should be > 0L
     row("status") shouldBe "Active"
@@ -189,6 +192,71 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("trial") shouldBe true
     row("days_remaining").asInstanceOf[Long] should (be >= 14L and be <= 15L)
     row("status") shouldBe "Active"
+  }
+
+  it should "show platform field matching LicenseKey.platform when set" in {
+    val stagingManager = new LicenseManager {
+      override def validate(key: String): Either[LicenseError, LicenseKey] =
+        Left(InvalidLicense("test"))
+      override def hasFeature(feature: Feature): Boolean = true
+      override def quotas: Quota = Quota(
+        maxMaterializedViews = Some(25),
+        maxQueryResults = Some(500000),
+        maxConcurrentQueries = Some(25),
+        maxClusters = Some(2),
+        maxJoins = Some(2)
+      )
+      override def licenseType: LicenseType = LicenseType.Pro
+      override def currentLicenseKey: LicenseKey = LicenseKey(
+        id = "test-staging",
+        licenseType = LicenseType.Pro,
+        features = Feature.values.toSet,
+        expiresAt = Some(Instant.parse("2026-12-31T23:59:59Z")),
+        platform = Some(Platform.Staging)
+      )
+    }
+    val executor = new LicenseExecutor(strategy = mkStrategy(stagingManager))
+    val row = execute(executor, ShowLicense)
+
+    row("platform") shouldBe "STAGING"
+    row("license_type") shouldBe "Pro"
+    row("max_materialized_views") shouldBe "25"
+    row("max_clusters") shouldBe "2"
+    row("max_result_rows") shouldBe "500000"
+    row("max_concurrent_queries") shouldBe "25"
+    row("max_joins") shouldBe "2"
+  }
+
+  it should "show DEVELOPMENT platform when LicenseKey has Development platform" in {
+    val devManager = new LicenseManager {
+      override def validate(key: String): Either[LicenseError, LicenseKey] =
+        Left(InvalidLicense("test"))
+      override def hasFeature(feature: Feature): Boolean = true
+      override def quotas: Quota = Quota(
+        maxMaterializedViews = Some(5),
+        maxQueryResults = Some(10000),
+        maxConcurrentQueries = Some(5),
+        maxClusters = Some(1),
+        maxJoins = Some(1)
+      )
+      override def licenseType: LicenseType = LicenseType.Pro
+      override def currentLicenseKey: LicenseKey = LicenseKey(
+        id = "test-dev",
+        licenseType = LicenseType.Pro,
+        features = Feature.values.toSet,
+        expiresAt = Some(Instant.parse("2026-12-31T23:59:59Z")),
+        platform = Some(Platform.Development)
+      )
+    }
+    val executor = new LicenseExecutor(strategy = mkStrategy(devManager))
+    val row = execute(executor, ShowLicense)
+
+    row("platform") shouldBe "DEVELOPMENT"
+    row("max_materialized_views") shouldBe "5"
+    row("max_clusters") shouldBe "1"
+    row("max_result_rows") shouldBe "10000"
+    row("max_concurrent_queries") shouldBe "5"
+    row("max_joins") shouldBe "1"
   }
 
   // -------------------------------------------------------------------------
