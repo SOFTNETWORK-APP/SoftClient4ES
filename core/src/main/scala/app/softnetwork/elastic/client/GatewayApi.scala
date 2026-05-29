@@ -1628,6 +1628,7 @@ class LicenseExecutor(
     val row = ListMap[String, Any](
       "license_type"           -> s"${mgr.licenseType}$trialNote$degradedNote",
       "trial"                  -> key.isTrial,
+      "platform"               -> key.platform.map(_.name).getOrElse("PRODUCTION"),
       "max_materialized_views" -> formatQuota(mgr.quotas.maxMaterializedViews),
       "max_clusters"           -> formatQuota(mgr.quotas.maxClusters),
       "max_result_rows"        -> formatQuota(mgr.quotas.maxQueryResults),
