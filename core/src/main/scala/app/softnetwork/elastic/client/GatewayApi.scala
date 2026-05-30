@@ -195,7 +195,8 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
     implicit val ec: ExecutionContext = system.dispatcher
     statement match {
       case delete: Delete =>
-        api.deleteByQuery(delete.table.name, delete.sql) match {
+        // Pass the AST directly — avoids the AST → Delete.sql → re-parse round-trip.
+        api.deleteByQuery(delete.table.name, delete, refresh = true) match {
           case ElasticSuccess(count) =>
             logger.info(s"✅ Deleted $count documents from ${delete.table.name}.")
             Future.successful(ElasticResult.success(DmlResult(deleted = count)))
@@ -221,7 +222,8 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
             )
         }
       case insert: Insert =>
-        api.insertByQuery(insert.table, insert.sql).map {
+        // Pass the AST directly — avoids the AST → Insert.sql → re-parse round-trip.
+        api.insertByQuery(insert.table, insert, refresh = true).map {
           case success @ ElasticSuccess(res) =>
             logger.info(s"✅ Inserted ${res.inserted} documents into ${insert.table}.")
             success

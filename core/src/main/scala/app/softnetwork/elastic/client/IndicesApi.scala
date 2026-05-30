@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
-import app.softnetwork.elastic.client.bulk.BulkOptions
+import app.softnetwork.elastic.client.bulk.{BulkOptions, BulkResult}
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.PainlessContextType
@@ -756,25 +756,78 @@ trait IndicesApi extends ElasticClientHelpers {
     query: String,
     refresh: Boolean = true
   ): ElasticResult[Long] = {
-
     val result = for {
-      // 1. Validate index name
-      _ <- validateIndexName(index)
-        .toLeft(())
-        .left
-        .map(err =>
-          err.copy(
-            operation = Some("deleteByQuery"),
-            statusCode = Some(400),
-            index = Some(index),
-            message = s"Invalid index: ${err.message}"
-          )
-        )
-
-      // 2. Parse query (SQL or JSON)
+      _         <- validateDeleteIndex(index)
       jsonQuery <- parseQueryForDeletion(index, query)
+      deleted   <- runDeleteByQuery(index, jsonQuery, refresh)
+    } yield deleted
+    finalizeDeleteByQuery(index, result)
+  }
 
-      // 3. Check index exists
+  /** Delete documents using an already-parsed [[Delete]] AST. Skips the SQL parser entirely.
+    *
+    * Same motivation as the [[updateByQuery]] AST overload: avoid the AST → `Delete.sql` → re-parse
+    * round-trip when [[GatewayApi.run]] already has the AST.
+    */
+  def deleteByQuery(
+    index: String,
+    delete: Delete,
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+    val result = for {
+      _ <- validateDeleteIndex(index)
+      _ <-
+        if (delete.table.name != index)
+          Left(
+            sqlErrorFor(
+              operation = "deleteByQuery",
+              index = index,
+              message =
+                s"SQL query index '${delete.table.name}' does not match provided index '$index'"
+            )
+          )
+        else Right(())
+      jsonQuery = delete.where match {
+        case None =>
+          logger.info(
+            s"SQL delete query has no WHERE clause, deleting all documents from index '$index'"
+          )
+          """{"query": {"match_all": {}}}"""
+        case Some(where) =>
+          implicit val timestamp: Long = System.currentTimeMillis()
+          val search: String =
+            SingleSearch(
+              from = From(tables = Seq(delete.table)),
+              where = Some(where),
+              deleteByQuery = true
+            )
+          logger.info(s"✅ Converted SQL delete query to search for deleteByQuery: $search")
+          search
+      }
+      deleted <- runDeleteByQuery(index, jsonQuery, refresh)
+    } yield deleted
+    finalizeDeleteByQuery(index, result)
+  }
+
+  private def validateDeleteIndex(index: String): Either[ElasticError, Unit] =
+    validateIndexName(index)
+      .toLeft(())
+      .left
+      .map(err =>
+        err.copy(
+          operation = Some("deleteByQuery"),
+          statusCode = Some(400),
+          index = Some(index),
+          message = s"Invalid index: ${err.message}"
+        )
+      )
+
+  private def runDeleteByQuery(
+    index: String,
+    jsonQuery: String,
+    refresh: Boolean
+  ): Either[ElasticError, Long] =
+    for {
       _ <- indexExists(index, pattern = false) match {
         case ElasticSuccess(true) => Right(())
         case ElasticSuccess(false) =>
@@ -788,30 +841,25 @@ trait IndicesApi extends ElasticClientHelpers {
           )
         case ElasticFailure(err) => Left(err)
       }
-
-      // 4. Open index if needed
       tuple <- openIfNeeded(index)
       (_, restore) = tuple
-
-      // 5. Execute delete-by-query
       deleted <- executeDeleteByQuery(index, jsonQuery, refresh).toEither
-
-      // 6. Restore state
       _ <- restore().toEither.left.map { restoreErr =>
         logger.warn(s"❌ Failed to restore index state for '$index': ${restoreErr.message}")
         restoreErr
       }
-
     } yield deleted
 
-    result match {
-      case Right(count) =>
-        logger.info(s"✅ Deleted $count documents from index '$index'")
-        ElasticSuccess(count)
-      case Left(err) =>
-        logger.error(s"❌ Failed to delete by query on index '$index': ${err.message}")
-        ElasticFailure(err)
-    }
+  private def finalizeDeleteByQuery(
+    index: String,
+    result: Either[ElasticError, Long]
+  ): ElasticResult[Long] = result match {
+    case Right(count) =>
+      logger.info(s"✅ Deleted $count documents from index '$index'")
+      ElasticSuccess(count)
+    case Left(err) =>
+      logger.error(s"❌ Failed to delete by query on index '$index': ${err.message}")
+      ElasticFailure(err)
   }
 
   /** Update documents by query from an index.
@@ -1023,26 +1071,100 @@ trait IndicesApi extends ElasticClientHelpers {
     refresh: Boolean = true
   )(implicit system: ActorSystem): Future[ElasticResult[DmlResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
-
     val result = for {
-      // 1. Validate index
-      _ <- Future.fromTry(
-        validateIndexName(index)
-          .toLeft(())
-          .left
-          .map(err =>
-            err.copy(
+      _      <- Future.fromTry(validateInsertIndex(index).toTry)
+      parsed <- parseInsertQuery(index, query).toFuture
+      out    <- runInsertByQuery(index, parsed, refresh)
+    } yield out
+    insertResultFinalize(index, result)
+  }
+
+  /** Insert documents using an already-parsed [[Insert]] AST. Skips the SQL parser entirely.
+    *
+    * Same motivation as the [[updateByQuery]] AST overload — avoid the AST → `Insert.sql` →
+    * re-parse round-trip when [[GatewayApi.run]] already has the AST.
+    */
+  def insertByQuery(
+    index: String,
+    insert: Insert,
+    refresh: Boolean
+  )(implicit system: ActorSystem): Future[ElasticResult[DmlResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    val result = for {
+      _ <- Future.fromTry(validateInsertIndex(index).toTry)
+      _ <- Future.fromTry {
+        if (insert.table != index)
+          Left(
+            ElasticError(
               operation = Some("insertByQuery"),
               statusCode = Some(400),
+              index = Some(index),
+              message = s"SQL table '${insert.table}' does not match index '$index'"
+            )
+          ).toTry
+        else
+          insert.validate() match {
+            case Left(msg) =>
+              Left(
+                ElasticError(
+                  operation = Some("insertByQuery"),
+                  statusCode = Some(400),
+                  index = Some(index),
+                  message = msg
+                )
+              ).toTry
+            case Right(_) => Right(()).toTry
+          }
+      }
+      out <- runInsertByQuery(index, insert, refresh)
+    } yield out
+    insertResultFinalize(index, result)
+  }
+
+  private def validateInsertIndex(index: String): Either[ElasticError, Unit] =
+    validateIndexName(index)
+      .toLeft(())
+      .left
+      .map(err =>
+        err.copy(
+          operation = Some("insertByQuery"),
+          statusCode = Some(400),
+          index = Some(index)
+        )
+      )
+
+  private def insertResultFinalize(
+    index: String,
+    result: Future[BulkResult]
+  )(implicit ec: ExecutionContext): Future[ElasticResult[DmlResult]] =
+    result
+      .map(r => ElasticSuccess(DmlResult(inserted = r.successCount, rejected = r.failedCount)))
+      .recover {
+        case e: ElasticError =>
+          ElasticFailure(
+            e.copy(
+              operation = Some("insertByQuery"),
               index = Some(index)
             )
           )
-          .toTry
-      )
+        case e =>
+          ElasticFailure(
+            ElasticError(
+              message = e.getMessage,
+              operation = Some("insertByQuery"),
+              index = Some(index)
+            )
+          )
+      }
 
-      // 2. Parse SQL INSERT
-      parsed <- parseInsertQuery(index, query).toFuture
-
+  /** Shared post-parse path for both [[insertByQuery]] overloads. */
+  private def runInsertByQuery(
+    index: String,
+    parsed: Insert,
+    refresh: Boolean
+  )(implicit system: ActorSystem): Future[BulkResult] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    for {
       // 3. Load index metadata
       idx <- Future.fromTry(getIndex(index).toEither.flatMap {
         case Some(i) => Right(i.schema)
@@ -1238,26 +1360,6 @@ trait IndicesApi extends ElasticClientHelpers {
       )(BulkOptions(defaultIndex = index, disableRefresh = !refresh), system)
 
     } yield bulkResult
-
-    result
-      .map(r => ElasticSuccess(DmlResult(inserted = r.successCount, rejected = r.failedCount)))
-      .recover {
-        case e: ElasticError =>
-          ElasticFailure(
-            e.copy(
-              operation = Some("insertByQuery"),
-              index = Some(index)
-            )
-          )
-        case e =>
-          ElasticFailure(
-            ElasticError(
-              message = e.getMessage,
-              operation = Some("insertByQuery"),
-              index = Some(index)
-            )
-          )
-      }
   }
 
   /** Copy documents from files into an index.

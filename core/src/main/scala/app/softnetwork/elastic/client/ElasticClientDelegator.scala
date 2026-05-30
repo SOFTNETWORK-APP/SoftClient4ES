@@ -26,6 +26,8 @@ import app.softnetwork.elastic.schema.{Index, IndexMappings}
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.{
+  Delete,
+  Insert,
   SQLAggregation,
   SearchStatement,
   SelectStatement,
@@ -213,6 +215,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def deleteByQuery(index: String, query: String, refresh: Boolean): ElasticResult[Long] =
     delegate.deleteByQuery(index, query, refresh)
 
+  override def deleteByQuery(index: String, delete: Delete, refresh: Boolean): ElasticResult[Long] =
+    delegate.deleteByQuery(index, delete, refresh)
+
   override def isIndexClosed(index: String): ElasticResult[Boolean] =
     delegate.isIndexClosed(index)
 
@@ -260,6 +265,11 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     system: ActorSystem
   ): Future[ElasticResult[DmlResult]] =
     delegate.insertByQuery(index, query, refresh)
+
+  override def insertByQuery(index: String, insert: Insert, refresh: Boolean)(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[DmlResult]] =
+    delegate.insertByQuery(index, insert, refresh)
 
   /** Load the schema for the provided index.
     *
