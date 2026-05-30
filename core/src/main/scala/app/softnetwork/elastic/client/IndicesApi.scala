@@ -850,14 +850,81 @@ trait IndicesApi extends ElasticClientHelpers {
       // 2. Parse SQL or JSON
       parsed <- parseQueryForUpdate(index, query).toEither
 
+      count <- runUpdateByQuery(index, parsed, pipelineId, refresh)
+    } yield count
+
+    result match {
+      case Right(count) => ElasticSuccess(count)
+      case Left(err)    => ElasticFailure(err)
+    }
+  }
+
+  /** Update documents by query using an already-parsed [[Update]] AST.
+    *
+    * Skips the SQL parser entirely — used by [[GatewayApi.run]] when the dispatcher has already
+    * parsed the SQL once. Avoids the round-trip AST → `Update.sql` → re-parse that historically
+    * lost the syntactic shape of string literals (see issue #92).
+    */
+  def updateByQuery(
+    index: String,
+    update: Update,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] = {
+    val result = for {
+      _ <- validateIndexName(index)
+        .toLeft(())
+        .left
+        .map(err =>
+          err.copy(
+            operation = Some("updateByQuery"),
+            statusCode = Some(400),
+            index = Some(index)
+          )
+        )
+
+      _ <-
+        if (update.table != index)
+          Left(
+            sqlErrorFor(
+              operation = "updateByQuery",
+              index = index,
+              message = s"SQL query index '${update.table}' does not match provided index '$index'"
+            )
+          )
+        else Right(())
+
+      count <- runUpdateByQuery(index, Left(update), pipelineId, refresh)
+    } yield count
+
+    result match {
+      case Right(count) => ElasticSuccess(count)
+      case Left(err)    => ElasticFailure(err)
+    }
+  }
+
+  /** Shared execution path for both [[updateByQuery]] overloads. Runs everything from the
+    * post-parse step (pipeline extraction → WHERE → JSON conversion → execute).
+    *
+    * @param parsed
+    *   Left(Update) for SQL update statements; Right(jsonQuery) for JSON passthrough or for a
+    *   SELECT that [[parseQueryForUpdate]] has already converted into JSON.
+    */
+  private def runUpdateByQuery(
+    index: String,
+    parsed: Either[Update, String],
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): Either[ElasticError, Long] = {
+    for {
       // 3. Extract SQL pipeline (optional)
-      sqlPipeline = parsed match {
+      sqlPipeline <- Right(parsed match {
         case Left(u: Update) if u.values.nonEmpty => Some(u.customPipeline)
         case _                                    => None
-      }
+      })
 
-      // 4. Extract SQL WHERE → JSON query
-      jsonQuery = parsed match {
+      // 4. Build the JSON query to execute
+      jsonQuery <- Right(parsed match {
         case Left(u: Update) =>
           u.where match {
             case None =>
@@ -878,8 +945,9 @@ trait IndicesApi extends ElasticClientHelpers {
               search
           }
 
-        case _ => query // JSON passthrough
-      }
+        case Right(jsonOrConverted) =>
+          jsonOrConverted
+      })
 
       // 5. Load user pipeline if provided
       userPipeline <- pipelineId match {
@@ -937,11 +1005,6 @@ trait IndicesApi extends ElasticClientHelpers {
       _ <- restore().toEither
 
     } yield updated
-
-    result match {
-      case Right(count) => ElasticSuccess(count)
-      case Left(err)    => ElasticFailure(err)
-    }
   }
 
   /** Insert documents by query into an index.

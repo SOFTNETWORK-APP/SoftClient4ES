@@ -2844,6 +2844,25 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "round-trip Update.sql with string literals so re-parsing yields the same AST" in {
+    // Regression for #92: Update.sql previously rendered string literals as bare tokens
+    // (`country = USA` instead of `country = 'USA'`), which made re-parsing turn the literal
+    // into an Identifier. Downstream paths that re-parse the emitted SQL (e.g. updateByQuery)
+    // would then build a broken painless script that silently nulled the column.
+    val sql = "UPDATE customers SET country = 'USA' WHERE id = 1"
+    val first = Parser(sql).toOption.get.asInstanceOf[Update]
+    first.values("country").asInstanceOf[Value[_]].value shouldBe "USA"
+    val reEmitted = first.sql
+    reEmitted should include("country = 'USA'")
+    val second = Parser(reEmitted).toOption.get.asInstanceOf[Update]
+    second.values("country").asInstanceOf[Value[_]].value shouldBe "USA"
+    // Pipeline must take the SET branch (not SCRIPT) for string literals, otherwise the
+    // generated painless source references ctx.<literal> instead of assigning the literal.
+    val pipeline = second.customPipeline
+    pipeline.processors should have size 1
+    pipeline.processors.head shouldBe a[SetProcessor]
+  }
+
   it should "parse UPDATE with scripts" in {
     val sql =
       "UPDATE products SET price = price * 1.1, updated_at = CURRENT_TIMESTAMP WHERE category = 'Electronics'"

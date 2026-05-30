@@ -963,12 +963,12 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     val sql =
       """SELECT
         | o.id,
-        | items.product,
-        | items.quantity,
-        | SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
+        | oi.product,
+        | oi.quantity,
+        | SUM(oi.price * oi.quantity) OVER (PARTITION BY o.id) AS total_price
         |FROM dql_orders o
-        |JOIN UNNEST(o.items) AS items
-        |WHERE items.quantity >= 1
+        |JOIN UNNEST(o.items) AS oi
+        |WHERE oi.quantity >= 1
         |ORDER BY o.id ASC;""".stripMargin
 
     val res = client.run(sql).futureValue
@@ -977,22 +977,22 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       res,
       Seq(
         Map(
-          "id"             -> 1,
-          "items.product"  -> "A",
-          "items.quantity" -> 2,
-          "total_price"    -> 40.0
+          "id"          -> 1,
+          "oi.product"  -> "A",
+          "oi.quantity" -> 2,
+          "total_price" -> 40.0
         ),
         Map(
-          "id"             -> 1,
-          "items.product"  -> "B",
-          "items.quantity" -> 1,
-          "total_price"    -> 40.0
+          "id"          -> 1,
+          "oi.product"  -> "B",
+          "oi.quantity" -> 1,
+          "total_price" -> 40.0
         ),
         Map(
-          "id"             -> 2,
-          "items.product"  -> "C",
-          "items.quantity" -> 3,
-          "total_price"    -> 15.0
+          "id"          -> 2,
+          "oi.product"  -> "C",
+          "oi.quantity" -> 3,
+          "total_price" -> 15.0
         )
       )
     )

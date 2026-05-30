@@ -207,7 +207,9 @@ class DmlExecutor(api: IndicesApi, logger: Logger) extends Executor[DmlStatement
             )
         }
       case update: Update =>
-        api.updateByQuery(update.table, update.sql) match {
+        // Pass the AST directly — avoids the AST → Update.sql → re-parse round-trip that
+        // historically dropped the syntactic shape of string literals (issue #92).
+        api.updateByQuery(update.table, update, None, refresh = true) match {
           case ElasticSuccess(count) =>
             logger.info(s"✅ Updated $count documents in ${update.table}.")
             Future.successful(ElasticResult.success(DmlResult(updated = count)))

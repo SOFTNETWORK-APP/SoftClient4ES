@@ -34,7 +34,7 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.schema.{Index, IndexMappings}
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema}
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SearchStatement, SelectStatement}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SearchStatement, SelectStatement, Update}
 import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import app.softnetwork.elastic.sql.transform.{
   TransformConfig,
@@ -225,6 +225,16 @@ class MetricsElasticClient(
   ): ElasticResult[Long] =
     measureResult("updateByQuery", Some(index)) {
       delegate.updateByQuery(index, query, pipelineId, refresh)
+    }
+
+  override def updateByQuery(
+    index: String,
+    update: Update,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    measureResult("updateByQuery", Some(index)) {
+      delegate.updateByQuery(index, update, pipelineId, refresh)
     }
 
   /** Insert documents by query into an index.

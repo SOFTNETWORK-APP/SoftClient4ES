@@ -29,7 +29,8 @@ import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SearchStatement,
   SelectStatement,
-  SingleSearch
+  SingleSearch,
+  Update
 }
 import app.softnetwork.elastic.sql.schema.{Schema, TableAlias}
 import app.softnetwork.elastic.sql.transform.{
@@ -235,6 +236,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     refresh: Boolean
   ): ElasticResult[Long] =
     delegate.updateByQuery(index, query, pipelineId, refresh)
+
+  override def updateByQuery(
+    index: String,
+    update: Update,
+    pipelineId: Option[String],
+    refresh: Boolean
+  ): ElasticResult[Long] =
+    delegate.updateByQuery(index, update, pipelineId, refresh)
 
   /** Insert documents by query into an index.
     *

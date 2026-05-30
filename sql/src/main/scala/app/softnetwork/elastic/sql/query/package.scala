@@ -495,10 +495,16 @@ package object query {
 
   case class Update(table: String, values: ListMap[String, PainlessScript], where: Option[Where])
       extends DmlStatement {
+    // Uses `value.sql` (not `value.value`) for the literal branch so the rendered string is
+    // re-parseable into the same AST. `value.value` loses the syntactic shape of string
+    // literals (`'USA'` becomes `USA`), and any downstream consumer that re-parses this output
+    // — e.g. GatewayApi.run → api.updateByQuery(table, update.sql) before it was changed to
+    // accept the AST directly — would mis-parse the bare token as an Identifier and silently
+    // null the column via a broken painless script.
     override def sql: String = s"UPDATE $table SET ${values
       .map { case (k, v) =>
         v match {
-          case value: Value[_] => s"$k = ${value.value}"
+          case value: Value[_] => s"$k = ${value.sql}"
           case painlessScript  => s"$k = ${painlessScript.sql}"
         }
       }
