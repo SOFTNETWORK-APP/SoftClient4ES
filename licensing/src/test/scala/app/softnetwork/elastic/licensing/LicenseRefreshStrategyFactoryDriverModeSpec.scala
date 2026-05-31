@@ -24,10 +24,10 @@ import org.scalatest.matchers.should.Matchers
   * overlay `softclient4es.license.refresh-enabled = false` onto the merged HOCON config and
   * [[LicenseRefreshStrategyFactory.resolveMode]] returns `Some(LicenseMode.Driver)`.
   *
-  * The companion integration test in `JdbcIntegrationSpec` cannot verify this end-to-end —
-  * the JDBC test classpath registers a priority-1 `TestLicenseManagerSpi` that ignores the
-  * `mode` parameter, so a strategy-class assertion there is vacuous. `resolveMode` is pure
-  * on the config (no SPI involvement), so a direct call here is the authoritative check.
+  * The companion integration test in `JdbcIntegrationSpec` cannot verify this end-to-end — the JDBC
+  * test classpath registers a priority-1 `TestLicenseManagerSpi` that ignores the `mode` parameter,
+  * so a strategy-class assertion there is vacuous. `resolveMode` is pure on the config (no SPI
+  * involvement), so a direct call here is the authoritative check.
   */
 class LicenseRefreshStrategyFactoryDriverModeSpec extends AnyFlatSpec with Matchers {
 
