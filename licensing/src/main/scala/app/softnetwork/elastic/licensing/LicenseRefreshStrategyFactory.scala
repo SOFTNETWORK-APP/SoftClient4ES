@@ -85,8 +85,12 @@ object LicenseRefreshStrategyFactory extends LazyLogging {
     }
   }
 
-  /** Resolve LicenseMode from config. refreshEnabled=true -> LongRunning, else -> Driver. */
-  private def resolveMode(config: Config): Option[LicenseMode] = {
+  /** Resolve LicenseMode from config. refreshEnabled=true -> LongRunning, else -> Driver.
+    *
+    * `private[licensing]` so cross-repo licensing-mode tests can verify the resolution rule
+    * directly without going through SPI resolution (Story 10.3 Review patch D2).
+    */
+  private[licensing] def resolveMode(config: Config): Option[LicenseMode] = {
     val licenseConfig = LicenseConfig.load(config)
     if (licenseConfig.refreshEnabled) Some(LicenseMode.LongRunning)
     else Some(LicenseMode.Driver)
