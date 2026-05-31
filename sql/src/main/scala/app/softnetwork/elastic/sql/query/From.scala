@@ -245,11 +245,6 @@ case class StandardJoin(
 
   override def validate(): Either[String, Unit] = {
     for {
-      _ <- joinType match {
-        case Some(InnerJoin | LeftJoin) => Right(())
-        case None                       => Right(()) // by default INNER JOIN
-        case _ => Left(s"Standard JOIN $this requires an INNER (default) or LEFT JOIN type")
-      }
       _ <- on match {
         case Some(o) => o.validate()
         case None    => Left(s"Standard JOIN $this requires an ON clause")
