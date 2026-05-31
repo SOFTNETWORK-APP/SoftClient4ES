@@ -473,10 +473,22 @@ DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv;
 | Limitation                                  | Details                                                              |
 |---------------------------------------------|----------------------------------------------------------------------|
 | **UNNEST JOIN**                             | Not supported in materialized views                                  |
+| **`RIGHT JOIN` / `FULL OUTER JOIN`**        | Not supported (see below). Use `LEFT JOIN` with swapped table order. |
 | **Quota limits**                            | Community edition: max 3 views. Pro: limited. Enterprise: unlimited  |
 | **Watcher dependency (ES license)**         | Automatic enrich policy re-execution relies on Elasticsearch Watchers, which require an Elasticsearch Platinum or Enterprise license (see below) |
 | **Eventual consistency**                    | Data is eventually consistent based on refresh frequency and delay   |
 | **Join cardinality**                        | JOINs use enrich policies which match on a single field              |
+
+### Supported JOIN types
+
+Only `INNER JOIN` and `LEFT JOIN` (`LEFT OUTER JOIN`) are supported for materialized views.
+
+The MV's ingest pipeline is driven by **writes to the main (left-hand) `FROM` table** — every joined table is enriched into the main-table document via an `EnrichProcessor`. There is no mechanism for the pipeline to fire from the right-hand side, so:
+
+- **`RIGHT JOIN A ON A.x = B.y`** cannot preserve unmatched rows of the joined table when no matching main-table row triggers the pipeline. Rewrite the query with the right-hand table as the main `FROM` table and use `LEFT JOIN`.
+- **`FULL OUTER JOIN`** needs to preserve rows from both sides, which the single-direction enrichment pipeline cannot do.
+
+Attempting to create a materialized view with `RIGHT JOIN` or `FULL OUTER JOIN` fails at creation time with an actionable error message; no partial artifacts are deployed.
 
 ### Watcher Dependency and Elasticsearch Licensing
 
