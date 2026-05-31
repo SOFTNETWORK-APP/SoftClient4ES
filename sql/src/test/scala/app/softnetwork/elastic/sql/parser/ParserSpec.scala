@@ -3072,6 +3072,40 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // ── Optional OUTER keyword in LEFT/RIGHT/FULL OUTER JOIN (Issue #94) ───────
+
+  private def firstStandardJoinType(sql: String): Option[JoinType] = {
+    Parser(sql).toOption.get
+      .asInstanceOf[SingleSearch]
+      .from
+      .mainTable
+      .joins
+      .head
+      .asInstanceOf[StandardJoin]
+      .joinType
+  }
+
+  it should "parse LEFT JOIN and LEFT OUTER JOIN identically" in {
+    val short = "SELECT * FROM orders o LEFT JOIN customers c ON o.customer_id = c.id"
+    val long = "SELECT * FROM orders o LEFT OUTER JOIN customers c ON o.customer_id = c.id"
+    firstStandardJoinType(short) shouldBe Some(LeftJoin)
+    firstStandardJoinType(long) shouldBe Some(LeftJoin)
+  }
+
+  it should "parse RIGHT JOIN and RIGHT OUTER JOIN identically" in {
+    val short = "SELECT * FROM orders o RIGHT JOIN customers c ON o.customer_id = c.id"
+    val long = "SELECT * FROM orders o RIGHT OUTER JOIN customers c ON o.customer_id = c.id"
+    firstStandardJoinType(short) shouldBe Some(RightJoin)
+    firstStandardJoinType(long) shouldBe Some(RightJoin)
+  }
+
+  it should "parse FULL JOIN and FULL OUTER JOIN identically" in {
+    val short = "SELECT * FROM orders o FULL JOIN customers c ON o.customer_id = c.id"
+    val long = "SELECT * FROM orders o FULL OUTER JOIN customers c ON o.customer_id = c.id"
+    firstStandardJoinType(short) shouldBe Some(FullJoin)
+    firstStandardJoinType(long) shouldBe Some(FullJoin)
+  }
+
   behavior of "Parser Cluster"
 
   it should "parse SHOW CLUSTER NAME" in {

@@ -37,11 +37,21 @@ sealed trait JoinType extends TokenRegex
 
 case object InnerJoin extends Expr("INNER") with JoinType
 
-case object LeftJoin extends Expr("LEFT") with JoinType
+// ANSI SQL allows the optional `OUTER` keyword after LEFT / RIGHT / FULL — `LEFT OUTER JOIN`
+// is the same as `LEFT JOIN`. The `words` override extends the parser-side regex to accept
+// both forms while keeping the SQL round-trip rendering (`sql` value) on the short form.
+// Longer alternatives come first so regex alternation prefers them on longest-match.
+case object LeftJoin extends Expr("LEFT") with JoinType {
+  override def words: List[String] = List("LEFT\\s+OUTER", "LEFT")
+}
 
-case object RightJoin extends Expr("RIGHT") with JoinType
+case object RightJoin extends Expr("RIGHT") with JoinType {
+  override def words: List[String] = List("RIGHT\\s+OUTER", "RIGHT")
+}
 
-case object FullJoin extends Expr("FULL") with JoinType
+case object FullJoin extends Expr("FULL") with JoinType {
+  override def words: List[String] = List("FULL\\s+OUTER", "FULL")
+}
 
 case object CrossJoin extends Expr("CROSS") with JoinType
 
