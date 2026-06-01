@@ -3106,6 +3106,33 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     firstStandardJoinType(long) shouldBe Some(FullJoin)
   }
 
+  // ── Alias-less JOIN (Issue #95) ─────────────────────────────────────────────
+
+  it should "parse a JOIN without an alias on the joined table" in {
+    val sql =
+      "SELECT * FROM orders LEFT JOIN customers ON orders.customer_id = customers.id"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    val ss = result.toOption.get.asInstanceOf[SingleSearch]
+    val join = ss.from.mainTable.joins.head.asInstanceOf[StandardJoin]
+    join.alias shouldBe None
+    join.source.name shouldBe "customers"
+  }
+
+  it should "expose an alias-less joined table by its bare name in From.tableAliases" in {
+    val sql =
+      "SELECT * FROM orders LEFT JOIN customers ON orders.customer_id = customers.id"
+    val ss = Parser(sql).toOption.get.asInstanceOf[SingleSearch]
+    ss.from.tableAliases should contain("customers" -> "customers")
+    ss.from.joinAliases.keySet should contain("customers")
+  }
+
+  it should "still reject a JOIN with no ON clause when joinType is set" in {
+    // INNER/LEFT/RIGHT/FULL JOIN still require ON — only the alias rule is relaxed.
+    val sql = "SELECT * FROM orders LEFT JOIN customers"
+    Parser(sql).isLeft shouldBe true
+  }
+
   behavior of "Parser Cluster"
 
   it should "parse SHOW CLUSTER NAME" in {

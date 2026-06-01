@@ -167,15 +167,9 @@ sealed trait Join extends Updateable {
   override def validate(): Either[String, Unit] =
     for {
       _ <- source.validate()
-      _ <- alias match {
-        case Some(a) if a.alias.nonEmpty => Right(())
-        case _                           => Left(s"JOIN $this requires an alias")
-      }
       _ <- this match {
         case j if joinType.isDefined && on.isEmpty && joinType.get != CrossJoin =>
           Left(s"JOIN $j requires an ON clause")
-        case j if alias.isEmpty =>
-          Left(s"JOIN $j requires an alias")
         case _ => Right(())
       }
     } yield ()
@@ -246,11 +240,10 @@ case class StandardJoin(
   alias: Option[Alias] = None
 ) extends Join {
   override def update(request: SingleSearch): StandardJoin = {
-    val updated = this.copy(
-      source = source.update(request),
-      on = on.map(_.update(request))
-    )
-    updated
+    // The source of a JOIN is a TABLE name, not a column expression — `Identifier.update`
+    // would treat the bare table name as `alias.column` and strip the (nonexistent) column
+    // part, leaving `name=""`. Only the ON clause needs to be updated for column resolution.
+    this.copy(on = on.map(_.update(request)))
   }
 
   override def validate(): Either[String, Unit] = {
