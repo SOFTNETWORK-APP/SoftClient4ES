@@ -937,9 +937,12 @@ class MetricsElasticClient(
     context: ConversionContext
   ): Future[ElasticResult[ElasticResponse]] =
     measureAsync("searchAsync", Some(elasticQuery.indices.mkString(","))) {
+      // Bare `.asInstanceOf` infers `Nothing` — same latent shape as the bulk-pipeline fixes in
+      // [[ElasticClientDelegator]]. Project to this trait's `ElasticResponse` so the cast is a
+      // no-op at runtime (both sides erase to Object) instead of `Future → Nothing$`.
       delegate
         .singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
-        .asInstanceOf
+        .asInstanceOf[Future[ElasticResult[ElasticResponse]]]
     }
 
   /** Asynchronous multi-search with Elasticsearch queries.
@@ -964,9 +967,10 @@ class MetricsElasticClient(
     context: ConversionContext
   ): Future[ElasticResult[ElasticResponse]] =
     measureAsync("multisearchAsync") {
+      // Same latent-`Nothing`-cast fix as `singleSearchAsync` above.
       delegate
         .multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
-        .asInstanceOf
+        .asInstanceOf[Future[ElasticResult[ElasticResponse]]]
     }
 
   /** Searches and converts results into typed entities.

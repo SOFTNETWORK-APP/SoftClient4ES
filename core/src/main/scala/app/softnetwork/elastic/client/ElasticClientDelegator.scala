@@ -1644,8 +1644,19 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def toBulkAction(bulkItem: BulkItem): BulkActionType =
     delegate.toBulkAction(bulkItem).asInstanceOf[BulkActionType]
 
-  override private[client] implicit def toBulkElasticAction(a: BulkActionType): BulkElasticAction =
-    delegate.toBulkElasticAction(a.asInstanceOf)
+  override private[client] implicit def toBulkElasticAction(
+    a: BulkActionType
+  ): BulkElasticAction = {
+    // `a.asInstanceOf` (no type param) infers `Nothing` and the runtime cast blows up the moment
+    // the delegated `bulkStream`/`bulkStreamWithResult` path is exercised — `delegate`'s
+    // `BulkActionType` is abstract here, so we must explicitly project to it. (This was a latent
+    // bug — there was no real caller of `bulkStream` through the delegator chain until the
+    // sidecar's CTAS / INSERT-SELECT row-1 executor in softclient4es-arrow added one.)
+    // `delegate` is a `def`, so alias it into a stable `val` first to make the path-dependent
+    // type `d.BulkActionType` legal.
+    val d = delegate
+    d.toBulkElasticAction(a.asInstanceOf[d.BulkActionType])
+  }
 
   /** Basic flow for executing a bulk action. This method must be implemented by concrete classes
     * depending on the Elasticsearch version and client used.
@@ -1659,7 +1670,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     bulkOptions: BulkOptions,
     system: ActorSystem
   ): Flow[Seq[BulkActionType], BulkResultType, NotUsed] =
-    delegate.bulkFlow(bulkOptions, system).asInstanceOf
+    // Same pattern as `toBulkElasticAction`/`actionToBulkItem` (~line 1648/1697): bare
+    // `.asInstanceOf` infers `Nothing`, so the synthetic cast at the call site (in
+    // `BulkApi.balancedBulkFlow`) tries `Flow → Nothing$` and CCEs. Project to this trait's
+    // own A/R abstract types — both erase to Object, so the runtime cast is a no-op.
+    delegate
+      .bulkFlow(bulkOptions, system)
+      .asInstanceOf[Flow[Seq[BulkActionType], BulkResultType, NotUsed]]
 
   /** Convert a BulkResultType into individual results. This method must extract the successes and
     * failures from the ES response.
@@ -1672,12 +1689,19 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def extractBulkResults(
     result: BulkResultType,
     originalBatch: Seq[BulkItem]
-  ): Seq[Either[FailedDocument, SuccessfulDocument]] =
-    delegate.extractBulkResults(result.asInstanceOf, originalBatch)
+  ): Seq[Either[FailedDocument, SuccessfulDocument]] = {
+    // Same pattern as `toBulkElasticAction` (see ~line 1648): bare `.asInstanceOf` infers
+    // `Nothing`, which blows up the moment the delegated bulk pipeline runs end-to-end. Project
+    // through a stable alias of `delegate` to the right path-dependent type.
+    val d = delegate
+    d.extractBulkResults(result.asInstanceOf[d.BulkResultType], originalBatch)
+  }
 
   /** Conversion BulkActionType -> BulkItem */
-  override private[client] def actionToBulkItem(action: BulkActionType): BulkItem =
-    delegate.actionToBulkItem(action.asInstanceOf)
+  override private[client] def actionToBulkItem(action: BulkActionType): BulkItem = {
+    val d = delegate
+    d.actionToBulkItem(action.asInstanceOf[d.BulkActionType])
+  }
 
   // ==================== PipelineApi (delegate) ====================
 
