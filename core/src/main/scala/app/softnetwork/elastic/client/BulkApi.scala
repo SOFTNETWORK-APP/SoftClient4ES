@@ -335,13 +335,8 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     system: ActorSystem
   ): Source[Either[FailedDocument, SuccessfulDocument], NotUsed] = {
 
-    implicit val ec: ExecutionContext = system.dispatcher
-
-    var metrics = BulkMetrics()
-
-    items
-      // ✅ Transformation en BulkItem
-      .map { item =>
+    bulkStream(
+      items.map { item =>
         toBulkItem(
           toDocument,
           indexKey,
@@ -354,6 +349,42 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
           item
         )
       }
+    )
+  }
+
+  /** Streaming bulk pipeline keyed directly on [[BulkItem]].
+    *
+    * Same chunking / backpressure / per-item retry pipeline as [[bulkSource]], but accepts a
+    * pre-built [[BulkItem]] stream — no `D => String` JSON conversion, no `indexKey`/`idKey`
+    * parsing back from the document. Use this from callers that already have the document content
+    * split out (target index, optional `_id` derived from a primary key, action type), e.g. the
+    * CTAS / INSERT INTO … SELECT-with-JOIN executors built on top of Arrow Flight SQL or JDBC/ADBC.
+    *
+    * Arrow / Parquet / DuckDB are deliberately kept out of this signature so the method can stay in
+    * core.
+    *
+    * @param items
+    *   the [[BulkItem]] stream to bulk-write
+    * @param bulkOptions
+    *   chunking, retry, parallelism settings (reuses the existing [[BulkOptions]])
+    * @param system
+    *   Akka actor system for materialization
+    * @return
+    *   a source emitting `Right(SuccessfulDocument)` / `Left(FailedDocument)` for each item, in
+    *   completion order
+    */
+  def bulkStream(
+    items: Source[BulkItem, NotUsed]
+  )(implicit
+    bulkOptions: BulkOptions,
+    system: ActorSystem
+  ): Source[Either[FailedDocument, SuccessfulDocument], NotUsed] = {
+
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    var metrics = BulkMetrics()
+
+    items
       // ✅ Settings management (refresh, replicas)
       .via(
         BulkSettings[BulkItem](bulkOptions.disableRefresh)(
@@ -395,6 +426,72 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
 
         case failure =>
           Future.successful(failure)
+      }
+  }
+
+  /** Materialized counterpart of [[bulkStream]] — runs the stream to completion and returns a
+    * [[BulkResult]] aggregating successes, failures, indices touched, and metrics. Mirrors
+    * [[bulkWithResult]] but skips the `D => String` conversion. Triggers per-index refresh on
+    * completion unless `bulkOptions.disableRefresh` is set.
+    *
+    * @param items
+    *   the [[BulkItem]] stream to bulk-write
+    * @param callbacks
+    *   per-event callbacks (`onSuccess`, `onFailure`, `onComplete`)
+    * @param bulkOptions
+    *   chunking, retry, parallelism settings
+    * @param system
+    *   Akka actor system for materialization
+    * @return
+    *   future of the aggregated [[BulkResult]]
+    */
+  def bulkStreamWithResult(
+    items: Source[BulkItem, NotUsed],
+    callbacks: BulkCallbacks = BulkCallbacks.default
+  )(implicit
+    bulkOptions: BulkOptions,
+    system: ActorSystem
+  ): Future[BulkResult] = {
+
+    implicit val materializer: Materializer = Materializer(system)
+    implicit val ec: ExecutionContext = system.dispatcher
+
+    val startTime = System.currentTimeMillis()
+    var metrics = BulkMetrics(startTime = startTime)
+
+    bulkStream(items)
+      .runWith(Sink.fold((Set.empty[String], Seq.empty[FailedDocument], Set.empty[String])) {
+        case ((successIds, failedDocs, indices), Right(successfulDoc)) =>
+          callbacks.onSuccess(successfulDoc.id, successfulDoc.index)
+          (successIds + successfulDoc.id, failedDocs, indices + successfulDoc.index)
+
+        case ((successIds, failedDocs, indices), Left(failed)) =>
+          callbacks.onFailure(failed)
+          metrics = metrics.addFailure(failed.error)
+          (successIds, failedDocs :+ failed, indices + failed.index)
+      })
+      .map { case (successIds, failedDocs, indices) =>
+        metrics = metrics.copy(
+          endTime = Some(System.currentTimeMillis()),
+          totalDocuments = successIds.size + failedDocs.size
+        )
+
+        val result = BulkResult(
+          successCount = successIds.size,
+          successIds = successIds,
+          failedCount = failedDocs.size,
+          failedDocuments = failedDocs,
+          indices = indices,
+          metrics = metrics.complete
+        )
+
+        callbacks.onComplete(result)
+
+        if (!bulkOptions.disableRefresh) {
+          indices.foreach(refresh)
+        }
+
+        result
       }
   }
 
