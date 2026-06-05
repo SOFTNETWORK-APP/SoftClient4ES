@@ -23,8 +23,10 @@ import app.softnetwork.elastic.sql.function.cond.{
   ConditionalFunction,
   ELSE,
   END,
+  Greatest,
   IsNotNull,
   IsNull,
+  Least,
   NullIf,
   THEN,
   WHEN
@@ -66,6 +68,16 @@ package object cond {
         case _ ~ _ ~ id1 ~ _ ~ id2 ~ _ => NullIf(id1, id2)
       }
 
+    def greatest: PackratParser[Greatest] =
+      Greatest.regex ~ start ~ rep1sep(valueExpr, separator) ~ end ^^ { case _ ~ _ ~ vs ~ _ =>
+        Greatest(vs)
+      }
+
+    def least: PackratParser[Least] =
+      Least.regex ~ start ~ rep1sep(valueExpr, separator) ~ end ^^ { case _ ~ _ ~ vs ~ _ =>
+        Least(vs)
+      }
+
     def start_case: PackratParser[StartCase.type] = Case.regex ^^ (_ => StartCase)
 
     def when_case: PackratParser[WhenCase.type] = WHEN.regex ^^ (_ => WhenCase)
@@ -100,7 +112,7 @@ package object cond {
     }
 
     def conditional_function: PackratParser[FunctionWithIdentifier] =
-      is_null | is_notnull | coalesce | nullif
+      is_null | is_notnull | coalesce | nullif | greatest | least
 
     def conditionalFunctionWithIdentifier: PackratParser[Identifier] =
       conditional_function ^^ { t =>

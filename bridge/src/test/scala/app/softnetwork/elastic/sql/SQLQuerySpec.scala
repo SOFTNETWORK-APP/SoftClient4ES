@@ -2096,6 +2096,47 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
+  it should "handle GREATEST 2-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(greatest2)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"hi":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.max(param1, param2)))"}}},"_source":true}"""
+  }
+
+  it should "handle GREATEST 3-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(greatest3)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"hi":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); def param3 = (doc['price_uk'].size() == 0 ? null : doc['price_uk'].value); (param1 == null ? (param2 == null ? param3 : (param3 == null ? param2 : Math.max(param2, param3))) : ((param2 == null ? param3 : (param3 == null ? param2 : Math.max(param2, param3))) == null ? param1 : Math.max(param1, (param2 == null ? param3 : (param3 == null ? param2 : Math.max(param2, param3))))))"}}},"_source":{"includes":["sku"]}}"""
+  }
+
+  it should "handle LEAST 2-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(least2)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"lo":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.min(param1, param2)))"}}},"_source":true}"""
+  }
+
+  it should "handle LEAST 3-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(least3)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"lo":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); def param3 = (doc['price_uk'].size() == 0 ? null : doc['price_uk'].value); (param1 == null ? (param2 == null ? param3 : (param3 == null ? param2 : Math.min(param2, param3))) : ((param2 == null ? param3 : (param3 == null ? param2 : Math.min(param2, param3))) == null ? param1 : Math.min(param1, (param2 == null ? param3 : (param3 == null ? param2 : Math.min(param2, param3))))))"}}},"_source":{"includes":["sku"]}}"""
+  }
+
+  it should "not guard non-nullable (literal) GREATEST args with == null" in {
+    val select: ElasticSearchRequest = SelectStatement(greatestLiteral)
+    val query = select.query
+    println(query)
+    // Painless rejects `<primitive> == null`; a literal arg must not be guarded.
+    query should not include "0 == null"
+    query should include("Math.max(0, param1)")
+  }
+
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
       SelectStatement(conversion)

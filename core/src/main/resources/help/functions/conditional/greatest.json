@@ -1,0 +1,38 @@
+{
+  "name": "GREATEST",
+  "category": "Conditional",
+  "shortDescription": "Return the largest non-NULL value",
+  "syntax": [
+    "GREATEST(expression1, expression2, ...)"
+  ],
+  "description": "Returns the largest value among the given numeric expressions. NULL arguments are ignored; the result is NULL only if every argument is NULL.",
+  "parameters": [
+    {
+      "name": "expressions",
+      "type": "NUMERIC",
+      "description": "One or more numeric expressions to compare",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Numeric (widest input type)",
+  "examples": [
+    {
+      "title": "Highest of multiple prices",
+      "description": "Pick the largest price across markets",
+      "sql": "SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products"
+    },
+    {
+      "title": "Floor on a computed value",
+      "description": "Never let the discount go below zero",
+      "sql": "SELECT GREATEST(0, base_price - rebate) AS net FROM orders"
+    }
+  ],
+  "notes": [
+    "Ignores NULL arguments (ANSI semantics)",
+    "Returns NULL only if every argument is NULL",
+    "All arguments should be numeric and have comparable types"
+  ],
+  "seeAlso": ["LEAST", "COALESCE"],
+  "aliases": []
+}

@@ -664,6 +664,24 @@ NULLIF(a, b)
 
 Returns NULL if `a = b`, otherwise `a`.
 
+##### GREATEST / LEAST
+
+```sql
+GREATEST(e1, e2, ...)
+LEAST(e1, e2, ...)
+```
+
+`GREATEST` returns the largest non-null numeric value among the given expressions; `LEAST`
+returns the smallest. NULL arguments are ignored (ANSI semantics); the result is NULL only
+when every argument is NULL. Both are emitted as Painless ternary chains over
+`Math.max` / `Math.min`. They are row-level conditional functions, not aggregates —
+`GREATEST(...) OVER (...)` is not supported.
+
+```sql
+SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;
+SELECT LEAST(0, base_price - rebate)          AS net       FROM orders;
+```
+
 **Example:**
 
 ```sql

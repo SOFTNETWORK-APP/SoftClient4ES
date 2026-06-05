@@ -207,6 +207,16 @@ object Queries {
   val isNotNullCriteria = "SELECT * FROM Table WHERE ISNOTNULL(identifier)"
   val coalesce: String =
     "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
+  val greatest2: String =
+    "SELECT GREATEST(price_us, price_eu) AS hi FROM products"
+  val greatest3: String =
+    "SELECT GREATEST(price_us, price_eu, price_uk) AS hi, sku FROM products"
+  val least2: String =
+    "SELECT LEAST(price_us, price_eu) AS lo FROM products"
+  val least3: String =
+    "SELECT LEAST(price_us, price_eu, price_uk) AS lo, sku FROM products"
+  val greatestLiteral: String =
+    "SELECT GREATEST(0, price_us) AS hi FROM products"
   val nullif: String =
     "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val conversion: String =
@@ -895,6 +905,51 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nullif) shouldBe true
+  }
+
+  it should "parse GREATEST 2-arg" in {
+    val result = Parser(greatest2)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(greatest2) shouldBe true
+  }
+
+  it should "parse GREATEST 3-arg" in {
+    val result = Parser(greatest3)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(greatest3) shouldBe true
+  }
+
+  it should "parse LEAST 2-arg" in {
+    val result = Parser(least2)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(least2) shouldBe true
+  }
+
+  it should "parse LEAST 3-arg" in {
+    val result = Parser(least3)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(least3) shouldBe true
+  }
+
+  it should "parse GREATEST with a literal arg" in {
+    val result = Parser(greatestLiteral)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(greatestLiteral) shouldBe true
+  }
+
+  it should "reject GREATEST with definitively non-numeric args" in {
+    val result = Parser("SELECT GREATEST('a', 'b') AS hi FROM products")
+    result.isLeft shouldBe true
   }
 
   it should "parse conversion function" in {

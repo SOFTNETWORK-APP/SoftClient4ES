@@ -1232,6 +1232,8 @@ trait Parser
     "nullif",
     "isnull",
     "isnotnull",
+    "greatest",
+    "least",
     "date_add",
     "date_sub",
     "parse_date",

@@ -1,0 +1,38 @@
+{
+  "name": "LEAST",
+  "category": "Conditional",
+  "shortDescription": "Return the smallest non-NULL value",
+  "syntax": [
+    "LEAST(expression1, expression2, ...)"
+  ],
+  "description": "Returns the smallest value among the given numeric expressions. NULL arguments are ignored; the result is NULL only if every argument is NULL.",
+  "parameters": [
+    {
+      "name": "expressions",
+      "type": "NUMERIC",
+      "description": "One or more numeric expressions to compare",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Numeric (widest input type)",
+  "examples": [
+    {
+      "title": "Lowest of multiple prices",
+      "description": "Pick the smallest price across markets",
+      "sql": "SELECT LEAST(price_us, price_eu, price_uk) AS min_price FROM products"
+    },
+    {
+      "title": "Cap on a computed value",
+      "description": "Never let the rebate exceed the base price",
+      "sql": "SELECT LEAST(rebate, base_price) AS applied_rebate FROM orders"
+    }
+  ],
+  "notes": [
+    "Ignores NULL arguments (ANSI semantics)",
+    "Returns NULL only if every argument is NULL",
+    "All arguments should be numeric and have comparable types"
+  ],
+  "seeAlso": ["GREATEST", "COALESCE"],
+  "aliases": []
+}

@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.{
 import app.softnetwork.elastic.sql.`type`.{
   SQLAny,
   SQLBool,
+  SQLNumeric,
   SQLTemporal,
   SQLType,
   SQLTypeUtils,
@@ -47,6 +48,8 @@ package object cond {
   case object IsNull extends Expr("ISNULL") with ConditionalOp
   case object IsNotNull extends Expr("ISNOTNULL") with ConditionalOp
   case object NullIf extends Expr("NULLIF") with ConditionalOp
+  case object Greatest extends Expr("GREATEST") with ConditionalOp
+  case object Least extends Expr("LEAST") with ConditionalOp
   // case object Exists extends Expr("EXISTS") with ConditionalOp
 
   case object Case extends Expr("CASE") with ConditionalOp
@@ -417,5 +420,125 @@ package object cond {
         }
       )
     }
+  }
+
+  /** N-ary numeric reducer shared by `GREATEST` / `LEAST`.
+    *
+    * Emits a right-folded nested ternary so a NULL argument is skipped and the whole expression
+    * yields NULL only when every argument is NULL: pairwise(x, y) = (x == null ? y : (y == null ? x
+    * : Math.{max|min}(x, y)))
+    *
+    * Output is `SQLNumeric` because `Math.max` / `Math.min` only operate on numeric primitives. The
+    * base type narrows to the widest input numeric.
+    */
+  sealed trait NumericReducer
+      extends TransformFunction[SQLAny, SQLNumeric]
+      with FunctionWithIdentifier {
+    def values: List[PainlessScript]
+    def operator: ConditionalOp
+    protected def mathFn: String // "Math.max" | "Math.min"
+
+    override def fun: Option[ConditionalOp] = Some(operator)
+
+    override def args: List[PainlessScript] = values
+
+    override def outputType: SQLNumeric = SQLTypes.Numeric
+
+    override def identifier: Identifier = Identifier()
+
+    override def inputType: SQLAny = SQLTypes.Any
+
+    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes) match {
+      case n: SQLNumeric => n
+      case _             => outputType
+    }
+
+    override def sql: String = s"$operator(${values.map(_.sql).mkString(", ")})"
+
+    override def checkIfNullable: Boolean = false
+
+    override def validate(): Either[String, Unit] =
+      if (values.isEmpty) Left(s"$operator requires at least one argument")
+      else
+        // Accept numeric args and still-unresolved args (SQLAny / NULL, which
+        // extends SQLAny): a bare field has no known type until it is resolved
+        // against the index mapping, so we must not reject it here. Only reject
+        // args whose type is *definitively* non-numeric (string, temporal,
+        // boolean, …) — those would emit Math.{max,min}() on a non-numeric and
+        // fail at ES runtime.
+        values.find { v =>
+          v.out match {
+            case _: SQLNumeric => false
+            case _: SQLAny     => false
+            case _             => true
+          }
+        } match {
+          case Some(nonNumeric) =>
+            Left(
+              s"$operator requires numeric arguments but got ${nonNumeric.out} for ${nonNumeric.sql}"
+            )
+          case None => Right(())
+        }
+
+    override def nullable: Boolean = values.forall(_.nullable)
+
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String = {
+      // Pair each rendered arg with its nullability so non-nullable args (e.g.
+      // numeric literals, which render inline as primitives) are NOT guarded
+      // with `== null` — Painless rejects `<primitive> == null` at compile time.
+      // Right-fold pairwise: pairwise(a, pairwise(b, pairwise(c, …))).
+      // The combined sub-tree is itself nullable only when BOTH sides can be
+      // null, which lets us drop the guard on parent levels too.
+      def fold(args: List[(String, Boolean)]): (String, Boolean) =
+        args match {
+          case Nil =>
+            throw new IllegalArgumentException(s"$operator requires at least one argument")
+          case (s, n) :: Nil => (s.trim, n)
+          case (s, xNullable) :: rest =>
+            val x = s.trim
+            val (y, yNullable) = fold(rest)
+            val expr =
+              (xNullable, yNullable) match {
+                case (true, true)   => s"($x == null ? $y : ($y == null ? $x : $mathFn($x, $y)))"
+                case (true, false)  => s"($x == null ? $y : $mathFn($x, $y))"
+                case (false, true)  => s"($y == null ? $x : $mathFn($x, $y))"
+                case (false, false) => s"$mathFn($x, $y)"
+              }
+            // result is null only if every branch can be null
+            (expr, xNullable && yNullable)
+        }
+
+      callArgs match {
+        case Nil =>
+          throw new IllegalArgumentException(s"$operator requires at least one argument")
+        case x :: Nil => x
+        case _        => fold(callArgs.zip(values.map(_.nullable)))._1
+      }
+    }
+  }
+
+  case class Greatest(values: List[PainlessScript]) extends NumericReducer {
+    override def operator: ConditionalOp = Greatest
+    override protected def mathFn: String = "Math.max"
+
+    override def update(request: query.SingleSearch): Greatest =
+      this.copy(values = values.map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case other         => other
+      })
+  }
+
+  case class Least(values: List[PainlessScript]) extends NumericReducer {
+    override def operator: ConditionalOp = Least
+    override protected def mathFn: String = "Math.min"
+
+    override def update(request: query.SingleSearch): Least =
+      this.copy(values = values.map {
+        case u: Updateable => u.update(request).asInstanceOf[PainlessScript]
+        case other         => other
+      })
   }
 }
