@@ -108,6 +108,12 @@ object Queries {
   val groupBy =
     "SELECT identifier, COUNT(identifier2) FROM Table WHERE identifier2 is NOT null GROUP BY identifier"
   val orderBy = "SELECT * FROM Table ORDER BY identifier DESC"
+  val orderByNullsFirst = "SELECT * FROM Table ORDER BY identifier DESC NULLS FIRST"
+  val orderByNullsLast = "SELECT * FROM Table ORDER BY identifier ASC NULLS LAST"
+  val orderByMixedNulls =
+    "SELECT * FROM Table ORDER BY a DESC NULLS LAST, b ASC NULLS FIRST"
+  val orderByLowerNulls = "SELECT * FROM Table ORDER BY id desc nulls first"
+  val orderByNullsNoDirection = "SELECT * FROM Table ORDER BY identifier NULLS LAST"
   val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
   val groupByWithOrderByAndLimit: String =
     """SELECT identifier, COUNT(identifier2)
@@ -639,6 +645,58 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(orderBy) shouldBe true
+  }
+
+  it should "parse ORDER BY with NULLS FIRST" in {
+    val result = Parser(orderByNullsFirst)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByNullsFirst) shouldBe true
+  }
+
+  it should "parse ORDER BY with NULLS LAST" in {
+    val result = Parser(orderByNullsLast)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByNullsLast) shouldBe true
+  }
+
+  it should "parse ORDER BY with mixed null ordering" in {
+    val result = Parser(orderByMixedNulls)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByMixedNulls) shouldBe true
+  }
+
+  it should "parse ORDER BY with lowercase nulls first" in {
+    val result = Parser(orderByLowerNulls)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByLowerNulls) shouldBe true
+  }
+
+  it should "parse ORDER BY with NULLS ordering and no explicit direction" in {
+    // No ASC/DESC: the grammar still accepts NULLS LAST; the default ASC is
+    // injected on round-trip.
+    val result = Parser(orderByNullsNoDirection)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase("SELECT * FROM Table ORDER BY identifier ASC NULLS LAST") shouldBe true
+  }
+
+  it should "reject NULLS FIRST / NULLS LAST on a GROUP BY / aggregation ORDER BY" in {
+    // ES terms aggregations have no `missing` parameter, so null ordering cannot
+    // be honored on a grouped/aggregated sort and must be rejected rather than
+    // silently dropped.
+    val result = Parser(
+      "SELECT identifier, COUNT(identifier2) FROM Table GROUP BY identifier ORDER BY identifier DESC NULLS LAST"
+    )
+    result.isLeft shouldBe true
   }
 
   it should "parse LIMIT" in {

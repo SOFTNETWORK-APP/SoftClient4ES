@@ -336,6 +336,28 @@ package object query {
             Right(())
           }
         }
+        _ <- {
+          // NULLS FIRST / NULLS LAST cannot be honored when the query is an
+          // aggregation / GROUP BY query: Elasticsearch terms aggregations have
+          // no `missing` parameter, so the bridge routes these sorts through the
+          // aggregation path (guarded by `aggregates.isEmpty && buckets.isEmpty`)
+          // and would silently drop the null ordering. Reject explicitly.
+          if (aggregates.nonEmpty || buckets.nonEmpty) {
+            val nullOrdered =
+              orderBy.map(_.sorts.filter(_.nullOrdering.isDefined)).getOrElse(Seq.empty)
+            if (nullOrdered.nonEmpty) {
+              Left(
+                s"NULLS FIRST / NULLS LAST is not supported on ORDER BY when GROUP BY or aggregations are present (offending sort: ${nullOrdered
+                  .map(_.sql)
+                  .mkString(", ")})"
+              )
+            } else {
+              Right(())
+            }
+          } else {
+            Right(())
+          }
+        }
       } yield ()
     }
 

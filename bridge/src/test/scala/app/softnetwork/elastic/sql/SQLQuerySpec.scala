@@ -4193,4 +4193,42 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">", " > ")
   }
 
+  // === Story 14.1: NULLS FIRST / NULLS LAST on ORDER BY ===
+
+  it should "emit sort with missing=_last for ORDER BY ... DESC NULLS LAST" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT identifier FROM Table ORDER BY identifier DESC NULLS LAST")
+    val query = select.query
+    query should include("\"missing\":\"_last\"")
+    query should include("\"order\":\"desc\"")
+  }
+
+  it should "emit sort with missing=_first for ORDER BY ... ASC NULLS FIRST" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT identifier FROM Table ORDER BY identifier ASC NULLS FIRST")
+    val query = select.query
+    query should include("\"missing\":\"_first\"")
+    query should include("\"order\":\"asc\"")
+  }
+
+  it should "emit per-field null ordering for multi-column ORDER BY" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        "SELECT identifier FROM Table ORDER BY a DESC NULLS LAST, b ASC NULLS FIRST"
+      )
+    val query = select.query
+    // Bind each missing value to its own sort field so a swapped mapping
+    // (e.g. NullsFirst -> _last) cannot pass: the missing key must live inside
+    // the same JSON object as the field it belongs to.
+    query should include regex """"a":\{[^}]*"missing":"_last""""
+    query should include regex """"b":\{[^}]*"missing":"_first""""
+  }
+
+  it should "omit the missing field when no null ordering specified" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT identifier FROM Table ORDER BY identifier DESC")
+    val query = select.query
+    query should not include "\"missing\""
+  }
+
 }

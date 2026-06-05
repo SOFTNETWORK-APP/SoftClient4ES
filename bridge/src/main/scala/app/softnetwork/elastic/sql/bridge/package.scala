@@ -579,9 +579,14 @@ package object bridge {
               case _          => scriptSort.asc()
             }
           } else {
-            sort.order match {
+            val baseSort = sort.order match {
               case Some(Desc) => FieldSort(sort.field.aliasOrName).desc()
               case _          => FieldSort(sort.field.aliasOrName).asc()
+            }
+            sort.nullOrdering match {
+              case Some(NullsFirst) => baseSort.missing("_first")
+              case Some(NullsLast)  => baseSort.missing("_last")
+              case None             => baseSort
             }
           }
         }

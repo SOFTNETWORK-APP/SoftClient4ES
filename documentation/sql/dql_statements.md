@@ -62,7 +62,7 @@ FROM table_name [alias]
 [WHERE condition]
 [GROUP BY expr1, expr2, ...]
 [HAVING condition]
-[ORDER BY expr1 [ASC|DESC], ...]
+[ORDER BY expr1 [ASC|DESC] [NULLS FIRST|NULLS LAST], ...]
 [LIMIT n]
 [OFFSET m];
 ```
@@ -127,6 +127,7 @@ WHERE age BETWEEN 20 AND 50
 
 - Supports multiple sort keys
 - Supports `ASC` and `DESC`
+- Supports `NULLS FIRST` / `NULLS LAST` per sort key (see below)
 - Supports expressions and nested fields (e.g., `profile.city`)
 - When used inside a window function (`OVER`), `ORDER BY` defines the logical ordering of the window
 
@@ -138,6 +139,40 @@ FROM dql_users
 ORDER BY age DESC, name ASC
 LIMIT 2 OFFSET 1;
 ```
+
+### NULLS FIRST / NULLS LAST
+
+Each sort key may declare where `NULL` values appear in the result:
+
+```sql
+SELECT id, name, bonus
+FROM dql_users
+ORDER BY bonus DESC NULLS LAST;
+```
+
+Mapped to Elasticsearch's `sort.missing` parameter:
+
+- `NULLS FIRST` → `"missing": "_first"`
+- `NULLS LAST`  → `"missing": "_last"`
+
+When `NULLS FIRST` / `NULLS LAST` is omitted, defaults follow the Elasticsearch
+convention:
+
+- `ASC`  → nulls last
+- `DESC` → nulls first
+
+Different null orderings can be combined within a single query:
+
+```sql
+SELECT id, name, bonus, hire_date
+FROM dql_users
+ORDER BY bonus DESC NULLS LAST, hire_date ASC NULLS FIRST;
+```
+
+**Caveat (ES6 Jest client)**: scroll / `search_after` queries in the ES6 Jest
+client do not propagate `NULLS FIRST` / `NULLS LAST` reliably across batches
+(search_after's null handling is implementation-defined in Jest). For ES6
+scroll/search_after, prefer client-side null-bucketing or upgrade to ES7+.
 
 ---
 
