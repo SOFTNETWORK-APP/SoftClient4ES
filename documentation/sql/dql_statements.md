@@ -369,6 +369,9 @@ Supported window functions include:
 - `FIRST_VALUE(expr) OVER (...)`
 - `LAST_VALUE(expr) OVER (...)`
 - `ARRAY_AGG(expr) OVER (...)`
+- `ROW_NUMBER() OVER ([PARTITION BY ...] ORDER BY ...)`
+- `RANK() OVER ([PARTITION BY ...] ORDER BY ...)`
+- `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY ...)`
 
 #### Basic window example
 
@@ -382,6 +385,42 @@ SELECT
 FROM dql_sales
 ORDER BY product, ts;
 ```
+
+#### ROW_NUMBER / RANK / DENSE_RANK (ranking windows)
+
+`ORDER BY` is REQUIRED inside `OVER` for ranking functions (ANSI). `PARTITION BY`
+is optional — when absent, the entire result set is treated as one partition.
+
+```sql
+SELECT name, salary,
+  ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn,
+  RANK()       OVER (PARTITION BY department ORDER BY salary DESC) AS r,
+  DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr
+FROM emp;
+```
+
+Tie semantics:
+
+- `ROW_NUMBER` — sequential within partition; no ties recognized (1, 2, 3, 4, …)
+- `RANK` — ties share rank, next rank skips (1, 2, 2, 4, …)
+- `DENSE_RANK` — ties share rank, next rank does NOT skip (1, 2, 2, 3, …)
+
+##### Top-N per group (push-down via `LIMIT` inside `OVER`)
+
+Inline `LIMIT N` inside the OVER clause to limit the number of rows ranked per
+partition. The engine pushes `N` down to the underlying Elasticsearch
+`top_hits.size` parameter so only the top-N rows per partition are
+materialised:
+
+```sql
+SELECT name, salary,
+  RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS r
+FROM emp;
+```
+
+Without an explicit `LIMIT`, `top_hits.size` defaults to 100 — the
+Elasticsearch `index.max_inner_result_window` default. For larger partitions
+either supply `LIMIT N` inline or raise the index setting.
 
 #### FIRST_VALUE / LAST_VALUE / ARRAY_AGG
 

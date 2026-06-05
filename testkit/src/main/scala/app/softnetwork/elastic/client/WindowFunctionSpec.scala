@@ -221,7 +221,7 @@ trait WindowFunctionSpec
           ROW_NUMBER() OVER (
             PARTITION BY department
             ORDER BY salary DESC
-          ) AS row_number
+          ) AS rnum
         FROM emp
         ORDER BY department, row_number
       """)
@@ -229,7 +229,7 @@ trait WindowFunctionSpec
       results match {
         case ElasticSuccess(employees) =>
           employees.groupBy(_.department).foreach { case (dept, emps) =>
-            val rowNumbers = emps.flatMap(_.row_number).sorted
+            val rowNumbers = emps.flatMap(_.rnum).sorted
             rowNumbers shouldBe (1 to emps.size).toList
 
             info(s"$dept: ${emps.size} employees numbered 1 to ${emps.size}")
@@ -250,7 +250,7 @@ trait WindowFunctionSpec
           RANK() OVER (
             PARTITION BY department
             ORDER BY salary DESC
-          ) AS rank
+          ) AS rk
         FROM emp
         ORDER BY department, rank
       """)
@@ -258,7 +258,7 @@ trait WindowFunctionSpec
       results match {
         case ElasticSuccess(employees) =>
           employees.groupBy(_.department).foreach { case (dept, emps) =>
-            val ranks = emps.flatMap(_.rank)
+            val ranks = emps.flatMap(_.rk)
             ranks.head shouldBe 1 // Top earner always rank 1
 
             info(s"$dept top earner: ${emps.head.name} (${emps.head.salary})")
@@ -446,6 +446,163 @@ trait WindowFunctionSpec
         employees.foreach { emp =>
           emp.salary should be >= 80000
         }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  // ========================================================================
+  // RANKING WINDOW FUNCTIONS (Story 14.3)
+  // ROW_NUMBER / RANK / DENSE_RANK with PARTITION BY + ORDER BY,
+  // plus top-N push-down via LIMIT inside OVER.
+  // ========================================================================
+
+  "ROW_NUMBER window function" should "assign unique 1-based ordinals per department by salary DESC" in {
+    val results = client.searchAs[EmployeeWithWindow]("""
+      SELECT
+        department,
+        name,
+        salary,
+        hire_date,
+        ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rnum
+      FROM emp
+      LIMIT 100
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        employees should have size 20
+        // Every employee receives a positive ordinal.
+        employees.foreach(_.rnum shouldBe defined)
+        // Within each department the ordinals are exactly 1..n with no gaps
+        // and the row carrying ordinal 1 has the largest salary.
+        employees.groupBy(_.department).foreach { case (dept, emps) =>
+          val ordinals = emps.flatMap(_.rnum).sorted
+          ordinals shouldBe (1L to emps.size.toLong)
+          val byOrdinal = emps.flatMap(e => e.rnum.map(_ -> e)).toMap
+          byOrdinal(1L).salary shouldBe emps.map(_.salary).max
+          info(s"$dept ROW_NUMBER 1 = ${byOrdinal(1L).name} (${byOrdinal(1L).salary})")
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  "RANK window function" should "produce values matching ROW_NUMBER on tie-free salary DESC" in {
+    val results = client.searchAs[EmployeeWithWindow]("""
+      SELECT
+        department,
+        name,
+        salary,
+        hire_date,
+        RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS rk
+      FROM emp
+      LIMIT 100
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        employees should have size 20
+        // The fixture has no salary ties within any department, so RANK
+        // agrees with ROW_NUMBER on the (rank=1..n, no gaps) invariant.
+        employees.groupBy(_.department).foreach { case (dept, emps) =>
+          val ranks = emps.flatMap(_.rk).sorted
+          ranks shouldBe (1L to emps.size.toLong)
+          val byRank = emps.flatMap(e => e.rk.map(_ -> e)).toMap
+          byRank(1L).salary shouldBe emps.map(_.salary).max
+          info(s"$dept RANK 1 = ${byRank(1L).name} (${byRank(1L).salary})")
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  "DENSE_RANK window function" should "produce values matching ROW_NUMBER on tie-free salary DESC" in {
+    val results = client.searchAs[EmployeeWithWindow]("""
+      SELECT
+        department,
+        name,
+        salary,
+        hire_date,
+        DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS drk
+      FROM emp
+      LIMIT 100
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        employees should have size 20
+        employees.groupBy(_.department).foreach { case (dept, emps) =>
+          val ranks = emps.flatMap(_.drk).sorted
+          ranks shouldBe (1L to emps.size.toLong)
+          val byRank = emps.flatMap(e => e.drk.map(_ -> e)).toMap
+          byRank(1L).salary shouldBe emps.map(_.salary).max
+          info(s"$dept DENSE_RANK 1 = ${byRank(1L).name} (${byRank(1L).salary})")
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  "Ranking without PARTITION BY" should "rank every employee across the entire result set" in {
+    val results = client.searchAs[EmployeeWithWindow]("""
+      SELECT
+        department,
+        name,
+        salary,
+        hire_date,
+        ROW_NUMBER() OVER (ORDER BY salary DESC) AS rnum
+      FROM emp
+      LIMIT 100
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        employees should have size 20
+        val ordinals = employees.flatMap(_.rnum).sorted
+        ordinals shouldBe (1L to 20L)
+        // The top earner overall is Sam Turner ($130k).
+        val byOrdinal = employees.flatMap(e => e.rnum.map(_ -> e)).toMap
+        byOrdinal(1L).name shouldBe "Sam Turner"
+        byOrdinal(1L).salary shouldBe 130000
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  "RANK with LIMIT N inside OVER" should "push N into ES top_hits.size and return only top-N per partition" in {
+    val results = client.searchAs[EmployeeWithWindow]("""
+      SELECT
+        department,
+        name,
+        salary,
+        hire_date,
+        RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS rk
+      FROM emp
+      LIMIT 100
+    """)
+
+    results match {
+      case ElasticSuccess(employees) =>
+        // Only rows in the top-3 per department surface with a rank value.
+        // The base query still returns every row, so we filter by `rank.isDefined`.
+        val ranked = employees.filter(_.rk.isDefined)
+        ranked.groupBy(_.department).foreach { case (dept, emps) =>
+          emps.size should be <= 3
+          val ranks = emps.flatMap(_.rk).sorted
+          ranks shouldBe (1L to emps.size.toLong)
+          val top = emps.minBy(_.rk.get)
+          info(s"$dept top-of-3 = ${top.name} (${top.salary}) rk=${top.rk.get}")
+        }
+        // Engineering has 7 employees; the top-3 are Sam, Bob, Diana.
+        val engTop3 =
+          ranked.filter(_.department == "Engineering").sortBy(_.rk.get).map(_.name)
+        engTop3 shouldBe Seq("Sam Turner", "Bob Smith", "Diana Prince")
 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")
@@ -830,7 +987,7 @@ trait WindowFunctionSpec
           ROW_NUMBER() OVER (
             PARTITION BY department
             ORDER BY salary DESC
-          ) AS row_number
+          ) AS rnum
         FROM emp
         ORDER BY department, row_number
         """,
@@ -845,11 +1002,11 @@ trait WindowFunctionSpec
       val employees = results.map(_._1)
 
       employees.groupBy(_.department).foreach { case (dept, emps) =>
-        val rowNumbers = emps.flatMap(_.row_number).sorted
+        val rowNumbers = emps.flatMap(_.rnum).sorted
         rowNumbers shouldBe (1 to emps.size).toList
 
         // Top earner (row_number = 1)
-        val topEarner = emps.find(_.row_number.contains(1)).get
+        val topEarner = emps.find(_.rnum.contains(1)).get
 
         dept match {
           case "Engineering" => topEarner.name shouldBe "Sam Turner"
@@ -877,7 +1034,7 @@ trait WindowFunctionSpec
           ROW_NUMBER() OVER (
             PARTITION BY department
             ORDER BY salary DESC
-          ) AS row_number
+          ) AS rnum
         FROM emp
         ORDER BY department, row_number
         """,
@@ -891,7 +1048,7 @@ trait WindowFunctionSpec
 
       // Filtrer les top 2 par département
       val top2PerDept = employees
-        .filter(_.row_number.exists(_ <= 2))
+        .filter(_.rnum.exists(_ <= 2))
         .groupBy(_.department)
 
       top2PerDept.foreach { case (dept, emps) =>
@@ -918,7 +1075,7 @@ trait WindowFunctionSpec
           RANK() OVER (
             PARTITION BY department
             ORDER BY salary DESC
-          ) AS rank
+          ) AS rk
         FROM emp
         ORDER BY department, rank
         """,
@@ -933,7 +1090,7 @@ trait WindowFunctionSpec
       val employees = results.map(_._1)
 
       employees.groupBy(_.department).foreach { case (dept, emps) =>
-        val ranks = emps.flatMap(_.rank)
+        val ranks = emps.flatMap(_.rk)
         ranks.head shouldBe 1 // Top earner always rank 1
 
         val topEarner = emps.head
@@ -1166,8 +1323,8 @@ trait WindowFunctionSpec
         (emp, pctVsFirst, scrollId)
       }
       .filter { case (emp, pct, _) =>
-        // Ne garder que les top earners (row_number <= 3)
-        emp.row_number.exists(_ <= 3)
+        // Ne garder que les top earners (rnum <= 3)
+        emp.rnum.exists(_ <= 3)
       }
       .runWith(Sink.seq)
 

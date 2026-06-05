@@ -41,8 +41,13 @@ package object window {
     skills: Option[List[String]] = None,
     first_salary: Option[Int] = None,
     last_salary: Option[Int] = None,
-    rank: Option[Int] = None,
-    row_number: Option[Int] = None
+    // Ranking-window fields. The SELECT aliases avoid the reserved keywords
+    // (row_number / rank / dense_rank) so the parser's identifier filter
+    // accepts them: rnum = ROW_NUMBER, rk = RANK, drk = DENSE_RANK.
+    // BIGINT in SQL → Long here so the searchAs macro accepts the binding.
+    rnum: Option[Long] = None,
+    rk: Option[Long] = None,
+    drk: Option[Long] = None
   )
 
   case class DepartmentStats(

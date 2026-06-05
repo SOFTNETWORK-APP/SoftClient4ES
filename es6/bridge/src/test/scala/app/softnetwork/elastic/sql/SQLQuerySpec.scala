@@ -2096,6 +2096,46 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
+  it should "emit top_hits for ROW_NUMBER per-department" in {
+    val select: ElasticSearchRequest = SelectStatement(rowNumber)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"rn":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "emit top_hits for ROW_NUMBER without PARTITION BY" in {
+    val select: ElasticSearchRequest = SelectStatement(rowNumberNoPartition)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"rn":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}"""
+  }
+
+  it should "emit top_hits for RANK per-department" in {
+    val select: ElasticSearchRequest = SelectStatement(rankSql)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"r":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "emit top_hits for DENSE_RANK per-department" in {
+    val select: ElasticSearchRequest = SelectStatement(denseRank)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"dr":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "push LIMIT N inside OVER into top_hits.size for ranking (top-N per group)" in {
+    val select: ElasticSearchRequest = SelectStatement(rankTopN)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"r":{"top_hits":{"size":3,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
   it should "handle GREATEST 2-arg as script field" in {
     val select: ElasticSearchRequest = SelectStatement(greatest2)
     val query = select.query

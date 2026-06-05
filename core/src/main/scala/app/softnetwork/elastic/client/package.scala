@@ -339,7 +339,12 @@ package object client extends SerializationApi {
     */
   object AggregationType extends Enumeration {
     type AggregationType = Value
-    val Count, Min, Max, Avg, Sum, FirstValue, LastValue, ArrayAgg = Value
+    val Count, Min, Max, Avg, Sum, FirstValue, LastValue, ArrayAgg,
+    // Ranking-style window functions. Each top_hits hit gets a per-row
+    // ordinal computed Scala-side by the searchWithWindowEnrichment
+    // pipeline (RankingKind in function.aggregate); the ordinal is then
+    // injected into the base-query row by (partitionKey, _id) lookup.
+    RowNumber, Rank, DenseRank = Value
   }
 
   /** Client Aggregation
@@ -367,8 +372,20 @@ package object client extends SerializationApi {
     bucketRoot: String,
     auxiliary: Boolean = false
   ) {
-    def multivalued: Boolean = aggType == AggregationType.ArrayAgg
+    def multivalued: Boolean =
+      aggType == AggregationType.ArrayAgg ||
+      // Ranking windows return a per-row stream from the underlying
+      // top_hits sub-aggregation; the enrichment pipeline consumes the
+      // list to compute ordinals (Scala-side) and look them up by _id.
+      aggType == AggregationType.RowNumber ||
+      aggType == AggregationType.Rank ||
+      aggType == AggregationType.DenseRank
     def singleValued: Boolean = !multivalued
+
+    def ranking: Boolean =
+      aggType == AggregationType.RowNumber ||
+      aggType == AggregationType.Rank ||
+      aggType == AggregationType.DenseRank
   }
 
   implicit def sqlAggregationToClientAggregation(agg: SQLAggregation): ClientAggregation = {
@@ -386,6 +403,9 @@ package object client extends SerializationApi {
       case _: MaxAgg     => AggregationType.Max
       case _: AvgAgg     => AggregationType.Avg
       case _: SumAgg     => AggregationType.Sum
+      case _: RowNumber  => AggregationType.RowNumber
+      case _: Ranking    => AggregationType.Rank
+      case _: DenseRank  => AggregationType.DenseRank
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
     ClientAggregation(

@@ -120,10 +120,34 @@ package object aggregate {
         SumAgg(top._1, top._2)
       }
 
+    /** OVER clause variant used by ranking windows: ORDER BY is REQUIRED (ANSI). Falling through to
+      * the optional-orderBy parser would let `ROW_NUMBER() OVER (PARTITION BY d)` parse and then
+      * break at execution; rejecting at parse time is preferable.
+      */
+    private[this] def ranking_over: Parser[(Seq[Identifier], OrderBy, Option[Limit])] =
+      OVER.regex ~> start ~ partition_by.? ~ orderBy ~ limit.? <~ end ^^ { case _ ~ pb ~ ob ~ l =>
+        (pb.getOrElse(Seq.empty), ob, l)
+      }
+
+    def row_number: PackratParser[WindowFunction] =
+      ROW_NUMBER.regex ~ start ~ end ~ ranking_over ^^ { case _ ~ _ ~ _ ~ ((pb, ob, l)) =>
+        RowNumber(partitionBy = pb, orderBy = Some(ob), limit = l)
+      }
+
+    def rank: PackratParser[WindowFunction] =
+      RANK.regex ~ start ~ end ~ ranking_over ^^ { case _ ~ _ ~ _ ~ ((pb, ob, l)) =>
+        Ranking(partitionBy = pb, orderBy = Some(ob), limit = l)
+      }
+
+    def dense_rank: PackratParser[WindowFunction] =
+      DENSE_RANK.regex ~ start ~ end ~ ranking_over ^^ { case _ ~ _ ~ _ ~ ((pb, ob, l)) =>
+        DenseRank(partitionBy = pb, orderBy = Some(ob), limit = l)
+      }
+
     def identifierWithWindowFunction: PackratParser[Identifier] =
-      (first_value | last_value | array_agg | count_agg | min_agg | max_agg | avg_agg | sum_agg) ^^ {
-        th =>
-          th.identifier.withFunctions(th +: th.identifier.functions)
+      (first_value | last_value | array_agg | count_agg | min_agg | max_agg | avg_agg | sum_agg |
+      row_number | rank | dense_rank) ^^ { th =>
+        th.identifier.withFunctions(th +: th.identifier.functions)
       }
 
   }

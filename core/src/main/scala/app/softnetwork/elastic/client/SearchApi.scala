@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.PainlessContextType
+import app.softnetwork.elastic.sql.function.aggregate.RankingWindow
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
   MultiSearch,
@@ -1353,15 +1354,81 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
     logger.info(s"✅ Parsed ${aggRows.size} aggregation buckets")
 
-    // Build cache: partition key -> window values
+    // Ranking-style windows in the original request, paired with their
+    // SELECT-field alias (which is the key under which the top_hits
+    // sub-aggregation surfaces in the parsed agg row). Ranking windows have
+    // an empty positional identifier, so we can't recover the alias from
+    // the AST alone — pull it from the field that wraps them.
+    val rankingWindows: Seq[(String, RankingWindow)] =
+      request.windowFields.flatMap { f =>
+        f.identifier.windows.collect { case r: RankingWindow =>
+          f.fieldAlias.map(_.alias).getOrElse(f.sourceField) -> r
+        }
+      }
+
     val cache = aggRows.map { row =>
       val partitionKey = extractPartitionKey(row, request)
       val windowValues = extractWindowValues(row, response.aggregations)
-
-      partitionKey -> windowValues
+      val rankings = extractRankings(row, rankingWindows)
+      partitionKey -> windowValues.copy(rankings = rankings)
     }
 
     ElasticResult.success(WindowCache(ListMap(cache: _*)))
+  }
+
+  /** Read each ranking window's top_hits results from the parsed aggregation row, compute ordinals
+    * via the window's `assignOrdinals` (per its tie rule), and return a `fieldAlias -> (rowId ->
+    * rank)` map per partition.
+    *
+    * Each `(name, rw)` pair carries the SELECT-field alias (the key under which the top_hits
+    * sub-agg surfaces in `row`) and the ranking window itself.
+    */
+  /** Resolve an OVER ORDER BY column value from a top_hits inner-source map. The inner-source map
+    * keeps nested objects un-flattened, so a dotted column (e.g. `address.salary`) is not a
+    * top-level key. Fall back to walking the dotted path into nested maps. This is purely additive
+    * — a flat column hits the direct lookup and behaves exactly as before.
+    */
+  private def resolveSortKey(h: Map[String, Any], col: String): Any =
+    h.get(col) match {
+      case Some(v) => v
+      case None =>
+        col
+          .split('.')
+          .foldLeft(Option[Any](h)) {
+            case (Some(m: Map[_, _]), part) =>
+              m.asInstanceOf[Map[String, Any]].get(part)
+            case _ => None
+          }
+          .orNull
+    }
+
+  private def extractRankings(
+    row: ListMap[String, Any],
+    rankingWindows: Seq[(String, RankingWindow)]
+  ): Map[String, Map[String, Long]] = {
+    if (rankingWindows.isEmpty) Map.empty
+    else {
+      rankingWindows.flatMap { case (name, rw) =>
+        val orderByCols: Seq[String] =
+          rw.orderBy.toSeq.flatMap(_.sorts.map(_.field.name))
+        val hits: Seq[Map[String, Any]] = row.get(name) match {
+          case Some(l: List[_]) =>
+            l.collect { case m: Map[_, _] =>
+              m.asInstanceOf[Map[String, Any]]
+            }
+          case _ => Seq.empty
+        }
+        if (hits.isEmpty) None
+        else {
+          val ordered: Seq[(String, Seq[Any])] = hits.map { h =>
+            val rowId = h.getOrElse("_id", "").toString
+            val key = orderByCols.map(c => resolveSortKey(h, c))
+            rowId -> key
+          }
+          Some(name -> rw.assignOrdinals(ordered).toMap)
+        }
+      }.toMap
+    }
   }
 
   // ========================================================================
@@ -1484,22 +1551,52 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
     // Build partition key from document
     val partitionKey = extractPartitionKey(doc, request)
+    val rowId = doc.get("_id").map(_.toString).getOrElse("")
+
+    val rankingAliases: Seq[String] =
+      request.windowFields.flatMap { f =>
+        f.identifier.windows.collect { case _: RankingWindow =>
+          f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+        }
+      }
 
     // Lookup window values
     cache.get(partitionKey) match {
       case Some(windowValues) =>
-        // Merge document with window values
-        doc ++ windowValues.values
+        // Aggregation-style windows: merge the per-partition scalars.
+        val withScalars = doc ++ windowValues.values
+
+        // Ranking-style windows: look up the ordinal by row _id and inject
+        // it under the SELECT-field alias. Rows that the top_hits sub-agg
+        // didn't return (e.g. when the LIMIT push-down kept only top-N per
+        // partition) receive null.
+        if (rankingAliases.isEmpty) withScalars
+        else {
+          val rankEntries = rankingAliases.map { name =>
+            val value = windowValues.rankings
+              .get(name)
+              .flatMap(_.get(rowId))
+              .map(Long.box(_): Any)
+              .orNull
+            name -> value
+          }
+          withScalars ++ ListMap(rankEntries: _*)
+        }
 
       case None =>
         logger.warn(s"⚠️ No window values found for partition: ${partitionKey.values}")
 
-        // Add null values for missing window functions
-        val nullValues = request.windowFunctions.map { wf =>
-          wf.identifier.aliasOrName -> null
+        // Add null values for missing window functions. Aggregation-style
+        // windows key off their own alias/name; ranking windows have an empty
+        // positional identifier, so their null must be injected under the
+        // SELECT-field alias (mirrors the Some-branch).
+        val aggNulls = request.windowFunctions.collect {
+          case wf if !wf.isInstanceOf[RankingWindow] =>
+            wf.identifier.aliasOrName -> (null: Any)
         }
+        val rankingNulls = rankingAliases.map(_ -> (null: Any))
 
-        doc ++ ListMap(nullValues: _*)
+        doc ++ ListMap(aggNulls: _*) ++ ListMap(rankingNulls: _*)
     }
   }
 
@@ -1517,9 +1614,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     }
   }
 
-  /** Window function values for a partition
+  /** Window function values for a partition.
+    *
+    * `values` carries the existing per-partition scalars (aggregation-style windows:
+    * SUM/COUNT/MIN/MAX/AVG, plus FIRST_VALUE/LAST_VALUE/ARRAY_AGG).
+    *
+    * `rankings` carries the per-row ordinals computed Scala-side from each ranking window's
+    * top_hits sub-aggregation: a map `windowFunction.aliasOrName → (rowId → rank)`. The base-row
+    * enrichment step looks up the ordinal by `doc._id` for each ranking window.
     */
-  protected case class WindowValues(values: ListMap[String, Any])
+  protected case class WindowValues(
+    values: ListMap[String, Any],
+    rankings: Map[String, Map[String, Long]] = Map.empty
+  )
 
   /** Cache of partition key -> window values
     */
@@ -1527,4 +1634,5 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     def get(key: PartitionKey): Option[WindowValues] = cache.get(key)
     def size: Int = cache.size
   }
+
 }

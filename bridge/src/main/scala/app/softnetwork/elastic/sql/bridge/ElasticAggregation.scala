@@ -213,23 +213,43 @@ object ElasticAggregation {
             case SUM =>
               aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
             case _ =>
+              val isRanking = th.isInstanceOf[RankingWindow]
               val limit = {
                 th match {
                   case _: LastValue | _: FirstValue => Some(1)
-                  case _                            => th.limit.map(_.limit)
+                  // Ranking: top_hits.size driven by the AST's `limit`,
+                  // populated by the inline `LIMIT N` inside OVER (the shipped
+                  // top-N push-down syntax). When absent, default to ES
+                  // `index.max_inner_result_window` (100); push the desired N
+                  // via `LIMIT N` inside OVER for larger partitions. A
+                  // non-positive LIMIT is meaningless for top-N, so it falls
+                  // back to the default cap rather than emitting size:0.
+                  case _: RankingWindow =>
+                    Some(th.limit.map(_.limit).filter(_ > 0).getOrElse(100))
+                  case _ => th.limit.map(_.limit)
                 }
               }
+              // Ranking emits fetchSource = only the ORDER BY columns (used
+              // by the in-memory ordinal assigner to detect ties); `_id`
+              // comes back automatically as hit metadata. The aggregation
+              // window (LAST_VALUE / FIRST_VALUE / ARRAY_AGG) keeps the
+              // existing identifier-name-based fetchSource.
+              val fetchSourceCols: Array[String] =
+                if (isRanking) {
+                  th.orderBy.toSeq
+                    .flatMap(_.sorts.map(_.field.name))
+                    .distinct
+                    .toArray
+                } else {
+                  (th.identifier.name +: th.fields
+                    .filterNot(_.isScriptField)
+                    .filterNot(_.sourceField == th.identifier.name)
+                    .map(_.sourceField)
+                    .distinct).toArray
+                }
               val topHits =
                 topHitsAgg(aggName)
-                  .fetchSource(
-                    th.identifier.name +: th.fields
-                      .filterNot(_.isScriptField)
-                      .filterNot(_.sourceField == th.identifier.name)
-                      .map(_.sourceField)
-                      .distinct
-                      .toArray,
-                    Array.empty
-                  )
+                  .fetchSource(fetchSourceCols, Array.empty)
                   .copy(
                     scripts = th.fields
                       .filter(_.isScriptField)

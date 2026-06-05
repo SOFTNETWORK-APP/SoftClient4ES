@@ -6,5 +6,8 @@
   "max.json",
   "array_agg.json",
   "first_value.json",
-  "last_value.json"
+  "last_value.json",
+  "row_number.json",
+  "rank.json",
+  "dense_rank.json"
 ]

@@ -63,6 +63,10 @@ package object aggregate {
     override val words: List[String] = List(sql, "ARRAY")
   }
 
+  case object ROW_NUMBER extends Expr("ROW_NUMBER") with Window
+  case object RANK extends Expr("RANK") with Window
+  case object DENSE_RANK extends Expr("DENSE_RANK") with Window
+
   case object OVER extends Expr("OVER") with TokenRegex
 
   case object PARTITION_BY extends Expr("PARTITION BY") with TokenRegex
@@ -124,15 +128,31 @@ package object aggregate {
       b.identifier.identifierName -> b
     }.toMap
 
+    /** Window subclasses that should emit `LIMIT N` inside their OVER clause when round-tripping to
+      * SQL. Defaults to false so existing windows (FIRST_VALUE / LAST_VALUE / ARRAY_AGG /
+      * aggregate-style) keep the bare round-trip; ranking windows override to true so the push-down
+      * syntax is preserved.
+      */
+    protected def emitsLimitInOver: Boolean = false
+
     override def sql: String = {
       (partitionBy, orderBy) match {
         case (Nil, None) => s"$window($identifier)"
-        case _ =>
-          val orderByStr = orderBy.map(_.sql).getOrElse("")
+        case _           =>
+          // OrderBy.sql carries a leading space — strip it when there is
+          // no PARTITION BY ahead so the OVER clause does not start with
+          // `OVER ( ORDER BY ...)`.
+          val orderByStr =
+            orderBy
+              .map(_.sql)
+              .map(s => if (partitionBy.isEmpty) s.stripPrefix(" ") else s)
+              .getOrElse("")
           val partitionByStr =
             if (partitionBy.nonEmpty) s"$PARTITION_BY ${partitionBy.mkString(", ")}"
             else ""
-          s"$window($identifier) $OVER ($partitionByStr$orderByStr)"
+          val limitStr =
+            if (emitsLimitInOver) limit.map(_.sql).getOrElse("") else ""
+          s"$window($identifier) $OVER ($partitionByStr$orderByStr$limitStr)"
       }
     }
 
@@ -343,6 +363,136 @@ package object aggregate {
       .asInstanceOf[SumAgg]
       .copy(
         identifier = identifier.update(request)
+      )
+  }
+
+  /** ROW_NUMBER / RANK / DENSE_RANK — ranking-style windows.
+    *
+    * ANSI requires `ORDER BY` inside the `OVER (...)` clause for ranking functions; the parser
+    * enforces this so the AST always carries an `Option[OrderBy]` that is `Some(...)`. PARTITION BY
+    * is optional — when absent the whole result set is one partition.
+    *
+    * Distinct from the other `WindowFunction` shapes because the result is one value per ROW within
+    * partition, not one value per partition. The `searchWithWindowEnrichment` pipeline branches on
+    * this trait via pattern matching: ranking windows produce a per-row ordinal injected by lookup
+    * on `(partitionKey, _id)`.
+    */
+  sealed trait RankingWindow extends WindowFunction {
+    override def isWindowing: Boolean = true
+    // Ranking windows surface their `LIMIT N` clause in the SQL round-trip
+    // so the top-N push-down syntax is preserved through Updateable.update.
+    override protected def emitsLimitInOver: Boolean = true
+
+    /** Apply this window's tie rule to an ordered `(rowId, sortKey)` sequence.
+      *
+      *   - ROW_NUMBER: sequential, no ties (1, 2, 3, 4, …)
+      *   - RANK: ties share rank, next rank skips (1, 2, 2, 4, …)
+      *   - DENSE_RANK: ties share rank, next rank does not skip (1, 2, 2, 3, …)
+      *
+      * Tie detection is value-equality on the full OVER ORDER BY tuple.
+      */
+    def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)]
+  }
+
+  case class RowNumber(
+    partitionBy: Seq[Identifier] = Seq.empty,
+    orderBy: Option[OrderBy],
+    fields: Seq[Field] = Seq.empty,
+    limit: Option[Limit] = None
+  ) extends RankingWindow {
+    override def identifier: Identifier = Identifier()
+    override def window: Window = ROW_NUMBER
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    override def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)] =
+      ordered.zipWithIndex.map { case ((rowId, _), i) => rowId -> (i + 1L) }
+
+    override def withPartitionBy(pb: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = pb)
+
+    override def withFields(fs: Seq[Field]): WindowFunction = this.copy(fields = fs)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[RowNumber]
+      .copy(
+        orderBy = orderBy.map(_.update(request))
+        // NB: ranking windows intentionally do NOT fall back to the outer
+        // query LIMIT — top-N push-down comes solely from the inline `LIMIT N`
+        // inside OVER. Standard SQL computes window functions before LIMIT, so
+        // the outer LIMIT must not shrink the per-partition ranked set.
+      )
+  }
+
+  case class Ranking(
+    partitionBy: Seq[Identifier] = Seq.empty,
+    orderBy: Option[OrderBy],
+    fields: Seq[Field] = Seq.empty,
+    limit: Option[Limit] = None
+  ) extends RankingWindow {
+    override def identifier: Identifier = Identifier()
+    override def window: Window = RANK
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    override def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)] = {
+      var lastKey: Seq[Any] = null
+      var lastRank = 0L
+      ordered.zipWithIndex.map { case ((rowId, key), i) =>
+        if (key != lastKey) { lastRank = (i + 1).toLong; lastKey = key }
+        rowId -> lastRank
+      }
+    }
+
+    override def withPartitionBy(pb: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = pb)
+
+    override def withFields(fs: Seq[Field]): WindowFunction = this.copy(fields = fs)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[Ranking]
+      .copy(
+        orderBy = orderBy.map(_.update(request))
+        // NB: ranking windows intentionally do NOT fall back to the outer
+        // query LIMIT — top-N push-down comes solely from the inline `LIMIT N`
+        // inside OVER. Standard SQL computes window functions before LIMIT, so
+        // the outer LIMIT must not shrink the per-partition ranked set.
+      )
+  }
+
+  case class DenseRank(
+    partitionBy: Seq[Identifier] = Seq.empty,
+    orderBy: Option[OrderBy],
+    fields: Seq[Field] = Seq.empty,
+    limit: Option[Limit] = None
+  ) extends RankingWindow {
+    override def identifier: Identifier = Identifier()
+    override def window: Window = DENSE_RANK
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    override def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)] = {
+      var lastKey: Seq[Any] = null
+      var dense = 0L
+      ordered.map { case (rowId, key) =>
+        if (key != lastKey) { dense += 1; lastKey = key }
+        rowId -> dense
+      }
+    }
+
+    override def withPartitionBy(pb: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = pb)
+
+    override def withFields(fs: Seq[Field]): WindowFunction = this.copy(fields = fs)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[DenseRank]
+      .copy(
+        orderBy = orderBy.map(_.update(request))
+        // NB: ranking windows intentionally do NOT fall back to the outer
+        // query LIMIT — top-N push-down comes solely from the inline `LIMIT N`
+        // inside OVER. Standard SQL computes window functions before LIMIT, so
+        // the outer LIMIT must not shrink the per-partition ranked set.
       )
   }
 }

@@ -217,6 +217,16 @@ object Queries {
     "SELECT LEAST(price_us, price_eu, price_uk) AS lo, sku FROM products"
   val greatestLiteral: String =
     "SELECT GREATEST(0, price_us) AS hi FROM products"
+  val rowNumber: String =
+    "SELECT name, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn FROM emp"
+  val rankSql: String =
+    "SELECT name, RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS r FROM emp"
+  val denseRank: String =
+    "SELECT name, DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr FROM emp"
+  val rowNumberNoPartition: String =
+    "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM emp"
+  val rankTopN: String =
+    "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS r FROM emp"
   val nullif: String =
     "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val conversion: String =
@@ -945,6 +955,53 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(greatestLiteral) shouldBe true
+  }
+
+  it should "parse ROW_NUMBER() window" in {
+    val result = Parser(rowNumber)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rowNumber) shouldBe true
+  }
+
+  it should "parse RANK() window" in {
+    val result = Parser(rankSql)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rankSql) shouldBe true
+  }
+
+  it should "parse DENSE_RANK() window" in {
+    val result = Parser(denseRank)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(denseRank) shouldBe true
+  }
+
+  it should "parse ROW_NUMBER without PARTITION BY" in {
+    val result = Parser(rowNumberNoPartition)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rowNumberNoPartition) shouldBe true
+  }
+
+  it should "parse RANK with top-N LIMIT inside OVER (push-down)" in {
+    val result = Parser(rankTopN)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rankTopN) shouldBe true
+  }
+
+  it should "reject ROW_NUMBER() without ORDER BY (ANSI: ORDER BY REQUIRED)" in {
+    val result = Parser(
+      "SELECT ROW_NUMBER() OVER (PARTITION BY department) AS rn FROM emp"
+    )
+    result.isLeft shouldBe true
   }
 
   it should "reject GREATEST with definitively non-numeric args" in {

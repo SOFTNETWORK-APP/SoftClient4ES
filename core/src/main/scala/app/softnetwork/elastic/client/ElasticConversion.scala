@@ -701,24 +701,35 @@ trait ElasticConversion {
             case _ =>
           }
 
+          // Ranking windows need every hit's `_id` for the per-row ordinal
+          // lookup in `SearchApi.enrichDocumentWithWindowValues`. Skip the
+          // "single-source-field → return the scalar" shortcut so the
+          // per-hit map preserves both the ORDER BY columns AND the metadata.
+          val isRanking = agg.exists(_.ranking)
           val processedHits = hits.map { hit =>
             val source = extractSource(hit, fieldAliases)
             if (hasMultipleValues) {
-              source.size match {
-                case 0 => null
-                case 1 =>
-                  // If only one field in source and multivalued, return the value directly
-                  val value = source.head._2
-                  value match {
-                    case list: List[_]  => list
-                    case map: Map[_, _] => map
-                    case other          => other
-                  }
-                case _ =>
-                  // Multiple fields: return as object
-                  val metadata = extractHitMetadata(hit)
-                  val innerHits = extractInnerHits(hit, fieldAliases)
-                  source ++ metadata ++ innerHits
+              if (isRanking) {
+                val metadata = extractHitMetadata(hit)
+                val innerHits = extractInnerHits(hit, fieldAliases)
+                source ++ metadata ++ innerHits
+              } else {
+                source.size match {
+                  case 0 => null
+                  case 1 =>
+                    // If only one field in source and multivalued, return the value directly
+                    val value = source.head._2
+                    value match {
+                      case list: List[_]  => list
+                      case map: Map[_, _] => map
+                      case other          => other
+                    }
+                  case _ =>
+                    // Multiple fields: return as object
+                    val metadata = extractHitMetadata(hit)
+                    val innerHits = extractInnerHits(hit, fieldAliases)
+                    source ++ metadata ++ innerHits
+                }
               }
             } else {
               val metadata = extractHitMetadata(hit)
