@@ -43,6 +43,15 @@ trait WindowFunctionSpec
   implicit val localDateOrdering: Ordering[LocalDate] =
     Ordering.by(_.toEpochDay)
 
+  def supportsStdDevVariance: Boolean = {
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsStdDevVariance(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
+  }
+
   override def beforeAll(): Unit = {
     super.beforeAll()
 
@@ -1959,6 +1968,68 @@ trait WindowFunctionSpec
       searchLast shouldBe scrollLast
 
       log.info(s"  ✓ $dept: FIRST=$searchFirst, LAST=$searchLast (consistent)")
+    }
+  }
+
+  // ========================================================================
+  // STORY 14.4 — STDDEV / VARIANCE family (extended_stats)
+  // ========================================================================
+
+  "STDDEV / VARIANCE family" should "compute sample stddev, sample variance and pop variance per department" in {
+    assume(
+      supportsStdDevVariance,
+      "Sample STDDEV / VARIANCE require the extended_stats `_sampling` keys (Elasticsearch 7.7+)"
+    )
+
+    val results = client.searchAs[DepartmentStatsExtended](
+      """
+        SELECT
+          department,
+          STDDEV(salary)   AS sd_salary,
+          VAR_POP(salary)  AS vp_salary,
+          VAR_SAMP(salary) AS vs_salary
+        FROM emp
+        GROUP BY department
+      """
+    )
+
+    results match {
+      case ElasticSuccess(rows) =>
+        rows should not be empty
+
+        // Engineering fixture salaries (see EmployeeData):
+        // 95k, 120k, 85k, 110k, 75k, 105k, 130k.
+        // mean = 102857.14
+        // sum of squared deviations ≈ 2,242,857,142.86
+        // sample variance ≈ 373,809,523.81  (÷ n-1 = 6)
+        // pop    variance ≈ 320,408,163.27  (÷ n   = 7)
+        // sample stddev   ≈ 19,334.16        (sqrt of sample variance)
+        val eng = rows.find(_.department == "Engineering").getOrElse(fail("no Engineering row"))
+
+        eng.sd_salary should not be empty
+        eng.vs_salary should not be empty
+        eng.vp_salary should not be empty
+
+        eng.sd_salary.get shouldBe 19334.16 +- 1.0
+        eng.vs_salary.get shouldBe 3.738e8 +- 1e6
+        eng.vp_salary.get shouldBe 3.204e8 +- 1e6
+
+        // Sanity check across all departments: sample variance ≥ population variance
+        // (Bessel correction always gives a strictly-larger sample variance when n ≥ 2).
+        rows.foreach { r =>
+          (r.vs_salary, r.vp_salary) match {
+            case (Some(vs), Some(vp)) =>
+              vs should be >= vp
+              log.info(
+                f"${r.department}%-12s  sd=${r.sd_salary.getOrElse(0.0)}%10.2f  vp=$vp%14.2f  vs=$vs%14.2f"
+              )
+            case _ =>
+              log.info(s"${r.department}: missing values (sample-only ES?)")
+          }
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
     }
   }
 

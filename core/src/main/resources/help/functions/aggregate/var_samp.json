@@ -1,0 +1,34 @@
+{
+  "name": "VAR_SAMP",
+  "category": "Aggregate",
+  "shortDescription": "Sample variance of values",
+  "syntax": [
+    "VAR_SAMP(column)",
+    "VAR_SAMP(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Computes the sample variance (Bessel-corrected, divides by n-1). Equivalent to VARIANCE.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "NUMERIC",
+      "description": "Numeric column",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Sample variance",
+      "description": "Equivalent to VARIANCE",
+      "sql": "SELECT VAR_SAMP(salary) FROM emp"
+    }
+  ],
+  "notes": [
+    "Identical semantics to VARIANCE (ANSI default is sample).",
+    "NULL values are ignored.",
+    "Requires Elasticsearch 7.7+."
+  ],
+  "seeAlso": ["VARIANCE", "VAR_POP", "STDDEV_SAMP"],
+  "aliases": []
+}

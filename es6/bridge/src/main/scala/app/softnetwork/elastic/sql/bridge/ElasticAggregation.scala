@@ -40,6 +40,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   bucketScriptAggregation,
   bucketSelectorAggregation,
   cardinalityAgg,
+  extendedStatsAgg,
   maxAgg,
   minAgg,
   nestedAggregation,
@@ -192,6 +193,11 @@ object ElasticAggregation {
         case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
         case SUM => aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+        case STDDEV | STDDEV_SAMP | STDDEV_POP | VARIANCE | VAR_SAMP | VAR_POP =>
+          aggWithFieldOrScript(
+            extendedStatsAgg,
+            (name, s) => extendedStatsAgg(name, sourceField).script(s)
+          )
         case th: WindowFunction =>
           th.window match {
             case COUNT =>
@@ -213,6 +219,11 @@ object ElasticAggregation {
               aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
             case SUM =>
               aggWithFieldOrScript(sumAgg, (name, s) => sumAgg(name, sourceField).script(s))
+            case STDDEV | STDDEV_SAMP | STDDEV_POP | VARIANCE | VAR_SAMP | VAR_POP =>
+              aggWithFieldOrScript(
+                extendedStatsAgg,
+                (name, s) => extendedStatsAgg(name, sourceField).script(s)
+              )
             case _ =>
               val isRanking = th.isInstanceOf[RankingWindow]
               val limit = {

@@ -28,6 +28,11 @@ import scala.jdk.CollectionConverters._
 
 trait ElasticConversion {
 
+  // Distinctly named to avoid colliding with the `logger` member that
+  // `ClientCompanion`'s self-type contributes where this trait is mixed in.
+  private val conversionLogger: org.slf4j.Logger =
+    org.slf4j.LoggerFactory.getLogger(getClass)
+
   def convertTo[T](map: Map[String, Any])(implicit m: Manifest[T], formats: Formats): T = {
     val jValue = Extraction.decompose(map)
     jValue.extract[T]
@@ -614,8 +619,36 @@ trait ElasticConversion {
               name -> numericValue
             }
             .orElse {
-              // Stats aggregations
-              if (value.has("count") && value.has("sum") && value.has("avg")) {
+              // Extended stats — project the SQL-requested field via
+              // ClientAggregation.aggResultField, set at SQLAggregation →
+              // ClientAggregation conversion time for STDDEV / STDDEV_POP /
+              // STDDEV_SAMP / VARIANCE / VAR_POP / VAR_SAMP. When the projection
+              // key is absent (the `_sampling` sample keys require ES 7.7+),
+              // logs a warning and yields None so the column appears as null —
+              // the Stats branch below is skipped for these aggregations (see
+              // its `aggResultField.isEmpty` guard) to avoid emitting a
+              // stats-shaped struct in place of the null.
+              aggregations.get(name).flatMap(_.aggResultField).flatMap { resultField =>
+                Option(value.get(resultField)).filterNot(_.isNull) match {
+                  case Some(node) => Some(name -> node.asDouble())
+                  case None =>
+                    conversionLogger.warn(
+                      s"Aggregation '$name' requested extended_stats field '$resultField' " +
+                      "which is absent from the response (sample variants require " +
+                      "Elasticsearch 7.7+); the column will be null."
+                    )
+                    None
+                }
+              }
+            }
+            .orElse {
+              // Stats aggregations — skipped when this aggregation projects a
+              // specific extended_stats field (handled above; an absent key
+              // yields a null column rather than a stats-shaped struct).
+              if (
+                aggregations.get(name).flatMap(_.aggResultField).isEmpty &&
+                value.has("count") && value.has("sum") && value.has("avg")
+              ) {
                 Some(
                   name -> ListMap(
                     "count" -> value.get("count").asLong(),

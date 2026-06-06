@@ -4312,4 +4312,115 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     query should not include "\"missing\""
   }
 
+  // === Story 14.4: STDDEV / VARIANCE family — extended_stats translation ===
+
+  it should "translate STDDEV(salary) GROUP BY department to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, STDDEV(salary) AS sd
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "sd": { "extended_stats": { "field": "salary" } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate STDDEV_SAMP(salary) to extended_stats (alias of STDDEV)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, STDDEV_SAMP(salary) AS sd
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"sd\":{")
+  }
+
+  it should "translate STDDEV_POP(salary) to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, STDDEV_POP(salary) AS sdp
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"sdp\":{")
+  }
+
+  it should "translate VARIANCE(salary) GROUP BY department to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, VARIANCE(salary) AS v
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "v": { "extended_stats": { "field": "salary" } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate VAR_SAMP(salary) to extended_stats (alias of VARIANCE)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, VAR_SAMP(salary) AS v
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"v\":{")
+  }
+
+  it should "translate VAR_POP(salary) to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, VAR_POP(salary) AS vp
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"vp\":{")
+  }
+
+  it should "translate VARIANCE(salary) OVER (PARTITION BY department) to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT name, salary, VARIANCE(salary) OVER (PARTITION BY department) AS v
+          |FROM emp""".stripMargin
+      )
+    val query = select.query
+    // PARTITION BY department => a `department` terms bucket; the windowed
+    // VARIANCE lives as an `extended_stats` sub-aggregation against `salary`.
+    query should include("\"terms\":{\"field\":\"department\"")
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+  }
+
 }

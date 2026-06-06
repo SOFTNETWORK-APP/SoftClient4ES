@@ -35,7 +35,24 @@ package object aggregate {
 
     def sum: PackratParser[AggregateFunction] = SUM.regex ^^ (_ => SUM)
 
-    def aggregate_function: PackratParser[AggregateFunction] = count | min | max | avg | sum
+    def stddev: PackratParser[AggregateFunction] = STDDEV.regex ^^ (_ => STDDEV)
+
+    def stddev_pop: PackratParser[AggregateFunction] = STDDEV_POP.regex ^^ (_ => STDDEV_POP)
+
+    def stddev_samp: PackratParser[AggregateFunction] = STDDEV_SAMP.regex ^^ (_ => STDDEV_SAMP)
+
+    def variance: PackratParser[AggregateFunction] = VARIANCE.regex ^^ (_ => VARIANCE)
+
+    def var_pop: PackratParser[AggregateFunction] = VAR_POP.regex ^^ (_ => VAR_POP)
+
+    def var_samp: PackratParser[AggregateFunction] = VAR_SAMP.regex ^^ (_ => VAR_SAMP)
+
+    // Longest-prefix alternation: STDDEV_POP / STDDEV_SAMP / VAR_POP / VAR_SAMP must be tried
+    // before the bare STDDEV / VARIANCE so the suffixed forms are not shadowed.
+    def aggregate_function: PackratParser[AggregateFunction] =
+      count | min | max | avg | sum |
+      stddev_pop | stddev_samp | stddev |
+      var_pop | var_samp | variance
 
     def aggWithFunction: PackratParser[Identifier] =
       identifierWithArithmeticExpression |
@@ -120,6 +137,26 @@ package object aggregate {
         SumAgg(top._1, top._2)
       }
 
+    def stddev_agg: PackratParser[WindowFunction] =
+      (stddev_pop | stddev_samp | stddev) ~ window_function(aggWithFunction) ^^ { case fn ~ top =>
+        val kind = fn match {
+          case STDDEV_POP  => ExtendedStatsKind.StddevPop
+          case STDDEV_SAMP => ExtendedStatsKind.StddevSamp
+          case _           => ExtendedStatsKind.Stddev
+        }
+        ExtendedStatsAgg(top._1, kind, top._2)
+      }
+
+    def variance_agg: PackratParser[WindowFunction] =
+      (var_pop | var_samp | variance) ~ window_function(aggWithFunction) ^^ { case fn ~ top =>
+        val kind = fn match {
+          case VAR_POP  => ExtendedStatsKind.VarPop
+          case VAR_SAMP => ExtendedStatsKind.VarSamp
+          case _        => ExtendedStatsKind.Variance
+        }
+        ExtendedStatsAgg(top._1, kind, top._2)
+      }
+
     /** OVER clause variant used by ranking windows: ORDER BY is REQUIRED (ANSI). Falling through to
       * the optional-orderBy parser would let `ROW_NUMBER() OVER (PARTITION BY d)` parse and then
       * break at execution; rejecting at parse time is preferable.
@@ -146,6 +183,7 @@ package object aggregate {
 
     def identifierWithWindowFunction: PackratParser[Identifier] =
       (first_value | last_value | array_agg | count_agg | min_agg | max_agg | avg_agg | sum_agg |
+      stddev_agg | variance_agg |
       row_number | rank | dense_rank) ^^ { th =>
         th.identifier.withFunctions(th +: th.identifier.functions)
       }

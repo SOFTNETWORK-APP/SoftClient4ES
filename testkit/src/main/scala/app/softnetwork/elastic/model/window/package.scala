@@ -58,6 +58,20 @@ package object window {
     employee_count: Long
   )
 
+  /** Story 14.4 — STDDEV / VARIANCE family integration shape.
+    *
+    * All four projections come from a single ES `extended_stats` per call. Fields are
+    * `Option[Double]` because the sample variants return `null` on ES < 7.7 (the `_sampling` keys
+    * do not exist there); the population variants read the un-suffixed `std_deviation` / `variance`
+    * keys, which are present on ES 6+.
+    */
+  case class DepartmentStatsExtended(
+    department: String,
+    sd_salary: Option[Double] = None,
+    vp_salary: Option[Double] = None,
+    vs_salary: Option[Double] = None
+  )
+
   case class DepartmentWithWindow(
     department: String,
     location: Option[String] = None,

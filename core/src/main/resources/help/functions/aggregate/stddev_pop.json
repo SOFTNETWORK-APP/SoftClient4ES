@@ -1,0 +1,34 @@
+{
+  "name": "STDDEV_POP",
+  "category": "Aggregate",
+  "shortDescription": "Population standard deviation of values",
+  "syntax": [
+    "STDDEV_POP(column)",
+    "STDDEV_POP(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Computes the population standard deviation (divides by n). Use when the input is the entire population, not a sample.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "NUMERIC",
+      "description": "Numeric column",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Population standard deviation",
+      "description": "Across all rows",
+      "sql": "SELECT STDDEV_POP(salary) FROM emp"
+    }
+  ],
+  "notes": [
+    "Population variant — divides by n, not n-1.",
+    "NULL values are ignored.",
+    "Works on Elasticsearch 6+."
+  ],
+  "seeAlso": ["STDDEV", "STDDEV_SAMP", "VAR_POP"],
+  "aliases": []
+}

@@ -227,6 +227,21 @@ object Queries {
     "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM emp"
   val rankTopN: String =
     "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS r FROM emp"
+  // Story 14.4 — STDDEV / VARIANCE family
+  val stddevSql: String =
+    "SELECT department, STDDEV(salary) AS sd FROM emp GROUP BY department"
+  val stddevSampSql: String =
+    "SELECT department, STDDEV_SAMP(salary) AS sd FROM emp GROUP BY department"
+  val stddevPopSql: String =
+    "SELECT department, STDDEV_POP(salary) AS sdp FROM emp GROUP BY department"
+  val varianceSql: String =
+    "SELECT department, VARIANCE(salary) AS v FROM emp GROUP BY department"
+  val varSampSql: String =
+    "SELECT department, VAR_SAMP(salary) AS v FROM emp GROUP BY department"
+  val varPopSql: String =
+    "SELECT department, VAR_POP(salary) AS vp FROM emp GROUP BY department"
+  val varianceOverSql: String =
+    "SELECT name, salary, VARIANCE(salary) OVER (PARTITION BY department) AS v FROM emp"
   val nullif: String =
     "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val conversion: String =
@@ -1002,6 +1017,43 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       "SELECT ROW_NUMBER() OVER (PARTITION BY department) AS rn FROM emp"
     )
     result.isLeft shouldBe true
+  }
+
+  // === Story 14.4: STDDEV / VARIANCE family ===
+
+  it should "parse STDDEV(expr) and round-trip the SQL token" in {
+    val result = Parser(stddevSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(stddevSql) shouldBe true
+  }
+
+  it should "parse STDDEV_SAMP(expr) and round-trip the SQL token" in {
+    val result = Parser(stddevSampSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(stddevSampSql) shouldBe true
+  }
+
+  it should "parse STDDEV_POP(expr) and round-trip the SQL token" in {
+    val result = Parser(stddevPopSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(stddevPopSql) shouldBe true
+  }
+
+  it should "parse VARIANCE(expr) and round-trip the SQL token" in {
+    val result = Parser(varianceSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varianceSql) shouldBe true
+  }
+
+  it should "parse VAR_SAMP(expr) and round-trip the SQL token" in {
+    val result = Parser(varSampSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varSampSql) shouldBe true
+  }
+
+  it should "parse VAR_POP(expr) and round-trip the SQL token" in {
+    val result = Parser(varPopSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varPopSql) shouldBe true
+  }
+
+  it should "parse VARIANCE OVER (PARTITION BY ...) as a windowed aggregate" in {
+    val result = Parser(varianceOverSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varianceOverSql) shouldBe true
   }
 
   it should "reject GREATEST with definitively non-numeric args" in {

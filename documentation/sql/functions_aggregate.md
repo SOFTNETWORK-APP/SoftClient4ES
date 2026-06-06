@@ -18,6 +18,7 @@ This page documents aggregate functions for summarizing and analyzing data.
 6. [FIRST_VALUE](#function-first_value)
 7. [LAST_VALUE](#function-last_value)
 8. [ARRAY_AGG](#function-array_agg)
+9. [STDDEV / VARIANCE family](#function-stddev--variance-family)
 
 ---
 
@@ -1204,6 +1205,62 @@ FROM emp;
 
 ---
 
+## Function: STDDEV / VARIANCE family
+
+**Description:**  
+The six ANSI statistical aggregates compute the standard deviation and variance of a numeric column. All map to a single Elasticsearch `extended_stats` aggregation per call; each function projects the matching field from the response.
+
+`STDDEV` is an alias for `STDDEV_SAMP`, and `VARIANCE` is an alias for `VAR_SAMP` — i.e. both default to the **sample** (Bessel-corrected) form, matching PostgreSQL, Snowflake, and MySQL 8.0+. (MySQL 5.5 and earlier defaulted `STDDEV` to population.)
+
+**Syntax:**
+```sql
+STDDEV(expr)  | STDDEV_SAMP(expr)  | STDDEV_POP(expr)
+VARIANCE(expr) | VAR_SAMP(expr)     | VAR_POP(expr)
+
+-- windowed form
+STDDEV(expr) OVER (PARTITION BY partition_expr, ...)
+```
+
+**Inputs:**
+- `expr` - Numeric column
+- `PARTITION BY` - Optional grouping columns (windowed form)
+
+**Output:**
+- `DOUBLE`
+
+**Function → Elasticsearch `extended_stats` field:**
+
+| SQL                | ES `extended_stats` field  | Min ES version |
+|--------------------|----------------------------|----------------|
+| `STDDEV(x)`        | `std_deviation_sampling`   | **7.7+**       |
+| `STDDEV_SAMP(x)`   | `std_deviation_sampling`   | **7.7+**       |
+| `STDDEV_POP(x)`    | `std_deviation`            | 6+             |
+| `VARIANCE(x)`      | `variance_sampling`        | **7.7+**       |
+| `VAR_SAMP(x)`      | `variance_sampling`        | **7.7+**       |
+| `VAR_POP(x)`       | `variance`                 | 6+             |
+
+**Behavior:**
+- `NULL` values are ignored.
+- The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Consequently the sample variants — including the default `STDDEV` / `VARIANCE` — require Elasticsearch 7.7+. On older clusters the column is returned as `null` and a warning is logged.
+- Each call emits its own `extended_stats` aggregation; two stat calls over the same column emit two aggregations.
+
+**Examples:**
+```sql
+-- Per-group sample standard deviation and population variance
+SELECT department,
+       STDDEV(salary)  AS sd,
+       VAR_POP(salary) AS vp
+FROM emp
+GROUP BY department;
+
+-- Windowed sample variance per partition
+SELECT name, salary,
+       VARIANCE(salary) OVER (PARTITION BY department) AS v
+FROM emp;
+```
+
+---
+
 ## Aggregate Functions Summary
 
 | Function               | Purpose               | Input      | Output        | NULL Handling    |
@@ -1218,5 +1275,11 @@ FROM emp;
 | `FIRST_VALUE(expr)`    | First value (ordered) | Any        | Same as input | Depends on ORDER |
 | `LAST_VALUE(expr)`     | Last value (ordered)  | Any        | Same as input | Depends on ORDER |
 | `ARRAY_AGG(expr)`      | Collect into array    | Any        | `ARRAY<type>` | Includes NULLs   |
+| `STDDEV(expr)`         | Sample std deviation  | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `STDDEV_SAMP(expr)`    | Sample std deviation  | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `STDDEV_POP(expr)`     | Population std dev     | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `VARIANCE(expr)`       | Sample variance       | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `VAR_SAMP(expr)`       | Sample variance       | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `VAR_POP(expr)`        | Population variance   | Numeric    | `DOUBLE`      | Ignores NULLs    |
 
 [Back to index](README.md)

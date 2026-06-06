@@ -49,6 +49,16 @@ package object aggregate {
 
   case object SUM extends Expr("SUM") with AggregateFunction with Window
 
+  // STDDEV / VARIANCE family — all translate to the same ES `extended_stats`
+  // aggregation; the SQL token is preserved for round-trip and used to pick
+  // the response key (`std_deviation` vs `std_deviation_population`, etc.).
+  case object STDDEV extends Expr("STDDEV") with AggregateFunction with Window
+  case object STDDEV_POP extends Expr("STDDEV_POP") with AggregateFunction with Window
+  case object STDDEV_SAMP extends Expr("STDDEV_SAMP") with AggregateFunction with Window
+  case object VARIANCE extends Expr("VARIANCE") with AggregateFunction with Window
+  case object VAR_POP extends Expr("VAR_POP") with AggregateFunction with Window
+  case object VAR_SAMP extends Expr("VAR_SAMP") with AggregateFunction with Window
+
   sealed trait Window extends TokenRegex
 
   case object FIRST_VALUE extends Expr("FIRST_VALUE") with Window {
@@ -361,6 +371,79 @@ package object aggregate {
     override def update(request: SingleSearch): WindowFunction = super
       .update(request)
       .asInstanceOf[SumAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
+
+  /** STDDEV / VARIANCE family. All six SQL functions translate to a single ES `extended_stats`
+    * aggregation; the bridge emits one aggregation per call and the `kind` here drives result-field
+    * projection during response extraction (`std_deviation`, `variance`, etc.).
+    *
+    * `STDDEV` ≡ `STDDEV_SAMP` and `VARIANCE` ≡ `VAR_SAMP` (ANSI defaults to sample — matches
+    * PostgreSQL and Snowflake). The two pairs carry distinct kinds so the SQL form round-trips
+    * faithfully through `WindowFunction.sql`.
+    */
+  sealed trait ExtendedStatsKind extends Product with Serializable {
+    def window: Window
+    def resultField: String
+  }
+
+  object ExtendedStatsKind {
+    // ES `extended_stats` quirk: the un-suffixed `std_deviation` / `variance`
+    // fields are the POPULATION values (kept for backwards compatibility
+    // with the pre-7.7 response shape). The explicit sample values live
+    // under the `_sampling` keys, which were introduced in ES 7.7 — so SQL
+    // SAMP variants (default for ANSI STDDEV / VARIANCE) require ES 7.7+.
+    // POP variants work on ES 6+ via the un-suffixed keys.
+    case object Stddev extends ExtendedStatsKind {
+      val window: Window = STDDEV
+      val resultField: String = "std_deviation_sampling"
+    }
+    case object StddevSamp extends ExtendedStatsKind {
+      val window: Window = STDDEV_SAMP
+      val resultField: String = "std_deviation_sampling"
+    }
+    case object StddevPop extends ExtendedStatsKind {
+      val window: Window = STDDEV_POP
+      val resultField: String = "std_deviation"
+    }
+    case object Variance extends ExtendedStatsKind {
+      val window: Window = VARIANCE
+      val resultField: String = "variance_sampling"
+    }
+    case object VarSamp extends ExtendedStatsKind {
+      val window: Window = VAR_SAMP
+      val resultField: String = "variance_sampling"
+    }
+    case object VarPop extends ExtendedStatsKind {
+      val window: Window = VAR_POP
+      val resultField: String = "variance"
+    }
+  }
+
+  case class ExtendedStatsAgg(
+    identifier: Identifier,
+    kind: ExtendedStatsKind,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def baseType: SQLType = SQLTypes.Double
+
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = kind.window
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[ExtendedStatsAgg]
       .copy(
         identifier = identifier.update(request)
       )

@@ -344,7 +344,12 @@ package object client extends SerializationApi {
     // ordinal computed Scala-side by the searchWithWindowEnrichment
     // pipeline (RankingKind in function.aggregate); the ordinal is then
     // injected into the base-query row by (partitionKey, _id) lookup.
-    RowNumber, Rank, DenseRank = Value
+    RowNumber, Rank, DenseRank,
+    // STDDEV / VARIANCE family — all back the same ES `extended_stats`
+    // aggregation; the specific result key is carried separately on
+    // ClientAggregation.aggResultField so extractMetrics knows which
+    // field to project from the response.
+    Stddev, StddevSamp, StddevPop, Variance, VarSamp, VarPop = Value
   }
 
   /** Client Aggregation
@@ -370,7 +375,13 @@ package object client extends SerializationApi {
     windowing: Boolean,
     bucketPath: String,
     bucketRoot: String,
-    auxiliary: Boolean = false
+    auxiliary: Boolean = false,
+    // Response field projected from a multi-key ES aggregation (currently
+    // `extended_stats` — e.g. "std_deviation_sampling", "variance"). The
+    // un-suffixed "std_deviation"/"variance" keys are the population values
+    // (ES 6+); the "_sampling" keys are the sample values (ES 7.7+).
+    // None for plain `value`-style metrics.
+    aggResultField: Option[String] = None
   ) {
     def multivalued: Boolean =
       aggType == AggregationType.ArrayAgg ||
@@ -395,6 +406,12 @@ package object client extends SerializationApi {
       case MAX           => AggregationType.Max
       case AVG           => AggregationType.Avg
       case SUM           => AggregationType.Sum
+      case STDDEV        => AggregationType.Stddev
+      case STDDEV_SAMP   => AggregationType.StddevSamp
+      case STDDEV_POP    => AggregationType.StddevPop
+      case VARIANCE      => AggregationType.Variance
+      case VAR_SAMP      => AggregationType.VarSamp
+      case VAR_POP       => AggregationType.VarPop
       case _: FirstValue => AggregationType.FirstValue
       case _: LastValue  => AggregationType.LastValue
       case _: ArrayAgg   => AggregationType.ArrayAgg
@@ -406,7 +423,29 @@ package object client extends SerializationApi {
       case _: RowNumber  => AggregationType.RowNumber
       case _: Ranking    => AggregationType.Rank
       case _: DenseRank  => AggregationType.DenseRank
+      case e: ExtendedStatsAgg =>
+        e.kind match {
+          case ExtendedStatsKind.Stddev     => AggregationType.Stddev
+          case ExtendedStatsKind.StddevSamp => AggregationType.StddevSamp
+          case ExtendedStatsKind.StddevPop  => AggregationType.StddevPop
+          case ExtendedStatsKind.Variance   => AggregationType.Variance
+          case ExtendedStatsKind.VarSamp    => AggregationType.VarSamp
+          case ExtendedStatsKind.VarPop     => AggregationType.VarPop
+        }
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
+    }
+    // `extended_stats` is multi-key — pick which one to project. Plain
+    // tokens (STDDEV / STDDEV_POP / …) get a fixed key matching the SQL
+    // semantic; the wrapped ExtendedStatsAgg carries it on the kind.
+    val aggResultField: Option[String] = agg.aggType match {
+      case STDDEV              => Some(ExtendedStatsKind.Stddev.resultField)
+      case STDDEV_SAMP         => Some(ExtendedStatsKind.StddevSamp.resultField)
+      case STDDEV_POP          => Some(ExtendedStatsKind.StddevPop.resultField)
+      case VARIANCE            => Some(ExtendedStatsKind.Variance.resultField)
+      case VAR_SAMP            => Some(ExtendedStatsKind.VarSamp.resultField)
+      case VAR_POP             => Some(ExtendedStatsKind.VarPop.resultField)
+      case e: ExtendedStatsAgg => Some(e.kind.resultField)
+      case _                   => None
     }
     ClientAggregation(
       agg.aggName,
@@ -416,7 +455,8 @@ package object client extends SerializationApi {
       agg.aggType.isWindowing,
       agg.bucketPath,
       agg.bucketRoot,
-      agg.auxiliary
+      agg.auxiliary,
+      aggResultField
     )
   }
 

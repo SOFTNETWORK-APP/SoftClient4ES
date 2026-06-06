@@ -284,6 +284,26 @@ Supported aggregate functions include:
 - `AVG(expr)`
 - `MIN(expr)`
 - `MAX(expr)`
+- `STDDEV(expr)` / `STDDEV_SAMP(expr)` / `STDDEV_POP(expr)`
+- `VARIANCE(expr)` / `VAR_SAMP(expr)` / `VAR_POP(expr)`
+
+`STDDEV` defaults to **sample** standard deviation (Bessel-corrected, `STDDEV ≡ STDDEV_SAMP`) and
+`VARIANCE` defaults to **sample** variance (`VARIANCE ≡ VAR_SAMP`). This matches PostgreSQL and
+Snowflake; users coming from MySQL 5.5 or earlier should note that those releases defaulted
+`STDDEV` to population.
+
+```sql
+SELECT department,
+       STDDEV(salary)   AS sd,
+       VAR_POP(salary)  AS vp
+FROM emp
+GROUP BY department;
+```
+
+All six map to a single Elasticsearch `extended_stats` aggregation per call; the requested field
+(`std_deviation_sampling`, `variance_sampling` for the sample variants; the un-suffixed
+`std_deviation`, `variance` for the population variants) is projected from the response. Sample
+variants require **Elasticsearch 7.7+**; population variants work on Elasticsearch 6+.
 
 ### GROUP BY and HAVING
 
@@ -366,6 +386,8 @@ Supported window functions include:
 
 - `SUM(expr) OVER (...)`
 - `COUNT(expr) OVER (...)`
+- `STDDEV(expr) OVER (PARTITION BY ...)` and its `_SAMP` / `_POP` variants
+- `VARIANCE(expr) OVER (PARTITION BY ...)` and its `_SAMP` / `_POP` variants
 - `FIRST_VALUE(expr) OVER (...)`
 - `LAST_VALUE(expr) OVER (...)`
 - `ARRAY_AGG(expr) OVER (...)`

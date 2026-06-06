@@ -1,0 +1,39 @@
+{
+  "name": "VARIANCE",
+  "category": "Aggregate",
+  "shortDescription": "Sample variance of values",
+  "syntax": [
+    "VARIANCE(column)",
+    "VARIANCE(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Computes the sample variance (Bessel-corrected). Alias for VAR_SAMP — matches PostgreSQL and Snowflake defaults.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "NUMERIC",
+      "description": "Numeric column",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Sample variance",
+      "description": "Across all rows",
+      "sql": "SELECT VARIANCE(salary) FROM emp"
+    },
+    {
+      "title": "Per group",
+      "description": "By department",
+      "sql": "SELECT department, VARIANCE(salary) AS v FROM emp GROUP BY department"
+    }
+  ],
+  "notes": [
+    "Defaults to sample (matches PostgreSQL / Snowflake); use VAR_POP for population.",
+    "NULL values are ignored.",
+    "Sample variants (STDDEV / STDDEV_SAMP / VARIANCE / VAR_SAMP) require Elasticsearch 7.7+; population variants work on ES 6+."
+  ],
+  "seeAlso": ["VAR_POP", "VAR_SAMP", "STDDEV", "STDDEV_POP", "STDDEV_SAMP"],
+  "aliases": ["VAR_SAMP"]
+}
