@@ -1295,6 +1295,8 @@ trait Parser
     "variance",
     "var_pop",
     "var_samp",
+    "percentile_cont",
+    "percentile_disc",
     "case",
     "when",
     "then",

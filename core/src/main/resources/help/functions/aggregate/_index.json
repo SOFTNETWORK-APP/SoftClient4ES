@@ -10,6 +10,8 @@
   "variance.json",
   "var_samp.json",
   "var_pop.json",
+  "percentile_cont.json",
+  "percentile_disc.json",
   "array_agg.json",
   "first_value.json",
   "last_value.json",

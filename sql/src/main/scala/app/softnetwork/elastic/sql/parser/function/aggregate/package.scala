@@ -157,6 +157,68 @@ package object aggregate {
         ExtendedStatsAgg(top._1, kind, top._2)
       }
 
+    def percentile_cont: PackratParser[AggregateFunction] =
+      PERCENTILE_CONT.regex ^^ (_ => PERCENTILE_CONT)
+
+    def percentile_disc: PackratParser[AggregateFunction] =
+      PERCENTILE_DISC.regex ^^ (_ => PERCENTILE_DISC)
+
+    // Numeric percentile literal in [0,1] — accepts decimals (0.99) and whole 0/1.
+    private[this] def percentile_literal: PackratParser[Double] =
+      (double ^^ (_.value)) | (long ^^ (_.value.toDouble))
+
+    // (col, p) shorthand  OR  (p)
+    private[this] def percentile_args: PackratParser[(Option[Identifier], Double)] =
+      (start ~> aggWithFunction ~ (separator ~> percentile_literal) <~ end ^^ { case id ~ p =>
+        (Some(id), p)
+      }) |
+      (start ~> percentile_literal <~ end ^^ (p => (None, p)))
+
+    // WITHIN GROUP ( ORDER BY <col> ) -> value column(s). A percentile takes a
+    // SINGLE value column; a multi-column ORDER BY is rejected in `percentile_agg`
+    // (the full sort list is surfaced here so the guard can count columns).
+    private[this] def percentile_within_group: PackratParser[Seq[Identifier]] =
+      """(?i)\bwithin\b""".r ~> """(?i)\bgroup\b""".r ~> start ~> orderBy <~ end ^^ (_.sorts.map(
+        _.field
+      ))
+
+    // value column(s) from OVER's ORDER BY, if present
+    private[this] def percentileOverValueCols(
+      ov: Option[(Seq[Identifier], Option[OrderBy], Option[Limit])]
+    ): Seq[Identifier] =
+      ov.flatMap(_._2).map(_.sorts.map(_.field)).getOrElse(Seq.empty)
+
+    /** PERCENTILE_CONT / PERCENTILE_DISC — five forms, all normalizing to
+      * `PercentileAgg(valueColumn, cont, p, partitionBy)`. The value column comes from exactly one
+      * of: the `(col, p)` shorthand, `WITHIN GROUP (ORDER BY col)`, or `OVER (... ORDER BY col)`.
+      * The `^?` guard rejects (parse failure) when there is no value column, more than one source,
+      * or `p` outside `[0,1]`.
+      */
+    def percentile_agg: PackratParser[WindowFunction] =
+      ((percentile_cont | percentile_disc) ~ percentile_args ~
+      percentile_within_group.? ~ over.?) ^? ({
+        case fn ~ ((shorthandCol, p)) ~ wg ~ ov if {
+              // exactly one value-column SOURCE, and that source names exactly ONE
+              // column (rejects no source, conflicting sources, and a multi-column
+              // WITHIN GROUP / OVER ORDER BY value list).
+              val sources =
+                Seq(shorthandCol.toSeq, wg.getOrElse(Seq.empty), percentileOverValueCols(ov))
+                  .filter(_.nonEmpty)
+              sources.size == 1 && sources.head.size == 1 && p >= 0.0 && p <= 1.0
+            } =>
+          val valueCol =
+            Seq(shorthandCol.toSeq, wg.getOrElse(Seq.empty), percentileOverValueCols(ov))
+              .filter(_.nonEmpty)
+              .head
+              .head
+          val partitionBy = ov.map(_._1).getOrElse(Seq.empty)
+          PercentileAgg(valueCol, cont = fn == PERCENTILE_CONT, p, partitionBy)
+      }, { _ =>
+        "PERCENTILE_CONT/DISC requires a literal percentile in [0,1] and exactly one value " +
+        "column (a single column via (column, p), WITHIN GROUP (ORDER BY col), or " +
+        "OVER (... ORDER BY col))"
+      })
+
     /** OVER clause variant used by ranking windows: ORDER BY is REQUIRED (ANSI). Falling through to
       * the optional-orderBy parser would let `ROW_NUMBER() OVER (PARTITION BY d)` parse and then
       * break at execution; rejecting at parse time is preferable.
@@ -183,7 +245,7 @@ package object aggregate {
 
     def identifierWithWindowFunction: PackratParser[Identifier] =
       (first_value | last_value | array_agg | count_agg | min_agg | max_agg | avg_agg | sum_agg |
-      stddev_agg | variance_agg |
+      stddev_agg | variance_agg | percentile_agg |
       row_number | rank | dense_rank) ^^ { th =>
         th.identifier.withFunctions(th +: th.identifier.functions)
       }

@@ -19,6 +19,7 @@ This page documents aggregate functions for summarizing and analyzing data.
 7. [LAST_VALUE](#function-last_value)
 8. [ARRAY_AGG](#function-array_agg)
 9. [STDDEV / VARIANCE family](#function-stddev--variance-family)
+10. [PERCENTILE_CONT / PERCENTILE_DISC](#function-percentile_cont--percentile_disc)
 
 ---
 
@@ -1261,6 +1262,53 @@ FROM emp;
 
 ---
 
+## Function: PERCENTILE_CONT / PERCENTILE_DISC
+
+**Description:**  
+Compute a percentile of a numeric column. `PERCENTILE_CONT` is continuous (interpolated); `PERCENTILE_DISC` is the discrete form. Both map to the Elasticsearch `percentiles` aggregation (TDigest). Elasticsearch has no native discrete percentile, so `PERCENTILE_DISC` is **continuous-backed** — it returns the same interpolated value as `PERCENTILE_CONT` rather than the nearest actual data point.
+
+**Syntax:**
+```sql
+PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)
+PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column) OVER (PARTITION BY partition_expr, ...)
+PERCENTILE_CONT(p) OVER (PARTITION BY partition_expr, ... ORDER BY column)
+PERCENTILE_CONT(column, p)
+```
+
+**Inputs:**
+- `p` - Percentile fraction, a literal in `[0, 1]` (e.g. `0.99` for p99). Out-of-range values are rejected at parse time.
+- `column` - Numeric value column. Supplied by the `ORDER BY` clause (`WITHIN GROUP` or `OVER`), or the shorthand's first argument.
+- Grouping comes from `OVER (PARTITION BY ...)` or a top-level `GROUP BY` (or neither — one value over the whole result set).
+
+**Output:**
+- `DOUBLE`
+
+**Behavior:**
+- `NULL` values are ignored.
+- Multiple percentile calls on the same value column may be coalesced into a single Elasticsearch aggregation.
+- Works on Elasticsearch 6+.
+
+**Examples:**
+```sql
+-- p99 request latency per endpoint (SRE latency analysis)
+SELECT endpoint,
+       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99
+FROM requests
+GROUP BY endpoint;
+
+-- OVER form: partition and value column both in OVER
+SELECT name,
+       PERCENTILE_CONT(0.95) OVER (PARTITION BY department ORDER BY salary) AS p95
+FROM emp;
+
+-- Column-first shorthand (BI-tool friendly)
+SELECT department, PERCENTILE_CONT(salary, 0.5) AS median
+FROM emp
+GROUP BY department;
+```
+
+---
+
 ## Aggregate Functions Summary
 
 | Function               | Purpose               | Input      | Output        | NULL Handling    |
@@ -1281,5 +1329,7 @@ FROM emp;
 | `VARIANCE(expr)`       | Sample variance       | Numeric    | `DOUBLE`      | Ignores NULLs    |
 | `VAR_SAMP(expr)`       | Sample variance       | Numeric    | `DOUBLE`      | Ignores NULLs    |
 | `VAR_POP(expr)`        | Population variance   | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `PERCENTILE_CONT(p)`   | Continuous percentile | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `PERCENTILE_DISC(p)`   | Discrete percentile   | Numeric    | `DOUBLE`      | Ignores NULLs    |
 
 [Back to index](README.md)

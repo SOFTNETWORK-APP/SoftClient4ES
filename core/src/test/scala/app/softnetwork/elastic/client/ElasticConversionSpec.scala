@@ -703,6 +703,42 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     }
   }
 
+  it should "project a percentile column via numeric-proximity when ES drifts the values key" in {
+    // Story 14.5 review: p=0.333 → requested percent 33.300000000000004 (IEEE-754
+    // noise). ES echoes the key as "33.3", so the exact-key lookup misses; the
+    // numeric-proximity fallback must still populate the column.
+    val results =
+      """{
+        |  "took": 2,
+        |  "timed_out": false,
+        |  "hits": { "total": { "value": 5, "relation": "eq" }, "hits": [] },
+        |  "aggregations": {
+        |    "p33": { "values": { "33.3": 4200.0 } }
+        |  }
+        |}""".stripMargin
+
+    val aggregations = ListMap(
+      "p33" -> ClientAggregation(
+        aggName = "p33",
+        aggType = AggregationType.PercentileCont,
+        distinct = false,
+        sourceField = "salary",
+        windowing = false,
+        bucketPath = "",
+        bucketRoot = "",
+        aggResultField = Some("33.300000000000004")
+      )
+    )
+
+    parseResponse(results, ListMap.empty, aggregations) match {
+      case Success(rows) =>
+        rows.size shouldBe 1
+        rows.head("p33") shouldBe 4200.0
+      case Failure(error) =>
+        throw error
+    }
+  }
+
   it should "parse window results with distinct partitions" in {
     val results =
       """

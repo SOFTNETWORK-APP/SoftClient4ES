@@ -349,7 +349,11 @@ package object client extends SerializationApi {
     // aggregation; the specific result key is carried separately on
     // ClientAggregation.aggResultField so extractMetrics knows which
     // field to project from the response.
-    Stddev, StddevSamp, StddevPop, Variance, VarSamp, VarPop = Value
+    Stddev, StddevSamp, StddevPop, Variance, VarSamp, VarPop,
+    // PERCENTILE_CONT / PERCENTILE_DISC — both back the ES `percentiles`
+    // aggregation; the requested percentile key (e.g. "99.0") is carried on
+    // ClientAggregation.aggResultField and projected from the response `values`.
+    PercentileCont, PercentileDisc = Value
   }
 
   /** Client Aggregation
@@ -381,7 +385,12 @@ package object client extends SerializationApi {
     // un-suffixed "std_deviation"/"variance" keys are the population values
     // (ES 6+); the "_sampling" keys are the sample values (ES 7.7+).
     // None for plain `value`-style metrics.
-    aggResultField: Option[String] = None
+    aggResultField: Option[String] = None,
+    // When several percentile columns coalesce into one ES `percentiles`
+    // aggregation, the delegates name the shared response node here (the owner
+    // column's aggName). extractMetrics reads `values[aggResultField]` from that
+    // node for the delegate column. None ⇒ this column reads its own node.
+    sourceAgg: Option[String] = None
   ) {
     def multivalued: Boolean =
       aggType == AggregationType.ArrayAgg ||
@@ -432,6 +441,8 @@ package object client extends SerializationApi {
           case ExtendedStatsKind.VarSamp    => AggregationType.VarSamp
           case ExtendedStatsKind.VarPop     => AggregationType.VarPop
         }
+      case p: PercentileAgg =>
+        if (p.cont) AggregationType.PercentileCont else AggregationType.PercentileDisc
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
     // `extended_stats` is multi-key — pick which one to project. Plain
@@ -445,7 +456,10 @@ package object client extends SerializationApi {
       case VAR_SAMP            => Some(ExtendedStatsKind.VarSamp.resultField)
       case VAR_POP             => Some(ExtendedStatsKind.VarPop.resultField)
       case e: ExtendedStatsAgg => Some(e.kind.resultField)
-      case _                   => None
+      // `percentiles` is multi-key — project the requested percentile (e.g. "99.0")
+      // from the response `values` object (see extractMetrics).
+      case p: PercentileAgg => Some(p.resultField)
+      case _                => None
     }
     ClientAggregation(
       agg.aggName,

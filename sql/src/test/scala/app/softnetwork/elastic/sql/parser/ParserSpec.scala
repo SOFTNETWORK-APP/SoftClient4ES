@@ -3421,4 +3421,54 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.toOption.get shouldBe RefreshLicense
   }
 
+  // === Story 14.5: PERCENTILE_CONT / PERCENTILE_DISC ===
+
+  private val percentileForms = Seq(
+    "SELECT department, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99 FROM emp GROUP BY department",
+    "SELECT name, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) OVER (PARTITION BY department) AS p99 FROM emp",
+    "SELECT name, PERCENTILE_CONT(0.99) OVER (PARTITION BY department ORDER BY salary) AS p99 FROM emp",
+    "SELECT department, PERCENTILE_CONT(salary, 0.99) AS p99 FROM emp GROUP BY department",
+    "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) AS median FROM emp"
+  )
+
+  percentileForms.zipWithIndex.foreach { case (sql, i) =>
+    it should s"parse percentile form #${i + 1}" in {
+      Parser(sql).isRight shouldBe true
+    }
+  }
+
+  it should "parse percentiles case-insensitively" in {
+    Parser(
+      "select department, percentile_cont(0.99) within group (order by salary) as p99 from emp group by department"
+    ).isRight shouldBe true
+  }
+
+  it should "canonicalize a percentile to a stable re-parseable form" in {
+    val canon = Parser(percentileForms.head).toOption.map(_.sql).getOrElse("")
+    canon should not be empty
+    Parser(canon).toOption.map(_.sql).getOrElse("") shouldBe canon
+  }
+
+  it should "reject a percentile literal outside [0,1]" in {
+    Parser(
+      "SELECT PERCENTILE_CONT(1.5) WITHIN GROUP (ORDER BY salary) AS x FROM emp"
+    ).isLeft shouldBe true
+  }
+
+  it should "reject a percentile with no value column" in {
+    Parser("SELECT PERCENTILE_CONT(0.5) AS x FROM emp").isLeft shouldBe true
+  }
+
+  it should "reject a multi-column WITHIN GROUP value source" in {
+    Parser(
+      "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary, bonus) AS x FROM emp"
+    ).isLeft shouldBe true
+  }
+
+  it should "reject a multi-column OVER ORDER BY value source" in {
+    Parser(
+      "SELECT name, PERCENTILE_CONT(0.5) OVER (PARTITION BY department ORDER BY salary, bonus) AS x FROM emp"
+    ).isLeft shouldBe true
+  }
+
 }

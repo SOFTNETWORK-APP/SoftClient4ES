@@ -59,6 +59,11 @@ package object aggregate {
   case object VAR_POP extends Expr("VAR_POP") with AggregateFunction with Window
   case object VAR_SAMP extends Expr("VAR_SAMP") with AggregateFunction with Window
 
+  // PERCENTILE_CONT / PERCENTILE_DISC — both translate to the ES `percentiles`
+  // aggregation (TDigest). See `PercentileAgg`.
+  case object PERCENTILE_CONT extends Expr("PERCENTILE_CONT") with AggregateFunction with Window
+  case object PERCENTILE_DISC extends Expr("PERCENTILE_DISC") with AggregateFunction with Window
+
   sealed trait Window extends TokenRegex
 
   case object FIRST_VALUE extends Expr("FIRST_VALUE") with Window {
@@ -447,6 +452,104 @@ package object aggregate {
       .copy(
         identifier = identifier.update(request)
       )
+  }
+
+  /** PERCENTILE_CONT / PERCENTILE_DISC. Both translate to a single ES `percentiles` aggregation
+    * (TDigest, continuous/interpolated). `identifier` is the VALUE COLUMN (sourced by the parser
+    * from the WITHIN GROUP / OVER `ORDER BY` clause, or the `(col, p)` shorthand's first argument).
+    * `cont` round-trips the SQL token.
+    *
+    * `resultField` is the response `values` key projected during extraction: ES renders the
+    * percentile as a Double, so 0.99 → percent 99.0 → key "99.0", 0.5 → "50.0". `orderBy` is None
+    * on purpose — the ORDER BY designates the value column and is consumed by the parser, not
+    * retained as a window-frame order.
+    */
+  case class PercentileAgg(
+    identifier: Identifier,
+    cont: Boolean,
+    p: Double,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def baseType: SQLType = SQLTypes.Double
+
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = if (cont) PERCENTILE_CONT else PERCENTILE_DISC
+
+    /** ES `values` key for this percentile, e.g. 0.99 → "99.0". */
+    def resultField: String = PercentileAgg.percentLabel(p)
+
+    /** The percent passed to ES `percents`, e.g. 0.99 → 99.0. */
+    def percent: Double = p * 100.0
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[PercentileAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+
+    // All five input forms normalize to a single canonical round-trip form.
+    override def sql: String = {
+      val fn = if (cont) PERCENTILE_CONT else PERCENTILE_DISC
+      val base = s"$fn($p) WITHIN GROUP (ORDER BY ${identifier.identifierName})"
+      if (partitionBy.nonEmpty)
+        s"$base $OVER ($PARTITION_BY ${partitionBy.map(_.identifierName).mkString(", ")})"
+      else base
+    }
+  }
+
+  object PercentileAgg {
+
+    /** Format the percentile the way ES labels it in the response `values` object. percent = p *
+      * 100, rendered via `Double.toString` — locale-independent (always a `.` decimal separator,
+      * never `,`) and identical to the value serialized into the ES request, so whole values become
+      * "50.0"/"99.0" and fractional ones keep their digits ("99.9"). Do NOT use `String.format`/the
+      * `f` interpolator here: they honour the default locale and would emit "50,0" under e.g. a
+      * French locale, breaking the response lookup.
+      */
+    def percentLabel(p: Double): String = (p * 100.0).toString
+
+    /** Coalescing plan: percentile aggregations that share the same value column, `cont` flag and
+      * partition are merged into ONE ES `percentiles` aggregation owned by the FIRST of them in
+      * SELECT order. `ownerOf` maps every percentile aggName to its owning aggName (an owner maps
+      * to itself); `mergedPercents` maps each owner aggName to the sorted distinct percents of its
+      * group. Built identically on the query side (bridge) and the response side (SearchApi) so
+      * both agree on which node is shared.
+      *
+      * @param items
+      *   percentile `(aggName, PercentileAgg)` pairs in SELECT order.
+      */
+    def coalescePlan(items: Seq[(String, PercentileAgg)]): PercentileCoalescePlan = {
+      val groups = items.groupBy { case (_, pa) =>
+        (pa.identifier.identifierName, pa.cont, pa.partitionBy.map(_.identifierName))
+      }
+      val ownerOf = groups.values.flatMap { g =>
+        val owner = g.head._1
+        g.map { case (name, _) => name -> owner }
+      }.toMap
+      val mergedPercents = groups.values.map { g =>
+        g.head._1 -> g.map(_._2.percent).distinct.sorted
+      }.toMap
+      PercentileCoalescePlan(ownerOf, mergedPercents)
+    }
+  }
+
+  /** Result of [[PercentileAgg.coalescePlan]] — see there. */
+  final case class PercentileCoalescePlan(
+    ownerOf: Map[String, String],
+    mergedPercents: Map[String, Seq[Double]]
+  ) {
+    def isOwner(aggName: String): Boolean = ownerOf.get(aggName).contains(aggName)
+    def isDelegate(aggName: String): Boolean = ownerOf.get(aggName).exists(_ != aggName)
   }
 
   /** ROW_NUMBER / RANK / DENSE_RANK — ranking-style windows.

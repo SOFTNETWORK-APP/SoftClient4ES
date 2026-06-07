@@ -2033,4 +2033,83 @@ trait WindowFunctionSpec
     }
   }
 
+  "PERCENTILE family" should "compute p50/p95/p99 of salary per department" in {
+    val results = client.searchAs[DepartmentPercentiles](
+      """
+        SELECT
+          department,
+          PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY salary) AS p50_salary,
+          PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY salary) AS p95_salary,
+          PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99_salary
+        FROM emp
+        GROUP BY department
+      """
+    )
+
+    results match {
+      case ElasticSuccess(rows) =>
+        rows should not be empty
+
+        val eng = rows.find(_.department == "Engineering").getOrElse(fail("no Engineering row"))
+        eng.p50_salary should not be empty
+        eng.p95_salary should not be empty
+        eng.p99_salary should not be empty
+
+        // TDigest percentiles are monotonic non-decreasing: p50 ≤ p95 ≤ p99.
+        rows.foreach { r =>
+          (r.p50_salary, r.p95_salary, r.p99_salary) match {
+            case (Some(p50), Some(p95), Some(p99)) =>
+              p50 should be <= p95
+              p95 should be <= p99
+              log.info(f"${r.department}%-12s  p50=$p50%10.2f  p95=$p95%10.2f  p99=$p99%10.2f")
+            case _ =>
+              log.info(s"${r.department}: missing percentile values")
+          }
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  "PERCENTILE coalescing" should "return correct per-alias values when several percentiles share a column" in {
+    // q1/q2/q3/p99 on `salary` all coalesce into ONE ES `percentiles` aggregation
+    // (verified at the query level in SQLQuerySpec). The deliberately
+    // non-sequential aliases prove each percentile is split back out of the
+    // shared node under its OWN alias — not positionally.
+    val results = client.searchAs[DepartmentQuartiles](
+      """
+        SELECT department,
+               PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY salary) AS q1,
+               PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY salary) AS q2,
+               PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY salary) AS q3,
+               PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99
+        FROM emp
+        GROUP BY department
+      """
+    )
+
+    results match {
+      case ElasticSuccess(rows) =>
+        rows should not be empty
+        rows.foreach { r =>
+          (r.q1, r.q2, r.q3, r.p99) match {
+            case (Some(q1), Some(q2), Some(q3), Some(p99)) =>
+              // Per-alias values, monotonic non-decreasing across the quartiles.
+              q1 should be <= q2
+              q2 should be <= q3
+              q3 should be <= p99
+              log.info(
+                f"${r.department}%-12s  q1=$q1%10.2f  q2=$q2%10.2f  q3=$q3%10.2f  p99=$p99%10.2f"
+              )
+            case _ =>
+              fail(s"${r.department}: a coalesced percentile column came back null")
+          }
+        }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
 }

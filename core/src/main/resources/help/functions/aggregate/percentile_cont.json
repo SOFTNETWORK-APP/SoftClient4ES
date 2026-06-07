@@ -1,0 +1,31 @@
+{
+  "name": "PERCENTILE_CONT",
+  "category": "Aggregate",
+  "shortDescription": "Continuous (interpolated) percentile of a numeric column",
+  "syntax": [
+    "PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)",
+    "PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column) OVER (PARTITION BY partition_expr, ...)",
+    "PERCENTILE_CONT(p) OVER (PARTITION BY partition_expr, ... ORDER BY column)",
+    "PERCENTILE_CONT(column, p)"
+  ],
+  "description": "Computes a continuous (interpolated) percentile. Maps to the Elasticsearch `percentiles` aggregation (TDigest). p is a literal between 0 and 1, e.g. 0.99 for p99. The value column is given by the ORDER BY clause (WITHIN GROUP or OVER); grouping is given by OVER (PARTITION BY ...) or a top-level GROUP BY. A column-first shorthand PERCENTILE_CONT(column, p) is also accepted (many BI tools emit it).",
+  "parameters": [
+    { "name": "p", "type": "NUMERIC", "description": "Percentile fraction in [0,1], e.g. 0.99", "optional": false, "defaultValue": null },
+    { "name": "column", "type": "NUMERIC", "description": "Value column (from the ORDER BY clause, or the shorthand first argument)", "optional": false, "defaultValue": null }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    { "title": "p99 latency per endpoint", "description": "SRE latency analysis", "sql": "SELECT endpoint, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99 FROM requests GROUP BY endpoint" },
+    { "title": "OVER form", "description": "Partition and value column in OVER", "sql": "SELECT name, PERCENTILE_CONT(0.99) OVER (PARTITION BY department ORDER BY salary) AS p99 FROM emp" },
+    { "title": "Shorthand", "description": "BI-tool friendly", "sql": "SELECT department, PERCENTILE_CONT(salary, 0.95) AS p95 FROM emp GROUP BY department" }
+  ],
+  "notes": [
+    "Maps to the Elasticsearch `percentiles` aggregation (TDigest, continuous/interpolated).",
+    "The value column comes from the ORDER BY clause (WITHIN GROUP or OVER), or the (column, p) shorthand's first argument.",
+    "Multiple percentile calls on the same column coalesce into a single Elasticsearch aggregation.",
+    "NULL values are ignored.",
+    "Works on Elasticsearch 6+."
+  ],
+  "seeAlso": ["PERCENTILE_DISC", "AVG", "STDDEV"],
+  "aliases": []
+}

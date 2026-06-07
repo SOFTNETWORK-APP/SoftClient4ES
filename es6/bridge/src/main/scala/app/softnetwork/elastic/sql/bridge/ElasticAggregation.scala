@@ -44,6 +44,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   maxAgg,
   minAgg,
   nestedAggregation,
+  percentilesAgg,
   sumAgg,
   termsAgg,
   topHitsAgg,
@@ -223,6 +224,17 @@ object ElasticAggregation {
               aggWithFieldOrScript(
                 extendedStatsAgg,
                 (name, s) => extendedStatsAgg(name, sourceField).script(s)
+              )
+            case PERCENTILE_CONT | PERCENTILE_DISC =>
+              // Both map to ES `percentiles` (TDigest). One call → one percent;
+              // the requested value column is `sourceField` (PercentileAgg.identifier).
+              val pct: Seq[Double] = th match {
+                case p: PercentileAgg => Seq(p.percent)
+                case _                => Seq.empty
+              }
+              aggWithFieldOrScript(
+                (name, field) => percentilesAgg(name, field).percents(pct),
+                (name, s) => percentilesAgg(name, sourceField).percents(pct).script(s)
               )
             case _ =>
               val isRanking = th.isInstanceOf[RankingWindow]

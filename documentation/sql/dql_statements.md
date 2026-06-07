@@ -305,6 +305,29 @@ All six map to a single Elasticsearch `extended_stats` aggregation per call; the
 `std_deviation`, `variance` for the population variants) is projected from the response. Sample
 variants require **Elasticsearch 7.7+**; population variants work on Elasticsearch 6+.
 
+### Percentiles — `PERCENTILE_CONT` / `PERCENTILE_DISC`
+
+- `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)` — ANSI ordered-set aggregate (optionally with a top-level `GROUP BY`)
+- `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column) OVER (PARTITION BY ...)` — value column from `WITHIN GROUP`, partition from `OVER`
+- `PERCENTILE_CONT(p) OVER (PARTITION BY ... ORDER BY column)` — value column from the `OVER` `ORDER BY`
+- `PERCENTILE_CONT(column, p)` — column-first shorthand (many BI tools emit it)
+
+The percentile literal `p` is a value in `[0, 1]` (e.g. `0.99` for p99); a value outside that range is
+rejected at parse time. The **value column** is given by the `ORDER BY` clause (`WITHIN GROUP` or `OVER`),
+or the shorthand's first argument; **grouping** is given by `OVER (PARTITION BY ...)` or a top-level
+`GROUP BY` (or neither — a single percentile over the whole result set). Both functions map to the
+Elasticsearch `percentiles` aggregation (TDigest). Elasticsearch has no native discrete percentile, so
+`PERCENTILE_DISC` is **continuous-backed** — it returns the same interpolated value as `PERCENTILE_CONT`
+rather than the nearest actual data point. All forms work on Elasticsearch 6+.
+
+```sql
+-- p99 request latency per endpoint (SRE latency analysis)
+SELECT endpoint,
+       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99
+FROM requests
+GROUP BY endpoint;
+```
+
 ### GROUP BY and HAVING
 
 ```sql

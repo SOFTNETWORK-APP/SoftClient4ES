@@ -1,0 +1,29 @@
+{
+  "name": "PERCENTILE_DISC",
+  "category": "Aggregate",
+  "shortDescription": "Discrete percentile (continuous-backed) of a numeric column",
+  "syntax": [
+    "PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY column)",
+    "PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY column) OVER (PARTITION BY partition_expr, ...)",
+    "PERCENTILE_DISC(p) OVER (PARTITION BY partition_expr, ... ORDER BY column)",
+    "PERCENTILE_DISC(column, p)"
+  ],
+  "description": "Computes a discrete percentile. p is a literal between 0 and 1, e.g. 0.99 for p99. The value column is given by the ORDER BY clause (WITHIN GROUP or OVER); grouping is given by OVER (PARTITION BY ...) or a top-level GROUP BY. A column-first shorthand PERCENTILE_DISC(column, p) is also accepted.",
+  "parameters": [
+    { "name": "p", "type": "NUMERIC", "description": "Percentile fraction in [0,1], e.g. 0.99", "optional": false, "defaultValue": null },
+    { "name": "column", "type": "NUMERIC", "description": "Value column (from the ORDER BY clause, or the shorthand first argument)", "optional": false, "defaultValue": null }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    { "title": "p95 per department", "description": "Discrete percentile", "sql": "SELECT department, PERCENTILE_DISC(0.95) WITHIN GROUP (ORDER BY salary) AS p95 FROM emp GROUP BY department" }
+  ],
+  "notes": [
+    "Maps to the Elasticsearch `percentiles` aggregation (TDigest). Elasticsearch has no native discrete percentile, so PERCENTILE_DISC returns the same interpolated value as PERCENTILE_CONT — it does NOT (yet) round to the nearest actual data point as ANSI PERCENTILE_DISC specifies.",
+    "The value column comes from the ORDER BY clause (WITHIN GROUP or OVER), or the (column, p) shorthand's first argument.",
+    "Multiple percentile calls on the same column coalesce into a single Elasticsearch aggregation.",
+    "NULL values are ignored.",
+    "Works on Elasticsearch 6+."
+  ],
+  "seeAlso": ["PERCENTILE_CONT", "AVG", "STDDEV"],
+  "aliases": []
+}

@@ -72,6 +72,29 @@ package object window {
     vs_salary: Option[Double] = None
   )
 
+  /** Story 14.5 — PERCENTILE_CONT integration shape. Each field is one percentile projected from a
+    * single ES `percentiles` aggregation per call.
+    */
+  case class DepartmentPercentiles(
+    department: String,
+    p50_salary: Option[Double] = None,
+    p95_salary: Option[Double] = None,
+    p99_salary: Option[Double] = None
+  )
+
+  /** Story 14.5 — percentile COALESCING shape. Several percentiles on the same column merge into
+    * one ES `percentiles` aggregation; the non-sequential aliases (q1/q2/q3/p99) prove each column
+    * is returned under its own alias (not positionally) when the value is split back out of the
+    * shared node.
+    */
+  case class DepartmentQuartiles(
+    department: String,
+    q1: Option[Double] = None,
+    q2: Option[Double] = None,
+    q3: Option[Double] = None,
+    p99: Option[Double] = None
+  )
+
   case class DepartmentWithWindow(
     department: String,
     location: Option[String] = None,

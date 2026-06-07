@@ -4423,4 +4423,114 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     query should include("\"extended_stats\":{\"field\":\"salary\"}")
   }
 
+  // === Story 14.5: PERCENTILE_CONT / PERCENTILE_DISC — percentiles translation ===
+
+  it should "translate PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) GROUP BY department" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "p99": { "percentiles": { "field": "salary", "percents": [99.0] } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate the PERCENTILE_CONT(salary, 0.95) shorthand to percentiles" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, PERCENTILE_CONT(salary, 0.95) AS p95
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "p95": { "percentiles": { "field": "salary", "percents": [95.0] } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) to percentiles" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) AS median FROM emp"
+      )
+    select.query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "median": { "percentiles": { "field": "salary", "percents": [50.0] } }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate PERCENTILE_CONT(0.9) OVER (PARTITION BY department ORDER BY salary)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT name, PERCENTILE_CONT(0.9) OVER (PARTITION BY department ORDER BY salary) AS p90
+          |FROM emp""".stripMargin
+      )
+    val query = select.query
+    // PARTITION BY department => a `department` terms bucket; the windowed
+    // percentile lives as a `percentiles` sub-aggregation against `salary`.
+    query should include("\"terms\":{\"field\":\"department\"")
+    query should include("\"percentiles\":{\"field\":\"salary\",\"percents\":[90.0]}")
+  }
+
+  it should "coalesce multiple PERCENTILE_CONT on the same column into one percentiles agg" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department,
+          |       PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY salary) AS p50,
+          |       PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY salary) AS p95,
+          |       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    // The three calls collapse to ONE `percentiles` agg (owned by p50) with the
+    // merged percents; p95 / p99 read from p50's `values` at extraction time and
+    // are returned under their own aliases.
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "p50": { "percentiles": { "field": "salary", "percents": [50.0, 95.0, 99.0] } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+    "\"percentiles\"".r.findAllIn(query).length shouldBe 1
+  }
+
 }

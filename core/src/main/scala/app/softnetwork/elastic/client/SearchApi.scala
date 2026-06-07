@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.sql.PainlessContextType
-import app.softnetwork.elastic.sql.function.aggregate.RankingWindow
+import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
   MultiSearch,
@@ -158,6 +158,29 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     }
   }
 
+  /** Convert SELECT aggregations to ClientAggregations, applying percentile coalescing: columns
+    * sharing a value column / `cont` flag / partition become delegates of the first (owner) column
+    * and read their value from the owner's shared ES `percentiles` response node. Mirrors the
+    * bridge's percent-merge (both call [[PercentileAgg.coalescePlan]] on the same SELECT-ordered
+    * items, so they always pick the same owner).
+    */
+  private def toClientAggregations(
+    aggregations: ListMap[String, SQLAggregation]
+  ): ListMap[String, ClientAggregation] = {
+    val aggs0 = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+    val percentileItems = aggregations.toSeq.collect {
+      case (name, sa) if sa.aggType.isInstanceOf[PercentileAgg] =>
+        name -> sa.aggType.asInstanceOf[PercentileAgg]
+    }
+    if (percentileItems.size < 2) aggs0
+    else {
+      val plan = PercentileAgg.coalescePlan(percentileItems)
+      aggs0.map { case (name, ca) =>
+        name -> (if (plan.isDelegate(name)) ca.copy(sourceAgg = plan.ownerOf.get(name)) else ca)
+      }
+    }
+  }
+
   /** Search for documents / aggregations matching the Elasticsearch query.
     *
     * @param elasticQuery
@@ -202,7 +225,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         logger.info(
           s"✅ Successfully executed search for query \n$elasticQuery\nin indices '$indices'"
         )
-        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        val aggs = toClientAggregations(aggregations)
         ElasticResult.fromTry(
           parseResponse(
             response,
@@ -311,7 +334,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         logger.info(
           s"✅ Successfully executed multi-search for query \n$elasticQueries"
         )
-        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        val aggs = toClientAggregations(aggregations)
         ElasticResult.fromTry(
           parseResponse(
             response,
@@ -488,7 +511,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         logger.info(
           s"✅ Successfully executed asynchronous search for query \n$elasticQuery\nin indices '$indices'"
         )
-        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        val aggs = toClientAggregations(aggregations)
         ElasticResult.fromTry(
           parseResponse(
             response,
@@ -585,7 +608,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         logger.info(
           s"✅ Successfully executed asynchronous multi-search for query \n$elasticQueries"
         )
-        val aggs = aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+        val aggs = toClientAggregations(aggregations)
         ElasticResult.fromTry(
           parseResponse(
             response,

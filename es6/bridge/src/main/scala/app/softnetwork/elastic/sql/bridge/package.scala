@@ -24,7 +24,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLVarchar
 }
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
-import app.softnetwork.elastic.sql.function.aggregate.COUNT
+import app.softnetwork.elastic.sql.function.aggregate.{COUNT, PercentileAgg}
 import app.softnetwork.elastic.sql.function.geo.{Distance, Meters}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.query._
@@ -41,6 +41,7 @@ import com.sksamuel.elastic4s.searches.aggs.{
   AbstractAggregation,
   FilterAggregation,
   NestedAggregation,
+  PercentilesAggregation,
   TermsAggregation
 }
 import com.sksamuel.elastic4s.searches.queries.{BoolQuery, InnerHit, Query}
@@ -451,6 +452,34 @@ package object bridge {
       request.orderBy.map(_.sorts).getOrElse(Seq.empty)
     ).minScore(request.score)
 
+  /** Merge percentile ElasticAggregations that share a value column / `cont` flag / partition into
+    * the FIRST of them (the owner): set the owner's ES `percentiles` `percents` to the group's
+    * sorted-distinct union and drop the delegates. Mirrors `SearchApi.toClientAggregations` via the
+    * shared [[PercentileAgg.coalescePlan]] so query and response agree on the owner node.
+    */
+  private def coalescePercentileAggs(
+    aggs: Seq[ElasticAggregation]
+  ): Seq[ElasticAggregation] = {
+    val items = aggs.collect {
+      case ea if ea.aggType.isInstanceOf[PercentileAgg] =>
+        ea.aggName -> ea.aggType.asInstanceOf[PercentileAgg]
+    }
+    if (items.size < 2) aggs
+    else {
+      val plan = PercentileAgg.coalescePlan(items)
+      aggs.flatMap { ea =>
+        if (plan.isDelegate(ea.aggName)) None
+        else if (plan.isOwner(ea.aggName))
+          Some(
+            ea.copy(agg =
+              ea.agg.asInstanceOf[PercentilesAggregation].percents(plan.mergedPercents(ea.aggName))
+            )
+          )
+        else Some(ea)
+      }
+    }
+  }
+
   implicit def requestToSearchRequest(
     request: SingleSearch
   )(implicit
@@ -459,12 +488,14 @@ package object bridge {
   ): SearchRequest = {
     import request._
 
-    val aggregations = request.aggregates.map(
-      ElasticAggregation(
-        _,
-        request.having.flatMap(_.criteria),
-        request.sorts,
-        request.sqlAggregations
+    val aggregations = coalescePercentileAggs(
+      request.aggregates.map(
+        ElasticAggregation(
+          _,
+          request.having.flatMap(_.criteria),
+          request.sorts,
+          request.sqlAggregations
+        )
       )
     )
 
