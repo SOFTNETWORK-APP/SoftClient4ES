@@ -2096,6 +2096,87 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",ZoneId.of", ", ZoneId.of")
   }
 
+  it should "emit top_hits for ROW_NUMBER per-department" in {
+    val select: ElasticSearchRequest = SelectStatement(rowNumber)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"rn":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "emit top_hits for ROW_NUMBER without PARTITION BY" in {
+    val select: ElasticSearchRequest = SelectStatement(rowNumberNoPartition)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"rn":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}"""
+  }
+
+  it should "emit top_hits for RANK per-department" in {
+    val select: ElasticSearchRequest = SelectStatement(rankSql)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"r":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "emit top_hits for DENSE_RANK per-department" in {
+    val select: ElasticSearchRequest = SelectStatement(denseRank)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"dr":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "push LIMIT N inside OVER into top_hits.size for ranking (top-N per group)" in {
+    val select: ElasticSearchRequest = SelectStatement(rankTopN)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"r":{"top_hits":{"size":3,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+  }
+
+  it should "handle GREATEST 2-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(greatest2)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"hi":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.max(param1, param2)))"}}},"_source":true}"""
+  }
+
+  it should "handle GREATEST 3-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(greatest3)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"hi":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); def param3 = (doc['price_uk'].size() == 0 ? null : doc['price_uk'].value); (param1 == null ? (param2 == null ? param3 : (param3 == null ? param2 : Math.max(param2, param3))) : ((param2 == null ? param3 : (param3 == null ? param2 : Math.max(param2, param3))) == null ? param1 : Math.max(param1, (param2 == null ? param3 : (param3 == null ? param2 : Math.max(param2, param3))))))"}}},"_source":{"includes":["sku"]}}"""
+  }
+
+  it should "handle LEAST 2-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(least2)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"lo":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.min(param1, param2)))"}}},"_source":true}"""
+  }
+
+  it should "handle LEAST 3-arg as script field" in {
+    val select: ElasticSearchRequest = SelectStatement(least3)
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{"query":{"match_all":{}},"script_fields":{"lo":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); def param3 = (doc['price_uk'].size() == 0 ? null : doc['price_uk'].value); (param1 == null ? (param2 == null ? param3 : (param3 == null ? param2 : Math.min(param2, param3))) : ((param2 == null ? param3 : (param3 == null ? param2 : Math.min(param2, param3))) == null ? param1 : Math.min(param1, (param2 == null ? param3 : (param3 == null ? param2 : Math.min(param2, param3))))))"}}},"_source":{"includes":["sku"]}}"""
+  }
+
+  it should "not guard non-nullable (literal) GREATEST args with == null" in {
+    val select: ElasticSearchRequest = SelectStatement(greatestLiteral)
+    val query = select.query
+    println(query)
+    // Painless rejects `<primitive> == null`; a literal arg must not be guarded.
+    query should not include "0 == null"
+    query should include("Math.max(0, param1)")
+  }
+
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
       SelectStatement(conversion)
@@ -4191,6 +4272,265 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+  }
+
+  // === Story 14.1: NULLS FIRST / NULLS LAST on ORDER BY ===
+
+  it should "emit sort with missing=_last for ORDER BY ... DESC NULLS LAST" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT identifier FROM Table ORDER BY identifier DESC NULLS LAST")
+    val query = select.query
+    query should include("\"missing\":\"_last\"")
+    query should include("\"order\":\"desc\"")
+  }
+
+  it should "emit sort with missing=_first for ORDER BY ... ASC NULLS FIRST" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT identifier FROM Table ORDER BY identifier ASC NULLS FIRST")
+    val query = select.query
+    query should include("\"missing\":\"_first\"")
+    query should include("\"order\":\"asc\"")
+  }
+
+  it should "emit per-field null ordering for multi-column ORDER BY" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        "SELECT identifier FROM Table ORDER BY a DESC NULLS LAST, b ASC NULLS FIRST"
+      )
+    val query = select.query
+    // Bind each missing value to its own sort field so a swapped mapping
+    // (e.g. NullsFirst -> _last) cannot pass: the missing key must live inside
+    // the same JSON object as the field it belongs to.
+    query should include regex """"a":\{[^}]*"missing":"_last""""
+    query should include regex """"b":\{[^}]*"missing":"_first""""
+  }
+
+  it should "omit the missing field when no null ordering specified" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT identifier FROM Table ORDER BY identifier DESC")
+    val query = select.query
+    query should not include "\"missing\""
+  }
+
+  // === Story 14.4: STDDEV / VARIANCE family — extended_stats translation ===
+
+  it should "translate STDDEV(salary) GROUP BY department to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, STDDEV(salary) AS sd
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "sd": { "extended_stats": { "field": "salary" } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate STDDEV_SAMP(salary) to extended_stats (alias of STDDEV)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, STDDEV_SAMP(salary) AS sd
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"sd\":{")
+  }
+
+  it should "translate STDDEV_POP(salary) to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, STDDEV_POP(salary) AS sdp
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"sdp\":{")
+  }
+
+  it should "translate VARIANCE(salary) GROUP BY department to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, VARIANCE(salary) AS v
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "v": { "extended_stats": { "field": "salary" } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate VAR_SAMP(salary) to extended_stats (alias of VARIANCE)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, VAR_SAMP(salary) AS v
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"v\":{")
+  }
+
+  it should "translate VAR_POP(salary) to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, VAR_POP(salary) AS vp
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+    query should include("\"vp\":{")
+  }
+
+  it should "translate VARIANCE(salary) OVER (PARTITION BY department) to extended_stats" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT name, salary, VARIANCE(salary) OVER (PARTITION BY department) AS v
+          |FROM emp""".stripMargin
+      )
+    val query = select.query
+    // PARTITION BY department => a `department` terms bucket; the windowed
+    // VARIANCE lives as an `extended_stats` sub-aggregation against `salary`.
+    query should include("\"terms\":{\"field\":\"department\"")
+    query should include("\"extended_stats\":{\"field\":\"salary\"}")
+  }
+
+  // === Story 14.5: PERCENTILE_CONT / PERCENTILE_DISC — percentiles translation ===
+
+  it should "translate PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) GROUP BY department" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "p99": { "percentiles": { "field": "salary", "percents": [99.0] } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate the PERCENTILE_CONT(salary, 0.95) shorthand to percentiles" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department, PERCENTILE_CONT(salary, 0.95) AS p95
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "p95": { "percentiles": { "field": "salary", "percents": [95.0] } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) to percentiles" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) AS median FROM emp"
+      )
+    select.query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "median": { "percentiles": { "field": "salary", "percents": [50.0] } }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+  }
+
+  it should "translate PERCENTILE_CONT(0.9) OVER (PARTITION BY department ORDER BY salary)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT name, PERCENTILE_CONT(0.9) OVER (PARTITION BY department ORDER BY salary) AS p90
+          |FROM emp""".stripMargin
+      )
+    val query = select.query
+    // PARTITION BY department => a `department` terms bucket; the windowed
+    // percentile lives as a `percentiles` sub-aggregation against `salary`.
+    query should include("\"terms\":{\"field\":\"department\"")
+    query should include("\"percentiles\":{\"field\":\"salary\",\"percents\":[90.0]}")
+  }
+
+  it should "coalesce multiple PERCENTILE_CONT on the same column into one percentiles agg" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        """SELECT department,
+          |       PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY salary) AS p50,
+          |       PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY salary) AS p95,
+          |       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      )
+    val query = select.query
+    // The three calls collapse to ONE `percentiles` agg (owned by p50) with the
+    // merged percents; p95 / p99 read from p50's `values` at extraction time and
+    // are returned under their own aliases.
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "department": {
+        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "aggs": {
+        |        "p50": { "percentiles": { "field": "salary", "percents": [50.0, 95.0, 99.0] } }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s+", "")
+    "\"percentiles\"".r.findAllIn(query).length shouldBe 1
   }
 
 }

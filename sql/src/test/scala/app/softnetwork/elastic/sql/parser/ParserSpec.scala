@@ -108,6 +108,12 @@ object Queries {
   val groupBy =
     "SELECT identifier, COUNT(identifier2) FROM Table WHERE identifier2 is NOT null GROUP BY identifier"
   val orderBy = "SELECT * FROM Table ORDER BY identifier DESC"
+  val orderByNullsFirst = "SELECT * FROM Table ORDER BY identifier DESC NULLS FIRST"
+  val orderByNullsLast = "SELECT * FROM Table ORDER BY identifier ASC NULLS LAST"
+  val orderByMixedNulls =
+    "SELECT * FROM Table ORDER BY a DESC NULLS LAST, b ASC NULLS FIRST"
+  val orderByLowerNulls = "SELECT * FROM Table ORDER BY id desc nulls first"
+  val orderByNullsNoDirection = "SELECT * FROM Table ORDER BY identifier NULLS LAST"
   val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
   val groupByWithOrderByAndLimit: String =
     """SELECT identifier, COUNT(identifier2)
@@ -201,6 +207,41 @@ object Queries {
   val isNotNullCriteria = "SELECT * FROM Table WHERE ISNOTNULL(identifier)"
   val coalesce: String =
     "SELECT COALESCE(createdAt - INTERVAL 35 MINUTE, CURRENT_DATE) AS c, identifier FROM Table"
+  val greatest2: String =
+    "SELECT GREATEST(price_us, price_eu) AS hi FROM products"
+  val greatest3: String =
+    "SELECT GREATEST(price_us, price_eu, price_uk) AS hi, sku FROM products"
+  val least2: String =
+    "SELECT LEAST(price_us, price_eu) AS lo FROM products"
+  val least3: String =
+    "SELECT LEAST(price_us, price_eu, price_uk) AS lo, sku FROM products"
+  val greatestLiteral: String =
+    "SELECT GREATEST(0, price_us) AS hi FROM products"
+  val rowNumber: String =
+    "SELECT name, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn FROM emp"
+  val rankSql: String =
+    "SELECT name, RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS r FROM emp"
+  val denseRank: String =
+    "SELECT name, DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr FROM emp"
+  val rowNumberNoPartition: String =
+    "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM emp"
+  val rankTopN: String =
+    "SELECT name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS r FROM emp"
+  // Story 14.4 — STDDEV / VARIANCE family
+  val stddevSql: String =
+    "SELECT department, STDDEV(salary) AS sd FROM emp GROUP BY department"
+  val stddevSampSql: String =
+    "SELECT department, STDDEV_SAMP(salary) AS sd FROM emp GROUP BY department"
+  val stddevPopSql: String =
+    "SELECT department, STDDEV_POP(salary) AS sdp FROM emp GROUP BY department"
+  val varianceSql: String =
+    "SELECT department, VARIANCE(salary) AS v FROM emp GROUP BY department"
+  val varSampSql: String =
+    "SELECT department, VAR_SAMP(salary) AS v FROM emp GROUP BY department"
+  val varPopSql: String =
+    "SELECT department, VAR_POP(salary) AS vp FROM emp GROUP BY department"
+  val varianceOverSql: String =
+    "SELECT name, salary, VARIANCE(salary) OVER (PARTITION BY department) AS v FROM emp"
   val nullif: String =
     "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE) AS c, identifier FROM Table"
   val conversion: String =
@@ -641,6 +682,58 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       .equalsIgnoreCase(orderBy) shouldBe true
   }
 
+  it should "parse ORDER BY with NULLS FIRST" in {
+    val result = Parser(orderByNullsFirst)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByNullsFirst) shouldBe true
+  }
+
+  it should "parse ORDER BY with NULLS LAST" in {
+    val result = Parser(orderByNullsLast)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByNullsLast) shouldBe true
+  }
+
+  it should "parse ORDER BY with mixed null ordering" in {
+    val result = Parser(orderByMixedNulls)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByMixedNulls) shouldBe true
+  }
+
+  it should "parse ORDER BY with lowercase nulls first" in {
+    val result = Parser(orderByLowerNulls)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(orderByLowerNulls) shouldBe true
+  }
+
+  it should "parse ORDER BY with NULLS ordering and no explicit direction" in {
+    // No ASC/DESC: the grammar still accepts NULLS LAST; the default ASC is
+    // injected on round-trip.
+    val result = Parser(orderByNullsNoDirection)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase("SELECT * FROM Table ORDER BY identifier ASC NULLS LAST") shouldBe true
+  }
+
+  it should "reject NULLS FIRST / NULLS LAST on a GROUP BY / aggregation ORDER BY" in {
+    // ES terms aggregations have no `missing` parameter, so null ordering cannot
+    // be honored on a grouped/aggregated sort and must be rejected rather than
+    // silently dropped.
+    val result = Parser(
+      "SELECT identifier, COUNT(identifier2) FROM Table GROUP BY identifier ORDER BY identifier DESC NULLS LAST"
+    )
+    result.isLeft shouldBe true
+  }
+
   it should "parse LIMIT" in {
     val result = Parser(limit)
     result.toOption
@@ -837,6 +930,171 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       .map(_.sql)
       .getOrElse("")
       .equalsIgnoreCase(nullif) shouldBe true
+  }
+
+  it should "parse GREATEST 2-arg" in {
+    val result = Parser(greatest2)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(greatest2) shouldBe true
+  }
+
+  it should "parse GREATEST 3-arg" in {
+    val result = Parser(greatest3)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(greatest3) shouldBe true
+  }
+
+  it should "parse LEAST 2-arg" in {
+    val result = Parser(least2)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(least2) shouldBe true
+  }
+
+  it should "parse LEAST 3-arg" in {
+    val result = Parser(least3)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(least3) shouldBe true
+  }
+
+  it should "parse GREATEST with a literal arg" in {
+    val result = Parser(greatestLiteral)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(greatestLiteral) shouldBe true
+  }
+
+  it should "parse ROW_NUMBER() window" in {
+    val result = Parser(rowNumber)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rowNumber) shouldBe true
+  }
+
+  it should "parse RANK() window" in {
+    val result = Parser(rankSql)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rankSql) shouldBe true
+  }
+
+  it should "parse DENSE_RANK() window" in {
+    val result = Parser(denseRank)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(denseRank) shouldBe true
+  }
+
+  it should "parse ROW_NUMBER without PARTITION BY" in {
+    val result = Parser(rowNumberNoPartition)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rowNumberNoPartition) shouldBe true
+  }
+
+  it should "parse RANK with top-N LIMIT inside OVER (push-down)" in {
+    val result = Parser(rankTopN)
+    result.toOption
+      .map(_.sql)
+      .getOrElse("")
+      .equalsIgnoreCase(rankTopN) shouldBe true
+  }
+
+  it should "reject ROW_NUMBER() without ORDER BY (ANSI: ORDER BY REQUIRED)" in {
+    val result = Parser(
+      "SELECT ROW_NUMBER() OVER (PARTITION BY department) AS rn FROM emp"
+    )
+    result.isLeft shouldBe true
+  }
+
+  // === Story 14.4: STDDEV / VARIANCE family ===
+
+  it should "parse STDDEV(expr) and round-trip the SQL token" in {
+    val result = Parser(stddevSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(stddevSql) shouldBe true
+  }
+
+  it should "parse STDDEV_SAMP(expr) and round-trip the SQL token" in {
+    val result = Parser(stddevSampSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(stddevSampSql) shouldBe true
+  }
+
+  it should "parse STDDEV_POP(expr) and round-trip the SQL token" in {
+    val result = Parser(stddevPopSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(stddevPopSql) shouldBe true
+  }
+
+  it should "parse VARIANCE(expr) and round-trip the SQL token" in {
+    val result = Parser(varianceSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varianceSql) shouldBe true
+  }
+
+  it should "parse VAR_SAMP(expr) and round-trip the SQL token" in {
+    val result = Parser(varSampSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varSampSql) shouldBe true
+  }
+
+  it should "parse VAR_POP(expr) and round-trip the SQL token" in {
+    val result = Parser(varPopSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varPopSql) shouldBe true
+  }
+
+  it should "parse VARIANCE OVER (PARTITION BY ...) as a windowed aggregate" in {
+    val result = Parser(varianceOverSql)
+    result.toOption.map(_.sql).getOrElse("").equalsIgnoreCase(varianceOverSql) shouldBe true
+  }
+
+  it should "reject GREATEST with definitively non-numeric args" in {
+    val result = Parser("SELECT GREATEST('a', 'b') AS hi FROM products")
+    result.isLeft shouldBe true
+  }
+
+  // Story 14.6 — case-insensitivity of the Epic-14 keywords (AC 4): every new
+  // reserved word resolves through the (?i) TokenRegex (and NULLS FIRST/LAST
+  // through its own (?i) production), so a fully-lowercased query must parse.
+  // percentile_cont is also covered in the 14.5 block; this test exercises all
+  // 18 Epic-14 keywords lowercased, including the stddev_pop/stddev_samp/
+  // percentile_disc and nulls-last forms the original 14.6 test omitted.
+  it should "parse the Epic-14 window/stats/conditional keywords case-insensitively" in {
+    Parser(
+      "select name, rank() over (partition by department order by salary desc) as r from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select name, row_number() over (order by salary desc) as rn from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select name, dense_rank() over (partition by department order by salary desc) as dr from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select department, stddev(salary) as sd, variance(salary) as v from emp group by department"
+    ).isRight shouldBe true
+    Parser(
+      "select department, var_pop(salary) as vp, var_samp(salary) as vs from emp group by department"
+    ).isRight shouldBe true
+    Parser(
+      "select department, stddev_pop(salary) as sdp, stddev_samp(salary) as sds from emp group by department"
+    ).isRight shouldBe true
+    Parser(
+      "select percentile_disc(0.5) within group (order by salary) as median from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select greatest(price_us, price_eu) as hi, least(price_us, price_eu) as lo from products"
+    ).isRight shouldBe true
+    Parser(
+      "select * from emp order by salary asc nulls last"
+    ).isRight shouldBe true
   }
 
   it should "parse conversion function" in {
@@ -3197,6 +3455,56 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser("Refresh License")
     result.isRight shouldBe true
     result.toOption.get shouldBe RefreshLicense
+  }
+
+  // === Story 14.5: PERCENTILE_CONT / PERCENTILE_DISC ===
+
+  private val percentileForms = Seq(
+    "SELECT department, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) AS p99 FROM emp GROUP BY department",
+    "SELECT name, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY salary) OVER (PARTITION BY department) AS p99 FROM emp",
+    "SELECT name, PERCENTILE_CONT(0.99) OVER (PARTITION BY department ORDER BY salary) AS p99 FROM emp",
+    "SELECT department, PERCENTILE_CONT(salary, 0.99) AS p99 FROM emp GROUP BY department",
+    "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) AS median FROM emp"
+  )
+
+  percentileForms.zipWithIndex.foreach { case (sql, i) =>
+    it should s"parse percentile form #${i + 1}" in {
+      Parser(sql).isRight shouldBe true
+    }
+  }
+
+  it should "parse percentiles case-insensitively" in {
+    Parser(
+      "select department, percentile_cont(0.99) within group (order by salary) as p99 from emp group by department"
+    ).isRight shouldBe true
+  }
+
+  it should "canonicalize a percentile to a stable re-parseable form" in {
+    val canon = Parser(percentileForms.head).toOption.map(_.sql).getOrElse("")
+    canon should not be empty
+    Parser(canon).toOption.map(_.sql).getOrElse("") shouldBe canon
+  }
+
+  it should "reject a percentile literal outside [0,1]" in {
+    Parser(
+      "SELECT PERCENTILE_CONT(1.5) WITHIN GROUP (ORDER BY salary) AS x FROM emp"
+    ).isLeft shouldBe true
+  }
+
+  it should "reject a percentile with no value column" in {
+    Parser("SELECT PERCENTILE_CONT(0.5) AS x FROM emp").isLeft shouldBe true
+  }
+
+  it should "reject a multi-column WITHIN GROUP value source" in {
+    Parser(
+      "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary, bonus) AS x FROM emp"
+    ).isLeft shouldBe true
+  }
+
+  it should "reject a multi-column OVER ORDER BY value source" in {
+    Parser(
+      "SELECT name, PERCENTILE_CONT(0.5) OVER (PARTITION BY department ORDER BY salary, bonus) AS x FROM emp"
+    ).isLeft shouldBe true
   }
 
 }

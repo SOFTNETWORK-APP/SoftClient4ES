@@ -41,8 +41,13 @@ package object window {
     skills: Option[List[String]] = None,
     first_salary: Option[Int] = None,
     last_salary: Option[Int] = None,
-    rank: Option[Int] = None,
-    row_number: Option[Int] = None
+    // Ranking-window fields. The SELECT aliases avoid the reserved keywords
+    // (row_number / rank / dense_rank) so the parser's identifier filter
+    // accepts them: rnum = ROW_NUMBER, rk = RANK, drk = DENSE_RANK.
+    // BIGINT in SQL → Long here so the searchAs macro accepts the binding.
+    rnum: Option[Long] = None,
+    rk: Option[Long] = None,
+    drk: Option[Long] = None
   )
 
   case class DepartmentStats(
@@ -51,6 +56,43 @@ package object window {
     max_salary: Int,
     min_salary: Int,
     employee_count: Long
+  )
+
+  /** Story 14.4 — STDDEV / VARIANCE family integration shape.
+    *
+    * All four projections come from a single ES `extended_stats` per call. Fields are
+    * `Option[Double]` because the sample variants return `null` on ES < 7.7 (the `_sampling` keys
+    * do not exist there); the population variants read the un-suffixed `std_deviation` / `variance`
+    * keys, which are present on ES 6+.
+    */
+  case class DepartmentStatsExtended(
+    department: String,
+    sd_salary: Option[Double] = None,
+    vp_salary: Option[Double] = None,
+    vs_salary: Option[Double] = None
+  )
+
+  /** Story 14.5 — PERCENTILE_CONT integration shape. Each field is one percentile projected from a
+    * single ES `percentiles` aggregation per call.
+    */
+  case class DepartmentPercentiles(
+    department: String,
+    p50_salary: Option[Double] = None,
+    p95_salary: Option[Double] = None,
+    p99_salary: Option[Double] = None
+  )
+
+  /** Story 14.5 — percentile COALESCING shape. Several percentiles on the same column merge into
+    * one ES `percentiles` aggregation; the non-sequential aliases (q1/q2/q3/p99) prove each column
+    * is returned under its own alias (not positionally) when the value is split back out of the
+    * shared node.
+    */
+  case class DepartmentQuartiles(
+    department: String,
+    q1: Option[Double] = None,
+    q2: Option[Double] = None,
+    q3: Option[Double] = None,
+    p99: Option[Double] = None
   )
 
   case class DepartmentWithWindow(

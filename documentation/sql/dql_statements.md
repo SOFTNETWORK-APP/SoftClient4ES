@@ -62,7 +62,7 @@ FROM table_name [alias]
 [WHERE condition]
 [GROUP BY expr1, expr2, ...]
 [HAVING condition]
-[ORDER BY expr1 [ASC|DESC], ...]
+[ORDER BY expr1 [ASC|DESC] [NULLS FIRST|NULLS LAST], ...]
 [LIMIT n]
 [OFFSET m];
 ```
@@ -127,6 +127,7 @@ WHERE age BETWEEN 20 AND 50
 
 - Supports multiple sort keys
 - Supports `ASC` and `DESC`
+- Supports `NULLS FIRST` / `NULLS LAST` per sort key (see below)
 - Supports expressions and nested fields (e.g., `profile.city`)
 - When used inside a window function (`OVER`), `ORDER BY` defines the logical ordering of the window
 
@@ -138,6 +139,40 @@ FROM dql_users
 ORDER BY age DESC, name ASC
 LIMIT 2 OFFSET 1;
 ```
+
+### NULLS FIRST / NULLS LAST
+
+Each sort key may declare where `NULL` values appear in the result:
+
+```sql
+SELECT id, name, bonus
+FROM dql_users
+ORDER BY bonus DESC NULLS LAST;
+```
+
+Mapped to Elasticsearch's `sort.missing` parameter:
+
+- `NULLS FIRST` → `"missing": "_first"`
+- `NULLS LAST`  → `"missing": "_last"`
+
+When `NULLS FIRST` / `NULLS LAST` is omitted, defaults follow the Elasticsearch
+convention:
+
+- `ASC`  → nulls last
+- `DESC` → nulls first
+
+Different null orderings can be combined within a single query:
+
+```sql
+SELECT id, name, bonus, hire_date
+FROM dql_users
+ORDER BY bonus DESC NULLS LAST, hire_date ASC NULLS FIRST;
+```
+
+**Caveat (ES6 Jest client)**: scroll / `search_after` queries in the ES6 Jest
+client do not propagate `NULLS FIRST` / `NULLS LAST` reliably across batches
+(search_after's null handling is implementation-defined in Jest). For ES6
+scroll/search_after, prefer client-side null-bucketing or upgrade to ES7+.
 
 ---
 
@@ -249,6 +284,49 @@ Supported aggregate functions include:
 - `AVG(expr)`
 - `MIN(expr)`
 - `MAX(expr)`
+- `STDDEV(expr)` / `STDDEV_SAMP(expr)` / `STDDEV_POP(expr)`
+- `VARIANCE(expr)` / `VAR_SAMP(expr)` / `VAR_POP(expr)`
+
+`STDDEV` defaults to **sample** standard deviation (Bessel-corrected, `STDDEV ≡ STDDEV_SAMP`) and
+`VARIANCE` defaults to **sample** variance (`VARIANCE ≡ VAR_SAMP`). This matches PostgreSQL and
+Snowflake; users coming from MySQL 5.5 or earlier should note that those releases defaulted
+`STDDEV` to population.
+
+```sql
+SELECT department,
+       STDDEV(salary)   AS sd,
+       VAR_POP(salary)  AS vp
+FROM emp
+GROUP BY department;
+```
+
+All six map to a single Elasticsearch `extended_stats` aggregation per call; the requested field
+(`std_deviation_sampling`, `variance_sampling` for the sample variants; the un-suffixed
+`std_deviation`, `variance` for the population variants) is projected from the response. Sample
+variants require **Elasticsearch 7.7+**; population variants work on Elasticsearch 6+.
+
+### Percentiles — `PERCENTILE_CONT` / `PERCENTILE_DISC`
+
+- `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)` — ANSI ordered-set aggregate (optionally with a top-level `GROUP BY`)
+- `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column) OVER (PARTITION BY ...)` — value column from `WITHIN GROUP`, partition from `OVER`
+- `PERCENTILE_CONT(p) OVER (PARTITION BY ... ORDER BY column)` — value column from the `OVER` `ORDER BY`
+- `PERCENTILE_CONT(column, p)` — column-first shorthand (many BI tools emit it)
+
+The percentile literal `p` is a value in `[0, 1]` (e.g. `0.99` for p99); a value outside that range is
+rejected at parse time. The **value column** is given by the `ORDER BY` clause (`WITHIN GROUP` or `OVER`),
+or the shorthand's first argument; **grouping** is given by `OVER (PARTITION BY ...)` or a top-level
+`GROUP BY` (or neither — a single percentile over the whole result set). Both functions map to the
+Elasticsearch `percentiles` aggregation (TDigest). Elasticsearch has no native discrete percentile, so
+`PERCENTILE_DISC` is **continuous-backed** — it returns the same interpolated value as `PERCENTILE_CONT`
+rather than the nearest actual data point. All forms work on Elasticsearch 6+.
+
+```sql
+-- p99 request latency per endpoint (SRE latency analysis)
+SELECT endpoint,
+       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99
+FROM requests
+GROUP BY endpoint;
+```
 
 ### GROUP BY and HAVING
 
@@ -331,9 +409,14 @@ Supported window functions include:
 
 - `SUM(expr) OVER (...)`
 - `COUNT(expr) OVER (...)`
+- `STDDEV(expr) OVER (PARTITION BY ...)` and its `_SAMP` / `_POP` variants
+- `VARIANCE(expr) OVER (PARTITION BY ...)` and its `_SAMP` / `_POP` variants
 - `FIRST_VALUE(expr) OVER (...)`
 - `LAST_VALUE(expr) OVER (...)`
 - `ARRAY_AGG(expr) OVER (...)`
+- `ROW_NUMBER() OVER ([PARTITION BY ...] ORDER BY ...)`
+- `RANK() OVER ([PARTITION BY ...] ORDER BY ...)`
+- `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY ...)`
 
 #### Basic window example
 
@@ -347,6 +430,42 @@ SELECT
 FROM dql_sales
 ORDER BY product, ts;
 ```
+
+#### ROW_NUMBER / RANK / DENSE_RANK (ranking windows)
+
+`ORDER BY` is REQUIRED inside `OVER` for ranking functions (ANSI). `PARTITION BY`
+is optional — when absent, the entire result set is treated as one partition.
+
+```sql
+SELECT name, salary,
+  ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn,
+  RANK()       OVER (PARTITION BY department ORDER BY salary DESC) AS r,
+  DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr
+FROM emp;
+```
+
+Tie semantics:
+
+- `ROW_NUMBER` — sequential within partition; no ties recognized (1, 2, 3, 4, …)
+- `RANK` — ties share rank, next rank skips (1, 2, 2, 4, …)
+- `DENSE_RANK` — ties share rank, next rank does NOT skip (1, 2, 2, 3, …)
+
+##### Top-N per group (push-down via `LIMIT` inside `OVER`)
+
+Inline `LIMIT N` inside the OVER clause to limit the number of rows ranked per
+partition. The engine pushes `N` down to the underlying Elasticsearch
+`top_hits.size` parameter so only the top-N rows per partition are
+materialised:
+
+```sql
+SELECT name, salary,
+  RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS r
+FROM emp;
+```
+
+Without an explicit `LIMIT`, `top_hits.size` defaults to 100 — the
+Elasticsearch `index.max_inner_result_window` default. For larger partitions
+either supply `LIMIT N` inline or raise the index setting.
 
 #### FIRST_VALUE / LAST_VALUE / ARRAY_AGG
 
@@ -628,6 +747,24 @@ NULLIF(a, b)
 ```
 
 Returns NULL if `a = b`, otherwise `a`.
+
+##### GREATEST / LEAST
+
+```sql
+GREATEST(e1, e2, ...)
+LEAST(e1, e2, ...)
+```
+
+`GREATEST` returns the largest non-null numeric value among the given expressions; `LEAST`
+returns the smallest. NULL arguments are ignored (ANSI semantics); the result is NULL only
+when every argument is NULL. Both are emitted as Painless ternary chains over
+`Math.max` / `Math.min`. They are row-level conditional functions, not aggregates —
+`GREATEST(...) OVER (...)` is not supported.
+
+```sql
+SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;
+SELECT LEAST(0, base_price - rebate)          AS net       FROM orders;
+```
 
 **Example:**
 

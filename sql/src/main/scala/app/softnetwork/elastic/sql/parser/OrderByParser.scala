@@ -18,7 +18,15 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.Identifier
 import app.softnetwork.elastic.sql.function.Function
-import app.softnetwork.elastic.sql.query.{Asc, Desc, FieldSort, OrderBy}
+import app.softnetwork.elastic.sql.query.{
+  Asc,
+  Desc,
+  FieldSort,
+  NullOrdering,
+  NullsFirst,
+  NullsLast,
+  OrderBy
+}
 
 trait OrderByParser {
   self: Parser =>
@@ -26,6 +34,12 @@ trait OrderByParser {
   def asc: PackratParser[Asc.type] = Asc.regex ^^ (_ => Asc)
 
   def desc: PackratParser[Desc.type] = Desc.regex ^^ (_ => Desc)
+
+  def nullsFirst: PackratParser[NullsFirst.type] = NullsFirst.regex ^^ (_ => NullsFirst)
+
+  def nullsLast: PackratParser[NullsLast.type] = NullsLast.regex ^^ (_ => NullsLast)
+
+  def nullOrdering: PackratParser[NullOrdering] = nullsFirst | nullsLast
 
   private def fieldName: PackratParser[String] =
     """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
@@ -41,8 +55,8 @@ trait OrderByParser {
     identifier
 
   def sort: PackratParser[FieldSort] =
-    fieldWithFunction ~ (asc | desc).? ^^ { case f ~ o =>
-      FieldSort(f, o)
+    fieldWithFunction ~ (asc | desc).? ~ nullOrdering.? ^^ { case f ~ o ~ n =>
+      FieldSort(f, o, n)
     }
 
   def orderBy: PackratParser[OrderBy] = OrderBy.regex ~ rep1sep(sort, separator) ^^ { case _ ~ s =>

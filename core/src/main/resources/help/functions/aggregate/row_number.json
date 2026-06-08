@@ -1,0 +1,31 @@
+{
+  "name": "ROW_NUMBER",
+  "category": "Aggregate",
+  "shortDescription": "Assign a sequential 1-based ordinal to each row within a partition",
+  "syntax": [
+    "ROW_NUMBER() OVER ([PARTITION BY ...] ORDER BY ...)"
+  ],
+  "description": "Ranking window function. Returns sequential row numbers (1, 2, 3, ...) within each partition, ordered by the OVER ORDER BY clause. No ties are recognized — two rows with the same sort value still receive distinct ordinals.",
+  "parameters": [],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Per-department row number by salary",
+      "description": "1, 2, 3 ... within each department, ordered by salary DESC",
+      "sql": "SELECT name, salary,\n  ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn\nFROM emp"
+    },
+    {
+      "title": "Top-N per group via inline LIMIT",
+      "description": "Add LIMIT N inside the OVER clause: N is pushed into the ES top_hits sub-aggregation so only the top-N rows per partition are ranked and returned.",
+      "sql": "SELECT name, salary,\n  ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS rn\nFROM emp"
+    }
+  ],
+  "notes": [
+    "ORDER BY is REQUIRED inside OVER (ANSI semantics)",
+    "PARTITION BY is optional — when absent, the entire result set is one partition",
+    "No-ties semantics: distinct ordinals even when sort values are equal",
+    "Top-N push-down: LIMIT N inside OVER sets the ES top_hits.size parameter (top-N rows per partition)"
+  ],
+  "seeAlso": ["RANK", "DENSE_RANK"],
+  "aliases": []
+}

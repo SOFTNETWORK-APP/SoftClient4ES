@@ -27,15 +27,23 @@ case object Desc extends Expr("DESC") with SortOrder
 
 case object Asc extends Expr("ASC") with SortOrder
 
+sealed trait NullOrdering extends TokenRegex
+
+case object NullsFirst extends Expr("NULLS FIRST") with NullOrdering
+
+case object NullsLast extends Expr("NULLS LAST") with NullOrdering
+
 case class FieldSort(
   field: Identifier,
-  order: Option[SortOrder]
+  order: Option[SortOrder],
+  nullOrdering: Option[NullOrdering] = None
 ) extends FunctionChain
     with Updateable {
   lazy val functions: List[Function] = field.functions
   lazy val direction: SortOrder = order.getOrElse(Asc)
   lazy val name: String = field.identifierName
-  override def sql: String = s"$name $direction"
+  override def sql: String =
+    s"$name $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
   override def update(request: SingleSearch): FieldSort = this.copy(
     field = field.update(request)
   )

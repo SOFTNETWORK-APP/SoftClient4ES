@@ -18,6 +18,9 @@ This page documents aggregate functions for summarizing and analyzing data.
 6. [FIRST_VALUE](#function-first_value)
 7. [LAST_VALUE](#function-last_value)
 8. [ARRAY_AGG](#function-array_agg)
+9. [STDDEV / VARIANCE family](#function-stddev--variance-family)
+10. [PERCENTILE_CONT / PERCENTILE_DISC](#function-percentile_cont--percentile_disc)
+11. [ROW_NUMBER / RANK / DENSE_RANK (ranking windows)](#function-row_number--rank--dense_rank-ranking-windows)
 
 ---
 
@@ -1204,6 +1207,144 @@ FROM emp;
 
 ---
 
+## Function: STDDEV / VARIANCE family
+
+**Description:**  
+The six ANSI statistical aggregates compute the standard deviation and variance of a numeric column. All map to a single Elasticsearch `extended_stats` aggregation per call; each function projects the matching field from the response.
+
+`STDDEV` is an alias for `STDDEV_SAMP`, and `VARIANCE` is an alias for `VAR_SAMP` — i.e. both default to the **sample** (Bessel-corrected) form, matching PostgreSQL, Snowflake, and MySQL 8.0+. (MySQL 5.5 and earlier defaulted `STDDEV` to population.)
+
+**Syntax:**
+```sql
+STDDEV(expr)  | STDDEV_SAMP(expr)  | STDDEV_POP(expr)
+VARIANCE(expr) | VAR_SAMP(expr)     | VAR_POP(expr)
+
+-- windowed form
+STDDEV(expr) OVER (PARTITION BY partition_expr, ...)
+```
+
+**Inputs:**
+- `expr` - Numeric column
+- `PARTITION BY` - Optional grouping columns (windowed form)
+
+**Output:**
+- `DOUBLE`
+
+**Function → Elasticsearch `extended_stats` field:**
+
+| SQL                | ES `extended_stats` field  | Min ES version |
+|--------------------|----------------------------|----------------|
+| `STDDEV(x)`        | `std_deviation_sampling`   | **7.7+**       |
+| `STDDEV_SAMP(x)`   | `std_deviation_sampling`   | **7.7+**       |
+| `STDDEV_POP(x)`    | `std_deviation`            | 6+             |
+| `VARIANCE(x)`      | `variance_sampling`        | **7.7+**       |
+| `VAR_SAMP(x)`      | `variance_sampling`        | **7.7+**       |
+| `VAR_POP(x)`       | `variance`                 | 6+             |
+
+**Behavior:**
+- `NULL` values are ignored.
+- The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Consequently the sample variants — including the default `STDDEV` / `VARIANCE` — require Elasticsearch 7.7+. On older clusters the column is returned as `null` and a warning is logged.
+- Each call emits its own `extended_stats` aggregation; two stat calls over the same column emit two aggregations.
+
+**Examples:**
+```sql
+-- Per-group sample standard deviation and population variance
+SELECT department,
+       STDDEV(salary)  AS sd,
+       VAR_POP(salary) AS vp
+FROM emp
+GROUP BY department;
+
+-- Windowed sample variance per partition
+SELECT name, salary,
+       VARIANCE(salary) OVER (PARTITION BY department) AS v
+FROM emp;
+```
+
+---
+
+## Function: PERCENTILE_CONT / PERCENTILE_DISC
+
+**Description:**  
+Compute a percentile of a numeric column. `PERCENTILE_CONT` is continuous (interpolated); `PERCENTILE_DISC` is the discrete form. Both map to the Elasticsearch `percentiles` aggregation (TDigest). Elasticsearch has no native discrete percentile, so `PERCENTILE_DISC` is **continuous-backed** — it returns the same interpolated value as `PERCENTILE_CONT` rather than the nearest actual data point.
+
+**Syntax:**
+```sql
+PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)
+PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column) OVER (PARTITION BY partition_expr, ...)
+PERCENTILE_CONT(p) OVER (PARTITION BY partition_expr, ... ORDER BY column)
+PERCENTILE_CONT(column, p)
+```
+
+**Inputs:**
+- `p` - Percentile fraction, a literal in `[0, 1]` (e.g. `0.99` for p99). Out-of-range values are rejected at parse time.
+- `column` - Numeric value column. Supplied by the `ORDER BY` clause (`WITHIN GROUP` or `OVER`), or the shorthand's first argument.
+- Grouping comes from `OVER (PARTITION BY ...)` or a top-level `GROUP BY` (or neither — one value over the whole result set).
+
+**Output:**
+- `DOUBLE`
+
+**Behavior:**
+- `NULL` values are ignored.
+- Multiple percentile calls on the same value column may be coalesced into a single Elasticsearch aggregation.
+- Works on Elasticsearch 6+.
+
+**Examples:**
+```sql
+-- p99 request latency per endpoint (SRE latency analysis)
+SELECT endpoint,
+       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99
+FROM requests
+GROUP BY endpoint;
+
+-- OVER form: partition and value column both in OVER
+SELECT name,
+       PERCENTILE_CONT(0.95) OVER (PARTITION BY department ORDER BY salary) AS p95
+FROM emp;
+
+-- Column-first shorthand (BI-tool friendly)
+SELECT department, PERCENTILE_CONT(salary, 0.5) AS median
+FROM emp
+GROUP BY department;
+```
+
+---
+
+## Function: ROW_NUMBER / RANK / DENSE_RANK (ranking windows)
+
+**Description:**
+The three ANSI ranking window functions assign an ordinal to each row within a
+partition, ordered by the `OVER (... ORDER BY ...)` clause:
+
+- `ROW_NUMBER()` — sequential 1-based ordinals (1, 2, 3, ...); no ties recognized.
+- `RANK()` — ties share a rank and the next rank **skips** (1, 2, 2, 4, ...).
+- `DENSE_RANK()` — ties share a rank and the next rank does **not** skip (1, 2, 2, 3, ...).
+
+`ORDER BY` is **required** inside `OVER`; `PARTITION BY` is optional (absent → the
+whole result set is one partition). A `LIMIT N` inside `OVER` is pushed into the
+Elasticsearch `top_hits` sub-aggregation, returning only the top-N rows per partition.
+
+**Syntax:**
+```sql
+ROW_NUMBER() OVER ([PARTITION BY ...] ORDER BY ... [LIMIT N])
+RANK()       OVER ([PARTITION BY ...] ORDER BY ... [LIMIT N])
+DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY ... [LIMIT N])
+```
+
+**Example:**
+```sql
+SELECT name, salary,
+       ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn,
+       RANK()       OVER (PARTITION BY department ORDER BY salary DESC) AS rk,
+       DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr
+FROM emp;
+```
+
+> Full ranking-window details and top-N push-down examples are in
+> [DQL statements — ranking windows](dql_statements.md).
+
+---
+
 ## Aggregate Functions Summary
 
 | Function               | Purpose               | Input      | Output        | NULL Handling    |
@@ -1218,5 +1359,16 @@ FROM emp;
 | `FIRST_VALUE(expr)`    | First value (ordered) | Any        | Same as input | Depends on ORDER |
 | `LAST_VALUE(expr)`     | Last value (ordered)  | Any        | Same as input | Depends on ORDER |
 | `ARRAY_AGG(expr)`      | Collect into array    | Any        | `ARRAY<type>` | Includes NULLs   |
+| `STDDEV(expr)`         | Sample std deviation  | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `STDDEV_SAMP(expr)`    | Sample std deviation  | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `STDDEV_POP(expr)`     | Population std dev     | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `VARIANCE(expr)`       | Sample variance       | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `VAR_SAMP(expr)`       | Sample variance       | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `VAR_POP(expr)`        | Population variance   | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `PERCENTILE_CONT(p)`   | Continuous percentile | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `PERCENTILE_DISC(p)`   | Discrete percentile   | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `ROW_NUMBER()`         | Sequential ordinal    | —          | `BIGINT`      | n/a (window)     |
+| `RANK()`               | Rank, ties skip       | —          | `BIGINT`      | n/a (window)     |
+| `DENSE_RANK()`         | Rank, ties dense      | —          | `BIGINT`      | n/a (window)     |
 
 [Back to index](README.md)

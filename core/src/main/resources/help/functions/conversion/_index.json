@@ -1,5 +1,6 @@
 [
   "cast.json",
   "try_cast.json",
+  "safe_cast.json",
   "convert.json"
 ]

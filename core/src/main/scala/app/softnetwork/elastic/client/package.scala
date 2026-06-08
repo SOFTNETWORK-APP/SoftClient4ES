@@ -339,7 +339,21 @@ package object client extends SerializationApi {
     */
   object AggregationType extends Enumeration {
     type AggregationType = Value
-    val Count, Min, Max, Avg, Sum, FirstValue, LastValue, ArrayAgg = Value
+    val Count, Min, Max, Avg, Sum, FirstValue, LastValue, ArrayAgg,
+    // Ranking-style window functions. Each top_hits hit gets a per-row
+    // ordinal computed Scala-side by the searchWithWindowEnrichment
+    // pipeline (RankingKind in function.aggregate); the ordinal is then
+    // injected into the base-query row by (partitionKey, _id) lookup.
+    RowNumber, Rank, DenseRank,
+    // STDDEV / VARIANCE family — all back the same ES `extended_stats`
+    // aggregation; the specific result key is carried separately on
+    // ClientAggregation.aggResultField so extractMetrics knows which
+    // field to project from the response.
+    Stddev, StddevSamp, StddevPop, Variance, VarSamp, VarPop,
+    // PERCENTILE_CONT / PERCENTILE_DISC — both back the ES `percentiles`
+    // aggregation; the requested percentile key (e.g. "99.0") is carried on
+    // ClientAggregation.aggResultField and projected from the response `values`.
+    PercentileCont, PercentileDisc = Value
   }
 
   /** Client Aggregation
@@ -365,10 +379,33 @@ package object client extends SerializationApi {
     windowing: Boolean,
     bucketPath: String,
     bucketRoot: String,
-    auxiliary: Boolean = false
+    auxiliary: Boolean = false,
+    // Response field projected from a multi-key ES aggregation (currently
+    // `extended_stats` — e.g. "std_deviation_sampling", "variance"). The
+    // un-suffixed "std_deviation"/"variance" keys are the population values
+    // (ES 6+); the "_sampling" keys are the sample values (ES 7.7+).
+    // None for plain `value`-style metrics.
+    aggResultField: Option[String] = None,
+    // When several percentile columns coalesce into one ES `percentiles`
+    // aggregation, the delegates name the shared response node here (the owner
+    // column's aggName). extractMetrics reads `values[aggResultField]` from that
+    // node for the delegate column. None ⇒ this column reads its own node.
+    sourceAgg: Option[String] = None
   ) {
-    def multivalued: Boolean = aggType == AggregationType.ArrayAgg
+    def multivalued: Boolean =
+      aggType == AggregationType.ArrayAgg ||
+      // Ranking windows return a per-row stream from the underlying
+      // top_hits sub-aggregation; the enrichment pipeline consumes the
+      // list to compute ordinals (Scala-side) and look them up by _id.
+      aggType == AggregationType.RowNumber ||
+      aggType == AggregationType.Rank ||
+      aggType == AggregationType.DenseRank
     def singleValued: Boolean = !multivalued
+
+    def ranking: Boolean =
+      aggType == AggregationType.RowNumber ||
+      aggType == AggregationType.Rank ||
+      aggType == AggregationType.DenseRank
   }
 
   implicit def sqlAggregationToClientAggregation(agg: SQLAggregation): ClientAggregation = {
@@ -378,6 +415,12 @@ package object client extends SerializationApi {
       case MAX           => AggregationType.Max
       case AVG           => AggregationType.Avg
       case SUM           => AggregationType.Sum
+      case STDDEV        => AggregationType.Stddev
+      case STDDEV_SAMP   => AggregationType.StddevSamp
+      case STDDEV_POP    => AggregationType.StddevPop
+      case VARIANCE      => AggregationType.Variance
+      case VAR_SAMP      => AggregationType.VarSamp
+      case VAR_POP       => AggregationType.VarPop
       case _: FirstValue => AggregationType.FirstValue
       case _: LastValue  => AggregationType.LastValue
       case _: ArrayAgg   => AggregationType.ArrayAgg
@@ -386,7 +429,37 @@ package object client extends SerializationApi {
       case _: MaxAgg     => AggregationType.Max
       case _: AvgAgg     => AggregationType.Avg
       case _: SumAgg     => AggregationType.Sum
+      case _: RowNumber  => AggregationType.RowNumber
+      case _: Ranking    => AggregationType.Rank
+      case _: DenseRank  => AggregationType.DenseRank
+      case e: ExtendedStatsAgg =>
+        e.kind match {
+          case ExtendedStatsKind.Stddev     => AggregationType.Stddev
+          case ExtendedStatsKind.StddevSamp => AggregationType.StddevSamp
+          case ExtendedStatsKind.StddevPop  => AggregationType.StddevPop
+          case ExtendedStatsKind.Variance   => AggregationType.Variance
+          case ExtendedStatsKind.VarSamp    => AggregationType.VarSamp
+          case ExtendedStatsKind.VarPop     => AggregationType.VarPop
+        }
+      case p: PercentileAgg =>
+        if (p.cont) AggregationType.PercentileCont else AggregationType.PercentileDisc
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
+    }
+    // `extended_stats` is multi-key — pick which one to project. Plain
+    // tokens (STDDEV / STDDEV_POP / …) get a fixed key matching the SQL
+    // semantic; the wrapped ExtendedStatsAgg carries it on the kind.
+    val aggResultField: Option[String] = agg.aggType match {
+      case STDDEV              => Some(ExtendedStatsKind.Stddev.resultField)
+      case STDDEV_SAMP         => Some(ExtendedStatsKind.StddevSamp.resultField)
+      case STDDEV_POP          => Some(ExtendedStatsKind.StddevPop.resultField)
+      case VARIANCE            => Some(ExtendedStatsKind.Variance.resultField)
+      case VAR_SAMP            => Some(ExtendedStatsKind.VarSamp.resultField)
+      case VAR_POP             => Some(ExtendedStatsKind.VarPop.resultField)
+      case e: ExtendedStatsAgg => Some(e.kind.resultField)
+      // `percentiles` is multi-key — project the requested percentile (e.g. "99.0")
+      // from the response `values` object (see extractMetrics).
+      case p: PercentileAgg => Some(p.resultField)
+      case _                => None
     }
     ClientAggregation(
       agg.aggName,
@@ -396,7 +469,8 @@ package object client extends SerializationApi {
       agg.aggType.isWindowing,
       agg.bucketPath,
       agg.bucketRoot,
-      agg.auxiliary
+      agg.auxiliary,
+      aggResultField
     )
   }
 

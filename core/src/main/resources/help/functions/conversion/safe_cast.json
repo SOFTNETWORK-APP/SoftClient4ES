@@ -1,0 +1,39 @@
+{
+  "name": "SAFE_CAST",
+  "category": "Conversion",
+  "shortDescription": "Convert value to specified type, NULL on failure (BigQuery syntax)",
+  "syntax": [
+    "SAFE_CAST(expression AS data_type)"
+  ],
+  "description": "Attempts to convert an expression to the specified data type. Returns NULL if conversion fails. BigQuery-compatible alias for TRY_CAST.",
+  "parameters": [
+    {
+      "name": "expression",
+      "type": "ANY",
+      "description": "Value to convert",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "data_type",
+      "type": "KEYWORD",
+      "description": "Target data type",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "Specified data_type or NULL",
+  "examples": [
+    {
+      "title": "Safe conversion",
+      "description": "Convert with NULL on failure",
+      "sql": "SELECT SAFE_CAST('abc' AS INT) as result"
+    }
+  ],
+  "notes": [
+    "Equivalent to TRY_CAST",
+    "Provided for BigQuery compatibility"
+  ],
+  "seeAlso": ["TRY_CAST", "CAST"],
+  "aliases": []
+}

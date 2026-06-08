@@ -4,7 +4,18 @@
   "avg.json",
   "min.json",
   "max.json",
+  "stddev.json",
+  "stddev_samp.json",
+  "stddev_pop.json",
+  "variance.json",
+  "var_samp.json",
+  "var_pop.json",
+  "percentile_cont.json",
+  "percentile_disc.json",
   "array_agg.json",
   "first_value.json",
-  "last_value.json"
+  "last_value.json",
+  "row_number.json",
+  "rank.json",
+  "dense_rank.json"
 ]

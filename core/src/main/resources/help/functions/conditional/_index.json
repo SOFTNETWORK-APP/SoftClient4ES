@@ -3,5 +3,7 @@
   "nullif.json",
   "coalesce.json",
   "isnull.json",
-  "isnotnull.json"
+  "isnotnull.json",
+  "greatest.json",
+  "least.json"
 ]

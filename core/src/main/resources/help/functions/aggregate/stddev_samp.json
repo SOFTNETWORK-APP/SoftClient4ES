@@ -1,0 +1,34 @@
+{
+  "name": "STDDEV_SAMP",
+  "category": "Aggregate",
+  "shortDescription": "Sample standard deviation of values",
+  "syntax": [
+    "STDDEV_SAMP(column)",
+    "STDDEV_SAMP(column) OVER (PARTITION BY partition_expr, ...)"
+  ],
+  "description": "Computes the sample standard deviation (Bessel-corrected, divides by n-1). Equivalent to STDDEV.",
+  "parameters": [
+    {
+      "name": "column",
+      "type": "NUMERIC",
+      "description": "Numeric column",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DOUBLE",
+  "examples": [
+    {
+      "title": "Sample standard deviation",
+      "description": "Equivalent to STDDEV",
+      "sql": "SELECT STDDEV_SAMP(salary) FROM emp"
+    }
+  ],
+  "notes": [
+    "Identical semantics to STDDEV (ANSI default is sample).",
+    "NULL values are ignored.",
+    "Requires Elasticsearch 7.7+."
+  ],
+  "seeAlso": ["STDDEV", "STDDEV_POP", "VAR_SAMP"],
+  "aliases": []
+}

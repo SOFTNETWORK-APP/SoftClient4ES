@@ -28,6 +28,11 @@ import scala.jdk.CollectionConverters._
 
 trait ElasticConversion {
 
+  // Distinctly named to avoid colliding with the `logger` member that
+  // `ClientCompanion`'s self-type contributes where this trait is mixed in.
+  private val conversionLogger: org.slf4j.Logger =
+    org.slf4j.LoggerFactory.getLogger(getClass)
+
   def convertTo[T](map: Map[String, Any])(implicit m: Manifest[T], formats: Formats): T = {
     val jValue = Extraction.decompose(map)
     jValue.extract[T]
@@ -583,6 +588,38 @@ trait ElasticConversion {
       .orElse(Try(LocalTime.parse(text, isoTimeFormatter)).toOption)
   }
 
+  private def parseDoubleOpt(s: String): Option[Double] = Try(s.toDouble).toOption
+
+  /** Project a multi-key result field (set via `ClientAggregation.aggResultField`) out of an
+    * aggregation node. Tries the exact key top-level (extended_stats, e.g. "variance") then nested
+    * under the `values` object (percentiles, e.g. "99.0").
+    *
+    * When the exact key is absent from `values`, falls back to numeric-proximity matching:
+    * Elasticsearch labels percentile keys from the requested percent, and a fractional percentile
+    * sent as a float (`0.07 → 7.000000000000001`) can be echoed under a slightly different string.
+    * Matching the closest `values` key within a small epsilon keeps the column populated instead of
+    * silently nulling it.
+    */
+  private def projectAggResultField(value: JsonNode, resultField: String): Option[Double] = {
+    val direct = Option(value.get(resultField)).filterNot(_.isNull)
+    val valuesNode = Option(value.get("values"))
+    val nested = valuesNode.flatMap(vs => Option(vs.get(resultField))).filterNot(_.isNull)
+    direct.orElse(nested).map(_.asDouble()).orElse {
+      (valuesNode, parseDoubleOpt(resultField)) match {
+        case (Some(vs: ObjectNode), Some(want)) =>
+          var best: Option[(Double, JsonNode)] = None
+          vs.forEachEntry { (k, v) =>
+            parseDoubleOpt(k).foreach { kd =>
+              if (!v.isNull && best.forall(b => Math.abs(kd - want) < Math.abs(b._1 - want)))
+                best = Some(kd -> v)
+            }
+          }
+          best.collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
+        case _ => None
+      }
+    }
+  }
+
   /** Extract metrics from an aggregation node
     */
   def extractMetrics(
@@ -614,8 +651,38 @@ trait ElasticConversion {
               name -> numericValue
             }
             .orElse {
-              // Stats aggregations
-              if (value.has("count") && value.has("sum") && value.has("avg")) {
+              // Multi-key projection — project the SQL-requested field via
+              // ClientAggregation.aggResultField, set at SQLAggregation →
+              // ClientAggregation conversion time. Covers:
+              //   * extended_stats (STDDEV / VARIANCE) — key is top-level, e.g.
+              //     "variance"; the `_sampling` sample keys require ES 7.7+.
+              //   * percentiles (PERCENTILE_CONT / PERCENTILE_DISC) — key is
+              //     nested under the response `values` object, e.g. "99.0".
+              // When the key is absent, logs a warning and yields None so the
+              // column appears as null — the Stats branch below is skipped for
+              // these aggregations (see its `aggResultField.isEmpty` guard) to
+              // avoid emitting a stats-shaped struct in place of the null.
+              aggregations.get(name).flatMap(_.aggResultField).flatMap { resultField =>
+                projectAggResultField(value, resultField) match {
+                  case Some(d) => Some(name -> d)
+                  case None =>
+                    conversionLogger.warn(
+                      s"Aggregation '$name' requested result field '$resultField' " +
+                      "which is absent from the response (extended_stats sample variants " +
+                      "require Elasticsearch 7.7+); the column will be null."
+                    )
+                    None
+                }
+              }
+            }
+            .orElse {
+              // Stats aggregations — skipped when this aggregation projects a
+              // specific extended_stats field (handled above; an absent key
+              // yields a null column rather than a stats-shaped struct).
+              if (
+                aggregations.get(name).flatMap(_.aggResultField).isEmpty &&
+                value.has("count") && value.has("sum") && value.has("avg")
+              ) {
                 Some(
                   name -> ListMap(
                     "count" -> value.get("count").asLong(),
@@ -648,6 +715,21 @@ trait ElasticConversion {
               val isAuxiliary = aggregations.get(m._1).exists(_.auxiliary)
               if (!isAuxiliary) metrics ++= Seq(m._1 -> m._2)
             case _ =>
+          }
+          // Coalesced percentile delegates: sibling columns whose `sourceAgg`
+          // points at THIS node read their own percentile from its `values`
+          // object (the owner column was projected by the aggResultField branch
+          // above). Set on delegates by SearchApi.toClientAggregations.
+          // Skip auxiliary delegates (HAVING/WHERE/ORDER BY only, not in SELECT)
+          // so they do not leak into the result columns — mirrors the !isAuxiliary
+          // guard on the main projection branch above.
+          aggregations.foreach { case (delegateName, ca) =>
+            if (ca.sourceAgg.contains(name) && !ca.auxiliary) {
+              ca.aggResultField.foreach { resultField =>
+                projectAggResultField(value, resultField)
+                  .foreach(d => metrics ++= Seq(delegateName -> d))
+              }
+            }
           }
         }
         ListMap((bucketRoot match {
@@ -701,24 +783,35 @@ trait ElasticConversion {
             case _ =>
           }
 
+          // Ranking windows need every hit's `_id` for the per-row ordinal
+          // lookup in `SearchApi.enrichDocumentWithWindowValues`. Skip the
+          // "single-source-field → return the scalar" shortcut so the
+          // per-hit map preserves both the ORDER BY columns AND the metadata.
+          val isRanking = agg.exists(_.ranking)
           val processedHits = hits.map { hit =>
             val source = extractSource(hit, fieldAliases)
             if (hasMultipleValues) {
-              source.size match {
-                case 0 => null
-                case 1 =>
-                  // If only one field in source and multivalued, return the value directly
-                  val value = source.head._2
-                  value match {
-                    case list: List[_]  => list
-                    case map: Map[_, _] => map
-                    case other          => other
-                  }
-                case _ =>
-                  // Multiple fields: return as object
-                  val metadata = extractHitMetadata(hit)
-                  val innerHits = extractInnerHits(hit, fieldAliases)
-                  source ++ metadata ++ innerHits
+              if (isRanking) {
+                val metadata = extractHitMetadata(hit)
+                val innerHits = extractInnerHits(hit, fieldAliases)
+                source ++ metadata ++ innerHits
+              } else {
+                source.size match {
+                  case 0 => null
+                  case 1 =>
+                    // If only one field in source and multivalued, return the value directly
+                    val value = source.head._2
+                    value match {
+                      case list: List[_]  => list
+                      case map: Map[_, _] => map
+                      case other          => other
+                    }
+                  case _ =>
+                    // Multiple fields: return as object
+                    val metadata = extractHitMetadata(hit)
+                    val innerHits = extractInnerHits(hit, fieldAliases)
+                    source ++ metadata ++ innerHits
+                }
               }
             } else {
               val metadata = extractHitMetadata(hit)

@@ -1,0 +1,32 @@
+{
+  "name": "DENSE_RANK",
+  "category": "Aggregate",
+  "shortDescription": "Assign a rank within a partition; ties share a rank and the next rank does NOT skip",
+  "syntax": [
+    "DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY ...)"
+  ],
+  "description": "Ranking window function. Returns rank values (1, 2, 2, 3, ...) within each partition, ordered by the OVER ORDER BY clause. Ties share the same rank; the next rank does NOT skip — ranks remain dense (consecutive integers).",
+  "parameters": [],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Per-department dense rank by salary",
+      "description": "Salaries 100, 90, 90, 80 receive ranks 1, 2, 2, 3 (no gap)",
+      "sql": "SELECT name, salary,\n  DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr\nFROM emp"
+    },
+    {
+      "title": "Top-N per group via inline LIMIT",
+      "description": "Add LIMIT N inside the OVER clause: N is pushed into the ES top_hits sub-aggregation so only the top-N rows per partition are ranked and returned.",
+      "sql": "SELECT name, salary,\n  DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC LIMIT 3) AS dr\nFROM emp"
+    }
+  ],
+  "notes": [
+    "ORDER BY is REQUIRED inside OVER (ANSI semantics)",
+    "PARTITION BY is optional — when absent, the entire result set is one partition",
+    "Ties share a rank; consecutive ranks remain dense (1, 2, 2, 3, ...)",
+    "Use RANK if you want the next rank to skip ties (1, 2, 2, 4, ...)",
+    "Top-N push-down: LIMIT N inside OVER sets the ES top_hits.size parameter (top-N rows per partition)"
+  ],
+  "seeAlso": ["RANK", "ROW_NUMBER"],
+  "aliases": []
+}

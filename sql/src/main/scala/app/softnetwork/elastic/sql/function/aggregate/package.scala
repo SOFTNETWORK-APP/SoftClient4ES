@@ -49,6 +49,21 @@ package object aggregate {
 
   case object SUM extends Expr("SUM") with AggregateFunction with Window
 
+  // STDDEV / VARIANCE family — all translate to the same ES `extended_stats`
+  // aggregation; the SQL token is preserved for round-trip and used to pick
+  // the response key (`std_deviation` vs `std_deviation_population`, etc.).
+  case object STDDEV extends Expr("STDDEV") with AggregateFunction with Window
+  case object STDDEV_POP extends Expr("STDDEV_POP") with AggregateFunction with Window
+  case object STDDEV_SAMP extends Expr("STDDEV_SAMP") with AggregateFunction with Window
+  case object VARIANCE extends Expr("VARIANCE") with AggregateFunction with Window
+  case object VAR_POP extends Expr("VAR_POP") with AggregateFunction with Window
+  case object VAR_SAMP extends Expr("VAR_SAMP") with AggregateFunction with Window
+
+  // PERCENTILE_CONT / PERCENTILE_DISC — both translate to the ES `percentiles`
+  // aggregation (TDigest). See `PercentileAgg`.
+  case object PERCENTILE_CONT extends Expr("PERCENTILE_CONT") with AggregateFunction with Window
+  case object PERCENTILE_DISC extends Expr("PERCENTILE_DISC") with AggregateFunction with Window
+
   sealed trait Window extends TokenRegex
 
   case object FIRST_VALUE extends Expr("FIRST_VALUE") with Window {
@@ -62,6 +77,10 @@ package object aggregate {
   case object ARRAY_AGG extends Expr("ARRAY_AGG") with Window {
     override val words: List[String] = List(sql, "ARRAY")
   }
+
+  case object ROW_NUMBER extends Expr("ROW_NUMBER") with Window
+  case object RANK extends Expr("RANK") with Window
+  case object DENSE_RANK extends Expr("DENSE_RANK") with Window
 
   case object OVER extends Expr("OVER") with TokenRegex
 
@@ -124,15 +143,31 @@ package object aggregate {
       b.identifier.identifierName -> b
     }.toMap
 
+    /** Window subclasses that should emit `LIMIT N` inside their OVER clause when round-tripping to
+      * SQL. Defaults to false so existing windows (FIRST_VALUE / LAST_VALUE / ARRAY_AGG /
+      * aggregate-style) keep the bare round-trip; ranking windows override to true so the push-down
+      * syntax is preserved.
+      */
+    protected def emitsLimitInOver: Boolean = false
+
     override def sql: String = {
       (partitionBy, orderBy) match {
         case (Nil, None) => s"$window($identifier)"
-        case _ =>
-          val orderByStr = orderBy.map(_.sql).getOrElse("")
+        case _           =>
+          // OrderBy.sql carries a leading space — strip it when there is
+          // no PARTITION BY ahead so the OVER clause does not start with
+          // `OVER ( ORDER BY ...)`.
+          val orderByStr =
+            orderBy
+              .map(_.sql)
+              .map(s => if (partitionBy.isEmpty) s.stripPrefix(" ") else s)
+              .getOrElse("")
           val partitionByStr =
             if (partitionBy.nonEmpty) s"$PARTITION_BY ${partitionBy.mkString(", ")}"
             else ""
-          s"$window($identifier) $OVER ($partitionByStr$orderByStr)"
+          val limitStr =
+            if (emitsLimitInOver) limit.map(_.sql).getOrElse("") else ""
+          s"$window($identifier) $OVER ($partitionByStr$orderByStr$limitStr)"
       }
     }
 
@@ -343,6 +378,307 @@ package object aggregate {
       .asInstanceOf[SumAgg]
       .copy(
         identifier = identifier.update(request)
+      )
+  }
+
+  /** STDDEV / VARIANCE family. All six SQL functions translate to a single ES `extended_stats`
+    * aggregation; the bridge emits one aggregation per call and the `kind` here drives result-field
+    * projection during response extraction (`std_deviation`, `variance`, etc.).
+    *
+    * `STDDEV` ≡ `STDDEV_SAMP` and `VARIANCE` ≡ `VAR_SAMP` (ANSI defaults to sample — matches
+    * PostgreSQL and Snowflake). The two pairs carry distinct kinds so the SQL form round-trips
+    * faithfully through `WindowFunction.sql`.
+    */
+  sealed trait ExtendedStatsKind extends Product with Serializable {
+    def window: Window
+    def resultField: String
+  }
+
+  object ExtendedStatsKind {
+    // ES `extended_stats` quirk: the un-suffixed `std_deviation` / `variance`
+    // fields are the POPULATION values (kept for backwards compatibility
+    // with the pre-7.7 response shape). The explicit sample values live
+    // under the `_sampling` keys, which were introduced in ES 7.7 — so SQL
+    // SAMP variants (default for ANSI STDDEV / VARIANCE) require ES 7.7+.
+    // POP variants work on ES 6+ via the un-suffixed keys.
+    case object Stddev extends ExtendedStatsKind {
+      val window: Window = STDDEV
+      val resultField: String = "std_deviation_sampling"
+    }
+    case object StddevSamp extends ExtendedStatsKind {
+      val window: Window = STDDEV_SAMP
+      val resultField: String = "std_deviation_sampling"
+    }
+    case object StddevPop extends ExtendedStatsKind {
+      val window: Window = STDDEV_POP
+      val resultField: String = "std_deviation"
+    }
+    case object Variance extends ExtendedStatsKind {
+      val window: Window = VARIANCE
+      val resultField: String = "variance_sampling"
+    }
+    case object VarSamp extends ExtendedStatsKind {
+      val window: Window = VAR_SAMP
+      val resultField: String = "variance_sampling"
+    }
+    case object VarPop extends ExtendedStatsKind {
+      val window: Window = VAR_POP
+      val resultField: String = "variance"
+    }
+  }
+
+  case class ExtendedStatsAgg(
+    identifier: Identifier,
+    kind: ExtendedStatsKind,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def baseType: SQLType = SQLTypes.Double
+
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = kind.window
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[ExtendedStatsAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+  }
+
+  /** PERCENTILE_CONT / PERCENTILE_DISC. Both translate to a single ES `percentiles` aggregation
+    * (TDigest, continuous/interpolated). `identifier` is the VALUE COLUMN (sourced by the parser
+    * from the WITHIN GROUP / OVER `ORDER BY` clause, or the `(col, p)` shorthand's first argument).
+    * `cont` round-trips the SQL token.
+    *
+    * `resultField` is the response `values` key projected during extraction: ES renders the
+    * percentile as a Double, so 0.99 → percent 99.0 → key "99.0", 0.5 → "50.0". `orderBy` is None
+    * on purpose — the ORDER BY designates the value column and is consumed by the parser, not
+    * retained as a window-frame order.
+    */
+  case class PercentileAgg(
+    identifier: Identifier,
+    cont: Boolean,
+    p: Double,
+    partitionBy: Seq[Identifier] = Seq.empty,
+    fields: Seq[Field] = Seq.empty
+  ) extends WindowFunction {
+    override def baseType: SQLType = SQLTypes.Double
+
+    override def limit: Option[Limit] = None
+
+    override def orderBy: Option[OrderBy] = None
+
+    override def window: Window = if (cont) PERCENTILE_CONT else PERCENTILE_DISC
+
+    /** ES `values` key for this percentile, e.g. 0.99 → "99.0". */
+    def resultField: String = PercentileAgg.percentLabel(p)
+
+    /** The percent passed to ES `percents`, e.g. 0.99 → 99.0. */
+    def percent: Double = p * 100.0
+
+    override def withPartitionBy(partitionBy: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = partitionBy)
+
+    override def withFields(fields: Seq[Field]): WindowFunction = this.copy(fields = fields)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[PercentileAgg]
+      .copy(
+        identifier = identifier.update(request)
+      )
+
+    // All five input forms normalize to a single canonical round-trip form.
+    override def sql: String = {
+      val fn = if (cont) PERCENTILE_CONT else PERCENTILE_DISC
+      val base = s"$fn($p) WITHIN GROUP (ORDER BY ${identifier.identifierName})"
+      if (partitionBy.nonEmpty)
+        s"$base $OVER ($PARTITION_BY ${partitionBy.map(_.identifierName).mkString(", ")})"
+      else base
+    }
+  }
+
+  object PercentileAgg {
+
+    /** Format the percentile the way ES labels it in the response `values` object. percent = p *
+      * 100, rendered via `Double.toString` — locale-independent (always a `.` decimal separator,
+      * never `,`) and identical to the value serialized into the ES request, so whole values become
+      * "50.0"/"99.0" and fractional ones keep their digits ("99.9"). Do NOT use `String.format`/the
+      * `f` interpolator here: they honour the default locale and would emit "50,0" under e.g. a
+      * French locale, breaking the response lookup.
+      */
+    def percentLabel(p: Double): String = (p * 100.0).toString
+
+    /** Coalescing plan: percentile aggregations that share the same value column, `cont` flag and
+      * partition are merged into ONE ES `percentiles` aggregation owned by the FIRST of them in
+      * SELECT order. `ownerOf` maps every percentile aggName to its owning aggName (an owner maps
+      * to itself); `mergedPercents` maps each owner aggName to the sorted distinct percents of its
+      * group. Built identically on the query side (bridge) and the response side (SearchApi) so
+      * both agree on which node is shared.
+      *
+      * @param items
+      *   percentile `(aggName, PercentileAgg)` pairs in SELECT order.
+      */
+    def coalescePlan(items: Seq[(String, PercentileAgg)]): PercentileCoalescePlan = {
+      val groups = items.groupBy { case (_, pa) =>
+        (pa.identifier.identifierName, pa.cont, pa.partitionBy.map(_.identifierName))
+      }
+      val ownerOf = groups.values.flatMap { g =>
+        val owner = g.head._1
+        g.map { case (name, _) => name -> owner }
+      }.toMap
+      val mergedPercents = groups.values.map { g =>
+        g.head._1 -> g.map(_._2.percent).distinct.sorted
+      }.toMap
+      PercentileCoalescePlan(ownerOf, mergedPercents)
+    }
+  }
+
+  /** Result of [[PercentileAgg.coalescePlan]] — see there. */
+  final case class PercentileCoalescePlan(
+    ownerOf: Map[String, String],
+    mergedPercents: Map[String, Seq[Double]]
+  ) {
+    def isOwner(aggName: String): Boolean = ownerOf.get(aggName).contains(aggName)
+    def isDelegate(aggName: String): Boolean = ownerOf.get(aggName).exists(_ != aggName)
+  }
+
+  /** ROW_NUMBER / RANK / DENSE_RANK — ranking-style windows.
+    *
+    * ANSI requires `ORDER BY` inside the `OVER (...)` clause for ranking functions; the parser
+    * enforces this so the AST always carries an `Option[OrderBy]` that is `Some(...)`. PARTITION BY
+    * is optional — when absent the whole result set is one partition.
+    *
+    * Distinct from the other `WindowFunction` shapes because the result is one value per ROW within
+    * partition, not one value per partition. The `searchWithWindowEnrichment` pipeline branches on
+    * this trait via pattern matching: ranking windows produce a per-row ordinal injected by lookup
+    * on `(partitionKey, _id)`.
+    */
+  sealed trait RankingWindow extends WindowFunction {
+    override def isWindowing: Boolean = true
+    // Ranking windows surface their `LIMIT N` clause in the SQL round-trip
+    // so the top-N push-down syntax is preserved through Updateable.update.
+    override protected def emitsLimitInOver: Boolean = true
+
+    /** Apply this window's tie rule to an ordered `(rowId, sortKey)` sequence.
+      *
+      *   - ROW_NUMBER: sequential, no ties (1, 2, 3, 4, …)
+      *   - RANK: ties share rank, next rank skips (1, 2, 2, 4, …)
+      *   - DENSE_RANK: ties share rank, next rank does not skip (1, 2, 2, 3, …)
+      *
+      * Tie detection is value-equality on the full OVER ORDER BY tuple.
+      */
+    def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)]
+  }
+
+  case class RowNumber(
+    partitionBy: Seq[Identifier] = Seq.empty,
+    orderBy: Option[OrderBy],
+    fields: Seq[Field] = Seq.empty,
+    limit: Option[Limit] = None
+  ) extends RankingWindow {
+    override def identifier: Identifier = Identifier()
+    override def window: Window = ROW_NUMBER
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    override def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)] =
+      ordered.zipWithIndex.map { case ((rowId, _), i) => rowId -> (i + 1L) }
+
+    override def withPartitionBy(pb: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = pb)
+
+    override def withFields(fs: Seq[Field]): WindowFunction = this.copy(fields = fs)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[RowNumber]
+      .copy(
+        orderBy = orderBy.map(_.update(request))
+        // NB: ranking windows intentionally do NOT fall back to the outer
+        // query LIMIT — top-N push-down comes solely from the inline `LIMIT N`
+        // inside OVER. Standard SQL computes window functions before LIMIT, so
+        // the outer LIMIT must not shrink the per-partition ranked set.
+      )
+  }
+
+  case class Ranking(
+    partitionBy: Seq[Identifier] = Seq.empty,
+    orderBy: Option[OrderBy],
+    fields: Seq[Field] = Seq.empty,
+    limit: Option[Limit] = None
+  ) extends RankingWindow {
+    override def identifier: Identifier = Identifier()
+    override def window: Window = RANK
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    override def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)] = {
+      var lastKey: Seq[Any] = null
+      var lastRank = 0L
+      ordered.zipWithIndex.map { case ((rowId, key), i) =>
+        if (key != lastKey) { lastRank = (i + 1).toLong; lastKey = key }
+        rowId -> lastRank
+      }
+    }
+
+    override def withPartitionBy(pb: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = pb)
+
+    override def withFields(fs: Seq[Field]): WindowFunction = this.copy(fields = fs)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[Ranking]
+      .copy(
+        orderBy = orderBy.map(_.update(request))
+        // NB: ranking windows intentionally do NOT fall back to the outer
+        // query LIMIT — top-N push-down comes solely from the inline `LIMIT N`
+        // inside OVER. Standard SQL computes window functions before LIMIT, so
+        // the outer LIMIT must not shrink the per-partition ranked set.
+      )
+  }
+
+  case class DenseRank(
+    partitionBy: Seq[Identifier] = Seq.empty,
+    orderBy: Option[OrderBy],
+    fields: Seq[Field] = Seq.empty,
+    limit: Option[Limit] = None
+  ) extends RankingWindow {
+    override def identifier: Identifier = Identifier()
+    override def window: Window = DENSE_RANK
+    override def baseType: SQLType = SQLTypes.BigInt
+
+    override def assignOrdinals(ordered: Seq[(String, Seq[Any])]): Seq[(String, Long)] = {
+      var lastKey: Seq[Any] = null
+      var dense = 0L
+      ordered.map { case (rowId, key) =>
+        if (key != lastKey) { dense += 1; lastKey = key }
+        rowId -> dense
+      }
+    }
+
+    override def withPartitionBy(pb: Seq[Identifier]): WindowFunction =
+      this.copy(partitionBy = pb)
+
+    override def withFields(fs: Seq[Field]): WindowFunction = this.copy(fields = fs)
+
+    override def update(request: SingleSearch): WindowFunction = super
+      .update(request)
+      .asInstanceOf[DenseRank]
+      .copy(
+        orderBy = orderBy.map(_.update(request))
+        // NB: ranking windows intentionally do NOT fall back to the outer
+        // query LIMIT — top-N push-down comes solely from the inline `LIMIT N`
+        // inside OVER. Standard SQL computes window functions before LIMIT, so
+        // the outer LIMIT must not shrink the per-partition ranked set.
       )
   }
 }

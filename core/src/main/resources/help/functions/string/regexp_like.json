@@ -1,0 +1,53 @@
+{
+  "name": "REGEXP_LIKE",
+  "category": "String",
+  "shortDescription": "Test whether a string matches a regular expression",
+  "syntax": [
+    "REGEXP_LIKE(string, pattern)",
+    "REGEXP_LIKE(string, pattern, flags)"
+  ],
+  "description": "Returns TRUE when the source string matches the given regular expression pattern. An optional flags string controls matching behavior.",
+  "parameters": [
+    {
+      "name": "string",
+      "type": "VARCHAR",
+      "description": "Source string",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "pattern",
+      "type": "VARCHAR",
+      "description": "Regular expression pattern",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "flags",
+      "type": "VARCHAR",
+      "description": "Optional match flags: 'i' (case-insensitive), 'n' (dotall, '.' matches newlines), 'c' (case-sensitive, the default)",
+      "optional": true,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BOOLEAN",
+  "examples": [
+    {
+      "title": "Match a pattern",
+      "description": "Rows whose code starts with two letters followed by digits",
+      "sql": "SELECT code FROM products WHERE REGEXP_LIKE(code, '^[A-Z]{2}[0-9]+')"
+    },
+    {
+      "title": "Case-insensitive match",
+      "description": "Match regardless of letter case using the 'i' flag",
+      "sql": "SELECT name FROM contacts WHERE REGEXP_LIKE(name, 'smith', 'i')"
+    }
+  ],
+  "notes": [
+    "Uses Java regular expression syntax",
+    "Flags: 'i' = case-insensitive, 'n' = dotall, 'c' = case-sensitive (default)",
+    "REGEXP is an accepted alias for REGEXP_LIKE"
+  ],
+  "seeAlso": ["REPLACE", "POSITION"],
+  "aliases": ["REGEXP"]
+}
