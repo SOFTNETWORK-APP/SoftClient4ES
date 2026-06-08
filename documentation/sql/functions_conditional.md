@@ -394,4 +394,78 @@ SELECT
 FROM products
 ```
 
+---
+
+### GREATEST
+
+Returns the largest value among the given numeric expressions. NULL arguments are ignored (PostgreSQL-style NULL handling); the result is NULL only if every argument is NULL.
+
+**Syntax:**
+```sql
+GREATEST(expression1, expression2, ...)
+```
+
+**Inputs:**
+- One or more numeric expressions to compare
+
+**Output:**
+- Numeric (widest input type), or NULL if every argument is NULL
+
+**Examples:**
+
+**1. Highest of multiple prices:**
+```sql
+SELECT GREATEST(price_us, price_eu, price_uk) AS max_price
+FROM products
+```
+
+**2. Floor on a computed value:**
+```sql
+SELECT GREATEST(0, base_price - rebate) AS net
+FROM orders
+-- Never lets the net go below zero
+```
+
+**Notes:**
+- Ignores NULL arguments (PostgreSQL-style NULL handling); returns NULL only if every argument is NULL.
+- All arguments should be numeric and have comparable types.
+- See also: `LEAST`, `COALESCE`.
+
+---
+
+### LEAST
+
+Returns the smallest value among the given numeric expressions. NULL arguments are ignored (PostgreSQL-style NULL handling); the result is NULL only if every argument is NULL.
+
+**Syntax:**
+```sql
+LEAST(expression1, expression2, ...)
+```
+
+**Inputs:**
+- One or more numeric expressions to compare
+
+**Output:**
+- Numeric (widest input type), or NULL if every argument is NULL
+
+**Examples:**
+
+**1. Lowest of multiple prices:**
+```sql
+SELECT LEAST(price_us, price_eu, price_uk) AS min_price
+FROM products
+```
+
+**2. Cap on a computed value:**
+```sql
+SELECT LEAST(rebate, base_price) AS applied_rebate
+FROM orders
+-- Never lets the rebate exceed the base price
+```
+
+**Notes:**
+- Ignores NULL arguments (PostgreSQL-style NULL handling); returns NULL only if every argument is NULL.
+- All arguments should be numeric and have comparable types.
+- See also: `GREATEST`, `COALESCE`.
+
 [Back to index](README.md)

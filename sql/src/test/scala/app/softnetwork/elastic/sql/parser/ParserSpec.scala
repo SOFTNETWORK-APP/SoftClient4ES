@@ -1061,6 +1061,42 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isLeft shouldBe true
   }
 
+  // Story 14.6 — case-insensitivity of the Epic-14 keywords (AC 4): every new
+  // reserved word resolves through the (?i) TokenRegex (and NULLS FIRST/LAST
+  // through its own (?i) production), so a fully-lowercased query must parse.
+  // percentile_cont is also covered in the 14.5 block; this test exercises all
+  // 18 Epic-14 keywords lowercased, including the stddev_pop/stddev_samp/
+  // percentile_disc and nulls-last forms the original 14.6 test omitted.
+  it should "parse the Epic-14 window/stats/conditional keywords case-insensitively" in {
+    Parser(
+      "select name, rank() over (partition by department order by salary desc) as r from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select name, row_number() over (order by salary desc) as rn from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select name, dense_rank() over (partition by department order by salary desc) as dr from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select department, stddev(salary) as sd, variance(salary) as v from emp group by department"
+    ).isRight shouldBe true
+    Parser(
+      "select department, var_pop(salary) as vp, var_samp(salary) as vs from emp group by department"
+    ).isRight shouldBe true
+    Parser(
+      "select department, stddev_pop(salary) as sdp, stddev_samp(salary) as sds from emp group by department"
+    ).isRight shouldBe true
+    Parser(
+      "select percentile_disc(0.5) within group (order by salary) as median from emp"
+    ).isRight shouldBe true
+    Parser(
+      "select greatest(price_us, price_eu) as hi, least(price_us, price_eu) as lo from products"
+    ).isRight shouldBe true
+    Parser(
+      "select * from emp order by salary asc nulls last"
+    ).isRight shouldBe true
+  }
+
   it should "parse conversion function" in {
     val result = Parser(conversion)
     result.toOption

@@ -20,6 +20,7 @@ This page documents aggregate functions for summarizing and analyzing data.
 8. [ARRAY_AGG](#function-array_agg)
 9. [STDDEV / VARIANCE family](#function-stddev--variance-family)
 10. [PERCENTILE_CONT / PERCENTILE_DISC](#function-percentile_cont--percentile_disc)
+11. [ROW_NUMBER / RANK / DENSE_RANK (ranking windows)](#function-row_number--rank--dense_rank-ranking-windows)
 
 ---
 
@@ -1309,6 +1310,41 @@ GROUP BY department;
 
 ---
 
+## Function: ROW_NUMBER / RANK / DENSE_RANK (ranking windows)
+
+**Description:**
+The three ANSI ranking window functions assign an ordinal to each row within a
+partition, ordered by the `OVER (... ORDER BY ...)` clause:
+
+- `ROW_NUMBER()` — sequential 1-based ordinals (1, 2, 3, ...); no ties recognized.
+- `RANK()` — ties share a rank and the next rank **skips** (1, 2, 2, 4, ...).
+- `DENSE_RANK()` — ties share a rank and the next rank does **not** skip (1, 2, 2, 3, ...).
+
+`ORDER BY` is **required** inside `OVER`; `PARTITION BY` is optional (absent → the
+whole result set is one partition). A `LIMIT N` inside `OVER` is pushed into the
+Elasticsearch `top_hits` sub-aggregation, returning only the top-N rows per partition.
+
+**Syntax:**
+```sql
+ROW_NUMBER() OVER ([PARTITION BY ...] ORDER BY ... [LIMIT N])
+RANK()       OVER ([PARTITION BY ...] ORDER BY ... [LIMIT N])
+DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY ... [LIMIT N])
+```
+
+**Example:**
+```sql
+SELECT name, salary,
+       ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn,
+       RANK()       OVER (PARTITION BY department ORDER BY salary DESC) AS rk,
+       DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dr
+FROM emp;
+```
+
+> Full ranking-window details and top-N push-down examples are in
+> [DQL statements — ranking windows](dql_statements.md).
+
+---
+
 ## Aggregate Functions Summary
 
 | Function               | Purpose               | Input      | Output        | NULL Handling    |
@@ -1331,5 +1367,8 @@ GROUP BY department;
 | `VAR_POP(expr)`        | Population variance   | Numeric    | `DOUBLE`      | Ignores NULLs    |
 | `PERCENTILE_CONT(p)`   | Continuous percentile | Numeric    | `DOUBLE`      | Ignores NULLs    |
 | `PERCENTILE_DISC(p)`   | Discrete percentile   | Numeric    | `DOUBLE`      | Ignores NULLs    |
+| `ROW_NUMBER()`         | Sequential ordinal    | —          | `BIGINT`      | n/a (window)     |
+| `RANK()`               | Rank, ties skip       | —          | `BIGINT`      | n/a (window)     |
+| `DENSE_RANK()`         | Rank, ties dense      | —          | `BIGINT`      | n/a (window)     |
 
 [Back to index](README.md)
