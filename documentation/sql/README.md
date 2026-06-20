@@ -18,3 +18,4 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [DML Support](dml_statements.md)
 - [DQL Support](dql_statements.md)
 - [Materialized Views](materialized_views.md)
+- [Telemetry & Privacy](telemetry.md)
