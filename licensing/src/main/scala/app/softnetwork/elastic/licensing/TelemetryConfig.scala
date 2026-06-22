@@ -18,13 +18,14 @@ package app.softnetwork.elastic.licensing
 
 import com.typesafe.config.{Config, ConfigFactory}
 
-/** Story 15.2 (A8) -- reads the NEW top-level `softclient4es.telemetry.enabled` opt-out switch for the
-  * daily product-instance telemetry ping (all five surfaces, all tiers including Community).
+/** Story 15.2 (A8) -- reads the NEW top-level `softclient4es.telemetry.enabled` opt-out switch for
+  * the daily product-instance telemetry ping (all five surfaces, all tiers including Community).
   *
   * This is DELIBERATELY DISTINCT from `softclient4es.license.telemetry.enabled`
-  * ([[LicenseConfig.telemetryEnabled]]), which gates ONLY the detailed operation/index metrics inside
-  * the license-REFRESH body (and is semantically meaningless for Community, which has no refresh). The
-  * daily ping reads THIS key, never `LicenseConfig`. See the privacy doc (Story 15.6) two-key table.
+  * ([[LicenseConfig.telemetryEnabled]]), which gates ONLY the detailed operation/index metrics
+  * inside the license-REFRESH body (and is semantically meaningless for Community, which has no
+  * refresh). The daily ping reads THIS key, never `LicenseConfig`. See the privacy doc (Story 15.6)
+  * two-key table.
   *
   * Default is `true` (opt-out, not opt-in) for ALL tiers -- supplied by the `reference.conf`
   * `softclient4es.telemetry { enabled = true }` block.
