@@ -49,4 +49,39 @@ trait LicenseRefreshStrategy {
 
   /** Shutdown background resources (scheduler, etc.). Default is no-op. */
   def shutdown(): Unit = ()
+
+  /** Story 15.2 (A15) -- emit ONE daily product-instance telemetry ping for the given surface.
+    *
+    * Best-effort, fire-and-forget: never throws to the caller, gated on the NEW
+    * `softclient4es.telemetry.enabled` opt-out ([[TelemetryConfig]]). This trait lives in the
+    * Apache `licensing` module (visible to `core`/REPL), but the actual ELv2 ping transport
+    * (`InstancePingClient`) lives downstream in the extensions module — so this is the seam the
+    * REPL (and any surface holding only a `LicenseRefreshStrategy`) calls; the extensions
+    * strategies override it to build the surface-specific report and POST it. The strategy itself
+    * supplies the stable `instance_id`, `uptime_seconds`, `license_tier` and `join_query_count`
+    * (from [[telemetryCollector]] / [[licenseManager]]); the caller supplies only the
+    * surface-specific fields. The default implementation is a no-op (Community/Apache build with no
+    * extension wired).
+    *
+    * @param product
+    *   the surface discriminator (`ProductType.displayName`, e.g. `"repl"`)
+    * @param version
+    *   the surface's own build version
+    * @param sessionDurationSeconds
+    *   REPL session duration (None for non-REPL surfaces)
+    * @param commandsExecuted
+    *   REPL executed-statement count (None for non-REPL surfaces)
+    * @param clusterName
+    *   sidecar single-cluster name (None where N/A)
+    * @param clusterCount
+    *   federation connected-cluster count (None where N/A)
+    */
+  def emitInstancePing(
+    product: String,
+    version: String,
+    sessionDurationSeconds: Option[Long] = None,
+    commandsExecuted: Option[Int] = None,
+    clusterName: Option[String] = None,
+    clusterCount: Option[Int] = None
+  ): Unit = ()
 }

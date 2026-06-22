@@ -38,6 +38,12 @@ package object licensing {
     case object Community extends LicenseType // Gratuit
     case object Pro extends LicenseType // Payant
     case object Enterprise extends LicenseType // Payant + support
+
+    /** Story 15.2 (A11) -- allowlist source for the daily-ping `license_tier` validation
+      * (`validTiers = LicenseType.values.map(_.displayName)`).
+      */
+    def values: Seq[LicenseType] = Seq(Community, Pro, Enterprise)
+
     def upgradeTo(licenseType: LicenseType): LicenseType = licenseType match {
       case Community  => Pro
       case Pro        => Enterprise
@@ -53,43 +59,67 @@ package object licensing {
 
   sealed trait Feature
 
+  /** Story 15.2 (A11) -- marker for product-surface features. The daily product-instance ping's
+    * `product` discriminator is `ProductType.displayName` (the snake feature name), and the
+    * license-server `InstancePingDecorator.validate()` allowlist is
+    * `ProductType.values.map(_.displayName)`.
+    */
+  sealed trait ProductType extends Feature {
+    def displayName: String = Feature.toSnakeCase(this)
+  }
+
+  object ProductType {
+    def values: Seq[ProductType] =
+      Seq(
+        Feature.JdbcDriver,
+        Feature.FlightSql,
+        Feature.AdbcDriver,
+        Feature.Repl,
+        Feature.Federation
+      )
+  }
+
   object Feature {
     case object MaterializedViews extends Feature
-    case object JdbcDriver extends Feature
-    case object OdbcDriver extends Feature
+    case object JdbcDriver extends ProductType
+    case object AdbcDriver extends ProductType // Story 15.2 (A11) -- replaces OdbcDriver
     case object UnlimitedResults extends Feature
     case object AdvancedAggregations extends Feature
-    case object FlightSql extends Feature
-    case object Federation extends Feature
+    case object FlightSql extends ProductType
+    case object Federation extends ProductType
+    case object Repl extends ProductType // Story 15.2 (A11) -- NEW
     def values: Seq[Feature] = Seq(
       MaterializedViews,
       JdbcDriver,
-      OdbcDriver,
+      AdbcDriver,
       UnlimitedResults,
       AdvancedAggregations,
       FlightSql,
-      Federation
+      Federation,
+      Repl
     )
 
     def fromString(s: String): Option[Feature] = s.trim.toLowerCase match {
       case "materialized_views"    => Some(MaterializedViews)
       case "jdbc_driver"           => Some(JdbcDriver)
-      case "odbc_driver"           => Some(OdbcDriver)
+      case "adbc_driver"           => Some(AdbcDriver)
       case "unlimited_results"     => Some(UnlimitedResults)
       case "advanced_aggregations" => Some(AdvancedAggregations)
       case "flight_sql"            => Some(FlightSql)
       case "federation"            => Some(Federation)
+      case "repl"                  => Some(Repl)
       case _                       => None
     }
 
     def toSnakeCase(f: Feature): String = f match {
       case MaterializedViews    => "materialized_views"
       case JdbcDriver           => "jdbc_driver"
-      case OdbcDriver           => "odbc_driver"
+      case AdbcDriver           => "adbc_driver"
       case UnlimitedResults     => "unlimited_results"
       case AdvancedAggregations => "advanced_aggregations"
       case FlightSql            => "flight_sql"
       case Federation           => "federation"
+      case Repl                 => "repl"
     }
   }
 

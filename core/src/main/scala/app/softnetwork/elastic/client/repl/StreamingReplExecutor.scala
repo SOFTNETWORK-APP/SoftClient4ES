@@ -21,7 +21,7 @@ package app.softnetwork.elastic.client.repl
 import akka.actor.ActorSystem
 import akka.stream.Materializer
 import akka.stream.scaladsl.{Sink, Source}
-import app.softnetwork.elastic.client.GatewayApi
+import app.softnetwork.elastic.client.ElasticClientApi
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
@@ -36,7 +36,7 @@ import scala.concurrent.duration._
 
 /** Extended executor with stream support
   */
-class StreamingReplExecutor(gateway: GatewayApi)(implicit
+class StreamingReplExecutor(gateway: ElasticClientApi)(implicit
   system: ActorSystem,
   ec: ExecutionContext,
   materializer: Materializer

@@ -29,8 +29,8 @@ class FeatureFromStringSpec extends AnyFlatSpec with Matchers {
     Feature.fromString("jdbc_driver") shouldBe Some(Feature.JdbcDriver)
   }
 
-  it should "map odbc_driver" in {
-    Feature.fromString("odbc_driver") shouldBe Some(Feature.OdbcDriver)
+  it should "map adbc_driver" in {
+    Feature.fromString("adbc_driver") shouldBe Some(Feature.AdbcDriver)
   }
 
   it should "map unlimited_results" in {
@@ -47,6 +47,10 @@ class FeatureFromStringSpec extends AnyFlatSpec with Matchers {
 
   it should "map federation" in {
     Feature.fromString("federation") shouldBe Some(Feature.Federation)
+  }
+
+  it should "map repl" in {
+    Feature.fromString("repl") shouldBe Some(Feature.Repl)
   }
 
   it should "return None for unknown string" in {
