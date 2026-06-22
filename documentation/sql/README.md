@@ -20,3 +20,4 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [Materialized Views](materialized_views.md)
 - [Telemetry & Privacy](../client/telemetry.md)
 - [Telemetry & Privacy](telemetry.md)
+- [Internal-ops dashboards (R1 success criteria)](internal_ops_dashboards.md)
