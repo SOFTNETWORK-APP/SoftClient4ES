@@ -85,8 +85,63 @@ class Repl(
   private var running = true
   private var multilineBuffer = new StringBuilder()
 
+  // ==================== Story 15.2 -- daily product-instance telemetry ping ====================
+
+  /** Wall-clock start of this REPL session, for `session_duration_seconds`. */
+  private val sessionStart: java.time.Instant = java.time.Instant.now()
+
+  /** Count of user-typed SQL statements executed this session (success + fail), EXCLUDING
+    * meta/backslash commands and empty lines (OQ-3/P3). Incremented in `executeStatement`
+    * (interactive) and `executeBatch` (batch mode) -- NOT in the shared `executeStatementDirect`.
+    */
+  @volatile private var commandsExecuted: Int = 0
+
+  /** Guards against a double session-end ping (e.g. a >24h daily tick racing the loop-exit tail).
+    */
+  private val pingEmitted = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /** Optional >24h daily ping timer (a long-lived interactive session pings each day). */
+  @volatile private var dailyPingTimer: Option[akka.actor.Cancellable] = None
+
+  private def sessionDurationSeconds: Long =
+    java.time.Duration.between(sessionStart, java.time.Instant.now()).getSeconds
+
+  /** Best-effort daily ping for a session that survives > 24h. Fire-and-forget; never blocks. */
+  private def emitDailyPing(): Unit =
+    Try {
+      executor.licenseRefreshStrategy.emitInstancePing(
+        product = "repl",
+        version = version,
+        sessionDurationSeconds = Some(sessionDurationSeconds),
+        commandsExecuted = Some(commandsExecuted)
+      )
+    }
+
+  /** Session-end ping (P1): fire-and-forget on a future with a SHORT bounded await (~2s) so a quick
+    * exit usually lands the ping but NEVER blocks teardown beyond the cap. Idempotent.
+    */
+  private def emitSessionEndPing(): Unit =
+    if (pingEmitted.compareAndSet(false, true)) {
+      dailyPingTimer.foreach(_.cancel())
+      val f = scala.concurrent.Future {
+        executor.licenseRefreshStrategy.emitInstancePing(
+          product = "repl",
+          version = version,
+          sessionDurationSeconds = Some(sessionDurationSeconds),
+          commandsExecuted = Some(commandsExecuted)
+        )
+      }
+      Try(Await.result(f, 2.seconds))
+      ()
+    }
+
   def start(): Unit = {
     printWelcomeBanner()
+
+    // A session that survives > 24h pings daily while it runs (P1 / AC-2.8).
+    dailyPingTimer = Some(
+      system.scheduler.scheduleWithFixedDelay(24.hours, 24.hours)(() => emitDailyPing())
+    )
 
     while (running) {
       try {
@@ -120,6 +175,8 @@ class Repl(
     }
 
     printGoodbyeBanner()
+    // Story 15.2 (AC-2.8) -- session-end daily ping (best-effort, bounded await), before teardown.
+    emitSessionEndPing()
     terminal.close()
   }
 
@@ -163,6 +220,9 @@ class Repl(
   private def executeStatement(sql: String): Unit = {
     val cleanSql = sql.stripSuffix(";").trim
     if (cleanSql.isEmpty) return
+    // Story 15.2 (OQ-3/P3) -- count user-typed SQL only (the SQL-only choke-point); meta/backslash
+    // commands reach executeStatementDirect by a different path and must NOT bump this counter.
+    commandsExecuted += 1
     executeStatementDirect(cleanSql)
   }
 
@@ -200,6 +260,7 @@ class Repl(
     } match {
       case Success(sql) =>
         executeBatch(sql)
+        emitSessionEndPing() // Story 15.2 (AC-2.8) -- one ping at end of a batch run
         0 // Success
 
       case Failure(ex) =>
@@ -211,6 +272,7 @@ class Repl(
   /** Execute single SQL command (batch mode) */
   def executeCommand(sql: String): Int = {
     executeBatch(sql)
+    emitSessionEndPing() // Story 15.2 (AC-2.8) -- one ping at end of a batch run
     0
   }
 
@@ -219,6 +281,8 @@ class Repl(
 
     statements.foreach { stmt =>
       println(s"\n${cyan("=>")} ${gray(stmt)}")
+      // Story 15.2 (OQ-3/P3) -- batch statements ARE user SQL; count each non-empty one here.
+      commandsExecuted += 1
       executeStatementDirect(stmt)
     }
   }
