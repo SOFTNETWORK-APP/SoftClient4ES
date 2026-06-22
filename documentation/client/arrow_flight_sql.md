@@ -138,6 +138,12 @@ elastic.credentials {
 
 ---
 
+## Telemetry
+
+The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no SQL, no PII). Opt out with `softclient4es.telemetry.enabled = false` in your server HOCON config. See [Telemetry & Privacy](telemetry.md) for details.
+
+---
+
 ## License
 
 Arrow Flight SQL is licensed under the **Elastic License 2.0** — free to use, not open source.

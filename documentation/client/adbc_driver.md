@@ -131,6 +131,12 @@ elastic.credentials {
 
 ---
 
+## Telemetry
+
+The ADBC driver sends one anonymous usage ping per day (no IP, no SQL, no PII). Opt out with `softclient4es.telemetry.enabled = false` in your HOCON config. See [Telemetry & Privacy](telemetry.md) for details.
+
+---
+
 ## License
 
 The ADBC driver is licensed under the **Elastic License 2.0** — free to use, not open source.
