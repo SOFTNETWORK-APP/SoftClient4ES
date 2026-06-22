@@ -18,3 +18,4 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [DML Support](dml_statements.md)
 - [DQL Support](dql_statements.md)
 - [Materialized Views](materialized_views.md)
+- [Trial → Paid Conversion Funnel (internal ops)](trial-conversion-funnel.md)
