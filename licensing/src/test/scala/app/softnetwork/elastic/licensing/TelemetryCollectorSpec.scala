@@ -149,4 +149,93 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
     val data = collector.collect(noop)
     data.queriesTotal shouldBe 10000
   }
+
+  // --- Story 15.3: JOIN query counter ---
+
+  "TelemetryCollector" should "increment the JOIN counter per row and sum to the total" in {
+    val collector = new TelemetryCollector
+    collector.incrementJoin(TelemetryCollector.JoinRow.Passthrough)
+    collector.incrementJoin(TelemetryCollector.JoinRow.CrossCluster)
+    collector.incrementJoin(TelemetryCollector.JoinRow.CrossCluster)
+    collector.incrementJoin(TelemetryCollector.JoinRow.Coordinator)
+    val data = collector.collect(noop)
+    data.joinQueryByRow("passthrough") shouldBe 1
+    data.joinQueryByRow("cross_cluster") shouldBe 2
+    data.joinQueryByRow("coordinator") shouldBe 1
+    data.joinQueryCount shouldBe 4
+  }
+
+  it should "ALWAYS carry all three JOIN row keys even when their buckets are 0" in {
+    val collector = new TelemetryCollector
+    val data = collector.collect(noop)
+    data.joinQueryByRow.keySet shouldBe Set("passthrough", "cross_cluster", "coordinator")
+    data.joinQueryByRow.values.toSet shouldBe Set(0L)
+    data.joinQueryCount shouldBe 0
+    // and the same on a reset read
+    val reset = collector.collectAndReset(noop)
+    reset.joinQueryByRow.keySet shouldBe Set("passthrough", "cross_cluster", "coordinator")
+    reset.joinQueryCount shouldBe 0
+  }
+
+  it should "NOT reset the JOIN counters on collect (interval read without flush)" in {
+    val collector = new TelemetryCollector
+    collector.incrementJoin(TelemetryCollector.JoinRow.Passthrough)
+    collector.collect(noop).joinQueryCount shouldBe 1
+    collector.collect(noop).joinQueryCount shouldBe 1 // still 1 -- collect never resets
+  }
+
+  it should "reset the JOIN counters on collectAndReset (per-interval delta; shutdown flush)" in {
+    val collector = new TelemetryCollector
+    collector.incrementJoin(TelemetryCollector.JoinRow.Coordinator)
+    collector.collectAndReset(noop).joinQueryCount shouldBe 1
+    collector.collectAndReset(noop).joinQueryCount shouldBe 0 // delta reset after the interval
+  }
+
+  it should "snapshot+reset only the JOIN delta via collectAndResetJoinCounts (all 3 keys)" in {
+    val collector = new TelemetryCollector
+    collector.incrementJoin(TelemetryCollector.JoinRow.Passthrough)
+    collector.incrementJoin(TelemetryCollector.JoinRow.Coordinator)
+    val (total, byRow) = collector.collectAndResetJoinCounts()
+    total shouldBe 2
+    byRow shouldBe Map("passthrough" -> 1L, "cross_cluster" -> 0L, "coordinator" -> 1L)
+    // reset: a second snapshot returns zeros, all 3 keys present
+    val (total2, byRow2) = collector.collectAndResetJoinCounts()
+    total2 shouldBe 0
+    byRow2 shouldBe Map("passthrough" -> 0L, "cross_cluster" -> 0L, "coordinator" -> 0L)
+    // and queriesTotal is NOT affected by the JOIN flush
+    collector.incrementQueries()
+    collector.collect(noop).queriesTotal shouldBe 1
+  }
+
+  it should "increment the JOIN counters concurrently without loss" in {
+    val collector = new TelemetryCollector
+    val threads = (1 to 10).map { _ =>
+      new Thread(() => {
+        (1 to 1000).foreach { _ =>
+          collector.incrementJoin(TelemetryCollector.JoinRow.Passthrough)
+        }
+      })
+    }
+    threads.foreach(_.start())
+    threads.foreach(_.join())
+    collector.collect(noop).joinQueryCount shouldBe 10000
+  }
+
+  it should "record ONLY integer JOIN counts (no SQL text / identifiers -- AC 7)" in {
+    val collector = new TelemetryCollector
+    collector.incrementJoin(TelemetryCollector.JoinRow.CrossCluster)
+    val data = collector.collect(noop)
+    // The carrier exposes a Long total and a Map[String, Long] -- no String payload derived from
+    // any SQL. The only String keys are the fixed row labels, never query-derived.
+    data.joinQueryByRow.keySet shouldBe Set("passthrough", "cross_cluster", "coordinator")
+    data.joinQueryCount shouldBe 1
+  }
+
+  "TelemetryCollector.Noop" should "no-op incrementJoin and zero-out collectAndResetJoinCounts" in {
+    TelemetryCollector.Noop.incrementJoin(TelemetryCollector.JoinRow.Coordinator)
+    TelemetryCollector.Noop.collect(noop).joinQueryCount shouldBe 0
+    val (total, byRow) = TelemetryCollector.Noop.collectAndResetJoinCounts()
+    total shouldBe 0
+    byRow shouldBe Map("passthrough" -> 0L, "cross_cluster" -> 0L, "coordinator" -> 0L)
+  }
 }

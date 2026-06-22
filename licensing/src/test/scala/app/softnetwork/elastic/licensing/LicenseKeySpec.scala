@@ -50,14 +50,15 @@ class LicenseKeySpec extends AnyFlatSpec with Matchers {
       features = Feature.values.toSet,
       expiresAt = None
     )
-    key.features should have size 7
+    key.features should have size 8
     key.features should contain(Feature.MaterializedViews)
     key.features should contain(Feature.JdbcDriver)
-    key.features should contain(Feature.OdbcDriver)
+    key.features should contain(Feature.AdbcDriver)
     key.features should contain(Feature.UnlimitedResults)
     key.features should contain(Feature.AdvancedAggregations)
     key.features should contain(Feature.FlightSql)
     key.features should contain(Feature.Federation)
+    key.features should contain(Feature.Repl)
   }
 
   it should "store JWT metadata claims" in {
