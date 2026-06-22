@@ -29,8 +29,8 @@ class FeatureSpec extends AnyFlatSpec with Matchers {
     Feature.Federation shouldBe a[Feature]
   }
 
-  "Feature.values" should "contain all 7 features" in {
-    Feature.values should have size 7
+  "Feature.values" should "contain all 8 features" in {
+    Feature.values should have size 8
   }
 
   it should "contain FlightSql and Federation" in {
@@ -42,11 +42,12 @@ class FeatureSpec extends AnyFlatSpec with Matchers {
     Feature.values shouldBe Seq(
       Feature.MaterializedViews,
       Feature.JdbcDriver,
-      Feature.OdbcDriver,
+      Feature.AdbcDriver,
       Feature.UnlimitedResults,
       Feature.AdvancedAggregations,
       Feature.FlightSql,
-      Feature.Federation
+      Feature.Federation,
+      Feature.Repl
     )
   }
 }

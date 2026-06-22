@@ -70,7 +70,9 @@ trait ReplIntegrationTestKit
   def gateway: GatewayApi
 
   // REPL components
-  protected lazy val executor: StreamingReplExecutor = new StreamingReplExecutor(gateway)
+  protected lazy val executor: StreamingReplExecutor = new StreamingReplExecutor(
+    gateway.asInstanceOf[ElasticClientApi]
+  )
   protected lazy val testRepl: TestableRepl = new TestableRepl(executor)
 
   override def beforeAll(): Unit = {
