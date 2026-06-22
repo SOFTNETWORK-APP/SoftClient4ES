@@ -162,8 +162,14 @@ package object licensing {
     val Community: LicenseKey = LicenseKey(
       id = "community",
       licenseType = LicenseType.Community,
-      features =
-        Set(Feature.MaterializedViews, Feature.JdbcDriver, Feature.FlightSql, Feature.Federation),
+      features = Set(
+        Feature.MaterializedViews,
+        Feature.JdbcDriver,
+        Feature.AdbcDriver,
+        Feature.FlightSql,
+        Feature.Federation,
+        Feature.Repl
+      ),
       expiresAt = None,
       quota = Some(Quota.Community)
     )
