@@ -156,6 +156,8 @@ package object licensing {
     /** Testable variant: days since expiry relative to a given instant. */
     def daysSinceExpiryAt(now: java.time.Instant): Option[Long] =
       expiresAt.map(exp => -daysBetween(now, exp))
+
+    def products: Set[ProductType] = features.collect { case p: ProductType => p }
   }
 
   object LicenseKey {
