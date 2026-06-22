@@ -39,12 +39,12 @@ class LicenseManagerSpec extends AnyFlatSpec with Matchers {
     manager.hasFeature(Feature.Federation) shouldBe true
   }
 
-  it should "not include AdbcDriver" in {
-    manager.hasFeature(Feature.AdbcDriver) shouldBe false
+  it should "include AdbcDriver" in {
+    manager.hasFeature(Feature.AdbcDriver) shouldBe true
   }
 
-  it should "not include Repl" in {
-    manager.hasFeature(Feature.Repl) shouldBe false
+  it should "include Repl" in {
+    manager.hasFeature(Feature.Repl) shouldBe true
   }
 
   it should "not include UnlimitedResults" in {
