@@ -835,4 +835,10 @@ Goodbye!
 
 ---
 
+## Telemetry
+
+The REPL sends one anonymous usage ping per session (no IP, no SQL, no command text). Opt out with `-Dsoftclient4es.telemetry.enabled=false`. See [Telemetry & Privacy](telemetry.md) for details.
+
+---
+
 [Back to index](README.md)
