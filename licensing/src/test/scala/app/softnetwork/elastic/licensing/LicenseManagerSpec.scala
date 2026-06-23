@@ -47,14 +47,6 @@ class LicenseManagerSpec extends AnyFlatSpec with Matchers {
     manager.hasFeature(Feature.Repl) shouldBe true
   }
 
-  it should "not include UnlimitedResults" in {
-    manager.hasFeature(Feature.UnlimitedResults) shouldBe false
-  }
-
-  it should "not include AdvancedAggregations" in {
-    manager.hasFeature(Feature.AdvancedAggregations) shouldBe false
-  }
-
   it should "return Community quotas" in {
     manager.quotas shouldBe Quota.Community
   }

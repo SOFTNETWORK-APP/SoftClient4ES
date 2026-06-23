@@ -83,8 +83,6 @@ package object licensing {
     case object MaterializedViews extends Feature
     case object JdbcDriver extends ProductType
     case object AdbcDriver extends ProductType // Story 15.2 (A11) -- replaces OdbcDriver
-    case object UnlimitedResults extends Feature
-    case object AdvancedAggregations extends Feature
     case object FlightSql extends ProductType
     case object Federation extends ProductType
     case object Repl extends ProductType // Story 15.2 (A11) -- NEW
@@ -92,34 +90,28 @@ package object licensing {
       MaterializedViews,
       JdbcDriver,
       AdbcDriver,
-      UnlimitedResults,
-      AdvancedAggregations,
       FlightSql,
       Federation,
       Repl
     )
 
     def fromString(s: String): Option[Feature] = s.trim.toLowerCase match {
-      case "materialized_views"    => Some(MaterializedViews)
-      case "jdbc_driver"           => Some(JdbcDriver)
-      case "adbc_driver"           => Some(AdbcDriver)
-      case "unlimited_results"     => Some(UnlimitedResults)
-      case "advanced_aggregations" => Some(AdvancedAggregations)
-      case "flight_sql"            => Some(FlightSql)
-      case "federation"            => Some(Federation)
-      case "repl"                  => Some(Repl)
-      case _                       => None
+      case "materialized_views" => Some(MaterializedViews)
+      case "jdbc_driver"        => Some(JdbcDriver)
+      case "adbc_driver"        => Some(AdbcDriver)
+      case "flight_sql"         => Some(FlightSql)
+      case "federation"         => Some(Federation)
+      case "repl"               => Some(Repl)
+      case _                    => None
     }
 
     def toSnakeCase(f: Feature): String = f match {
-      case MaterializedViews    => "materialized_views"
-      case JdbcDriver           => "jdbc_driver"
-      case AdbcDriver           => "adbc_driver"
-      case UnlimitedResults     => "unlimited_results"
-      case AdvancedAggregations => "advanced_aggregations"
-      case FlightSql            => "flight_sql"
-      case Federation           => "federation"
-      case Repl                 => "repl"
+      case MaterializedViews => "materialized_views"
+      case JdbcDriver        => "jdbc_driver"
+      case AdbcDriver        => "adbc_driver"
+      case FlightSql         => "flight_sql"
+      case Federation        => "federation"
+      case Repl              => "repl"
     }
   }
 
@@ -180,24 +172,21 @@ package object licensing {
   case class Quota(
     maxMaterializedViews: Option[Int], // None = unlimited
     maxQueryResults: Option[Int], // None = unlimited
-    maxConcurrentQueries: Option[Int],
     maxClusters: Option[Int] = Some(0), // None = unlimited
     maxJoins: Option[Int] = Some(0) // None = unlimited
   )
 
   object Quota {
     val Community: Quota = Quota(
-      maxMaterializedViews = Some(3),
+      maxMaterializedViews = Some(1), // ADR D6: 3 -> 1 (operationalization signal)
       maxQueryResults = Some(10000),
-      maxConcurrentQueries = Some(5),
       maxClusters = Some(1),
-      maxJoins = Some(1)
+      maxJoins = Some(2) // ADR D5: 1 -> 2 (3-table JOIN free-tier aha)
     )
 
     val Pro: Quota = Quota(
       maxMaterializedViews = Some(50),
       maxQueryResults = Some(1000000),
-      maxConcurrentQueries = Some(50),
       maxClusters = Some(5),
       maxJoins = Some(5)
     )
@@ -205,7 +194,6 @@ package object licensing {
     val Enterprise: Quota = Quota(
       maxMaterializedViews = None, // Unlimited
       maxQueryResults = None,
-      maxConcurrentQueries = None,
       maxClusters = None,
       maxJoins = None
     )

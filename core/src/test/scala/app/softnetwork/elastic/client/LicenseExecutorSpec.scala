@@ -79,20 +79,18 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row should contain key "platform"
     row("platform") shouldBe "PRODUCTION"
     row should contain key "max_materialized_views"
-    row("max_materialized_views") shouldBe "3"
+    row("max_materialized_views") shouldBe "1"
     row should contain key "max_clusters"
     row("max_clusters") shouldBe "1"
     row should contain key "max_result_rows"
     row("max_result_rows") shouldBe "10000"
-    row should contain key "max_concurrent_queries"
-    row("max_concurrent_queries") shouldBe "5"
     row should contain key "expires_at"
     row("expires_at") shouldBe "never"
     row("days_remaining") shouldBe -1L
     row should contain key "status"
     row("status") shouldBe "Active"
     row should contain key "max_joins"
-    row("max_joins") shouldBe "1"
+    row("max_joins") shouldBe "2"
   }
 
   it should "return strategy license info when strategy is configured" in {
@@ -117,7 +115,6 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("max_materialized_views") shouldBe "50"
     row("max_clusters") shouldBe "5"
     row("max_result_rows") shouldBe "1000000"
-    row("max_concurrent_queries") shouldBe "50"
     row("platform") shouldBe "PRODUCTION"
     row("expires_at") shouldBe "2026-12-31T23:59:59Z"
     row("days_remaining").asInstanceOf[Long] should be > 0L
@@ -202,7 +199,6 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
       override def quotas: Quota = Quota(
         maxMaterializedViews = Some(25),
         maxQueryResults = Some(500000),
-        maxConcurrentQueries = Some(25),
         maxClusters = Some(2),
         maxJoins = Some(2)
       )
@@ -223,7 +219,6 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("max_materialized_views") shouldBe "25"
     row("max_clusters") shouldBe "2"
     row("max_result_rows") shouldBe "500000"
-    row("max_concurrent_queries") shouldBe "25"
     row("max_joins") shouldBe "2"
   }
 
@@ -235,7 +230,6 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
       override def quotas: Quota = Quota(
         maxMaterializedViews = Some(5),
         maxQueryResults = Some(10000),
-        maxConcurrentQueries = Some(5),
         maxClusters = Some(1),
         maxJoins = Some(1)
       )
@@ -255,7 +249,6 @@ class LicenseExecutorSpec extends AnyFlatSpec with Matchers {
     row("max_materialized_views") shouldBe "5"
     row("max_clusters") shouldBe "1"
     row("max_result_rows") shouldBe "10000"
-    row("max_concurrent_queries") shouldBe "5"
     row("max_joins") shouldBe "1"
   }
 

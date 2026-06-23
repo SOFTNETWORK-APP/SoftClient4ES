@@ -1440,7 +1440,6 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     row("license_type") shouldBe "Community"
     row should contain key "max_materialized_views"
     row should contain key "max_result_rows"
-    row should contain key "max_concurrent_queries"
     row should contain key "max_clusters"
     row should contain key "expires_at"
     row("expires_at") shouldBe "never"
