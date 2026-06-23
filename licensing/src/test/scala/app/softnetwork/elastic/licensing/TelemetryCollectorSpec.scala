@@ -238,4 +238,115 @@ class TelemetryCollectorSpec extends AnyFlatSpec with Matchers {
     total shouldBe 0
     byRow shouldBe Map("passthrough" -> 0L, "cross_cluster" -> 0L, "coordinator" -> 0L)
   }
+
+  // --- Story P0.6: cap-hit counter ---
+
+  private val allCapKeys =
+    Set("max_materialized_views", "max_query_results", "max_joins", "max_clusters")
+
+  "TelemetryCollector" should "increment ONLY the bucket for the given cap-hit kind" in {
+    val collector = new TelemetryCollector
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.MaterializedViews)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.QueryResults)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.QueryResults)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Joins)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Clusters)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Clusters)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Clusters)
+    val data = collector.collect(noop)
+    data.capHitsByKind("max_materialized_views") shouldBe 1
+    data.capHitsByKind("max_query_results") shouldBe 2
+    data.capHitsByKind("max_joins") shouldBe 1
+    data.capHitsByKind("max_clusters") shouldBe 3
+  }
+
+  it should "ALWAYS carry all four cap-hit keys even when their buckets are 0" in {
+    val collector = new TelemetryCollector
+    val data = collector.collect(noop)
+    data.capHitsByKind.keySet shouldBe allCapKeys
+    data.capHitsByKind.values.toSet shouldBe Set(0L)
+    // and the same on a reset read
+    val reset = collector.collectAndReset(noop)
+    reset.capHitsByKind.keySet shouldBe allCapKeys
+    reset.capHitsByKind.values.toSet shouldBe Set(0L)
+  }
+
+  it should "NOT reset the cap-hit counters on collect (interval read without flush)" in {
+    val collector = new TelemetryCollector
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Joins)
+    collector.collect(noop).capHitsByKind("max_joins") shouldBe 1
+    collector.collect(noop).capHitsByKind("max_joins") shouldBe 1 // still 1 -- collect never resets
+  }
+
+  it should "reset the cap-hit counters on collectAndReset (per-interval delta; shutdown flush)" in {
+    val collector = new TelemetryCollector
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Clusters)
+    collector.collectAndReset(noop).capHitsByKind("max_clusters") shouldBe 1
+    // delta reset after the interval
+    collector.collectAndReset(noop).capHitsByKind("max_clusters") shouldBe 0
+  }
+
+  it should "snapshot+reset only the cap-hit delta via collectAndResetCapHits (all 4 keys)" in {
+    val collector = new TelemetryCollector
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.MaterializedViews)
+    collector.incrementCapHit(TelemetryCollector.CapHitKind.Clusters)
+    val first = collector.collectAndResetCapHits()
+    first shouldBe Map(
+      "max_materialized_views" -> 1L,
+      "max_query_results"      -> 0L,
+      "max_joins"              -> 0L,
+      "max_clusters"           -> 1L
+    )
+    // reset: a second snapshot returns zeros, all 4 keys present
+    val second = collector.collectAndResetCapHits()
+    second shouldBe Map(
+      "max_materialized_views" -> 0L,
+      "max_query_results"      -> 0L,
+      "max_joins"              -> 0L,
+      "max_clusters"           -> 0L
+    )
+    // the cap-hit flush does NOT affect the JOIN buckets or queriesTotal
+    collector.incrementQueries()
+    collector.collect(noop).queriesTotal shouldBe 1
+    collector.collect(noop).joinQueryCount shouldBe 0
+  }
+
+  it should "increment the cap-hit counters concurrently without loss" in {
+    val collector = new TelemetryCollector
+    val threads = (1 to 10).map { _ =>
+      new Thread(() => {
+        (1 to 1000).foreach { _ =>
+          collector.incrementCapHit(TelemetryCollector.CapHitKind.QueryResults)
+        }
+      })
+    }
+    threads.foreach(_.start())
+    threads.foreach(_.join())
+    collector.collect(noop).capHitsByKind("max_query_results") shouldBe 10000
+  }
+
+  it should "expose exactly the four CapHitKind values with their snake-case keys" in {
+    TelemetryCollector.CapHitKind.values should have size 4
+    TelemetryCollector.CapHitKind.values.map(_.key).toSet shouldBe allCapKeys
+    TelemetryCollector.CapHitKind.MaterializedViews.key shouldBe "max_materialized_views"
+    TelemetryCollector.CapHitKind.QueryResults.key shouldBe "max_query_results"
+    TelemetryCollector.CapHitKind.Joins.key shouldBe "max_joins"
+    TelemetryCollector.CapHitKind.Clusters.key shouldBe "max_clusters"
+  }
+
+  "TelemetryCollector.Noop" should "no-op incrementCapHit and zero-out collectAndResetCapHits" in {
+    TelemetryCollector.Noop.incrementCapHit(TelemetryCollector.CapHitKind.Joins)
+    TelemetryCollector.Noop.collect(noop).capHitsByKind shouldBe Map(
+      "max_materialized_views" -> 0L,
+      "max_query_results"      -> 0L,
+      "max_joins"              -> 0L,
+      "max_clusters"           -> 0L
+    )
+    TelemetryCollector.Noop.collectAndResetCapHits() shouldBe Map(
+      "max_materialized_views" -> 0L,
+      "max_query_results"      -> 0L,
+      "max_joins"              -> 0L,
+      "max_clusters"           -> 0L
+    )
+  }
 }
