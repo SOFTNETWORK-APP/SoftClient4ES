@@ -156,14 +156,22 @@ package object licensing {
     /** Testable variant: days since expiry relative to a given instant. */
     def daysSinceExpiryAt(now: java.time.Instant): Option[Long] =
       expiresAt.map(exp => -daysBetween(now, exp))
+
+    def products: Set[ProductType] = features.collect { case p: ProductType => p }
   }
 
   object LicenseKey {
     val Community: LicenseKey = LicenseKey(
       id = "community",
       licenseType = LicenseType.Community,
-      features =
-        Set(Feature.MaterializedViews, Feature.JdbcDriver, Feature.FlightSql, Feature.Federation),
+      features = Set(
+        Feature.MaterializedViews,
+        Feature.JdbcDriver,
+        Feature.AdbcDriver,
+        Feature.FlightSql,
+        Feature.Federation,
+        Feature.Repl
+      ),
       expiresAt = None,
       quota = Some(Quota.Community)
     )
