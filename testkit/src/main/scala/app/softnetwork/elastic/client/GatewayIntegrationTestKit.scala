@@ -117,7 +117,7 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
     }
     res.isSuccess shouldBe true
     res.toOption.get match {
-      case QueryStream(stream) =>
+      case QueryStream(stream, _) =>
         val sink =
           Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
             case (acc, (row, _)) =>
@@ -133,7 +133,7 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
         } else {
           log.info(s"Rows: $results")
         }
-      case QueryStructured(response) =>
+      case QueryStructured(response, _) =>
         renderResults(startTime, res)
         val results =
           response.results.map(normalizeRow)
@@ -213,7 +213,7 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
     renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get match {
-      case QueryStream(stream) =>
+      case QueryStream(stream, _) =>
         val sink =
           Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
             case (acc, (row, _)) => acc :+ normalizeRow(row)
@@ -221,7 +221,7 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
         stream.runWith(sink).futureValue
       case q: QueryRows =>
         q.rows.map(normalizeRow)
-      case QueryStructured(response) =>
+      case QueryStructured(response, _) =>
         response.results.map(normalizeRow)
       case other =>
         fail(s"Unexpected QueryResult type for SELECT: $other")

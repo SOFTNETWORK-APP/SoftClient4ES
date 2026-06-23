@@ -156,7 +156,7 @@ trait ReplIntegrationTestKit
 
     val success = res.asInstanceOf[ExecutionSuccess]
     success.result match {
-      case QueryStream(stream) =>
+      case QueryStream(stream, _) =>
         val sink = Sink.fold[Seq[Map[String, Any]], (Map[String, Any], ScrollMetrics)](Seq.empty) {
           case (acc, (row, _)) => acc :+ normalizeRow(row)
         }
@@ -170,7 +170,7 @@ trait ReplIntegrationTestKit
           log.info(s"Rows: $results")
         }
 
-      case QueryStructured(response) =>
+      case QueryStructured(response, _) =>
         val results = response.results.map(normalizeRow)
         if (rows.nonEmpty) {
           results.size shouldBe rows.size
