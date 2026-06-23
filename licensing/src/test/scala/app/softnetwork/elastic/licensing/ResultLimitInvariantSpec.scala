@@ -19,9 +19,9 @@ package app.softnetwork.elastic.licensing
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** ADR D3 invariant: "unlimited results" has ONE source of truth —
-  * `Quota.maxQueryResults` — not a removed `UnlimitedResults` feature flag.
-  * Community = Some(10000), Pro = Some(1000000), Enterprise = None (unlimited).
+/** ADR D3 invariant: "unlimited results" has ONE source of truth — `Quota.maxQueryResults` — not a
+  * removed `UnlimitedResults` feature flag. Community = Some(10000), Pro = Some(1000000),
+  * Enterprise = None (unlimited).
   */
 class ResultLimitInvariantSpec extends AnyFlatSpec with Matchers {
 
@@ -51,6 +51,8 @@ class ResultLimitInvariantSpec extends AnyFlatSpec with Matchers {
     val mgr = new CommunityLicenseManager
     mgr.quotas.maxQueryResults shouldBe Some(10000)
     // No flag encodes the limit:
-    Feature.values.foreach(f => mgr.hasFeature(f) shouldBe LicenseKey.Community.features.contains(f))
+    Feature.values.foreach(f =>
+      mgr.hasFeature(f) shouldBe LicenseKey.Community.features.contains(f)
+    )
   }
 }
