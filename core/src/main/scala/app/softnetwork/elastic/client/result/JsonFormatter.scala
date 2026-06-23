@@ -27,7 +27,7 @@ object JsonFormatter {
 
   def format(result: QueryResult, executionTime: Duration): String = {
     result match {
-      case QueryRows(rows) =>
+      case QueryRows(rows, _) =>
         val json = JObject(
           "rows"              -> JArray(rows.map(rowToJson).toList),
           "count"             -> JInt(rows.size),
@@ -35,7 +35,7 @@ object JsonFormatter {
         )
         pretty(render(json))
 
-      case QueryStructured(response) =>
+      case QueryStructured(response, _) =>
         val json = JObject(
           "rows"              -> JArray(response.results.map(rowToJson).toList),
           "count"             -> JInt(response.results.size),
