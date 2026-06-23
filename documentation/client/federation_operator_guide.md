@@ -1,6 +1,6 @@
 # SoftClient4ES Federation — Operator Guide
 
-> **Canonical source:** this guide mirrors the chart's `helm/softclient4es-federation/docs/operator-guide.md` in `softclient4es-arrow`. The web and core-docs copies carry the same content.
+> **Canonical source:** the authoritative version of this guide ships with the federation Helm chart, at `softclient4es-federation/docs/operator-guide.md`. This page presents the same content.
 
 The SoftClient4ES federation Helm chart deploys a **cross-cluster Arrow Flight SQL coordinator** (the *federation server*) plus one **per-ES-version sidecar** for each Elasticsearch cluster you want to federate. One `values.yaml` + `helm install` replaces 30+ minutes of hand-written HOCON, Kubernetes manifests, Secrets, and probe wiring.
 
@@ -14,10 +14,10 @@ The SoftClient4ES federation Helm chart deploys a **cross-cluster Arrow Flight S
 
 > **Image availability:** the federation image `docker.io/softnetwork/softclient4es-federation` is published to public DockerHub at R1 release. The four sidecar images `docker.io/softnetwork/softclient4es{6,7,8,9}-arrow-flight-sql` are already published. Always pin `image.tag` to the published release tag in your `values.yaml`.
 
-**Working directory convention.** Every `cp examples/…` and `helm install … ./softclient4es-federation` command in this guide is run **from the chart directory `helm/softclient4es-federation/`** (where `Chart.yaml`, `examples/`, and the `./softclient4es-federation` chart path resolve). `cd` there first:
+**Working directory convention.** Every `cp examples/…` and `helm install … ./softclient4es-federation` command in this guide is run **from the chart directory `softclient4es-federation/`** (where `Chart.yaml`, `examples/`, and the `./softclient4es-federation` chart path resolve). `cd` there first:
 
 ```bash
-cd helm/softclient4es-federation/          # all commands below run from here
+cd softclient4es-federation/          # all commands below run from here
 ```
 
 The release name you pass to `helm install <release> …` (this guide uses `fed`) becomes part of the in-cluster Service DNS — `<release>-softclient4es-federation.<namespace>.svc.cluster.local`. Keep it consistent across `install`, `upgrade`, `test`, and `rollback`.
