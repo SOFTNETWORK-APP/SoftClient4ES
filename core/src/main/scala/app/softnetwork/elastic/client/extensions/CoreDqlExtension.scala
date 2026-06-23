@@ -60,6 +60,15 @@ class CoreDqlExtension extends ExtensionSpi {
   protected var licenseManager: Option[LicenseManager] = None
   protected val logger = org.slf4j.LoggerFactory.getLogger(getClass)
 
+  /** Story P0.6 -- the cap-hit collector captured at `initialize`. It is the SAME per-strategy
+    * `TelemetryCollector` that `GatewayApi.run` increments for `queriesTotal`, so a `QueryResults`
+    * cap-hit recorded here rides the existing `InstancePing` delta to the license-server. Defaults
+    * to `Noop` until initialized (or if no strategy carries a real collector). The closed
+    * `EnforcedDqlExtension` (priority &lt; 100) extends this class and inherits the increment via
+    * the shared `capOrReject`, so the paid enforcement path counts cap-hits too.
+    */
+  protected var capHitCollector: TelemetryCollector = TelemetryCollector.Noop
+
   override def extensionId: String = "core-dql"
   override def extensionName: String = "Core DQL Quotas"
   override def version: String = "0.1.0"
@@ -70,6 +79,7 @@ class CoreDqlExtension extends ExtensionSpi {
   ): Either[String, Unit] = {
     logger.info("🔌 Initializing Core DQL extension")
     licenseManager = Some(licenseRefreshStrategy.licenseManager)
+    capHitCollector = licenseRefreshStrategy.telemetryCollector
     Right(())
   }
 
@@ -172,6 +182,9 @@ class CoreDqlExtension extends ExtensionSpi {
     (single.limit, quota.maxQueryResults) match {
       // (1) Explicit LIMIT over a finite quota → hard 402 (UNCHANGED).
       case (Some(l), Some(max)) if max < l.limit =>
+        // Story P0.6 — the meter bit: record a QueryResults cap-hit BEFORE building the 402
+        // (side-effect only; the reject itself is unchanged — AC 8).
+        capHitCollector.incrementCapHit(TelemetryCollector.CapHitKind.QueryResults)
         logger.warn(
           s"⚠️ Query result limit (${l.limit}) exceeds license quota ($max)"
         )
@@ -198,6 +211,12 @@ class CoreDqlExtension extends ExtensionSpi {
       //     and must NOT be re-routed to scroll (it would mishandle aggregation buckets). JOIN legs
       //     (ResultCapContext.isSuppressed) also skip the cap so the join input is not truncated.
       case (None, Some(max)) if single.fields.nonEmpty && !ResultCapContext.isSuppressed =>
+        // Story P0.6 (OQ-2) — the no-LIMIT truncation IS the meter biting (non-fatally): count it
+        // as a QueryResults cap-hit, the SAME kind as the explicit-LIMIT 402 above. The cap is
+        // suppressed for JOIN legs (the `!isSuppressed` guard), so a per-leg input truncation is
+        // never counted — only a genuine single-index result cap. (JOIN-output truncation is
+        // counted on the Joins axis downstream, not here — no double-count.)
+        capHitCollector.incrementCapHit(TelemetryCollector.CapHitKind.QueryResults)
         logger.info(
           s"ℹ️ No LIMIT on single-index scroll query; capping the stream at license quota ($max rows) and flagging truncation"
         )

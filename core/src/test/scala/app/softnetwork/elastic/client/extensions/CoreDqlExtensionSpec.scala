@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll.{ScrollConfig, ScrollMetrics}
 import app.softnetwork.elastic.licensing._
+import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{SearchStatement, SelectStatement, SingleSearch}
 import com.typesafe.config.ConfigFactory
@@ -63,11 +64,15 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
       override def licenseType: LicenseType = tier
     }
 
-  private def strategy(mgr: LicenseManager): LicenseRefreshStrategy =
+  private def strategy(
+    mgr: LicenseManager,
+    collector: TelemetryCollector = TelemetryCollector.Noop
+  ): LicenseRefreshStrategy =
     new LicenseRefreshStrategy {
       override def initialize(): LicenseKey = LicenseKey.Community
       override def refresh(): Either[LicenseError, LicenseKey] = Left(RefreshNotSupported)
       override def licenseManager: LicenseManager = mgr
+      override def telemetryCollector: TelemetryCollector = collector
     }
 
   /** Records every statement forwarded to the scroll / searchAsync seam plus the scroll config, so
@@ -282,5 +287,79 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.scrolledStatement.get() shouldBe a[SingleSearch]
     client.scrolledConfig.get().maxDocuments shouldBe None
     truncationOf(res) shouldBe None
+  }
+
+  // ---- Story P0.6: QueryResults cap-hit recorded on BOTH reject branches ----
+
+  behavior of "CoreDqlExtension cap-hit instrumentation (P0.6)"
+
+  private def runWithCollector(
+    sql: String,
+    quota: Quota,
+    tier: LicenseType,
+    suppress: Boolean = false
+  ): (TelemetryCollector, ElasticResult[QueryResult]) = {
+    val parsed = Parser(sql) match {
+      case Right(s) => s
+      case Left(e)  => fail(s"parse failed: ${e.msg}")
+    }
+    val collector = new TelemetryCollector
+    val client = new RecordingClient()
+    val ext = new CoreDqlExtension()
+    ext.initialize(ConfigFactory.empty(), strategy(managerWithQuota(quota, tier), collector))
+    val res =
+      if (suppress)
+        ResultCapContext.suppressed(Await.result(ext.execute(parsed, client), 5.seconds))
+      else Await.result(ext.execute(parsed, client), 5.seconds)
+    (collector, res)
+  }
+
+  private def capHits(c: TelemetryCollector): Map[String, Long] =
+    c.collect(MetricsApi.Noop).capHitsByKind
+
+  it should "increment the QueryResults cap-hit on the explicit-LIMIT 402 branch" in {
+    val (collector, res) =
+      runWithCollector("SELECT a FROM idx LIMIT 20000", Quota.Community, LicenseType.Community)
+    res shouldBe a[ElasticFailure]
+    res.asInstanceOf[ElasticFailure].elasticError.statusCode shouldBe Some(402)
+    capHits(collector)("max_query_results") shouldBe 1L
+    // no other bucket bumped
+    capHits(collector)("max_joins") shouldBe 0L
+    capHits(collector)("max_clusters") shouldBe 0L
+    capHits(collector)("max_materialized_views") shouldBe 0L
+  }
+
+  it should "increment the QueryResults cap-hit on the P0.5 no-LIMIT truncation branch (OQ-2)" in {
+    val (collector, res) =
+      runWithCollector("SELECT a, b FROM idx", Quota.Community, LicenseType.Community)
+    res shouldBe a[ElasticSuccess[_]]
+    truncationOf(res).map(_.truncated) shouldBe Some(true)
+    capHits(collector)("max_query_results") shouldBe 1L
+  }
+
+  it should "NOT increment any cap-hit when an explicit LIMIT is within quota" in {
+    val (collector, res) =
+      runWithCollector("SELECT a FROM idx LIMIT 50", Quota.Community, LicenseType.Community)
+    res shouldBe a[ElasticSuccess[_]]
+    capHits(collector).values.toSet shouldBe Set(0L)
+  }
+
+  it should "NOT increment a cap-hit when a no-LIMIT query is a suppressed JOIN leg" in {
+    val (collector, res) =
+      runWithCollector(
+        "SELECT a, b FROM idx",
+        Quota.Community,
+        LicenseType.Community,
+        suppress = true
+      )
+    res shouldBe a[ElasticSuccess[_]]
+    capHits(collector).values.toSet shouldBe Set(0L)
+  }
+
+  it should "NOT increment a cap-hit for an unlimited (Enterprise) no-LIMIT query" in {
+    val (collector, res) =
+      runWithCollector("SELECT a, b FROM idx", Quota.Enterprise, LicenseType.Enterprise)
+    res shouldBe a[ElasticSuccess[_]]
+    capHits(collector).values.toSet shouldBe Set(0L)
   }
 }
