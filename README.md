@@ -386,21 +386,36 @@ SoftClient4ES uses a dual-license model:
 - **Core** (SQL engine, REPL client, Scala library) — **Apache License 2.0** (open source)
 - **JDBC Driver**, **Arrow Flight SQL**, **ADBC Driver**, and **Materialized Views** — **Elastic License 2.0** (free to use, not open source)
 
-### Feature Matrix
+### Editions & pricing
 
-| Feature                                                            | Community | Pro     | Enterprise |
-|--------------------------------------------------------------------|-----------|---------|------------|
-| Full SQL DDL (CREATE, ALTER, DROP TABLE)                           | Yes       | Yes     | Yes        |
-| Full SQL DML (INSERT, UPDATE, DELETE, COPY INTO)                   | Yes       | Yes     | Yes        |
-| Full SQL DQL (SELECT, JOIN UNNEST, aggregations, window functions) | Yes       | Yes     | Yes        |
-| Pipelines, Watchers, Enrich Policies                               | Yes       | Yes     | Yes        |
-| Interactive REPL client                                            | Yes       | Yes     | Yes        |
-| Scala library (Akka Streams)                                       | Yes       | Yes     | Yes        |
-| Elasticsearch 6, 7, 8, 9 support                                   | Yes       | Yes     | Yes        |
-| JDBC driver (DBeaver, Tableau, etc.)                               | Yes       | Yes     | Yes        |
-| Arrow Flight SQL server + ADBC driver                              | Yes       | Yes     | Yes        |
-| Materialized Views (CREATE, REFRESH, DESCRIBE)                     | Max 3     | Limited | Unlimited  |
-| Priority support                                                   | -         | -       | Yes        |
+Every tier has **every feature** — including all client drivers. You pay for
+**scale**, metered by quotas, not for unlocking capabilities.
+
+The two things Elasticsearch cannot do natively — and that DIY can't either —
+are available on **every** tier:
+
+- **Query-time cross-index JOIN** — on every surface (REPL, JDBC, ADBC,
+  Arrow Flight SQL, Federation). JOIN *depth* is metered.
+- **Persisted Materialized Views** — pre-joined / pre-aggregated indices.
+
+| | **Community** | **Pro** | **Enterprise** |
+|---|---|---|---|
+| **Price** | Free | **€129/mo** · €1,290/yr | **from €12,000/year** |
+| Full SQL (DDL · DML · DQL · window functions) | Yes | Yes | Yes |
+| Client drivers — JDBC · ADBC · REPL | **Free** | Free | Free |
+| Arrow Flight SQL server | Yes | Yes | Yes |
+| Cross-index JOINs per query | **2** | 5 | Unlimited |
+| Federation (cross-cluster) | **1 cluster** | up to 5 clusters | Unlimited |
+| Materialized Views | **1** | 50 | Unlimited |
+| Max query results | 10,000 | 1,000,000 | Unlimited |
+| ES 6 / 7 / 8 / 9 support | Yes | Yes | Yes |
+| Support | Community | Email / 48h | Priority / 4h SLA |
+| SSO · air-gapped licensing · custom quotas | — | — | Yes |
+
+> Single-cluster cross-index JOINs and one Materialized View are **free** in
+> Community — taste both superpowers, then scale up by cluster count, JOIN
+> depth, and MV volume. See the
+> [pricing page](https://softclient4es.dev/licensing/) for details.
 
 ### Elasticsearch License Requirements
 

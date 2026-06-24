@@ -1461,7 +1461,6 @@ Returns the current license type, quota values, expiration date, and grace statu
 | `max_materialized_views` | Maximum number of materialized views allowed, or "unlimited" |
 | `max_clusters` | Maximum number of federated clusters allowed, or "unlimited" |
 | `max_result_rows` | Maximum rows returned per query, or "unlimited" |
-| `max_concurrent_queries` | Maximum concurrent queries allowed, or "unlimited" |
 | `max_joins` | Maximum number of JOIN operations allowed per query, or "unlimited" |
 | `expires_at` | License expiration timestamp, or "never" for Community |
 | `days_remaining` | Days until expiration, or -1 for Community (no expiry) |
@@ -1473,9 +1472,9 @@ Returns the current license type, quota values, expiration date, and grace statu
 SHOW LICENSE;
 ```
 
-| license_type | trial | platform | max_materialized_views | max_clusters | max_result_rows | max_concurrent_queries | max_joins | expires_at | days_remaining | status |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Community | false | PRODUCTION | 3 | 1 | 10000 | 5 | 1 | never | -1 | Active |
+| license_type | trial | platform | max_materialized_views | max_clusters | max_result_rows | max_joins | expires_at | days_remaining | status |
+|---|---|---|---|---|---|---|---|---|---|
+| Community | false | PRODUCTION | 1 | 1 | 10000 | 2 | never | -1 | Active |
 📊 1 row(s) (1ms)
 
 ---
