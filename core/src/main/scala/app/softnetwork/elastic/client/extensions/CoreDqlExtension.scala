@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.licensing._
 import app.softnetwork.elastic.sql.query._
 import com.typesafe.config.Config
+import org.slf4j.Logger
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -57,8 +58,8 @@ import scala.concurrent.{ExecutionContext, Future}
 //format:on
 class CoreDqlExtension extends ExtensionSpi {
 
-  protected var licenseManager: Option[LicenseManager] = None
-  protected val logger = org.slf4j.LoggerFactory.getLogger(getClass)
+  private[this] var licenseManager: Option[LicenseManager] = None
+  private[this] val logger: Logger = org.slf4j.LoggerFactory.getLogger(getClass)
 
   /** Story P0.6 -- the cap-hit collector captured at `initialize`. It is the SAME per-strategy
     * `TelemetryCollector` that `GatewayApi.run` increments for `queriesTotal`, so a `QueryResults`
@@ -67,7 +68,7 @@ class CoreDqlExtension extends ExtensionSpi {
     * `EnforcedDqlExtension` (priority &lt; 100) extends this class and inherits the increment via
     * the shared `capOrReject`, so the paid enforcement path counts cap-hits too.
     */
-  protected var capHitCollector: TelemetryCollector = TelemetryCollector.Noop
+  private[this] var capHitCollector: TelemetryCollector = TelemetryCollector.Noop
 
   override def extensionId: String = "core-dql"
   override def extensionName: String = "Core DQL Quotas"
