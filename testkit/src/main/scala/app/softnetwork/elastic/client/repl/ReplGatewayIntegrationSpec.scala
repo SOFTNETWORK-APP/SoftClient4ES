@@ -1259,7 +1259,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
 
     val watcherStatus = executeSync("SHOW WATCHER STATUS my_watcher_interval")
     watcherStatus match {
-      case ExecutionSuccess(QueryRows(rows), _) =>
+      case ExecutionSuccess(QueryRows(rows, _), _) =>
         rows.size shouldBe 1
         val row = rows.head
         log.info(s"Watcher Status: $row")
@@ -1272,7 +1272,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     if (supportsQueryWatchers) {
       val watchers = executeSync("SHOW WATCHERS")
       watchers match {
-        case ExecutionSuccess(QueryRows(rows), _) =>
+        case ExecutionSuccess(QueryRows(rows, _), _) =>
           rows.find(row => row.get("id").contains("my_watcher_interval")) match {
             case Some(row) =>
               row.get("is_healthy") shouldBe Some(true)
@@ -1365,7 +1365,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     val executePolicy = "EXECUTE ENRICH POLICY my_policy"
     val result = executeSync(executePolicy)
     result match {
-      case ExecutionSuccess(QueryRows(rows), _) =>
+      case ExecutionSuccess(QueryRows(rows, _), _) =>
         rows.size shouldBe 1
         val row = rows.head
         log.info(s"Policy Execution Result: $row")
@@ -1440,7 +1440,6 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     row("license_type") shouldBe "Community"
     row should contain key "max_materialized_views"
     row should contain key "max_result_rows"
-    row should contain key "max_concurrent_queries"
     row should contain key "max_clusters"
     row should contain key "expires_at"
     row("expires_at") shouldBe "never"

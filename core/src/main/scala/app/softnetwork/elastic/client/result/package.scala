@@ -393,17 +393,60 @@ package object result {
     def empty: QueryResult = EmptyResult
   }
 
+  /** Truncation metadata for a result that was capped at its source.
+    *
+    * Mirrors the JOIN path's `TruncationResult` (arrow `JoinLicenseGuard`) so single-index
+    * truncation surfaces through the identical driver channels: JDBC/ADBC `SQLWarning` SQLState
+    * `"01004"` and Flight schema metadata `x-result-truncated` / `x-result-total-rows` /
+    * `x-result-limit`.
+    *
+    * `totalRows = None` when the pre-cap total is unknown (the result was capped at the source and
+    * the stream never scanned past the limit — by design; see Story P0.5 OQ-4).
+    *
+    * @param truncated
+    *   whether the result was actually capped (rows available exceeded the limit)
+    * @param limit
+    *   the row-count cap that was applied (the licensed `maxQueryResults`)
+    * @param totalRows
+    *   the true pre-cap total when cheaply known (scroll first-response `hits.total`), else `None`
+    * @param warning
+    *   a human-readable, tier-aware message reusable verbatim as the `"01004"` `SQLWarning` text
+    */
+  case class ResultTruncation(
+    truncated: Boolean,
+    limit: Long,
+    totalRows: Option[Long],
+    warning: String
+  )
+
   // --------------------
   // DQL (SELECT)
   // --------------------
-  case class QueryRows(rows: Seq[ListMap[String, Any]]) extends QueryResult
 
-  case class QueryStream(
-    stream: Source[(ListMap[String, Any], ScrollMetrics), NotUsed]
+  /** A materialized set of result rows.
+    *
+    * Story P0.5: the additive, default-`None` `truncation` field carries the single-index result
+    * cap signal. Because the field has a default value, every `QueryRows(rows)` '''constructor'''
+    * call across core / arrow / jdbc keeps compiling unchanged. Positional '''pattern''' matches
+    * (`case QueryRows(rows)`) must add a trailing `_` (`case QueryRows(rows, _)`) — the compiler's
+    * synthetic extractor now binds both fields. (A custom 1-arg companion `unapply` was rejected:
+    * Scala 2.12 still prefers the synthetic 2-arg extractor, so it is not cross-version safe.)
+    */
+  case class QueryRows(
+    rows: Seq[ListMap[String, Any]],
+    truncation: Option[ResultTruncation] = None
   ) extends QueryResult
 
-  case class QueryStructured(response: ElasticResponse) extends QueryResult {
-    def asQueryRows: QueryRows = QueryRows(response.results)
+  case class QueryStream(
+    stream: Source[(ListMap[String, Any], ScrollMetrics), NotUsed],
+    truncation: Option[ResultTruncation] = None
+  ) extends QueryResult
+
+  case class QueryStructured(
+    response: ElasticResponse,
+    truncation: Option[ResultTruncation] = None
+  ) extends QueryResult {
+    def asQueryRows: QueryRows = QueryRows(response.results, truncation)
   }
 
   case class StreamResult(

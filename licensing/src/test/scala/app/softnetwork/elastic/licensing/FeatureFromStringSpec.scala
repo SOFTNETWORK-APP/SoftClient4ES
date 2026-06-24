@@ -33,14 +33,6 @@ class FeatureFromStringSpec extends AnyFlatSpec with Matchers {
     Feature.fromString("adbc_driver") shouldBe Some(Feature.AdbcDriver)
   }
 
-  it should "map unlimited_results" in {
-    Feature.fromString("unlimited_results") shouldBe Some(Feature.UnlimitedResults)
-  }
-
-  it should "map advanced_aggregations" in {
-    Feature.fromString("advanced_aggregations") shouldBe Some(Feature.AdvancedAggregations)
-  }
-
   it should "map flight_sql" in {
     Feature.fromString("flight_sql") shouldBe Some(Feature.FlightSql)
   }
@@ -55,6 +47,11 @@ class FeatureFromStringSpec extends AnyFlatSpec with Matchers {
 
   it should "return None for unknown string" in {
     Feature.fromString("warp_drive") shouldBe None
+  }
+
+  it should "return None for retired flag strings" in {
+    Feature.fromString("unlimited_results") shouldBe None
+    Feature.fromString("advanced_aggregations") shouldBe None
   }
 
   it should "be case-insensitive" in {

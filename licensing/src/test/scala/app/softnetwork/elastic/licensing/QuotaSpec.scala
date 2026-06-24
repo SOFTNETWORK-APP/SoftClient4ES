@@ -25,20 +25,16 @@ class QuotaSpec extends AnyFlatSpec with Matchers {
     Quota.Community.maxClusters shouldBe Some(1)
   }
 
-  it should "have maxJoins = Some(1)" in {
-    Quota.Community.maxJoins shouldBe Some(1)
+  it should "have maxJoins = Some(2)" in {
+    Quota.Community.maxJoins shouldBe Some(2)
   }
 
-  it should "have maxMaterializedViews = Some(3)" in {
-    Quota.Community.maxMaterializedViews shouldBe Some(3)
+  it should "have maxMaterializedViews = Some(1)" in {
+    Quota.Community.maxMaterializedViews shouldBe Some(1)
   }
 
   it should "have maxQueryResults = Some(10000)" in {
     Quota.Community.maxQueryResults shouldBe Some(10000)
-  }
-
-  it should "have maxConcurrentQueries = Some(5)" in {
-    Quota.Community.maxConcurrentQueries shouldBe Some(5)
   }
 
   "Quota.Pro" should "have maxClusters = Some(5)" in {
@@ -57,10 +53,6 @@ class QuotaSpec extends AnyFlatSpec with Matchers {
     Quota.Pro.maxQueryResults shouldBe Some(1000000)
   }
 
-  it should "have maxConcurrentQueries = Some(50)" in {
-    Quota.Pro.maxConcurrentQueries shouldBe Some(50)
-  }
-
   "Quota.Enterprise" should "have maxClusters = None (unlimited)" in {
     Quota.Enterprise.maxClusters shouldBe None
   }
@@ -77,15 +69,10 @@ class QuotaSpec extends AnyFlatSpec with Matchers {
     Quota.Enterprise.maxQueryResults shouldBe None
   }
 
-  it should "have maxConcurrentQueries = None (unlimited)" in {
-    Quota.Enterprise.maxConcurrentQueries shouldBe None
-  }
-
   "Quota default constructor" should "use maxClusters = Some(0)" in {
     val quota = Quota(
       maxMaterializedViews = Some(10),
-      maxQueryResults = Some(100),
-      maxConcurrentQueries = Some(1)
+      maxQueryResults = Some(100)
     )
     quota.maxClusters shouldBe Some(0)
     quota.maxJoins shouldBe Some(0)

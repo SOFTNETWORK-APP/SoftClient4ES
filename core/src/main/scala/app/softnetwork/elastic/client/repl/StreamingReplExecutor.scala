@@ -62,7 +62,7 @@ class StreamingReplExecutor(gateway: ElasticClientApi)(implicit
         val executionTime = (System.nanoTime() - startTime).nanos
 
         elasticResult match {
-          case ElasticSuccess(QueryStream(source)) =>
+          case ElasticSuccess(QueryStream(source, _)) =>
             // Store stream context for later consumption
             activeStream = Some(StreamContext(source.map(_._1), sql, startTime))
             ExecutionSuccess(

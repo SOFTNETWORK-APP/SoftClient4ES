@@ -48,19 +48,19 @@ class LicenseUsageSpec extends AnyFlatSpec with Matchers {
   }
 
   "checkQuota for MaterializedViews" should "return None when within quota" in {
-    val usage = LicenseUsage(totalMvsActive = 2)
+    val usage = LicenseUsage(totalMvsActive = 0)
     usage.checkQuota(Feature.MaterializedViews, Quota.Community) shouldBe None
   }
 
   it should "return None at exact quota boundary" in {
-    val usage = LicenseUsage(totalMvsActive = 3)
+    val usage = LicenseUsage(totalMvsActive = 1)
     usage.checkQuota(Feature.MaterializedViews, Quota.Community) shouldBe None
   }
 
   it should "detect exceeded maxMaterializedViews" in {
-    val usage = LicenseUsage(totalMvsActive = 4)
+    val usage = LicenseUsage(totalMvsActive = 2)
     usage.checkQuota(Feature.MaterializedViews, Quota.Community) shouldBe Some(
-      QuotaExceeded("maxMaterializedViews", 4, 3)
+      QuotaExceeded("maxMaterializedViews", 2, 1)
     )
   }
 
@@ -100,6 +100,5 @@ class LicenseUsageSpec extends AnyFlatSpec with Matchers {
     val usage = LicenseUsage(totalMvsActive = 100, totalFederatedClusters = 100)
     usage.checkQuota(Feature.JdbcDriver, Quota.Community) shouldBe None
     usage.checkQuota(Feature.FlightSql, Quota.Community) shouldBe None
-    usage.checkQuota(Feature.UnlimitedResults, Quota.Community) shouldBe None
   }
 }

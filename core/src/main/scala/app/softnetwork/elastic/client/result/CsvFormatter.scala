@@ -23,7 +23,7 @@ object CsvFormatter {
   @tailrec
   def format(result: QueryResult): String = {
     result match {
-      case QueryRows(rows) if rows.nonEmpty =>
+      case QueryRows(rows, _) if rows.nonEmpty =>
         val columns = rows.head.keys.toSeq
         val header = columns.mkString(",")
         val body = rows
@@ -33,7 +33,7 @@ object CsvFormatter {
           .mkString("\n")
         s"$header\n$body"
 
-      case QueryStructured(response) if response.results.nonEmpty =>
+      case QueryStructured(response, _) if response.results.nonEmpty =>
         format(QueryRows(response.results))
 
       case _ =>

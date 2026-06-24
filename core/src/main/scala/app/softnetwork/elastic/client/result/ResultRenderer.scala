@@ -48,10 +48,10 @@ object ResultRenderer {
       case EmptyResult =>
         renderEmpty()
 
-      case QueryRows(rows) =>
+      case QueryRows(rows, _) =>
         renderTable(rows, executionTime)
 
-      case QueryStructured(response) =>
+      case QueryStructured(response, _) =>
         renderTable(response.results, executionTime)
 
       case DmlResult(inserted, updated, deleted, rejected) =>
@@ -69,7 +69,7 @@ object ResultRenderer {
       case SQLResult(sql) =>
         renderSql(sql)
 
-      case QueryStream(_) =>
+      case QueryStream(_, _) =>
         renderStreamInfo()
 
       case StreamResult(estimatedSize, _) =>
