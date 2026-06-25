@@ -4,6 +4,9 @@
 
 The SoftClient4ES federation Helm chart deploys a **cross-cluster Arrow Flight SQL coordinator** (the *federation server*) plus one **per-ES-version sidecar** for each Elasticsearch cluster you want to federate. One `values.yaml` + `helm install` replaces 30+ minutes of hand-written HOCON, Kubernetes manifests, Secrets, and probe wiring.
 
+> **See also:** the federation server is the query-time coordinator behind cross-cluster JOINs. For the JOIN semantics it serves — single-index, cross-index, and cross-cluster — see the [Cross-Index JOIN matrix](../sql/joins.md).
+<!-- TODO(17.1): ../sql/joins.md lands with Story 17.1 (PR #137, base release-r1) — resolve/verify link before R1 launch. -->
+
 ## 1. Prerequisites
 
 - A Kubernetes cluster (v1.27+ recommended for native gRPC readiness probes; on **older clusters set `federation.probes.useGrpc: false`** for TCP readiness — no extra binary needed; see §9/§10).
@@ -215,7 +218,3 @@ Sidecars are independent — there is **no constraint** on mixing ES 6/7/8/9 in 
 ## 12. SLA implications
 
 Pro includes 48h support. This guide is intended to be authoritative enough that the common scenarios (install, add/remove a cluster, mixed-version migration, the over-quota and connectivity failure modes) are self-serviceable without a ticket.
-
-## For Epic 17
-
-Epic 17 (Documentation & Marketing) consumes, for R1 launch-day docs: **this operator guide** (linked/included from the launch docs), the **`examples/` topology folders** (single-cluster, three-region, heterogeneous-ready — each with README + ASCII diagram), and the **SRE incident-triage walkthrough** (§10, linked from the R1 marketing SRE-wedge story).
