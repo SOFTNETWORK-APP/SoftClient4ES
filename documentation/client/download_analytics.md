@@ -1,11 +1,10 @@
-# Telemetry & Privacy
+# Download Analytics
 
 SoftClient4ES measures **driver adoption** with anonymous, aggregate counts only. This page describes
-the download analytics specifically; a complete, surface-by-surface telemetry overview will follow.
-
-> This is the core-project mirror of the website page
-> [Telemetry & Privacy](https://softclient4es.com/privacy/telemetry/) — kept in sync per the dual-doc
-> convention.
+the **download analytics** specifically — the small beacon sent when you click a Download button on the
+website. For the complete, surface-by-surface product-telemetry overview (what the JDBC/ADBC drivers, the
+REPL, and the Arrow Flight SQL / federation servers send, and how to opt out), see
+[Telemetry & Privacy](telemetry.md).
 
 ## What is collected
 

@@ -116,7 +116,7 @@ softclient4es.telemetry.enabled = false
 -Dsoftclient4es.telemetry.enabled=false
 ```
 
-> A dedicated driver property (JDBC URL `?telemetry=false`) or ADBC connection option may also be offered — when available it will be documented here. Until then, use the HOCON / `-D` form above for the drivers.
+> The JDBC driver also accepts `?telemetry=false` directly on the JDBC URL. The ADBC driver has no equivalent connection option — use the HOCON / `-D` form above.
 
 ## What happens when you opt out
 
