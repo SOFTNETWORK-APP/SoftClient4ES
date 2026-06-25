@@ -1,0 +1,39 @@
+<svg width="640" height="380" viewBox="0 0 640 380" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <!-- source 1 -->
+  <rect x="40" y="40" width="160" height="50" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="120" y="70" font-family="Arial" font-size="14" text-anchor="middle">prod_us</text>
+
+  <!-- source 2 -->
+  <rect x="40" y="180" width="160" height="50" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="120" y="210" font-family="Arial" font-size="14" text-anchor="middle">prod_fr</text>
+
+  <!-- coordinator -->
+  <rect x="300" y="70" width="300" height="90" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="450" y="105" font-family="Arial" font-size="14" text-anchor="middle">Federation coordinator</text>
+  <text x="450" y="126" font-family="Arial" font-size="12" text-anchor="middle">Parquet scratch +</text>
+  <text x="450" y="143" font-family="Arial" font-size="12" text-anchor="middle">per-query DuckDB view</text>
+
+  <!-- leg 1 -->
+  <line x1="200" y1="62" x2="298" y2="92" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="245" y="62" font-family="Arial" font-size="11" text-anchor="middle">leg 1</text>
+
+  <!-- leg 2 -->
+  <line x1="200" y1="206" x2="298" y2="140" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="245" y="190" font-family="Arial" font-size="11" text-anchor="middle">leg 2</text>
+
+  <!-- coordinator-local JOIN -->
+  <line x1="450" y1="160" x2="450" y2="244" stroke="#333" marker-end="url(#arrow)"/>
+  <rect x="320" y="248" width="260" height="44" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="450" y="275" font-family="Arial" font-size="14" text-anchor="middle">coordinator-local JOIN</text>
+
+  <!-- target -->
+  <line x1="450" y1="292" x2="450" y2="318" stroke="#333" marker-end="url(#arrow)"/>
+  <rect x="320" y="322" width="260" height="44" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="450" y="349" font-family="Arial" font-size="14" text-anchor="middle">prod_eu (target)</text>
+</svg>

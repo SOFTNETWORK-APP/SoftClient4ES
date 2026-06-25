@@ -29,9 +29,9 @@ Cross-index JOIN ships in three shapes ("rows"). Pick by where your data lives:
 
 **One sentence to decide:** same cluster → **Row 1**; copy results between two clusters → **Row 2**; join across two or more clusters → **Row 3**.
 
-The rule the engine actually applies: `QueryRouter.routeWriteWithJoin` counts the **distinct source catalogs** in the rewritten `FROM` / `JOIN` clauses versus the target catalog. Same (or no) catalog → Row 1; exactly one source catalog different from the target → Row 2; two or more source catalogs → Row 3.
+The rule the engine actually applies: it counts the **distinct source catalogs** in the rewritten `FROM` / `JOIN` clauses versus the target catalog. Same (or no) catalog → Row 1; exactly one source catalog different from the target → Row 2; two or more source catalogs → Row 3.
 
-> **What does NOT work yet:** Cross-index JOINs are first-class in R1, but two things are intentionally **not** here yet: arbitrary **subqueries / CTEs** in a JOIN query land in **R2a**, and **heterogeneous Row-3 sources** (joining ES with Postgres, MySQL, Snowflake, …) land in **R2b** — R1 Row 3 is multi-**Elasticsearch** only. See Known limitations (_pending 17.6_) for the full list.
+> **What does NOT work yet:** Cross-index JOINs are first-class in this release, but two things are intentionally **not** here yet: arbitrary **subqueries / CTEs** in a JOIN query land in **the next release (Quarter 4 2026)**, and **heterogeneous Row-3 sources** (joining ES with Postgres, MySQL, Snowflake, …) land in **the upcoming release (Quarter 1 2027)** — this release's Row 3 is multi-**Elasticsearch** only. See [Known limitations](known_limitations.md) for the full list.
 
 ---
 
@@ -39,21 +39,9 @@ The rule the engine actually applies: `QueryRouter.routeWriteWithJoin` counts th
 
 A Row-1 JOIN reaches two or more indices in **one** Elasticsearch cluster. Each table in the query becomes its own ES sub-query (with any single-table `WHERE` pushed down into it); the cross-index JOIN itself is executed in-process by an embedded **DuckDB** engine inside the driver, sidecar, or REPL. The first JOIN on a fresh process warms up the DuckDB native library once.
 
-```
-        SQL: SELECT ... FROM emp e JOIN dept d ON e.dept_id = d.dept_id
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │   Driver / sidecar / REPL  │
-                    │   (embedded DuckDB engine) │
-                    └─────────────┬─────────────┘
-              sub-query e │                 │ sub-query d
-                          ▼                 ▼
-                   ┌────────────┐    ┌────────────┐
-                   │  ES index  │    │  ES index  │   ← one cluster
-                   │    emp     │    │    dept    │
-                   └────────────┘    └────────────┘
-                          └────► joined in DuckDB ◄────┘ → rows to client
-```
+![Row 1 — same-cluster passthrough](diagrams/join-row1.svg)
+
+*Row 1 — same-cluster passthrough: the embedded DuckDB engine fans each table out to its own ES sub-query in one cluster, then joins the results in-process before returning rows to the client.*
 
 All examples below are transcribed verbatim from the SoftClient4ES JDBC integration test suite.
 They run against two fixtures: **`jdbc_join_emp`** (`emp_id`, `dept_id`, `name`, `salary` — 6 rows: Alice/1/1/6000, Bob/2/1/4000, Carol/3/1/8000, Dave/4/2/5500, Eve/5/2/3000, Orphan/6/**99**/4500) and **`jdbc_join_dept`** (`dept_id`, `dept_name` — Engineering=1, Marketing=2, Empty=9). The orphan employee (`dept_id`=99) and the empty department (`dept_id`=9) surface the outer-join NULLs.
@@ -207,17 +195,9 @@ WHERE e.salary > ?;   -- bind 3500.0 → more rows; bind 6500.0 → fewer (Carol
 
 A Row-2 operation has its **target** in a different cluster from its **source**. The Federation coordinator runs the source SELECT on the source cluster's sidecar, receives the result as an Arrow stream, and **conveyors** it to the target sidecar for a bulk-load. (The JOIN in 2a/2b is itself single-source — both source tables are in `prod_us` — but the *target* `prod_eu` is a different cluster, and that is what makes it Row 2. A plain catalog-to-catalog `INSERT … SELECT *` with no JOIN is also a Row-2 conveyor.)
 
-```
-   ┌──────────────────────────┐
-   │  Federation coordinator  │
-   └───┬──────────────────▲───┘
-   1.  │ run source SELECT │  2. Arrow stream
-       ▼                   │
-   ┌────────────────────┐  │        ┌────────────────────┐
-   │  prod_us  sidecar  │──┘        │  prod_eu  sidecar  │  ← target
-   └────────────────────┘           └─────────▲──────────┘
-            └──────── 3. bulk-load conveyor ───┘
-```
+![Row 2 — cross-cluster conveyor](diagrams/join-row2.svg)
+
+*Row 2 — cross-cluster conveyor: the coordinator runs the source SELECT on `prod_us`, receives the result as an Arrow stream, and bulk-loads it onto the `prod_eu` target sidecar.*
 
 Cross-cluster references use **backtick-quoted catalog prefixes** — the catalog name is the Federation `servers.<name>` alias, which Federation strips before forwarding each leg's SELECT to its source cluster.
 
@@ -247,23 +227,11 @@ JOIN `prod_us`.customers c ON o.id = c.id;
 
 A Row-3 JOIN reaches **two or more source clusters**. The coordinator stages each leg to Parquet scratch on disk and exposes it as a per-query DuckDB view (named `q_<UUID>` for isolation), then runs the JOIN **coordinator-local**.
 
-> **R1 = multi-Elasticsearch only:** in R1, Row 3 joins across **multiple Elasticsearch clusters**. Joining Elasticsearch against heterogeneous sources (Postgres, MySQL, Snowflake, …) is **coming in R2b** — it is not promised for R1.
+> **Multi-Elasticsearch only in this release:** in this release, Row 3 joins across **multiple Elasticsearch clusters**. Joining Elasticsearch against heterogeneous sources (Postgres, MySQL, Snowflake, …) is **coming in the upcoming release (Quarter 1 2027)** — it is not promised for this release.
 
-```
-   ┌──────────────┐   leg 1   ┌──────────────────────────┐
-   │  prod_us     │──────────▶│  Federation coordinator  │
-   └──────────────┘           │                          │
-   ┌──────────────┐   leg 2   │  Parquet scratch + a     │
-   │  prod_fr     │──────────▶│  per-query DuckDB view   │
-   └──────────────┘           └────────────┬─────────────┘
-                                            ▼
-                                 coordinator-local JOIN
-                                            │
-                                            ▼
-                              ┌──────────────────────────┐
-                              │  prod_eu  (target)        │
-                              └──────────────────────────┘
-```
+![Row 3 — multi-source coordinator](diagrams/join-row3.svg)
+
+*Row 3 — multi-source coordinator: each source leg (`prod_us`, `prod_fr`) is staged to Parquet scratch and exposed as a per-query DuckDB view; the JOIN runs coordinator-local before landing on the `prod_eu` target.*
 
 **Multi-source SELECT JOIN** (read; the headline three-cluster query — two source catalogs, joined coordinator-local):
 
@@ -274,7 +242,7 @@ JOIN `prod_eu`.customers c ON o.id = c.id;
 -- two source catalogs (prod_us, prod_eu) → coordinator-local join
 ```
 
-This is the SRE wedge: **correlate logs, metrics, and traces across regional ES clusters in one SQL query.** (The full SRE story lives in the Federation operator guide (_pending 16.6/17.2 merge_) and the `three-region` example topology.)
+This is the SRE wedge: **correlate logs, metrics, and traces across regional ES clusters in one SQL query.** (The full SRE story lives in the [Federation operator guide](../client/federation_operator_guide.md) and the `three-region` example topology.)
 
 **Multi-source INSERT-with-JOIN** (sources `prod_us` + `prod_fr`, target `prod_eu`):
 
@@ -298,12 +266,12 @@ JOIN `prod_fr`.customers c ON o.customer_id = c.id;
 
 ## Performance characteristics
 
-What to expect per row, qualitatively. (Hard latency and throughput numbers belong to the R1.1 Arrow benchmark — link forward, don't pre-empt.)
+What to expect per row, qualitatively. (Hard latency and throughput numbers belong to a follow-up release's Arrow benchmark — link forward, don't pre-empt.)
 
 - **Row 1** — lowest latency of the three rows; the JOIN is in-process DuckDB over ES sub-query results, so the dominant cost is the ES sub-queries plus the cross product. The first JOIN on a fresh process pays a one-time DuckDB native-library warm-up.
 - **Row 2** — adds a network hop (coordinator → source SELECT) plus a bulk-load conveyor to the target; throughput is bound by the Arrow stream and target ingest, not by JSON — data crosses the wire as Arrow RecordBatches.
 - **Row 3** — adds per-leg Parquet staging on the coordinator before the DuckDB join; cost scales with the **largest** leg plus the join cardinality.
-- **Arrow wire format** — for **Flight SQL** and **ADBC** clients specifically, results stream as Arrow RecordBatches (zero JSON on the wire). The JDBC driver surfaces JOIN rows via an in-process Arrow result set and the REPL renders to a console, so the clean zero-JSON-wire property is a Flight-SQL/ADBC trait, not a blanket one. The value here is interoperability and SQL completeness; the full zero-copy speed story is the R1.1 benchmark.
+- **Arrow wire format** — for **Flight SQL** and **ADBC** clients specifically, results stream as Arrow RecordBatches (zero JSON on the wire). The JDBC driver surfaces JOIN rows via an in-process Arrow result set and the REPL renders to a console, so the clean zero-JSON-wire property is a Flight-SQL/ADBC trait, not a blanket one. The value here is interoperability and SQL completeness; the full zero-copy speed story is a follow-up release's benchmark.
 
 ### Row truncation at the result cap
 
@@ -316,7 +284,7 @@ The **joined output** is capped at the tier's `maxQueryResults` (Community 10,00
 Every tier **has every feature.** The meter gates *scale*, not an on/off switch.
 
 - **`maxJoins` — JOIN depth per query.** A 2-table JOIN counts as **1** JOIN, a 3-table JOIN as **2**, a 4-table JOIN as **3**. Community **2** (up to a 3-table JOIN), Pro **5** (up to a 6-table JOIN), Enterprise **∞**. `UNNEST` does **not** count toward `maxJoins`.
-- **`maxClusters` — cross-cluster reach.** Community **1**, Pro **5**, Enterprise **∞**. Single-cluster Federation is free — the **meter**, not a feature flag, is the paywall. **ES-only at R1** (phrased "across N ES clusters").
+- **`maxClusters` — cross-cluster reach.** Community **1**, Pro **5**, Enterprise **∞**. Single-cluster Federation is free — the **meter**, not a feature flag, is the paywall. **ES-only in this release** (phrased "across N ES clusters").
 - **`maxMaterializedViews` — persisted views.** Community **1**, Pro **50**, Enterprise **∞**.
 
 **Community has Federation.** It is capped at 1 cluster — the quota *is* the paywall, not a feature gate. One sidecar / one cluster boots free; a second cluster makes the Federation sidecar fail to start by design.
@@ -357,23 +325,23 @@ For the full price matrix and editions, see the licensing & pricing page on the 
 
 ## What does NOT work yet
 
-- **Arbitrary subqueries and CTEs** inside a JOIN query — coming in **R2a**.
-- **Heterogeneous Row-3 sources** (joining Elasticsearch with Postgres, MySQL, Snowflake, …) — coming in **R2b**; R1 Row 3 is multi-Elasticsearch only.
+- **Arbitrary subqueries and CTEs** inside a JOIN query — coming in **the next release (Quarter 4 2026)**.
+- **Heterogeneous Row-3 sources** (joining Elasticsearch with Postgres, MySQL, Snowflake, …) — coming in **the upcoming release (Quarter 1 2027)**; this release's Row 3 is multi-Elasticsearch only.
 
-Full list: Known limitations (_pending 17.6_).
+Full list: [Known limitations](known_limitations.md).
 
 ## Try it in 5 minutes
 
-- JDBC quickstart — single-cluster JOIN from any JDBC tool.
-- ADBC quickstart (_pending 17.3_) — in-process Arrow.
-- Arrow Flight SQL quickstart — columnar streaming.
-- Federation operator guide (_pending 16.6/17.2 merge_) — cross-cluster (Rows 2 & 3) with the Helm chart.
-- Example topologies live in the [`softclient4es-helm`](https://github.com/SOFTNETWORK-APP/softclient4es-helm) repo: `softclient4es-federation/examples/single-cluster/` and `.../three-region/`. (_pending Epic-16 topologies_)
+- [JDBC quickstart](../client/jdbc.md) — single-cluster JOIN from any JDBC tool.
+- [ADBC quickstart](../client/adbc_driver.md) — in-process Arrow.
+- [Arrow Flight SQL quickstart](../client/arrow_flight_sql.md) — columnar streaming.
+- [Federation operator guide](../client/federation_operator_guide.md) — cross-cluster (Rows 2 & 3) with the Helm chart.
+- Example topologies live in the [`softclient4es-helm`](https://github.com/SOFTNETWORK-APP/softclient4es-helm) repo: `softclient4es-federation/examples/single-cluster/` and `.../three-region/`.
 
 ## See also
 
 - [Materialized Views](materialized_views.md) — superpower #2: persisted, pre-joined data.
 - [DQL Support](dql_statements.md) — non-JOIN SELECT and `JOIN UNNEST` detail.
 - Licensing & pricing — the full edition / quota matrix (on the website).
-- Known limitations (_pending 17.6_).
-- Federation operator guide (_pending 16.6/17.2 merge_).
+- [Known limitations](known_limitations.md).
+- [Federation operator guide](../client/federation_operator_guide.md).

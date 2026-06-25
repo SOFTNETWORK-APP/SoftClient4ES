@@ -1,0 +1,32 @@
+<svg width="620" height="300" viewBox="0 0 620 300" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <!-- coordinator -->
+  <rect x="200" y="20" width="220" height="50" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="310" y="50" font-family="Arial" font-size="14" text-anchor="middle">Federation coordinator</text>
+
+  <!-- source sidecar -->
+  <rect x="40" y="200" width="200" height="50" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="140" y="230" font-family="Arial" font-size="14" text-anchor="middle">prod_us sidecar</text>
+
+  <!-- target sidecar -->
+  <rect x="380" y="200" width="220" height="50" rx="6" fill="#f0f0f0" stroke="#333"/>
+  <text x="490" y="225" font-family="Arial" font-size="13" text-anchor="middle">prod_eu sidecar</text>
+  <text x="490" y="241" font-family="Arial" font-size="11" text-anchor="middle">(target)</text>
+
+  <!-- 1. run source SELECT -->
+  <line x1="250" y1="70" x2="150" y2="200" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="120" y="135" font-family="Arial" font-size="11">1. run source SELECT</text>
+
+  <!-- 2. Arrow stream -->
+  <line x1="170" y1="200" x2="290" y2="70" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="245" y="150" font-family="Arial" font-size="11">2. Arrow stream</text>
+
+  <!-- 3. bulk-load conveyor -->
+  <line x1="370" y1="60" x2="470" y2="200" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="430" y="135" font-family="Arial" font-size="11">3. bulk-load conveyor</text>
+</svg>
