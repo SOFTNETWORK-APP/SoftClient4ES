@@ -55,8 +55,7 @@ A Row-1 JOIN reaches two or more indices in **one** Elasticsearch cluster. Each 
                           └────► joined in DuckDB ◄────┘ → rows to client
 ```
 
-All examples below are transcribed verbatim from the JDBC integration suite
-`softclient4es-jdbc/testkit/src/main/scala/app/softnetwork/elastic/jdbc/JdbcIntegrationSpec.scala`.
+All examples below are transcribed verbatim from the SoftClient4ES JDBC integration test suite.
 They run against two fixtures: **`jdbc_join_emp`** (`emp_id`, `dept_id`, `name`, `salary` — 6 rows: Alice/1/1/6000, Bob/2/1/4000, Carol/3/1/8000, Dave/4/2/5500, Eve/5/2/3000, Orphan/6/**99**/4500) and **`jdbc_join_dept`** (`dept_id`, `dept_name` — Engineering=1, Marketing=2, Empty=9). The orphan employee (`dept_id`=99) and the empty department (`dept_id`=9) surface the outer-join NULLs.
 
 A few examples use a separate small fixture **`jdbc_test`** (`id`, `name`, `value` — a 3-column table, **not** the employees table; it has no `salary`/`dept_id`).
@@ -222,8 +221,7 @@ A Row-2 operation has its **target** in a different cluster from its **source**.
 
 Cross-cluster references use **backtick-quoted catalog prefixes** — the catalog name is the Federation `servers.<name>` alias, which Federation strips before forwarding each leg's SELECT to its source cluster.
 
-Examples are transcribed from
-`softclient4es-arrow/federation/src/test/scala/app/softnetwork/elastic/arrow/federation/FederationJoinE2ESpec.scala`.
+Examples are transcribed from the SoftClient4ES Federation integration test suite.
 
 **Cross-cluster INSERT-with-JOIN** — the source SELECT runs on `prod_us`, conveyed to `prod_eu`:
 
