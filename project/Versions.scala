@@ -40,7 +40,11 @@ object Versions {
 
   val elastic94s = "9.0.0"
 
-  val log4j = "2.8.2"
+  // 2.17.1 = the version Elasticsearch 7.17 bundles for log4j-core (post-log4shell). Keeping
+  // log4j-api aligned with that transitive core is REQUIRED: ES7's RestHighLevelClient.<clinit>
+  // hard-references org.apache.logging.log4j.LogManager, and elasticDependencies excludes log4j-api
+  // from elasticsearch while log4j-core still arrives transitively — see elastic4sDependencies(7).
+  val log4j = "2.17.1"
 
   val testContainers = "2.0.2"
 

@@ -72,7 +72,16 @@ trait SoftClient4es {
         )
       case 7 =>
         Seq(
-          "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
+          "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"),
+          // ES7's elastic4s-core pulls elasticsearch-rest-high-level-client, whose <clinit>
+          // hard-references org.apache.logging.log4j.LogManager (log4j-api). elasticDependencies
+          // excludes log4j-api from elasticsearch while log4j-core still arrives transitively, so
+          // without this the published softclient4es7-rest-client — and therefore the es7 REPL,
+          // the es7 JDBC driver and the arrow es7 sidecar — crash on the first ES call with
+          //   NoClassDefFoundError: org/apache/logging/log4j/LogManager.
+          // Versions.log4j (2.17.1) matches the log4j-core ES 7.17 bundles, keeping the pair
+          // aligned. (ES6 RHLC needs no log4j; ES8/9 use the new Java client.)
+          "org.apache.logging.log4j" % "log4j-api" % Versions.log4j
         )
       case 8 =>
         Seq(
