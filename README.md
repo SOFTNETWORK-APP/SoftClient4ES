@@ -414,8 +414,8 @@ are available on **every** tier:
 
 > Single-cluster cross-index JOINs and one Materialized View are **free** in
 > Community — taste both superpowers, then scale up by cluster count, JOIN
-> depth, and MV volume. Federation meters across **ES clusters** specifically at
-> R1; non-ES backends are an R2 concern.
+> depth, and MV volume. Federation meters across **ES clusters** specifically in
+> this release; non-ES backends are a future-release concern.
 
 **What happens at a cap** (every number is enforced, not aspirational): exceeding
 `maxJoins` rejects the query before execution; exceeding `maxClusters` makes the
