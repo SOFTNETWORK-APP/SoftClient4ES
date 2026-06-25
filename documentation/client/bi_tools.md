@@ -19,4 +19,4 @@ Full, step-by-step guides — connect, browse your indices, and run a cross-inde
 
 ## Honest-gap note
 
-Every tool runs the R1 superpower — a **cross-index JOIN** that Elasticsearch can't do — best through explicit `JOIN … ON …` SQL. Some BI tools auto-generate nested subqueries (Tableau live connections, Power BI DirectQuery relationships, the Metabase GUI Question builder); subqueries and CTEs are not in R1 yet. Use Extract / Import / Native-SQL mode with explicit JOINs as the workaround. Full BI-tool subquery / CTE support is coming in R2a. See the website's Known Limitations page for the full picture.
+Every tool runs the superpower of this release — a **cross-index JOIN** that Elasticsearch can't do — best through explicit `JOIN … ON …` SQL. Some BI tools auto-generate nested subqueries (Tableau live connections, Power BI DirectQuery relationships, the Metabase GUI Question builder); subqueries and CTEs are not in this release yet. Use Extract / Import / Native-SQL mode with explicit JOINs as the workaround. Full BI-tool subquery / CTE support is coming in the next release (Quarter 4 2026). See the website's Known Limitations page for the full picture.
