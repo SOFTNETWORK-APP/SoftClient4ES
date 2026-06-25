@@ -5,7 +5,6 @@
 The SoftClient4ES federation Helm chart deploys a **cross-cluster Arrow Flight SQL coordinator** (the *federation server*) plus one **per-ES-version sidecar** for each Elasticsearch cluster you want to federate. One `values.yaml` + `helm install` replaces 30+ minutes of hand-written HOCON, Kubernetes manifests, Secrets, and probe wiring.
 
 > **See also:** the federation server is the query-time coordinator behind cross-cluster JOINs. For the JOIN semantics it serves — single-index, cross-index, and cross-cluster — see the [Cross-Index JOIN matrix](../sql/joins.md).
-<!-- TODO(17.1): ../sql/joins.md lands with Story 17.1 (PR #137, base release-r1) — resolve/verify link before R1 launch. -->
 
 ## 1. Prerequisites
 
@@ -15,7 +14,7 @@ The SoftClient4ES federation Helm chart deploys a **cross-cluster Arrow Flight S
 - A container runtime able to pull from **public DockerHub** (`docker.io/softnetwork/...`). For rate-limit avoidance on first install, configure `imagePullSecrets` with an authenticated DockerHub account.
 - (Multi-cluster only) a **Pro or Enterprise license** — see §7. Single-cluster federation runs free on the Community tier.
 
-> **Image availability:** the federation image `docker.io/softnetwork/softclient4es-federation` is published to public DockerHub at R1 release. The four sidecar images `docker.io/softnetwork/softclient4es{6,7,8,9}-arrow-flight-sql` are already published. Always pin `image.tag` to the published release tag in your `values.yaml`.
+> **Image availability:** the federation image `docker.io/softnetwork/softclient4es-federation` is published to public DockerHub at this release. The four sidecar images `docker.io/softnetwork/softclient4es{6,7,8,9}-arrow-flight-sql` are already published. Always pin `image.tag` to the published release tag in your `values.yaml`.
 
 **Working directory convention.** Every `cp examples/…` and `helm install … ./softclient4es-federation` command in this guide is run **from the chart directory `softclient4es-federation/`** (where `Chart.yaml`, `examples/`, and the `./softclient4es-federation` chart path resolve). `cd` there first:
 
@@ -87,13 +86,13 @@ Each `sidecars[]` entry deploys one Deployment + one Service and registers one `
 
 > ⚠️ **All-or-nothing readiness (SPOF).** With the default `federation.probes.useGrpc: true`, the federation is Ready only if **every** sidecar's backing ES is reachable — one down region pulls the whole federation out of its Service. For partial availability set `federation.probes.useGrpc: false` (TCP readiness on 32020); the federation then stays Ready and fails only the queries that touch the down region. See §9.
 
-## 4. The R2b-ready path
+## 4. The path that is ready for the upcoming release
 
 ```bash
 cp examples/heterogeneous-ready/values.yaml my-values.yaml
 ```
 
-This is the three-region topology **plus commented-out R2b `duckdb-attach` placeholders** (PostgreSQL / MySQL / Snowflake) that show how heterogeneous sources slot into the same `servers` map when R2b ships (Epic 25/26). **In R1 they stay commented** — `GetCatalogs` returns 3, not 6. R1 has no `values.yaml` key for `duckdb-attach` (the `servers` map is ConfigMap-rendered from `sidecars[]` Flight SQL servers only). **Uncommenting them later counts toward the license quota** (`clusterCount` includes attach servers) — 3 ES + 3 attach = 6 > Pro's 5 → Enterprise. See the chart's `examples/heterogeneous-ready/README.md` for the R2b preview narrative.
+This is the three-region topology **plus commented-out `duckdb-attach` placeholders** (PostgreSQL / MySQL / Snowflake) that show how heterogeneous sources slot into the same `servers` map once heterogeneous-source support ships in the upcoming release (Quarter 1 2027). **In this release they stay commented** — `GetCatalogs` returns 3, not 6. This release has no `values.yaml` key for `duckdb-attach` (the `servers` map is ConfigMap-rendered from `sidecars[]` Flight SQL servers only). **Uncommenting them later counts toward the license quota** (the cluster count includes attach servers) — 3 ES + 3 attach = 6 > Pro's 5 → Enterprise. See the chart's `examples/heterogeneous-ready/README.md` for the preview narrative.
 
 ## 5. Configuration reference
 
@@ -153,9 +152,9 @@ The chart **never creates a `Secret`** — you create it (raw, SealedSecrets, Ex
 - **External Secrets Operator (ESO)** — sync from AWS/GCP Secret Manager or Vault. Examples use `external-secrets.io/v1` (the stable API; `v1beta1` was removed at ESO v0.17).
 - **Vault Agent Injector** — inject secrets as files/env via pod annotations.
 
-> **RFC1123 sidecar names are mandatory.** The federation→sidecar credential injection mangles the sidecar `name` into a `CONFIG_FORCE_*` env path; a name with `_`/`.`/uppercase mangles wrong and the federation `sys.exit(1)`s. Use `[a-z0-9-]` names. **A wrong/missing Secret is a loud, SELF-HEALING CrashLoop** — the pod restarts and boots Ready once the Secret materializes (e.g. after ESO syncs). Do NOT uninstall; check the Secret's data keys.
+> **RFC1123 sidecar names are mandatory.** The federation→sidecar credential injection mangles the sidecar `name` into a `CONFIG_FORCE_*` env path; a name with `_`/`.`/uppercase mangles wrong and the federation exits with a non-zero status on startup. Use `[a-z0-9-]` names. **A wrong/missing Secret is a loud, SELF-HEALING CrashLoop** — the pod restarts and boots Ready once the Secret materializes (e.g. after ESO syncs). Do NOT uninstall; check the Secret's data keys.
 
-**TLS at the Ingress, not the pod.** The federation listener is plaintext-only (`Location.forGrpcInsecure`). `federation.tls.{enabled,secretName}` drives an **Ingress** `tls:` block (cert-manager `kubernetes.io/tls`); since Flight SQL is gRPC, the Ingress controller must proxy gRPC — nginx annotation `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` (NOT `GRPCS`; the pod upstream is plaintext h2c). This is DISTINCT from `sidecars[].tls` (outgoing per-downstream client TLS → `servers.<name>.tls`). In-cluster plaintext clients hit the Service (32020) directly.
+**TLS at the Ingress, not the pod.** The federation listener is plaintext-only (it serves gRPC without in-pod TLS). `federation.tls.{enabled,secretName}` drives an **Ingress** `tls:` block (cert-manager `kubernetes.io/tls`); since Flight SQL is gRPC, the Ingress controller must proxy gRPC — nginx annotation `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` (NOT `GRPCS`; the pod upstream is plaintext h2c). This is DISTINCT from `sidecars[].tls` (outgoing per-downstream client TLS → `servers.<name>.tls`). In-cluster plaintext clients hit the Service (32020) directly.
 
 ## 7. Licensing
 
@@ -167,13 +166,13 @@ The federation reads its license from a referenced Secret as `SOFTCLIENT4ES_LICE
 | **Pro** | 5 | up to 5 sidecars / clusters |
 | **Enterprise** | unlimited | any |
 
-Exceeding the quota → the federation logs the over-quota error and `sys.exit(1)` → **CrashLoopBackOff by design** (see §10). Federation is NOT a paid feature — single-cluster is the free adoption tier; the quota is on *cluster count*. To opt out of the daily anonymous usage ping, set `telemetry.enabled: false` (→ `SOFTCLIENT4ES_TELEMETRY_ENABLED=false`); this has zero impact on functionality or your license.
+Exceeding the quota → the federation logs the over-quota error and exits with a non-zero status → **CrashLoopBackOff by design** (see §10). Federation is NOT a paid feature — single-cluster is the free adoption tier; the quota is on *cluster count*. To opt out of the daily anonymous usage ping, set `telemetry.enabled: false` (→ `SOFTCLIENT4ES_TELEMETRY_ENABLED=false`); this has zero impact on functionality or your license.
 
 > **Offline verification.** For air-gapped or strict-egress clusters, mount the Ed25519 public JWK via `license.publicKeySecretName` (key `license.publicKeyKey`, default `license-public-key`) → `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY`. This lets the federation verify a Pro/Enterprise JWT entirely offline (no portal round-trip). It is gated independently of `license.secretName`.
 
 ## 8. ES-version mixing & migration
 
-Sidecars are independent — there is **no constraint** on mixing ES 6/7/8/9 in one federation at R1. The canonical migration story: run ES 8 sidecars in two regions while you migrate one region to ES 9; flip that region's `sidecars[].elasticsearchVersion` from `8` to `9` and `helm upgrade` once the ES cluster is upgraded. Cross-version JOINs with version-specific SQL features are the one caveat — flag them in testing (advanced cross-version cases surface in customer testing).
+Sidecars are independent — there is **no constraint** on mixing ES 6/7/8/9 in one federation in this release. The canonical migration story: run ES 8 sidecars in two regions while you migrate one region to ES 9; flip that region's `sidecars[].elasticsearchVersion` from `8` to `9` and `helm upgrade` once the ES cluster is upgraded. Cross-version JOINs with version-specific SQL features are the one caveat — flag them in testing (advanced cross-version cases surface in customer testing).
 
 ## 9. Upgrades & rollback
 
@@ -186,8 +185,8 @@ Sidecars are independent — there is **no constraint** on mixing ES 6/7/8/9 in 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Federation pod `CrashLoopBackOff`, log "exceeds maxClusters" / `sys.exit(1)` | More sidecars than the license tier allows (Community=1, Pro=5) | Add/upgrade the license Secret (Pro/Enterprise), or reduce `sidecars[]`. §7 |
-| `CrashLoopBackOff` after uncommenting R2b `duckdb-attach` | `clusterCount` counts attach servers too → over Pro's 5 | Enterprise license, or keep R2b commented in R1. §4 |
+| Federation pod `CrashLoopBackOff`, log "exceeds maxClusters" / non-zero exit | More sidecars than the license tier allows (Community=1, Pro=5) | Add/upgrade the license Secret (Pro/Enterprise), or reduce `sidecars[]`. §7 |
+| `CrashLoopBackOff` after uncommenting `duckdb-attach` | the cluster count includes attach servers too → over Pro's 5 | Enterprise license, or keep the attach servers commented in this release. §4 |
 | `CrashLoopBackOff`, "invalid credentials" at config load | `auth.method` ≠ none with creds only in a Secret but `federation.credentialsFromEnv` off, OR a non-RFC1123 sidecar name mangled the `CONFIG_FORCE_*` path | Enable `credentialsFromEnv`; rename sidecar to `[a-z0-9-]`. §6 |
 | `CrashLoopBackOff` immediately at boot, no clear error | `readOnlyRootFilesystem` with no writable `/tmp` — the DuckDB JNI native lib can't extract | Ensure the `/tmp` `emptyDir` is present (chart default); don't override the volume. |
 | Federation NotReady, "could not connect to sidecar X" | Sidecar pod / its backing ES unreachable; all-or-nothing gRPC readiness pulls the whole federation | Check sidecar pod + ES; for partial availability set `federation.probes.useGrpc: false`. §3/§9 |
@@ -202,18 +201,18 @@ Sidecars are independent — there is **no constraint** on mixing ES 6/7/8/9 in 
 1. **Alert:** dashboards/queries failing across regions. `kubectl get pods` → the `fed-softclient4es-federation` pod is `0/1 NotReady`.
 2. **Confirm the SPOF:** `kubectl describe pod` shows the gRPC readiness probe failing. With `useGrpc:true`, one unreachable region makes the *whole* federation NotReady (all-or-nothing aggregate).
 3. **Find the bad region:** `kubectl get pods -l app.kubernetes.io/component=sidecar` → identify the `NotReady` sidecar; `kubectl logs` it for the ES connection error.
-4. **Mitigate fast:** re-apply your existing values file AND flip the probe — `helm upgrade fed ./softclient4es-federation -f my-values.yaml --set federation.probes.useGrpc=false` → the federation goes Ready and serves the two healthy regions; only queries touching the down region fail. (Per-alias readiness is an R1.x backlog item.) ⚠️ **Always include `-f my-values.yaml`**: a bare `helm upgrade … --set …` resets every other value to the chart default (Helm does NOT reuse the previous release's values unless you pass `-f` or `--reuse-values`), which would silently revert your three-region `sidecars[]` / license / topology mid-incident.
+4. **Mitigate fast:** re-apply your existing values file AND flip the probe — `helm upgrade fed ./softclient4es-federation -f my-values.yaml --set federation.probes.useGrpc=false` → the federation goes Ready and serves the two healthy regions; only queries touching the down region fail. (Per-alias readiness is a follow-up-release backlog item.) ⚠️ **Always include `-f my-values.yaml`**: a bare `helm upgrade … --set …` resets every other value to the chart default (Helm does NOT reuse the previous release's values unless you pass `-f` or `--reuse-values`), which would silently revert your three-region `sidecars[]` / license / topology mid-incident.
 5. **Fix root cause:** restore the down region's ES / sidecar, then flip `useGrpc` back to `true` for fail-closed semantics.
 
-## 11. Performance tuning *(placeholder — iterate after R1 telemetry)*
+## 11. Performance tuning *(placeholder — iterate after this release's telemetry)*
 
-> Hard numbers land after R1 telemetry. The qualitative levers today:
+> Hard numbers land after this release's telemetry. The qualitative levers today:
 
 - **Scale federation replicas** (`replicaCount`) for concurrent-query throughput; the federation is stateless per query (DuckDB `:memory:`).
 - **Scale sidecars** (`sidecars[].replicaCount`, document HA at 3) for per-cluster availability and parallelism.
 - **`federation.maxMemory` / `sidecars[].arrow.maxMemory`** size the DuckDB / JOIN engine; raise for large cross-cluster JOINs, watch pod memory limits.
 - **`batchSize`** trades latency vs throughput on streaming.
-- Resource recommendations per cluster-count tier: TBD — seeded after R1 telemetry.
+- Resource recommendations per cluster-count tier: TBD — seeded after this release's telemetry.
 
 ## 12. SLA implications
 
