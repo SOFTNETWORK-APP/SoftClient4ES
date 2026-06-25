@@ -1,6 +1,6 @@
 # SoftClient4ES Federation — Operator Guide
 
-> **Canonical source:** the authoritative version of this guide ships with the federation Helm chart, at `softclient4es-federation/docs/operator-guide.md`. This page presents the same content.
+> **Helm chart:** the federation Helm chart described in this guide lives in the [softclient4es-helm](https://github.com/SOFTNETWORK-APP/softclient4es-helm) repository, under the `softclient4es-federation/` chart directory.
 
 The SoftClient4ES federation Helm chart deploys a **cross-cluster Arrow Flight SQL coordinator** (the *federation server*) plus one **per-ES-version sidecar** for each Elasticsearch cluster you want to federate. One `values.yaml` + `helm install` replaces 30+ minutes of hand-written HOCON, Kubernetes manifests, Secrets, and probe wiring.
 
