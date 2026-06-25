@@ -20,12 +20,10 @@ Download the self-contained fat JAR for your Elasticsearch version. The JARs are
 
 | Elasticsearch | Artifact |
 |---------------|----------|
-| ES 6.x | `softclient4es6-jdbc-driver-<R1_DRIVER_VERSION>.jar` |
-| ES 7.x | `softclient4es7-jdbc-driver-<R1_DRIVER_VERSION>.jar` |
-| ES 8.x | `softclient4es8-jdbc-driver-<R1_DRIVER_VERSION>.jar` |
-| ES 9.x | `softclient4es9-jdbc-driver-<R1_DRIVER_VERSION>.jar` |
-
-> Replace `<R1_DRIVER_VERSION>` with the published R1 release tag for the driver JARs.
+| ES 6.x | `softclient4es6-jdbc-driver-0.2.0.jar` |
+| ES 7.x | `softclient4es7-jdbc-driver-0.2.0.jar` |
+| ES 8.x | `softclient4es8-jdbc-driver-0.2.0.jar` |
+| ES 9.x | `softclient4es9-jdbc-driver-0.2.0.jar` |
 
 ### Build Tool Integration
 
@@ -35,20 +33,20 @@ Download the self-contained fat JAR for your Elasticsearch version. The JARs are
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version><R1_DRIVER_VERSION></version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:<R1_DRIVER_VERSION>'
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.0'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "<R1_DRIVER_VERSION>"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.0"
 ```
 
 ---
@@ -151,7 +149,7 @@ ps.setDouble(1, 6500.0);   // higher threshold → fewer rows (Carol = 8000 surv
 ResultSet rs2 = ps.executeQuery(); /* … */ rs2.close();
 ```
 
-For the full JOIN matrix, see the Cross-Index JOIN walkthrough (`../sql/joins.md`). <!-- pending 17.1 — wire live on merge -->
+For the full JOIN matrix, see the Cross-Index JOIN walkthrough (`../sql/joins.md`).
 
 ---
 
@@ -237,7 +235,7 @@ Multi-cluster **federation** — joining across *separate* ES clusters — is **
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in R1 — they arrive in R2a. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list. <!-- pending 17.6 — wire live on merge -->
+Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in the current release — they arrive in a later release. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list.
 
 ---
 
@@ -245,9 +243,9 @@ Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH
 
 - [ADBC Driver](adbc_driver.md) — the Arrow-native in-process columnar alternative.
 - [Arrow Flight SQL](arrow_flight_sql.md) — the gRPC server for polyglot and networked clients.
-- Cross-Index JOIN walkthrough (`../sql/joins.md`) — the full JOIN matrix (rows 1/2/3) with worked examples. <!-- pending 17.1 — wire live on merge -->
-- Multi-cluster federation operator guide (`federation_operator_guide.md`) — the Pro+ path: JOIN across separate ES clusters. <!-- pending 17.2 — wire live on merge -->
-- Known Limitations & Roadmap (`../sql/known_limitations.md`) — what works in R1 vs what's coming. <!-- pending 17.6 — wire live on merge -->
+- Cross-Index JOIN walkthrough (`../sql/joins.md`) — the full JOIN matrix (rows 1/2/3) with worked examples.
+- Multi-cluster federation operator guide (`federation_operator_guide.md`) — the Pro+ path: JOIN across separate ES clusters.
+- Known Limitations & Roadmap (`../sql/known_limitations.md`) — what works in the current release vs what's coming.
 
 ---
 

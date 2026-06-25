@@ -8,8 +8,8 @@ Zero-copy columnar access to Elasticsearch over gRPC — for DuckDB, Python, Apa
 
 There are two Flight SQL servers, and these quickstarts cover only the first:
 
-- **Single-cluster sidecar** (`ElasticFlightServer`, port `32010`) — one server in front of **one** ES cluster. Cross-index JOINs run in the sidecar's embedded DuckDB engine. **This is what this page covers, and it is free in Community.**
-- **Multi-cluster federation server** (`FederationFlightServer`) — a coordinator that fans out across **multiple** ES clusters to JOIN data living in different clusters. This is the **Pro+** path; see the federation operator guide (`federation_operator_guide.md`). <!-- pending 17.2 — wire live on merge -->
+- **Single-cluster sidecar** (port `32010`) — one server in front of **one** ES cluster. Cross-index JOINs run in the sidecar's embedded DuckDB engine. **This is what this page covers, and it is free in Community.**
+- **Multi-cluster federation server** — a coordinator that fans out across **multiple** ES clusters to JOIN data living in different clusters. This is the **Pro+** path; see the federation operator guide (`federation_operator_guide.md`).
 
 ---
 
@@ -49,17 +49,15 @@ Available images per ES version:
 ### Fat JAR
 
 ```bash
-java -jar softclient4es8-arrow-flight-sql-<R1_DRIVER_VERSION>.jar
+java -jar softclient4es8-arrow-flight-sql-0.2.0.jar
 ```
 
 | Elasticsearch | Artifact |
 |---------------|----------|
-| ES 6.x | `softclient4es6-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
-| ES 7.x | `softclient4es7-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
-| ES 8.x | `softclient4es8-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
-| ES 9.x | `softclient4es9-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
-
-> Replace `<R1_DRIVER_VERSION>` with the published R1 release tag for the fat JARs.
+| ES 6.x | `softclient4es6-arrow-flight-sql-0.2.0.jar` |
+| ES 7.x | `softclient4es7-arrow-flight-sql-0.2.0.jar` |
+| ES 8.x | `softclient4es8-arrow-flight-sql-0.2.0.jar` |
+| ES 9.x | `softclient4es9-arrow-flight-sql-0.2.0.jar` |
 
 ---
 
@@ -193,16 +191,16 @@ The single-cluster sidecar on this page is the free shape. Multi-cluster **feder
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in R1 — they arrive in R2a. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list. <!-- pending 17.6 — wire live on merge -->
+Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in the current release — they arrive in a later release. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list.
 
 ---
 
 ## Going further
 
 - [ADBC Driver](adbc_driver.md) — the in-process columnar alternative (no separate server).
-- Cross-Index JOIN walkthrough (`../sql/joins.md`) — the full JOIN matrix (rows 1/2/3) with worked examples. <!-- pending 17.1 — wire live on merge -->
-- Multi-cluster federation operator guide (`federation_operator_guide.md`) — the Pro+ path: JOIN across separate ES clusters. <!-- pending 17.2 — wire live on merge -->
-- Known Limitations & Roadmap (`../sql/known_limitations.md`) — what works in R1 vs what's coming. <!-- pending 17.6 — wire live on merge -->
+- Cross-Index JOIN walkthrough (`../sql/joins.md`) — the full JOIN matrix (rows 1/2/3) with worked examples.
+- Multi-cluster federation operator guide (`federation_operator_guide.md`) — the Pro+ path: JOIN across separate ES clusters.
+- Known Limitations & Roadmap (`../sql/known_limitations.md`) — what works in the current release vs what's coming.
 
 ---
 
