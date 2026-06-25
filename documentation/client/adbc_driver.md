@@ -21,12 +21,14 @@ In-process columnar access to Elasticsearch — direct Arrow format, no separate
 
 Download the self-contained fat JAR for your Elasticsearch version:
 
-| Elasticsearch  | Artifact                               |
-|----------------|----------------------------------------|
-| ES 6.x         | `softclient4es6-adbc-driver-0.1.5.jar` |
-| ES 7.x         | `softclient4es7-adbc-driver-0.1.5.jar` |
-| ES 8.x         | `softclient4es8-adbc-driver-0.1.5.jar` |
-| ES 9.x         | `softclient4es9-adbc-driver-0.1.5.jar` |
+| Elasticsearch  | Artifact                                            |
+|----------------|-----------------------------------------------------|
+| ES 6.x         | `softclient4es6-adbc-driver-<R1_DRIVER_VERSION>.jar` |
+| ES 7.x         | `softclient4es7-adbc-driver-<R1_DRIVER_VERSION>.jar` |
+| ES 8.x         | `softclient4es8-adbc-driver-<R1_DRIVER_VERSION>.jar` |
+| ES 9.x         | `softclient4es9-adbc-driver-<R1_DRIVER_VERSION>.jar` |
+
+> Replace `<R1_DRIVER_VERSION>` with the published R1 release tag for the driver JARs.
 
 ### Maven / Gradle / sbt
 
@@ -36,20 +38,20 @@ Download the self-contained fat JAR for your Elasticsearch version:
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-adbc-driver</artifactId>
-  <version>0.1.5</version>
+  <version><R1_DRIVER_VERSION></version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-adbc-driver:0.1.5'
+implementation 'app.softnetwork.elastic:softclient4es8-adbc-driver:<R1_DRIVER_VERSION>'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-adbc-driver" % "0.1.5"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-adbc-driver" % "<R1_DRIVER_VERSION>"
 ```
 
 ---
@@ -98,6 +100,21 @@ adbc:elastic://<host>:<port>?bearer=<token>
 
 ---
 
+## Your first JOIN
+
+Elasticsearch can't JOIN across indices — SoftClient4ES does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). ADBC routes the JOIN through the same `arrow-ext`/DuckDB engine as the JDBC driver, so the SQL is identical — only the connection setup differs:
+
+```sql
+SELECT e.name, e.salary, d.dept_name
+FROM jdbc_join_emp e
+JOIN jdbc_join_dept d ON e.dept_id = d.dept_id;
+-- 5 rows (the orphan employee with dept_id = 99 is dropped by the INNER JOIN)
+```
+
+Set this as the statement's SQL (`stmt.setSqlQuery(...)`) and read the Arrow stream as shown in [Usage](#usage). For the full JOIN matrix, see the Cross-Index JOIN walkthrough (`../sql/joins.md`). <!-- pending 17.1 — wire live on merge -->
+
+---
+
 ## Configuration
 
 ```hocon
@@ -131,9 +148,43 @@ elastic.credentials {
 
 ---
 
+## Version compatibility
+
+| Driver | Scala | ES versions | Clients | Process model |
+|--------|-------|-------------|---------|---------------|
+| ADBC   | cross-built Scala 2.12 + 2.13 | ES 6.x / 7.x / 8.x / 9.x | Java/JVM only (polyglot → Flight SQL) | In-process |
+
+The fat JARs are **Scala-version-independent for consumers** — they bundle their own Scala runtime, so you almost never need to think about the Scala axis. For non-JVM languages (Python, Go, DuckDB, C++), use the [Arrow Flight SQL server](arrow_flight_sql.md) with the Arrow project's standard `adbc_driver_flightsql` client.
+
+---
+
+## Licensing & self-selection
+
+All client drivers (JDBC, ADBC, and the REPL) plus the Arrow Flight SQL sidecar are **free in Community**, including up to **2 cross-index JOINs per query** (a 3-table JOIN). A 4-table JOIN (a 3rd cross-index JOIN in one query) is rejected by the planner with a message ending `… Upgrade to Pro … See: https://portal.softclient4es.com/pricing`.
+
+Multi-cluster **federation** — joining across *separate* ES clusters — is **Pro+** (`maxClusters` 1 / 5 / ∞). This quickstart covers the **single-cluster** shape, which is free.
+
+---
+
+## What does NOT work yet
+
+Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in R1 — they arrive in R2a. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list. <!-- pending 17.6 — wire live on merge -->
+
+---
+
+## Going further
+
+- [JDBC Driver](jdbc.md) — the row-based in-process alternative for any JDBC tool.
+- [Arrow Flight SQL](arrow_flight_sql.md) — the gRPC server for polyglot and networked clients.
+- Cross-Index JOIN walkthrough (`../sql/joins.md`) — the full JOIN matrix (rows 1/2/3) with worked examples. <!-- pending 17.1 — wire live on merge -->
+- Multi-cluster federation operator guide (`federation_operator_guide.md`) — the Pro+ path: JOIN across separate ES clusters. <!-- pending 17.2 — wire live on merge -->
+- Known Limitations & Roadmap (`../sql/known_limitations.md`) — what works in R1 vs what's coming. <!-- pending 17.6 — wire live on merge -->
+
+---
+
 ## Telemetry
 
-The ADBC driver sends one anonymous usage ping per day (no IP, no SQL, no PII). Opt out with `softclient4es.telemetry.enabled = false` in your HOCON config. See [Telemetry & Privacy](telemetry.md) for details.
+The ADBC driver sends one anonymous usage ping per day (no IP, no SQL, no PII). Opt out with `softclient4es.telemetry.enabled = false` in your HOCON config, the `SOFTCLIENT4ES_TELEMETRY_ENABLED=false` environment variable, or `-Dsoftclient4es.telemetry.enabled=false`. ADBC has no connection-string opt-out — the `adbc:elastic://` URI carries no `telemetry` option. See [Telemetry & Privacy](telemetry.md) for details.
 
 ---
 

@@ -21,6 +21,7 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [Template Management](templates.md)
 - [SQL Gateway Usage](gateway.md)
 - [REPL Client](repl.md)
-- [Arrow Flight SQL](arrow_flight_sql.md)
+- [JDBC Driver](jdbc.md)
 - [ADBC Driver](adbc_driver.md)
+- [Arrow Flight SQL](arrow_flight_sql.md)
 - [Telemetry & Privacy](telemetry.md)

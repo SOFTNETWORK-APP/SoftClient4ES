@@ -4,6 +4,15 @@ Zero-copy columnar access to Elasticsearch over gRPC — for DuckDB, Python, Apa
 
 ---
 
+## Sidecar vs federation
+
+There are two Flight SQL servers, and these quickstarts cover only the first:
+
+- **Single-cluster sidecar** (`ElasticFlightServer`, port `32010`) — one server in front of **one** ES cluster. Cross-index JOINs run in the sidecar's embedded DuckDB engine. **This is what this page covers, and it is free in Community.**
+- **Multi-cluster federation server** (`FederationFlightServer`) — a coordinator that fans out across **multiple** ES clusters to JOIN data living in different clusters. This is the **Pro+** path; see the federation operator guide (`federation_operator_guide.md`). <!-- pending 17.2 — wire live on merge -->
+
+---
+
 ## Features
 
 - **gRPC Protocol** — High-performance columnar data access over HTTP/2
@@ -40,15 +49,17 @@ Available images per ES version:
 ### Fat JAR
 
 ```bash
-java -jar softclient4es8-arrow-flight-sql-<version>.jar
+java -jar softclient4es8-arrow-flight-sql-<R1_DRIVER_VERSION>.jar
 ```
 
 | Elasticsearch | Artifact |
 |---------------|----------|
-| ES 6.x | `softclient4es6-arrow-flight-sql-<version>.jar` |
-| ES 7.x | `softclient4es7-arrow-flight-sql-<version>.jar` |
-| ES 8.x | `softclient4es8-arrow-flight-sql-<version>.jar` |
-| ES 9.x | `softclient4es9-arrow-flight-sql-<version>.jar` |
+| ES 6.x | `softclient4es6-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
+| ES 7.x | `softclient4es7-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
+| ES 8.x | `softclient4es8-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
+| ES 9.x | `softclient4es9-arrow-flight-sql-<R1_DRIVER_VERSION>.jar` |
+
+> Replace `<R1_DRIVER_VERSION>` with the published R1 release tag for the fat JARs.
 
 ---
 
@@ -70,6 +81,24 @@ duckdb.sql("""
   ORDER BY revenue DESC
 """)
 ```
+
+## Your first JOIN
+
+Elasticsearch can't JOIN across indices — the Flight SQL sidecar does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). Both indices live in the **one** ES cluster the sidecar fronts; the JOIN runs in the sidecar's embedded DuckDB engine:
+
+```python
+cursor.execute("""
+  SELECT e.name, e.salary, d.dept_name
+  FROM jdbc_join_emp e
+  JOIN jdbc_join_dept d ON e.dept_id = d.dept_id
+""")
+table = cursor.fetch_arrow_table()
+# 5 rows (the orphan employee with dept_id = 99 is dropped by the INNER JOIN)
+```
+
+To JOIN across *separate* ES clusters, deploy the federation server instead — see [Going further](#going-further).
+
+---
 
 ## Apache Superset
 
@@ -138,9 +167,48 @@ elastic.credentials {
 
 ---
 
+## In-process alternative: the ADBC driver
+
+If you need columnar Arrow access **without** running a separate server, the in-process **ADBC driver** delivers the same SQL (including cross-index JOIN) inside your JVM — see the [ADBC Driver](adbc_driver.md) page. ADBC is Java/JVM in-process; polyglot clients (Python, Go, DuckDB, C++) connect to *this* Flight SQL server.
+
+---
+
+## Version compatibility
+
+| Driver | Scala | ES versions | Clients | Process model |
+|--------|-------|-------------|---------|---------------|
+| Arrow Flight SQL | cross-built Scala 2.12 + 2.13 (server) | ES 6.x / 7.x / 8.x / 9.x | Any ADBC/Flight SQL client — Python, Go, DuckDB, C++, Grafana, Superset | Separate server (gRPC) |
+
+The fat JARs are **Scala-version-independent for consumers** — you almost never need to think about the Scala axis.
+
+---
+
+## Licensing & self-selection
+
+All client drivers (JDBC, ADBC, and the REPL) plus the Arrow Flight SQL sidecar are **free in Community**, including up to **2 cross-index JOINs per query** (a 3-table JOIN). A 4-table JOIN (a 3rd cross-index JOIN in one query) is rejected by the planner with a message ending `… Upgrade to Pro … See: https://portal.softclient4es.com/pricing`.
+
+The single-cluster sidecar on this page is the free shape. Multi-cluster **federation** — joining across *separate* ES clusters — is **Pro+** (`maxClusters` 1 / 5 / ∞).
+
+---
+
+## What does NOT work yet
+
+Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in R1 — they arrive in R2a. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list. <!-- pending 17.6 — wire live on merge -->
+
+---
+
+## Going further
+
+- [ADBC Driver](adbc_driver.md) — the in-process columnar alternative (no separate server).
+- Cross-Index JOIN walkthrough (`../sql/joins.md`) — the full JOIN matrix (rows 1/2/3) with worked examples. <!-- pending 17.1 — wire live on merge -->
+- Multi-cluster federation operator guide (`federation_operator_guide.md`) — the Pro+ path: JOIN across separate ES clusters. <!-- pending 17.2 — wire live on merge -->
+- Known Limitations & Roadmap (`../sql/known_limitations.md`) — what works in R1 vs what's coming. <!-- pending 17.6 — wire live on merge -->
+
+---
+
 ## Telemetry
 
-The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no SQL, no PII). Opt out with `softclient4es.telemetry.enabled = false` in your server HOCON config. See [Telemetry & Privacy](telemetry.md) for details.
+The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no SQL, no PII). Opt out with `softclient4es.telemetry.enabled = false` in the server HOCON config, the `SOFTCLIENT4ES_TELEMETRY_ENABLED=false` environment variable, or `-Dsoftclient4es.telemetry.enabled=false`. The sidecar has no connection-string opt-out — the `grpc://` URI carries no `telemetry` option. See [Telemetry & Privacy](telemetry.md) for details.
 
 ---
 
