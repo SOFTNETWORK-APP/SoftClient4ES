@@ -15,7 +15,7 @@ beacon to a public endpoint with exactly these fields:
 |---------------|----------|-----------------------------------------------|
 | `source`      | `portal` | Where the count came from (the docs button)   |
 | `driver`      | `jdbc`   | Which driver family (`jdbc` or `adbc`)        |
-| `version`     | `0.1.4`  | The published artifact version                |
+| `version`     | `0.2.0`  | The published artifact version                |
 | `count_delta` | `1`      | One download                                  |
 
 A timestamp is added on the server. That is the **entire** record.

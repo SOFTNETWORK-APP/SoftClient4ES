@@ -134,7 +134,7 @@ Nothing else changes. With telemetry disabled:
 
 ## Why we collect this
 
-- **Measure the R1 launch** — did people actually adopt SoftClient4ES?
+- **Measure the launch of this release** — did people actually adopt SoftClient4ES?
 - **Prioritise the right features** — which surfaces and capabilities get used most.
 - **Understand the mix** — how many JDBC vs. ADBC vs. sidecar vs. federation vs. REPL deployments exist, so we invest where it matters.
 
