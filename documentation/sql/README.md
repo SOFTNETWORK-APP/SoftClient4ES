@@ -17,6 +17,7 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [DDL Support](ddl_statements.md)
 - [DML Support](dml_statements.md)
 - [DQL Support](dql_statements.md)
+- [Known Limitations & Roadmap](known_limitations.md)
 - [Materialized Views](materialized_views.md)
 - [Telemetry & Privacy](../client/telemetry.md)
 - [Telemetry & Privacy](telemetry.md)

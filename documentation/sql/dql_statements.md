@@ -852,6 +852,8 @@ Notes:
 
 ## Limitations
 
+For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool workarounds, see [Known Limitations & Roadmap](known_limitations.md).
+
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Traditional SQL joins are supported only through the use of Materialized Views (only `JOIN UNNEST` on `ARRAY<STRUCT>` is available natively)

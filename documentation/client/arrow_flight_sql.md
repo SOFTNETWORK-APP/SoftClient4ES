@@ -144,6 +144,12 @@ The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no S
 
 ---
 
+## Known limitations
+
+Subqueries, CTEs (`WITH`), and set operators beyond `UNION ALL` are not in R1 — and some BI tools auto-generate them. See [Known Limitations & Roadmap](../sql/known_limitations.md) for exactly what works today, what's coming in R2a, and the per-tool workaround.
+
+---
+
 ## License
 
 Arrow Flight SQL is licensed under the **Elastic License 2.0** — free to use, not open source.
