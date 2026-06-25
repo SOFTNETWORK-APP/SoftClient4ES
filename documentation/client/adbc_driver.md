@@ -102,7 +102,7 @@ adbc:elastic://<host>:<port>?bearer=<token>
 
 ## Your first JOIN
 
-Elasticsearch can't JOIN across indices — SoftClient4ES does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). ADBC routes the JOIN through the same `arrow-ext`/DuckDB engine as the JDBC driver, so the SQL is identical — only the connection setup differs:
+Elasticsearch can't JOIN across indices — SoftClient4ES does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). ADBC routes the JOIN through the same embedded DuckDB engine as the JDBC driver, so the SQL is identical — only the connection setup differs:
 
 ```sql
 SELECT e.name, e.salary, d.dept_name
