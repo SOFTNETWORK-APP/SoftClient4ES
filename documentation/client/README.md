@@ -24,4 +24,7 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [JDBC Driver](jdbc.md)
 - [ADBC Driver](adbc_driver.md)
 - [Arrow Flight SQL](arrow_flight_sql.md)
+- [BI Tool Integration](bi_tools.md) — DBeaver, Superset, Grafana, Tableau, Power BI, Metabase (full guides on the website)
 - [Telemetry & Privacy](telemetry.md)
+- [Download Analytics](download_analytics.md)
+- [Federation Operator Guide](federation_operator_guide.md)
