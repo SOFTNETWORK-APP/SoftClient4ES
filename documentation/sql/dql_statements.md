@@ -853,6 +853,8 @@ Notes:
 
 ## Limitations
 
+For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool workarounds, see [Known Limitations & Roadmap](known_limitations.md).
+
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.

@@ -22,3 +22,4 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [Telemetry & Privacy](../client/telemetry.md)
 - [Download Analytics](../client/download_analytics.md)
 - [Federation Operator Guide](../client/federation_operator_guide.md)
+- [Known Limitations & Roadmap](known_limitations.md)
