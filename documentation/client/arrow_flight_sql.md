@@ -82,7 +82,7 @@ duckdb.sql("""
 
 ## Your first JOIN
 
-Elasticsearch can't JOIN across indices — the Flight SQL sidecar does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). Both indices live in the **one** ES cluster the sidecar fronts; the JOIN runs in the sidecar's embedded DuckDB engine:
+Elasticsearch SQL can't JOIN across indices — the Flight SQL sidecar does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). Both indices live in the **one** ES cluster the sidecar fronts; the JOIN runs in the sidecar's embedded DuckDB engine:
 
 ```python
 cursor.execute("""

@@ -103,7 +103,7 @@ try (Statement stmt = conn.createStatement();
 
 ## Your first JOIN
 
-Elasticsearch can't JOIN across indices — SoftClient4ES does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). The JOIN runs in an embedded DuckDB engine; your existing single ES cluster needs no extra infrastructure.
+Elasticsearch SQL can't JOIN across indices — SoftClient4ES does. **Free in Community: up to 2 cross-index JOINs per query** (a 3-table JOIN). The JOIN runs in an embedded DuckDB engine; your existing single ES cluster needs no extra infrastructure.
 
 A cross-index INNER JOIN over two ES indices — `jdbc_join_emp` (employees) and `jdbc_join_dept` (departments):
 
