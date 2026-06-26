@@ -400,12 +400,12 @@ are available on **every** tier:
 
 | | **Community** | **Pro** | **Enterprise** |
 |---|---|---|---|
-| **Price** | Free | **€129/mo** · €1,290/yr | **from €12,000/year** |
+| **Price** | Free | **€119/mo** · €1,190/yr · $129/$1,290 | **from €12,000/year** |
 | Full SQL (DDL · DML · DQL · window functions) | Yes | Yes | Yes |
 | Client drivers — JDBC · ADBC · REPL | **Free** | Free | Free |
 | Arrow Flight SQL server | Yes | Yes | Yes |
 | Cross-index JOINs per query | **2** | 5 | Unlimited |
-| Federation (cross-cluster) | **1 cluster** | up to 5 clusters | Unlimited |
+| Federation across ES clusters | **1 ES cluster** | up to 5 ES clusters | Unlimited |
 | Materialized Views | **1** | 50 | Unlimited |
 | Max query results | 10,000 | 1,000,000 | Unlimited |
 | ES 6 / 7 / 8 / 9 support | Yes | Yes | Yes |
@@ -414,8 +414,21 @@ are available on **every** tier:
 
 > Single-cluster cross-index JOINs and one Materialized View are **free** in
 > Community — taste both superpowers, then scale up by cluster count, JOIN
-> depth, and MV volume. See the
-> [pricing page](https://softclient4es.dev/licensing/) for details.
+> depth, and MV volume. Federation meters across **ES clusters** specifically in
+> this release; non-ES backends are a future-release concern.
+
+**What happens at a cap** (every number is enforced, not aspirational): exceeding
+`maxJoins` rejects the query before execution; exceeding `maxClusters` makes the
+federation sidecar fail to start (CrashLoop) by design; the Nth+1 Materialized View
+returns HTTP 402; over-quota query results are truncated with a warning (no `LIMIT`)
+or return HTTP 402 (explicit `LIMIT`). JOIN inputs are never capped — only the
+joined output is.
+
+Start a 30-day Pro trial at
+[portal.softclient4es.com/signup](https://portal.softclient4es.com/signup), buy at
+[portal.softclient4es.com/pricing](https://portal.softclient4es.com/pricing), or see
+the full [pricing page](https://softclient4es.dev/licensing/) for the tier matrix
+and FAQ.
 
 ### Elasticsearch License Requirements
 
@@ -437,6 +450,7 @@ Materialized views with JOINs rely on **Elasticsearch Watchers** to automaticall
 - [x] Materialized views with JOINs and aggregations
 - [x] Arrow Flight SQL server (gRPC, Docker)
 - [x] ADBC driver (in-process, columnar)
+- [x] Cross-index JOINs
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge
