@@ -12,7 +12,8 @@ DQL supports:
 - `SELECT` with expressions, aliases, nested fields, STRUCT and ARRAY<STRUCT>
 - `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`
 - `UNION ALL`
-- `JOIN UNNEST` on `ARRAY<STRUCT>`
+- cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) across indices and clusters — see [Cross-Index JOIN](joins.md)
+- `JOIN UNNEST` on `ARRAY<STRUCT>` (the single-index nested form, handled natively inside one index)
 - aggregations, parent-level aggregations on nested arrays
 - window functions with `OVER`
 - rich function support (numeric, string, date/time, geo, conditional, type conversion)
@@ -854,7 +855,7 @@ Notes:
 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
-- Traditional SQL joins are supported only through the use of Materialized Views (only `JOIN UNNEST` on `ARRAY<STRUCT>` is available natively)
+- Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
 - No correlated subqueries
 - No arbitrary subqueries in `SELECT` or `WHERE` (except `INSERT ... AS SELECT` in DML)
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
