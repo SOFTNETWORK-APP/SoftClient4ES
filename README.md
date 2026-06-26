@@ -450,6 +450,7 @@ Materialized views with JOINs rely on **Elasticsearch Watchers** to automaticall
 - [x] Materialized views with JOINs and aggregations
 - [x] Arrow Flight SQL server (gRPC, Docker)
 - [x] ADBC driver (in-process, columnar)
+- [x] Cross-index JOINs
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge
