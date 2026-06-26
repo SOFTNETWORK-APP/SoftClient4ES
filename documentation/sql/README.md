@@ -20,5 +20,5 @@ Welcome to the SQL Engine Documentation. Navigate through the sections below:
 - [Cross-Index JOIN](joins.md)
 - [Materialized Views](materialized_views.md)
 - [Telemetry & Privacy](../client/telemetry.md)
-- [Telemetry & Privacy](telemetry.md)
+- [Download Analytics](../client/download_analytics.md)
 - [Federation Operator Guide](../client/federation_operator_guide.md)
