@@ -21,3 +21,5 @@ testkit/target*
 _bmad*
 docker/data
 .claude
+blogs/
+linkedin/
