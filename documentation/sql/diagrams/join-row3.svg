@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="560" viewBox="0 0 640 560" font-family="'Inter','Segoe UI',system-ui,sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0f172a"/><stop offset="100%" stop-color="#1e293b"/></linearGradient>
+    <linearGradient id="coord" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0891b2"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient>
+    <linearGradient id="es" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#059669"/><stop offset="100%" stop-color="#10b981"/></linearGradient>
+    <linearGradient id="join" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#2563eb"/><stop offset="100%" stop-color="#3b82f6"/></linearGradient>
+    <linearGradient id="target" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ea580c"/><stop offset="100%" stop-color="#f97316"/></linearGradient>
+    <filter id="shadow" x="-6%" y="-8%" width="112%" height="120%"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.35"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/></marker>
+  </defs>
+
+  <rect width="640" height="560" rx="16" fill="url(#bg)"/>
+
+  <!-- terminal header with the SQL query -->
+  <rect x="40" y="16" width="560" height="140" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <circle cx="60" cy="35" r="5.5" fill="#ff5f56"/>
+  <circle cx="78" cy="35" r="5.5" fill="#ffbd2e"/>
+  <circle cx="96" cy="35" r="5.5" fill="#27c93f"/>
+  <text x="582" y="39" text-anchor="end" font-size="11" fill="#8b949e">Row 3 · multi-source coordinator</text>
+  <line x1="40" y1="52" x2="600" y2="52" stroke="#30363d" stroke-width="1"/>
+  <text x="58" y="78" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">INSERT INTO</tspan><tspan fill="#e6edf3"> </tspan><tspan fill="#7ee787">`prod_eu`</tspan><tspan fill="#e6edf3">.dest</tspan></text>
+  <text x="58" y="99" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">SELECT</tspan><tspan fill="#e6edf3"> o.id, c.name</tspan></text>
+  <text x="58" y="120" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">FROM</tspan><tspan fill="#e6edf3"> </tspan><tspan fill="#7ee787">`prod_us`</tspan><tspan fill="#e6edf3">.orders o</tspan></text>
+  <text x="58" y="141" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">JOIN</tspan><tspan fill="#e6edf3"> </tspan><tspan fill="#7ee787">`prod_fr`</tspan><tspan fill="#e6edf3">.customers c </tspan><tspan fill="#79c0ff">ON</tspan><tspan fill="#e6edf3"> o.id = c.id;</tspan></text>
+
+  <!-- flow diagram -->
+  <g transform="translate(0,170)">
+    <line x1="195" y1="66" x2="292" y2="96" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+    <line x1="195" y1="206" x2="292" y2="140" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+    <line x1="450" y1="160" x2="450" y2="240" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <line x1="450" y1="288" x2="450" y2="314" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+    <rect x="40" y="40" width="160" height="52" rx="10" fill="url(#es)" filter="url(#shadow)"/>
+    <text x="120" y="71" font-size="14" font-weight="700" text-anchor="middle" fill="#fff">prod_us</text>
+    <rect x="40" y="180" width="160" height="52" rx="10" fill="url(#es)" filter="url(#shadow)"/>
+    <text x="120" y="211" font-size="14" font-weight="700" text-anchor="middle" fill="#fff">prod_fr</text>
+
+    <rect x="300" y="66" width="300" height="98" rx="10" fill="url(#coord)" filter="url(#shadow)"/>
+    <text x="450" y="100" font-size="14" font-weight="700" text-anchor="middle" fill="#fff">Federation coordinator</text>
+    <text x="450" y="123" font-size="11" text-anchor="middle" fill="#cffafe">Parquet scratch +</text>
+    <text x="450" y="140" font-size="11" text-anchor="middle" fill="#cffafe">per-query DuckDB view</text>
+
+    <rect x="320" y="248" width="260" height="44" rx="10" fill="url(#join)" filter="url(#shadow)"/>
+    <text x="450" y="275" font-size="14" font-weight="700" text-anchor="middle" fill="#fff">coordinator-local JOIN</text>
+
+    <rect x="320" y="322" width="260" height="44" rx="10" fill="url(#target)" filter="url(#shadow)"/>
+    <text x="450" y="349" font-size="14" font-weight="700" text-anchor="middle" fill="#fff">prod_eu (target)</text>
+
+    <text x="248" y="60" font-size="11" text-anchor="middle" fill="#cbd5e1">leg 1</text>
+    <text x="250" y="190" font-size="11" text-anchor="middle" fill="#cbd5e1">leg 2</text>
+  </g>
+</svg>

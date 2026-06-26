@@ -24,3 +24,5 @@ Welcome to the Client Engine Documentation. Navigate through the sections below:
 - [Arrow Flight SQL](arrow_flight_sql.md)
 - [ADBC Driver](adbc_driver.md)
 - [Telemetry & Privacy](telemetry.md)
+- [Download Analytics](download_analytics.md)
+- [Federation Operator Guide](federation_operator_guide.md)
