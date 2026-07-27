@@ -841,6 +841,7 @@ Notes:
 | Basic SELECT                   | ✔   | ✔   | ✔   | ✔   |
 | Nested fields                  | ✔   | ✔   | ✔   | ✔   |
 | UNION ALL                      | ✔   | ✔   | ✔   | ✔   |
+| Cross-index JOINs              | ✔   | ✔   | ✔   | ✔   |
 | JOIN UNNEST                    | ✔   | ✔   | ✔   | ✔   |
 | Aggregations                   | ✔   | ✔   | ✔   | ✔   |
 | Parent-level nested array aggs | ✔   | ✔   | ✔   | ✔   |
