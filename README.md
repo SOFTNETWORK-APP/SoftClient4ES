@@ -7,7 +7,7 @@
 
 🌐 **Website:** [softclient4es.dev/](https://softclient4es.dev/)
 
-**SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — through an interactive **REPL client**, a **JDBC driver**, an **Arrow Flight SQL** server, or as a **Scala library**.
+**SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — including **cross-index JOINs**, which Elasticsearch has no native support for — through an interactive **REPL client**, a **JDBC driver**, an **Arrow Flight SQL** server, or as a **Scala library**.
 
 ## 🏗️ Architecture
 
@@ -72,6 +72,7 @@ SHOW TABLES LIKE 'user%';
 
 | Feature                   | Benefit                                                      |
 |---------------------------|--------------------------------------------------------------|
+| 🔗 **Cross-index JOINs**  | INNER / LEFT / RIGHT / FULL JOINs across indices — and across clusters — no ETL required |
 | 🗣️ **SQL Interface**     | Use familiar SQL syntax — no need to learn Elasticsearch DSL |
 | 🔄 **Version Agnostic**   | Single codebase for Elasticsearch 6, 7, 8, and 9             |
 | ⚡ **Interactive REPL**    | Auto-completion, syntax highlighting, persistent history     |
@@ -131,9 +132,28 @@ ORDER BY sales DESC
 LIMIT 100;
 ```
 
-**Supported features:** `JOIN UNNEST`, window functions, aggregations, nested fields, geospatial queries, and more.
+**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, window functions, aggregations, nested fields, geospatial queries, and more.
 
 📖 **[DQL Documentation](documentation/sql/dql_statements.md)**
+
+### Cross-Index JOINs — the feature Elasticsearch doesn't have
+
+**Stop ETL'ing Elasticsearch into your warehouse just to JOIN it.** Elasticsearch has no native cross-index JOIN — SoftClient4ES adds one at query time, on **every** surface: the REPL, the JDBC driver, the ADBC driver, the Arrow Flight SQL server, and Federation.
+
+```sql
+SELECT o.id, o.amount, c.name AS customer_name, c.email
+FROM orders AS o
+JOIN customers AS c ON o.customer_id = c.id
+WHERE o.status = 'completed'
+ORDER BY o.amount DESC
+LIMIT 10;
+```
+
+- **`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`** joins — plus `JOIN UNNEST` for nested arrays
+- **Same-cluster** joins (each table becomes an ES sub-query with `WHERE` push-down; the join runs in-process on an embedded engine) — **cross-cluster** and **multi-cluster** joins via Federation
+- **Free in Community** — up to 2 cross-index JOINs per query on a single cluster, on all client drivers
+
+📖 **[Cross-Index JOIN Documentation](documentation/sql/joins.md)**
 
 ### Materialized Views
 
@@ -179,10 +199,10 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch Version | Artifact                               |
 |-----------------------|----------------------------------------|
-| ES 6.x                | `softclient4es6-jdbc-driver-0.1.4.jar` |
-| ES 7.x                | `softclient4es7-jdbc-driver-0.1.4.jar` |
-| ES 8.x                | `softclient4es8-jdbc-driver-0.1.4.jar` |
-| ES 9.x                | `softclient4es9-jdbc-driver-0.1.4.jar` |
+| ES 6.x                | `softclient4es6-jdbc-driver-0.2.0.jar` |
+| ES 7.x                | `softclient4es7-jdbc-driver-0.2.0.jar` |
+| ES 8.x                | `softclient4es8-jdbc-driver-0.2.0.jar` |
+| ES 9.x                | `softclient4es9-jdbc-driver-0.2.0.jar` |
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200
@@ -197,20 +217,20 @@ Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.1.4</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.1.4'
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.0'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.1.4"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.0"
 ```
 
 The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
@@ -298,9 +318,9 @@ resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases
 // Choose your Elasticsearch version
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.20.0"
 // Add the community extensions for materialized views (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.1.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.2.0"
 // Add the JDBC driver if you want to use it from Scala (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.1.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.2.0"
 ```
 
 ```scala
@@ -371,11 +391,16 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 |------------------------|-------------------------------------------------------------|
 | **REPL Client**        | [📖 Documentation](documentation/client/repl.md)            |
 | **SQL Reference**      | [📖 Documentation](documentation/sql/README.md)             |
+| **Cross-Index JOINs**  | [📖 Documentation](documentation/sql/joins.md)              |
 | **API Reference**      | [📖 Documentation](documentation/client/README.md)          |
 | **Materialized Views** | [📖 Documentation](documentation/sql/materialized_views.md) |
 | **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)     |
 | **Arrow Flight SQL**   | [📖 Documentation](documentation/client/arrow_flight_sql.md) |
 | **ADBC Driver**        | [📖 Documentation](documentation/client/adbc_driver.md)     |
+| **JDBC Driver**        | [📖 Documentation](documentation/client/jdbc.md)            |
+| **BI Tool Integrations** | [📖 Documentation](documentation/client/bi_tools.md)      |
+| **Federation Operator Guide** | [📖 Documentation](documentation/client/federation_operator_guide.md) |
+| **Known Limitations**  | [📖 Documentation](documentation/sql/known_limitations.md)  |
 
 ---
 
@@ -386,21 +411,49 @@ SoftClient4ES uses a dual-license model:
 - **Core** (SQL engine, REPL client, Scala library) — **Apache License 2.0** (open source)
 - **JDBC Driver**, **Arrow Flight SQL**, **ADBC Driver**, and **Materialized Views** — **Elastic License 2.0** (free to use, not open source)
 
-### Feature Matrix
+### Editions & pricing
 
-| Feature                                                            | Community | Pro     | Enterprise |
-|--------------------------------------------------------------------|-----------|---------|------------|
-| Full SQL DDL (CREATE, ALTER, DROP TABLE)                           | Yes       | Yes     | Yes        |
-| Full SQL DML (INSERT, UPDATE, DELETE, COPY INTO)                   | Yes       | Yes     | Yes        |
-| Full SQL DQL (SELECT, JOIN UNNEST, aggregations, window functions) | Yes       | Yes     | Yes        |
-| Pipelines, Watchers, Enrich Policies                               | Yes       | Yes     | Yes        |
-| Interactive REPL client                                            | Yes       | Yes     | Yes        |
-| Scala library (Akka Streams)                                       | Yes       | Yes     | Yes        |
-| Elasticsearch 6, 7, 8, 9 support                                   | Yes       | Yes     | Yes        |
-| JDBC driver (DBeaver, Tableau, etc.)                               | Yes       | Yes     | Yes        |
-| Arrow Flight SQL server + ADBC driver                              | Yes       | Yes     | Yes        |
-| Materialized Views (CREATE, REFRESH, DESCRIBE)                     | Max 3     | Limited | Unlimited  |
-| Priority support                                                   | -         | -       | Yes        |
+Every tier has **every feature** — including all client drivers. You pay for
+**scale**, metered by quotas, not for unlocking capabilities.
+
+The two things Elasticsearch cannot do natively — and that DIY can't either —
+are available on **every** tier:
+
+- **Query-time cross-index JOIN** — on every surface (REPL, JDBC, ADBC,
+  Arrow Flight SQL, Federation). JOIN *depth* is metered.
+- **Persisted Materialized Views** — pre-joined / pre-aggregated indices.
+
+| | **Community** | **Pro** | **Enterprise** |
+|---|---|---|---|
+| **Price** | Free | **€119/mo** · €1,190/yr · $129/$1,290 | **from €12,000/year** |
+| Full SQL (DDL · DML · DQL · window functions) | Yes | Yes | Yes |
+| Client drivers — JDBC · ADBC · REPL | **Free** | Free | Free |
+| Arrow Flight SQL server | Yes | Yes | Yes |
+| Cross-index JOINs per query | **2** | 5 | Unlimited |
+| Federation across ES clusters | **1 ES cluster** | up to 5 ES clusters | Unlimited |
+| Materialized Views | **1** | 50 | Unlimited |
+| Max query results | 10,000 | 1,000,000 | Unlimited |
+| ES 6 / 7 / 8 / 9 support | Yes | Yes | Yes |
+| Support | Community | Email / 48h | Priority / 4h SLA |
+| SSO · air-gapped licensing · custom quotas | — | — | Yes |
+
+> Single-cluster cross-index JOINs and one Materialized View are **free** in
+> Community — taste both superpowers, then scale up by cluster count, JOIN
+> depth, and MV volume. Federation meters across **ES clusters** specifically in
+> this release; non-ES backends are a future-release concern.
+
+**What happens at a cap** (every number is enforced, not aspirational): exceeding
+`maxJoins` rejects the query before execution; exceeding `maxClusters` makes the
+federation sidecar fail to start (CrashLoop) by design; the Nth+1 Materialized View
+returns HTTP 402; over-quota query results are truncated with a warning (no `LIMIT`)
+or return HTTP 402 (explicit `LIMIT`). JOIN inputs are never capped — only the
+joined output is.
+
+Start a 30-day Pro trial at
+[portal.softclient4es.com/signup](https://portal.softclient4es.com/signup), buy at
+[portal.softclient4es.com/pricing](https://portal.softclient4es.com/pricing), or see
+the full [pricing page](https://softclient4es.dev/licensing/) for the tier matrix
+and FAQ.
 
 ### Elasticsearch License Requirements
 
@@ -422,6 +475,7 @@ Materialized views with JOINs rely on **Elasticsearch Watchers** to automaticall
 - [x] Materialized views with JOINs and aggregations
 - [x] Arrow Flight SQL server (gRPC, Docker)
 - [x] ADBC driver (in-process, columnar)
+- [x] Cross-index JOINs
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge

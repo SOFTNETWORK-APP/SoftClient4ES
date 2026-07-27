@@ -12,7 +12,8 @@ DQL supports:
 - `SELECT` with expressions, aliases, nested fields, STRUCT and ARRAY<STRUCT>
 - `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`
 - `UNION ALL`
-- `JOIN UNNEST` on `ARRAY<STRUCT>`
+- cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) across indices and clusters — see [Cross-Index JOIN](joins.md)
+- `JOIN UNNEST` on `ARRAY<STRUCT>` (the single-index nested form, handled natively inside one index)
 - aggregations, parent-level aggregations on nested arrays
 - window functions with `OVER`
 - rich function support (numeric, string, date/time, geo, conditional, type conversion)
@@ -852,9 +853,11 @@ Notes:
 
 ## Limitations
 
+For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool workarounds, see [Known Limitations & Roadmap](known_limitations.md).
+
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
-- Traditional SQL joins are supported only through the use of Materialized Views (only `JOIN UNNEST` on `ARRAY<STRUCT>` is available natively)
+- Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
 - No correlated subqueries
 - No arbitrary subqueries in `SELECT` or `WHERE` (except `INSERT ... AS SELECT` in DML)
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
@@ -1461,7 +1464,6 @@ Returns the current license type, quota values, expiration date, and grace statu
 | `max_materialized_views` | Maximum number of materialized views allowed, or "unlimited" |
 | `max_clusters` | Maximum number of federated clusters allowed, or "unlimited" |
 | `max_result_rows` | Maximum rows returned per query, or "unlimited" |
-| `max_concurrent_queries` | Maximum concurrent queries allowed, or "unlimited" |
 | `max_joins` | Maximum number of JOIN operations allowed per query, or "unlimited" |
 | `expires_at` | License expiration timestamp, or "never" for Community |
 | `days_remaining` | Days until expiration, or -1 for Community (no expiry) |
@@ -1473,9 +1475,9 @@ Returns the current license type, quota values, expiration date, and grace statu
 SHOW LICENSE;
 ```
 
-| license_type | trial | platform | max_materialized_views | max_clusters | max_result_rows | max_concurrent_queries | max_joins | expires_at | days_remaining | status |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Community | false | PRODUCTION | 3 | 1 | 10000 | 5 | 1 | never | -1 | Active |
+| license_type | trial | platform | max_materialized_views | max_clusters | max_result_rows | max_joins | expires_at | days_remaining | status |
+|---|---|---|---|---|---|---|---|---|---|
+| Community | false | PRODUCTION | 1 | 1 | 10000 | 2 | never | -1 | Active |
 📊 1 row(s) (1ms)
 
 ---

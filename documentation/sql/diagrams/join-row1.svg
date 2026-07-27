@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="490" viewBox="0 0 640 490" font-family="'Inter','Segoe UI',system-ui,sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0f172a"/><stop offset="100%" stop-color="#1e293b"/></linearGradient>
+    <linearGradient id="engine" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7c3aed"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient>
+    <linearGradient id="es" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#059669"/><stop offset="100%" stop-color="#10b981"/></linearGradient>
+    <linearGradient id="join" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#2563eb"/><stop offset="100%" stop-color="#3b82f6"/></linearGradient>
+    <filter id="shadow" x="-6%" y="-8%" width="112%" height="120%"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.35"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/></marker>
+  </defs>
+
+  <rect width="640" height="490" rx="16" fill="url(#bg)"/>
+
+  <!-- terminal header with the SQL query -->
+  <rect x="40" y="16" width="560" height="120" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <circle cx="60" cy="35" r="5.5" fill="#ff5f56"/>
+  <circle cx="78" cy="35" r="5.5" fill="#ffbd2e"/>
+  <circle cx="96" cy="35" r="5.5" fill="#27c93f"/>
+  <text x="582" y="39" text-anchor="end" font-size="11" fill="#8b949e">Row 1 · same-cluster JOIN</text>
+  <line x1="40" y1="52" x2="600" y2="52" stroke="#30363d" stroke-width="1"/>
+  <text x="58" y="78" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">SELECT</tspan><tspan fill="#e6edf3"> e.name, e.salary, d.dept_name</tspan></text>
+  <text x="58" y="99" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">FROM</tspan><tspan fill="#e6edf3"> emp e</tspan></text>
+  <text x="58" y="120" xml:space="preserve" font-family="'JetBrains Mono','SF Mono','Courier New',monospace" font-size="13"><tspan fill="#79c0ff">JOIN</tspan><tspan fill="#e6edf3"> dept d </tspan><tspan fill="#79c0ff">ON</tspan><tspan fill="#e6edf3"> e.dept_id = d.dept_id;</tspan></text>
+
+  <!-- flow diagram -->
+  <g transform="translate(0,120)">
+    <rect x="190" y="64" width="260" height="56" rx="10" fill="url(#engine)" filter="url(#shadow)"/>
+    <text x="320" y="89" font-size="14" font-weight="700" text-anchor="middle" fill="#fff">Driver / sidecar / REPL</text>
+    <text x="320" y="107" font-size="11" text-anchor="middle" fill="#ede9fe">embedded DuckDB engine</text>
+
+    <line x1="250" y1="120" x2="172" y2="188" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+    <text x="150" y="160" font-size="11" text-anchor="middle" fill="#cbd5e1">sub-query e</text>
+    <line x1="390" y1="120" x2="468" y2="188" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+    <text x="490" y="160" font-size="11" text-anchor="middle" fill="#cbd5e1">sub-query d</text>
+
+    <rect x="80" y="194" width="480" height="96" rx="10" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <text x="320" y="213" font-size="11" font-weight="600" text-anchor="middle" fill="#64748b">one Elasticsearch cluster</text>
+
+    <rect x="110" y="224" width="160" height="52" rx="10" fill="url(#es)" filter="url(#shadow)"/>
+    <text x="190" y="255" font-size="13" font-weight="700" text-anchor="middle" fill="#fff">ES index: emp</text>
+    <rect x="370" y="224" width="160" height="52" rx="10" fill="url(#es)" filter="url(#shadow)"/>
+    <text x="450" y="255" font-size="13" font-weight="700" text-anchor="middle" fill="#fff">ES index: dept</text>
+
+    <line x1="190" y1="276" x2="290" y2="310" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <line x1="450" y1="276" x2="350" y2="310" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <rect x="210" y="314" width="220" height="34" rx="10" fill="url(#join)" filter="url(#shadow)"/>
+    <text x="320" y="336" font-size="13" font-weight="700" text-anchor="middle" fill="#fff">joined in DuckDB</text>
+
+    <line x1="430" y1="331" x2="538" y2="331" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="585" y="335" font-size="11" text-anchor="middle" fill="#cbd5e1">rows to client</text>
+  </g>
+</svg>

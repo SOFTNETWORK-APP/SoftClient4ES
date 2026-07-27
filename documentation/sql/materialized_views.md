@@ -474,7 +474,7 @@ DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv;
 |---------------------------------------------|----------------------------------------------------------------------|
 | **UNNEST JOIN**                             | Not supported in materialized views                                  |
 | **`RIGHT JOIN` / `FULL OUTER JOIN`**        | Not supported (see below). Use `LEFT JOIN` with swapped table order. |
-| **Quota limits**                            | Community edition: max 3 views. Pro: limited. Enterprise: unlimited  |
+| **Quota limits**                            | Community: 1 view · Pro: 50 · Enterprise: unlimited                 |
 | **Watcher dependency (ES license)**         | Automatic enrich policy re-execution relies on Elasticsearch Watchers, which require an Elasticsearch Platinum or Enterprise license (see below) |
 | **Eventual consistency**                    | Data is eventually consistent based on refresh frequency and delay   |
 | **Join cardinality**                        | JOINs use enrich policies which match on a single field              |
