@@ -7,7 +7,7 @@
 
 🌐 **Website:** [softclient4es.dev/](https://softclient4es.dev/)
 
-**SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — through an interactive **REPL client**, a **JDBC driver**, an **Arrow Flight SQL** server, or as a **Scala library**.
+**SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — including **cross-index JOINs**, which Elasticsearch has no native support for — through an interactive **REPL client**, a **JDBC driver**, an **Arrow Flight SQL** server, or as a **Scala library**.
 
 ## 🏗️ Architecture
 
@@ -72,6 +72,7 @@ SHOW TABLES LIKE 'user%';
 
 | Feature                   | Benefit                                                      |
 |---------------------------|--------------------------------------------------------------|
+| 🔗 **Cross-index JOINs**  | INNER / LEFT / RIGHT / FULL JOINs across indices — and across clusters — no ETL required |
 | 🗣️ **SQL Interface**     | Use familiar SQL syntax — no need to learn Elasticsearch DSL |
 | 🔄 **Version Agnostic**   | Single codebase for Elasticsearch 6, 7, 8, and 9             |
 | ⚡ **Interactive REPL**    | Auto-completion, syntax highlighting, persistent history     |
@@ -131,9 +132,28 @@ ORDER BY sales DESC
 LIMIT 100;
 ```
 
-**Supported features:** `JOIN UNNEST`, window functions, aggregations, nested fields, geospatial queries, and more.
+**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, window functions, aggregations, nested fields, geospatial queries, and more.
 
 📖 **[DQL Documentation](documentation/sql/dql_statements.md)**
+
+### Cross-Index JOINs — the feature Elasticsearch doesn't have
+
+**Stop ETL'ing Elasticsearch into your warehouse just to JOIN it.** Elasticsearch has no native cross-index JOIN — SoftClient4ES adds one at query time, on **every** surface: the REPL, the JDBC driver, the ADBC driver, the Arrow Flight SQL server, and Federation.
+
+```sql
+SELECT o.id, o.amount, c.name AS customer_name, c.email
+FROM orders AS o
+JOIN customers AS c ON o.customer_id = c.id
+WHERE o.status = 'completed'
+ORDER BY o.amount DESC
+LIMIT 10;
+```
+
+- **`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`** joins — plus `JOIN UNNEST` for nested arrays
+- **Same-cluster** joins (each table becomes an ES sub-query with `WHERE` push-down; the join runs in-process on an embedded engine) — **cross-cluster** and **multi-cluster** joins via Federation
+- **Free in Community** — up to 2 cross-index JOINs per query on a single cluster, on all client drivers
+
+📖 **[Cross-Index JOIN Documentation](documentation/sql/joins.md)**
 
 ### Materialized Views
 
@@ -371,11 +391,16 @@ Seamlessly sync event-sourced systems with Elasticsearch.
 |------------------------|-------------------------------------------------------------|
 | **REPL Client**        | [📖 Documentation](documentation/client/repl.md)            |
 | **SQL Reference**      | [📖 Documentation](documentation/sql/README.md)             |
+| **Cross-Index JOINs**  | [📖 Documentation](documentation/sql/joins.md)              |
 | **API Reference**      | [📖 Documentation](documentation/client/README.md)          |
 | **Materialized Views** | [📖 Documentation](documentation/sql/materialized_views.md) |
 | **DDL Statements**     | [📖 Documentation](documentation/sql/ddl_statements.md)     |
 | **Arrow Flight SQL**   | [📖 Documentation](documentation/client/arrow_flight_sql.md) |
 | **ADBC Driver**        | [📖 Documentation](documentation/client/adbc_driver.md)     |
+| **JDBC Driver**        | [📖 Documentation](documentation/client/jdbc.md)            |
+| **BI Tool Integrations** | [📖 Documentation](documentation/client/bi_tools.md)      |
+| **Federation Operator Guide** | [📖 Documentation](documentation/client/federation_operator_guide.md) |
+| **Known Limitations**  | [📖 Documentation](documentation/sql/known_limitations.md)  |
 
 ---
 
