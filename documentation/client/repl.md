@@ -47,6 +47,10 @@ It provides:
 | ES 8                  | Java 8+              |
 | ES 9                  | Java 17+             |
 
+> **Cross-index JOINs need Java 11+** on every ES version (the JOIN engine is built on
+> Apache Arrow 18.x, which ships Java-11 bytecode). On Java 8 the REPL and materialized
+> views work; JOINs are unavailable. See [Extensions](#extensions-cross-index-joins-materialized-views).
+
 ### Network Requirements
 
 - Network access to JFrog repository (`softnetwork.jfrog.io`)
