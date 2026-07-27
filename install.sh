@@ -152,7 +152,7 @@ Extensions (installed by default, with all their dependencies):
   Use --no-extensions for a minimal install.
 
 Java Requirements:
-  ES 6, 7, 8  →  Java 8 or higher
+  ES 6, 7, 8  →  Java 11 or higher (the 0.20+ CLI bundles logback 1.5.x = Java-11 bytecode)
   ES 9        →  Java 17 or higher
 
 Examples:
@@ -242,7 +242,10 @@ get_required_java_version() {
     if [[ "$es_ver" == "9" ]]; then
         echo 17
     else
-        echo 8
+        # The 0.20+ CLI bundles logback 1.5.x (Java-11 bytecode): the REPL
+        # does not start on Java 8 — verified empirically (--help crashes
+        # with UnsupportedClassVersionError on Zulu 8).
+        echo 11
     fi
 }
 

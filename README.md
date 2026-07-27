@@ -204,7 +204,7 @@ Download the self-contained fat JAR for your Elasticsearch version:
 | ES 8.x                | `softclient4es8-jdbc-driver-0.2.0.jar` |
 | ES 9.x                | `softclient4es9-jdbc-driver-0.2.0.jar` |
 
-> The driver runs on Java 8+ (Java 17+ for ES 9.x), but **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
+> **Java 11+ recommended** (17+ for ES 9.x): **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200

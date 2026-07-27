@@ -42,14 +42,14 @@ It provides:
 
 | Elasticsearch Version | Minimum Java Version |
 |-----------------------|----------------------|
-| ES 6                  | Java 8+              |
-| ES 7                  | Java 8+              |
-| ES 8                  | Java 8+              |
+| ES 6                  | Java 11+             |
+| ES 7                  | Java 11+             |
+| ES 8                  | Java 11+             |
 | ES 9                  | Java 17+             |
 
-> **Cross-index JOINs need Java 11+** on every ES version (the JOIN engine is built on
-> Apache Arrow 18.x, which ships Java-11 bytecode). On Java 8 the REPL and materialized
-> views work; JOINs are unavailable. See [Extensions](#extensions-cross-index-joins-materialized-views).
+> The 0.20+ REPL requires **Java 11+** on every ES version: the CLI bundles logback
+> 1.5.x and the JOIN engine is built on Apache Arrow 18.x — both ship Java-11
+> bytecode. See [Extensions](#extensions-cross-index-joins-materialized-views).
 
 ### Network Requirements
 
@@ -219,10 +219,9 @@ jars discovered on the classpath through the `ExtensionSpi` ServiceLoader mechan
 **The installer sets these up by default** — no manual step:
 
 - **community extensions**: always installed — any engine version (matching 0.1.x line
-  for engines < 0.20), runs on Java 8+
-- **arrow extensions**: installed for engines ≥ 0.20 on **Java 11+** (hard constraint:
-  Apache Arrow 18.x ships Java-11 bytecode; on Java 8 the JOIN engine cannot load —
-  materialized views remain available)
+  for engines < 0.20)
+- **arrow extensions**: installed for engines ≥ 0.20 (requires Java 11+, like the
+  0.20+ CLI itself — Apache Arrow 18.x ships Java-11 bytecode)
 
 Each extension is resolved **with its full dependency closure** (Apache Arrow, DuckDB,
 …; ~250 jars) via a bundled [coursier](https://get-coursier.io) resolver into `lib/`.
@@ -252,7 +251,6 @@ cs fetch --repository https://softnetwork.jfrog.io/artifactory/releases \
 > re-run the installer to get the classpath-based launcher.
 
 The launcher adds the required Arrow `--add-opens` flags automatically on Java 9+.
-On Java 8 the REPL and materialized views work; cross-index JOINs need Java 11+.
 
 ### Add to PATH
 
