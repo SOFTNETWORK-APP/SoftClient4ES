@@ -60,13 +60,13 @@ It provides:
 #### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/softclient4es/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.sh | bash
 ```
 
 Or download and run manually:
 
 ```bash
-curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/softclient4es/main/install.sh
+curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -74,13 +74,13 @@ chmod +x install.sh
 #### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/SOFTNETWORK-APP/softclient4es/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1 | iex
 ```
 
 Or download and run manually:
 
 ```powershell
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/SOFTNETWORK-APP/softclient4es/main/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1 -OutFile install.ps1
 .\install.ps1
 ```
 
@@ -193,7 +193,8 @@ softclient4es/
 │   ├── application.conf        # Application configuration
 │   └── logback.xml             # Logging configuration
 ├── lib/
-│   └── softclient4es8-cli_2.13-x.y.z-assembly.jar
+│   ├── softclient4es8-cli_2.13-x.y.z-assembly.jar
+│   └── ...                     # extension jars + their dependencies (see Extensions)
 ├── logs/                       # Log files directory
 │   └── softclient4es.log       # (created at runtime)
 ├── LICENSE
@@ -201,6 +202,53 @@ softclient4es/
 ├── VERSION
 └── uninstall.sh
 ```
+
+### Extensions (cross-index JOINs, materialized views)
+
+Cross-index `JOIN`s and materialized views are delivered as **extensions** — separate
+jars discovered on the classpath through the `ExtensionSpi` ServiceLoader mechanism:
+
+- `softclient4es-arrow-extensions` — the cross-index JOIN engine (**required for
+  `SELECT … JOIN` across indices** — the same engine the JDBC driver embeds)
+- `softclient4es-community-extensions` — materialized views and quota enforcement
+
+**The installer sets these up by default** — no manual step:
+
+- **community extensions**: always installed — any engine version (matching 0.1.x line
+  for engines < 0.20), runs on Java 8+
+- **arrow extensions**: installed for engines ≥ 0.20 on **Java 11+** (hard constraint:
+  Apache Arrow 18.x ships Java-11 bytecode; on Java 8 the JOIN engine cannot load —
+  materialized views remain available)
+
+Each extension is resolved **with its full dependency closure** (Apache Arrow, DuckDB,
+…; ~250 jars) via a bundled [coursier](https://get-coursier.io) resolver into `lib/`.
+The launcher runs the REPL with `java -cp "<assembly>:lib/*"`, so every jar in `lib/`
+is visible.
+
+To skip them:
+
+```bash
+./install.sh --no-extensions        # minimal install — JOINs and MVs unavailable
+```
+
+**Manual installation on an existing install** (or air-gapped preparation):
+
+```bash
+# Resolve each extension with all its dependencies into lib/
+cs fetch --repository https://softnetwork.jfrog.io/artifactory/releases \
+  "app.softnetwork.elastic:softclient4es-arrow-extensions_2.13:<version>" \
+  "app.softnetwork.elastic:softclient4es-community-extensions_2.13:<version>" \
+  | xargs -I{} cp {} ~/softclient4es/lib/
+```
+
+> ⚠️ **Copying only the two extension jars into `lib/` is NOT enough** — they are thin
+> jars whose engine (Arrow memory, DuckDB, Flight) arrives transitively. Always resolve
+> the full dependency closure as above. Installations made with an installer older than
+> the 0.20 line launched the REPL with `java -jar`, which ignores `lib/` entirely —
+> re-run the installer to get the classpath-based launcher.
+
+The launcher adds the required Arrow `--add-opens` flags automatically on Java 9+.
+On Java 8 the REPL and materialized views work; cross-index JOINs need Java 11+.
 
 ### Add to PATH
 
