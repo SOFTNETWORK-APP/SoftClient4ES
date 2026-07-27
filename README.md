@@ -23,12 +23,12 @@ Get started in seconds with the interactive SQL client:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1 | iex
 ```
 
 ### Connect and Query
