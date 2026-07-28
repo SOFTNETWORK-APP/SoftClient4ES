@@ -159,7 +159,7 @@ Examples:
   $0
   $0 --list-versions --es-version 8
   $0 --target /opt/softclient4es --es-version 8 --version 0.16-SNAPSHOT
-  $0 -t ~/tools/softclient4es -e 7 -v 0.2.0
+  $0 -t ~/tools/softclient4es -e 7 -v 0.20.0
 
 Detected OS: $OS_TYPE
 
