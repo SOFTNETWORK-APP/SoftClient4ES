@@ -7,6 +7,8 @@ Elasticsearch has no native cross-index JOIN — and a stock JDBC driver on top 
 1. **Query-time cross-index JOIN** — `INNER` / `LEFT` / `RIGHT` / `FULL OUTER` joins across indices (and across clusters), at query time, on **every** surface: the REPL, the JDBC driver, the ADBC driver, the Arrow Flight SQL sidecar, and Federation. The drivers are the **free delivery channel**; the JOIN *depth* is metered.
 2. **Persisted [Materialized Views](materialized_views.md)** — the other superpower: denormalize cross-index data once into a queryable view. (That has its own page; this page is about query-time JOINs.)
 
+> **Runtime requirement — Java 11+.** The JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode, and the 0.20+ REPL/driver line also bundles logback 1.5.x (Java-11 as well). Every JVM-side surface (the REPL, the JDBC/ADBC drivers) requires **Java 11 or newer** at runtime (17+ for ES 9); the Flight SQL and Federation Docker images bundle their own Java 17. In the REPL, the installer sets the extensions up for you (see the [REPL Extensions section](../client/repl.md#extensions-cross-index-joins-materialized-views)).
+
 ## The JOIN ladder
 
 Three meters gate how far a JOIN can reach. Think of them as rungs:

@@ -142,17 +142,24 @@ Options:
   -v, --version <ver>      SoftClient4ES version (default: latest)
   -s, --scala <ver>        Scala version (default: $DEFAULT_SCALA_VERSION)
   -l, --list-versions      List available versions for the specified ES version
+      --no-extensions      Skip the extensions (cross-index JOINs, materialized views)
   -h, --help               Show this help message
 
+Extensions (installed by default, with all their dependencies):
+  - community extensions (materialized views): always — any engine version, Java 8+
+  - arrow extensions (cross-index JOINs): engine >= 0.20; requires Java 11+
+    (Apache Arrow constraint)
+  Use --no-extensions for a minimal install.
+
 Java Requirements:
-  ES 6, 7, 8  →  Java 8 or higher
+  ES 6, 7, 8  →  Java 11 or higher (the 0.20+ CLI bundles logback 1.5.x = Java-11 bytecode)
   ES 9        →  Java 17 or higher
 
 Examples:
   $0
   $0 --list-versions --es-version 8
   $0 --target /opt/softclient4es --es-version 8 --version 0.16-SNAPSHOT
-  $0 -t ~/tools/softclient4es -e 7 -v 0.2.0
+  $0 -t ~/tools/softclient4es -e 7 -v 0.20.0
 
 Detected OS: $OS_TYPE
 
@@ -169,6 +176,7 @@ ES_VERSION="$DEFAULT_ES_VERSION"
 SOFT_VERSION="$DEFAULT_SOFT_VERSION"
 SCALA_VERSION="$DEFAULT_SCALA_VERSION"
 LIST_VERSIONS=false
+WITH_EXTENSIONS=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -190,6 +198,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -l|--list-versions)
             LIST_VERSIONS=true
+            shift
+            ;;
+        --no-extensions)
+            WITH_EXTENSIONS=false
+            shift
+            ;;
+        --extensions)
+            WITH_EXTENSIONS=true
             shift
             ;;
         -h|--help)
@@ -226,7 +242,10 @@ get_required_java_version() {
     if [[ "$es_ver" == "9" ]]; then
         echo 17
     else
-        echo 8
+        # The 0.20+ CLI bundles logback 1.5.x (Java-11 bytecode): the REPL
+        # does not start on Java 8 — verified empirically (--help crashes
+        # with UnsupportedClassVersionError on Zulu 8).
+        echo 11
     fi
 }
 
@@ -237,7 +256,8 @@ REQUIRED_JAVA_VERSION=$(get_required_java_version "$ES_VERSION")
 # =============================================================================
 
 fetch_versions() {
-    local api_url="${JFROG_API_URL}/${ARTIFACT_NAME}"
+    local artifact="${1:-$ARTIFACT_NAME}"
+    local api_url="${JFROG_API_URL}/${artifact}"
     local response=""
 
     if command -v curl &> /dev/null; then
@@ -482,6 +502,118 @@ download_jar() {
 }
 
 # =============================================================================
+# Install Extensions (cross-index JOINs, materialized views)
+# =============================================================================
+
+# The engine assembly is launched via classpath (bin/softclient4es uses -cp
+# "lib/*"), so extension jars dropped into lib/ are discovered through the
+# ServiceLoader SPI. The extensions are thin jars: their full dependency
+# closure (Apache Arrow, DuckDB, ...) must be resolved too — a couple of jars
+# is NOT enough. We bootstrap the coursier launcher (a single portable jar
+# that runs with the already-required java) to resolve everything.
+
+COURSIER_URL="https://github.com/coursier/launchers/raw/master/coursier"
+JFROG_ROOT_URL="https://softnetwork.jfrog.io/artifactory/releases"
+EXTENSIONS_INSTALLED="none"
+
+# version_ge A B — true if version A >= version B
+version_ge() {
+    [[ "$(printf '%s\n%s\n' "$2" "$1" | sort_versions | head -1)" == "$2" ]]
+}
+
+# Resolve one extension (with its full dependency closure) into lib/.
+# $1 = artifact base name (without scala suffix), $2 = version
+install_one_extension() {
+    local ext="$1"
+    local ver="$2"
+    local artifact="${ext}_${SCALA_VERSION}"
+    local cs="$TARGET_DIR/bin/.coursier"
+    local jars jar base_jar count
+
+    info "Resolving ${artifact}:${ver} with all dependencies..."
+    if ! jars=$("$cs" fetch --repository "$JFROG_ROOT_URL" "app.softnetwork.elastic:${artifact}:${ver}" 2>/dev/null); then
+        warn "Dependency resolution failed for $artifact — skipping"
+        return 1
+    fi
+
+    count=0
+    while IFS= read -r jar; do
+        [[ -f "$jar" ]] || continue
+        base_jar=$(basename "$jar")
+        if [[ ! -f "$TARGET_DIR/lib/$base_jar" ]]; then
+            cp "$jar" "$TARGET_DIR/lib/$base_jar"
+            (( ++count )) || true
+        fi
+    done <<< "$jars"
+
+    success "Installed ${artifact}:${ver} ($count jar(s) added to lib/)"
+    if [[ "$EXTENSIONS_INSTALLED" == "none" ]]; then
+        EXTENSIONS_INSTALLED="${ext}:${ver}"
+    else
+        EXTENSIONS_INSTALLED="$EXTENSIONS_INSTALLED ${ext}:${ver}"
+    fi
+    return 0
+}
+
+install_extensions() {
+    if [[ "$WITH_EXTENSIONS" != true ]]; then
+        info "Skipping extensions (--no-extensions)"
+        return 0
+    fi
+
+    info "Installing extensions (materialized views + cross-index JOINs)..."
+
+    local cs="$TARGET_DIR/bin/.coursier"
+    if [[ ! -x "$cs" ]]; then
+        if ! download_file "$COURSIER_URL" "$cs" "coursier resolver"; then
+            warn "Could not download the coursier resolver — extensions skipped."
+            warn "Manual install: https://github.com/SOFTNETWORK-APP/SoftClient4ES/blob/main/documentation/client/repl.md"
+            return 0
+        fi
+        chmod +x "$cs"
+    fi
+
+    local java_version
+    java_version=$(get_java_version)
+
+    # ── Community extensions (materialized views) — ALWAYS installed by default.
+    #    No Arrow dependency, runs on Java 8+. For engines < 0.20 the matching
+    #    0.1.x line is selected; for >= 0.20 the latest release.
+    local community_ver
+    if version_ge "$SOFT_VERSION" "0.20"; then
+        community_ver=$(fetch_versions "softclient4es-community-extensions_${SCALA_VERSION}" | grep -v 'SNAPSHOT' | tail -1)
+    else
+        community_ver=$(fetch_versions "softclient4es-community-extensions_${SCALA_VERSION}" | grep -v 'SNAPSHOT' | grep '^0\.1\.' | tail -1)
+    fi
+    if [[ -n "$community_ver" ]]; then
+        install_one_extension "softclient4es-community-extensions" "$community_ver" || true
+    else
+        warn "Could not resolve a community-extensions release for engine $SOFT_VERSION — skipping"
+    fi
+
+    # ── Arrow extensions (cross-index JOINs) — default for engines >= 0.20.
+    #    Hard runtime constraint: Apache Arrow 18.x ships Java-11 bytecode
+    #    (class file major 55) — on Java 8 the JOIN engine cannot load.
+    if ! version_ge "$SOFT_VERSION" "0.20"; then
+        info "Cross-index JOIN extension requires SoftClient4ES >= 0.20 (installing $SOFT_VERSION) — skipping"
+        return 0
+    fi
+    if [[ -n "$java_version" ]] && [[ "$java_version" -lt 11 ]]; then
+        warn "Cross-index JOINs require Java 11+ (Apache Arrow constraint) — found Java $java_version."
+        warn "Materialized views remain available; re-run the installer on Java 11+ to enable JOINs."
+        return 0
+    fi
+
+    local arrow_ver
+    arrow_ver=$(fetch_versions "softclient4es-arrow-extensions_${SCALA_VERSION}" | grep -v 'SNAPSHOT' | tail -1)
+    if [[ -n "$arrow_ver" ]]; then
+        install_one_extension "softclient4es-arrow-extensions" "$arrow_ver" || true
+    else
+        warn "Could not resolve an arrow-extensions release — skipping"
+    fi
+}
+
+# =============================================================================
 # Download Documentation and License
 # =============================================================================
 
@@ -645,6 +777,8 @@ check_java() {
         echo "Error: Java \$REQUIRED_JAVA+ is required. Found: Java \$java_version" >&2
         exit 1
     fi
+
+    JAVA_MAJOR="\$java_version"
 }
 
 check_java
@@ -652,17 +786,27 @@ check_java
 # Default JVM options
 JAVA_OPTS="\${JAVA_OPTS:--Xmx512m}"
 
+# The extensions (Apache Arrow / DuckDB) need reflective access on Java 9+
+EXTRA_OPTS=""
+if [[ -n "\$JAVA_MAJOR" ]] && [[ "\$JAVA_MAJOR" -ge 9 ]]; then
+    EXTRA_OPTS="--add-opens=java.base/java.nio=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true"
+fi
+
 # Logback configuration
 LOGBACK_OPTS=""
 if [[ -f "\$LOGBACK_FILE" ]]; then
     LOGBACK_OPTS="-Dlogback.configurationFile=\$LOGBACK_FILE"
 fi
 
-exec java \$JAVA_OPTS \\
+# The engine assembly comes first on the classpath so it wins any conflict;
+# lib/* brings the extension jars, discovered via the ServiceLoader SPI.
+# (java -jar would ignore the classpath entirely — do not switch back.)
+exec java \$JAVA_OPTS \$EXTRA_OPTS \\
     -Dconfig.file="\$CONFIG_FILE" \\
     -Dlog.dir="\$LOG_DIR" \\
     \$LOGBACK_OPTS \\
-    -jar "\$JAR_FILE" \\
+    -cp "\$JAR_FILE:\$BASE_DIR/lib/*" \\
+    app.softnetwork.elastic.client.Cli \\
     "\$@"
 LAUNCHER_EOF
 
@@ -770,6 +914,7 @@ Version:            $SOFT_VERSION
 Scala:              $SCALA_VERSION
 Java Required:      $REQUIRED_JAVA_VERSION+
 Artifact:           $ARTIFACT_NAME
+Extensions:         $EXTENSIONS_INSTALLED
 OS:                 $OS_TYPE
 EOF
 
@@ -800,7 +945,12 @@ print_summary() {
     echo "    │   ├── application.conf"
     echo "    │   └── logback.xml"
     echo "    ├── lib/"
-    echo "    │   └── $JAR_NAME"
+    echo "    │   ├── $JAR_NAME"
+    if [[ "$EXTENSIONS_INSTALLED" != "none" ]]; then
+        echo "    │   └── (+ extension jars: $EXTENSIONS_INSTALLED)"
+    else
+        echo "    │   └── (no extensions installed)"
+    fi
     echo "    ├── logs/"
     echo "    │   └── softclient4es.log  (created at runtime)"
     echo "    ├── LICENSE"
@@ -876,6 +1026,7 @@ main() {
     echo ""
     create_directories
     download_jar
+    install_extensions
     download_docs
     create_config
     create_logback_config

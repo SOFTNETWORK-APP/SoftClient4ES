@@ -199,10 +199,12 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch Version | Artifact                               |
 |-----------------------|----------------------------------------|
-| ES 6.x                | `softclient4es6-jdbc-driver-0.2.0.jar` |
-| ES 7.x                | `softclient4es7-jdbc-driver-0.2.0.jar` |
-| ES 8.x                | `softclient4es8-jdbc-driver-0.2.0.jar` |
-| ES 9.x                | `softclient4es9-jdbc-driver-0.2.0.jar` |
+| ES 6.x                | `softclient4es6-jdbc-driver-0.2.1.jar` |
+| ES 7.x                | `softclient4es7-jdbc-driver-0.2.1.jar` |
+| ES 8.x                | `softclient4es8-jdbc-driver-0.2.1.jar` |
+| ES 9.x                | `softclient4es9-jdbc-driver-0.2.1.jar` |
+
+> **Java 11+ recommended** (17+ for ES 9.x): **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200
@@ -217,20 +219,20 @@ Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.0'
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.1'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.0"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.1"
 ```
 
 The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
@@ -309,6 +311,8 @@ For programmatic access, add SoftClient4ES to your project.
 | 8.x            | `softclient4es8-java-client` | 2.12, 2.13 | 8+   |
 | 9.x            | `softclient4es9-java-client` | 2.13 only  | 17+  |
 
+> JDK versions above apply to the client libraries themselves. **Cross-index JOINs (via the arrow extensions, the JDBC/ADBC drivers) require Java 11+** — see [Cross-Index JOIN](documentation/sql/joins.md).
+
 ### sbt Setup
 
 ```scala
@@ -320,7 +324,7 @@ libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client"
 // Add the community extensions for materialized views (optional)
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.2.0"
 // Add the JDBC driver if you want to use it from Scala (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.2.0"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.2.1"
 ```
 
 ```scala
