@@ -122,6 +122,10 @@ object Queries {
     "SELECT o.id, oi.quantity FROM orders o JOIN UNNEST(o.items) AS oi ORDER BY oi.quantity DESC"
   val groupByOrderByCountDistinct =
     "SELECT country, COUNT(DISTINCT customer_id) AS cnt FROM orders GROUP BY country ORDER BY COUNT(DISTINCT customer_id) DESC"
+  val joinWithOrderByNulls =
+    "SELECT e.name, e.salary FROM emp e JOIN dept d ON e.dept_id = d.dept_id ORDER BY e.salary DESC NULLS LAST"
+  val rowNumberUnaliasedQualified =
+    "SELECT e.name, ROW_NUMBER() OVER (ORDER BY e.salary DESC) FROM emp e"
   val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
   val groupByWithOrderByAndLimit: String =
     """SELECT identifier, COUNT(identifier2)
@@ -750,13 +754,17 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     // column" failure downstream.
     val result = Parser(joinWithOrderBy)
     result.isRight shouldBe true
-    result.toOption.get.sql should include("ORDER BY e.salary DESC")
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY e.salary DESC")
+    Parser(rendered).isRight shouldBe true
   }
 
   it should "keep qualified sorts qualified and bare sorts bare on round-trip" in {
     val result = Parser(joinWithMixedOrderBy)
     result.isRight shouldBe true
-    result.toOption.get.sql should include("ORDER BY e.salary DESC, dept_name ASC")
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY e.salary DESC, dept_name ASC")
+    Parser(rendered).isRight shouldBe true
   }
 
   it should "render an UNNEST sort with its unnest alias on round-trip" in {
@@ -765,7 +773,9 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     // handling, so the rendered SQL matches what the user typed.
     val result = Parser(unnestWithOrderBy)
     result.isRight shouldBe true
-    result.toOption.get.sql should include("ORDER BY oi.quantity DESC")
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY oi.quantity DESC")
+    Parser(rendered).isRight shouldBe true
   }
 
   it should "preserve DISTINCT in an ORDER BY aggregate on round-trip" in {
@@ -773,7 +783,31 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     // re-rendered SQL keeps COUNT(DISTINCT x) semantics on re-parse.
     val result = Parser(groupByOrderByCountDistinct)
     result.isRight shouldBe true
-    result.toOption.get.sql should include("ORDER BY COUNT(DISTINCT customer_id) DESC")
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY COUNT(DISTINCT customer_id) DESC")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "compose qualifier, direction and NULLS ordering on round-trip" in {
+    val result = Parser(joinWithOrderByNulls)
+    result.isRight shouldBe true
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY e.salary DESC NULLS LAST")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "derive a qualified column name for an unaliased ranking window" in {
+    // Since #158 the OVER-sort renders qualifier-preserving, so the derived
+    // name of an unaliased window column embeds the table alias.
+    val result = Parser(rowNumberUnaliasedQualified)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case ss: SingleSearch =>
+        ss.select.fields.map(_.sourceField) should contain(
+          "row_number_over_order_by_e_salary_desc"
+        )
+      case other => fail(s"Expected SingleSearch, got: $other")
+    }
   }
 
   it should "parse LIMIT" in {
