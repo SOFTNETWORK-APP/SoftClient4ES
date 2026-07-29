@@ -124,6 +124,9 @@ object Queries {
     "SELECT country, COUNT(DISTINCT customer_id) AS cnt FROM orders GROUP BY country ORDER BY COUNT(DISTINCT customer_id) DESC"
   val joinWithOrderByNulls =
     "SELECT e.name, e.salary FROM emp e JOIN dept d ON e.dept_id = d.dept_id ORDER BY e.salary DESC NULLS LAST"
+  val orderByBareTableAlias = "SELECT e.name FROM emp e ORDER BY e"
+  val orderByBareUnnestAlias =
+    "SELECT o.id, oi.quantity FROM orders o JOIN UNNEST(o.items) AS oi ORDER BY oi"
   val rowNumberUnaliasedQualified =
     "SELECT e.name, ROW_NUMBER() OVER (ORDER BY e.salary DESC) FROM emp e"
   val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
@@ -794,6 +797,20 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val rendered = result.toOption.get.sql
     rendered should include("ORDER BY e.salary DESC NULLS LAST")
     Parser(rendered).isRight shouldBe true
+  }
+
+  it should "reject ORDER BY on a bare table alias (dangling qualifier, Issue #159)" in {
+    Parser(orderByBareTableAlias) match {
+      case Left(err) => err.msg should include("Column name expected after table alias 'e'")
+      case Right(r)  => fail(s"expected rejection, got: ${r.sql}")
+    }
+  }
+
+  it should "reject ORDER BY on a bare UNNEST alias (Issue #159)" in {
+    Parser(orderByBareUnnestAlias) match {
+      case Left(err) => err.msg should include("Column name expected after table alias 'oi'")
+      case Right(r)  => fail(s"expected rejection, got: ${r.sql}")
+    }
   }
 
   it should "derive a qualified column name for an unaliased ranking window" in {

@@ -50,6 +50,15 @@ case class FieldSort(
   override def update(request: SingleSearch): FieldSort = this.copy(
     field = field.update(request)
   )
+  // A sort identifier colliding with a table alias (e.g. `ORDER BY e` where `e`
+  // aliases a FROM table) leaves the alias-split with an empty column name —
+  // reject it instead of rendering a dangling qualifier (#159).
+  override def validate(): Either[String, Unit] =
+    field.tableAlias match {
+      case Some(alias) if field.name.isEmpty || field.name.endsWith(".") =>
+        Left(s"Column name expected after table alias '$alias'")
+      case _ => super.validate()
+    }
   def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
 
   def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation
