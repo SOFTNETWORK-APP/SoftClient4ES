@@ -42,8 +42,11 @@ case class FieldSort(
   lazy val functions: List[Function] = field.functions
   lazy val direction: SortOrder = order.getOrElse(Asc)
   lazy val name: String = field.identifierName
+  // Render via field.sql (not identifierName) so the table-alias qualifier
+  // survives the AST → SQL round-trip — consumers such as the join planner
+  // re-parse this output and reject unqualified columns as ambiguous (#158).
   override def sql: String =
-    s"$name $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
+    s"${field.sql} $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
   override def update(request: SingleSearch): FieldSort = this.copy(
     field = field.update(request)
   )
