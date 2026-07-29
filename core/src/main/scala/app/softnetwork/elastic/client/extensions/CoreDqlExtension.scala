@@ -90,7 +90,11 @@ class CoreDqlExtension extends ExtensionSpi {
 
   override def canHandle(statement: Statement): Boolean = statement match {
     case _: DqlStatement => true
-    case _               => false
+    // Issue #157 — also claim write-with-JOIN statements (INSERT … SELECT / CREATE TABLE … AS
+    // SELECT with a cross-index JOIN, mirroring the arrow JoinExtension's canHandle) so they
+    // fail loudly in execute instead of falling through to the core DML/DDL executors, which
+    // would silently run the inner SELECT as a single-index search and write wrong data.
+    case other => joinRequired(other)
   }
 
   override def execute(
@@ -100,6 +104,26 @@ class CoreDqlExtension extends ExtensionSpi {
     implicit val ec: ExecutionContext = system.dispatcher
 
     statement match {
+      // Issue #157 — this baseline handler (and the closed EnforcedDqlExtension inheriting it)
+      // translates only the first FROM table: a cross-index JOIN reaching it would silently
+      // execute as a single-index search (joined columns NULL, orphans kept) — or, for
+      // INSERT … SELECT / CTAS, write that wrong data. With a join-capable extension
+      // registered ahead (priority < 100) join statements never get here; without one, fail
+      // loudly instead of returning wrong data.
+      case s if joinRequired(s) =>
+        Future.successful(
+          ElasticFailure(
+            ElasticError(
+              message =
+                "Cross-index JOIN requires the softclient4es-arrow-extensions jar (Java 11+). " +
+                "Re-run the installer, or run with --no-extensions removed. " +
+                "See documentation/client/repl.md#extensions.",
+              statusCode = Some(400),
+              operation = Some("join")
+            )
+          )
+        )
+
       case dql: DqlStatement =>
         licenseManager match {
           case Some(manager) =>
@@ -125,6 +149,19 @@ class CoreDqlExtension extends ExtensionSpi {
   override def supportedSyntax: Seq[String] = Seq(
     "SELECT ... FROM ... WHERE ... GROUP BY ... HAVING ... LIMIT ..."
   )
+
+  /** True when the statement carries a cross-index JOIN (`from.enrichmentRequired`), including
+    * embedded in INSERT … SELECT / CREATE TABLE … AS SELECT. UNNEST joins are excluded by
+    * construction — `joinedTables` collects `StandardJoin` sources only.
+    */
+  private[this] def joinRequired(statement: Statement): Boolean = statement match {
+    case single: SingleSearch    => single.from.enrichmentRequired
+    case multi: MultiSearch      => multi.requests.exists(_.from.enrichmentRequired)
+    case select: SelectStatement => select.statement.exists(joinRequired)
+    case insert: Insert          => insert.values.left.exists(joinRequired)
+    case create: CreateTable     => create.ddl.left.exists(joinRequired)
+    case _                       => false
+  }
 
   // ════════════════════════════════════════════════════════════════════
   // ✅ QUOTA CHECK LOGIC (in extension, not in core)
