@@ -42,11 +42,23 @@ case class FieldSort(
   lazy val functions: List[Function] = field.functions
   lazy val direction: SortOrder = order.getOrElse(Asc)
   lazy val name: String = field.identifierName
+  // Render via field.sql (not identifierName) so the table-alias qualifier
+  // survives the AST → SQL round-trip — consumers such as the join planner
+  // re-parse this output and reject unqualified columns as ambiguous (#158).
   override def sql: String =
-    s"$name $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
+    s"${field.sql} $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
   override def update(request: SingleSearch): FieldSort = this.copy(
     field = field.update(request)
   )
+  // A sort identifier colliding with a table alias (e.g. `ORDER BY e` where `e`
+  // aliases a FROM table) leaves the alias-split with an empty column name —
+  // reject it instead of rendering a dangling qualifier (#159).
+  override def validate(): Either[String, Unit] =
+    field.tableAlias match {
+      case Some(alias) if field.name.isEmpty || field.name.endsWith(".") =>
+        Left(s"Column name expected after table alias '$alias'")
+      case _ => super.validate()
+    }
   def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
 
   def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation

@@ -114,6 +114,21 @@ object Queries {
     "SELECT * FROM Table ORDER BY a DESC NULLS LAST, b ASC NULLS FIRST"
   val orderByLowerNulls = "SELECT * FROM Table ORDER BY id desc nulls first"
   val orderByNullsNoDirection = "SELECT * FROM Table ORDER BY identifier NULLS LAST"
+  val joinWithOrderBy =
+    "SELECT e.name, e.salary, d.dept_name FROM emp e JOIN dept d ON e.dept_id = d.dept_id ORDER BY e.salary DESC"
+  val joinWithMixedOrderBy =
+    "SELECT e.name, e.salary, d.dept_name FROM emp e JOIN dept d ON e.dept_id = d.dept_id ORDER BY e.salary DESC, dept_name ASC"
+  val unnestWithOrderBy =
+    "SELECT o.id, oi.quantity FROM orders o JOIN UNNEST(o.items) AS oi ORDER BY oi.quantity DESC"
+  val groupByOrderByCountDistinct =
+    "SELECT country, COUNT(DISTINCT customer_id) AS cnt FROM orders GROUP BY country ORDER BY COUNT(DISTINCT customer_id) DESC"
+  val joinWithOrderByNulls =
+    "SELECT e.name, e.salary FROM emp e JOIN dept d ON e.dept_id = d.dept_id ORDER BY e.salary DESC NULLS LAST"
+  val orderByBareTableAlias = "SELECT e.name FROM emp e ORDER BY e"
+  val orderByBareUnnestAlias =
+    "SELECT o.id, oi.quantity FROM orders o JOIN UNNEST(o.items) AS oi ORDER BY oi"
+  val rowNumberUnaliasedQualified =
+    "SELECT e.name, ROW_NUMBER() OVER (ORDER BY e.salary DESC) FROM emp e"
   val limit = "SELECT * FROM Table LIMIT 10 OFFSET 2"
   val groupByWithOrderByAndLimit: String =
     """SELECT identifier, COUNT(identifier2)
@@ -732,6 +747,84 @@ class ParserSpec extends AnyFlatSpec with Matchers {
       "SELECT identifier, COUNT(identifier2) FROM Table GROUP BY identifier ORDER BY identifier DESC NULLS LAST"
     )
     result.isLeft shouldBe true
+  }
+
+  // ── ORDER BY qualifier preservation in SQL round-trip (Issue #158) ─────────
+
+  it should "preserve the table-alias qualifier in ORDER BY on a JOIN round-trip" in {
+    // REPL JOIN path re-renders the parsed statement via .sql before handing it
+    // to the join planner — losing the qualifier manufactures an "Ambiguous
+    // column" failure downstream.
+    val result = Parser(joinWithOrderBy)
+    result.isRight shouldBe true
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY e.salary DESC")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "keep qualified sorts qualified and bare sorts bare on round-trip" in {
+    val result = Parser(joinWithMixedOrderBy)
+    result.isRight shouldBe true
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY e.salary DESC, dept_name ASC")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "render an UNNEST sort with its unnest alias on round-trip" in {
+    // The unnest alias is re-attached in place of the resolved nested path head
+    // (oi.quantity, not items.quantity) — mirroring Identifier.sql nested
+    // handling, so the rendered SQL matches what the user typed.
+    val result = Parser(unnestWithOrderBy)
+    result.isRight shouldBe true
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY oi.quantity DESC")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "preserve DISTINCT in an ORDER BY aggregate on round-trip" in {
+    // FieldSort.sql renders via Identifier.sql, which emits DISTINCT — the
+    // re-rendered SQL keeps COUNT(DISTINCT x) semantics on re-parse.
+    val result = Parser(groupByOrderByCountDistinct)
+    result.isRight shouldBe true
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY COUNT(DISTINCT customer_id) DESC")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "compose qualifier, direction and NULLS ordering on round-trip" in {
+    val result = Parser(joinWithOrderByNulls)
+    result.isRight shouldBe true
+    val rendered = result.toOption.get.sql
+    rendered should include("ORDER BY e.salary DESC NULLS LAST")
+    Parser(rendered).isRight shouldBe true
+  }
+
+  it should "reject ORDER BY on a bare table alias (dangling qualifier, Issue #159)" in {
+    Parser(orderByBareTableAlias) match {
+      case Left(err) => err.msg should include("Column name expected after table alias 'e'")
+      case Right(r)  => fail(s"expected rejection, got: ${r.sql}")
+    }
+  }
+
+  it should "reject ORDER BY on a bare UNNEST alias (Issue #159)" in {
+    Parser(orderByBareUnnestAlias) match {
+      case Left(err) => err.msg should include("Column name expected after table alias 'oi'")
+      case Right(r)  => fail(s"expected rejection, got: ${r.sql}")
+    }
+  }
+
+  it should "derive a qualified column name for an unaliased ranking window" in {
+    // Since #158 the OVER-sort renders qualifier-preserving, so the derived
+    // name of an unaliased window column embeds the table alias.
+    val result = Parser(rowNumberUnaliasedQualified)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case ss: SingleSearch =>
+        ss.select.fields.map(_.sourceField) should contain(
+          "row_number_over_order_by_e_salary_desc"
+        )
+      case other => fail(s"Expected SingleSearch, got: $other")
+    }
   }
 
   it should "parse LIMIT" in {

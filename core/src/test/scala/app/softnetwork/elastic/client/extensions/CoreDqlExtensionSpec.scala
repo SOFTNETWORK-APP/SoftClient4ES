@@ -289,6 +289,89 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     truncationOf(res) shouldBe None
   }
 
+  // ---- Issue #157: cross-index JOIN must fail loudly on a join-incapable handler ----
+
+  behavior of "CoreDqlExtension cross-index JOIN guard (#157)"
+
+  it should "reject a cross-index JOIN with a clear 400 instead of silently executing the left table only" in {
+    val (client, res) = run(
+      "SELECT e.name, d.dept_name FROM emp e JOIN dept d ON e.dept_id = d.dept_id",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("join")
+    err.message should include("softclient4es-arrow-extensions")
+    // never forwarded to any execution seam — no silent left-table-only search.
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "reject a UNION whose leg carries a cross-index JOIN" in {
+    val (client, res) = run(
+      "SELECT e.name FROM emp e JOIN dept d ON e.dept_id = d.dept_id UNION SELECT name FROM others",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("join")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "NOT reject a JOIN UNNEST (nested-field unnest, handled natively)" in {
+    val (_, res) = run(
+      "SELECT o.id, oi.quantity FROM orders o JOIN UNNEST(o.items) AS oi",
+      Quota.Community
+    )
+    res shouldBe a[ElasticSuccess[_]]
+  }
+
+  it should "reject an INSERT ... SELECT whose inner SELECT carries a cross-index JOIN" in {
+    val (client, res) = run(
+      "INSERT INTO target SELECT e.name, d.dept_name FROM emp e JOIN dept d ON e.dept_id = d.dept_id",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("join")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "reject a CREATE TABLE ... AS SELECT whose inner SELECT carries a cross-index JOIN" in {
+    val (client, res) = run(
+      "CREATE TABLE target AS SELECT e.name, d.dept_name FROM emp e JOIN dept d ON e.dept_id = d.dept_id",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("join")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "claim write-with-JOIN statements in canHandle but leave join-less writes to core executors" in {
+    val ext = new CoreDqlExtension()
+    def parsed(sql: String) = Parser(sql) match {
+      case Right(s) => s
+      case Left(e)  => fail(s"parse failed: ${e.msg}")
+    }
+    ext.canHandle(
+      parsed("INSERT INTO target SELECT e.name FROM emp e JOIN dept d ON e.dept_id = d.dept_id")
+    ) shouldBe true
+    ext.canHandle(
+      parsed("CREATE TABLE target AS SELECT e.name FROM emp e JOIN dept d ON e.dept_id = d.dept_id")
+    ) shouldBe true
+    // join-less writes keep their existing routing (core DML/DDL executors).
+    ext.canHandle(parsed("INSERT INTO target SELECT id, name FROM old_users")) shouldBe false
+    ext.canHandle(parsed("CREATE TABLE target AS SELECT id, name FROM old_users")) shouldBe false
+  }
+
   // ---- Story P0.6: QueryResults cap-hit recorded on BOTH reject branches ----
 
   behavior of "CoreDqlExtension cap-hit instrumentation (P0.6)"
