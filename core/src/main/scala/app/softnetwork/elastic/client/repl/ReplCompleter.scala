@@ -23,112 +23,28 @@ import java.util
 
 class ReplCompleter extends Completer {
 
-  private val simpleKeywords = Set(
-    // DQL
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "GROUP",
-    "ORDER",
-    "HAVING",
-    "LIMIT",
-    "OFFSET",
-    "JOIN",
-    "LEFT",
-    "RIGHT",
-    "INNER",
-    "OUTER",
-    "UNION",
-    "INTERSECT",
-    "EXCEPT",
+  // Single source of truth for SQL keywords (#161): parser-derived registry + REPL extras.
+  private val simpleKeywords: Set[String] = ReplKeywords.all
 
-    // DML
-    "INSERT",
-    "INTO",
-    "VALUES",
-    "UPDATE",
-    "SET",
-    "DELETE",
-    "COPY",
-    "BULK",
-
-    // DDL
-    "CREATE",
-    "ALTER",
-    "DROP",
-    "TRUNCATE",
-    "RENAME",
-    "TABLE",
-    "INDEX",
-    "VIEW",
-    "PIPELINE",
-    "WATCHER",
-    "ENRICH",
-    "POLICY",
-    "TRANSFORM",
-
-    // Functions
-    "COUNT",
-    "SUM",
-    "AVG",
-    "MIN",
-    "MAX",
-    "DISTINCT",
-    "CAST",
-    "COALESCE",
-    "NULLIF",
-    "CASE",
-    "WHEN",
-    "THEN",
-    "ELSE",
-    "END",
-
-    // Operators
-    "AND",
-    "OR",
-    "NOT",
-    "IN",
-    "LIKE",
-    "BETWEEN",
-    "IS",
-    "NULL",
-    "TRUE",
-    "FALSE",
-
-    // Enrich/Watcher
-    "TYPE",
-    "MATCH",
-    "GEO_MATCH",
-    "RANGE",
-    "ON",
-    "EXECUTE",
-    "SCHEDULE",
-    "EVERY",
-    "CONDITION",
-    "ACTION",
-    "WEBHOOK",
-    "LOG",
-
-    // Meta
-    "SHOW",
-    "DESCRIBE",
-    "EXPLAIN",
-    "BY",
-    "ALL",
-    "AS"
-  )
-
-  // Context-aware compound keywords
+  // Context-aware compound keywords (continuations offered after the trigger word).
+  // Hand-curated UX map; the underlying registry phrases (ORDER BY, PARTITION BY,
+  // UNION ALL, NULLS FIRST/LAST, ...) are pinned in SQLKeywords.compoundPhrases by
+  // ReplKeywordsSpec. GEO -> MATCH is a REPL-only convenience (extraWords).
   private val compoundKeywords = Map(
-    "GROUP"  -> List("BY"),
-    "ORDER"  -> List("BY"),
-    "LEFT"   -> List("JOIN", "OUTER JOIN"),
-    "RIGHT"  -> List("JOIN", "OUTER JOIN"),
-    "INNER"  -> List("JOIN"),
-    "OUTER"  -> List("JOIN"),
-    "UNION"  -> List("ALL"),
-    "ENRICH" -> List("POLICY"),
-    "GEO"    -> List("MATCH")
+    "GROUP"     -> List("BY"),
+    "ORDER"     -> List("BY"),
+    "PARTITION" -> List("BY"),
+    "LEFT"      -> List("JOIN", "OUTER JOIN"),
+    "RIGHT"     -> List("JOIN", "OUTER JOIN"),
+    "FULL"      -> List("JOIN", "OUTER JOIN"),
+    "CROSS"     -> List("JOIN"),
+    "INNER"     -> List("JOIN"),
+    "OUTER"     -> List("JOIN"),
+    "UNION"     -> List("ALL"),
+    "NULLS"     -> List("FIRST", "LAST"),
+    "IS"        -> List("NULL", "NOT NULL"),
+    "ENRICH"    -> List("POLICY"),
+    "GEO"       -> List("MATCH")
   )
 
   private val metaCommands = Set(
