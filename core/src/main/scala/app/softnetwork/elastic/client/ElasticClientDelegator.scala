@@ -1907,6 +1907,15 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): Future[ElasticResult[QueryResult]] =
     delegate.run(statement)
 
+  // ==================== Extensions (delegate) ====================
+
+  /** #163 — the delegator inherits ExtensionApi's lazy vals, so `this.extensionRegistry` would be a
+    * SECOND registry that no query path consults (`run` delegates to `delegate.run`, which uses the
+    * delegate's registry). Eager init must warm THAT one.
+    */
+  override def initializeExtensions()(implicit ec: ExecutionContext): Future[Int] =
+    delegate.initializeExtensions()
+
   // ==================== Transform (delegate) ====================
 
   override def createTransform(

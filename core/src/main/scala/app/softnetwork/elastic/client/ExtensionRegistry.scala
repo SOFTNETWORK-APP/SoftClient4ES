@@ -35,6 +35,7 @@ class ExtensionRegistry(
   /** All loaded extensions.
     */
   lazy val extensions: Seq[ExtensionSpi] = {
+    val scanStart = System.nanoTime()
     val loader = ServiceLoader.load(classOf[ExtensionSpi])
 
     val loaded = loader.iterator().asScala.toSeq.flatMap { ext =>
@@ -42,20 +43,32 @@ class ExtensionRegistry(
         s"🔌 Discovered extension: ${ext.extensionName} v${ext.version} (priority: ${ext.priority})"
       )
 
+      val initStart = System.nanoTime()
       ext.initialize(config, licenseRefreshStrategy) match {
         case Right(_) =>
-          logger.info(s"✅ Extension ${ext.extensionName} initialized successfully")
+          logger.info(
+            s"✅ Extension ${ext.extensionName} initialized successfully in ${elapsedMs(initStart)}ms"
+          )
           Some(ext)
 
         case Left(error) =>
-          logger.warn(s"⚠️ Failed to initialize extension ${ext.extensionName}: $error")
+          logger.warn(
+            s"⚠️ Failed to initialize extension ${ext.extensionName} after ${elapsedMs(initStart)}ms: $error"
+          )
           None
       }
     }
 
     // ✅ Sort by priority (lower = higher priority)
-    loaded.sortBy(_.priority)
+    val sorted = loaded.sortBy(_.priority)
+    logger.info(
+      s"🔌 Extension discovery + initialization completed in ${elapsedMs(scanStart)}ms " +
+      s"(${sorted.size} extension(s) active)"
+    )
+    sorted
   }
+
+  private def elapsedMs(t0: Long): Long = (System.nanoTime() - t0) / 1000000L
 
   /** Find extension that can handle a statement.
     */

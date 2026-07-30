@@ -24,6 +24,8 @@ import scala.concurrent.ExecutionContext
 
 object Cli extends App {
 
+  private val logger = org.slf4j.LoggerFactory.getLogger(getClass)
+
   implicit val system: ActorSystem = ActorSystem("softclient4es-sql-cli")
   implicit val ec: ExecutionContext = system.dispatcher
 
@@ -32,6 +34,27 @@ object Cli extends App {
 
   try {
     val gateway = ElasticClientFactory.createWithMonitoring(config.elasticConfig)
+
+    // #163 — eager extension init OFF the prompt thread: fold the ~442ms ServiceLoader scan (and
+    // kick off any extension-side warm-up, e.g. the arrow JoinExtension's DuckDB native load)
+    // into startup instead of the first query. Fire-and-forget: the REPL prompt (or the batch
+    // statement) proceeds immediately; a query racing this simply blocks on the lazy-val monitor
+    // (single scan, no double-init). Goes through the delegator forwarding so the DELEGATE's
+    // registry — the one run() consults — is the one warmed.
+    locally {
+      val initStart = System.nanoTime()
+      gateway.initializeExtensions().onComplete {
+        case scala.util.Success(count) =>
+          logger.info(
+            s"🔌 $count extension(s) ready in ${(System.nanoTime() - initStart) / 1000000L}ms"
+          )
+        case scala.util.Failure(e) =>
+          logger.warn(
+            "⚠️ Eager extension initialization failed — extensions will initialize on first query",
+            e
+          )
+      }
+    }
 
     val executor = new StreamingReplExecutor(gateway)
     val repl = new Repl(executor, config.replConfig)
