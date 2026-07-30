@@ -792,6 +792,27 @@ if [[ -n "\$JAVA_MAJOR" ]] && [[ "\$JAVA_MAJOR" -ge 9 ]]; then
     EXTRA_OPTS="--add-opens=java.base/java.nio=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true"
 fi
 
+# Class-Data Sharing (AppCDS) — cuts JVM class-load time on every start (#163 fix 3).
+# BUNDLE-ONLY: CDS_BUNDLE below is baked in AT INSTALL TIME from REPL.4's USE_BUNDLE
+# (intentionally NOT \$-escaped) — plain/--no-extensions installs get NO CDS behaviour
+# at all (no flags, no cache/ dir), on every JDK. Without this gate the 19+ branch
+# would fire on plain installs too and attempt runtime dumps over the multi-jar lib/*.
+# - JDK 19+: the JVM creates/refreshes the archive itself (AutoCreateSharedArchive).
+# - JDK 13-18: use the archive generated at install time, if present and not stale.
+# - JDK 11/12 or no archive: no CDS flags — default behaviour, zero regression.
+# -Xshare:auto (the default) silently ignores an invalid/mismatched archive.
+CDS_BUNDLE=${USE_BUNDLE:-false}
+CDS_ARCHIVE="\$BASE_DIR/cache/softclient4es.jsa"
+CDS_OPTS=""
+if [[ "\$CDS_BUNDLE" == true ]] && [[ -n "\$JAVA_MAJOR" ]]; then
+    if [[ "\$JAVA_MAJOR" -ge 19 ]]; then
+        mkdir -p "\$BASE_DIR/cache"
+        CDS_OPTS="-XX:+AutoCreateSharedArchive -XX:SharedArchiveFile=\$CDS_ARCHIVE"
+    elif [[ "\$JAVA_MAJOR" -ge 13 ]] && [[ -f "\$CDS_ARCHIVE" ]] && [[ ! "\$JAR_FILE" -nt "\$CDS_ARCHIVE" ]]; then
+        CDS_OPTS="-XX:SharedArchiveFile=\$CDS_ARCHIVE"
+    fi
+fi
+
 # Logback configuration
 LOGBACK_OPTS=""
 if [[ -f "\$LOGBACK_FILE" ]]; then
@@ -801,7 +822,7 @@ fi
 # The engine assembly comes first on the classpath so it wins any conflict;
 # lib/* brings the extension jars, discovered via the ServiceLoader SPI.
 # (java -jar would ignore the classpath entirely — do not switch back.)
-exec java \$JAVA_OPTS \$EXTRA_OPTS \\
+exec java \$JAVA_OPTS \$EXTRA_OPTS \$CDS_OPTS \\
     -Dconfig.file="\$CONFIG_FILE" \\
     -Dlog.dir="\$LOG_DIR" \\
     \$LOGBACK_OPTS \\
@@ -813,6 +834,55 @@ LAUNCHER_EOF
     chmod +x "$TARGET_DIR/bin/softclient4es"
 
     success "Created $TARGET_DIR/bin/softclient4es"
+}
+
+# =============================================================================
+# Generate AppCDS archive (REPL.5 / #163 fix 3) — bundle installs, JDK 13-18.
+# JDK 19+ needs nothing here (the launcher passes -XX:+AutoCreateSharedArchive).
+# =============================================================================
+
+CDS_STATUS="disabled"
+
+generate_cds_archive() {
+    [[ "$USE_BUNDLE" == true ]] || return 0        # single-jar classpath only (CDS forbids lib/*)
+    local jv
+    jv=$(get_java_version)
+    [[ -n "$jv" ]] || return 0
+    if [[ "$jv" -ge 19 ]]; then
+        # The launcher's -XX:+AutoCreateSharedArchive branch dumps/refreshes at runtime.
+        CDS_STATUS="enabled (runtime auto-create, JDK 19+)"
+        return 0
+    fi
+    [[ "$jv" -ge 13 ]] || return 0                 # 11/12: no dynamic archive support
+
+    info "Generating AppCDS archive (one-off; speeds up every REPL/batch start)..."
+    # The installer runs under `set -e`: every may-fail step below is guarded so a
+    # CDS failure can NEVER fail the install (warn-and-continue only).
+    if ! mkdir -p "$TARGET_DIR/cache" 2>/dev/null; then
+        warn "AppCDS archive generation skipped — could not create cache/ (no runtime impact)"
+        CDS_STATUS="disabled (generation failed)"
+        return 0
+    fi
+    # Re-install into an existing dir: never dump over a stale archive.
+    rm -f "$TARGET_DIR/cache/softclient4es.jsa" 2>/dev/null || true
+    # Dump workload: a short-lived batch run. It needs NO Elasticsearch — whatever the
+    # statement resolves to (local help or a connection error printed by the executor),
+    # the process exits normally with code 0 (Repl.executeCommand always returns 0) and
+    # the dynamic archive is written at exit. -cp is the bare jar: wildcards are
+    # forbidden at dump time, and [jar] is a prefix of the runtime [jar, lib/*] path.
+    # The exit code alone is not proof the archive was written (an unwritable path
+    # still exits 0) — require the .jsa file to actually exist.
+    if java -XX:ArchiveClassesAtExit="$TARGET_DIR/cache/softclient4es.jsa" \
+            -cp "$TARGET_DIR/lib/$JAR_NAME" \
+            app.softnetwork.elastic.client.Cli -c "help" > /dev/null 2>&1 \
+            && [[ -f "$TARGET_DIR/cache/softclient4es.jsa" ]]; then
+        success "AppCDS archive created: cache/softclient4es.jsa"
+        CDS_STATUS="enabled (cache/softclient4es.jsa)"
+    else
+        warn "AppCDS archive generation failed — continuing without it (no runtime impact)"
+        rm -f "$TARGET_DIR/cache/softclient4es.jsa" 2>/dev/null || true
+        CDS_STATUS="disabled (generation failed)"
+    fi
 }
 
 # =============================================================================
@@ -915,6 +985,7 @@ Scala:              $SCALA_VERSION
 Java Required:      $REQUIRED_JAVA_VERSION+
 Artifact:           $ARTIFACT_NAME
 Extensions:         $EXTENSIONS_INSTALLED
+AppCDS:             $CDS_STATUS
 OS:                 $OS_TYPE
 EOF
 
@@ -936,6 +1007,12 @@ print_summary() {
     echo "  SoftClient4ES version:  $SOFT_VERSION"
     echo "  Java required:          $REQUIRED_JAVA_VERSION+"
     echo "  OS detected:            $OS_TYPE"
+    if [[ "$CDS_STATUS" == enabled* ]]; then
+        echo "  AppCDS:                 $CDS_STATUS"
+        if [[ "$CDS_STATUS" == *cache/* ]]; then
+            echo "                          (regenerate by re-running the installer after a Java upgrade)"
+        fi
+    fi
     echo ""
     echo "  Directory structure:"
     echo "    $TARGET_DIR/"
@@ -1031,6 +1108,7 @@ main() {
     create_config
     create_logback_config
     create_launcher
+    generate_cds_archive
     create_uninstaller
     create_version_info
     print_summary

@@ -422,6 +422,38 @@ INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');
 SELECT * FROM users;
 ```
 
+#### Cold-start & batch invocation cost
+
+Each `softclient4es -c "…"` invocation starts a fresh JVM and pays the full
+initialization cost (class loading, client setup, extension discovery) before the
+statement runs. For scripted or CI use, prefer batching statements into **one**
+invocation — both forms below execute all `;`-separated statements in a single JVM,
+so the startup cost is paid once:
+
+```bash
+# Recommended: a SQL file (N statements, one JVM)
+softclient4es -f batch.sql
+
+# Also works: several statements in one -c
+softclient4es -c "CREATE TABLE t (id INT); INSERT INTO t (id) VALUES (1); SELECT * FROM t"
+```
+
+In practice the marginal cost of each extra statement is a few milliseconds, versus
+1.5–2s of JVM startup for every separate invocation.
+
+On bundle installs (the default self-contained `-all` jar) running on JDK 13+, the
+launcher additionally uses [Class-Data Sharing (AppCDS)](https://docs.oracle.com/en/java/javase/17/vm/class-data-sharing.html)
+to cut class-loading time (~20-25% faster start on JDK 17/21):
+
+- **JDK 13-18** — the installer generates `cache/softclient4es.jsa` once at install
+  time. After a Java upgrade, re-run the installer to regenerate it.
+- **JDK 19+** — the JVM creates and refreshes the archive by itself
+  (`-XX:+AutoCreateSharedArchive`); nothing to do.
+- The archive is an internal cache: it is safe to delete `cache/` at any time (the
+  REPL falls back to normal class loading, and JDK 19+ recreates it on the next run).
+- Plain and `--no-extensions` installs are unaffected — no CDS flags, no `cache/`
+  directory.
+
 ---
 
 ## Basic Usage
