@@ -64,7 +64,15 @@ class CliConfigSpec extends AnyFlatSpec with Matchers {
       "ELASTIC_CREDENTIALS_USERNAME",
       "ELASTIC_CREDENTIALS_PASSWORD",
       "ELASTIC_CREDENTIALS_API_KEY",
-      "ELASTIC_CREDENTIALS_BEARER_TOKEN"
+      "ELASTIC_CREDENTIALS_BEARER_TOKEN",
+      "ELASTIC_WATCHER_SCHEME",
+      "ELASTIC_WATCHER_HOST",
+      "ELASTIC_WATCHER_PORT",
+      "ELASTIC_WATCHER_AUTH_METHOD",
+      "ELASTIC_WATCHER_USERNAME",
+      "ELASTIC_WATCHER_PASSWORD",
+      "ELASTIC_WATCHER_API_KEY",
+      "ELASTIC_WATCHER_BEARER_TOKEN"
     ).foreach(name => assume(sys.env.get(name).forall(_.trim.isEmpty)))
 
   behavior of "CliConfig connection precedence"
@@ -268,6 +276,120 @@ class CliConfigSpec extends AnyFlatSpec with Matchers {
           external = fileOf("""elastic.credentials.method = "noauth"""")
         )
     ).credentials.authMethod shouldBe Some(NoAuth)
+  }
+
+  behavior of "CliConfig watcher block inheritance (issue #172)"
+
+  private def watcher(config: Config, key: String): String =
+    config.getString(s"elastic.watcher.$key")
+
+  it should "inherit the resolved credentials values when nothing watcher-specific is set" in {
+    assumeCleanEnvironment()
+    val config = CliConfig().buildElasticConfig(noEnv)
+    watcher(config, "scheme") shouldBe "http"
+    watcher(config, "host") shouldBe "localhost"
+    config.getInt("elastic.watcher.port") shouldBe 9200
+    watcher(config, "username") shouldBe ""
+    watcher(config, "password") shouldBe ""
+    watcher(config, "api-key") shouldBe ""
+    watcher(config, "bearer-token") shouldBe ""
+    // method inherits the (absent) credentials.method - it must stay absent so
+    // auth auto-detection engages
+    config.hasPath("elastic.watcher.method") shouldBe false
+    // regression: no key may carry the old literal dotted-path garbage
+    Seq("method", "username", "password", "api-key", "bearer-token").foreach { key =>
+      if (config.hasPath(s"elastic.watcher.$key")) {
+        watcher(config, key) should not startWith "elastic.credentials"
+      }
+    }
+  }
+
+  it should "inherit CUSTOM credentials values through the builtin conf substitutions" in {
+    // Exercises the builtin resource's ${elastic.credentials.*} substitutions directly:
+    // overriding a credentials key before resolution (what ELASTIC_CREDENTIALS_* env
+    // vars do at load time) must propagate into the watcher block.
+    assumeCleanEnvironment()
+    val resolved = ConfigFactory
+      .parseString(
+        """
+          |elastic.credentials.host = "main-host"
+          |elastic.credentials.username = "bob"
+          |elastic.credentials.api-key = "secret-key"
+        """.stripMargin
+      )
+      .withFallback(ConfigFactory.parseResources("softnetwork-elastic.conf"))
+      .resolve()
+    resolved.getString("elastic.watcher.host") shouldBe "main-host"
+    resolved.getString("elastic.watcher.username") shouldBe "bob"
+    resolved.getString("elastic.watcher.api-key") shouldBe "secret-key"
+  }
+
+  it should "let ELASTIC_WATCHER_* env vars override inherited and file values" in {
+    assumeCleanEnvironment()
+    val file = fileOf("""elastic.watcher.host = "file-watcher-host"""")
+    // env beats file
+    watcher(
+      CliConfig().buildElasticConfig(
+        envOf("ELASTIC_WATCHER_HOST" -> "watcher-host"),
+        external = file
+      ),
+      "host"
+    ) shouldBe "watcher-host"
+    // env beats the inherited credentials value, without touching the main connection
+    val config = CliConfig().buildElasticConfig(
+      envOf(
+        "ELASTIC_WATCHER_HOST"     -> " watcher-host ",
+        "ELASTIC_WATCHER_PASSWORD" -> " spacey pass "
+      )
+    )
+    watcher(config, "host") shouldBe "watcher-host" // coordinates trimmed
+    watcher(config, "password") shouldBe " spacey pass " // credentials verbatim
+    credentials(config, "host") shouldBe "localhost"
+  }
+
+  it should "treat an empty ELASTIC_WATCHER_* env var as unset" in {
+    assumeCleanEnvironment()
+    // empty env must NOT mask the file value
+    watcher(
+      CliConfig().buildElasticConfig(
+        envOf("ELASTIC_WATCHER_HOST" -> ""),
+        external = fileOf("""elastic.watcher.host = "file-watcher-host"""")
+      ),
+      "host"
+    ) shouldBe "file-watcher-host"
+    // empty env with no file: the inherited value survives
+    val config = CliConfig().buildElasticConfig(
+      envOf("ELASTIC_WATCHER_HOST" -> "", "ELASTIC_WATCHER_PORT" -> " ")
+    )
+    watcher(config, "host") shouldBe "localhost"
+    config.getInt("elastic.watcher.port") shouldBe 9200
+  }
+
+  it should "repair an empty watcher coordinate to the main connection coordinate (sanitize guard)" in {
+    assumeCleanEnvironment()
+    val config = CliConfig().buildElasticConfig(
+      noEnv,
+      external = fileOf("""
+        elastic.credentials.host = "main-host"
+        elastic.watcher.host = ""
+        elastic.watcher.port = ""
+      """)
+    )
+    watcher(config, "host") shouldBe "main-host"
+    config.getInt("elastic.watcher.port") shouldBe 9200
+  }
+
+  it should "auto-detect NO auth on the watcher block when nothing is set (garbage-ApiKeyAuth regression)" in {
+    assumeCleanEnvironment()
+    // Before the fix, watcher.api-key resolved to the literal string
+    // "elastic.credentials.api-key", which auto-detection picked up as ApiKeyAuth.
+    val watcherCredentials =
+      ElasticConfig(CliConfig().buildElasticConfig(noEnv)).watcher
+    watcherCredentials.authMethod shouldBe None
+    watcherCredentials.apiKey.getOrElse("") shouldBe ""
+    watcherCredentials.bearerToken.getOrElse("") shouldBe ""
+    watcherCredentials.username shouldBe ""
+    watcherCredentials.password shouldBe ""
   }
 
   behavior of "CliConfig.parseArgs"
