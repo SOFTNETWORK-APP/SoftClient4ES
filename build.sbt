@@ -321,6 +321,14 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       ),
 
       assembly / assemblyMergeStrategy := {
+        // Issue #171: dnsjava (transitive via hadoop-client -> hadoop-common) registers
+        // org.xbill.DNS.spi.DnsjavaInetAddressResolverProvider, but the provider class only
+        // exists under META-INF/versions/18/ (multi-release jar), which the META-INF discard
+        // rule below drops. Keeping the classless registration breaks ALL name resolution on
+        // JDK 18+ (JEP 418 consults the InetAddressResolver SPI on first lookup), so the
+        // service entry must be discarded along with the class.
+        case PathList("META-INF", "services", "java.net.spi.InetAddressResolverProvider") =>
+          MergeStrategy.discard
         case PathList("META-INF", "services", _ @_*) => MergeStrategy.concat
         case PathList("META-INF", _ @_*) => MergeStrategy.discard
         case "reference.conf"            => MergeStrategy.concat
