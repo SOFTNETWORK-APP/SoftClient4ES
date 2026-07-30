@@ -27,9 +27,9 @@ import org.scalatest.wordspec.AnyWordSpec
   * `IllegalStateException("Invalid authentication configuration: None")` at client CREATION time
   * (172 CI failures) — `None` must be treated as no-auth, exactly like `Some(NoAuth)`.
   *
-  * Client construction never dials the cluster, so this spec needs no embedded/Docker
-  * Elasticsearch — it runs everywhere (the embedded-ES suite cannot start on Apple Silicon:
-  * ES 6.8's jvm.options passes the x86-only `-XX:UseAVX=2`).
+  * Client construction never dials the cluster, so this spec needs no embedded/Docker Elasticsearch
+  * — it runs everywhere (the embedded-ES suite cannot start on Apple Silicon: ES 6.8's jvm.options
+  * passes the x86-only `-XX:UseAVX=2`).
   */
 class JestClientNoAuthSpec extends AnyWordSpec with Matchers {
 
