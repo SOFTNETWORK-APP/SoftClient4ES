@@ -290,6 +290,21 @@ $env:PATH += ";$env:USERPROFILE\softclient4es\bin"
 
 ## Connection
 
+### Configuration Precedence
+
+Connection settings are resolved with the following precedence (highest first):
+
+```text
+CLI flag  >  ELASTIC_* environment variable  >  conf/application.conf (-Dconfig.file)  >  built-in defaults (http://localhost:9200)
+```
+
+Notes:
+
+- An environment variable set to the **empty string** (or whitespace only) is treated as **unset** — it never masks a value from the configuration file or the defaults.
+- Credential values (`username`, `password`, `api-key`, `bearer-token`) are passed through **verbatim**; `scheme`, `host` and `port` values are trimmed.
+- `ELASTIC_IP` takes precedence over `ELASTIC_HOST`; the installer-documented `ELASTIC_USERNAME`/`ELASTIC_PASSWORD`/`ELASTIC_API_KEY`/`ELASTIC_BEARER_TOKEN` names take precedence over the library-internal `ELASTIC_CREDENTIALS_*` forms (both keep working).
+- When no explicit authentication `method` is configured, the client **auto-detects** it from the supplied credentials: API key > bearer token > basic auth > none.
+
 ### Configuration File
 
 The REPL reads default connection settings from `conf/application.conf`:

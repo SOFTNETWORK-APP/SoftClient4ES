@@ -686,6 +686,7 @@ create_config() {
     cat > "$TARGET_DIR/conf/application.conf" << 'EOF'
 # SoftClient4ES Configuration
 # Override these settings or use command-line options
+# Precedence: CLI flag > ELASTIC_* env var > this file > built-in defaults
 
 elastic {
   credentials {
@@ -782,6 +783,23 @@ check_java() {
 }
 
 check_java
+
+# HOCON \${?VAR} substitution treats an env var set to "" as PRESENT and lets it
+# override file/default values (empty host => http://:9200). Treat empty as unset.
+# The ELASTIC_WATCHER_* family is included because the builtin conf carries the
+# same \${?VAR} substitution lines for the watcher block.
+for var in ELASTIC_SCHEME ELASTIC_HOST ELASTIC_IP ELASTIC_PORT \\
+           ELASTIC_USERNAME ELASTIC_PASSWORD ELASTIC_API_KEY ELASTIC_BEARER_TOKEN \\
+           ELASTIC_AUTH_METHOD \\
+           ELASTIC_CREDENTIALS_USERNAME ELASTIC_CREDENTIALS_PASSWORD \\
+           ELASTIC_CREDENTIALS_API_KEY ELASTIC_CREDENTIALS_BEARER_TOKEN \\
+           ELASTIC_WATCHER_SCHEME ELASTIC_WATCHER_HOST ELASTIC_WATCHER_PORT \\
+           ELASTIC_WATCHER_AUTH_METHOD ELASTIC_WATCHER_USERNAME ELASTIC_WATCHER_PASSWORD \\
+           ELASTIC_WATCHER_API_KEY ELASTIC_WATCHER_BEARER_TOKEN; do
+    if [[ -z "\${!var:-}" ]]; then
+        unset "\$var"
+    fi
+done
 
 # Default JVM options
 JAVA_OPTS="\${JAVA_OPTS:--Xmx512m}"
