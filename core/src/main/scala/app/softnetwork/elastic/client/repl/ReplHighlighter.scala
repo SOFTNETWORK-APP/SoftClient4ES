@@ -21,36 +21,8 @@ import org.jline.utils.{AttributedString, AttributedStringBuilder, AttributedSty
 
 class ReplHighlighter extends Highlighter {
 
-  private val keywords = Set(
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "CREATE",
-    "ALTER",
-    "DROP",
-    "TABLE",
-    "INDEX",
-    "VIEW",
-    "AND",
-    "OR",
-    "NOT",
-    "IN",
-    "LIKE",
-    "BETWEEN",
-    "JOIN",
-    "LEFT",
-    "RIGHT",
-    "INNER",
-    "OUTER",
-    "ENRICH",
-    "POLICY",
-    "WATCHER",
-    "TRANSFORM",
-    "PIPELINE"
-  )
+  // Single source of truth for SQL keywords (#161): parser-derived registry + REPL extras.
+  private val keywords: Set[String] = ReplKeywords.all
 
   override def highlight(reader: LineReader, buffer: String): AttributedString = {
     val builder = new AttributedStringBuilder()
