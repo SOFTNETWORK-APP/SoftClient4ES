@@ -63,7 +63,7 @@ Examples:
   .\install.ps1
   .\install.ps1 -ListVersions -EsVersion 8
   .\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 8 -Version 1.0.0
-  .\install.ps1 -EsVersion 7 -Version 0.20.0 -NoExtensions
+  .\install.ps1 -EsVersion 7 -Version 0.20.2 -NoExtensions
 
 "@
     exit 0
