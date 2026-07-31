@@ -625,6 +625,36 @@ download_jar() {
 }
 
 # =============================================================================
+# Extract the licence bundle (bundle installs only)
+# The -all jar mixes Apache-2.0 + ELv2 + proprietary: materialize licenses/
+# and NOTICE into the install root so the visible tree is not just the
+# Apache-2.0 LICENSE. Failure-tolerant (set -e): the jar keeps the canonical
+# copies either way.
+# =============================================================================
+
+extract_bundle_licenses() {
+    [[ "$USE_BUNDLE" == true ]] || return 0
+
+    local jar="$TARGET_DIR/lib/$JAR_NAME"
+    info "Extracting licence bundle (licenses/ + NOTICE) from $JAR_NAME..."
+
+    if command -v unzip >/dev/null 2>&1; then
+        if unzip -o -q "$jar" 'licenses/*' NOTICE -d "$TARGET_DIR" 2>/dev/null; then
+            success "Extracted licenses/ and NOTICE to $TARGET_DIR"
+            return 0
+        fi
+    elif command -v jar >/dev/null 2>&1; then
+        if (cd "$TARGET_DIR" && jar -xf "$jar" licenses NOTICE) 2>/dev/null; then
+            success "Extracted licenses/ and NOTICE to $TARGET_DIR"
+            return 0
+        fi
+    fi
+
+    warn "Could not extract the licence bundle (unzip/jar unavailable or failed)."
+    warn "The canonical copies remain inside the jar: licenses/ and NOTICE."
+}
+
+# =============================================================================
 # Install Extensions (cross-index JOINs, materialized views)
 # =============================================================================
 
@@ -682,6 +712,7 @@ install_extensions() {
     if [[ "$USE_BUNDLE" == true ]]; then
         info "Extensions are bundled inside $JAR_NAME — no dependency resolution needed"
         EXTENSIONS_INSTALLED="bundled (community + arrow JOIN)"
+        extract_bundle_licenses
         return 0
     fi
 
@@ -751,7 +782,8 @@ print_license_notice() {
     if [[ "$USE_BUNDLE" == true ]]; then
         echo "  License: this bundle contains the Apache-2.0 SoftClient4ES engine PLUS"
         echo "  SoftClient4ES extensions under the Elastic License 2.0 and the proprietary"
-        echo "  cross-index JOIN engine (free to use; see licenses/ inside the jar and NOTICE)."
+        echo "  cross-index JOIN engine (free to use; see the licenses/ directory and NOTICE"
+        echo "  in the install root — canonical copies ship inside the jar)."
         echo "  Quota enforcement is active. For a pure Apache-2.0 install re-run with --no-extensions."
     elif [[ "$WITH_EXTENSIONS" != true ]] || [[ "$EXTENSIONS_INSTALLED" == "none" ]]; then
         echo "  License: pure Apache-2.0 engine (no extensions)."
@@ -1131,7 +1163,16 @@ print_summary() {
     fi
     echo "    ├── logs/"
     echo "    │   └── softclient4es.log  (created at runtime)"
-    echo "    ├── LICENSE"
+    if [[ "$USE_BUNDLE" == true ]]; then
+        echo "    ├── licenses/"
+        echo "    │   ├── LICENSE-Apache-2.0.txt"
+        echo "    │   ├── LICENSE-Elastic-2.0.txt"
+        echo "    │   └── NOTICE-arrow-extensions.txt"
+        echo "    ├── LICENSE"
+        echo "    ├── NOTICE"
+    else
+        echo "    ├── LICENSE"
+    fi
     echo "    ├── README.md"
     echo "    ├── VERSION"
     echo "    └── uninstall.sh"
