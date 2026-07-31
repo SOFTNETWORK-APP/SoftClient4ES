@@ -291,6 +291,7 @@ class Repl(
 
   private lazy val metaCommands: Set[String] = Set(
     "help",
+    "version",
     "quit",
     "exit",
     "tables",
@@ -318,6 +319,9 @@ class Repl(
     command match {
       case "help" =>
         handleHelp(args)
+
+      case "version" =>
+        printVersionInfo()
 
       case "quit" | "exit" =>
         running = false
@@ -418,6 +422,9 @@ class Repl(
     command match {
       case "h" | "help" =>
         handleHelp(args)
+
+      case "version" =>
+        printVersionInfo()
 
       case "q" | "quit" =>
         running = false
@@ -629,19 +636,37 @@ class Repl(
   private def printWelcomeBanner(): Unit = {
     val name = s"║  ${formatLigne(bold(cyan("SoftClient4ES CLI")), 56)} ║"
     val ver = s"║  ${formatLigne(gray(s"Version $version"), 56)} ║"
+    // REPL.4 (#163 fix 4): -all bundle installs disclose their provenance right
+    // under the version line; plain installs have no bundle-info resource and
+    // the banner is unchanged. Same fixed-width box — always via formatLigne.
+    val bundleLine: Option[String] =
+      BundleInfo.fromClasspath.map(b => s"║  ${formatLigne(gray(b.bannerLine), 56)} ║")
     val help = s"║  ${formatLigne(s"Type ${yellow("help")} for available commands", 56)} ║"
     val quit = s"║  ${formatLigne(s"Type ${yellow("quit")} to exit", 56)} ║"
-    println(
-      s"""
-         |╔═══════════════════════════════════════════════════════════╗
-         |$name
-         |$ver
-         |║                                                           ║
-         |$help
-         |$quit
-         |╚═══════════════════════════════════════════════════════════╝
-         |""".stripMargin
-    )
+    val lines =
+      Seq(
+        "╔═══════════════════════════════════════════════════════════╗",
+        name,
+        ver
+      ) ++ bundleLine ++ Seq(
+        "║                                                           ║",
+        help,
+        quit,
+        "╚═══════════════════════════════════════════════════════════╝"
+      )
+    println(lines.mkString("\n", "\n", "\n"))
+  }
+
+  private def printVersionInfo(): Unit = {
+    println(s"${bold(cyan("SoftClient4ES CLI"))} ${gray(s"version $version")}")
+    BundleInfo.fromClasspath.foreach { b =>
+      println(s"${cyan(b.summary)}")
+      println(s"  engine:               ${b.engineVersion}")
+      println(s"  community extensions: ${b.communityExtensionsVersion}")
+      println(s"  arrow extensions:     ${b.arrowExtensionsVersion}")
+      b.gitSha.foreach(sha => println(s"  bundle git SHA:       $sha"))
+      b.javaFloor.foreach(floor => println(s"  java floor:           $floor+"))
+    }
   }
 
   private def formatLigne(value: String, size: Int): String = {
@@ -671,6 +696,7 @@ class Repl(
          |${bold(cyan("Meta Commands:"))}
          |  ${yellow("help")}              Show this help
          |  ${yellow("help <topic>")}      Show help for SQL command or function
+         |  ${yellow("version")}           Show engine (and bundle) version info
          |  ${yellow("quit")}              Exit the REPL
          |  ${yellow("tables")}            List all tables
          |  ${yellow("pipelines")}         List all pipelines

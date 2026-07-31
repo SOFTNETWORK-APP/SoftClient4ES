@@ -68,7 +68,18 @@ trait SoftClient4es {
       case 6 =>
         Seq(
           "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"),
-          "com.sksamuel.elastic4s" %% "elastic4s-http" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch")
+          "com.sksamuel.elastic4s" %% "elastic4s-http" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch"),
+          // Same story as ES7 below (issue #168): ES6's elastic4s-http pulls
+          // elasticsearch-rest-high-level-client 6.8.x, whose <clinit> hard-references
+          // org.apache.logging.log4j.LogManager (log4j-api), while excludeSlf4jAndLog4j strips
+          // every org.apache.logging.log4j artifact from the closure. Without this explicit
+          // re-add the published softclient4es6-rest-client — and therefore the plain es6 REPL —
+          // crashes on the first ES call with
+          //   NoClassDefFoundError: org/apache/logging/log4j/LogManager.
+          // Versions.log4j (2.17.1) matches the log4j the ES 6.8.23 server bundles; only the
+          // log4j-api surface is needed client-side (no provider required — log4j-api falls
+          // back to its no-op/SimpleLogger provider, which is fine for the cli).
+          "org.apache.logging.log4j" % "log4j-api" % Versions.log4j
         )
       case 7 =>
         Seq(
@@ -80,7 +91,8 @@ trait SoftClient4es {
           // the es7 JDBC driver and the arrow es7 sidecar — crash on the first ES call with
           //   NoClassDefFoundError: org/apache/logging/log4j/LogManager.
           // Versions.log4j (2.17.1) matches the log4j-core ES 7.17 bundles, keeping the pair
-          // aligned. (ES6 RHLC needs no log4j; ES8/9 use the new Java client.)
+          // aligned. (ES6's RHLC has the same LogManager hard reference — handled above, see
+          // issue #168; ES8/9 use the new Java client.)
           "org.apache.logging.log4j" % "log4j-api" % Versions.log4j
         )
       case 8 =>

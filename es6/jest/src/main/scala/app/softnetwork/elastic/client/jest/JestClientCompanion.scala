@@ -123,11 +123,16 @@ trait JestClientCompanion extends ElasticClientCompanion[JestClient] with Loggin
         logger.info("🔐 Configuring Bearer Token Auth")
         builder
 
-      case Some(NoAuth) =>
+      // None = no method configured and nothing to auto-detect from the credentials
+      // (since #162 the builtin conf no longer forces method = "noauth", so an
+      // unauthenticated setup legitimately resolves to None) — same as Some(NoAuth).
+      case Some(NoAuth) | None =>
         logger.warn("No authentication configured")
         builder
 
       case _ =>
+        // A method was explicitly selected but its credentials are missing/empty
+        // (e.g. method = "basic" without username) — fail loudly.
         throw new IllegalStateException(
           s"Invalid authentication configuration: ${elasticConfig.credentials.authMethod}"
         )

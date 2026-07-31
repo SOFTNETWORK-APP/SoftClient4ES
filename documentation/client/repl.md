@@ -111,13 +111,13 @@ Before installing, you can list all available versions for a specific Elasticsea
   Available SoftClient4ES Versions for Elasticsearch 8
 ═══════════════════════════════════════════════════════════════
 
-  Artifact: softclient4es8-cli_2.13
-  Java required: 8+
+  Artifact: softclient4es8-cli-all_2.13
+  Java required: 11+
 
   Versions:
 
-    • 0.16.0-SNAPSHOT
-    • 0.16.0
+    • 0.20.2
+    • 0.20.3
 
   Total: 2 version(s)
 
@@ -197,8 +197,9 @@ softclient4es/
 │   ├── application.conf        # Application configuration
 │   └── logback.xml             # Logging configuration
 ├── lib/
-│   ├── softclient4es8-cli_2.13-x.y.z-assembly.jar
-│   └── ...                     # extension jars + their dependencies (see Extensions)
+│   └── softclient4es8-cli-all_2.13-x.y.z-assembly.jar   # self-contained -all bundle
+│                               # (fallback/--no-extensions installs: plain cli jar
+│                               #  + extension jars and dependencies, see Extensions)
 ├── logs/                       # Log files directory
 │   └── softclient4es.log       # (created at runtime)
 ├── LICENSE
@@ -207,16 +208,53 @@ softclient4es/
 └── uninstall.sh
 ```
 
+### Default install: the self-contained `-all` bundle
+
+Two REPL artifacts are published per Elasticsearch version:
+
+| Artifact | Contents | License |
+|---|---|---|
+| `softclient4es{N}-cli` (plain) | the engine assembly only | pure **Apache-2.0** |
+| `softclient4es{N}-cli-all` (bundle) | engine + community extensions + arrow JOIN extension + **all** their dependencies in ONE jar | combined — see below |
+
+**The default install downloads the ONE self-contained `-all` bundle** — a single
+download, an empty `lib/`, no install-time dependency resolution. Everything —
+cross-index JOINs, materialized views, quota enforcement — works out of the box.
+
+The `-all` bundle has its **own version line** (it can be re-released for an
+extension hotfix without a new engine release):
+
+- `--list-versions` lists **bundle** versions by default, and **engine** versions
+  with `--no-extensions` (the output names the artifact listed);
+- `-v <version>` selects a **bundle** version on the default path; an engine-only
+  version (one with no matching bundle) falls back to the plain artifact plus the
+  coursier-based extensions resolution described below.
+
+The REPL welcome banner and the `version` meta-command disclose the bundle
+provenance (bundle version + the exact engine / extension versions), which the jar
+also carries in its `MANIFEST.MF` and `softclient4es-bundle-info.properties`.
+
+**License** — the `-all` bundle contains the Apache-2.0 SoftClient4ES engine PLUS
+SoftClient4ES extensions under the **Elastic License 2.0** and the **proprietary
+cross-index JOIN engine** (free to use; see `licenses/` inside the jar and the
+`NOTICE` file). The bundle as a whole is therefore **not** a pure Apache-2.0
+artifact. Quota enforcement is active out of the box. For a pure Apache-2.0
+install, use `--no-extensions`. Bundle bugs are reported on the
+[SoftClient4ES issue tracker](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues).
+
 ### Extensions (cross-index JOINs, materialized views)
 
-Cross-index `JOIN`s and materialized views are delivered as **extensions** — separate
-jars discovered on the classpath through the `ExtensionSpi` ServiceLoader mechanism:
+Cross-index `JOIN`s and materialized views are delivered as **extensions** — jars
+discovered on the classpath through the `ExtensionSpi` ServiceLoader mechanism:
 
 - `softclient4es-arrow-extensions` — the cross-index JOIN engine (**required for
   `SELECT … JOIN` across indices** — the same engine the JDBC driver embeds)
 - `softclient4es-community-extensions` — materialized views and quota enforcement
 
-**The installer sets these up by default** — no manual step:
+On the default path both ship **inside the `-all` bundle** (see above). The
+coursier-based resolution below is the **fallback path** — used when no bundle is
+published for the selected version, for engine-only `-v` selections, and for
+pre-0.20 engines:
 
 - **community extensions**: always installed — any engine version (matching 0.1.x line
   for engines < 0.20)
@@ -228,10 +266,10 @@ Each extension is resolved **with its full dependency closure** (Apache Arrow, D
 The launcher runs the REPL with `java -cp "<assembly>:lib/*"`, so every jar in `lib/`
 is visible.
 
-To skip them:
+To skip extensions entirely:
 
 ```bash
-./install.sh --no-extensions        # minimal install — JOINs and MVs unavailable
+./install.sh --no-extensions        # pure Apache-2.0 install — JOINs and MVs unavailable
 ```
 
 **Manual installation on an existing install** (or air-gapped preparation):
@@ -289,6 +327,21 @@ $env:PATH += ";$env:USERPROFILE\softclient4es\bin"
 ---
 
 ## Connection
+
+### Configuration Precedence
+
+Connection settings are resolved with the following precedence (highest first):
+
+```text
+CLI flag  >  ELASTIC_* environment variable  >  conf/application.conf (-Dconfig.file)  >  built-in defaults (http://localhost:9200)
+```
+
+Notes:
+
+- An environment variable set to the **empty string** (or whitespace only) is treated as **unset** — it never masks a value from the configuration file or the defaults.
+- Credential values (`username`, `password`, `api-key`, `bearer-token`) are passed through **verbatim**; `scheme`, `host` and `port` values are trimmed.
+- `ELASTIC_IP` takes precedence over `ELASTIC_HOST`; the installer-documented `ELASTIC_USERNAME`/`ELASTIC_PASSWORD`/`ELASTIC_API_KEY`/`ELASTIC_BEARER_TOKEN` names take precedence over the library-internal `ELASTIC_CREDENTIALS_*` forms (both keep working).
+- When no explicit authentication `method` is configured, the client **auto-detects** it from the supplied credentials: API key > bearer token > basic auth > none.
 
 ### Configuration File
 

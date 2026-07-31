@@ -23,6 +23,8 @@ import app.softnetwork.elastic.licensing.{
   LicenseRefreshStrategyFactory
 }
 
+import scala.concurrent.{ExecutionContext, Future}
+
 trait ExtensionApi { self: ElasticClientApi =>
 
   /** License refresh strategy resolved via LicenseRefreshStrategyFactory. The factory uses SPI
@@ -55,4 +57,16 @@ trait ExtensionApi { self: ElasticClientApi =>
   /** Extension registry (lazy loaded) */
   lazy val extensionRegistry: ExtensionRegistry =
     new ExtensionRegistry(config, licenseRefreshStrategy)
+
+  /** #163 — eagerly force extension discovery + initialization on the given execution context,
+    * instead of paying the ServiceLoader scan (~442ms measured over a 278-jar REPL classpath) on
+    * the first query. Additive: the underlying lazy vals stay the single initialization path — a
+    * concurrent first query simply blocks on the lazy-val monitor until the one scan finishes (and
+    * a FAILED lazy init is not cached, so a later query retries).
+    *
+    * @return
+    *   the number of successfully initialized extensions.
+    */
+  def initializeExtensions()(implicit ec: ExecutionContext): Future[Int] =
+    Future(extensionRegistry.extensions.size)
 }

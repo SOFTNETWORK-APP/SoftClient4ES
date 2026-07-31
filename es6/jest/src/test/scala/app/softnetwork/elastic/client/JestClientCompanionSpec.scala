@@ -85,6 +85,29 @@ class JestClientCompanionSpec
       val companion = TestCompanion()
       companion.testConnection() shouldBe true
     }
+
+    // Regression for #162 follow-up: the builtin conf no longer defaults
+    // method = "noauth", so a config with no credentials and no method resolves
+    // authMethod to None — the client must treat that as no-auth, not throw
+    // "Invalid authentication configuration: None".
+    "create client when no credentials and no method are configured (authMethod None)" in {
+      val base = ElasticConfig(elasticConfig)
+      val noAuthConfig = base.copy(
+        credentials = base.credentials.copy(
+          method = None,
+          username = "",
+          password = "",
+          apiKey = None,
+          bearerToken = None
+        )
+      )
+      noAuthConfig.credentials.authMethod shouldBe None
+
+      val companion = TestCompanion(noAuthConfig)
+      val client = companion.apply()
+      client should not be null
+      companion.testConnection() shouldBe true
+    }
   }
 
   case class TestCompanion(config: ElasticConfig) extends JestClientCompanion {
