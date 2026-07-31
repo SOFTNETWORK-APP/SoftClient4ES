@@ -139,17 +139,32 @@ Usage: $0 [OPTIONS]
 Options:
   -t, --target <dir>       Installation directory (default: $DEFAULT_TARGET_DIR)
   -e, --es-version <ver>   Elasticsearch major version: 6, 7, 8, 9 (default: $DEFAULT_ES_VERSION)
-  -v, --version <ver>      SoftClient4ES version (default: latest)
+  -v, --version <ver>      Version to install (default: latest). On the default
+                           path this selects a BUNDLE version (the -all artifact
+                           has its own version line); with --no-extensions (or
+                           when no bundle matches) it selects an ENGINE version.
   -s, --scala <ver>        Scala version (default: $DEFAULT_SCALA_VERSION)
   -l, --list-versions      List available versions for the specified ES version
-      --no-extensions      Skip the extensions (cross-index JOINs, materialized views)
+                           (bundle versions by default, engine versions with
+                           --no-extensions)
+      --no-extensions      Install the plain, pure Apache-2.0 engine only
+                           (no cross-index JOINs, no materialized views)
   -h, --help               Show this help message
 
-Extensions (installed by default, with all their dependencies):
+Default install = ONE self-contained -all bundle:
+  engine + community extensions + arrow JOIN extension + all dependencies in a
+  single jar (no install-time dependency resolution). The bundle contains
+  components under the Elastic License 2.0 plus the proprietary JOIN engine
+  (free to use) — it is NOT a pure Apache-2.0 artifact.
+  Fallback (no bundle published / engine-version -v / Java < 11): the plain
+  Apache-2.0 engine assembly + extensions resolved via coursier as before.
+  --no-extensions always yields a pure Apache-2.0 install.
+  Bundle bugs: https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues
+
+Extensions on the FALLBACK path (resolved with all their dependencies):
   - community extensions (materialized views): always — any engine version, Java 8+
   - arrow extensions (cross-index JOINs): engine >= 0.20; requires Java 11+
     (Apache Arrow constraint)
-  Use --no-extensions for a minimal install.
 
 Java Requirements:
   ES 6, 7, 8  →  Java 11 or higher (the 0.20+ CLI bundles logback 1.5.x = Java-11 bytecode)
@@ -158,8 +173,8 @@ Java Requirements:
 Examples:
   $0
   $0 --list-versions --es-version 8
-  $0 --target /opt/softclient4es --es-version 8 --version 0.16-SNAPSHOT
-  $0 -t ~/tools/softclient4es -e 7 -v 0.20.0
+  $0 --target /opt/softclient4es --es-version 8 --no-extensions
+  $0 -t ~/tools/softclient4es -e 7 -v 0.20.0 --no-extensions
 
 Detected OS: $OS_TYPE
 
@@ -231,7 +246,15 @@ fi
 # Derived Variables
 # =============================================================================
 
-ARTIFACT_NAME="softclient4es${ES_VERSION}-cli_${SCALA_VERSION}"
+# Plain artifact: the pure Apache-2.0 engine assembly (published by elasticsql).
+PLAIN_ARTIFACT_NAME="softclient4es${ES_VERSION}-cli_${SCALA_VERSION}"
+# Bundle artifact: the self-contained -all assembly (engine + community
+# extensions + arrow JOIN extension + all dependencies), published by the
+# softclient4es-repl packaging repo on its OWN version line.
+BUNDLE_ARTIFACT_NAME="softclient4es${ES_VERSION}-cli-all_${SCALA_VERSION}"
+# ARTIFACT_NAME is finalized by the bundle-selection block below; until then it
+# refers to the plain artifact (fallback/legacy paths).
+ARTIFACT_NAME="$PLAIN_ARTIFACT_NAME"
 
 # =============================================================================
 # Get Required Java Version
@@ -256,7 +279,7 @@ REQUIRED_JAVA_VERSION=$(get_required_java_version "$ES_VERSION")
 # =============================================================================
 
 fetch_versions() {
-    local artifact="${1:-$ARTIFACT_NAME}"
+    local artifact="${1:-$PLAIN_ARTIFACT_NAME}"
     local api_url="${JFROG_API_URL}/${artifact}"
     local response=""
 
@@ -272,7 +295,7 @@ fetch_versions() {
     if [[ -z "$response" ]]; then
         error "Failed to fetch versions from repository"
         error "URL: $api_url"
-        error "Artifact: $ARTIFACT_NAME"
+        error "Artifact: $artifact"
         return 1
     fi
 
@@ -287,11 +310,26 @@ fetch_versions() {
 list_available_versions() {
     info "Fetching available versions for ES$ES_VERSION..."
 
-    local versions
-    versions=$(fetch_versions)
+    # List the versions of the artifact the install would actually download:
+    # the -all bundle by default (its OWN version line), the plain artifact
+    # under --no-extensions or when no bundle is published.
+    local listed_artifact versions
+    if [[ "$WITH_EXTENSIONS" == true ]]; then
+        listed_artifact="$BUNDLE_ARTIFACT_NAME"
+        # `|| true`: an empty bundle listing must fall through (set -e is active)
+        versions=$(fetch_versions "$listed_artifact" 2>/dev/null || true)
+        if [[ -z "$versions" ]]; then
+            warn "No -all bundle versions found for $listed_artifact — listing the plain artifact instead"
+            listed_artifact="$PLAIN_ARTIFACT_NAME"
+            versions=$(fetch_versions "$listed_artifact")
+        fi
+    else
+        listed_artifact="$PLAIN_ARTIFACT_NAME"
+        versions=$(fetch_versions "$listed_artifact")
+    fi
 
     if [[ -z "$versions" ]]; then
-        error "No versions found for $ARTIFACT_NAME"
+        error "No versions found for $listed_artifact"
         exit 1
     fi
 
@@ -300,7 +338,7 @@ list_available_versions() {
     echo -e "${CYAN}  Available SoftClient4ES Versions for Elasticsearch $ES_VERSION${NC}"
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${YELLOW}Artifact:${NC} $ARTIFACT_NAME"
+    echo -e "  ${YELLOW}Artifact:${NC} $listed_artifact"
     echo -e "  ${YELLOW}Java required:${NC} $REQUIRED_JAVA_VERSION+"
     echo ""
     echo -e "  ${GREEN}Versions:${NC}"
@@ -337,8 +375,11 @@ fi
 resolve_latest_version() {
     info "Resolving latest version..."
 
+    # Latest of the PLAIN artifact (engine version line) — used on the
+    # fallback/--no-extensions paths; the bundle path resolves its latest
+    # from the bundle listing in the bundle-selection block below.
     local versions
-    versions=$(fetch_versions)
+    versions=$(fetch_versions "$PLAIN_ARTIFACT_NAME")
 
     if [[ -z "$versions" ]]; then
         error "Could not fetch versions"
@@ -365,8 +406,51 @@ resolve_latest_version() {
     echo "$latest"
 }
 
-if [[ "$SOFT_VERSION" == "latest" ]]; then
-    SOFT_VERSION=$(resolve_latest_version)
+# =============================================================================
+# Bundle Selection: default install = ONE self-contained -all assembly
+# =============================================================================
+# (This block owns latest-resolution for BOTH paths: the bundle listing first,
+#  the plain listing on fallback. The version list consulted is always the list
+#  of the artifact actually downloaded — the bundle has its OWN version line.)
+
+# Remember whether the user asked for "latest" (needed if the bundle path is
+# abandoned later by the existence probe — the plain latest must be re-resolved).
+REQUESTED_VERSION="$SOFT_VERSION"
+
+USE_BUNDLE=false
+if [[ "$WITH_EXTENSIONS" == true ]]; then
+    # NOTE: the trailing `|| true` matters — with `set -e` an empty listing
+    # (no bundles published yet → grep exits 1) must fall back, not abort.
+    bundle_versions=$(fetch_versions "$BUNDLE_ARTIFACT_NAME" 2>/dev/null | grep -v 'SNAPSHOT' || true)
+    if [[ -n "$bundle_versions" ]]; then
+        if [[ "$SOFT_VERSION" == "latest" ]]; then
+            SOFT_VERSION=$(echo "$bundle_versions" | tail -1)   # bundle-version line (0.20.2, 0.20.3, ...)
+            USE_BUNDLE=true
+            success "Resolved latest -all bundle version: $SOFT_VERSION"
+        elif echo "$bundle_versions" | grep -qx "$SOFT_VERSION"; then
+            USE_BUNDLE=true                                     # -v selects a BUNDLE version on the default path
+        else
+            warn "No -all bundle for version $SOFT_VERSION — falling back to the plain artifact + extensions resolution"
+        fi
+    else
+        warn "No -all bundles published for $BUNDLE_ARTIFACT_NAME — falling back to the plain artifact + extensions resolution"
+    fi
+    # Belt-and-braces: the bundle needs Java 11+ (Arrow/logback bytecode);
+    # check_prerequisites aborts below the ES-version floor anyway.
+    java_version=$(get_java_version)
+    if [[ -n "$java_version" ]] && [[ "$java_version" -lt 11 ]]; then
+        if [[ "$USE_BUNDLE" == true ]]; then
+            warn "Java $java_version found — the -all bundle requires Java 11+; falling back to the plain artifact"
+            USE_BUNDLE=false
+            SOFT_VERSION="$REQUESTED_VERSION"
+        fi
+    fi
+fi
+
+if [[ "$USE_BUNDLE" != true ]] && [[ "$SOFT_VERSION" == "latest" ]]; then
+    # Plain/fallback path: resolve latest from the PLAIN artifact's listing
+    # (`|| true` keeps set -e from aborting before the empty-check below)
+    SOFT_VERSION=$(resolve_latest_version || true)
     if [[ -z "$SOFT_VERSION" ]]; then
         error "Failed to resolve latest version"
         error "Try specifying a version manually with --version"
@@ -376,8 +460,47 @@ if [[ "$SOFT_VERSION" == "latest" ]]; then
     success "Resolved latest version: $SOFT_VERSION"
 fi
 
+if [[ "$USE_BUNDLE" == true ]]; then
+    ARTIFACT_NAME="$BUNDLE_ARTIFACT_NAME"
+else
+    ARTIFACT_NAME="$PLAIN_ARTIFACT_NAME"
+fi
 JAR_NAME="${ARTIFACT_NAME}-${SOFT_VERSION}-assembly.jar"
 DOWNLOAD_URL="${JFROG_REPO_URL}/${ARTIFACT_NAME}/${SOFT_VERSION}/${JAR_NAME}"
+
+# ── Existence probe (belt-and-braces over the listing check: covers a pruned
+#    scala variant or a listing/artifact race). Self-contained — never rely on
+#    $DOWNLOADER, which is only set later inside check_prerequisites().
+probe_url() {
+    local url="$1"
+    if command -v curl &> /dev/null; then
+        curl -fsI "$url" > /dev/null 2>&1
+    elif command -v wget &> /dev/null; then
+        wget -q --spider "$url" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+if [[ "$USE_BUNDLE" == true ]]; then
+    if ! probe_url "$DOWNLOAD_URL"; then
+        warn "-all bundle not reachable at $DOWNLOAD_URL"
+        warn "Falling back to the plain artifact + extensions resolution"
+        USE_BUNDLE=false
+        SOFT_VERSION="$REQUESTED_VERSION"
+        if [[ "$SOFT_VERSION" == "latest" ]]; then
+            SOFT_VERSION=$(resolve_latest_version || true)
+            if [[ -z "$SOFT_VERSION" ]]; then
+                error "Failed to resolve latest version"
+                exit 1
+            fi
+            success "Resolved latest version: $SOFT_VERSION"
+        fi
+        ARTIFACT_NAME="$PLAIN_ARTIFACT_NAME"
+        JAR_NAME="${ARTIFACT_NAME}-${SOFT_VERSION}-assembly.jar"
+        DOWNLOAD_URL="${JFROG_REPO_URL}/${ARTIFACT_NAME}/${SOFT_VERSION}/${JAR_NAME}"
+    fi
+fi
 
 # =============================================================================
 # Check Prerequisites
@@ -502,6 +625,36 @@ download_jar() {
 }
 
 # =============================================================================
+# Extract the licence bundle (bundle installs only)
+# The -all jar mixes Apache-2.0 + ELv2 + proprietary: materialize licenses/
+# and NOTICE into the install root so the visible tree is not just the
+# Apache-2.0 LICENSE. Failure-tolerant (set -e): the jar keeps the canonical
+# copies either way.
+# =============================================================================
+
+extract_bundle_licenses() {
+    [[ "$USE_BUNDLE" == true ]] || return 0
+
+    local jar="$TARGET_DIR/lib/$JAR_NAME"
+    info "Extracting licence bundle (licenses/ + NOTICE) from $JAR_NAME..."
+
+    if command -v unzip >/dev/null 2>&1; then
+        if unzip -o -q "$jar" 'licenses/*' NOTICE -d "$TARGET_DIR" 2>/dev/null; then
+            success "Extracted licenses/ and NOTICE to $TARGET_DIR"
+            return 0
+        fi
+    elif command -v jar >/dev/null 2>&1; then
+        if (cd "$TARGET_DIR" && jar -xf "$jar" licenses NOTICE) 2>/dev/null; then
+            success "Extracted licenses/ and NOTICE to $TARGET_DIR"
+            return 0
+        fi
+    fi
+
+    warn "Could not extract the licence bundle (unzip/jar unavailable or failed)."
+    warn "The canonical copies remain inside the jar: licenses/ and NOTICE."
+}
+
+# =============================================================================
 # Install Extensions (cross-index JOINs, materialized views)
 # =============================================================================
 
@@ -556,6 +709,13 @@ install_one_extension() {
 }
 
 install_extensions() {
+    if [[ "$USE_BUNDLE" == true ]]; then
+        info "Extensions are bundled inside $JAR_NAME — no dependency resolution needed"
+        EXTENSIONS_INSTALLED="bundled (community + arrow JOIN)"
+        extract_bundle_licenses
+        return 0
+    fi
+
     if [[ "$WITH_EXTENSIONS" != true ]]; then
         info "Skipping extensions (--no-extensions)"
         return 0
@@ -610,6 +770,32 @@ install_extensions() {
         install_one_extension "softclient4es-arrow-extensions" "$arrow_ver" || true
     else
         warn "Could not resolve an arrow-extensions release — skipping"
+    fi
+}
+
+# =============================================================================
+# License Notice (AC 4b) — wording rules: the bundle is "free to use", NEVER
+# "open source" / "source-available" / "Apache-2.0" as a whole.
+# =============================================================================
+
+print_license_notice() {
+    if [[ "$USE_BUNDLE" == true ]]; then
+        echo "  License: this bundle contains the Apache-2.0 SoftClient4ES engine PLUS"
+        echo "  SoftClient4ES extensions under the Elastic License 2.0 and the proprietary"
+        echo "  cross-index JOIN engine (free to use; see the licenses/ directory and NOTICE"
+        echo "  in the install root — canonical copies ship inside the jar)."
+        echo "  Quota enforcement is active. For a pure Apache-2.0 install re-run with --no-extensions."
+    elif [[ "$WITH_EXTENSIONS" != true ]] || [[ "$EXTENSIONS_INSTALLED" == "none" ]]; then
+        echo "  License: pure Apache-2.0 engine (no extensions)."
+    elif [[ "$EXTENSIONS_INSTALLED" == *arrow-extensions* ]]; then
+        echo "  License: this installation contains the Apache-2.0 SoftClient4ES engine PLUS"
+        echo "  SoftClient4ES extensions under the Elastic License 2.0 and the proprietary"
+        echo "  cross-index JOIN engine (free to use). Quota enforcement is active."
+        echo "  For a pure Apache-2.0 install re-run with --no-extensions."
+    else
+        echo "  License: this installation contains the Apache-2.0 SoftClient4ES engine PLUS"
+        echo "  SoftClient4ES extensions under the Elastic License 2.0 (free to use)."
+        echo "  Quota enforcement is active. For a pure Apache-2.0 install re-run with --no-extensions."
     fi
 }
 
@@ -923,7 +1109,27 @@ UNINSTALL_EOF
 # =============================================================================
 
 create_version_info() {
-    cat > "$TARGET_DIR/VERSION" << EOF
+    if [[ "$USE_BUNDLE" == true ]]; then
+        # Bundle path: $SOFT_VERSION is the BUNDLE version (its own line);
+        # the exact engine/extension versions are disclosed by the jar
+        # MANIFEST and the REPL banner / 'version' command.
+        cat > "$TARGET_DIR/VERSION" << EOF
+SoftClient4ES Installation Info
+================================
+Installed:          $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+Elasticsearch:      $ES_VERSION
+Version:            $SOFT_VERSION (bundle version line)
+Note:               engine and extension versions are disclosed by the jar
+                    MANIFEST and the REPL banner ('version' command)
+Scala:              $SCALA_VERSION
+Java Required:      $REQUIRED_JAVA_VERSION+
+Artifact:           $ARTIFACT_NAME
+Extensions:         $EXTENSIONS_INSTALLED
+OS:                 $OS_TYPE
+$(print_license_notice)
+EOF
+    else
+        cat > "$TARGET_DIR/VERSION" << EOF
 SoftClient4ES Installation Info
 ================================
 Installed:          $(date -u +"%Y-%m-%d %H:%M:%S UTC")
@@ -934,7 +1140,9 @@ Java Required:      $REQUIRED_JAVA_VERSION+
 Artifact:           $ARTIFACT_NAME
 Extensions:         $EXTENSIONS_INSTALLED
 OS:                 $OS_TYPE
+$(print_license_notice)
 EOF
+    fi
 
     success "Created $TARGET_DIR/VERSION"
 }
@@ -964,17 +1172,30 @@ print_summary() {
     echo "    │   └── logback.xml"
     echo "    ├── lib/"
     echo "    │   ├── $JAR_NAME"
-    if [[ "$EXTENSIONS_INSTALLED" != "none" ]]; then
+    if [[ "$USE_BUNDLE" == true ]]; then
+        echo "    │   └── (self-contained -all bundle — no additional jars)"
+    elif [[ "$EXTENSIONS_INSTALLED" != "none" ]]; then
         echo "    │   └── (+ extension jars: $EXTENSIONS_INSTALLED)"
     else
         echo "    │   └── (no extensions installed)"
     fi
     echo "    ├── logs/"
     echo "    │   └── softclient4es.log  (created at runtime)"
-    echo "    ├── LICENSE"
+    if [[ "$USE_BUNDLE" == true ]]; then
+        echo "    ├── licenses/"
+        echo "    │   ├── LICENSE-Apache-2.0.txt"
+        echo "    │   ├── LICENSE-Elastic-2.0.txt"
+        echo "    │   └── NOTICE-arrow-extensions.txt"
+        echo "    ├── LICENSE"
+        echo "    ├── NOTICE"
+    else
+        echo "    ├── LICENSE"
+    fi
     echo "    ├── README.md"
     echo "    ├── VERSION"
     echo "    └── uninstall.sh"
+    echo ""
+    print_license_notice
     echo ""
     echo -e "  ${CYAN}Quick Start:${NC}"
     echo ""
@@ -1045,6 +1266,8 @@ main() {
     create_directories
     download_jar
     install_extensions
+    # AC 4b: state the licence terms right after the download (repeated in the summary)
+    print_license_notice >&2
     download_docs
     create_config
     create_logback_config
