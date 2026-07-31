@@ -92,6 +92,16 @@ object CliConfig extends LazyLogging {
   private[client] val ApiKeyPath = "elastic.credentials.api-key"
   private[client] val BearerTokenPath = "elastic.credentials.bearer-token"
 
+  // Watcher block (issue #172): inherits elastic.credentials.* in the builtin conf,
+  // overridable per key through the ELASTIC_WATCHER_* env family.
+  private[client] val WatcherSchemePath = "elastic.watcher.scheme"
+  private[client] val WatcherHostPath = "elastic.watcher.host"
+  private[client] val WatcherPortPath = "elastic.watcher.port"
+  private[client] val WatcherUsernamePath = "elastic.watcher.username"
+  private[client] val WatcherPasswordPath = "elastic.watcher.password"
+  private[client] val WatcherApiKeyPath = "elastic.watcher.api-key"
+  private[client] val WatcherBearerTokenPath = "elastic.watcher.bearer-token"
+
   private def layerOf(entries: Seq[(String, AnyRef)]): Config =
     entries.foldLeft(ConfigFactory.empty()) { case (config, (path, value)) =>
       config.withValue(path, ConfigValueFactory.fromAnyRef(value))
@@ -129,7 +139,18 @@ object CliConfig extends LazyLogging {
         firstNonBlank("ELASTIC_API_KEY", "ELASTIC_CREDENTIALS_API_KEY")
           .map(ApiKeyPath -> _),
         firstNonBlank("ELASTIC_BEARER_TOKEN", "ELASTIC_CREDENTIALS_BEARER_TOKEN")
-          .map(BearerTokenPath -> _)
+          .map(BearerTokenPath -> _),
+        // ELASTIC_WATCHER_* family (issue #172): same empty-env-is-unset and trimming
+        // treatment as the main connection family. ELASTIC_WATCHER_AUTH_METHOD is NOT
+        // in this layer - parity with ELASTIC_AUTH_METHOD, which only enters through
+        // the builtin conf tail.
+        firstCoordinate("ELASTIC_WATCHER_SCHEME").map(WatcherSchemePath          -> _),
+        firstCoordinate("ELASTIC_WATCHER_HOST").map(WatcherHostPath              -> _),
+        firstCoordinate("ELASTIC_WATCHER_PORT").map(WatcherPortPath              -> _),
+        firstNonBlank("ELASTIC_WATCHER_USERNAME").map(WatcherUsernamePath        -> _),
+        firstNonBlank("ELASTIC_WATCHER_PASSWORD").map(WatcherPasswordPath        -> _),
+        firstNonBlank("ELASTIC_WATCHER_API_KEY").map(WatcherApiKeyPath           -> _),
+        firstNonBlank("ELASTIC_WATCHER_BEARER_TOKEN").map(WatcherBearerTokenPath -> _)
       ).flatten
     )
   }
@@ -140,12 +161,30 @@ object CliConfig extends LazyLogging {
     * `port = ""`. `hasPath` is false for HOCON `null`, so `key = null` in a user file is also
     * repaired.
     */
-  private[client] def sanitize(resolved: Config): Config =
-    Seq[(String, AnyRef)](
-      SchemePath -> "http",
-      HostPath   -> "localhost",
-      PortPath   -> Int.box(9200)
-    ).foldLeft(resolved) { case (config, (path, default)) =>
+  private[client] def sanitize(resolved: Config): Config = {
+    val repaired = repairEmpty(
+      resolved,
+      Seq[(String, AnyRef)](
+        SchemePath -> "http",
+        HostPath   -> "localhost",
+        PortPath   -> Int.box(9200)
+      )
+    )
+    // Watcher coordinates (issue #172): the watcher targets the main cluster unless
+    // explicitly overridden, so an empty/missing watcher coordinate falls back to the
+    // (already repaired) main connection coordinate rather than a hard default.
+    repairEmpty(
+      repaired,
+      Seq[(String, AnyRef)](
+        WatcherSchemePath -> repaired.getAnyRef(SchemePath),
+        WatcherHostPath   -> repaired.getAnyRef(HostPath),
+        WatcherPortPath   -> repaired.getAnyRef(PortPath)
+      )
+    )
+  }
+
+  private def repairEmpty(resolved: Config, defaults: Seq[(String, AnyRef)]): Config =
+    defaults.foldLeft(resolved) { case (config, (path, default)) =>
       val missingOrEmpty =
         !config.hasPath(path) || config.getString(path).trim.isEmpty
       if (missingOrEmpty) {
