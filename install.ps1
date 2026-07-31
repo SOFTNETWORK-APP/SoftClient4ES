@@ -430,11 +430,11 @@ function Create-LogbackConfig {
         <appender-ref ref="FILE" />
     </appender>
 
-    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%date{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n</pattern>
-        </encoder>
-    </appender>
+    <!-- File-only by design: the REPL owns stdout. An appender that no
+         <appender-ref> points at is reported as unreferenced, and that single
+         WARN makes logback dump its entire status log to stdout on every
+         launch. Reference any new appender from <root> or a <logger>, or
+         leave it out. -->
 
     <logger name="app.softnetwork.elastic" level="INFO" />
     <logger name="org.apache.http" level="WARN" />
