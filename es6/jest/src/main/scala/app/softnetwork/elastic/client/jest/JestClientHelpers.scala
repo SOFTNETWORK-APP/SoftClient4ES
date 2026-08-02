@@ -96,6 +96,11 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
           ElasticError(
             message = s"Exception during $operation: ${ex.getMessage}",
             cause = Some(ex),
+            // The Jest 6.3.1 client exposes the HTTP status only on `JestResult.getResponseCode`
+            // (see the non-succeeded branches below); its thrown exceptions are plain IOExceptions
+            // with no status. There is therefore deliberately NO `statusOf` override in this trait
+            // — core's default applies and the async flattening sites fall back to 500
+            // (SoftClient4ES#184, AD-6).
             statusCode = None,
             operation = Some(operation)
           )
@@ -361,7 +366,16 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
         val error = ElasticError(
           message = s"Exception during $operation: ${ex.getMessage}",
           cause = Some(ex),
-          statusCode = None,
+          // `JestClientResultHandler` turns a non-succeeded `JestResult` into an `ElasticError`
+          // carrying its `getResponseCode`, so the status survives the trip through this failed
+          // Future — core's default `statusOf` reads it back. A genuine transport failure is a
+          // plain IOException with no status and still yields `None`, which is honest and is what
+          // AD-5 requires here: Jest 6.3.1 exposes an HTTP status only on `JestResult`, never on a
+          // thrown exception. That is why there is deliberately NO `statusOf` override in this
+          // trait (SoftClient4ES#184, AD-6). Read through `Try` rather than `statusOrServerError`
+          // so the `None` is preserved, while still guaranteeing this `onComplete` callback cannot
+          // throw before `promise.success` below.
+          statusCode = Try(statusOf(ex)).toOption.flatten,
           operation = Some(operation)
         )
         promise.success(ElasticResult.failure(error))

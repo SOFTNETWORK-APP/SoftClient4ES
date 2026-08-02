@@ -195,12 +195,16 @@ trait GetApi extends ElasticClientHelpers {
           ElasticError(
             message =
               s"Exception occurred while retrieving document with id '$id' from index '$index': ${exception.getMessage}",
-            statusCode = Some(500),
+            cause = Some(exception),
+            statusCode = statusOrServerError(exception),
             index = Some(index),
             operation = Some("getAsync")
           )
-        logger.error(s"❌ ${error.message}")
+        // Complete FIRST, log second (SoftClient4ES#184): passing the throwable makes the appender
+        // walk the whole cause chain, and a throw there would leave this Promise uncompleted
+        // forever — a hang, which is strictly worse than a lost log line.
         promise.success(ElasticResult.failure(error))
+        logger.error(s"❌ ${error.message}", exception)
     }
 
     promise.future

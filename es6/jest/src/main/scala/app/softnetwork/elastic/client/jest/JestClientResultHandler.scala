@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
+import app.softnetwork.elastic.client.result.ElasticError
 import io.searchbox.action.Action
 import io.searchbox.client.{JestClient, JestResult, JestResultHandler}
 import io.searchbox.core.BulkResult
@@ -30,7 +31,30 @@ private class JestClientResultHandler[T <: JestResult] extends JestResultHandler
 
   override def completed(result: T): Unit =
     if (!result.isSucceeded)
-      promise.failure(new Exception(s"${result.getErrorMessage} - ${result.getJsonString}"))
+      // SoftClient4ES#184 — this handler is the ONLY place a non-succeeded `JestResult` is turned
+      // into a throwable, and a plain `Exception` here used to destroy the HTTP status the result
+      // carried: `JestClientHelpers.executeAsyncJestAction`'s `Failure` branch could then only
+      // report `statusCode = None`, so ES 6 Jest answered `None` (never `Some(404)`) for every
+      // asynchronous call against a missing index. Raising an `ElasticError` instead keeps the
+      // status readable through `ElasticClientHelpers.statusOf`, whose core default already
+      // understands the framework's own status-bearing throwables. The message is deliberately
+      // byte-identical to the previous `Exception`'s so downstream text does not move.
+      //
+      // ⚠️ `ElasticError` extends `Throwable`, NOT `Exception`. The single consumer of this
+      // promise (`JestClientHelpers.executeAsyncJestAction`) matches `case Failure(ex)`, which
+      // catches any throwable, so nothing changes today — but a future
+      // `recover { case e: Exception => … }` on the ASYNC Jest path would silently stop catching
+      // this. (`JestScrollApi`'s `case ex: Exception` recovers are on the synchronous
+      // `apply().execute(...)` path and are unaffected.)
+      promise.failure(
+        ElasticError(
+          message = s"${result.getErrorMessage} - ${result.getJsonString}",
+          statusCode = result.getResponseCode match {
+            case 0    => None // No HTTP response
+            case code => Some(code)
+          }
+        )
+      )
     else {
       result match {
         case r: BulkResult if !r.getFailedItems.isEmpty =>

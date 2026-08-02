@@ -16,10 +16,11 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.client.result.ElasticError
+import app.softnetwork.elastic.client.result.{ElasticError, ElasticFailure}
 import org.slf4j.Logger
 
 import scala.language.reflectiveCalls
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 trait ElasticClientHelpers {
@@ -496,5 +497,100 @@ trait ElasticClientHelpers {
         logger.error(s"Operation '$operation'$indexStr failed: ${error.message}")
     }
   }
+
+  // ========================================================================
+  // HTTP STATUS EXTRACTION (SoftClient4ES#184)
+  // ========================================================================
+
+  /** Strip the asynchronous plumbing wrappers a throwable may have acquired on its way out of a
+    * `CompletableFuture` / `Future` before its HTTP status can be read.
+    *
+    * `CompletableFuture` wraps an upstream failure in a `CompletionException` when it crosses a
+    * dependent stage, and `Future`/`Await` surfaces `ExecutionException`; neither carries a status
+    * of its own. Unwrapping is a no-op when the wrapper is absent, so it is applied unconditionally
+    * rather than guessed per client library.
+    *
+    * Iterative, with BOTH a self-cause guard and a depth cap. The self-cause guard alone only
+    * covers a 1-cycle; a 2-object cycle (`a.getCause == b`, `b.getCause == a`) would otherwise
+    * recurse until `StackOverflowError` — which is a `VirtualMachineError`, so neither `NonFatal`
+    * nor [[statusOrServerError]] catches it, and the caller's `Promise` would never complete. The
+    * cap makes the method total by construction instead of by assumption; Elasticsearch's own
+    * `ExceptionsHelper.unwrapCause` bails out at 10 levels for the same reason.
+    */
+  private[client] final def unwrapThrowable(t: Throwable): Throwable = {
+    // Deliberately a method-LOCAL val, not a trait member: a `val` in a trait is emitted as a
+    // field plus an initializer setter on the interface, which every already-compiled implementor
+    // would have to provide — an `AbstractMethodError` at construction time and a binary
+    // incompatibility that AD-10 promises this change does not introduce. Real wrapper chains are
+    // 1-2 deep; the cap exists purely so a pathological cause cycle terminates.
+    val depthLimit = 16
+    var current = t
+    var depth = 0
+    var continue = true
+    while (continue && depth < depthLimit) {
+      val cause = current.getCause
+      val isWrapper = current.isInstanceOf[java.util.concurrent.CompletionException] ||
+        current.isInstanceOf[java.util.concurrent.ExecutionException]
+      if (isWrapper && (cause ne null) && (cause ne current)) {
+        current = cause
+        depth += 1
+      } else {
+        continue = false
+      }
+    }
+    current
+  }
+
+  /** Best-effort HTTP status of a throwable raised by the underlying Elasticsearch client.
+    *
+    * The core default understands only the framework's own status-bearing throwables
+    * (`ElasticError` / `ElasticFailure`). Each client module overrides this with the exception
+    * types of its own client library — see `JavaClientHelpers` (ES 8/9) and
+    * `RestHighLevelClientHelpers` (ES 6/7). ES 6 Jest deliberately has no override: its HTTP status
+    * is only ever exposed on `JestResult.getResponseCode`, never on a thrown exception.
+    *
+    * `None` means "no HTTP status could be determined" — it is NOT a synonym for 500 and must never
+    * be read as "not found". Callers that need a status pick their own fallback; the asynchronous
+    * flattening sites in core use [[statusOrServerError]].
+    *
+    * Overrides MUST unwrap first (`unwrapThrowable`), MUST delegate their fallthrough to
+    * `super.statusOf(t)` so the framework throwables keep working, and MUST NOT throw — some
+    * client-library accessors dereference a nullable field (`TransportException.statusCode()` is
+    * `return response.statusCode()` with no null check). [[statusOrServerError]] absorbs a throwing
+    * override as a last line of defence, but an override that needs the guard is a bug in the
+    * override.
+    */
+  private[client] def statusOf(t: Throwable): Option[Int] =
+    unwrapThrowable(t) match {
+      case f: ElasticFailure => f.elasticError.statusCode
+      case e: ElasticError   => e.statusCode
+      case _                 => None
+    }
+
+  /** [[statusOf]] with the "internal server error" fallback used by the asynchronous flattening
+    * sites, where an `ElasticError` must be produced and some status has to be chosen.
+    *
+    * TOTAL BY CONSTRUCTION — it never throws. This is not defensive decoration: every caller runs
+    * inside a `Future.onComplete` callback, and a throw there is swallowed by the
+    * `ExecutionContext` reporter *without completing the promise*, so `getAsync` would return a
+    * `Future` that never completes and the REPL would hang instead of reporting a 500.
+    *
+    * `LinkageError` is caught alongside `NonFatal` on purpose. `scala.util.control.NonFatal` does
+    * NOT cover it, yet `NoClassDefFoundError` is a real, observed failure mode in this repo
+    * (SoftClient4ES#168): an override's type test — e.g. `case ex:
+    * org.elasticsearch.client.ResponseException` in `JavaClientHelpers` — has to resolve that class
+    * at runtime, and a shaded or ProGuarded fat jar can have removed it. Letting it escape would
+    * produce exactly the hang this method exists to prevent. `OutOfMemoryError` and the other
+    * `VirtualMachineError`s still propagate: the JVM is already lost, and swallowing them would
+    * hide it.
+    */
+  private[client] final def statusOrServerError(t: Throwable): Option[Int] =
+    Some(
+      try statusOf(t).getOrElse(500)
+      catch {
+        case NonFatal(_)     => 500
+        case _: LinkageError => 500
+      }
+    )
 
 }
