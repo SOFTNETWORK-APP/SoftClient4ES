@@ -453,4 +453,25 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
       _.isAcknowledged
     )
   }
+
+  /** @see
+    *   [[app.softnetwork.elastic.client.ElasticClientHelpers.statusOf]]
+    *
+    * `org.elasticsearch.ElasticsearchException.status()` returns a `RestStatus`
+    * (`ElasticsearchStatusException`, raised for `index_not_found_exception`, is a subclass);
+    * `org.elasticsearch.client.ResponseException` carries the raw HTTP status line. Both are
+    * already mapped in the synchronous branches of this trait — this override makes the same
+    * mapping reachable from `core`'s asynchronous flattening sites.
+    *
+    * `ResponseException` is read through `Try`: `getResponse` may be null and `getStatusLine` is
+    * not null-checked either, and an extractor must never throw (see `statusOrServerError`).
+    */
+  override private[client] def statusOf(t: Throwable): Option[Int] =
+    unwrapThrowable(t) match {
+      case ex: org.elasticsearch.ElasticsearchException =>
+        Option(ex.status()).map(_.getStatus)
+      case ex: org.elasticsearch.client.ResponseException =>
+        Try(ex.getResponse.getStatusLine.getStatusCode).toOption
+      case other => super.statusOf(other)
+    }
 }

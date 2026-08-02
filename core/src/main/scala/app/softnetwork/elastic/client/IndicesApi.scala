@@ -1152,7 +1152,9 @@ trait IndicesApi extends ElasticClientHelpers {
             ElasticError(
               message = e.getMessage,
               operation = Some("insertByQuery"),
-              index = Some(index)
+              index = Some(index),
+              cause = Some(e),
+              statusCode = statusOrServerError(e)
             )
           )
       }
@@ -1446,7 +1448,9 @@ trait IndicesApi extends ElasticClientHelpers {
             ElasticError(
               message = e.getMessage,
               operation = Some("copyInto"),
-              index = Some(target)
+              index = Some(target),
+              cause = Some(e),
+              statusCode = statusOrServerError(e)
             )
           )
       }

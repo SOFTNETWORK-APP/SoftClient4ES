@@ -36,6 +36,7 @@ import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema}
 import app.softnetwork.elastic.sql.query.{
   Delete,
+  FileFormat,
   Insert,
   SQLAggregation,
   SearchStatement,
@@ -49,6 +50,7 @@ import app.softnetwork.elastic.sql.transform.{
   TransformStats
 }
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
+import org.apache.hadoop.conf.Configuration
 import org.json4s.Formats
 
 import scala.collection.immutable.ListMap
@@ -273,6 +275,32 @@ class MetricsElasticClient(
   ): Future[ElasticResult[DmlResult]] = {
     measureAsync("insertByQuery", Some(index)) {
       delegate.insertByQuery(index, insert, refresh)
+    }(system.dispatcher)
+  }
+
+  /** `COPY INTO` (SoftClient4ES#184).
+    *
+    * `ElasticClientDelegator` now forwards `copyInto` to the real client so its error handling
+    * derives the HTTP status there. Before that forward existed, this wrapper ran the core
+    * `IndicesApi.copyInto` body itself, and the operation was measured only INCIDENTALLY, through
+    * the `getIndex` and `bulkWithResult` overrides its body happens to call on `this`. Forwarding
+    * removes those incidental measurements, so `COPY INTO` would silently contribute nothing to
+    * `getMetrics` / `getAggregatedMetrics` — and `MonitoredElasticClient`'s failure-rate and
+    * latency alerts would stop seeing file-copy traffic entirely. Measuring it explicitly here both
+    * restores the signal and improves it: one honest `copyInto` operation instead of a scattering
+    * of sub-calls.
+    */
+  override def copyInto(
+    source: String,
+    target: String,
+    doUpdate: Boolean,
+    fileFormat: Option[FileFormat],
+    hadoopConf: Option[Configuration]
+  )(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[DmlResult]] = {
+    measureAsync("copyInto", Some(target)) {
+      delegate.copyInto(source, target, doUpdate, fileFormat, hadoopConf)
     }(system.dispatcher)
   }
 

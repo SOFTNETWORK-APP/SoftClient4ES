@@ -27,6 +27,7 @@ import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
 import app.softnetwork.elastic.sql.{query, schema, PainlessContextType}
 import app.softnetwork.elastic.sql.query.{
   Delete,
+  FileFormat,
   Insert,
   SQLAggregation,
   SearchStatement,
@@ -42,6 +43,7 @@ import app.softnetwork.elastic.sql.transform.{
 }
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import com.typesafe.config.Config
+import org.apache.hadoop.conf.Configuration
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -270,6 +272,49 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     system: ActorSystem
   ): Future[ElasticResult[DmlResult]] =
     delegate.insertByQuery(index, insert, refresh)
+
+  /** Copy the content of a file into an index.
+    *
+    * Forwarded so that the copy — and in particular its error handling, which derives the HTTP
+    * status of a thrown client exception (SoftClient4ES#184) — runs on the real client rather than
+    * on this wrapper. Default argument values are deliberately NOT repeated: Scala allows them in
+    * exactly one place in an override chain (see `IndicesApi.copyInto`).
+    *
+    * @param source
+    *   - the file to read the documents from
+    * @param target
+    *   - the target index name
+    * @param doUpdate
+    *   - true to update existing documents, false to insert only
+    * @param fileFormat
+    *   - optional file format (if not provided, will be inferred from the file extension)
+    * @param hadoopConf
+    *   - optional Hadoop configuration used to read the source
+    * @return
+    *   the number of documents inserted/updated
+    */
+  override def copyInto(
+    source: String,
+    target: String,
+    doUpdate: Boolean,
+    fileFormat: Option[FileFormat],
+    hadoopConf: Option[Configuration]
+  )(implicit
+    system: ActorSystem
+  ): Future[ElasticResult[DmlResult]] =
+    delegate.copyInto(source, target, doUpdate, fileFormat, hadoopConf)
+
+  /** Resolve the HTTP status of a thrown client exception against the REAL client
+    * (SoftClient4ES#184).
+    *
+    * The `copyInto` forward above fixes one method; this fixes the class of problem. Any core body
+    * that runs on this wrapper rather than being forwarded — today `copyInto` before the override
+    * above, tomorrow whatever is added without a forward — would otherwise resolve `statusOf`
+    * against `ElasticClientHelpers`' `None` default and report an undifferentiated 500. Delegating
+    * the seam itself means the wrapper can never disagree with the client it wraps, whether or not
+    * someone remembers to add the forward.
+    */
+  override private[client] def statusOf(t: Throwable): Option[Int] = delegate.statusOf(t)
 
   /** Load the schema for the provided index.
     *

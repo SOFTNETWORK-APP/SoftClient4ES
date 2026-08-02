@@ -217,10 +217,12 @@ trait IndexApi extends ElasticClientHelpers { _: SettingsApi =>
             s"Failed to index document with id '$id' in index '$index': ${exception.getMessage}",
           operation = Some("indexAsync"),
           index = Some(index),
-          cause = Some(exception)
+          cause = Some(exception),
+          statusCode = statusOrServerError(exception)
         )
-        logger.error(s"❌ ${error.message}")
+        // Complete FIRST, log second — see GetApi.getAsync (SoftClient4ES#184).
         promise.success(ElasticResult.failure(error))
+        logger.error(s"❌ ${error.message}", exception)
     }
 
     promise.future

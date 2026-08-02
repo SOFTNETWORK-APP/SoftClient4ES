@@ -298,4 +298,36 @@ trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
     )
   }
 
+  /** @see
+    *   [[app.softnetwork.elastic.client.ElasticClientHelpers.statusOf]]
+    *
+    * `co.elastic.clients.elasticsearch._types.ElasticsearchException` is a `RuntimeException`
+    * exposing `int status()`; `co.elastic.clients.transport.TransportException` is an `IOException`
+    * exposing `int statusCode()`. Both verified against elasticsearch-java v8.18.3 / v9.0.3.
+    * `org.elasticsearch.client.ResponseException` (low-level REST client, on this module's
+    * classpath via `elasticsearch-rest-client`) can surface for responses the java client cannot
+    * decode.
+    *
+    * `TransportException.statusCode()` is `return response.statusCode()` over a field that is never
+    * null-checked, so it is read through `Try` — an extractor must never throw (see
+    * `statusOrServerError`). `ResponseException` is read the same way: `getResponse` may be null
+    * and `getStatusLine` is not null-checked either.
+    *
+    * Both java-client accessors return a PRIMITIVE `int`, so an absent status surfaces as `0`
+    * rather than null. `0` is not an HTTP status — `filter(_ > 0)` turns it back into "unknown",
+    * which the async flattening sites then render as 500. Emitting `Some(0)` would defeat
+    * `isNotFound` and every `IF EXISTS` check, i.e. reintroduce the very bug this fixes. The Jest
+    * client uses the same `case 0 => None` convention.
+    */
+  override private[client] def statusOf(t: Throwable): Option[Int] =
+    unwrapThrowable(t) match {
+      case ex: co.elastic.clients.elasticsearch._types.ElasticsearchException =>
+        Some(ex.status()).filter(_ > 0)
+      case ex: co.elastic.clients.transport.TransportException =>
+        Try(ex.statusCode()).toOption.filter(_ > 0)
+      case ex: org.elasticsearch.client.ResponseException =>
+        Try(ex.getResponse.getStatusLine.getStatusCode).toOption.filter(_ > 0)
+      case other => super.statusOf(other)
+    }
+
 }

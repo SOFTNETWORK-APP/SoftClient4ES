@@ -223,12 +223,15 @@ trait UpdateApi extends ElasticClientHelpers { _: SettingsApi =>
       case Failure(exception) =>
         val error = ElasticError(
           message =
-            s"Exception while deleting document with id '$id' from index '$index': ${exception.getMessage}",
-          operation = Some("deleteAsync"),
-          index = Some(index)
+            s"Exception while updating document with id '$id' in index '$index': ${exception.getMessage}",
+          operation = Some("updateAsync"),
+          index = Some(index),
+          cause = Some(exception),
+          statusCode = statusOrServerError(exception)
         )
-        logger.error(s"❌ ${error.message}")
+        // Complete FIRST, log second — see GetApi.getAsync (SoftClient4ES#184).
         promise.success(ElasticResult.failure(error))
+        logger.error(s"❌ ${error.message}", exception)
     }
     promise.future
   }
