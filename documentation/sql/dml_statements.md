@@ -391,6 +391,59 @@ This allows fine-grained property overrides without changing environment variabl
 </configuration>
 ```
 
+#### JVM compatibility — JDK 23 and newer
+
+`JSON`, `JSON_ARRAY` and automatic format detection read **local** files
+(`/path/to/file.jsonl`, `file:///path/to/file.jsonl`) directly through `java.nio.file`, so they work
+on every supported JVM, **including JDK 23, 24 and 25**.
+
+`PARQUET`, `DELTA_LAKE` and **every remote scheme** go through Apache Hadoop, whose
+`UserGroupInformation.getCurrentUser()` calls
+`javax.security.auth.Subject.getSubject(AccessControlContext)`. That method was re-specified in
+**JDK 23** to throw whenever a Security Manager is not allowed (which is the default), and
+[JEP 486](https://openjdk.org/jeps/486) made it throw *unconditionally* in **JDK 24** while removing
+the escape hatch — a JDK 24+ launcher refuses to start if `java.security.manager` is set. Those
+paths therefore fail with:
+
+| JDK | Error text | `-Djava.security.manager=allow` |
+|---|---|---|
+| 23 | `getSubject is supported only if a security manager is allowed` | works around it |
+| 24 and newer | `getSubject is not supported` | JVM refuses to start |
+
+| `COPY INTO` source | JDK 8 – 22 | JDK 23 | JDK 24+ |
+|---|---|---|---|
+| local `JSON` / `JSON_ARRAY`, schemeless or `file:` | ✔ | ✔ | ✔ |
+| local file with auto-detected format | ✔ | ✔ | ✔ |
+| local `PARQUET` | ✔ | ✖ * | ✖ |
+| local `DELTA_LAKE` | ✔ | ✖ * | ✖ |
+| any remote scheme (`s3a://`, `s3://`, `gs://`, `abfs*://`, `wasb*://`, `hdfs://`) | ✔ | ✖ * | ✖ |
+
+\* works on JDK 23 if the host process is started with `-Djava.security.manager=allow`.
+
+**Workaround for the unsupported combinations:** run the host process on **JDK 21** (or any
+JDK ≤ 22). On JDK 23 you may instead add `-Djava.security.manager=allow`; on JDK 24+ there is no
+flag that helps. For DBeaver, add this to `dbeaver.ini` **before** `-vmargs` (a DBeaver update
+overwrites the file):
+
+```
+-vm
+/path/to/jdk-21/Contents/Home/lib/libjli.dylib
+```
+
+Lifting the Parquet / Delta / remote restriction depends on an upstream Hadoop release that no
+longer calls `Subject.getSubject`. Tracked as
+[SoftClient4ES#183](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues/183).
+
+**Local path notes:** `~` is **not** expanded — pass an absolute path. Relative paths resolve
+against the working directory of the process running the query. A `file://` URI may percent-encode
+special characters (`file:///data/my%20file.jsonl`); an unencoded space is accepted too. Leading and
+trailing whitespace around the path is ignored. Wildcards/globs (`/data/*.jsonl`) and transparent
+`.gz` decompression are **not** supported — they never were, on any JDK.
+
+Note that percent-encoded `file:` URIs are decoded only on the local `JSON` / `JSON_ARRAY` fast
+path. `PARQUET` and `DELTA_LAKE` still go through Hadoop, which takes `%20` literally — pass a
+schemeless path for those formats.
+
 ---
 
 ## DML Lifecycle Example

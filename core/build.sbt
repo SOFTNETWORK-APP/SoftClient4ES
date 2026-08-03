@@ -66,3 +66,16 @@ json4s ++ mockito ++ avro ++ cloudConnectors ++ repl :+ "com.google.code.gson" %
 "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
 "io.delta" %% "delta-standalone" % Versions.delta :+
 "org.scalatest" %% "scalatest" % Versions.scalatest % Test
+
+// Issue #183: run the very same test suite on an arbitrary JDK without changing the compile JDK.
+//   sbt -Dtest.jdk.home=/Library/Java/JavaVirtualMachines/zulu-25.jdk/Contents/Home \
+//       "core/testOnly *LocalPathSpec *FileSourceSpec"
+// With the property unset this is a no-op: tests run in-process on the default JDK as before.
+Test / fork := sys.props.get("test.jdk.home").isDefined
+
+Test / javaHome := sys.props.get("test.jdk.home").map(file)
+
+// `Test / parallelExecution := false` at build.sbt:101 is a BARE top-level statement, i.e. scoped
+// to the ROOT project only — it is NOT inherited by `core`. Without this line `core`'s suites run
+// concurrently in one JVM and the issue-#183 guards become order-dependent (see LocalPathSpec).
+Test / parallelExecution := false

@@ -51,6 +51,16 @@ WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
 
 The parser rejects this — `IN` accepts only literal value lists today, not a nested `SELECT`. Rewrite it as an explicit JOIN (fully supported), or wait for the next release where the subquery form lands as-is.
 
+## Runtime / JVM limitations
+
+These are constraints of the host JVM, not unimplemented SQL features — they have no delivery date because they depend on upstream projects.
+
+- **`COPY INTO` with `PARQUET`, `DELTA_LAKE`, or a remote URI (`s3a://`, `gs://`, `abfs://`,
+  `hdfs://`) does not work on JDK 23 or newer.** Local `JSON` / `JSON_ARRAY` files do, on every JDK.
+  This is an Apache Hadoop limitation (JDK 23 re-specified, and JEP 486 in JDK 24 removed, the API
+  Hadoop's `UserGroupInformation` depends on); run the host process on JDK 21 for those sources. See
+  [DML statements → COPY INTO → JVM compatibility](dml_statements.md#jvm-compatibility--jdk-23-and-newer).
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).

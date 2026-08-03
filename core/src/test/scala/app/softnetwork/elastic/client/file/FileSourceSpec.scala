@@ -73,6 +73,136 @@ class FileSourceSpec extends AnyWordSpec with Matchers with ScalaFutures with Be
       result.last should include("Bob")
     }
 
+    "read a JSON lines file from a file:// URI" in {
+      val tempFile = java.io.File.createTempFile("test-uri", ".jsonl")
+      tempFile.deleteOnExit()
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""{"id":1,"name":"Alice"}""")
+      writer.println("""{"id":2,"name":"Bob"}""")
+      writer.close()
+
+      val result = FileSourceFactory
+        .fromFile(tempFile.toPath.toUri.toString)
+        .runWith(Sink.seq)
+        .futureValue
+
+      result should have size 2
+      result.head should include("Alice")
+    }
+
+    "read a JSON lines file whose path contains a space" in {
+      val dir = Files.createTempDirectory("test dir with space")
+      dir.toFile.deleteOnExit()
+      val tempFile = new File(dir.toFile, "customers.jsonl")
+      tempFile.deleteOnExit()
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""{"id":1,"name":"Alice"}""")
+      writer.close()
+
+      // Schemeless
+      FileSourceFactory
+        .fromFile(tempFile.getAbsolutePath)
+        .runWith(Sink.seq)
+        .futureValue should have size 1
+
+      // file:// URI — java.io.File.toURI percent-encodes the space
+      FileSourceFactory
+        .fromFile(tempFile.toURI.toString)
+        .runWith(Sink.seq)
+        .futureValue should have size 1
+    }
+
+    "read a JSON lines file from a percent-encoded file:// URI" in {
+      // RED before the fix. Hadoop's Path re-encodes the '%' (toUri -> file:/…/test%2520dir/…) and
+      // then looks for a directory literally named "test%20dir", so this shape has ALWAYS failed
+      // with "File does not exist" — on every JDK. It is the shape java.io.File.toURI produces.
+      val dir = Files.createTempDirectory("test dir enc")
+      val tempFile = new File(dir.toFile, "customers.jsonl")
+      // Register the PARENT first. java.io.DeleteOnExitHook deletes in REVERSE registration order
+      // ("last in, first deleted"), and File.delete() silently fails on a non-empty directory — so
+      // the child must be registered LAST to be deleted FIRST, or the temp dir leaks every run.
+      dir.toFile.deleteOnExit()
+      tempFile.deleteOnExit()
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""{"id":1,"name":"Alice"}""")
+      writer.close()
+
+      val encoded = tempFile.toURI.toString // contains %20
+      encoded should include("%20")
+
+      FileSourceFactory
+        .fromFile(encoded)
+        .runWith(Sink.seq)
+        .futureValue should have size 1
+    }
+
+    "read a JSON array file in memory from a file:// URI" in {
+      // Only coverage anywhere for JsonArrayFileSource.fromFileInMemory (site 4).
+      val tempFile = java.io.File.createTempFile("test-inmem", ".json")
+      tempFile.deleteOnExit()
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]""")
+      writer.close()
+
+      JsonArrayFileSource
+        .fromFileInMemory(tempFile.toPath.toUri.toString)
+        .runWith(Sink.seq)
+        .futureValue should have size 2
+    }
+
+    "read a JSON array file from a file:// URI" in {
+      val tempFile = java.io.File.createTempFile("test-uri-array", ".json")
+      tempFile.deleteOnExit()
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]""")
+      writer.close()
+
+      val result = FileSourceFactory
+        .fromFile(tempFile.toPath.toUri.toString, format = JsonArray)
+        .runWith(Sink.seq)
+        .futureValue
+
+      result should have size 2
+      result.last should include("Bob")
+    }
+
+    "read a JSON lines file with Hadoop's local filesystem disabled" in {
+      // Issue #183 regression guard at the stream level: an unresolvable fs.file.impl means any
+      // Hadoop use for the `file` scheme throws. Passing means the fast path was taken.
+      // NOT `implicit` — it is passed explicitly below; making it implicit would collide with the
+      // class-level `implicit val conf`.
+      val poisoned: Configuration = {
+        val c = new Configuration()
+        c.set("fs.file.impl", "does.not.Exist")
+        // Mandatory: without this, Hadoop's static FileSystem cache (keyed on scheme/authority/ugi,
+        // NOT on the Configuration) returns the LocalFileSystem that this suite's Parquet and Delta
+        // tests already created in this same JVM, `fs.file.impl` is never read, and this test
+        // passes even with the bug present. See LocalPathSpec for the bytecode evidence.
+        c.setBoolean("fs.file.impl.disable.cache", true)
+        c
+      }
+
+      // Guard self-check: prove the poisoning is armed in THIS JVM before trusting the assertion.
+      val probe = java.io.File.createTempFile("test-nohadoop-probe", ".jsonl")
+      probe.deleteOnExit()
+      intercept[Exception] {
+        org.apache.parquet.hadoop.util.HadoopInputFile
+          .fromPath(new Path(probe.getAbsolutePath), poisoned)
+          .newStream()
+      }.toString should include("does.not.Exist")
+
+      val tempFile = java.io.File.createTempFile("test-nohadoop", ".jsonl")
+      tempFile.deleteOnExit()
+      val writer = new java.io.PrintWriter(tempFile)
+      writer.println("""{"id":1,"name":"Alice"}""")
+      writer.close()
+
+      FileSourceFactory
+        .fromFile(tempFile.getAbsolutePath)(ec, poisoned)
+        .runWith(Sink.seq)
+        .futureValue should have size 1
+    }
+
     "read JSON Array file (single line)" in {
       val tempFile = java.io.File.createTempFile("test", ".json")
       tempFile.deleteOnExit()

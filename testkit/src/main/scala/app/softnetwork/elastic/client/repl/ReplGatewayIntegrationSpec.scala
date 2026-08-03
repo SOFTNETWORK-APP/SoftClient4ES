@@ -516,6 +516,58 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     )
   }
 
+  it should "support COPY INTO from a file:// URI and from a path containing a space" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS copy_into_uri_test (
+        |  uuid KEYWORD NOT NULL,
+        |  name VARCHAR,
+        |  PRIMARY KEY (uuid)
+        |)""".stripMargin
+
+    assertDdl(System.nanoTime(), executeSync(create))
+
+    // 1. file:/// URI form — the exact shape reported in SoftClient4ES#183
+    val uriFile = java.io.File.createTempFile("copy_into_uri", ".jsonl")
+    uriFile.deleteOnExit()
+    val w1 = new java.io.PrintWriter(uriFile)
+    w1.println("""{"uuid": "U1", "name": "Homer Simpson"}""")
+    w1.println("""{"uuid": "U2", "name": "Moe Szyslak"}""")
+    w1.close()
+
+    val copyUri = s"""COPY INTO copy_into_uri_test FROM "${uriFile.toPath.toUri.toString}""""
+    assertDml(System.nanoTime(), executeSync(copyUri), Some(DmlResult(inserted = 2)))
+
+    // 2. a `file:` URI whose path contains an UNENCODED space. `new java.net.URI(...)` throws on
+    //    this input, so it is the only statement here that exercises LocalPath's literal fallback,
+    //    and it is RED before the fix (Hadoop's Path handles it, but only via the schemeless form).
+    //    A schemeless spaced path would NOT prove this — schemeless never reaches `new URI` at all.
+    val spacedDir = java.nio.file.Files.createTempDirectory("copy into dir")
+    spacedDir.toFile.deleteOnExit()
+    val spacedFile = new java.io.File(spacedDir.toFile, "customers.jsonl")
+    spacedFile.deleteOnExit()
+    val w2 = new java.io.PrintWriter(spacedFile)
+    w2.println("""{"uuid": "U3", "name": "Barney Gumble"}""")
+    w2.close()
+
+    // NOTE: `file://` + the RAW absolute path, i.e. the space is left unencoded on purpose.
+    // Do not substitute `spacedFile.toURI.toString` here — that percent-encodes it and exercises a
+    // different branch (already covered by FileSourceSpec).
+    val copySpaced =
+      s"""COPY INTO copy_into_uri_test FROM "file://${spacedFile.getAbsolutePath}" ON CONFLICT DO UPDATE"""
+    assertDml(System.nanoTime(), executeSync(copySpaced), Some(DmlResult(inserted = 1)))
+
+    val select = executeSync("SELECT * FROM copy_into_uri_test ORDER BY uuid ASC")
+    assertSelectResult(
+      System.nanoTime(),
+      select,
+      Seq(
+        Map("uuid" -> "U1", "name" -> "Homer Simpson"),
+        Map("uuid" -> "U2", "name" -> "Moe Szyslak"),
+        Map("uuid" -> "U3", "name" -> "Barney Gumble")
+      )
+    )
+  }
+
   // =========================================================================
   // 5. DQL — SELECT, JOIN, UNNEST, GROUP BY, etc.
   // =========================================================================
