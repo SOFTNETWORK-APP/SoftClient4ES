@@ -150,50 +150,62 @@ case class Delay(
 object Delay {
   val Default: Delay = Delay(TransformTimeUnit.Minutes, 1)
 
+  /** Smallest per-transform delay a calculated refresh chain may use, in seconds. */
+  val MinDelaySeconds: Long = 10L
+
   def fromSeconds(seconds: Long): Delay = {
     val timeInterval = TransformTimeInterval.fromSeconds(seconds)
     Delay(timeInterval._1, timeInterval._2)
   }
 
-  /** Calculates optimal delay based on frequency and number of stages
+  /** Calculates the optimal delay for one transform of a refresh chain.
     *
-    * Formula: delay = frequency / (nb_stages * buffer_factor)
-    *
-    * This ensures the complete chain can refresh within the specified frequency. The buffer factor
-    * adds safety margin for processing time.
+    * Hard constraint (identical to the one [[validate]] enforces): every transform runs every
+    * `delay × 2`, so the whole chain fits inside `frequency` only when `delay ≤ frequency / (2 ×
+    * nbStages)`. `bufferFactor` adds margin on top of that ceiling — it can only ever make the
+    * delay smaller, never push it past the constraint. With the default `1.5` (indeed with any
+    * value ≤ 2) the ceiling always wins and the buffered term is inert; it binds only above 2. Keep
+    * the `min` regardless — it is what absorbs `bufferFactor = 0`, where the buffered term is
+    * `Infinity.toLong == Long.MaxValue`.
     *
     * @param frequency
     *   Desired refresh frequency
     * @param nbStages
-    *   Total number of stages (changelog + enrichment + aggregate)
+    *   Total number of stages (changelog + enrichment + computed + final). Values below 1 are
+    *   clamped to 1: a materialized view always has at least one transform (the one that writes the
+    *   view index), so a non-positive count is a caller-side accounting bug and must never become
+    *   the user-visible face of a legitimate SQL statement (SoftClient4ES#185).
     * @param bufferFactor
     *   Safety factor (default 1.5)
     * @return
-    *   Optimal delay for each Transform, or error if constraints cannot be met
+    *   Optimal delay for each Transform, or an actionable error naming the minimum frequency
     */
   def calculateOptimal(
     frequency: Frequency,
     nbStages: Int,
     bufferFactor: Double = 1.5
   ): Either[String, Delay] = {
-    if (nbStages <= 0) {
-      return Left("Number of stages must be positive")
-    }
-
+    val stages = math.max(nbStages, 1)
     val frequencySeconds = frequency.toSeconds
-    val optimalDelaySeconds = (frequencySeconds / (nbStages * bufferFactor)).toInt
 
-    // Validate constraints
-    if (optimalDelaySeconds < 10) {
+    val maxDelaySeconds: Long = frequencySeconds / (2L * stages)
+    val bufferedDelaySeconds: Long = (frequencySeconds / (stages * bufferFactor)).toLong
+    val optimalDelaySeconds: Long = math.min(bufferedDelaySeconds, maxDelaySeconds)
+
+    if (optimalDelaySeconds < MinDelaySeconds) {
+      // The smallest frequency that would actually be accepted: BOTH terms of the `min` above must
+      // reach MinDelaySeconds, so the ceiling needs `2 × stages × Min` and the buffered term needs
+      // `stages × bufferFactor × Min` (rounded up, since the division truncates). Quoting only the
+      // first would print an unreachable figure whenever bufferFactor > 2.
+      val minFrequencySeconds: Long =
+        math.max(
+          2L * stages * MinDelaySeconds,
+          math.ceil(stages * bufferFactor * MinDelaySeconds).toLong
+        )
       Left(
         s"Calculated delay ($optimalDelaySeconds seconds) is too small. " +
         s"Consider increasing frequency or reducing number of stages. " +
-        s"Minimum required frequency: ${nbStages * bufferFactor * 10} seconds"
-      )
-    } else if (optimalDelaySeconds > frequencySeconds / 2) {
-      Left(
-        s"Calculated delay ($optimalDelaySeconds seconds) is too large. " +
-        s"Each stage needs at least delay × 2 = frequency."
+        s"Minimum required frequency: $minFrequencySeconds seconds"
       )
     } else {
       Right(Delay.fromSeconds(optimalDelaySeconds))

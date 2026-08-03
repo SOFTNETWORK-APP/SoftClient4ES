@@ -162,7 +162,7 @@ Precomputed, automatically refreshed query results stored as Elasticsearch indic
 ```sql
 CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
 REFRESH EVERY 10 SECONDS
-WITH (delay = '2s', user_latency = '1s')
+WITH (delay = '1s', user_latency = '1s')
 AS
 SELECT
   o.id,
