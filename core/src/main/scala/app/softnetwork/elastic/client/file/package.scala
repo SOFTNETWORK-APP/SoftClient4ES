@@ -32,10 +32,10 @@ import org.apache.parquet.hadoop.util.HadoopInputFile
 import io.delta.standalone.DeltaLog
 import io.delta.standalone.data.{CloseableIterator, RowRecord}
 import io.delta.standalone.types._
-import org.apache.parquet.io.SeekableInputStream
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.io.{BufferedReader, InputStream, InputStreamReader}
+import java.io.{BufferedInputStream, BufferedReader, InputStream, InputStreamReader}
+import java.nio.file.{Files, Path => NioPath}
 import scala.concurrent.{blocking, ExecutionContext, Future}
 import scala.io.{Source => IoSource}
 import scala.util.{Failure, Success, Try}
@@ -55,6 +55,33 @@ package object file {
     conf.setBoolean("fs.automatic.close", true)
     conf
   }
+
+  /** Default read-ahead buffer, mirroring the `io.file.buffer.size` that [[hadoopConfiguration]]
+    * and `HadoopConfigurationFactory.base()` already set (64 KB).
+    */
+  private val DefaultBufferSize = 65536
+
+  /** Opens `filePath` for reading.
+    *
+    * Local paths (schemeless, or `file:` with an empty/`localhost` authority) are opened straight
+    * through `java.nio.file`, never touching Hadoop — see [[LocalPath]] and issue #183
+    * (`Subject.getSubject` throws on JDK 23+ by default and on JDK 24+ unconditionally, so Hadoop's
+    * `UserGroupInformation.getCurrentUser()` can no longer be called).
+    *
+    * Every other scheme keeps the pre-existing Hadoop path unchanged.
+    */
+  def openStream(filePath: String)(implicit conf: Configuration): InputStream =
+    LocalPath.resolve(filePath) match {
+      case Some(local) =>
+        // Hadoop's LocalFileSystem wraps its stream in a BufferedFSInputStream sized by
+        // `io.file.buffer.size`; `Files.newInputStream` is unbuffered, so without this every
+        // 8 KB BufferedReader/Jackson refill becomes a syscall. Preserve the tuned buffer.
+        new BufferedInputStream(
+          Files.newInputStream(local),
+          conf.getInt("io.file.buffer.size", DefaultBufferSize)
+        )
+      case None => HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+    }
 
   /** Base trait for file sources */
   sealed trait FileSource {
@@ -146,6 +173,46 @@ package object file {
     protected def validateFile(
       filePath: String,
       checkIsFile: Boolean = true
+    )(implicit conf: Configuration): Unit =
+      LocalPath.resolve(filePath) match {
+        case Some(local) => validateLocalPath(filePath, local, checkIsFile)
+        case None        => validateHadoopPath(filePath, checkIsFile)
+      }
+
+    /** Local fast path — never touches Hadoop (issue #183). Error messages and log lines are
+      * byte-for-byte identical to the Hadoop branch: `FileSourceSpec` asserts on them.
+      */
+    private def validateLocalPath(
+      filePath: String,
+      local: NioPath,
+      checkIsFile: Boolean
+    ): Unit = {
+      if (!Files.exists(local)) {
+        throw new IllegalArgumentException(s"File does not exist: $filePath")
+      }
+
+      if (checkIsFile && !Files.isRegularFile(local)) {
+        throw new IllegalArgumentException(s"Path is not a file: $filePath")
+      }
+
+      if (!checkIsFile && !Files.isDirectory(local)) {
+        throw new IllegalArgumentException(s"Path is not a directory: $filePath")
+      }
+
+      val length = if (checkIsFile) Files.size(local) else 0L
+
+      if (checkIsFile && length == 0) {
+        logger.warn(s"⚠️  File is empty: $filePath")
+      }
+
+      val pathType = if (checkIsFile) "file" else "directory"
+      val sizeInfo = if (checkIsFile) s"($length bytes)" else ""
+      logger.info(s"📁 Loading $pathType: $filePath $sizeInfo")
+    }
+
+    private def validateHadoopPath(
+      filePath: String,
+      checkIsFile: Boolean
     )(implicit conf: Configuration): Unit = {
       val path = new Path(filePath)
       val fs = FileSystem.get(path.toUri, conf)
@@ -335,7 +402,7 @@ package object file {
           create = () => {
             logger.info(s"📂 Opening JSON file: $filePath")
             Try {
-              val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+              val is: InputStream = openStream(filePath)
               new BufferedReader(new InputStreamReader(is, "UTF-8"))
             } match {
               case Success(reader) => reader
@@ -430,14 +497,13 @@ package object file {
 
       Source
         .unfoldResource[String, (InputStream, JsonParser)](
-          // Create: Open file via Hadoop and create JSON parser
+          // Create: Open file and create JSON parser
           create = () => {
-            logger.info(s"📂 Opening JSON Array file via Hadoop: $filePath")
+            logger.info(s"📂 Opening JSON Array file: $filePath")
             Try {
-              val is: SeekableInputStream =
-                HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+              val is: InputStream = openStream(filePath)
 
-              // Create Jackson parser on top of Hadoop SeekableInputStream
+              // Create Jackson parser on top of the input stream
               val parser = jsonFactory.createParser(is)
 
               // Expect array start
@@ -449,7 +515,7 @@ package object file {
                 )
               }
 
-              logger.info(s"📊 Started parsing JSON Array via Hadoop FS")
+              logger.info(s"📊 Started parsing JSON Array")
               (is, parser)
             } match {
               case Success(result) => result
@@ -499,7 +565,7 @@ package object file {
             }
           },
 
-          // Close: Close parser and Hadoop input stream
+          // Close: Close parser and input stream
           close = { case (inputStream, parser) =>
             Try {
               parser.close() // This also closes the underlying stream
@@ -510,12 +576,12 @@ package object file {
                 logger.warn(s"⚠️  Failed to close JSON Array parser: ${ex.getMessage}")
             }
 
-            // Ensure Hadoop stream is closed
+            // Ensure the stream is closed
             Try(inputStream.close()) match {
               case Success(_) =>
-                logger.debug(s"🔒 Closed Hadoop input stream for: $filePath")
+                logger.debug(s"🔒 Closed input stream for: $filePath")
               case Failure(ex) =>
-                logger.warn(s"⚠️  Failed to close Hadoop input stream: ${ex.getMessage}")
+                logger.warn(s"⚠️  Failed to close input stream: ${ex.getMessage}")
             }
           }
         )
@@ -544,7 +610,7 @@ package object file {
       Source
         .future(Future {
           blocking {
-            val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+            val is: InputStream = openStream(filePath)
             try {
               val arrayNode = mapper.readTree(is)
               if (!arrayNode.isArray) {
@@ -578,7 +644,7 @@ package object file {
           throw ex
       }
 
-      val is: InputStream = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+      val is: InputStream = openStream(filePath)
 
       try {
         val arrayNode = mapper.readTree(is)
@@ -1106,9 +1172,14 @@ package object file {
       filePath: String
     )(implicit conf: Configuration = hadoopConfiguration): Boolean = {
       Try {
-        val fs = FileSystem.get(conf)
-        val deltaLogPath = new Path(filePath, "_delta_log")
-        fs.exists(deltaLogPath) && fs.getFileStatus(deltaLogPath).isDirectory
+        LocalPath.resolve(filePath) match {
+          case Some(local) =>
+            Files.isDirectory(local.resolve("_delta_log"))
+          case None =>
+            val fs = FileSystem.get(conf)
+            val deltaLogPath = new Path(filePath, "_delta_log")
+            fs.exists(deltaLogPath) && fs.getFileStatus(deltaLogPath).isDirectory
+        }
       }.getOrElse(false)
     }
 
@@ -1118,7 +1189,7 @@ package object file {
       filePath: String
     )(implicit conf: Configuration = hadoopConfiguration): FileFormat = {
       Try {
-        val is = HadoopInputFile.fromPath(new Path(filePath), conf).newStream()
+        val is = openStream(filePath)
         try {
           val reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
           val firstChar = reader.read().toChar
@@ -1173,13 +1244,15 @@ package object file {
 
     /** Returns a [[Configuration]] appropriate for the URI scheme embedded in `path`. */
     def forPath(path: String): Configuration = {
-      val scheme = Try(new java.net.URI(path).getScheme).getOrElse(null)
-      val conf = scheme match {
-        case "s3a" | "s3"                        => s3aConf()
-        case "abfs" | "abfss" | "wasb" | "wasbs" => azureConf()
-        case "gs"                                => gcsConf()
-        case "hdfs"                              => hdfsConf()
-        case _                                   => localConf()
+      // Scheme detection is LocalPath's (AD-10): it lowercases, and — unlike `new URI` — it does
+      // not throw on an unencoded space, so `S3A://b/x` and `s3a://b/my file.jsonl` both reach the
+      // S3 branch instead of silently falling through to localConf() with no credentials.
+      val conf = LocalPath.scheme(path) match {
+        case Some("s3a") | Some("s3")                                    => s3aConf()
+        case Some("abfs") | Some("abfss") | Some("wasb") | Some("wasbs") => azureConf()
+        case Some("gs")                                                  => gcsConf()
+        case Some("hdfs")                                                => hdfsConf()
+        case _                                                           => localConf()
       }
       loadUserXmlConf(conf)
       conf
