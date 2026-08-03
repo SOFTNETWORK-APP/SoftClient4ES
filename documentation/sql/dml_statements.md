@@ -397,42 +397,48 @@ This allows fine-grained property overrides without changing environment variabl
 (`/path/to/file.jsonl`, `file:///path/to/file.jsonl`) directly through `java.nio.file`, so they work
 on every supported JVM, **including JDK 23, 24 and 25**.
 
-`PARQUET`, `DELTA_LAKE` and **every remote scheme** go through Apache Hadoop, whose
-`UserGroupInformation.getCurrentUser()` calls
-`javax.security.auth.Subject.getSubject(AccessControlContext)`. That method was re-specified in
-**JDK 23** to throw whenever a Security Manager is not allowed (which is the default), and
-[JEP 486](https://openjdk.org/jeps/486) made it throw *unconditionally* in **JDK 24** while removing
-the escape hatch — a JDK 24+ launcher refuses to start if `java.security.manager` is set. Those
-paths therefore fail with:
+`PARQUET`, `DELTA_LAKE` and every remote scheme go through Apache Hadoop, and **they now work on
+every supported JVM too** — including JDK 23, 24 and 25.
+
+| `COPY INTO` source | JDK 8 – 22 | JDK 23 | JDK 24+ |
+|---|---|---|---|
+| local `JSON` / `JSON_ARRAY`, schemeless or `file:` | ✔ | ✔ | ✔ |
+| local file with auto-detected format | ✔ | ✔ | ✔ |
+| local `PARQUET` | ✔ | ✔ | ✔ |
+| local `DELTA_LAKE` | ✔ | ✔ | ✔ |
+| any remote scheme (`s3a://`, `s3://`, `gs://`, `abfs*://`, `wasb*://`, `hdfs://`) | ✔ | ✔ | ✔ |
+
+##### If you are on an older release
+
+Releases up to and including **0.20.3** fail on **JDK 23 and newer** for `PARQUET`, `DELTA_LAKE` and
+remote schemes, with:
 
 | JDK | Error text | `-Djava.security.manager=allow` |
 |---|---|---|
 | 23 | `getSubject is supported only if a security manager is allowed` | works around it |
 | 24 and newer | `getSubject is not supported` | JVM refuses to start |
 
-| `COPY INTO` source | JDK 8 – 22 | JDK 23 | JDK 24+ |
-|---|---|---|---|
-| local `JSON` / `JSON_ARRAY`, schemeless or `file:` | ✔ | ✔ | ✔ |
-| local file with auto-detected format | ✔ | ✔ | ✔ |
-| local `PARQUET` | ✔ | ✖ * | ✖ |
-| local `DELTA_LAKE` | ✔ | ✖ * | ✖ |
-| any remote scheme (`s3a://`, `s3://`, `gs://`, `abfs*://`, `wasb*://`, `hdfs://`) | ✔ | ✖ * | ✖ |
+The cause was Apache Hadoop: `UserGroupInformation.getCurrentUser()` called
+`javax.security.auth.Subject.getSubject(AccessControlContext)`, which **JDK 23** re-specified to
+throw whenever a Security Manager is not allowed (the default), and which
+[JEP 486](https://openjdk.org/jeps/486) made throw *unconditionally* in **JDK 24** while removing the
+escape hatch — a JDK 24+ launcher refuses to start if `java.security.manager` is set.
 
-\* works on JDK 23 if the host process is started with `-Djava.security.manager=allow`.
+This is fixed upstream in **Hadoop 3.4.3** ([HADOOP-19212](https://issues.apache.org/jira/browse/HADOOP-19212)),
+which this client now bundles; `UserGroupInformation` uses `Subject.current()` instead. Local
+`JSON` / `JSON_ARRAY` were additionally moved off Hadoop entirely in 0.20.3, which is why they work
+on every release.
 
-**Workaround for the unsupported combinations:** run the host process on **JDK 21** (or any
-JDK ≤ 22). On JDK 23 you may instead add `-Djava.security.manager=allow`; on JDK 24+ there is no
-flag that helps. For DBeaver, add this to `dbeaver.ini` **before** `-vmargs` (a DBeaver update
-overwrites the file):
+**If you cannot upgrade yet,** run the host process on **JDK 21** (or any JDK ≤ 22); on JDK 23 you
+may instead add `-Djava.security.manager=allow`. For DBeaver, add this to `dbeaver.ini` **before**
+`-vmargs` (a DBeaver update overwrites the file):
 
 ```
 -vm
 /path/to/jdk-21/Contents/Home/lib/libjli.dylib
 ```
 
-Lifting the Parquet / Delta / remote restriction depends on an upstream Hadoop release that no
-longer calls `Subject.getSubject`. Tracked as
-[SoftClient4ES#183](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues/183).
+Tracked as [SoftClient4ES#183](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues/183).
 
 **Local path notes:** `~` is **not** expanded — pass an absolute path. Relative paths resolve
 against the working directory of the process running the query. A `file://` URI may percent-encode
