@@ -467,7 +467,34 @@ package object result {
   // --------------------
   // DDL (CREATE / ALTER / DROP / TRUNCATE)
   // --------------------
-  case class DdlResult(success: Boolean) extends QueryResult
+
+  /** The outcome of a DDL statement.
+    *
+    * `warnings` carries caveats about a statement that did '''not''' fail — an operation that
+    * completed, but in a degraded mode. The motivating case (story R1FIX.8) is a materialized view
+    * created without its auto-refresh watcher because the cluster's licence does not include
+    * Watcher: the view exists and is queryable, only the scheduled refresh is missing, so failing
+    * the statement would discard real work. Renderers surface each entry as its own `⚠️` line.
+    *
+    * Warnings are rendered for `success = false` too. That combination is unusual — a no-op has
+    * normally nothing to caveat — but it is not a contract violation, and dropping the text there
+    * would silently lose information; renderers therefore do not special-case it. A genuine
+    * '''failure''' is an `ElasticFailure`, never a `DdlResult`, so nothing here is ever an error
+    * message.
+    *
+    * Follows the same additive, default-valued shape as `QueryRows.truncation` (story P0.5): every
+    * existing `DdlResult(ok)` '''constructor''' call keeps compiling untouched. Positional
+    * '''pattern''' matches (`case DdlResult(ok)`) must add a trailing `_` (`case DdlResult(ok, _)`)
+    * — the compiler's synthetic extractor now binds both fields. Matches that only need "is this a
+    * DDL result" are better written `case _: DdlResult`, which no future field can break.
+    *
+    * @param success
+    *   `false` means the statement was a no-op (e.g. `IF NOT EXISTS` on an existing object), not a
+    *   failure — a failure is an `ElasticFailure`, never a `DdlResult`
+    * @param warnings
+    *   user-facing caveats about a successful statement; empty for the overwhelmingly common case
+    */
+  case class DdlResult(success: Boolean, warnings: Seq[String] = Nil) extends QueryResult
 
   case class TableResult(table: Table) extends QueryResult
 

@@ -53,10 +53,16 @@ object JsonFormatter {
         )
         pretty(render(json))
 
-      case DdlResult(success) =>
+      case DdlResult(success, warnings) =>
+        // `warnings` is omitted entirely when empty so existing consumers see no new key.
         val json = JObject(
-          "success"           -> JBool(success),
-          "execution_time_ms" -> JInt(executionTime.toMillis)
+          List[(String, JValue)](
+            "success"           -> JBool(success),
+            "execution_time_ms" -> JInt(executionTime.toMillis)
+          ) ++ (
+            if (warnings.isEmpty) Nil
+            else List("warnings" -> JArray(warnings.map(JString(_)).toList))
+          )
         )
         pretty(render(json))
 

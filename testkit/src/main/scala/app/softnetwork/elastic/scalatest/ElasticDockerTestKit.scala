@@ -47,6 +47,16 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
 
   lazy val xpackGraphEnabled: Boolean = false
 
+  /** Self-generated licence type forced into `elasticsearch.yml`.
+    *
+    * Defaults to `"trial"`, which enables every X-Pack feature. Override to `"basic"` to exercise
+    * the paths a licence without Watcher refuses — `CREATE MATERIALIZED VIEW` on a joined view
+    * being the motivating one (softclient4es-extensions story R1FIX.8). Until this knob existed the
+    * licence type was hard-coded here, so no test in any repository had ever run against a cluster
+    * that declines a feature.
+    */
+  lazy val xpackLicenseType: String = "trial"
+
   lazy val elasticContainer: ElasticsearchContainer = {
     val tmpDir =
       if (localExecution) {
@@ -101,8 +111,8 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
         |# Discovery
         |discovery.type: single-node
         |
-        |# X-Pack License (force Trial license)
-        |xpack.license.self_generated.type: trial
+        |# X-Pack License (forced; see xpackLicenseType)
+        |xpack.license.self_generated.type: $xpackLicenseType
         |
         |# X-Pack Security (disabled for tests)
         |xpack.security.enabled: $xpackSecurityEnabled

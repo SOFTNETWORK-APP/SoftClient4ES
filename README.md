@@ -469,9 +469,9 @@ The JDBC driver and materialized views work on **free/basic Elasticsearch cluste
 |---------------------------------------------|-----------------------------------|
 | Transforms (continuous data sync)           | Free / Basic (ES 7.5+)            |
 | Enrich Policies (JOIN enrichment)           | Free / Basic (ES 7.5+)            |
-| **Watchers** (auto-refresh enrich policies) | **Platinum / Enterprise / Trial** |
+| **Watcher** (auto-refresh enrich policies)  | **Trial, or a [subscription that includes it](https://www.elastic.co/subscriptions)** |
 
-Materialized views with JOINs rely on **Elasticsearch Watchers** to automatically re-execute enrich policies when lookup table data changes. Without a Platinum ES license, this automation is unavailable — but an external scheduler (cron, Kubernetes CronJob, Airflow) can be used as a workaround. See the [Materialized Views documentation](documentation/sql/materialized_views.md#watcher-dependency-and-elasticsearch-licensing) for details.
+Materialized views with JOINs rely on **Elasticsearch Watcher** to automatically re-execute enrich policies when lookup table data changes. On a Basic cluster, `CREATE MATERIALIZED VIEW` **still succeeds** and returns a warning: the view is created and immediately queryable, and `REFRESH MATERIALIZED VIEW <name>` — which re-executes exactly what the watcher would have — works on every license. Only the *scheduled* refresh is unavailable; run it from an external scheduler (cron, Kubernetes CronJob, Airflow) instead. See the [Materialized Views documentation](documentation/sql/materialized_views.md#watcher-dependency-and-elasticsearch-licensing) for details.
 
 ---
 
