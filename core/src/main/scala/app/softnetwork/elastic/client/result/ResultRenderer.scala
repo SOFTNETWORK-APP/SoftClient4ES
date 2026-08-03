@@ -57,8 +57,8 @@ object ResultRenderer {
       case DmlResult(inserted, updated, deleted, rejected) =>
         renderDml(inserted, updated, deleted, rejected, executionTime)
 
-      case DdlResult(success) =>
-        renderDdl(success, executionTime)
+      case DdlResult(success, warnings) =>
+        renderDdl(success, warnings, executionTime)
 
       case TableResult(table) =>
         renderTableDefinition(table)
@@ -195,12 +195,19 @@ object ResultRenderer {
 
   // ==================== DDL Rendering ====================
 
-  private def renderDdl(success: Boolean, executionTime: Duration): String = {
-    if (success) {
-      s"${emoji("✅")} ${green("Success")} ${gray(s"(${executionTime.toMillis}ms)")}"
-    } else {
-      s"${emoji("ℹ️")} ${gray("No changes")} ${gray(s"(${executionTime.toMillis}ms)")}"
-    }
+  private def renderDdl(
+    success: Boolean,
+    warnings: Seq[String],
+    executionTime: Duration
+  ): String = {
+    val head =
+      if (success) {
+        s"${emoji("✅")} ${green("Success")} ${gray(s"(${executionTime.toMillis}ms)")}"
+      } else {
+        s"${emoji("ℹ️")} ${gray("No changes")} ${gray(s"(${executionTime.toMillis}ms)")}"
+      }
+    // One line per warning, below the outcome: the statement SUCCEEDED, the caveat is secondary.
+    head + warnings.map(warning => s"\n${emoji("⚠️")} ${yellow(warning)}").mkString
   }
 
   private def renderEmpty(): String = {

@@ -128,8 +128,9 @@ WHERE status = 'active';
 
 This creates:
 - One transform (source → view) — no changelog transform, no enrich policy, no ingest pipeline
-- **No watcher** — a single-table view is therefore the one materialized-view shape that runs on a
-  **basic** Elasticsearch licence (see [Watcher Dependency and Elasticsearch Licensing](#watcher-dependency-and-elasticsearch-licensing))
+- **No watcher** — nothing needs re-executing on a schedule, so a single-table view never touches
+  Watcher at all and needs no automatic refresh (see
+  [Watcher Dependency and Elasticsearch Licensing](#watcher-dependency-and-elasticsearch-licensing))
 - The view index `active_orders_mv`
 
 A single-table view whose `SELECT` has no `WHERE`, no `GROUP BY` and no aggregation is also accepted —
@@ -507,7 +508,7 @@ DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv;
 | **UNNEST JOIN**                             | Not supported in materialized views                                  |
 | **`RIGHT JOIN` / `FULL OUTER JOIN`**        | Not supported (see below). Use `LEFT JOIN` with swapped table order. |
 | **Quota limits**                            | Community: 1 view · Pro: 50 · Enterprise: unlimited                 |
-| **Watcher dependency (ES license)**         | Automatic enrich policy re-execution relies on Elasticsearch Watchers, which require an Elasticsearch Platinum or Enterprise license (see below) |
+| **Watcher dependency (ES license)**         | Automatic enrich policy re-execution relies on Elasticsearch Watcher, which the free Basic license does not include. The view is still created and `REFRESH MATERIALIZED VIEW` still works (see below) |
 | **Eventual consistency**                    | Data is eventually consistent based on refresh frequency and delay   |
 | **Join cardinality**                        | JOINs use enrich policies which match on a single field              |
 
@@ -526,13 +527,26 @@ Attempting to create a materialized view with `RIGHT JOIN` or `FULL OUTER JOIN` 
 
 Materialized views with JOINs rely on **enrich policies** to denormalize data from lookup tables into the view. When data in a lookup table (e.g. `customers`) changes, the corresponding enrich policy must be **re-executed** so that new documents flowing through the ingest pipeline pick up the updated values.
 
-To automate this re-execution, the engine creates an **Elasticsearch Watcher** that periodically triggers `EXECUTE ENRICH POLICY` calls. However, **Watchers require an Elasticsearch Platinum or Enterprise license** (or an active Trial license). This is an Elasticsearch-side requirement, independent of the JDBC driver license.
+To automate this re-execution, the engine creates an **Elasticsearch Watcher** that periodically triggers `EXECUTE ENRICH POLICY` calls. However, **Watcher is not included in the free Basic license** — it requires a subscription that includes it, or an active Trial license. See [Elastic's subscription matrix](https://www.elastic.co/subscriptions) for the current tier that first offers Watcher. This is an Elasticsearch-side requirement, independent of the JDBC driver license.
 
 **Impact:**
-- **With Elasticsearch Platinum/Enterprise/Trial license**: Fully automatic — the watcher handles enrich policy re-execution transparently
-- **Without Elasticsearch Platinum license**: The watcher cannot be created. Changes to lookup tables will **not** be reflected in the materialized view until the enrich policies are manually re-executed
+- **With a license that includes Watcher (Trial, or a paid subscription)**: fully automatic — the watcher re-executes the enrich policies transparently.
+- **Without it (the free Basic license)**: `CREATE MATERIALIZED VIEW` **still succeeds** and returns a warning. The view is created, its metadata is persisted and it is immediately queryable — only the *automatic* refresh is unavailable. `SHOW MATERIALIZED VIEW <name>` then reports `auto_refresh` as `unavailable: …` and `watcher_id` as `N/A`. Changes to lookup tables are **not** reflected until the enrich policies are re-executed, which is exactly what `REFRESH MATERIALIZED VIEW <name>` does — it always works, on every license.
 
-**Workaround for clusters without Watcher support:**
+The warning looks like this:
+
+```
+✅ Success (14203ms)
+⚠️ Materialized view 'orders_with_customers_mv' was created, but automatic refresh is
+   unavailable: this Elasticsearch cluster's licence does not include Watcher, so the joined
+   data cannot be refreshed on a schedule. Run 'REFRESH MATERIALIZED VIEW
+   orders_with_customers_mv' whenever the joined tables change, or schedule that statement
+   externally (cron, Kubernetes CronJob, Airflow). Elasticsearch reported: …
+```
+
+A view created this way keeps `auto_refresh: unavailable` even if the cluster is later upgraded to a license that includes Watcher — re-run `CREATE OR REPLACE MATERIALIZED VIEW` with a changed definition to redeploy it with a watcher.
+
+**Refreshing a view on a cluster without Watcher:**
 
 Use an external scheduled job (cron, Kubernetes CronJob, Airflow, etc.) to periodically re-execute the enrich policies via SQL:
 
@@ -544,7 +558,7 @@ EXECUTE ENRICH POLICY orders_with_customers_mv_customers_enrich_policy;
 REFRESH MATERIALIZED VIEW orders_with_customers_mv;
 ```
 
-Note that **transforms** (which power the continuous data sync) and **enrich policies** themselves are available in the free/basic Elasticsearch license starting from ES 7.5+. Only the **Watcher** component requires a paid Elasticsearch license.
+Note that **transforms** (which power the continuous data sync), **enrich policies** and **ingest pipelines** are all available in the free/basic Elasticsearch license starting from ES 7.5+. The **Watcher** component is the only part of a materialized-view deployment that a Basic license refuses — which is why the view itself is still created.
 
 ---
 
