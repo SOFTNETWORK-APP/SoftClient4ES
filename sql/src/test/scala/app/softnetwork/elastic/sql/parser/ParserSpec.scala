@@ -37,7 +37,7 @@ import app.softnetwork.elastic.sql.schema.{
 }
 import app.softnetwork.elastic.sql.time.TimeUnit.DAYS
 import app.softnetwork.elastic.sql.time.{CalendarInterval, TimeUnit}
-import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeUnit}
+import app.softnetwork.elastic.sql.transform.{Delay, Frequency, TransformTimeUnit}
 import app.softnetwork.elastic.sql.watcher._
 import com.fasterxml.jackson.databind.JsonNode
 import org.scalatest.flatspec.AnyFlatSpec
@@ -2035,6 +2035,63 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     stmt match {
       case DescribePipeline("mypipe") =>
       case _                          => fail("Expected DescribePipeline")
+    }
+  }
+
+  behavior of "Parser DDL with Materialized View Statements"
+
+  // SoftClient4ES#185 — single-table materialized views are SUPPORTED; the parser must keep
+  // accepting them. Do not "fix" #185 by adding a JOIN requirement here.
+  it should "parse a single-table CREATE MATERIALIZED VIEW (no JOIN)" in {
+    val sql =
+      """CREATE MATERIALIZED VIEW active_orders_mv
+        |REFRESH EVERY 30 SECONDS
+        |AS SELECT id, amount, status FROM orders WHERE status = 'active'""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateMaterializedView =>
+        create.view shouldBe "active_orders_mv"
+        create.frequency shouldBe Some(Frequency(TransformTimeUnit.Seconds, 30))
+        create.search.from.joinedTables shouldBe empty
+        create.search.from.enrichmentRequired shouldBe false
+      case other => fail(s"Expected CreateMaterializedView, got $other")
+    }
+  }
+
+  it should "parse a single-table CREATE MATERIALIZED VIEW with neither WHERE nor GROUP BY" in {
+    val sql = "CREATE MATERIALIZED VIEW orders_copy_mv AS SELECT id, amount FROM orders"
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateMaterializedView =>
+        create.frequency shouldBe None
+        create.search.from.enrichmentRequired shouldBe false
+      case other => fail(s"Expected CreateMaterializedView, got $other")
+    }
+  }
+
+  it should "parse CREATE OR REPLACE MATERIALIZED VIEW with a JOIN and options" in {
+    // 16s / 2s keeps `delay` and `user_latency` distinct (so a parser that swapped them would be
+    // caught) while remaining a statement the engine accepts: this view is 4 transforms, and
+    // Delay.validate(2s, 16s, 4) requires 2 x 2 x 4 = 16 <= 16.
+    val sql =
+      """CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
+        |REFRESH EVERY 16 SECONDS
+        |WITH (delay = '2s', user_latency = '1s')
+        |AS SELECT o.id, c.name AS customer_name
+        |FROM orders AS o JOIN customers AS c ON o.customer_id = c.id
+        |WHERE o.status = 'completed'""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateMaterializedView =>
+        create.orReplace shouldBe true
+        create.frequency shouldBe Some(Frequency(TransformTimeUnit.Seconds, 16))
+        create.delay shouldBe Some(Delay(TransformTimeUnit.Seconds, 2))
+        create.search.from.joinedTables should contain only "customers"
+        create.search.from.enrichmentRequired shouldBe true
+      case other => fail(s"Expected CreateMaterializedView, got $other")
     }
   }
 

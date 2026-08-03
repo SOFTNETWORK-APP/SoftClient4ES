@@ -91,7 +91,7 @@ AS select_statement
 The `REFRESH EVERY` clause controls how frequently transforms check for new data.
 
 ```sql
-REFRESH EVERY 10 SECONDS
+REFRESH EVERY 30 SECONDS
 REFRESH EVERY 5 MINUTES
 REFRESH EVERY 1 HOUR
 ```
@@ -111,7 +111,11 @@ WITH (delay = '5s', user_latency = '1s')
 
 ---
 
-### Simple Materialized View (no JOIN)
+### Single-table Materialized View (no JOIN)
+
+A materialized view over a **single table is supported**. With no JOIN there is no enrichment chain:
+the engine generates exactly **one** transform, reading the source table and writing the view index,
+applying the `WHERE`, `GROUP BY` and aggregations of the definition.
 
 ```sql
 CREATE MATERIALIZED VIEW active_orders_mv
@@ -122,6 +126,34 @@ FROM orders
 WHERE status = 'active';
 ```
 
+This creates:
+- One transform (source → view) — no changelog transform, no enrich policy, no ingest pipeline
+- **No watcher** — a single-table view is therefore the one materialized-view shape that runs on a
+  **basic** Elasticsearch licence (see [Watcher Dependency and Elasticsearch Licensing](#watcher-dependency-and-elasticsearch-licensing))
+- The view index `active_orders_mv`
+
+A single-table view whose `SELECT` has no `WHERE`, no `GROUP BY` and no aggregation is also accepted —
+it materialises the projected columns of the source table.
+
+#### Minimum refresh interval
+
+When `REFRESH EVERY` is given **without** an explicit `delay`, the engine derives the per-transform
+delay from the frequency. Every transform must be able to run twice per refresh, so:
+
+```
+REFRESH EVERY  ≥  2 × (number of transforms) × 10 seconds
+```
+
+| View shape | Transforms | Minimum `REFRESH EVERY` |
+|---|---|---|
+| Single table (no JOIN) | 1 | 20 seconds |
+| One JOIN + `WHERE` | 3 (changelog + enrichment + final) | 60 seconds |
+| One JOIN + `WHERE` + computed columns | 4 (+ computed-fields) | 80 seconds |
+
+Below that the statement is rejected with *"Calculated delay (N seconds) is too small … Minimum
+required frequency: M seconds"*. Supply an explicit `WITH (delay = '…')` to use a shorter frequency —
+the delay you give is then used as-is, subject only to `delay × 2 × transforms ≤ frequency`.
+
 ---
 
 ### Materialized View with JOIN
@@ -129,7 +161,7 @@ WHERE status = 'active';
 ```sql
 CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
 REFRESH EVERY 8 SECONDS
-WITH (delay = '2s', user_latency = '1s')
+WITH (delay = '1s', user_latency = '1s')
 AS
 SELECT
   o.id,
@@ -297,7 +329,7 @@ Returns:
 ```sql
 CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
 REFRESH EVERY 8 SECONDS
-WITH (delay = '2s', user_latency = '1s')
+WITH (delay = '1s', user_latency = '1s')
 AS
 SELECT o.id, o.amount, c.name AS customer_name, c.email, ...
 FROM orders AS o
@@ -393,7 +425,7 @@ COPY INTO customers FROM '/data/customers.json' WITH (format = 'json');
 ```sql
 CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
 REFRESH EVERY 8 SECONDS
-WITH (delay = '2s', user_latency = '1s')
+WITH (delay = '1s', user_latency = '1s')
 AS
 SELECT
   o.id,
