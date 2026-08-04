@@ -63,7 +63,7 @@ Examples:
   .\install.ps1
   .\install.ps1 -ListVersions -EsVersion 8
   .\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 8 -Version 1.0.0
-  .\install.ps1 -EsVersion 7 -Version 0.20.2 -NoExtensions
+  .\install.ps1 -EsVersion 7 -Version 0.20.3 -NoExtensions
 
 "@
     exit 0
@@ -253,7 +253,7 @@ function Resolve-LatestVersion {
 
     # Prefer non-snapshot versions.
     # @(...) matters: with a single match the pipeline yields a bare string, and
-    # [-1] on a string returns its last CHARACTER ("0.20.2" -> "2").
+    # [-1] on a string returns its last CHARACTER ("0.20.3" -> "3").
     $releaseVersions = @($versions | Where-Object { $_ -notmatch 'SNAPSHOT' })
 
     if ($releaseVersions.Count -gt 0) {
@@ -281,7 +281,7 @@ if ($WITH_EXTENSIONS) {
         Where-Object { $_ -notmatch 'SNAPSHOT' })
     if ($bundleVersions.Count -gt 0) {
         if ($Version -eq "latest") {
-            $Version = $bundleVersions[-1]      # bundle-version line (0.20.2, 0.20.3, ...)
+            $Version = $bundleVersions[-1]      # bundle-version line (0.20.2, 0.20.3, 0.20.4, ...)
             $USE_BUNDLE = $true
             Write-Success "Resolved latest -all bundle version: $Version"
         }
