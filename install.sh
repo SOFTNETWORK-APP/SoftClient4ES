@@ -174,7 +174,7 @@ Examples:
   $0
   $0 --list-versions --es-version 8
   $0 --target /opt/softclient4es --es-version 8 --no-extensions
-  $0 -t ~/tools/softclient4es -e 7 -v 0.20.2 --no-extensions
+  $0 -t ~/tools/softclient4es -e 7 -v 0.20.3 --no-extensions
 
 Detected OS: $OS_TYPE
 
@@ -424,7 +424,7 @@ if [[ "$WITH_EXTENSIONS" == true ]]; then
     bundle_versions=$(fetch_versions "$BUNDLE_ARTIFACT_NAME" 2>/dev/null | grep -v 'SNAPSHOT' || true)
     if [[ -n "$bundle_versions" ]]; then
         if [[ "$SOFT_VERSION" == "latest" ]]; then
-            SOFT_VERSION=$(echo "$bundle_versions" | tail -1)   # bundle-version line (0.20.1, 0.20.2, ...)
+            SOFT_VERSION=$(echo "$bundle_versions" | tail -1)   # bundle-version line (0.20.1, 0.20.2, 0.20.3, ...)
             USE_BUNDLE=true
             success "Resolved latest -all bundle version: $SOFT_VERSION"
         elif echo "$bundle_versions" | grep -qx "$SOFT_VERSION"; then

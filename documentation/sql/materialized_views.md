@@ -536,13 +536,25 @@ To automate this re-execution, the engine creates an **Elasticsearch Watcher** t
 The warning looks like this:
 
 ```
-✅ Success (14203ms)
+✅ Success (9549ms)
 ⚠️ Materialized view 'orders_with_customers_mv' was created, but automatic refresh is
-   unavailable: this Elasticsearch cluster's licence does not include Watcher, so the joined
-   data cannot be refreshed on a schedule. Run 'REFRESH MATERIALIZED VIEW
-   orders_with_customers_mv' whenever the joined tables change, or schedule that statement
-   externally (cron, Kubernetes CronJob, Airflow). Elasticsearch reported: …
+   unavailable: this deployment cannot host the refresh watcher, so the joined data cannot
+   be refreshed on a schedule. Run 'REFRESH MATERIALIZED VIEW orders_with_customers_mv'
+   whenever the joined tables change, or schedule that statement externally (cron,
+   Kubernetes CronJob, Airflow). Reason: Elasticsearch error during createWatcher:
+   security_exception - current license is non-compliant for [watcher]
 ```
+
+The wording names **no cause** — the licence is only one of two ways to end up here, and the
+actual one is quoted verbatim after `Reason:`. The other is a cluster with no usable webhook
+credentials for the watcher to call back with, which is what `xpack.security.enabled: false`
+gives you — the default local, CI and testkit setup. Both are the same outcome: the view exists
+and is queryable, only the scheduled refresh is missing, and `REFRESH MATERIALIZED VIEW` is the
+manual equivalent.
+
+A **wrong** credential is not this case. Supplying a username with no password, or a bad API key,
+keeps failing the statement loudly — that is a fixable misconfiguration, not a missing capability,
+and hiding it behind a warning would hide the typo.
 
 A view created this way keeps `auto_refresh: unavailable` even if the cluster is later upgraded to a license that includes Watcher — re-run `CREATE OR REPLACE MATERIALIZED VIEW` with a changed definition to redeploy it with a watcher.
 

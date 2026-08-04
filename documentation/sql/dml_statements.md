@@ -410,7 +410,7 @@ every supported JVM too** — including JDK 23, 24 and 25.
 
 ##### If you are on an older release
 
-Releases up to and including **0.20.3** fail on **JDK 23 and newer** for `PARQUET`, `DELTA_LAKE` and
+Releases up to and including **0.20.2** fail on **JDK 23 and newer** for `PARQUET`, `DELTA_LAKE` and
 remote schemes, with:
 
 | JDK | Error text | `-Djava.security.manager=allow` |

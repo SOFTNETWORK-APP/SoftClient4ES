@@ -118,6 +118,7 @@ Before installing, you can list all available versions for a specific Elasticsea
 
     • 0.20.1
     • 0.20.2
+    • 0.20.3
 
   Total: 2 version(s)
 
@@ -147,7 +148,7 @@ Before installing, you can list all available versions for a specific Elasticsea
 ./install.sh --list-versions --es-version 8
 
 # Install specific version
-./install.sh --es-version 8 --version 0.20.1
+./install.sh --es-version 8 --version 0.20.3
 
 # Install for Elasticsearch 9 (requires Java 17+)
 ./install.sh --es-version 9
@@ -156,7 +157,7 @@ Before installing, you can list all available versions for a specific Elasticsea
 ./install.sh --target /opt/softclient4es
 
 # Full custom installation
-./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.20.1
+./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.20.3
 ```
 
 #### Windows
@@ -169,7 +170,7 @@ Before installing, you can list all available versions for a specific Elasticsea
 .\install.ps1 -ListVersions -EsVersion 8
 
 # Install specific version
-.\install.ps1 -EsVersion 8 -Version 0.20.1
+.\install.ps1 -EsVersion 8 -Version 0.20.3
 
 # Install for Elasticsearch 9 (requires Java 17+)
 .\install.ps1 -EsVersion 9
@@ -178,7 +179,7 @@ Before installing, you can list all available versions for a specific Elasticsea
 .\install.ps1 -Target "C:\tools\softclient4es"
 
 # Full custom installation
-.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.20.1
+.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.20.3
 ```
 
 ---
