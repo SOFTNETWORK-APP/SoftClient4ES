@@ -1,0 +1,4 @@
+# capture-*.txt are raw terminal captures from script(1): they carry CR and ANSI escape
+# bytes. Git's CRLF normalisation would rewrite them on checkout, so a fresh clone would
+# no longer reproduce the committed .cast byte-for-byte. Keep them exactly as captured.
+capture-*.txt -text

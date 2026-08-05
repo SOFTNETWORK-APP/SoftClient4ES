@@ -1,0 +1,11 @@
+{"emp_id": "E01", "name": "Alice",   "dept_id": 1,  "salary": 120000}
+{"emp_id": "E02", "name": "Carol",   "dept_id": 1,  "salary": 98000}
+{"emp_id": "E03", "name": "Frank",   "dept_id": 1,  "salary": 88000}
+{"emp_id": "E04", "name": "Ivan",    "dept_id": 1,  "salary": 72000}
+{"emp_id": "E05", "name": "Bob",     "dept_id": 2,  "salary": 64000}
+{"emp_id": "E06", "name": "Dave",    "dept_id": 2,  "salary": 58000}
+{"emp_id": "E07", "name": "Eve",     "dept_id": 2,  "salary": 71000}
+{"emp_id": "E08", "name": "Grace",   "dept_id": 3,  "salary": 91000}
+{"emp_id": "E09", "name": "Heidi",   "dept_id": 3,  "salary": 79000}
+{"emp_id": "E10", "name": "Judy",    "dept_id": 3,  "salary": 68000}
+{"emp_id": "E11", "name": "Mallory", "dept_id": 99, "salary": 55000}

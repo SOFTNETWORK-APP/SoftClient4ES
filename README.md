@@ -9,6 +9,18 @@
 
 **SoftClient4ES** is a powerful SQL gateway for Elasticsearch. Query, manipulate, and manage your Elasticsearch data using familiar SQL syntax — including **cross-index JOINs**, which Elasticsearch has no native support for — through an interactive **REPL client**, a **JDBC driver**, an **Arrow Flight SQL** server, or as a **Scala library**.
 
+## 🎬 See It Run
+
+![SoftClient4ES REPL: two tables created, bulk-loaded from JSON with COPY INTO, aggregated across a cross-index JOIN with GROUP BY and HAVING, then materialised into a new index with CREATE TABLE AS SELECT and joined straight back](demo/softclient4es-demo.gif)
+
+Two indices created, bulk-loaded from JSON with `COPY INTO`, aggregated across a
+**cross-index JOIN** with `GROUP BY` / `HAVING`, then materialised into a new index with
+`CREATE TABLE … AS SELECT` — and that new index joined straight back, because the result of
+a JOIN is a first-class index like any other. One REPL session. No ETL, no second copy of
+your data.
+
+<sub>Every response and latency above is real output captured from a live Elasticsearch 8.18.3 on a free Community licence. The typing pace is edited for length — no recorder can drive the REPL's line editor without stalling, so the session is composed from captured output rather than screen-recorded. The seven statements, verbatim: <a href="demo/cast-src/final.sql">demo/cast-src/final.sql</a></sub>
+
 ## 🏗️ Architecture
 
 ![SoftClient4ES Architecture — Application layer, client interfaces (REPL, JDBC, ADBC, Flight SQL), unified GatewayApi, SQL Engine core, and ES 6/7/8/9 version-specific adapters](architecture.svg)
