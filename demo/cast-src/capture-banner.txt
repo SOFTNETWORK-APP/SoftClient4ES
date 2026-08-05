@@ -1,0 +1,14 @@
+^Dquit
+
+╔═══════════════════════════════════════════════════════════╗
+║  SoftClient4ES CLI                                        ║
+║  Version 0.20.3                                           ║
+║  Bundle 0.20.3 (engine 0.20.3, ext 0.2.3 + 0.2.4)         ║
+║                                                           ║
+║  Type help for available commands                         ║
+║  Type quit to exit                                        ║
+╚═══════════════════════════════════════════════════════════╝
+
+[?2004h>....
+👋 Goodbye!
+

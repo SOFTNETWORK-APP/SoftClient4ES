@@ -1,0 +1,4 @@
+{"dept_id": 1, "dept_name": "Engineering", "region": "EU"}
+{"dept_id": 2, "dept_name": "Marketing",   "region": "US"}
+{"dept_id": 3, "dept_name": "Sales",       "region": "US"}
+{"dept_id": 9, "dept_name": "Empty",       "region": "APAC"}

@@ -1,0 +1,34 @@
+^D
+=> CREATE TABLE jdbc_join_emp (emp_id KEYWORD, name KEYWORD, dept_id INTEGER, salary INTEGER, PRIMARY KEY (emp_id))
+✅ [32mSuccess[39m [90m(572ms)[39m
+
+=> CREATE TABLE jdbc_join_dept (dept_id INTEGER, dept_name KEYWORD, region KEYWORD, PRIMARY KEY (dept_id))
+✅ [32mSuccess[39m [90m(55ms)[39m
+
+=> COPY INTO jdbc_join_emp FROM 'employees.json' FILE_FORMAT = 'JSON'
+✅ [32m11 inserted[39m [90m(170ms)[39m
+
+=> COPY INTO jdbc_join_dept FROM 'departments.json' FILE_FORMAT = 'JSON'
+✅ [32m4 inserted[39m [90m(21ms)[39m
+
+=> SELECT d.dept_name, COUNT(*) AS headcount, AVG(e.salary) AS avg_salary, MAX(e.salary) AS top_salary FROM jdbc_join_emp e JOIN jdbc_join_dept d ON e.dept_id = d.dept_id GROUP BY d.dept_name HAVING AVG(e.salary) > 75000 ORDER BY AVG(e.salary) DESC
++-------------+-----------+-------------------+------------+
+| [36m[1mdept_name[0m   | [36m[1mheadcount[0m | [36m[1mavg_salary[0m        | [36m[1mtop_salary[0m |
++-------------+-----------+-------------------+------------+
+| Engineering | [33m4[39m         | [33m94500.0[39m           | [33m120000[39m     |
+| Sales       | [33m3[39m         | [33m79333.33333333333[39m | [33m91000[39m      |
++-------------+-----------+-------------------+------------+
+📊 [32m2 row(s)[39m [90m(814ms)[39m
+
+=> CREATE TABLE high_earner_report AS SELECT e.name, e.salary, d.dept_name FROM jdbc_join_emp e JOIN jdbc_join_dept d ON e.dept_id = d.dept_id WHERE e.salary > 90000
+✅ [32m3 inserted[39m [90m(298ms)[39m
+
+=> SELECT h.name, h.salary, d.region FROM high_earner_report h JOIN jdbc_join_dept d ON h.dept_name = d.dept_name ORDER BY h.salary DESC
++-------+--------+--------+
+| [36m[1mname[0m  | [36m[1msalary[0m | [36m[1mregion[0m |
++-------+--------+--------+
+| Alice | [33m120000[39m | EU     |
+| Carol | [33m98000[39m  | EU     |
+| Grace | [33m91000[39m  | US     |
++-------+--------+--------+
+📊 [32m3 row(s)[39m [90m(73ms)[39m
