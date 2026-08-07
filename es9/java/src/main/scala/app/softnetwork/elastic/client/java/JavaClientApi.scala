@@ -1615,9 +1615,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   val hits = extractHitsOnly(response, fieldAliases)
 
                   if (hits.isEmpty) {
-                    // Close PIT when done
-                    closePit(pitId)
-                    None
+                    None // end of stream — watchTermination owns the single PIT close (#202)
                   } else {
                     val lastHit = response.hits().hits().asScala.lastOption
                     val nextSearchAfter = lastHit.flatMap { hit =>
@@ -1642,12 +1640,13 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                 }
               }(system, logger).recover { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
-                closePit(pitId)
-                None
+                None // ends the stream — watchTermination owns the single PIT close (#202)
               }
             }
             .watchTermination() { (_, done) =>
-              // Cleanup PIT on stream completion/failure
+              // Single owner of the PIT close (#202): completion, failure and downstream
+              // cancellation all land here. The former in-loop closes made every clean run
+              // close twice and log a spurious "PIT close reported failure" WARN.
               done.onComplete {
                 case scala.util.Success(_) =>
                   logger.info(
