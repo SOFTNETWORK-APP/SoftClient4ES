@@ -128,4 +128,19 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     rows should have size totalDocs.toLong
     rows.map(_._1("id").toString).toSet should have size totalDocs.toLong
   }
+
+  it should "return every row exactly once with preferSearchAfter disabled (classic scroll)" in {
+    // #201 — preferSearchAfter = false is an operational opt-out that must force classic
+    // scroll on every ES version (it used to be silently ignored on 7.12+), and classic
+    // scroll must be just as row-complete on a multi-shard index.
+    val source = client.scroll(
+      SelectStatement(s"SELECT id FROM $index"),
+      ScrollConfig(scrollSize = 100, preferSearchAfter = false)
+    )
+
+    val rows = Await.result(source.runWith(Sink.seq), 5.minutes)
+
+    rows should have size totalDocs.toLong
+    rows.map(_._1("id").toString).toSet should have size totalDocs.toLong
+  }
 }

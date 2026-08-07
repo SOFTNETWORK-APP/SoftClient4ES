@@ -89,6 +89,10 @@ import scala.util.{Failure, Success}
   * └─────────────────┴───────────────┴──────────────────────────────────┘
   * }}}
   *
+  * [[ScrollConfig.preferSearchAfter]] ` = false` overrides the no-aggregation rows and forces
+  * classic scroll on every version — an operational opt-out for clusters that restrict the PIT API.
+  * Slower than the PIT path (9.55 s vs 6.15 s per 1M rows) but equally row-complete.
+  *
   * '''Point In Time (PIT) + search_after''' (ES 7.12+, no aggregations):
   *   - Provides a consistent snapshot of data across pagination
   *   - No scroll context timeout issues
@@ -286,7 +290,8 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   private def determineScrollStrategy(
     elasticQuery: ElasticQuery,
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    config: ScrollConfig
   ): ScrollStrategy = {
     // If aggregations are present, use classic scrolling
     if (aggregations.nonEmpty) {
@@ -294,6 +299,11 @@ trait ScrollApi extends ElasticClientHelpers {
     } else {
       // Check if the query contains aggregations in the JSON
       if (hasAggregations(elasticQuery.query)) {
+        UseScroll
+      } else if (!config.preferSearchAfter) {
+        // Operational opt-out (#201): classic scroll is slower than fixed PIT (9.55 s vs
+        // 6.15 s per 1M rows) but works on clusters that restrict the PIT API.
+        logger.info("preferSearchAfter is disabled, using classic scroll")
         UseScroll
       } else {
         // Detect version and choose implementation
@@ -398,7 +408,7 @@ trait ScrollApi extends ElasticClientHelpers {
     system: ActorSystem,
     context: ConversionContext
   ): Source[ListMap[String, Any], NotUsed] = {
-    val strategy = determineScrollStrategy(elasticQuery, aggregations)
+    val strategy = determineScrollStrategy(elasticQuery, aggregations, config)
 
     logger.info(
       s"Using scroll strategy: $strategy for query \n$elasticQuery"
@@ -409,7 +419,7 @@ trait ScrollApi extends ElasticClientHelpers {
         logger.info("Using classic scroll (supports aggregations)")
         scrollClassic(elasticQuery, fieldAliases, aggregations, config)
 
-      case UseSearchAfter if config.preferSearchAfter =>
+      case UseSearchAfter =>
         logger.info("Using search_after (optimized for hits only)")
         searchAfter(elasticQuery, fieldAliases, config, hasSorts)
 

@@ -76,7 +76,11 @@ import co.elastic.clients.elasticsearch.core.bulk.{
 import co.elastic.clients.elasticsearch.core.msearch.{MultisearchHeader, RequestItem}
 import co.elastic.clients.elasticsearch.core._
 import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESSource}
-import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
+import co.elastic.clients.elasticsearch.core.search.{
+  PointInTimeReference,
+  SearchRequestBody,
+  TrackHits
+}
 import co.elastic.clients.elasticsearch.enrich.{
   DeletePolicyRequest,
   ExecutePolicyRequest,
@@ -1529,6 +1533,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                     requestBuilder.withJson(new StringReader(elasticQuery.query))
                   }
 
+                  // The paging path never reads hits.total — computing it costs ~30% of the
+                  // ES-side CPU per page (#200). Set after withJson so the query cannot re-enable it.
+                  requestBuilder.trackTotalHits(TrackHits.of(t => t.enabled(false)))
+
                   // Check if sorts already exist in the query
                   if (!hasSorts && !queryJson.has("sort")) {
                     // _doc, NOT _shard_doc: from ES 8 / Lucene 9 a primary _shard_doc sort
@@ -1607,9 +1615,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   val hits = extractHitsOnly(response, fieldAliases)
 
                   if (hits.isEmpty) {
-                    // Close PIT when done
-                    closePit(pitId)
-                    None
+                    None // end of stream — watchTermination owns the single PIT close (#202)
                   } else {
                     val lastHit = response.hits().hits().asScala.lastOption
                     val nextSearchAfter = lastHit.flatMap { hit =>
@@ -1634,12 +1640,13 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                 }
               }(system, logger).recover { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
-                closePit(pitId)
-                None
+                None // ends the stream — watchTermination owns the single PIT close (#202)
               }
             }
             .watchTermination() { (_, done) =>
-              // Cleanup PIT on stream completion/failure
+              // Single owner of the PIT close (#202): completion, failure and downstream
+              // cancellation all land here. The former in-loop closes made every clean run
+              // close twice and log a spurious "PIT close reported failure" WARN.
               done.onComplete {
                 case scala.util.Success(_) =>
                   logger.info(

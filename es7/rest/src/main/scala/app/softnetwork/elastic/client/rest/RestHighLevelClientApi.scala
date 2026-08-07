@@ -1606,7 +1606,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 query
               )
             val sourceBuilder =
-              SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+              SearchSourceBuilder
+                .fromXContent(xContentParser)
+                .size(config.scrollSize)
+                // The paging path never reads hits.total — computing it costs ~30% of the
+                // ES-side CPU per page (#200)
+                .trackTotalHits(false)
 
             // Check if sorts already exist in the query
             if (!hasSorts && sourceBuilder.sorts() == null) {
@@ -1734,6 +1739,9 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                   val sourceBuilder = SearchSourceBuilder
                     .fromXContent(xContentParser)
                     .size(config.scrollSize)
+                    // The paging path never reads hits.total — computing it costs ~30% of the
+                    // ES-side CPU per page (#200)
+                    .trackTotalHits(false)
 
                   // Check if sorts already exist in the query
                   if (!hasSorts && sourceBuilder.sorts() == null) {
@@ -1789,8 +1797,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                   val hits = extractHitsOnly(response.toString, fieldAliases)
 
                   if (hits.isEmpty) {
-                    closePit(pitId)
-                    None
+                    None // end of stream — watchTermination owns the single PIT close (#202)
                   } else {
                     val searchHits = response.getHits.getHits
                     val lastHit = searchHits.last
@@ -1802,11 +1809,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 }
               }(system, logger).recover { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
-                closePit(pitId)
-                None
+                None // ends the stream — watchTermination owns the single PIT close (#202)
               }
             }
             .watchTermination() { (_, done) =>
+              // Single owner of the PIT close (#202): completion, failure and downstream
+              // cancellation all land here. The former in-loop closes made every clean run
+              // close twice and log a spurious "PIT close reported failure" WARN.
               done.onComplete {
                 case scala.util.Success(_) =>
                   logger.info(s"PIT search_after completed, closing PIT: ${pitId.take(20)}...")
