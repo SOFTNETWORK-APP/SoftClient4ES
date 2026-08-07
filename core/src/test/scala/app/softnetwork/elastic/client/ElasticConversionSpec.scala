@@ -1588,6 +1588,35 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
         throw error
     }
   }
+
+  // The cheap shape guard added for arrow#139 must not change what parses: every ISO form the
+  // formatters accept still parses, and non-temporal strings return None (now without paying
+  // four DateTimeParseException constructions per value).
+  it should "still parse every supported ISO temporal shape through the fast-path guard" in {
+    tryParseAsDateTime("2026-08-06T10:15:30Z") shouldBe defined
+    tryParseAsDateTime("2026-08-06T10:15:30+02:00") shouldBe defined
+    tryParseAsDateTime("2026-08-06T10:15:30") shouldBe defined
+    tryParseAsDateTime("2026-08-06") shouldBe defined
+    tryParseAsDateTime("0001-01-01") shouldBe defined
+    tryParseAsDateTime("10:15") shouldBe defined
+    tryParseAsDateTime("10:15:30") shouldBe defined
+    tryParseAsDateTime("10:15:30.123") shouldBe defined
+    // Extended and negative ISO years carry an explicit sign — the guard lets the parser decide
+    tryParseAsDateTime("+10000-01-01") shouldBe defined
+    tryParseAsDateTime("-0001-01-01") shouldBe defined
+  }
+
+  it should "return None for non-temporal strings without attempting a parse" in {
+    tryParseAsDateTime(null) shouldBe None
+    tryParseAsDateTime("") shouldBe None
+    tryParseAsDateTime("FR") shouldBe None
+    tryParseAsDateTime("completed") shouldBe None
+    tryParseAsDateTime("Electronics") shouldBe None
+    tryParseAsDateTime("550e8400-e29b-41d4-a716-446655440000") shouldBe None
+    tryParseAsDateTime("1723456789000") shouldBe None
+    tryParseAsDateTime("2026/08/06") shouldBe None
+    tryParseAsDateTime("v1:2026") shouldBe None
+  }
 }
 
 case class Products(category: String, top_products: List[Product], avg_price: Double)

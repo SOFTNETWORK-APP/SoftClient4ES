@@ -579,13 +579,40 @@ trait ElasticConversion {
     }
   }
 
+  /** Cheap shape check run before any temporal parse attempt. Every value the ISO formatters can
+    * parse starts with "dddd-" (date / date-time), "dd:" (time), or an explicit '+'/'-' year sign —
+    * anything else ("FR", "ok", UUIDs, …) would cost four DateTimeParseException constructions per
+    * value, which dominated extraction CPU at 1M rows (arrow#139).
+    */
+  private def looksLikeTemporal(text: String): Boolean = {
+    val len = text.length
+    if (len < 5) false
+    else {
+      val c0 = text.charAt(0)
+      if (c0 == '+' || c0 == '-') true // extended (>4-digit) or negative ISO years
+      else if (c0 < '0' || c0 > '9') false
+      else {
+        val c1 = text.charAt(1)
+        val c2 = text.charAt(2)
+        (len >= 10 &&
+        c1 >= '0' && c1 <= '9' &&
+        c2 >= '0' && c2 <= '9' &&
+        text.charAt(3) >= '0' && text.charAt(3) <= '9' &&
+        text.charAt(4) == '-') ||
+        (c1 >= '0' && c1 <= '9' && c2 == ':')
+      }
+    }
+  }
+
   /** Try to parse a string as ZonedDateTime, LocalDateTime, LocalDate or LocalTime
     */
   def tryParseAsDateTime(text: String): Option[Any] = {
-    Try(ZonedDateTime.parse(text, isoDateTimeFormatter)).toOption
-      .orElse(Try(LocalDateTime.parse(text, isoDateTimeFormatter)).toOption)
-      .orElse(Try(LocalDate.parse(text, isoDateFormatter)).toOption)
-      .orElse(Try(LocalTime.parse(text, isoTimeFormatter)).toOption)
+    if ((text eq null) || !looksLikeTemporal(text)) None
+    else
+      Try(ZonedDateTime.parse(text, isoDateTimeFormatter)).toOption
+        .orElse(Try(LocalDateTime.parse(text, isoDateTimeFormatter)).toOption)
+        .orElse(Try(LocalDate.parse(text, isoDateFormatter)).toOption)
+        .orElse(Try(LocalTime.parse(text, isoTimeFormatter)).toOption)
   }
 
   private def parseDoubleOpt(s: String): Option[Double] = Try(s.toDouble).toOption
