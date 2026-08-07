@@ -1531,15 +1531,18 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 
                   // Check if sorts already exist in the query
                   if (!hasSorts && !queryJson.has("sort")) {
-                    logger.warn(
-                      "No sort fields in query for PIT search_after, adding default _shard_doc sort. " +
-                      "_shard_doc is more efficient than _id for PIT."
+                    // _doc, NOT _shard_doc: from ES 8 / Lucene 9 a primary _shard_doc sort
+                    // defeats the doc-id skip optimisation and every page re-scans the whole
+                    // index (#197). Under a PIT (>= 7.12) ES appends _shard_doc as an automatic
+                    // tiebreaker, so _doc is a total order and row-complete across shards.
+                    logger.debug(
+                      "No sort fields in query for PIT search_after, adding default _doc sort."
                     )
                     requestBuilder.sort(
                       SortOptions.of { sortBuilder =>
                         sortBuilder.field(
                           FieldSort.of(fieldSortBuilder =>
-                            fieldSortBuilder.field("_shard_doc").order(SortOrder.Asc)
+                            fieldSortBuilder.field("_doc").order(SortOrder.Asc)
                           )
                         )
                       }

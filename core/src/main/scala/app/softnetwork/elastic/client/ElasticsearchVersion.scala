@@ -80,10 +80,16 @@ object ElasticsearchVersion {
     }
   }
 
-  /** Check if PIT is supported (ES >= 7.10)
+  /** Check if PIT is usable for paging (ES >= 7.12).
+    *
+    * The PIT API itself exists from 7.10, but our PIT paging relies on the `_shard_doc` sort field
+    * and on ES appending `_shard_doc` as an automatic tiebreaker under a PIT — both exist only from
+    * 7.12. On 7.10/7.11 a `_doc`-sorted PIT search returns HTTP 200 with NO tiebreaker and silently
+    * drops rows across shards (#197), so those versions must fall back to the classic `_id`-sorted
+    * search_after path.
     */
   def supportsPit(version: String): Boolean = {
-    isAtLeast(version, 7, 10)
+    isAtLeast(version, 7, 12)
   }
 
   /** Check if version is ES 8+

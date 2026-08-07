@@ -44,15 +44,21 @@ class ElasticsearchVersionSpec extends AnyWordSpec with Matchers {
   }
 
   "ElasticsearchVersion.supportsPit" should {
-    "return true for ES >= 7.10" in {
-      ElasticsearchVersion.supportsPit("7.10.0") shouldBe true
-      ElasticsearchVersion.supportsPit("7.10.2") shouldBe true
+    "return true for ES >= 7.12" in {
+      ElasticsearchVersion.supportsPit("7.12.0") shouldBe true
       ElasticsearchVersion.supportsPit("7.17.0") shouldBe true
       ElasticsearchVersion.supportsPit("8.0.0") shouldBe true
       ElasticsearchVersion.supportsPit("8.11.0") shouldBe true
+      ElasticsearchVersion.supportsPit("9.0.0") shouldBe true
     }
 
-    "return false for ES < 7.10" in {
+    // 7.10/7.11 have the PIT API but no _shard_doc sort field and no automatic PIT tiebreaker:
+    // a _doc-sorted PIT search on those versions silently drops rows across shards (#197), so
+    // they must take the classic _id-sorted search_after path instead.
+    "return false for ES < 7.12" in {
+      ElasticsearchVersion.supportsPit("7.11.2") shouldBe false
+      ElasticsearchVersion.supportsPit("7.10.0") shouldBe false
+      ElasticsearchVersion.supportsPit("7.10.2") shouldBe false
       ElasticsearchVersion.supportsPit("7.9.3") shouldBe false
       ElasticsearchVersion.supportsPit("7.0.0") shouldBe false
       ElasticsearchVersion.supportsPit("6.8.23") shouldBe false
