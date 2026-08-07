@@ -25,7 +25,8 @@ package object scroll {
     scrollSize: Int = 1000, // Number of documents per batch
     logEvery: Int = 10, // Log progress every n batches
     maxDocuments: Option[Long] = None, // Optional maximum number of documents to retrieve
-    preferSearchAfter: Boolean = true, // Prefer search_after over scroll when possible
+    preferSearchAfter: Boolean =
+      true, // false = force classic scroll even where PIT/search_after is available (slower; for clusters restricting the PIT API)
     metrics: ScrollMetrics = ScrollMetrics(), // Initial scroll metrics
     retryConfig: RetryConfig = RetryConfig(), // Retry configuration
     failOnWindowError: Option[Boolean] = None
