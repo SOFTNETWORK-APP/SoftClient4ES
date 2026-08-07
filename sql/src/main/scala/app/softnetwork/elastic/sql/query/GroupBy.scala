@@ -50,6 +50,16 @@ case class GroupBy(buckets: Seq[Bucket]) extends Updateable {
     buckets.flatMap(_.nestedElement).distinct
 }
 
+object Bucket {
+
+  /** SQL `GROUP BY` with no `LIMIT` means every group, but an Elasticsearch `terms` aggregation
+    * without an explicit `size` silently returns only its default 10 buckets (issue #205). Emit
+    * Elasticsearch's own `search.max_buckets` ceiling (65536) instead: cardinalities beyond it fail
+    * loudly server-side rather than truncate silently.
+    */
+  val DefaultSize: Int = 65536
+}
+
 case class Bucket(
   identifier: Identifier,
   size: Option[Int] = None
@@ -59,6 +69,7 @@ case class Bucket(
   def table: Option[String] = identifier.table
   override def sql: String = s"$identifier"
   def update(request: SingleSearch): Bucket = {
+    val bucketSize = request.limit.map(_.limit).orElse(Some(Bucket.DefaultSize))
     identifier.functions.headOption match {
       case Some(func: LongValue) =>
         if (func.value <= 0) {
@@ -69,10 +80,10 @@ case class Bucket(
           )
         } else {
           val field = request.select.fields(func.value.toInt - 1)
-          this.copy(identifier = field.identifier, size = request.limit.map(_.limit))
+          this.copy(identifier = field.identifier, size = bucketSize)
         }
       case _ =>
-        this.copy(identifier = identifier.update(request), size = request.limit.map(_.limit))
+        this.copy(identifier = identifier.update(request), size = bucketSize)
     }
   }
 
