@@ -1606,7 +1606,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 query
               )
             val sourceBuilder =
-              SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
+              SearchSourceBuilder
+                .fromXContent(xContentParser)
+                .size(config.scrollSize)
+                // The paging path never reads hits.total — computing it costs ~30% of the
+                // ES-side CPU per page (#200)
+                .trackTotalHits(false)
 
             // Check if sorts already exist in the query
             if (!hasSorts && sourceBuilder.sorts() == null) {
@@ -1734,6 +1739,9 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                   val sourceBuilder = SearchSourceBuilder
                     .fromXContent(xContentParser)
                     .size(config.scrollSize)
+                    // The paging path never reads hits.total — computing it costs ~30% of the
+                    // ES-side CPU per page (#200)
+                    .trackTotalHits(false)
 
                   // Check if sorts already exist in the query
                   if (!hasSorts && sourceBuilder.sorts() == null) {

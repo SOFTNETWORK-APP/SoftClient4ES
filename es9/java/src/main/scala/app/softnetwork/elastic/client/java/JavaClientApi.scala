@@ -76,7 +76,11 @@ import co.elastic.clients.elasticsearch.core.bulk.{
 import co.elastic.clients.elasticsearch.core.msearch.{MultisearchHeader, RequestItem}
 import co.elastic.clients.elasticsearch.core._
 import co.elastic.clients.elasticsearch.core.reindex.{Destination, Source => ESSource}
-import co.elastic.clients.elasticsearch.core.search.{PointInTimeReference, SearchRequestBody}
+import co.elastic.clients.elasticsearch.core.search.{
+  PointInTimeReference,
+  SearchRequestBody,
+  TrackHits
+}
 import co.elastic.clients.elasticsearch.enrich.{
   DeletePolicyRequest,
   ExecutePolicyRequest,
@@ -1528,6 +1532,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   if (queryJson.has("query")) {
                     requestBuilder.withJson(new StringReader(elasticQuery.query))
                   }
+
+                  // The paging path never reads hits.total — computing it costs ~30% of the
+                  // ES-side CPU per page (#200). Set after withJson so the query cannot re-enable it.
+                  requestBuilder.trackTotalHits(TrackHits.of(t => t.enabled(false)))
 
                   // Check if sorts already exist in the query
                   if (!hasSorts && !queryJson.has("sort")) {
