@@ -82,20 +82,23 @@ import scala.util.{Failure, Success}
   * ┌─────────────────┬───────────────┬──────────────────────────────────┐
   * │ ES Version      │ Aggregations  │ Strategy                         │
   * ├─────────────────┼───────────────┼──────────────────────────────────┤
-  * │ 7.10+           │ No            │ PIT + search_after (recommended) │
-  * │ 7.10+           │ Yes           │ Classic scroll                   │
-  * │ < 7.10          │ No            │ search_after                     │
-  * │ < 7.10          │ Yes           │ Classic scroll                   │
+  * │ 7.12+           │ No            │ PIT + search_after (recommended) │
+  * │ 7.12+           │ Yes           │ Classic scroll                   │
+  * │ < 7.12          │ No            │ search_after                     │
+  * │ < 7.12          │ Yes           │ Classic scroll                   │
   * └─────────────────┴───────────────┴──────────────────────────────────┘
   * }}}
   *
-  * '''Point In Time (PIT) + search_after''' (ES 7.10+, no aggregations):
+  * '''Point In Time (PIT) + search_after''' (ES 7.12+, no aggregations):
   *   - Provides a consistent snapshot of data across pagination
   *   - No scroll context timeout issues
   *   - Better resource usage and performance
   *   - Automatic cleanup on completion
+  *   - Gated at 7.12 (not 7.10, where the PIT API first appeared): the `_shard_doc` tiebreaker ES
+  *     appends under a PIT only exists from 7.12, and without it a paged extraction silently drops
+  *     rows across shards (#197)
   *
-  * '''search_after''' (ES < 7.10, no aggregations):
+  * '''search_after''' (ES < 7.12, no aggregations):
   *   - Efficient pagination without server-side state
   *   - Suitable for deep pagination
   *   - Requires explicit sort fields

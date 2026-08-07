@@ -1737,10 +1737,14 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
                   // Check if sorts already exist in the query
                   if (!hasSorts && sourceBuilder.sorts() == null) {
-                    logger.warn(
-                      "No sort fields in query for PIT search_after, adding default _shard_doc sort."
+                    // _doc, NOT _shard_doc: a primary _shard_doc sort defeats the doc-id skip
+                    // optimisation on ES 8 / Lucene 9 (#197); harmless but not needed on 7.x
+                    // either. Under a PIT (>= 7.12) ES appends _shard_doc as an automatic
+                    // tiebreaker, so _doc is a total order and row-complete across shards.
+                    logger.debug(
+                      "No sort fields in query for PIT search_after, adding default _doc sort."
                     )
-                    sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                    sourceBuilder.sort("_doc", SortOrder.ASC)
                   } else if (hasSorts && sourceBuilder.sorts() != null) {
                     // Sorts already present, check that a tie-breaker exists
                     val hasShardDocSort = sourceBuilder.sorts().asScala.exists {
