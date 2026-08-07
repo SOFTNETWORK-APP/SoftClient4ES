@@ -38,10 +38,10 @@ import scala.language.implicitConversions
   * exactly once on a MULTI-SHARD index.
   *
   * The failure mode this guards against is SILENT: a `_doc` sort without a cross-shard tiebreaker
-  * (i.e. without a PIT on ES >= 7.12) returns HTTP 200 on every page and simply loses the rows
-  * that tie at page boundaries — `_doc` values collide across shards by construction. A
-  * single-shard fixture can never catch it, and the default test index template pins
-  * `number_of_shards` to 1, so this spec creates its index with explicit multi-shard settings.
+  * (i.e. without a PIT on ES >= 7.12) returns HTTP 200 on every page and simply loses the rows that
+  * tie at page boundaries — `_doc` values collide across shards by construction. A single-shard
+  * fixture can never catch it, and the default test index template pins `number_of_shards` to 1, so
+  * this spec creates its index with explicit multi-shard settings.
   */
 trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
@@ -55,8 +55,8 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
 
   private val index = "scroll_completeness"
 
-  /** 3 shards x 1000 docs with pages of 100: every page boundary lands on `_doc` values that
-    * exist in all three shards, so a missing tiebreaker loses rows immediately.
+  /** 3 shards x 1000 docs with pages of 100: every page boundary lands on `_doc` values that exist
+    * in all three shards, so a missing tiebreaker loses rows immediately.
     */
   private val totalDocs = 3000
 
