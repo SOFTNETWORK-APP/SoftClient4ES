@@ -16,12 +16,15 @@
 
 package app.softnetwork.elastic.client
 
+import akka.actor.ActorSystem
+import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
   ElasticResult,
   ElasticSuccess
 }
+import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
@@ -33,10 +36,12 @@ import app.softnetwork.elastic.sql.query.{
   SingleSearch
 }
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
+import com.typesafe.config.ConfigFactory
 import org.json4s.Formats
 
 import scala.collection.immutable.ListMap
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 import scala.language.experimental.macros
 import scala.reflect.{classTag, ClassTag}
@@ -108,22 +113,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           sql = Some(query),
           explodeNested = single.explodeNested
         )
-        if (
-          single.windowFunctions.exists(
-            _.isWindowing
-          ) && single.groupBy.isEmpty && (!single.select.fields.forall(
-            _.isAggregation
-          ) || single.scriptFields.nonEmpty)
-        )
-          searchWithWindowEnrichment(single)
-        else
-          singleSearch(
-            elasticQuery,
-            single.fieldAliases,
-            single.sqlAggregations,
-            extractOutputFieldNames(single),
-            single.nestedHitsMappings
-          )
+        this match {
+          case scrollApi: ScrollApi if single.limit.isEmpty && single.returnsRows =>
+            // A row query is data-bound, not time-bound: every page request below
+            // carries its own timeout, so the stream always terminates.
+            Await.result(
+              scrollAllRows(scrollApi, single, elasticQuery),
+              Duration.Inf
+            )
+          case _ =>
+            if (single.windowRowQuery)
+              searchWithWindowEnrichment(single)
+            else
+              singleSearch(
+                elasticQuery,
+                single.fieldAliases,
+                single.sqlAggregations,
+                extractOutputFieldNames(single),
+                single.nestedHitsMappings
+              )
+        }
 
       case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
@@ -432,22 +441,21 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           single,
           collection.immutable.Seq(single.sources: _*)
         )
-        if (
-          single.windowFunctions.exists(
-            _.isWindowing
-          ) && single.groupBy.isEmpty && (!single.select.fields.forall(
-            _.isAggregation
-          ) || single.scriptFields.nonEmpty)
-        )
-          Future.successful(searchWithWindowEnrichment(single))
-        else
-          singleSearchAsync(
-            elasticQuery,
-            single.fieldAliases,
-            single.sqlAggregations,
-            extractOutputFieldNames(single),
-            single.nestedHitsMappings
-          )
+        this match {
+          case scrollApi: ScrollApi if single.limit.isEmpty && single.returnsRows =>
+            scrollAllRows(scrollApi, single, elasticQuery)
+          case _ =>
+            if (single.windowRowQuery)
+              Future.successful(searchWithWindowEnrichment(single))
+            else
+              singleSearchAsync(
+                elasticQuery,
+                single.fieldAliases,
+                single.sqlAggregations,
+                extractOutputFieldNames(single),
+                single.nestedHitsMappings
+              )
+        }
 
       case multiple: MultiSearch =>
         val elasticQueries = ElasticQueries(
@@ -1658,4 +1666,71 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     def size: Int = cache.size
   }
 
+  // ========================================================================
+  // ROW COMPLETENESS — SCROLL ROUTING (issue #209)
+  // ========================================================================
+
+  /** Collect EVERY row of an un-LIMITed row query through the scroll path.
+    *
+    * A one-shot search cannot honor "no LIMIT means every row": with no `size` Elasticsearch
+    * returns its default 10 hits, and any explicit `size` is bounded by `index.max_result_window`.
+    * The scroll path pages completely (PIT / search_after) and already handles window enrichment
+    * and script fields, so `search` / `searchAsync` route row-shaped queries with no LIMIT here.
+    * Aggregation-shaped queries must never be routed — their result is the aggregation itself,
+    * already bounded by an explicit `terms` size.
+    */
+  private[client] def scrollAllRows(
+    scrollApi: ScrollApi,
+    single: SingleSearch,
+    elasticQuery: ElasticQuery
+  )(implicit context: ConversionContext): Future[ElasticResult[ElasticResponse]] = {
+    implicit val system: ActorSystem = SearchApi.scrollRoutingSystem
+    implicit val ec: ExecutionContext = system.dispatcher
+    val sql = elasticQuery.sql.orElse(Option(single.sql))
+    logger.info(
+      s"▶ Row query without LIMIT — routing through scroll for row completeness:\n${sql.getOrElse(elasticQuery.query)}"
+    )
+    scrollApi
+      .scroll(single, ScrollConfig())
+      .map(_._1)
+      .runWith(Sink.seq)
+      .map { rows =>
+        logger.info(s"✅ Scroll-routed search returned ${rows.size} rows")
+        ElasticResult.success(
+          ElasticResponse(
+            sql,
+            elasticQuery.query,
+            rows,
+            single.fieldAliases,
+            ListMap.empty
+          )
+        )
+      }
+      .recover { case t =>
+        logger.error(
+          s"❌ Scroll-routed search failed for query \n${sql.getOrElse(elasticQuery.query)} -> ${t.getMessage}"
+        )
+        ElasticResult.failure(
+          ElasticError(
+            message = s"Scroll-routed search failed: ${t.getMessage}",
+            cause = Some(t),
+            index = Some(elasticQuery.indices.mkString(",")),
+            operation = Some("searchAsync")
+          )
+        )
+      }
+  }
+
+}
+
+object SearchApi {
+
+  /** JVM-shared materializer for [[SearchApi.scrollAllRows]]. Daemonic so an un-terminated system
+    * can never keep the JVM alive — clients don't own it, so no `close()` reaches it.
+    */
+  private[client] lazy val scrollRoutingSystem: ActorSystem =
+    ActorSystem(
+      "softclient4es-scroll-routing",
+      ConfigFactory.parseString("akka.daemonic = on")
+    )
 }

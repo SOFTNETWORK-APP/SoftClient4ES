@@ -237,18 +237,19 @@ class CoreDqlExtension extends ExtensionSpi {
           )
         )
 
-      // (2) No LIMIT, finite quota, the query would take the UNBOUNDED scroll branch, and NOT a
-      //     JOIN leg → cap the scroll stream at `max` via ScrollConfig.maxDocuments (enforced by
-      //     ScrollApi's `.take`) and flag truncation.
+      // (2) No LIMIT, finite quota, a ROW-shaped query, and NOT a JOIN leg → cap the scroll
+      //     stream at `max` via ScrollConfig.maxDocuments (enforced by ScrollApi's `.take`) and
+      //     flag truncation.
       //
-      //     `single.fields.nonEmpty` MIRRORS `SearchExecutor` (GatewayApi.scala:146): only a
-      //     no-LIMIT query with explicit projection fields takes the unbounded `scroll` branch —
-      //     the ONLY over-quota path. A no-LIMIT query with empty `fields` (aggregations / GROUP BY
-      //     / `SELECT *`) takes the `searchAsync` branch, which ES bounds by
-      //     `index.max_result_window` (≤10k ≤ every tier quota) → can never exceed, needs no cap,
-      //     and must NOT be re-routed to scroll (it would mishandle aggregation buckets). JOIN legs
+      //     `single.returnsRows` covers every unbounded path: the gateway's `scroll` branch
+      //     (plain projections) AND the row queries that reach `searchAsync` (windowed /
+      //     script-field-only projections), which since issue #209 routes them through scroll
+      //     internally and therefore returns EVERY row — so they must be capped here too.
+      //     Aggregation-shaped queries (`returnsRows` false: GROUP BY / metric-only SELECT) are
+      //     bounded by the aggregation sizes, need no row cap, and must NOT be re-routed to
+      //     scroll (it would mishandle aggregation buckets). JOIN legs
       //     (ResultCapContext.isSuppressed) also skip the cap so the join input is not truncated.
-      case (None, Some(max)) if single.fields.nonEmpty && !ResultCapContext.isSuppressed =>
+      case (None, Some(max)) if single.returnsRows && !ResultCapContext.isSuppressed =>
         // Story P0.6 (OQ-2) — the no-LIMIT truncation IS the meter biting (non-fatally): count it
         // as a QueryResults cap-hit, the SAME kind as the explicit-LIMIT 402 above. The cap is
         // suppressed for JOIN legs (the `!isSuppressed` guard), so a per-leg input truncation is
