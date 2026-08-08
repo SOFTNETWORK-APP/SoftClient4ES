@@ -2111,7 +2111,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"rn":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","size":65536,"min_doc_count":1},"aggs":{"rn":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
   }
 
   it should "emit top_hits for ROW_NUMBER without PARTITION BY" in {
@@ -2127,7 +2127,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"r":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","size":65536,"min_doc_count":1},"aggs":{"r":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
   }
 
   it should "emit top_hits for DENSE_RANK per-department" in {
@@ -2135,7 +2135,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"dr":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","size":65536,"min_doc_count":1},"aggs":{"dr":{"top_hits":{"size":100,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
   }
 
   it should "push LIMIT N inside OVER into top_hits.size for ranking (top-N per group)" in {
@@ -2143,7 +2143,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query shouldBe
-    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","min_doc_count":1},"aggs":{"r":{"top_hits":{"size":3,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
+    """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"department":{"terms":{"field":"department","size":65536,"min_doc_count":1},"aggs":{"r":{"top_hits":{"size":3,"sort":[{"salary":{"order":"desc"}}],"_source":{"includes":["salary"]}}}}}}}"""
   }
 
   it should "handle GREATEST 2-arg as script field" in {
@@ -2961,6 +2961,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "dept": {
         |      "terms": {
         |        "field": "department",
+        |        "size": 65536,
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
