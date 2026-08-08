@@ -37,8 +37,8 @@ case class CategoryCount(category: String, cnt: Long)
   * The failure mode this guards against is SILENT: without an explicit `size` on the `terms`
   * aggregation, Elasticsearch returns its default 10 buckets with HTTP 200 and no truncation flag,
   * so a 37-category index silently reports 10 plausible-looking groups. Every fixture in the other
-  * suites has cardinality <= 10, which is exactly why this went unnoticed — this spec asserts
-  * group count AND total doc coverage at cardinality > 10, on a multi-shard index.
+  * suites has cardinality <= 10, which is exactly why this went unnoticed — this spec asserts group
+  * count AND total doc coverage at cardinality > 10, on a multi-shard index.
   */
 trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
@@ -50,8 +50,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
 
   private val index = "group_by_completeness"
 
-  /** 37 categories — far above the ES `terms` default of 10 buckets. Category `cat_i` holds
-    * exactly `i` docs, so both the group count and every per-group count are exact oracles.
+  /** 37 categories — far above the ES `terms` default of 10 buckets. Category `cat_i` holds exactly
+    * `i` docs, so both the group count and every per-group count are exact oracles.
     */
   private val categories = 37
 
