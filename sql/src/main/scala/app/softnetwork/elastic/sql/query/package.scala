@@ -244,6 +244,21 @@ package object query {
 
     lazy val windowFunctions: Seq[WindowFunction] = windowFields.flatMap(_.identifier.windows)
 
+    /** Window-enriched ROW query: window functions present, no GROUP BY, and the SELECT projects at
+      * least one non-aggregation column (or computes script fields). The canonical dispatch
+      * condition shared by the search and scroll paths.
+      */
+    lazy val windowRowQuery: Boolean =
+      windowFunctions.exists(_.isWindowing) && groupBy.isEmpty &&
+      (!select.fields.forall(_.isAggregation) || scriptFields.nonEmpty)
+
+    /** Response shape: true when the query returns DOCUMENT ROWS (plain, script-field or
+      * window-enriched projections), false when it returns aggregation results (GROUP BY /
+      * metric-only SELECT). A row query with no LIMIT means EVERY matching row (issue #209) —
+      * consumers use this to route such queries through a paging-complete path.
+      */
+    lazy val returnsRows: Boolean = windowRowQuery || sqlAggregations.isEmpty
+
     private lazy val selectAggs: Seq[Field] =
       select.fieldsWithComputedAliases
         .filter(f => f.isAggregation || f.isBucketScript)
