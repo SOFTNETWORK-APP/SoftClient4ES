@@ -22,8 +22,8 @@ import org.scalatest.matchers.should.Matchers
 
 /** Issue #209 — `SingleSearch.returnsRows` is the canonical response-shape discriminator: row
   * queries with no LIMIT are routed through the scroll path (row completeness), while
-  * aggregation-shaped queries must never be. A wrong `true` would scroll-route an aggregation
-  * query (mishandling buckets); a wrong `false` would silently truncate rows at the ES default.
+  * aggregation-shaped queries must never be. A wrong `true` would scroll-route an aggregation query
+  * (mishandling buckets); a wrong `false` would silently truncate rows at the ES default.
   */
 class ReturnsRowsSpec extends AnyFlatSpec with Matchers {
 

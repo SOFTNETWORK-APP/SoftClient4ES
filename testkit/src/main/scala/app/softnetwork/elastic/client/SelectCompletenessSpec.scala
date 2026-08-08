@@ -36,11 +36,11 @@ case class SelectRow(category: String, amount: Int, rnum: Option[Long] = None)
 /** Regression test for issue #209: a row query with no `LIMIT` must return EVERY matching row.
   *
   * Same silent failure class as #205/#207, on the base hits: the one-shot search path emitted no
-  * top-level `size`, so Elasticsearch returned its default 10 hits with HTTP 200 and no
-  * truncation flag — a 45-row index reported 10 arbitrary rows. Un-LIMITed row queries are now
-  * routed through the scroll path (which pages completely); this spec asserts full row counts on
-  * a multi-shard index across the projection shapes that route: plain columns, `SELECT *`,
-  * script-field-only, and window-enriched. An explicit LIMIT must keep its one-shot bound.
+  * top-level `size`, so Elasticsearch returned its default 10 hits with HTTP 200 and no truncation
+  * flag — a 45-row index reported 10 arbitrary rows. Un-LIMITed row queries are now routed through
+  * the scroll path (which pages completely); this spec asserts full row counts on a multi-shard
+  * index across the projection shapes that route: plain columns, `SELECT *`, script-field-only, and
+  * window-enriched. An explicit LIMIT must keep its one-shot bound.
   */
 trait SelectCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
