@@ -58,8 +58,8 @@ trait WindowPartitionCompletenessSpec
 
   private val index = "window_partition_completeness"
 
-  /** 15 partitions — above the ES `terms` default of 10 buckets. Category `cat_i` holds 3 docs
-    * with amounts i*100 + 1..3, so every per-partition window value is an exact oracle.
+  /** 15 partitions — above the ES `terms` default of 10 buckets. Category `cat_i` holds 3 docs with
+    * amounts i*100 + 1..3, so every per-partition window value is an exact oracle.
     */
   private val categories = 15
 
