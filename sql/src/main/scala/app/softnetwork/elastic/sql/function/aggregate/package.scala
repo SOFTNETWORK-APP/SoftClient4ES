@@ -135,7 +135,12 @@ package object aggregate {
 
     override def isWindowing: Boolean = buckets.nonEmpty || orderBy.isDefined
 
-    lazy val buckets: Seq[Bucket] = partitionBy.map(identifier => Bucket(identifier, None))
+    // Partition buckets never pass Bucket.update (no LIMIT applies to the partition
+    // count), so the explicit size must be set here — without it the partition terms
+    // falls back to Elasticsearch's default 10 buckets and every partition beyond the
+    // tenth silently loses its window values (issue #207).
+    lazy val buckets: Seq[Bucket] =
+      partitionBy.map(identifier => Bucket(identifier, Some(Bucket.DefaultSize)))
 
     override lazy val bucketPath: String = BucketPath(buckets).path
 
