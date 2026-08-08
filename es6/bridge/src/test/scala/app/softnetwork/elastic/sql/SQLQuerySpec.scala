@@ -533,6 +533,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "Country": {
       |      "terms": {
       |        "field": "Country",
+      |        "size": 65536,
       |        "exclude": "USA",
       |        "min_doc_count": 1,
       |        "order": {
@@ -543,6 +544,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "City": {
       |          "terms": {
       |            "field": "City",
+      |            "size": 65536,
       |            "exclude": "Berlin",
       |            "min_doc_count": 1,
       |            "order": {
@@ -1016,6 +1018,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "userId": {
       |      "terms": {
       |        "field": "userId",
+      |        "size": 65536,
       |        "min_doc_count": 1
       |      },
       |      "aggs": {
@@ -1065,6 +1068,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "Country": {
       |      "terms": {
       |        "field": "Country",
+      |        "size": 65536,
       |        "exclude": "USA",
       |        "min_doc_count": 1,
       |        "order": {
@@ -1075,6 +1079,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "City": {
       |          "terms": {
       |            "field": "City",
+      |            "size": 65536,
       |            "exclude": "Berlin",
       |            "min_doc_count": 1
       |          },
@@ -1136,6 +1141,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "Country": {
       |      "terms": {
       |        "field": "Country",
+      |        "size": 65536,
       |        "exclude": "USA",
       |        "min_doc_count": 1,
       |        "order": {
@@ -1146,6 +1152,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |        "City": {
       |          "terms": {
       |            "field": "City",
+      |            "size": 65536,
       |            "exclude": "Berlin",
       |            "min_doc_count": 1
       |          },
@@ -1213,6 +1220,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "identifier": {
       |      "terms": {
       |        "field": "identifier",
+      |        "size": 65536,
       |        "min_doc_count": 1,
       |        "order": {
       |          "ct": "desc"
@@ -1429,6 +1437,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "identifier": {
       |      "terms": {
       |        "field": "identifier",
+      |        "size": 65536,
       |        "min_doc_count": 1,
       |        "order": {
       |          "ct": "desc"
@@ -1587,6 +1596,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "identifier": {
       |      "terms": {
       |        "field": "identifier",
+      |        "size": 65536,
       |        "min_doc_count": 1
       |      },
       |      "aggs": {
@@ -3929,12 +3939,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
+        |        "size": 65536,
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
         |        "City": {
         |          "terms": {
         |            "field": "City",
+        |            "size": 65536,
         |            "min_doc_count": 1,
         |            "order": {
         |              "__c3": "desc"
@@ -3988,6 +4000,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
+        |        "size": 65536,
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
@@ -4043,6 +4056,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
+        |        "size": 65536,
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
@@ -4146,6 +4160,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
+        |        "size": 65536,
         |        "min_doc_count": 1,
         |        "order": {
         |          "count_all": "desc"
@@ -4184,6 +4199,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
+        |        "size": 65536,
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
@@ -4232,6 +4248,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "Country": {
         |      "terms": {
         |        "field": "Country",
+        |        "size": 65536,
         |        "min_doc_count": 1
         |      },
         |      "aggs": {
@@ -4393,7 +4410,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": false,
         |  "aggs": {
         |    "department": {
-        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "terms": { "field": "department", "size": 65536, "min_doc_count": 1 },
         |      "aggs": {
         |        "sd": { "extended_stats": { "field": "salary" } }
         |      }
@@ -4441,7 +4458,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": false,
         |  "aggs": {
         |    "department": {
-        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "terms": { "field": "department", "size": 65536, "min_doc_count": 1 },
         |      "aggs": {
         |        "v": { "extended_stats": { "field": "salary" } }
         |      }
@@ -4504,7 +4521,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": false,
         |  "aggs": {
         |    "department": {
-        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "terms": { "field": "department", "size": 65536, "min_doc_count": 1 },
         |      "aggs": {
         |        "p99": { "percentiles": { "field": "salary", "percents": [99.0] } }
         |      }
@@ -4528,7 +4545,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": false,
         |  "aggs": {
         |    "department": {
-        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "terms": { "field": "department", "size": 65536, "min_doc_count": 1 },
         |      "aggs": {
         |        "p95": { "percentiles": { "field": "salary", "percents": [95.0] } }
         |      }
@@ -4582,7 +4599,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": false,
         |  "aggs": {
         |    "department": {
-        |      "terms": { "field": "department", "min_doc_count": 1 },
+        |      "terms": { "field": "department", "size": 65536, "min_doc_count": 1 },
         |      "aggs": {
         |        "p50": { "percentiles": { "field": "salary", "percents": [50.0, 95.0, 99.0] } }
         |      }

@@ -515,25 +515,29 @@ object ElasticAggregation {
           }
           agg match {
             case termsAgg: TermsAggregation =>
-              bucket.size.foreach(s => agg = termsAgg.size(s))
+              // each step must chain on the previous one — restarting from `termsAgg`
+              // would silently discard the earlier updates (issue #205)
+              var terms = termsAgg
+              bucket.size.foreach(s => terms = terms.size(s))
               having match {
                 case Some(criteria) =>
                   criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
                     case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      agg = termsAgg.include(regex)
+                      terms = terms.include(regex)
                     case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      agg = termsAgg.include(values.toArray)
+                      terms = terms.include(values.toArray)
                     case _ =>
                   }
                   criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
                     case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      agg = termsAgg.exclude(regex)
+                      terms = terms.exclude(regex)
                     case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      agg = termsAgg.exclude(values.toArray)
+                      terms = terms.exclude(values.toArray)
                     case _ =>
                   }
                 case _ =>
               }
+              agg = terms
             case _ =>
           }
           current match {
