@@ -188,15 +188,15 @@ object Parser
     (keyword("ALTER") ~ keyword("PIPELINE")) ~ ifExists ~ ident ~ start.? ~ repsep(
       alterPipelineStatement,
       separator
-    ) ~ end.? ^^ { case _ ~ ie ~ pipeline ~ s ~ stmts ~ e =>
+    ) ~ end.? >> { case _ ~ ie ~ pipeline ~ s ~ stmts ~ e =>
       if (s.isDefined && e.isEmpty) {
-        throw new Exception("Mismatched closing parentheses in ALTER PIPELINE statement")
+        err("Mismatched closing parentheses in ALTER PIPELINE statement")
       } else if (s.isEmpty && e.isDefined) {
-        throw new Exception("Mismatched opening parentheses in ALTER PIPELINE statement")
+        err("Mismatched opening parentheses in ALTER PIPELINE statement")
       } else if (s.isEmpty && e.isEmpty && stmts.size > 1) {
-        throw new Exception("Multiple ALTER PIPELINE statements require parentheses")
+        err("Multiple ALTER PIPELINE statements require parentheses")
       } else
-        AlterPipeline(pipeline, ie, stmts)
+        success(AlterPipeline(pipeline, ie, stmts))
     }
 
   /** `FIELDS (…)` — required. The empty fallback belongs to `optionalMultiFields`, whose only
@@ -229,10 +229,6 @@ object Parser
       case Some(_) => true
       case None    => false
     }
-
-  def ingest_id: PackratParser[Value[_]] = "_id" ^^ (_ => IdValue)
-
-  def ingest_timestamp: PackratParser[Value[_]] = "_ingest.timestamp" ^^ (_ => IngestTimestampValue)
 
   def defaultVal: PackratParser[Option[Value[_]]] =
     opt(keyword("DEFAULT") ~ (value | ingest_id | ingest_timestamp)) ^^ {
@@ -553,10 +549,17 @@ object Parser
       DropColumnScript(name, ifExists = ie)
     }
 
+  /** The value grammar must match `defaultVal`'s: a column declares `DEFAULT _ingest.timestamp` at
+    * CREATE time, so an ALTER that sets the same default on an existing column has to accept it
+    * too. It did not, which broke the `_last_updated` column the materialized-view machinery adds
+    * whenever that column already exists (`TableDiff` renders `ColumnDefaultSet` and the extension
+    * runs the rendered SQL).
+    */
   def alterColumnDefault: PackratParser[AlterColumnDefault] =
-    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("DEFAULT")) ~ value ^^ {
-      case ie ~ name ~ _ ~ dv =>
-        AlterColumnDefault(name, dv, ifExists = ie)
+    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword(
+      "DEFAULT"
+    )) ~ (value | ingest_id | ingest_timestamp) ^^ { case ie ~ name ~ _ ~ dv =>
+      AlterColumnDefault(name, dv, ifExists = ie)
     }
 
   def dropColumnDefault: PackratParser[DropColumnDefault] =
@@ -641,15 +644,18 @@ object Parser
     (keyword("ALTER") ~ keyword("TABLE")) ~ ifExists ~ ident ~ start.? ~ repsep(
       alterTableStatement,
       separator
-    ) ~ end.? ^^ { case _ ~ ie ~ table ~ s ~ stmts ~ e =>
+    ) ~ end.? >> { case _ ~ ie ~ table ~ s ~ stmts ~ e =>
+      // `err`, not `throw`: these run inside a combinator, and `Parser.apply` is typed
+      // `Either[ParserError, Statement]` — a raw exception escapes that signature and only
+      // `GatewayApi` happens to wrap the call in `ElasticResult.attempt`.
       if (s.isDefined && e.isEmpty) {
-        throw new Exception("Mismatched closing parentheses in ALTER TABLE statement")
+        err("Mismatched closing parentheses in ALTER TABLE statement")
       } else if (s.isEmpty && e.isDefined) {
-        throw new Exception("Mismatched opening parentheses in ALTER TABLE statement")
+        err("Mismatched opening parentheses in ALTER TABLE statement")
       } else if (s.isEmpty && e.isEmpty && stmts.size > 1) {
-        throw new Exception("Multiple ALTER TABLE statements require parentheses")
+        err("Multiple ALTER TABLE statements require parentheses")
       } else
-        AlterTable(table, ie, stmts)
+        success(AlterTable(table, ie, stmts))
     }
 
   // Watcher parsers
@@ -671,7 +677,7 @@ object Parser
   def compareWatcherCondition: PackratParser[CompareWatcherCondition] =
     keyword("WHEN") ~> opt(not) ~ ident ~ comparison_operator ~ opt(value) ~ opt(
       dateMathScript
-    ) ^^ { case n ~ field ~ op ~ v ~ fun =>
+    ) >> { case n ~ field ~ op ~ v ~ fun =>
       val target_op =
         n match {
           case Some(_) => op.not
@@ -679,23 +685,23 @@ object Parser
         }
       v match {
         case Some(value) =>
-          CompareWatcherCondition(field, target_op, Left(value))
+          success(CompareWatcherCondition(field, target_op, Left(value)))
         case None =>
           fun match {
             case Some(f) if f.identifier.dependencies.isEmpty =>
-              CompareWatcherCondition(
-                field,
-                target_op,
-                Right(f.identifier.withFunctions(f +: f.identifier.functions))
+              success(
+                CompareWatcherCondition(
+                  field,
+                  target_op,
+                  Right(f.identifier.withFunctions(f +: f.identifier.functions))
+                )
               )
             case Some(_) =>
-              throw new Exception(
-                s"Date/datetime functions with field dependencies are not supported for comparison"
+              err(
+                "Date/datetime functions with field dependencies are not supported for comparison"
               )
             case None =>
-              throw new Exception(
-                s"A value or a date/datetime function must be provided for comparison"
-              )
+              err("A value or a date/datetime function must be provided for comparison")
           }
       }
     }
@@ -875,13 +881,10 @@ object Parser
     }
 
   def watcherAction: PackratParser[(String, WatcherAction)] =
-    ident ~ opt(keyword("AS")) ~ (loggingAction | webhookAction) ^^ { case name ~ _ ~ wa =>
+    ident ~ opt(keyword("AS")) ~ (loggingAction | webhookAction) >> { case name ~ _ ~ wa =>
       wa match {
-        case Some(wa) => (name, wa)
-        case _ =>
-          throw new Exception(
-            s"Unsupported watcher action type in action '$name'"
-          )
+        case Some(wa) => success((name, wa))
+        case _        => err(s"Unsupported watcher action type in action '$name'")
       }
     }
 
@@ -1334,12 +1337,16 @@ trait Parser
       ObjectValues(ovs)
     }
 
+  // `ingest_id | ingest_timestamp` for the same reason as `alterColumnDefault`: the mapping
+  // metadata a column's DEFAULT is mirrored into (`_meta.columns.<c>.default_value`) is written
+  // through this production.
   def option: PackratParser[(String, Value[_])] =
-    (ident | literal) ~ "=" ~ (objectValues | objectValue | value) ^^ { case key ~ _ ~ value =>
-      key match {
-        case lit: StringValue => (lit.value, value)
-        case id: String       => (id, value)
-      }
+    (ident | literal) ~ "=" ~ (objectValues | objectValue | value | ingest_id | ingest_timestamp) ^^ {
+      case key ~ _ ~ value =>
+        key match {
+          case lit: StringValue => (lit.value, value)
+          case id: String       => (id, value)
+        }
     }
 
   def options: PackratParser[ListMap[String, Value[_]]] =

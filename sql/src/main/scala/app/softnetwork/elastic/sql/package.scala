@@ -55,6 +55,14 @@ package object sql {
     case _       => ""
   }
 
+  /** Escapes a bare string for a single-quoted SQL literal, exactly reversing how the grammar's
+    * `'([^'\\]|\\.)*'` unescapes it — backslash first, then the quote. Renderers that hold a plain
+    * `String` rather than a `StringValue` (a column COMMENT, for one) need it too, which is why it
+    * lives here rather than on the value.
+    */
+  def escapeStringLiteral(value: String): String =
+    value.replace("\\", "\\\\").replace("'", "\\'")
+
   /** Base trait for all tokens
     */
   trait Token extends Serializable with Validation {
@@ -438,42 +446,37 @@ package object sql {
       }
       .mkString("(", ", ", ")")
 
+    /** Recursion is on the HEAD of the path, one level at a time. Descending to the LEAF's parent
+      * and then re-attaching it under `keys.head` collapsed the intermediate levels: for a path of
+      * depth 3 or more, `_meta.columns.<c>.default_value` replaced the whole of `_meta` with the
+      * innermost object, dropping every sibling key. Depth 1 and 2 happened to be correct, which is
+      * why it survived — the metadata paths the schema writes are exactly the deeper ones.
+      */
     def set(path: String, newValue: Value[_]): ObjectValue = {
-      val keys = path.split("\\.")
-      val updatedValue = {
-        if (keys.length == 1) {
-          value + (keys.head -> newValue)
-        } else {
-          val parentPath = keys.dropRight(1).mkString(".")
-          val parentKey = keys.last
-          val parentObject = find(parentPath) match {
+      path.split("\\.").toList match {
+        case Nil      => this
+        case k :: Nil => ObjectValue(value + (k -> newValue))
+        case k :: rest =>
+          val child = value.get(k) match {
             case Some(obj: ObjectValue) => obj
             case _                      => ObjectValue.empty
           }
-          val updatedParent = parentObject.set(parentKey, newValue)
-          value + (keys.head -> updatedParent)
-        }
+          ObjectValue(value + (k -> child.set(rest.mkString("."), newValue)))
       }
-      ObjectValue(updatedValue)
     }
 
     def remove(path: String): ObjectValue = {
-      val keys = path.split("\\.")
-      val updatedValue = {
-        if (keys.length == 1) {
-          value - keys.head
-        } else {
-          val parentPath = keys.dropRight(1).mkString(".")
-          val parentKey = keys.last
-          val parentObject = find(parentPath) match {
-            case Some(obj: ObjectValue) => obj
-            case _                      => ObjectValue.empty
+      path.split("\\.").toList match {
+        case Nil      => this
+        case k :: Nil => ObjectValue(value - k)
+        case k :: rest =>
+          value.get(k) match {
+            case Some(obj: ObjectValue) =>
+              ObjectValue(value + (k -> obj.remove(rest.mkString("."))))
+            // nothing at that path: removing is a no-op, NOT a reason to overwrite `k`
+            case _ => this
           }
-          val updatedParent = parentObject.remove(parentKey)
-          value + (keys.head -> updatedParent)
-        }
       }
-      ObjectValue(updatedValue)
     }
 
     def find(path: String): Option[Value[_]] = {
@@ -575,7 +578,10 @@ package object sql {
   }
 
   case class StringValue(override val value: String) extends Value[String](value) {
-    override def sql: String = s"""'$value'"""
+    // Escaped exactly as the grammar's literal (`'([^'\\]|\\.)*'`) unescapes it — backslash first,
+    // then the quote, so the composition reverses. Without this a value holding an apostrophe
+    // rendered `'it's'`, which no longer parses.
+    override def sql: String = s"""'${escapeStringLiteral(value)}'"""
     override def baseType: SQLType = SQLTypes.Varchar
 
     override def ddl: String = s""""${value.replace("\\", "\\\\").replace("\"", "\\\"")}""""

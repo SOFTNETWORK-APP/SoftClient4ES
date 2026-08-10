@@ -668,14 +668,14 @@ package object query {
   ) extends PipelineStatement
       with DdlStatement {
     override def sql: String = {
-      val ifExistsClause = if (ifExists) " IF EXISTS " else ""
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       val parenthesesNeeded = statements.size > 1
       val statementsSql = if (parenthesesNeeded) {
         statements.map(_.sql).mkString("(\n\t", ",\n\t", "\n)")
       } else {
         statements.map(_.sql).mkString("")
       }
-      s"ALTER PIPELINE $name$ifExistsClause $statementsSql"
+      s"ALTER PIPELINE$ifExistsClause $name $statementsSql"
     }
 
     lazy val ddlProcessors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
@@ -963,14 +963,14 @@ package object query {
       extends TableStatement
       with DdlStatement {
     override def sql: String = {
-      val ifExistsClause = if (ifExists) " IF EXISTS " else ""
+      val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       val parenthesesNeeded = statements.size > 1
       val statementsSql = if (parenthesesNeeded) {
         statements.map(_.sql).mkString("(\n\t", ",\n\t", "\n)")
       } else {
         statements.map(_.sql).mkString("")
       }
-      s"ALTER TABLE $table$ifExistsClause $statementsSql"
+      s"ALTER TABLE$ifExistsClause $table $statementsSql"
     }
 
     lazy val processors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
@@ -1040,7 +1040,7 @@ package object query {
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET TYPE $newType"
+      s"ALTER COLUMN$ifExistsClause $columnName SET DATA TYPE $newType"
     }
   }
   case class AlterColumnScript(
@@ -1091,7 +1091,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET COMMENT '$comment'"
+      s"ALTER COLUMN$ifExistsClause $columnName SET COMMENT '${escapeStringLiteral(comment)}'"
     }
   }
   case class DropColumnComment(columnName: String, ifExists: Boolean = false)
