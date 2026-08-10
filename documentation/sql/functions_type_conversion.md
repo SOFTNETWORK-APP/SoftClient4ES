@@ -16,14 +16,17 @@ CONVERT(expr, TYPE)
 **Inputs:**
 - `expr` - Expression to convert
 - `TYPE` - Target data type:
-  - `VARCHAR` / `STRING` / `TEXT`
+  - `VARCHAR` / `STRING` / `CHAR`
   - `INT` / `INTEGER` / `BIGINT` / `SMALLINT` / `TINYINT`
   - `DOUBLE` / `FLOAT` / `REAL`
-  - `DECIMAL(p, s)` / `NUMERIC(p, s)`
-  - `BOOLEAN` / `BOOL`
+  - `BOOLEAN`
   - `DATE`
   - `TIMESTAMP` / `DATETIME`
   - `TIME`
+
+> `DECIMAL` / `NUMERIC` are **not** cast targets (see
+> [known limitations](known_limitations.md)) — use `DOUBLE` and round explicitly. `TEXT`, `KEYWORD`
+> and `BOOL` are column types in `CREATE TABLE`, not cast targets; write `VARCHAR` and `BOOLEAN`.
 
 **Output:**
 - Value converted to target `TYPE`
@@ -31,6 +34,9 @@ CONVERT(expr, TYPE)
 **Behavior:**
 - Throws error if conversion fails
 - Use `TRY_CAST` for safe conversion
+- A cast cannot wrap an **aggregate result** — cast the aggregate's input instead
+  (`MAX(salary::BIGINT)`, not `MAX(salary)::BIGINT`). See
+  [Type Conversion](type_conversion.md#restriction-cast-the-input-of-an-aggregate-not-its-result).
 
 **Examples:**
 

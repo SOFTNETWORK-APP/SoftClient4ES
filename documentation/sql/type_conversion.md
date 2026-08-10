@@ -16,7 +16,7 @@ Converts a value to a specified SQL type. Fails if the conversion is invalid.
 
 **Example:**
 ```sql
-SELECT CAST('2025-09-11' AS DATE) AS d;
+SELECT CAST('2025-09-11' AS DATE) AS d FROM logs;
 -- Result: 2025-09-11
 ```
 
@@ -36,7 +36,7 @@ Attempts to convert a value to a specified SQL type. Returns `NULL` if the conve
 
 **Example:**
 ```sql
-SELECT TRY_CAST('invalid-date' AS DATE) AS d;
+SELECT TRY_CAST('invalid-date' AS DATE) AS d FROM logs;
 -- Result: NULL
 ```
 
@@ -56,7 +56,7 @@ Shorthand operator for casting. Equivalent to `CAST(value AS type)`.
 
 **Example:**
 ```sql
-SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b;
+SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b FROM logs;
 -- Result: 2025-09-11, 125
 ```
 
@@ -68,5 +68,37 @@ SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b;
 - `TRY_CAST` (`SAFE_CAST`) returns `NULL` instead of failing.  
 - `::` is syntactic sugar, easier to read in queries.  
 - Type inference relies on `baseType`, and explicit `CAST`/`TRY_CAST`/`::` updates the type context for following functions.  
+
+---
+
+## Restriction: cast the input of an aggregate, not its result
+
+A cast cannot be applied to the **result** of an aggregate function. An aggregate has to be the
+first function in a column's chain, and a cast wrapping it would sit ahead of it:
+
+```sql
+-- Rejected: "Aggregation function must be the first function in the chain"
+SELECT MAX(salary)::BIGINT AS m FROM emp GROUP BY dept;
+SELECT CAST(MAX(salary) AS BIGINT) AS m FROM emp GROUP BY dept;
+```
+
+All four spellings behave the same way — `::`, `CAST`, `TRY_CAST` and `CONVERT`.
+
+Cast the aggregate's **input** instead. This is equivalent for every aggregate whose result type
+follows its argument (`MIN`, `MAX`, `SUM`, `AVG`, the `STDDEV` / `VARIANCE` family, the percentiles):
+
+```sql
+-- Both supported
+SELECT MAX(salary::BIGINT) AS m FROM emp GROUP BY dept;
+SELECT MAX(CAST(salary AS BIGINT)) AS m FROM emp GROUP BY dept;
+```
+
+Casting is unrestricted everywhere an aggregate is not involved — the SELECT list, `WHERE`,
+`ORDER BY`, and inside another function:
+
+```sql
+SELECT YEAR(createdAt)::VARCHAR AS y FROM logs;
+SELECT id FROM logs WHERE tries::INT > 3 ORDER BY tries::INT;
+```
 
 [Back to index](README.md)
