@@ -25,104 +25,91 @@ import io.searchbox.client.JestResult
 
 import scala.jdk.CollectionConverters._
 
+/** Every operation routes through [[JestClientHelpers.executeJestAction]]. They used to call
+  * `apply().execute(...)` directly, so a network fault threw instead of returning an
+  * `ElasticFailure` (SoftClient4ES#215, the same defect as #204 in the licence API). The wrapper
+  * also carries the HTTP status, names the failing operation, and guards the response-parsing
+  * transformers — several of which navigate the JSON with `get(...)` and could NPE.
+  *
+  * The absent-pipeline contract is unchanged: `Pipeline.Get` marks 404 as *succeeded* with no body,
+  * so a missing pipeline still reaches the transformer and yields `None` rather than a failure.
+  */
 trait JestPipelineApi extends PipelineApi with JestClientHelpers {
   _: JestVersionApi with JestClientCompanion =>
 
   override private[client] def executeCreatePipeline(
     pipelineName: String,
     pipelineDefinition: String
-  ): result.ElasticResult[Boolean] = {
+  ): result.ElasticResult[Boolean] =
     // There is no direct API to create a pipeline in Jest.
-    apply().execute(Pipeline.Create(pipelineName, pipelineDefinition)) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        result.ElasticSuccess(true)
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        result.ElasticFailure(
-          result.ElasticError(
-            s"Failed to create pipeline '$pipelineName': $errorMessage"
-          )
-        )
+    executeJestBooleanAction[JestResult](
+      operation = "createPipeline",
+      retryable = false // Creation can not be retried
+    ) {
+      Pipeline.Create(pipelineName, pipelineDefinition)
     }
-  }
 
   override private[client] def executeDeletePipeline(
     pipelineName: String,
     ifExists: Boolean
-  ): result.ElasticResult[Boolean] = {
+  ): result.ElasticResult[Boolean] =
     // There is no direct API to delete a pipeline in Jest.
-    apply().execute(Pipeline.Delete(pipelineName)) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        result.ElasticSuccess(true)
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        result.ElasticFailure(
-          result.ElasticError(
-            s"Failed to delete pipeline '$pipelineName': $errorMessage"
-          )
-        )
+    executeJestBooleanAction[JestResult](
+      operation = "deletePipeline",
+      retryable = false // Deletion can not be retried
+    ) {
+      Pipeline.Delete(pipelineName)
     }
-  }
 
   override private[client] def executeGetPipeline(
     pipelineName: String
-  ): result.ElasticResult[Option[String]] = {
+  ): result.ElasticResult[Option[String]] =
     // There is no direct API to get a pipeline in Jest.
-    apply().execute(Pipeline.Get(pipelineName)) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        val jsonString = jestResult.getJsonString
-        if (jsonString != null && jsonString.nonEmpty) {
-          val node: JsonNode = jsonString
-          node match {
-            case objectNode: ObjectNode if objectNode.has(pipelineName) =>
-              val pipelineNode = objectNode.get(pipelineName)
-              result.ElasticSuccess(Some(pipelineNode))
-            case _ =>
-              result.ElasticSuccess(None)
-          }
-        } else {
-          result.ElasticSuccess(None)
+    executeJestAction[JestResult, Option[String]](
+      operation = "getPipeline",
+      retryable = true
+    ) {
+      Pipeline.Get(pipelineName)
+    } { jestResult =>
+      val jsonString = jestResult.getJsonString
+      if (jsonString != null && jsonString.nonEmpty) {
+        val node: JsonNode = jsonString
+        node match {
+          case objectNode: ObjectNode if objectNode.has(pipelineName) =>
+            Some(objectNode.get(pipelineName))
+          case _ =>
+            None
         }
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        result.ElasticFailure(
-          result.ElasticError(
-            s"Failed to get pipeline '$pipelineName': $errorMessage"
-          )
-        )
+      } else {
+        None
+      }
     }
-  }
 
   override private[client] def executeListPipelines(): result.ElasticResult[Map[String, String]] =
     // There is no direct API to list pipelines in Jest.
-    apply().execute(Pipeline.List()) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        val jsonString = jestResult.getJsonString
-        if (jsonString != null && jsonString.nonEmpty) {
-          val node: JsonNode = jsonString
-          node match {
-            case objectNode: ObjectNode =>
-              val pipelines = objectNode
-                .fieldNames()
-                .asScala
-                .map { name =>
-                  val pipelineNode = objectNode.get(name)
-                  name -> pipelineNode.toString
-                }
-                .toMap
-              result.ElasticSuccess(pipelines)
-            case _ =>
-              result.ElasticSuccess(Map.empty)
-          }
-        } else {
-          result.ElasticSuccess(Map.empty)
+    executeJestAction[JestResult, Map[String, String]](
+      operation = "listPipelines",
+      retryable = true
+    ) {
+      Pipeline.List()
+    } { jestResult =>
+      val jsonString = jestResult.getJsonString
+      if (jsonString != null && jsonString.nonEmpty) {
+        val node: JsonNode = jsonString
+        node match {
+          case objectNode: ObjectNode =>
+            objectNode
+              .fieldNames()
+              .asScala
+              .map { name =>
+                name -> objectNode.get(name).toString
+              }
+              .toMap
+          case _ =>
+            Map.empty[String, String]
         }
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        result.ElasticFailure(
-          result.ElasticError(
-            s"Failed to list pipelines: $errorMessage"
-          )
-        )
+      } else {
+        Map.empty[String, String]
+      }
     }
 }

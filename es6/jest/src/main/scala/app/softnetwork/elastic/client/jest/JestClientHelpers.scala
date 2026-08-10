@@ -360,7 +360,10 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
             if (result.isSucceeded) {
               logger.debug(s"Operation '$operation'$indexStr succeeded asynchronously")
               // ✅ Success: applying the transformation
-              Try(transformer(result)) match {
+              // `tryAction`, not `Try`: a LinkageError here would escape the callback without
+              // completing the promise, and the caller's Future would never complete — a hang
+              // rather than an error. That is the whole reason this callback exists.
+              tryAction(transformer(result)) match {
                 case Success(transformed) =>
                   promise.success(ElasticResult.success(transformed))
                 case Failure(ex) =>
@@ -406,10 +409,12 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
               // plain IOException with no status and still yields `None`, which is honest and is what
               // AD-5 requires here: Jest 6.3.1 exposes an HTTP status only on `JestResult`, never on a
               // thrown exception. That is why there is deliberately NO `statusOf` override in this
-              // trait (SoftClient4ES#184, AD-6). Read through `Try` rather than `statusOrServerError`
-              // so the `None` is preserved, while still guaranteeing this `onComplete` callback cannot
-              // throw before `promise.success` below.
-              statusCode = Try(statusOf(ex)).toOption.flatten,
+              // trait (SoftClient4ES#184, AD-6). Read through `tryAction` rather than
+              // `statusOrServerError` so the `None` is preserved, while still guaranteeing this
+              // `onComplete` callback cannot throw before `promise.success` below — a `statusOf`
+              // override type-tests against client classes a shaded jar may have removed, and that
+              // is a LinkageError, which `Try` does not catch.
+              statusCode = tryAction(statusOf(ex)).toOption.flatten,
               operation = Some(operation)
             )
             promise.success(ElasticResult.failure(error))
