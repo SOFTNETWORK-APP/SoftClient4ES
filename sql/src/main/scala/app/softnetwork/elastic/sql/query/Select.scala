@@ -80,13 +80,24 @@ case class Field(
     identifier.windows match {
       case Some(th) =>
         val windowFunction = th.update(request)
-        val identifier = windowFunction.identifier
-        identifier.functions match {
-          case _ :: tail =>
-            this.copy(identifier = identifier.withFunctions(functions = windowFunction +: tail))
-          case _ =>
-            this.copy(identifier = identifier.withFunctions(functions = List(windowFunction)))
+        val windowed = windowFunction.identifier
+        // A field's chain is `<applied after the window> :: window :: <applied before it>`, and
+        // both ends were being lost. The trailing end went first: this dropped the HEAD of the
+        // WINDOW's identifier — a leftover from when the trimmed list was the field's own, whose
+        // head IS the window function. Once the source became the window's identifier the head
+        // stopped being the window and became the innermost transform, so
+        // `MAX(YEAR(DATE_TRUNC(x, MINUTE)))` silently lost `YEAR` and emitted a painless script
+        // without `.get(ChronoField.YEAR)`. The leading end was lost too, because rebuilding from
+        // the window's identifier alone cannot express anything wrapping the window: a postfix
+        // cast parses to `CastOperator :: MaxAgg :: …`, and `MAX(salary)::STRING` came back
+        // un-cast, the round trip quietly shorter than the statement.
+        val outer = identifier.updateFunctions(request).takeWhile {
+          case _: WindowFunction => false
+          case _                 => true
         }
+        this.copy(identifier =
+          windowed.withFunctions(functions = outer ++ (windowFunction +: windowed.functions))
+        )
       case None => this.copy(identifier = identifier.update(request))
     }
   }

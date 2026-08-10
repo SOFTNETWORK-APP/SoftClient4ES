@@ -249,20 +249,19 @@ object Parser
 
   /** The `SCRIPT AS ( … )` body, delimited by scanning its own balanced parentheses.
     *
-    * `scriptValue` cannot be relied on to stop at the wrapper's closing paren: the generic
-    * `identifierWithFunction` closes with `rep1(end)` — one or MORE — so a call to a name-only
-    * extractor (`YEAR(x)`, `MONTH(x)`, `QUARTER(x)`, …) consumed the `)` belonging to the wrapper.
-    * `script` then failed, and a column definition fell through to `optionalMultiFields`, which is
-    * why `age INT SCRIPT AS (YEAR(CURRENT_DATE) - YEAR(birthdate))` — the documented example —
-    * reported `')' expected but 'S' found`. `SELECT YEAR(x)` was never affected: nothing enclosed
-    * it.
+    * Historically `scriptValue` could not be relied on to stop at the wrapper's closing paren: the
+    * generic `identifierWithFunction` closed with `rep1(end)` — one or MORE — so a call to a
+    * name-only extractor (`YEAR(x)`, `MONTH(x)`, `QUARTER(x)`, …) consumed the `)` belonging to the
+    * wrapper. `script` then failed, and a column definition fell through to `optionalMultiFields`,
+    * which is why `age INT SCRIPT AS (YEAR(CURRENT_DATE) - YEAR(birthdate))` — the documented
+    * example — reported `')' expected but 'S' found`.
     *
-    * Balancing that shared production is NOT the fix, and three attempts proved it: `rep1sep(
-    * sql_function, start)` is ambiguous, and the greed of `rep1(end)` is what selects the correct
-    * parse for a nested call like `MAX(YEAR(DATE_TRUNC(DATETIME_PARSE(…), MINUTE)))`. Bounding the
-    * close count, or giving the extractors their own balanced production, silently drops `Year`
-    * from `identifier.functions` — while `.sql` still renders it, so only the emitted painless
-    * script shows the loss. Deciding the boundary here instead leaves every other parse untouched.
+    * `identifierWithFunction` has since been made balanced (issue #220), so it no longer overruns.
+    * This scanner is kept because it is the stronger guarantee: the body's extent is decided here
+    * rather than inferred from whichever alternative happens to win inside it, which is what makes
+    * the diagnostics below — unbalanced parentheses, a missing `(`, an unparseable body — possible
+    * at all. Deleting it would put the wrapper's boundary back at the mercy of the expression
+    * grammar.
     */
   private def scriptBody: Parser[String] = new Parser[String] {
     def apply(in: Input): ParseResult[String] = {
@@ -1663,21 +1662,36 @@ trait Parser
     geoFunctionWithIdentifier) >> cast
 
   def identifierWithFunction: PackratParser[Identifier] =
-    (rep1sep(
+    ((rep1sep(
       sql_function,
       start
-    ) ~ start.? ~ (identifierWithTransformation | identifierWithIntervalFunction | identifier).? ~ rep1(
-      end
-    ) ^^ { case f ~ _ ~ i ~ _ =>
-      i match {
-        case None =>
-          f.lastOption match {
-            case Some(fi: FunctionWithIdentifier) =>
-              fi.identifier.withFunctions(f ++ fi.identifier.functions)
-            case _ => Identifier(f)
+    ) ~ start.? ~ (identifierWithTransformation | identifierWithIntervalFunction | identifier).?) >> {
+      case f ~ s ~ i =>
+        // Close exactly the parentheses this production opened — one per `rep1sep` separator, plus
+        // the optional one introducing the innermost identifier. It used to close with `rep1(end)`
+        // — one or MORE — which made a call to a name-only extractor (`YEAR(x)`, `MONTH(x)`, …)
+        // swallow the `)` of whatever enclosed it, so `ABS(YEAR(x))` reported `')' expected but 'F'
+        // found` at the FROM (issue #220), and `SCRIPT AS (YEAR(x))` blamed the SCRIPT keyword
+        // (issue #219). Functions that consume their own parentheses (DATE_TRUNC, DATE_DIFF,
+        // WEEKDAY, …) were never affected, which is why the failure looked arbitrary.
+        val opened = f.size - 1 + (if (s.isDefined) 1 else 0)
+        if (opened < 1)
+          // No parenthesis was opened, so this is a bare function name rather than a call — the
+          // `rep1` this replaced rejected it too, and accepting it would let `SELECT MAX FROM t`
+          // parse as a function applied to nothing.
+          failure("function call expected")
+        else
+          repN(opened, end) ^^ { _ =>
+            i match {
+              case None =>
+                f.lastOption match {
+                  case Some(fi: FunctionWithIdentifier) =>
+                    fi.identifier.withFunctions(f ++ fi.identifier.functions)
+                  case _ => Identifier(f)
+                }
+              case Some(id) => id.withFunctions(f ++ id.functions)
+            }
           }
-        case Some(id) => id.withFunctions(f ++ id.functions)
-      }
     }) >> cast
 
   private val regexAlias =
