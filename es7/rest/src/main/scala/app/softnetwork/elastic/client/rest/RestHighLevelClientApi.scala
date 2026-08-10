@@ -3115,7 +3115,10 @@ trait RestHighLevelClientLicenseApi extends LicenseApi with RestHighLevelClientH
     )(
       executor = req => apply().license().startBasic(req, RequestOptions.DEFAULT)
     )(
-      transformer = resp => resp.isAcknowledged
+      // `isBasicStarted`, not `isAcknowledged`: a refusal for want of acknowledgement is an
+      // HTTP 200 whose `acknowledged` is false but whose meaning is "nothing was started"
+      // (SoftClient4ES#216). State refusals are 403 and already fail.
+      transformer = resp => resp.isBasicStarted
     )
   }
 
@@ -3128,7 +3131,7 @@ trait RestHighLevelClientLicenseApi extends LicenseApi with RestHighLevelClientH
     )(
       executor = req => apply().license().startTrial(req, RequestOptions.DEFAULT)
     )(
-      transformer = resp => resp.isAcknowledged
+      transformer = resp => resp.isTrialWasStarted
     )
   }
 }

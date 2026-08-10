@@ -835,7 +835,15 @@ package object sql {
 
   trait TokenRegex extends Token {
     def words: List[String] = List(sql)
-    lazy val regex: Regex = s"(?i)(${words.mkString("|")})\\b".r
+    // A literal space in a multi-word token (`GROUP BY`, `UNION ALL`, `IS NOT NULL`, …) matches
+    // one space and no other whitespace, so keyword-aligned SQL — `GROUP  BY`, or a newline
+    // between the words — missed the token. That used to be invisible: the production simply did
+    // not match and the rest of the statement was discarded. Now that `Parser.apply` requires the
+    // whole input to be consumed it would be a hard rejection of valid SQL, so accept any run of
+    // whitespace between the words. `\s+` cannot widen what matches otherwise: every alternative
+    // still has to match the same words in the same order.
+    lazy val regex: Regex =
+      s"(?i)(${words.map(_.replace(" ", "\\s+")).mkString("|")})\\b".r
   }
 
   trait Source extends Updateable {
@@ -1172,7 +1180,13 @@ package object sql {
         }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
-      val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
+      // A qualifier needs something to qualify: `parts.head` is only a table alias when a column
+      // name follows it. Without the arity check a column that happens to share its table's name
+      // — `FROM status WHERE status = 'done'` — matched `tableAliases` and was rewritten to
+      // `parts.tail.mkString(".")`, i.e. the empty string, silently querying a nameless field.
+      val table =
+        if (parts.size > 1) request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
+        else None
       if (table.nonEmpty) {
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>

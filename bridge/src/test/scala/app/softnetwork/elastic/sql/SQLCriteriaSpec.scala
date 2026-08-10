@@ -2,6 +2,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.Criteria
+import com.fasterxml.jackson.databind.JsonNode
 import com.sksamuel.elastic4s.ElasticApi.matchAllQuery
 import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -900,6 +901,65 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |  }
         |}
         |""".stripMargin.replaceAll("\\s", "")
+  }
+
+  /** #212 — a watcher search input flattens its FROM to bare index names, so an alias-qualified
+    * WHERE must be resolved or the emitted query names a field that exists in no index. This is the
+    * observable half of the ParserSpec assertions: what actually reaches Elasticsearch.
+    */
+  it should "emit the bare field name for an alias-qualified watcher search input" in {
+    implicit def timestamp: Long =
+      ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
+    val criteria: Option[Criteria] = parser
+      .Parser("""CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM orders o WHERE o.status = 'FAILED' WITHIN 2 MINUTES
+                | ALWAYS DO
+                | log_action AS LOG "x" AT INFO
+                | END""".stripMargin)
+      .toOption
+      .collect { case c: query.CreateWatcher => c.input }
+      .collect { case s: watcher.SearchWatcherInput => s.query }
+      .flatten
+    val result = SearchBodyBuilderFn(
+      SearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
+    ).string
+    println(result)
+    result.replaceAll("\\s", "") shouldBe
+    """{
+        |"query":{
+        |  "bool":{"filter":[{"term":{
+        |    "status":{
+        |      "value":"FAILED"
+        |    }
+        |  }
+        |}
+        |]}}}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  /** #211 + #212 together, through the real criteria conversion: building a watcher that carries a
+    * WHERE used to throw `ClassCastException` (value discard on the generic `ObjectNode.set`), and
+    * the alias-qualified column used to reach Elasticsearch as `o.status`, a field in no index.
+    */
+  it should "build the watcher JSON for an alias-qualified search input" in {
+    implicit def timestamp: Long =
+      ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
+    implicit val toNode: Criteria => JsonNode = c => criteriaToNode(c)
+    val watcher = parser
+      .Parser("""CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM orders o WHERE o.status = 'FAILED' WITHIN 2 MINUTES
+                | ALWAYS DO
+                | log_action AS LOG "x" AT INFO
+                | END""".stripMargin)
+      .toOption
+      .collect { case c: query.CreateWatcher => c.watcher }
+      .getOrElse(fail("expected a CreateWatcher"))
+    val json = watcher.node.toString
+    println(json)
+    json should include("\"indices\":[\"orders\"]")
+    json should include("\"term\":{\"status\":{\"value\":\"FAILED\"}}")
+    json should not include "o.status"
   }
 
 }

@@ -745,13 +745,70 @@ object Parser
       case None => None
     }
 
+  /** Resolve alias-qualified identifiers in a WHERE against its own FROM clause — `o.status`
+    * becomes `status`, tagged with `table = orders` — exactly as the SELECT path does. Any
+    * production that keeps the criteria while flattening the FROM to bare index names MUST run
+    * this: without it the alias is dropped from the index list but kept in the field name, and the
+    * query targets a field that exists in no index (#212).
+    *
+    * `Select(Nil)` keeps the throwaway request's SELECT pass a no-op — the default `Select()` is
+    * `SELECT *` — leaving `update()` to do its FROM and WHERE passes and nothing else. `update()`
+    * reaches the criteria through `map`, so a `Some` WHERE can never come back `None`; callers for
+    * which a lost WHERE would be destructive assert that anyway.
+    */
+  private def resolveWhere(f: From, w: Option[Where]): Option[Where] =
+    SingleSearch(select = Select(Nil), from = f, where = w).update().where
+
+  /** A single Elasticsearch search applies one query to every index it names, so a table-qualified
+    * predicate over a multi-index FROM asks for per-index scoping that cannot be honored — whether
+    * it correlates the indices (`WHERE o.id = c.order_id`, an ANSI-89 join, #191's defect in the
+    * older syntax) or merely scopes to one of them (`WHERE orders.status = 'F'`, which would
+    * silently filter `refunds` too).
+    *
+    * Testing for "any qualifier" rather than "qualifiers from two tables" is deliberate: the
+    * narrower test lets a correlation through whenever one side fails to resolve — a function
+    * argument (`WHERE o.id = LOWER(c.id)`), or a self-join through duplicate table names, where
+    * `From.tableAliases` is keyed by table name and keeps only the last alias.
+    */
+  private def qualifiedOverManyIndices(f: From, criteria: Option[Criteria]): Boolean =
+    f.tables.size > 1 && criteria.exists(_.referencedIdentifiers.exists(_.table.isDefined))
+
+  // A watcher search input maps to Elasticsearch's `search` input, which knows nothing but a list
+  // of indices — there is no join engine behind it. `from` parses `a JOIN b ON …` happily, so
+  // without this guard the join is dropped and the watcher silently watches `a` alone (#191).
+  // `err` (not `failure`) is deliberate: it short-circuits the enclosing alternatives instead of
+  // letting `watcherInput` fall through to `success(EmptyWatcherInput)` and report a position
+  // error that names neither JOIN nor the watcher.
   def searchInput: PackratParser[SearchWatcherInput] =
-    from ~ opt(where) ~ withinTimeout ^^ { case f ~ w ~ t =>
-      SearchWatcherInput(
-        f.tables.map(_.name).distinct,
-        w.flatMap(_.criteria),
-        t
-      )
+    from ~ opt(where) ~ withinTimeout >> { case f ~ w ~ t =>
+      f.joins match {
+        case Nil =>
+          val criteria = resolveWhere(f, w).flatMap(_.criteria)
+          // `FROM a, b` stays a legitimate multi-index search; only a qualifier over it is
+          // unserviceable — see `qualifiedOverManyIndices`.
+          if (qualifiedOverManyIndices(f, criteria))
+            err(
+              s"A watcher input cannot qualify a column by table when it searches several " +
+              s"indices (${f.tables.map(_.name).mkString(", ")}): one Elasticsearch search " +
+              "applies one query to all of them, so it can neither join them nor scope a " +
+              "predicate to one. Watch a single index, drop the qualifiers, or pre-join the " +
+              "sources with a MATERIALIZED VIEW and watch the view."
+            )
+          else
+            success(
+              SearchWatcherInput(
+                f.tables.map(_.name).distinct,
+                criteria,
+                t
+              )
+            )
+        case joins =>
+          err(
+            s"JOIN is not supported in a watcher input (${joins.map(_.sql.trim).mkString(" ")}): " +
+            "a watcher input can only search one or more indices (FROM index1, index2). " +
+            "Pre-join the sources with a MATERIALIZED VIEW and have the watcher search the view."
+          )
+      }
     }
 
   def httpInput: PackratParser[HttpInput] =
@@ -1037,13 +1094,36 @@ object Parser
         }
     }
 
+  /** FILE_FORMAT [=] {PARQUET | JSON | JSON_ARRAY | DELTA_LAKE} — bare or quoted, `=` optional.
+    *
+    * `FILE_FORMAT = X` is the form every published example uses (documentation, help JSON — and
+    * `FileFormat.sql` itself renders it), yet the grammar only accepted the bare `FILE_FORMAT X`:
+    * under the pre-#213 prefix parse, `opt(fileFormat)` backtracked on the `=` and the clause —
+    * plus any ON CONFLICT after it — was discarded in silence, with format auto-detection masking
+    * the loss. A FILE_FORMAT followed by anything but a known format is a hard `err` for the same
+    * reason: backtracking here can only ever mean dropping what the user wrote.
+    */
   def fileFormat: PackratParser[FileFormat] =
-    (keyword("FILE_FORMAT") ~> (
+    (keyword("FILE_FORMAT") ~ opt("=")) ~> (
       (keyword("PARQUET") ^^^ Parquet) |
       (keyword("JSON_ARRAY") ^^^ JsonArray) |
       (keyword("JSON") ^^^ Json) |
-      (keyword("DELTA_LAKE") ^^^ Delta)
-    )) ^^ { ff => ff }
+      (keyword("DELTA_LAKE") ^^^ Delta) |
+      // Quoted format names (the form dml_statements.md documents) land here; so does anything
+      // unrecognised, which must err rather than backtrack into a silent drop.
+      ((literal ^^ (_.value) | ident) >> { name =>
+        name.toUpperCase(java.util.Locale.ROOT) match {
+          case "PARQUET"    => success(Parquet)
+          case "JSON_ARRAY" => success(JsonArray)
+          case "JSON"       => success(Json)
+          case "DELTA_LAKE" => success(Delta)
+          case other =>
+            err(
+              s"Unsupported FILE_FORMAT '$other': expected PARQUET, JSON, JSON_ARRAY or DELTA_LAKE"
+            )
+        }
+      })
+    )
 
   /** COPY INTO table FROM source */
   def copy: PackratParser[CopyInto] =
@@ -1053,37 +1133,144 @@ object Parser
       CopyInto(source.value, table, fileFormat = format, onConflict = conflict)
     }
 
-  /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...] */
+  /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...]
+    *
+    * UPDATE has no FROM clause. `opt(from)` is here only to catch one being written anyway —
+    * `Parser.apply` runs `parse`, not `phrase`, so an unconsumed `FROM customers JOIN x ON …` used
+    * to be discarded in silence and the UPDATE ran against the first table alone (#213). It catches
+    * both operand orders: written before the WHERE, `where.?` yields None and this fires.
+    */
   def update: PackratParser[Update] =
     (keyword("UPDATE") ~> ident) ~ (keyword("SET") ~> repsep(
       ident ~ "=" ~ (value | scriptValue),
       separator
-    )) ~ where.? ^^ { case table ~ assigns ~ w =>
-      val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
-      Update(table, values, w)
+    )) ~ where.? ~ opt(from) >> { case table ~ assigns ~ w ~ extraFrom =>
+      extraFrom match {
+        case Some(f) =>
+          err(
+            s"UPDATE does not support a FROM clause (${f.sql.trim}): " +
+            "UPDATE targets exactly one table, named right after the UPDATE keyword. " +
+            "Filter with WHERE, or pre-join the sources with a MATERIALIZED VIEW."
+          )
+        case None =>
+          val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
+          // UPDATE keeps only the bare table name, so its WHERE needs the same qualifier
+          // resolution DELETE and watcher inputs get — `WHERE orders.id = 1` must filter on `id`.
+          success(Update(table, values, resolveWhere(From(Seq(Table(table))), w)))
+      }
     }
 
-  /** DELETE FROM table [WHERE ...] */
+  /** DELETE FROM table [WHERE ...]
+    *
+    * Parses the full FROM shape — alias and joins included — rather than a bare `ident`, then
+    * rejects what DELETE cannot express. `Parser.apply` runs `parse`, not `phrase`, so everything
+    * past the first table name used to be discarded in silence: `DELETE FROM a, b WHERE …` became
+    * `DELETE FROM a` with **no** WHERE, which the client turns into `match_all` — wiping the whole
+    * index instead of the matching rows (#213).
+    */
   def delete: PackratParser[Delete] =
-    (keyword("DELETE") ~ keyword("FROM")) ~> ident ~ where.? ^^ { case table ~ w =>
-      Delete(Table(table), w)
+    (keyword("DELETE") ~ keyword("FROM")) ~> rep1sep(table, separator) ~ where.? >> {
+      case tables ~ w =>
+        tables.flatMap(_.joins) match {
+          case Nil if tables.size > 1 =>
+            err(
+              s"DELETE targets a single table, got ${tables.map(_.name).mkString(", ")}: " +
+              "issue one DELETE per table."
+            )
+          case Nil =>
+            resolveWhere(From(tables), w) match {
+              // Fail closed. A DELETE with no WHERE is `match_all`, so a WHERE lost in resolution
+              // would empty the index — the very outcome #213 is about. `update()` reaches the
+              // criteria through `map` and cannot drop it, which is exactly why this must stay
+              // loud rather than becoming a comment claiming it cannot happen.
+              case None if w.isDefined =>
+                err(
+                  s"Could not resolve the WHERE clause of DELETE FROM ${tables.head.name}: " +
+                  "refusing to run it as an unfiltered delete."
+                )
+              case resolved => success(Delete(tables.head, resolved))
+            }
+          case joins =>
+            err(
+              s"JOIN is not supported in DELETE (${joins.map(_.sql.trim).mkString(" ")}): " +
+              "Elasticsearch deletes by query over a single index. Select the ids to remove with " +
+              "a JOIN query first, then DELETE on that key."
+            )
+        }
     }
 
   def dmlStatement: PackratParser[DmlStatement] = insert | update | delete | copy
 
   def statement: PackratParser[Statement] = ddlStatement | dqlStatement | dmlStatement
 
+  /** Strip `--` comments and collapse newlines OUTSIDE string literals only. The previous
+    * line-based normalizer (`split("\n").map(_.split("--")(0))`) was blind to quotes: it cut `WHERE
+    * code = 'AB--12'` at the `--`, severing the literal and failing a valid statement. Literal
+    * interiors — including their backslash escapes — are copied verbatim.
+    */
+  private def normalize(query: String): String = {
+    val out = new StringBuilder(query.length)
+    var quote: Char = 0
+    var i = 0
+    while (i < query.length) {
+      val c = query.charAt(i)
+      if (quote != 0) {
+        out.append(c)
+        if (c == '\\' && i + 1 < query.length) {
+          out.append(query.charAt(i + 1))
+          i += 1
+        } else if (c == quote) {
+          quote = 0
+        }
+        i += 1
+      } else if (c == '-' && i + 1 < query.length && query.charAt(i + 1) == '-') {
+        // comment runs to end of line; the newline itself is handled by the next iteration
+        while (i < query.length && query.charAt(i) != '\n') i += 1
+      } else {
+        c match {
+          case '\'' | '"' =>
+            quote = c
+            out.append(c)
+          case '\n' | '\r' => out.append(' ')
+          case _           => out.append(c)
+        }
+        i += 1
+      }
+    }
+    out.toString
+  }
+
   def apply(
     query: String
   ): Either[ParserError, Statement] = {
     val normalizedQuery =
-      query
-        .split("\n")
-        .map(_.split("--")(0).trim)
-        .filterNot(w => w.isEmpty || w.startsWith("--"))
-        .mkString(" ")
+      normalize(query)
+        // Trailing statement terminators are idiomatic SQL and every caller that splits on `;`
+        // already drops them; keep tolerating them now that anything else left over is an error.
+        // A run rather than one, because tools that append `;` to SQL a user already terminated
+        // produce `;;`. Anchored, so a `;` inside a literal is out of reach — a literal always
+        // ends in its closing quote.
+        .replaceFirst("(?:;\\s*)+$", "")
+        .trim
     val reader = new PackratReader(new CharSequenceReader(normalizedQuery))
-    parse(statement, reader) match {
+    // `phrase`, not a bare `parse` (#213): a bare `parse` succeeds on the longest matching PREFIX
+    // and silently discards the rest, so the statement that ran was not the statement written.
+    // Measured before/after on this exact grammar:
+    //
+    //   DELETE FROM orders WHEREE id = 1     ran as DELETE FROM orders  -> emptied the index
+    //   DELETE FROM orders LIMIT 10          ran as DELETE FROM orders  -> emptied the index
+    //   UPDATE orders SET a = 1 LIMIT 10     updated every document
+    //   SELECT a FROM x UNION SELECT b ...   ran as SELECT a FROM x     (bare UNION is not the
+    //                                        UNION ALL token, so the whole second leg vanished)
+    //   SELECT * FROM t WHERE a IS  NOT  NULL  ran as SELECT * FROM t   (two spaces broke the
+    //                                        token match and the WHERE was dropped — fixed in
+    //                                        TokenRegex with \s+, and now loud here if it recurs)
+    //
+    // All of those are hard errors now. The per-statement guards added for #213 cover only the
+    // shapes someone enumerated; requiring the whole input to be consumed covers the rest. The
+    // one shape this cannot catch: `DELETE FROM orders customers` stays a valid single-table
+    // DELETE, because an alias without AS is standard SQL — pinned as such in ParserSpec.
+    parse(phrase(statement), reader) match {
       case NoSuccess(msg, _) =>
         Console.err.println(msg)
         Left(ParserError(msg))

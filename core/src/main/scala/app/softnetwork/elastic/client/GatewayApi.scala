@@ -1798,13 +1798,11 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
 
   def run(sql: String)(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     logger.info(s"📥 SQL: $sql")
-    val normalizedQuery =
-      sql
-        .split("\n")
-        .map(_.split("--")(0).trim)
-        .filterNot(w => w.isEmpty || w.startsWith("--"))
-        .mkString(" ")
-    normalizedQuery.split(";\\s*$").toList match {
+    // Raw input goes straight to the quote- and comment-aware splitter: a line-based
+    // pre-normalization here (`split("\n").map(_.split("--")(0))`) used to sever literals
+    // containing `--` before the splitter could protect them. Comment stripping and newline
+    // collapsing happen inside splitStatements and Parser.apply, both literal-aware.
+    GatewayApi.splitStatements(sql) match {
       case Nil =>
         val error =
           ElasticError(
@@ -1839,8 +1837,14 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
 
       case statements =>
         implicit val ec: ExecutionContext = system.dispatcher
-        // run each statement sequentially and return the result of the last one
-        val last = statements
+        // Run each statement sequentially and return the result of the last one; the first
+        // failure becomes the accumulated value and every later flatMap passes it through
+        // without running its statement. NOT a `return`: this closure executes asynchronously
+        // on the dispatcher once the previous Future completes, where a non-local return
+        // throws `NonLocalReturnControl` — which `NonFatal` excludes, so nothing completes
+        // the Future and the caller hangs. Unreachable while the old anchored split kept this
+        // branch dead; live now that the split is real.
+        statements
           .foldLeft(
             Future.successful[ElasticResult[QueryResult]](ElasticSuccess(QueryResult.empty))
           ) { (acc, statement) =>
@@ -1848,10 +1852,9 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
               case ElasticSuccess(_) =>
                 run(statement)
               case failure @ ElasticFailure(_) =>
-                return Future.successful(failure)
+                Future.successful(failure)
             }
           }
-        last
     }
   }
 
@@ -1899,4 +1902,64 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     }
   }
 
+}
+
+object GatewayApi {
+
+  /** Split a normalized SQL string into statements on top-level `;`.
+    *
+    * This replaces `split(";\\s*$")`, which — `$` anchoring to the end of the whole (newline-free)
+    * string — could only ever strip a trailing semicolon, never separate statements: the
+    * multi-statement branch of `run` was unreachable and `run("a; b")` silently executed `a` alone
+    * under the old lenient parse. The documented contract ("splits multiple statements separated by
+    * `;`") is now real.
+    *
+    * Quote-aware: a `;` inside a single-quoted literal or a double-quoted identifier is not a
+    * boundary. Backslash escapes are honored inside quotes, matching the grammar's literal rule
+    * (`([^'\\]|\\.)*`). An unterminated quote consumes to the end of the input — the parser then
+    * reports the malformed statement itself, which beats guessing where it was meant to end. Empty
+    * fragments (`;;`, a trailing `;`) are dropped.
+    */
+  private[client] def splitStatements(sql: String): List[String] = {
+    val statements = scala.collection.mutable.ListBuffer.empty[String]
+    val current = new StringBuilder
+    var quote: Char = 0
+    var i = 0
+    while (i < sql.length) {
+      val c = sql.charAt(i)
+      if (quote != 0) {
+        current.append(c)
+        if (c == '\\' && i + 1 < sql.length) {
+          current.append(sql.charAt(i + 1))
+          i += 1
+        } else if (c == quote) {
+          quote = 0
+        }
+      } else if (c == '-' && i + 1 < sql.length && sql.charAt(i + 1) == '-') {
+        // A `--` comment (outside quotes) runs to the end of its line. Skipping it here — rather
+        // than relying on the line-based pre-normalization, which the REPL batch path does not
+        // apply — keeps an apostrophe in a comment (`-- don't split`) from opening a phantom
+        // quote and a `;` in a comment from splitting mid-comment. Inside quotes `--` is data.
+        // A space stands in for the comment so tokens on either side stay separated.
+        while (i < sql.length && sql.charAt(i) != '\n') {
+          i += 1
+        }
+        current.append(' ')
+      } else {
+        c match {
+          case '\'' | '"' =>
+            quote = c
+            current.append(c)
+          case ';' =>
+            statements += current.toString
+            current.clear()
+          case _ =>
+            current.append(c)
+        }
+      }
+      i += 1
+    }
+    statements += current.toString
+    statements.iterator.map(_.trim).filter(_.nonEmpty).toList
+  }
 }

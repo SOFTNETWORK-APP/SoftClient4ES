@@ -30,6 +30,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import io.searchbox.client.JestResult
 
 import scala.jdk.CollectionConverters._
+import scala.util.{Failure, Success}
 
 trait JestTemplateApi extends TemplateApi with JestClientHelpers {
   _: JestVersionApi with JestClientCompanion =>
@@ -97,19 +98,13 @@ trait JestTemplateApi extends TemplateApi with JestClientHelpers {
   override private[client] def executeCreateLegacyTemplate(
     templateName: String,
     templateDefinition: String
-  ): ElasticResult[Boolean] = {
-    apply().execute(Template.Create(templateName, templateDefinition)) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        ElasticSuccess(true)
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        ElasticFailure(
-          ElasticError(
-            s"Failed to create template '$templateName': $errorMessage"
-          )
-        )
+  ): ElasticResult[Boolean] =
+    executeJestBooleanAction[JestResult](
+      operation = "createLegacyTemplate",
+      retryable = false // Creation can not be retried
+    ) {
+      Template.Create(templateName, templateDefinition)
     }
-  }
 
   override private[client] def executeDeleteLegacyTemplate(
     templateName: String,
@@ -126,89 +121,105 @@ trait JestTemplateApi extends TemplateApi with JestClientHelpers {
           return failure
       }
     }
-    apply().execute(Template.Delete(templateName)) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        ElasticSuccess(true)
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        ElasticFailure(
-          ElasticError(
-            s"Failed to delete template '$templateName': $errorMessage"
-          )
-        )
+    executeJestBooleanAction[JestResult](
+      operation = "deleteLegacyTemplate",
+      retryable = false // Deletion can not be retried
+    ) {
+      Template.Delete(templateName)
     }
   }
 
   override private[client] def executeGetLegacyTemplate(
     templateName: String
-  ): ElasticResult[Option[String]] = {
-    apply().execute(Template.Get(templateName)) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        val jsonString = jestResult.getJsonString
-        if (jsonString != null && jsonString.nonEmpty) {
-          val node: JsonNode = jsonString
-          node match {
-            case objectNode: ObjectNode if objectNode.has(templateName) =>
-              val templateNode = objectNode.get(templateName)
-              ElasticSuccess(Some(templateNode))
-            case _ =>
-              ElasticSuccess(None)
-          }
-        } else {
-          ElasticSuccess(None)
+  ): ElasticResult[Option[String]] =
+    executeJestAction[JestResult, Option[String]](
+      operation = "getLegacyTemplate",
+      retryable = true
+    ) {
+      Template.Get(templateName)
+    } { jestResult =>
+      val jsonString = jestResult.getJsonString
+      if (jsonString != null && jsonString.nonEmpty) {
+        val node: JsonNode = jsonString
+        node match {
+          case objectNode: ObjectNode if objectNode.has(templateName) =>
+            Some(objectNode.get(templateName))
+          case _ =>
+            None
         }
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        ElasticFailure(
-          ElasticError(
-            s"Failed to get template '$templateName': $errorMessage"
-          )
-        )
+      } else {
+        None
+      }
     }
-  }
 
-  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] = {
-    apply().execute(Template.GetAll()) match {
-      case jestResult: JestResult if jestResult.isSucceeded =>
-        val jsonString = jestResult.getJsonString
-        if (jsonString != null && jsonString.nonEmpty) {
-          val node: JsonNode = jsonString
-          node match {
-            case objectNode: ObjectNode =>
-              val templates = objectNode
-                .fields()
-                .asScala
-                .map { entry =>
-                  entry.getKey -> entry.getValue.toString
-                }
-                .toMap
-              ElasticSuccess(templates)
-            case _ =>
-              ElasticSuccess(Map.empty[String, String])
-          }
-        } else {
-          ElasticSuccess(Map.empty[String, String])
+  override private[client] def executeListLegacyTemplates(): ElasticResult[Map[String, String]] =
+    executeJestAction[JestResult, Map[String, String]](
+      operation = "listLegacyTemplates",
+      retryable = true
+    ) {
+      Template.GetAll()
+    } { jestResult =>
+      val jsonString = jestResult.getJsonString
+      if (jsonString != null && jsonString.nonEmpty) {
+        val node: JsonNode = jsonString
+        node match {
+          case objectNode: ObjectNode =>
+            objectNode
+              .fields()
+              .asScala
+              .map { entry =>
+                entry.getKey -> entry.getValue.toString
+              }
+              .toMap
+          case _ =>
+            Map.empty[String, String]
         }
-      case jestResult: JestResult =>
-        val errorMessage = jestResult.getErrorMessage
-        ElasticFailure(
-          ElasticError(
-            s"Failed to list templates: $errorMessage"
-          )
-        )
+      } else {
+        Map.empty[String, String]
+      }
     }
-  }
 
+  /** Deliberately NOT routed through `executeJestAction`: an existence probe answers "no" with a
+    * 404, and the wrapper would turn that into an `ElasticFailure` — which
+    * `executeDeleteLegacyTemplate(ifExists = true)` propagates, so `DROP … IF EXISTS` would start
+    * failing on the very case it exists to tolerate. `tryAction` supplies the half that #215 is
+    * about (a network fault becomes a value, not a throw) while any HTTP response stays a success
+    * carrying the boolean.
+    */
   override private[client] def executeLegacyTemplateExists(
     templateName: String
-  ): ElasticResult[Boolean] = {
-    apply().execute(Template.Exists(templateName)) match {
-      case jestResult: JestResult =>
-        val statusCode = jestResult.getResponseCode
-        ElasticSuccess(statusCode == 200)
-      case _ =>
+  ): ElasticResult[Boolean] =
+    tryAction(apply().execute(Template.Exists(templateName))) match {
+      case Success(jestResult) if jestResult.getResponseCode == 200 =>
+        ElasticSuccess(true)
+      case Success(jestResult) if jestResult.getResponseCode == 404 =>
         ElasticSuccess(false)
+      case Success(jestResult) =>
+        // Only 200 and 404 are answers to "does it exist". Anything else — 503 from an
+        // unavailable cluster, 401, a proxy's 502 — was previously read as `false`, so
+        // `DROP … IF EXISTS` reported success while the template was still there. An outage is
+        // not an absence.
+        val statusCode = jestResult.getResponseCode
+        ElasticFailure(
+          ElasticError(
+            message = Option(jestResult.getErrorMessage)
+              .filter(_.nonEmpty)
+              .getOrElse(s"Unexpected status $statusCode probing template '$templateName'"),
+            cause = None,
+            statusCode = if (statusCode == 0) None else Some(statusCode),
+            operation = Some("legacyTemplateExists")
+          )
+        )
+      case Failure(ex) =>
+        logger.error(s"Exception during templateExists for '$templateName': ${ex.getMessage}", ex)
+        ElasticFailure(
+          ElasticError(
+            message = s"Exception during legacyTemplateExists: ${ex.getMessage}",
+            cause = Some(ex),
+            statusCode = None,
+            operation = Some("legacyTemplateExists")
+          )
+        )
     }
-  }
 
 }

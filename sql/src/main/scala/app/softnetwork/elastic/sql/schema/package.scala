@@ -1969,6 +1969,11 @@ package object schema {
         val aliasesNode = mapper.createObjectNode()
         indexAliases.foreach { alias =>
           aliasesNode.set(alias.alias, alias.node)
+          // Same value-discard trap as #211: `foreach`'s `U` and `ObjectNode.set`'s `T` are both
+          // free, so together they infer `Nothing` and the call site gets a cast that throws.
+          // Without this `()`, every partitioned CREATE TABLE declaring an alias died with a
+          // ClassCastException before its template was sent.
+          ()
         }
         template.set("aliases", aliasesNode)
       }

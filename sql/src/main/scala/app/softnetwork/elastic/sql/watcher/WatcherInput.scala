@@ -72,7 +72,13 @@ case class SearchWatcherInput(
 
     val body = mapper.createObjectNode()
     query match {
-      case Some(q) => body.set("query", implicitly[JsonNode](q))
+      // The trailing `()` is load-bearing. `ObjectNode.set` is `<T extends JsonNode> T set(…)`,
+      // and this `match` sits in statement position: without it, the other branch's `Unit` forces
+      // `T` to unify with `Unit`, scalac infers `Nothing` and emits a cast to `BoxedUnit`, so
+      // *every* watcher carrying a WHERE died with a ClassCastException before reaching ES (#211).
+      case Some(q) =>
+        body.set("query", implicitly[JsonNode](q))
+        ()
       case None =>
         val q = mapper.createObjectNode()
         val matchAll = mapper.createObjectNode()

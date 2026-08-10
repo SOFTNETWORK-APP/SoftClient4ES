@@ -1453,10 +1453,12 @@ SELECT * FROM users
 WHERE first_name = 'John' OR last_name = 'Doe';
 -- May require full table scan
 
--- Alternative: UNION (if indexes exist)
+-- Alternative: UNION ALL (if indexes exist)
+-- Note: bare UNION (with de-duplication) is not supported and is rejected at
+-- parse time — a row matching BOTH predicates appears twice with UNION ALL.
 SELECT * FROM users WHERE first_name = 'John'
-UNION
-SELECT * FROM users WHERE last_name = 'Doe';
+UNION ALL
+SELECT * FROM users WHERE last_name = 'Doe' AND first_name <> 'John';
 ```
 
 ---

@@ -198,6 +198,9 @@ LIMIT 10 OFFSET 20;
 
 `UNION ALL` combines the results of multiple `SELECT` queries **without removing duplicates**.
 
+> Bare `UNION` (with row de-duplication) is **not supported** and is rejected at parse time — the
+> two are not synonyms. It used to be accepted silently, returning only the first leg's rows.
+
 All SELECT statements in a UNION ALL must be **strictly compatible**:
 
 - **same number of columns**

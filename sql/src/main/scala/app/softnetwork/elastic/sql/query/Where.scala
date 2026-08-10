@@ -39,6 +39,23 @@ sealed trait Criteria extends Updateable with PainlessScript {
     case _                               => Nil
   }
 
+  /** Every identifier this criteria names directly — both operands of an equality included.
+    * Distinct from [[dependencies]], which returns the identifiers reached *through* an
+    * identifier's functions and so is empty for a plain `a = 1`.
+    */
+  def referencedIdentifiers: Seq[Identifier] = this match {
+    case Predicate(left, _, right, _, _) =>
+      left.referencedIdentifiers ++ right.referencedIdentifiers
+    case e: Expression =>
+      e.identifier +: (e.maybeValue match {
+        case Some(id: Identifier) => Seq(id)
+        case _                    => Nil
+      })
+    case relation: ElasticRelation => relation.criteria.referencedIdentifiers
+    case m: MultiMatchCriteria     => m.identifiers
+    case _                         => Nil
+  }
+
   def nested: Boolean = false
 
   def nestedElement: Option[NestedElement]

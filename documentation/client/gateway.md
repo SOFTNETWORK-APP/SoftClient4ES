@@ -47,10 +47,13 @@ It routes SQL statements to the appropriate executor:
 The API automatically:
 
 - normalizes SQL (removes comments, trims whitespace)
-- splits multiple statements separated by `;`
-- parses SQL into AST nodes
+- splits multiple statements separated by `;` — quote-aware, so a `;` inside a string literal or a
+  quoted identifier is not a statement boundary
+- parses each statement into AST nodes — each must be **complete on its own**: anything left over
+  after a statement is a parse error rather than being silently discarded
 - dispatches to the correct executor
-- returns a typed `QueryResult`
+- runs the statements sequentially, stopping at the first failure, and returns the **last**
+  statement's typed `QueryResult`
 
 ---
 
@@ -486,7 +489,7 @@ gateway.run("TRUNCATE TABLE dml_users")
 ```scala
 gateway.run("""
   COPY INTO dml_users
-  FROM 'classpath:/data/users.json'
+  FROM '/data/users.json'
 """)
 ```
 

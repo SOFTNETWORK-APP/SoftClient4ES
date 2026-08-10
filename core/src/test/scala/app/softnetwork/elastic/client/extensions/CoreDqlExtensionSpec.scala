@@ -308,9 +308,13 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.searchedStatement.get() shouldBe null
   }
 
+  // `UNION ALL`, not `UNION`: the token is `Expr("UNION ALL")`, so a bare `UNION` never matched
+  // the separator. Until #213 made `Parser.apply` require the whole input, this statement parsed
+  // as its first leg alone and everything from `UNION` on was silently discarded — so the rejection
+  // asserted below was firing on a single-leg SELECT, not on a union.
   it should "reject a UNION whose leg carries a cross-index JOIN" in {
     val (client, res) = run(
-      "SELECT e.name FROM emp e JOIN dept d ON e.dept_id = d.dept_id UNION SELECT name FROM others",
+      "SELECT e.name FROM emp e JOIN dept d ON e.dept_id = d.dept_id UNION ALL SELECT name FROM others",
       Quota.Community
     )
     res shouldBe a[ElasticFailure]
