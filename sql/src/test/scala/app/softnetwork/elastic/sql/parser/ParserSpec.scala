@@ -2835,6 +2835,54 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   // The join guard runs in the continuation of `from ~ opt(where) ~ withinTimeout`, so the WHERE
   // has to keep flowing into the input on the accepted path.
+  /** The second instance of #211's value-discard trap, found sweeping the other node builders:
+    * `indexAliases.foreach { alias => aliasesNode.set(…) }` left both `foreach`'s `U` and
+    * `ObjectNode.set`'s `T` free, so they inferred `Nothing` together and the call site got a cast
+    * that threw. Every partitioned CREATE TABLE declaring an alias died with a ClassCastException
+    * before its template was sent — `GatewayApi.createIndexOrTemplate` is the production caller.
+    */
+  it should "build the index template of a partitioned table declaring an alias" in {
+    val sql =
+      """CREATE TABLE events (id KEYWORD, ts TIMESTAMP)
+        | PARTITION BY ts (DAY),
+        | OPTIONS (aliases = (events_all = (routing = "r")))""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateTable =>
+        val template = create.schema.indexTemplate.toString
+        template should include("\"index_patterns\":[\"events-*\"]")
+        template should include("\"aliases\":{\"events_all\":")
+      case other => fail(s"Expected CreateTable, got $other")
+    }
+  }
+
+  /** #211 — `ObjectNode.set` is `<T extends JsonNode> T set(…)`, and the `query` assignment sits in
+    * a `match` in statement position. The other branch's `Unit` used to force `T` to unify with
+    * `Unit`, so scalac inferred `Nothing` and emitted a cast to `BoxedUnit`: **every** watcher
+    * carrying a WHERE died with a `ClassCastException` before its JSON reached Elasticsearch. No
+    * previous watcher test used a WHERE, so `query` was always `None` and only the safe branch ran.
+    */
+  it should "build the watcher JSON for a search input with a WHERE clause" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM logs-2025 WHERE level = 'ERROR' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateWatcher =>
+        // `criteriaToNode` is stubbed to an empty object in this spec — the bridge specs assert
+        // the real query body. What matters here is that building it does not throw.
+        create.watcher.node.toString shouldBe
+          """{"trigger":{"schedule":{"interval":"5m"}},"input":{"search":{"request":{"indices":["logs-2025"],"body":{"query":{}}},"timeout":"2m"}},"condition":{"always":{}},"actions":{"log_action":{"logging":{"text":"Watcher triggered","level":"info"}}}}"""
+      case other => fail(s"Expected CreateWatcher, got $other")
+    }
+  }
+
   it should "parse a search input with a WHERE clause" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS

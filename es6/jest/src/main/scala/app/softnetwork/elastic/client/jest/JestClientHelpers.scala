@@ -23,9 +23,25 @@ import io.searchbox.client.JestResult
 
 import scala.concurrent.Promise
 import scala.reflect.ClassTag
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
+
+  /** `Try` with `LinkageError` folded in.
+    *
+    * `scala.util.control.NonFatal` — and therefore `Try` — does NOT cover `LinkageError`, yet
+    * `NoClassDefFoundError` is an observed failure mode in this repo (SoftClient4ES#168: the es6
+    * closure loses `org/apache/logging/log4j/LogManager`). Letting it escape would defeat the whole
+    * point of routing an action through a wrapper that returns failures as values. The other
+    * `VirtualMachineError`s still propagate: the JVM is already lost and swallowing them hides it.
+    */
+  private[client] final def tryAction[T](action: => T): Try[T] =
+    try Success(action)
+    catch {
+      case NonFatal(ex)     => Failure(ex)
+      case ex: LinkageError => Failure(ex)
+    }
 
   // ========================================================================
   // GENERIC METHODS FOR EXECUTIVE JEST ACTIONS
@@ -81,7 +97,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     logger.debug(s"Executing operation '$operation'$indexStr")
 
     // ✅ Execution with exception handling
-    val tryResult: Try[R] = Try {
+    val tryResult: Try[R] = tryAction {
       apply().execute(action)
     }
 
@@ -111,7 +127,7 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     elasticResult.flatMap { result =>
       if (result.isSucceeded) {
         // ✅ Success: applying the transformation
-        Try(transformer(result)) match {
+        tryAction(transformer(result)) match {
           case Success(transformed) =>
             logger.debug(s"Operation '$operation'$indexStr succeeded")
             ElasticResult.success(transformed)
@@ -321,64 +337,83 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
 
     val promise: Promise[ElasticResult[T]] = Promise()
     import JestClientResultHandler._
-    apply().executeAsyncPromise(action) onComplete {
-      case Success(result) =>
-        if (result.isSucceeded) {
-          logger.debug(s"Operation '$operation'$indexStr succeeded asynchronously")
-          // ✅ Success: applying the transformation
-          Try(transformer(result)) match {
-            case Success(transformed) =>
-              promise.success(ElasticResult.success(transformed))
-            case Failure(ex) =>
-              logger.error(s"Transformation failed for operation '$operation'$indexStr", ex)
-              promise.success(
-                ElasticResult.failure(
-                  ElasticError(
-                    message = s"Failed to transform result: ${ex.getMessage}",
-                    cause = Some(ex),
-                    statusCode = Some(500),
-                    operation = Some(operation)
-                  )
-                )
-              )
-          }
-        } else {
-          // ✅ Failure: extract the error
-          val errorMessage = Option(result.getErrorMessage)
-            .filter(_.nonEmpty)
-            .getOrElse("Unknown error")
-          val statusCode = result.getResponseCode match {
-            case 0    => None // No HTTP response
-            case code => Some(code)
-          }
-          val error = ElasticError(
-            message = errorMessage,
-            cause = None,
-            statusCode = statusCode,
-            operation = Some(operation)
-          )
-          // ✅ Log according to severity
-          logError(operation, indexStr, error)
-          promise.success(ElasticResult.failure(error))
-        }
+    // Building the client (`apply()`) and submitting the action can throw *synchronously* — a bad
+    // scheme/host, or a LinkageError in a shaded jar. Outside a guard that throw escapes before
+    // the promise is completed, so the caller's Future never completes and the REPL hangs instead
+    // of reporting an error. Same hazard core's `statusOrServerError` documents.
+    tryAction(apply().executeAsyncPromise(action)) match {
       case Failure(ex) =>
         logger.error(s"Exception during operation '$operation'$indexStr: ${ex.getMessage}", ex)
-        val error = ElasticError(
-          message = s"Exception during $operation: ${ex.getMessage}",
-          cause = Some(ex),
-          // `JestClientResultHandler` turns a non-succeeded `JestResult` into an `ElasticError`
-          // carrying its `getResponseCode`, so the status survives the trip through this failed
-          // Future — core's default `statusOf` reads it back. A genuine transport failure is a
-          // plain IOException with no status and still yields `None`, which is honest and is what
-          // AD-5 requires here: Jest 6.3.1 exposes an HTTP status only on `JestResult`, never on a
-          // thrown exception. That is why there is deliberately NO `statusOf` override in this
-          // trait (SoftClient4ES#184, AD-6). Read through `Try` rather than `statusOrServerError`
-          // so the `None` is preserved, while still guaranteeing this `onComplete` callback cannot
-          // throw before `promise.success` below.
-          statusCode = Try(statusOf(ex)).toOption.flatten,
-          operation = Some(operation)
+        promise.success(
+          ElasticResult.failure(
+            ElasticError(
+              message = s"Exception during $operation: ${ex.getMessage}",
+              cause = Some(ex),
+              statusCode = None,
+              operation = Some(operation)
+            )
+          )
         )
-        promise.success(ElasticResult.failure(error))
+      case Success(future) =>
+        future onComplete {
+          case Success(result) =>
+            if (result.isSucceeded) {
+              logger.debug(s"Operation '$operation'$indexStr succeeded asynchronously")
+              // ✅ Success: applying the transformation
+              Try(transformer(result)) match {
+                case Success(transformed) =>
+                  promise.success(ElasticResult.success(transformed))
+                case Failure(ex) =>
+                  logger.error(s"Transformation failed for operation '$operation'$indexStr", ex)
+                  promise.success(
+                    ElasticResult.failure(
+                      ElasticError(
+                        message = s"Failed to transform result: ${ex.getMessage}",
+                        cause = Some(ex),
+                        statusCode = Some(500),
+                        operation = Some(operation)
+                      )
+                    )
+                  )
+              }
+            } else {
+              // ✅ Failure: extract the error
+              val errorMessage = Option(result.getErrorMessage)
+                .filter(_.nonEmpty)
+                .getOrElse("Unknown error")
+              val statusCode = result.getResponseCode match {
+                case 0    => None // No HTTP response
+                case code => Some(code)
+              }
+              val error = ElasticError(
+                message = errorMessage,
+                cause = None,
+                statusCode = statusCode,
+                operation = Some(operation)
+              )
+              // ✅ Log according to severity
+              logError(operation, indexStr, error)
+              promise.success(ElasticResult.failure(error))
+            }
+          case Failure(ex) =>
+            logger.error(s"Exception during operation '$operation'$indexStr: ${ex.getMessage}", ex)
+            val error = ElasticError(
+              message = s"Exception during $operation: ${ex.getMessage}",
+              cause = Some(ex),
+              // `JestClientResultHandler` turns a non-succeeded `JestResult` into an `ElasticError`
+              // carrying its `getResponseCode`, so the status survives the trip through this failed
+              // Future — core's default `statusOf` reads it back. A genuine transport failure is a
+              // plain IOException with no status and still yields `None`, which is honest and is what
+              // AD-5 requires here: Jest 6.3.1 exposes an HTTP status only on `JestResult`, never on a
+              // thrown exception. That is why there is deliberately NO `statusOf` override in this
+              // trait (SoftClient4ES#184, AD-6). Read through `Try` rather than `statusOrServerError`
+              // so the `None` is preserved, while still guaranteeing this `onComplete` callback cannot
+              // throw before `promise.success` below.
+              statusCode = Try(statusOf(ex)).toOption.flatten,
+              operation = Some(operation)
+            )
+            promise.success(ElasticResult.failure(error))
+        }
     }
 
     promise.future
