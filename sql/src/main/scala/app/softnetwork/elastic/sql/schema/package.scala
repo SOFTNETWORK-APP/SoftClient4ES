@@ -1602,7 +1602,13 @@ package object schema {
                 table.copy(
                   columns = table.columns.map { col =>
                     if (col.name == columnName)
-                      col.copy(script = Some(newScript.copy(dataType = col.dataType)))
+                      // A column is either multi-field or script-defined, never both — the grammar
+                      // says so (`ident ~ extension_type ~ (script | optionalMultiFields)`), so a
+                      // column carrying both renders DDL that cannot be parsed back.
+                      col.copy(
+                        script = Some(newScript.copy(dataType = col.dataType)),
+                        multiFields = Nil
+                      )
                     else col
                   }
                 )
@@ -1737,9 +1743,11 @@ package object schema {
               else {
                 col match {
                   case Some(c) =>
+                    // …and symmetrically: declaring sub-fields drops a script the column had.
                     val updated = c
                       .copy(
-                        multiFields = newFields.toList.map(_.update(Some(c)))
+                        multiFields = newFields.toList.map(_.update(Some(c))),
+                        script = None
                       )
                       .updateStruct()
                     table.copy(
@@ -1766,7 +1774,8 @@ package object schema {
                     val updated = c
                       .copy(
                         multiFields =
-                          c.multiFields.filterNot(_.name == field.name) :+ field.update(Some(c))
+                          c.multiFields.filterNot(_.name == field.name) :+ field.update(Some(c)),
+                        script = None
                       )
                       .updateStruct()
                     table.copy(
@@ -1875,6 +1884,14 @@ package object schema {
         if (!cols.contains(partition.column)) {
           errors = errors :+ s"Partition column ${partition.column} does not exist in table $name"
         }
+      }
+      // A column is either multi-field or script-defined, never both: the grammar offers one or the
+      // other (`ident ~ extension_type ~ (script | optionalMultiFields)`), so such a column renders
+      // `name TEXT FIELDS (…) SCRIPT AS (…)`, which cannot be parsed back — and that rendering is
+      // what SHOW CREATE TABLE and the diff statements emit. Loud here beats invalid DDL there.
+      columns.filter(c => c.script.isDefined && c.multiFields.nonEmpty).foreach { c =>
+        errors = errors :+
+          s"Column ${c.name} of table $name cannot declare both FIELDS and SCRIPT AS"
       }
       if (errors.isEmpty) Right(()) else Left(errors.mkString("\n"))
     }

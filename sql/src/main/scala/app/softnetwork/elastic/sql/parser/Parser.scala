@@ -247,8 +247,72 @@ object Parser
     identifierWithIntervalFunction |
     identifierWithFunction
 
+  /** The `SCRIPT AS ( … )` body, delimited by scanning its own balanced parentheses.
+    *
+    * `scriptValue` cannot be relied on to stop at the wrapper's closing paren: the generic
+    * `identifierWithFunction` closes with `rep1(end)` — one or MORE — so a call to a name-only
+    * extractor (`YEAR(x)`, `MONTH(x)`, `QUARTER(x)`, …) consumed the `)` belonging to the wrapper.
+    * `script` then failed, and a column definition fell through to `optionalMultiFields`, which is
+    * why `age INT SCRIPT AS (YEAR(CURRENT_DATE) - YEAR(birthdate))` — the documented example —
+    * reported `')' expected but 'S' found`. `SELECT YEAR(x)` was never affected: nothing enclosed
+    * it.
+    *
+    * Balancing that shared production is NOT the fix, and three attempts proved it: `rep1sep(
+    * sql_function, start)` is ambiguous, and the greed of `rep1(end)` is what selects the correct
+    * parse for a nested call like `MAX(YEAR(DATE_TRUNC(DATETIME_PARSE(…), MINUTE)))`. Bounding the
+    * close count, or giving the extractors their own balanced production, silently drops `Year`
+    * from `identifier.functions` — while `.sql` still renders it, so only the emitted painless
+    * script shows the loss. Deciding the boundary here instead leaves every other parse untouched.
+    */
+  private def scriptBody: Parser[String] = new Parser[String] {
+    def apply(in: Input): ParseResult[String] = {
+      val source = in.source
+      var i = in.offset
+      while (i < source.length && source.charAt(i).isWhitespace) i += 1
+      // `Error`, not `Failure`: `SCRIPT AS` has already been consumed, so no alternative is
+      // legitimate from here. A `Failure` is discarded by both call sites for structural reasons —
+      // `column`'s `script | optionalMultiFields` keeps the alternative's Success and drops the
+      // deeper failure, and `alterTable`'s `repsep` accepts zero statements so `phrase` overwrites
+      // the message — which left the diagnostic below unreachable and reported the very message
+      // this production exists to eliminate.
+      if (i >= source.length || source.charAt(i) != '(')
+        Error("'(' expected after SCRIPT AS", in)
+      else {
+        val bodyStart = i + 1
+        var depth = 0
+        var quote: Char = 0
+        var closing = -1
+        while (i < source.length && closing < 0) {
+          val c = source.charAt(i)
+          if (quote != 0) {
+            if (c == '\\') i += 1
+            else if (c == quote) quote = 0
+          } else
+            c match {
+              case '\'' | '"' => quote = c
+              case '('        => depth += 1
+              case ')'        => depth -= 1; if (depth == 0) closing = i
+              case _          => ()
+            }
+          i += 1
+        }
+        if (closing < 0) Error("unbalanced parentheses in SCRIPT AS", in)
+        else
+          Success(
+            source.subSequence(bodyStart, closing).toString,
+            in.drop(closing + 1 - in.offset)
+          )
+      }
+    }
+  }
+
   def script: PackratParser[PainlessScript] =
-    (keyword("SCRIPT") ~ keyword("AS")) ~ start ~ scriptValue ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
+    (keyword("SCRIPT") ~ keyword("AS")) ~> scriptBody >> { body =>
+      parseAll(scriptValue, body) match {
+        case Success(s, _)     => success(s)
+        case NoSuccess(msg, _) => err(s"Invalid SCRIPT AS expression ($body): $msg")
+      }
+    }
 
   def column: PackratParser[Column] =
     ident ~ extension_type ~ (script | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
