@@ -329,6 +329,7 @@ For the full price matrix and editions, see the licensing & pricing page on the 
 
 - **Arbitrary subqueries and CTEs** inside a JOIN query — coming in **the next release (Quarter 4 2026)**.
 - **Heterogeneous Row-3 sources** (joining Elasticsearch with Postgres, MySQL, Snowflake, …) — coming in **the upcoming release (Quarter 1 2027)**; this release's Row 3 is multi-Elasticsearch only.
+- **JOIN inside a watcher input** (`CREATE WATCHER … FROM a JOIN b ON …`) — a watcher input is a single Elasticsearch `search` request over a list of indices, so the join is rejected at parse time. Pre-join the sources with a [materialized view](materialized_views.md) and have the watcher search the view.
 
 Full list: [Known limitations](known_limitations.md).
 

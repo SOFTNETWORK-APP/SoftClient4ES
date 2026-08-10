@@ -600,6 +600,19 @@ FROM my_index WITHIN 2 MINUTES
 FROM logs-*, metrics-* WHERE level = 'ERROR' WITHIN 5 MINUTES
 ```
 
+> **`JOIN` is not supported in a search input.** A watcher input maps to a single Elasticsearch
+> `search` request over a list of indices — there is no join engine behind it. A `FROM` clause
+> containing `JOIN` (or `JOIN UNNEST(...)`) is rejected at parse time:
+>
+> ```text
+> JOIN is not supported in a watcher input (JOIN customers AS c ON o.customer_id = c.id): a watcher
+> input can only search one or more indices (FROM index1, index2). Pre-join the sources with a
+> MATERIALIZED VIEW and have the watcher search the view.
+> ```
+>
+> Pre-join the sources with a [`MATERIALIZED VIEW`](materialized_views.md) and point the watcher
+> at the view instead.
+
 **Generates:**
 
 ```json

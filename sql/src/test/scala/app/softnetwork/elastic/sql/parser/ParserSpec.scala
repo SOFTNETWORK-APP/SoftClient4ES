@@ -2810,6 +2810,161 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // --- #191: a watcher search input has no join engine behind it ---
+
+  it should "parse a search input over several indices" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM logs-2025, logs-2024 WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateWatcher =>
+        create.input shouldBe SearchWatcherInput(
+          index = Seq("logs-2025", "logs-2024"),
+          query = None,
+          timeout = Some(Delay(TransformTimeUnit.Minutes, 2))
+        )
+      case other => fail(s"Expected CreateWatcher, got $other")
+    }
+  }
+
+  // The join guard runs in the continuation of `from ~ opt(where) ~ withinTimeout`, so the WHERE
+  // has to keep flowing into the input on the accepted path.
+  it should "parse a search input with a WHERE clause" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM logs-2025 WHERE level = 'ERROR' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateWatcher =>
+        create.input match {
+          case input: SearchWatcherInput =>
+            input.index shouldBe Seq("logs-2025")
+            input.query.map(_.sql) shouldBe Some("level = 'ERROR'")
+            input.timeout shouldBe Some(Delay(TransformTimeUnit.Minutes, 2))
+          case other => fail(s"Expected SearchWatcherInput, got $other")
+        }
+      case other => fail(s"Expected CreateWatcher, got $other")
+    }
+  }
+
+  /** The `FROM` of a watcher input parses through the same `from` production as a `SELECT`, so a
+    * `JOIN` used to parse and then be silently dropped — the watcher watched the first table only,
+    * with no error and no warning. Rejecting it is the contract until (if ever) it is implemented.
+    */
+  private val watcherJoinRejection = "JOIN is not supported in a watcher input"
+
+  it should "reject a JOIN in a watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o JOIN customers c ON o.customer_id = c.id WHERE o.status = 'FAILED' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    val msg = result.swap.toOption.get.msg
+    msg should include(watcherJoinRejection)
+    msg should include("JOIN customers")
+    msg should include("MATERIALIZED VIEW")
+  }
+
+  it should "reject an outer JOIN in a CREATE WATCHER search input" in {
+    val sql =
+      """CREATE WATCHER IF NOT EXISTS my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include(watcherJoinRejection)
+  }
+
+  // The guard sits in the continuation of `from ~ opt(where) ~ withinTimeout`, so it must not
+  // depend on the two optional clauses being present — this is the barest shape that can carry a
+  // JOIN.
+  it should "reject a JOIN in a watcher search input with neither WHERE nor WITHIN" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders JOIN customers ON orders.customer_id = customers.id
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include(watcherJoinRejection)
+  }
+
+  // CROSS JOIN is the one join type `Join.validate` accepts without an ON clause — the rejection
+  // must not be an accident of the missing ON.
+  it should "reject a CROSS JOIN in a watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders CROSS JOIN customers WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include("CROSS JOIN customers")
+  }
+
+  it should "report every join of a chain in a watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    val msg = result.swap.toOption.get.msg
+    msg should include("JOIN b ON a.id = b.id")
+    msg should include("JOIN c ON b.id = c.id")
+  }
+
+  it should "reject an UNNEST in a watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders JOIN UNNEST(orders.items) AS item WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include(watcherJoinRejection)
+  }
+
+  it should "reject a JOIN in a chained watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | WITH INPUTS search_data AS FROM orders o JOIN customers c ON o.customer_id = c.id WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include(watcherJoinRejection)
+  }
+
   behavior of "Parser DDL with Enrich Statements"
 
   it should "parse CREATE ENRICH POLICY without WHERE clause" in {

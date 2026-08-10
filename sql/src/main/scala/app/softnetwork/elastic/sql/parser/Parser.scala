@@ -745,13 +745,30 @@ object Parser
       case None => None
     }
 
+  // A watcher search input maps to Elasticsearch's `search` input, which knows nothing but a list
+  // of indices — there is no join engine behind it. `from` parses `a JOIN b ON …` happily, so
+  // without this guard the join is dropped and the watcher silently watches `a` alone (#191).
+  // `err` (not `failure`) is deliberate: it short-circuits the enclosing alternatives instead of
+  // letting `watcherInput` fall through to `success(EmptyWatcherInput)` and report a position
+  // error that names neither JOIN nor the watcher.
   def searchInput: PackratParser[SearchWatcherInput] =
-    from ~ opt(where) ~ withinTimeout ^^ { case f ~ w ~ t =>
-      SearchWatcherInput(
-        f.tables.map(_.name).distinct,
-        w.flatMap(_.criteria),
-        t
-      )
+    from ~ opt(where) ~ withinTimeout >> { case f ~ w ~ t =>
+      f.joins match {
+        case Nil =>
+          success(
+            SearchWatcherInput(
+              f.tables.map(_.name).distinct,
+              w.flatMap(_.criteria),
+              t
+            )
+          )
+        case joins =>
+          err(
+            s"JOIN is not supported in a watcher input (${joins.map(_.sql.trim).mkString(" ")}): " +
+            "a watcher input can only search one or more indices (FROM index1, index2). " +
+            "Pre-join the sources with a MATERIALIZED VIEW and have the watcher search the view."
+          )
+      }
     }
 
   def httpInput: PackratParser[HttpInput] =
