@@ -9,8 +9,8 @@ import org.scalatest.matchers.should.Matchers
 /** A column is either multi-field or script-defined, never both — the grammar offers one or the
   * other (`ident ~ extension_type ~ (script | optionalMultiFields)`). `Table.merge` did not honour
   * that: `ALTER COLUMN … SET SCRIPT AS` kept the existing sub-fields, and the resulting `Table.sql`
-  * — what SHOW CREATE TABLE and the diff statements emit — rendered `name TEXT FIELDS (…) SCRIPT
-  * AS (…)`, which cannot be parsed back.
+  * — what SHOW CREATE TABLE and the diff statements emit — rendered `name TEXT FIELDS (…) SCRIPT AS
+  * (…)`, which cannot be parsed back.
   */
 class ColumnScriptFieldsExclusionSpec extends AnyFlatSpec with Matchers {
 
@@ -69,26 +69,30 @@ class ColumnScriptFieldsExclusionSpec extends AnyFlatSpec with Matchers {
   "a table holding an impossible column" should "fail validation rather than render invalid DDL" in {
     // Reachable outside SQL — `IndexField.ddlColumn` fills `script` and `multiFields` from a live
     // mapping independently.
-    val impossible = withFields.copy(columns =
-      withFields.columns.map {
-        case c if c.name == "name" =>
-          c.copy(script = columnOf(
+    val impossible = withFields.copy(columns = withFields.columns.map {
+      case c if c.name == "name" =>
+        c.copy(script =
+          columnOf(
             withFields.merge(
               statementsOf("ALTER TABLE t ALTER COLUMN name SET SCRIPT AS (UPPER(name))")
             ),
             "name"
-          ).script)
-        case c => c
-      }
-    )
+          ).script
+        )
+      case c => c
+    })
     impossible.columns.find(_.name == "name").exists(_.multiFields.nonEmpty) shouldBe true
     impossible.validate().isLeft shouldBe true
-    impossible.validate().swap.toOption.get should include("cannot declare both FIELDS and SCRIPT AS")
+    impossible.validate().swap.toOption.get should include(
+      "cannot declare both FIELDS and SCRIPT AS"
+    )
   }
 
   "a plain column" should "still validate" in {
     withFields.validate() shouldBe Right(())
-    Table(name = "u", columns = List(Column("id", SQLTypes.Int))).update().validate() shouldBe Right(
+    Table(name = "u", columns = List(Column("id", SQLTypes.Int)))
+      .update()
+      .validate() shouldBe Right(
       ()
     )
   }
