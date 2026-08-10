@@ -903,4 +903,38 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |""".stripMargin.replaceAll("\\s", "")
   }
 
+  /** #212 — a watcher search input flattens its FROM to bare index names, so an alias-qualified
+    * WHERE must be resolved or the emitted query names a field that exists in no index. This is the
+    * observable half of the ParserSpec assertions: what actually reaches Elasticsearch.
+    */
+  it should "emit the bare field name for an alias-qualified watcher search input" in {
+    implicit def timestamp: Long =
+      ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
+    val criteria: Option[Criteria] = parser
+      .Parser("""CREATE OR REPLACE WATCHER my_watcher AS
+                | EVERY 5 MINUTES
+                | FROM orders o WHERE o.status = 'FAILED' WITHIN 2 MINUTES
+                | ALWAYS DO
+                | log_action AS LOG "x" AT INFO
+                | END""".stripMargin)
+      .toOption
+      .collect { case c: query.CreateWatcher => c.input }
+      .collect { case s: watcher.SearchWatcherInput => s.query }
+      .flatten
+    val result = SearchBodyBuilderFn(
+      SearchRequest("*") query criteria.map(_.asQuery()).getOrElse(matchAllQuery())
+    ).string
+    println(result)
+    result.replaceAll("\\s", "") shouldBe
+    """{
+        |"query":{
+        |  "bool":{"filter":[{"term":{
+        |    "status":{
+        |      "value":"FAILED"
+        |    }
+        |  }
+        |}
+        |]}}}""".stripMargin.replaceAll("\\s", "")
+  }
+
 }

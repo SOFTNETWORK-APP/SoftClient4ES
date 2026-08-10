@@ -612,6 +612,21 @@ FROM logs-*, metrics-* WHERE level = 'ERROR' WITHIN 5 MINUTES
 >
 > Pre-join the sources with a [`MATERIALIZED VIEW`](materialized_views.md) and point the watcher
 > at the view instead.
+>
+A table alias may be used and is resolved in the `WHERE`, so `FROM orders o WHERE o.status =
+'FAILED'` searches index `orders` for documents whose **`status`** field is `FAILED`.
+
+> **Qualifiers are single-index only.** `FROM a, b` is a legitimate multi-index search, but one
+> Elasticsearch search applies one query to *every* index it names — it can neither join them nor
+> scope a predicate to one of them. A table-qualified column over a multi-index `FROM` is therefore
+> rejected, whether it correlates the indices (a join in ANSI-89 clothing) or only looks like
+> scoping:
+>
+> ```sql
+> FROM orders o, customers c WHERE o.customer_id = c.id  -- rejected: a join
+> FROM orders, refunds WHERE orders.status = 'FAILED'    -- rejected: would filter refunds too
+> FROM logs-2025, logs-2024 WHERE level = 'ERROR'        -- fine: no qualifier
+> ```
 
 **Generates:**
 

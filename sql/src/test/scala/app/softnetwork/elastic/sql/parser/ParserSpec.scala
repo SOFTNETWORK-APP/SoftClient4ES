@@ -2965,6 +2965,183 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.swap.toOption.get.msg should include(watcherJoinRejection)
   }
 
+  // --- #212: the FROM aliases are flattened away, so the WHERE must not keep them ---
+
+  /** `f.tables.map(_.name)` drops the alias from the index list. If the criteria keeps the
+    * qualifier, the watcher queries `o.status` — a field that exists in no index — and silently
+    * never matches. `.sql` still renders the qualified form (it is the re-parseable round trip);
+    * `Identifier.name` is what the bridge turns into the ES field, so that is what these assert.
+    */
+  private def watcherCriteriaIdentifiers(sql: String): Seq[Identifier] = {
+    val result = Parser(sql)
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case create: CreateWatcher =>
+        create.input match {
+          case input: SearchWatcherInput =>
+            input.query.map(_.referencedIdentifiers).getOrElse(Nil)
+          case other => fail(s"Expected SearchWatcherInput, got $other")
+        }
+      case other => fail(s"Expected CreateWatcher, got $other")
+    }
+  }
+
+  it should "resolve an alias-qualified WHERE in a watcher search input" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o WHERE o.status = 'FAILED' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("status")
+    identifiers.map(_.table) shouldBe Seq(Some("orders"))
+  }
+
+  it should "resolve a table-qualified WHERE in a watcher search input" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders WHERE orders.status = 'FAILED' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("status")
+  }
+
+  // A dotted name whose head matches no table is a nested field, not a qualifier — it must
+  // survive untouched.
+  it should "leave a nested field path alone in a watcher search input" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders WHERE items.price > 10 WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("items.price")
+    identifiers.map(_.table) shouldBe Seq(None)
+  }
+
+  /** One Elasticsearch search applies one query to every index it names, so any table-qualified
+    * predicate over a multi-index FROM is unserviceable — whether it correlates the indices (an
+    * ANSI-89 join, #191's defect in comma form) or merely scopes to one of them. Each of these
+    * shapes defeats a narrower "identifiers from two different tables" test.
+    */
+  private val multiIndexQualifierRejection =
+    "cannot qualify a column by table when it searches several indices"
+
+  it should "reject a WHERE that correlates two indices in a watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o, customers c WHERE o.customer_id = c.id WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    val result = Parser(sql)
+    result.isLeft shouldBe true
+    val msg = result.swap.toOption.get.msg
+    msg should include(multiIndexQualifierRejection)
+    msg should include("orders, customers")
+    msg should include("MATERIALIZED VIEW")
+  }
+
+  // Scoping a predicate to one of several indices is equally unserviceable: the predicate would
+  // silently be applied to the other index too.
+  it should "reject a WHERE qualified with a single index in a multi-index watcher input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders, refunds WHERE orders.status = 'FAILED' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    Parser(sql).swap.toOption.get.msg should include(multiIndexQualifierRejection)
+  }
+
+  // A correlation hidden in a function argument: only one operand resolves to a table, so a
+  // "two distinct tables" test would wave this through.
+  it should "reject a correlation wrapped in a function in a watcher search input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o, customers c WHERE o.id = LOWER(c.id) WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    Parser(sql).swap.toOption.get.msg should include(multiIndexQualifierRejection)
+  }
+
+  // A self-join through duplicate table names: `From.tableAliases` is keyed by table name and
+  // keeps only the last alias, so `o.id` never resolves and a "two distinct tables" test sees one.
+  it should "reject a self-correlation through duplicate table names in a watcher input" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o, orders p WHERE o.id = p.parent_id WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    Parser(sql).swap.toOption.get.msg should include(multiIndexQualifierRejection)
+  }
+
+  /** The arity guard added to `Identifier.update` for this: a bare name matching a table used to be
+    * rewritten to the empty string, so a column sharing its index's name queried a nameless field.
+    * Unqualified names must survive resolution untouched.
+    */
+  it should "not mistake a column sharing its table's name for a qualifier" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM status WHERE status = 'done' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("status")
+  }
+
+  it should "not mistake a column sharing its table's alias for a qualifier" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o WHERE o = 1 WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("o")
+  }
+
+  // `FROM a, b` remains a legitimate multi-index search — only a WHERE spanning both is a join.
+  it should "accept a multi-index watcher search input whose WHERE spans neither table" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM logs-2025, logs-2024 WHERE level = 'ERROR' WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("level")
+  }
+
+  it should "accept several predicates qualified with the same alias" in {
+    val identifiers = watcherCriteriaIdentifiers(
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM orders o WHERE o.status = 'FAILED' AND o.total > 100 WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "Watcher triggered" AT INFO
+        | END""".stripMargin
+    )
+    identifiers.map(_.name) shouldBe Seq("status", "total")
+  }
+
   behavior of "Parser DDL with Enrich Statements"
 
   it should "parse CREATE ENRICH POLICY without WHERE clause" in {
@@ -3694,6 +3871,112 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     // INNER/LEFT/RIGHT/FULL JOIN still require ON — only the alias rule is relaxed.
     val sql = "SELECT * FROM orders LEFT JOIN customers"
     Parser(sql).isLeft shouldBe true
+  }
+
+  // --- #213: everything past the first table name used to be discarded in silence ---
+
+  /** The dangerous one. `DELETE FROM a, b WHERE …` parsed as `DELETE FROM a` with **no** WHERE,
+    * because `Parser.apply` runs `parse` rather than `phrase` and `delete` took a bare `ident`.
+    * `IndicesApi` then reads the missing WHERE as "delete everything" and issues `match_all` — the
+    * whole index, instead of the one matching row.
+    */
+  it should "reject a multi-table DELETE instead of silently dropping the WHERE" in {
+    val result = Parser("DELETE FROM orders, customers WHERE orders.id = 1")
+    result.isLeft shouldBe true
+    val msg = result.swap.toOption.get.msg
+    msg should include("DELETE targets a single table")
+    msg should include("orders, customers")
+  }
+
+  it should "reject a JOIN in a DELETE" in {
+    val result = Parser("DELETE FROM orders JOIN customers ON orders.id = customers.id")
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include("JOIN is not supported in DELETE")
+  }
+
+  it should "parse a DELETE with a table alias and resolve the alias in the WHERE" in {
+    // Previously the alias was left unconsumed, `where.?` matched nothing, and the statement
+    // deleted every document in the index.
+    val result = Parser("DELETE FROM orders o WHERE o.status = 'FAILED'")
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case d: Delete =>
+        d.table.name shouldBe "orders"
+        d.where.flatMap(_.criteria).map(_.referencedIdentifiers.map(_.name)) shouldBe Some(
+          Seq("status")
+        )
+      case other => fail(s"Expected Delete, got $other")
+    }
+  }
+
+  it should "parse a plain DELETE unchanged" in {
+    val result = Parser("DELETE FROM orders WHERE status = 'FAILED'")
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case d: Delete =>
+        d.table.name shouldBe "orders"
+        d.where.flatMap(_.criteria).map(_.sql) shouldBe Some("status = 'FAILED'")
+      case other => fail(s"Expected Delete, got $other")
+    }
+  }
+
+  it should "parse a DELETE without a WHERE unchanged" in {
+    val result = Parser("DELETE FROM orders")
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case d: Delete =>
+        d.table.name shouldBe "orders"
+        d.where shouldBe None
+      case other => fail(s"Expected Delete, got $other")
+    }
+  }
+
+  // UPDATE has no FROM clause; one written anyway used to be discarded with everything after it.
+  it should "reject a FROM clause in an UPDATE" in {
+    val result = Parser("UPDATE orders SET a = 1 FROM customers JOIN x ON a.b = c.d")
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include("UPDATE does not support a FROM clause")
+  }
+
+  // Postgres puts FROM before WHERE — `where.?` yields None there, so the guard still fires.
+  it should "reject a FROM clause written before the WHERE in an UPDATE" in {
+    val result = Parser("UPDATE orders SET a = 1 FROM customers WHERE b = 2")
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include("UPDATE does not support a FROM clause")
+  }
+
+  it should "parse a plain UPDATE unchanged" in {
+    val result = Parser("UPDATE orders SET a = 1 WHERE b = 2")
+    result.isRight shouldBe true
+    result.toOption.get.sql shouldBe "UPDATE orders SET a = 1 WHERE b = 2"
+  }
+
+  // UPDATE keeps only the bare table name, so its WHERE needs the same qualifier resolution
+  // DELETE and watcher inputs get — otherwise it filters on `orders.id` and matches nothing.
+  it should "resolve a table-qualified WHERE in an UPDATE" in {
+    val result = Parser("UPDATE orders SET a = 1 WHERE orders.id = 2")
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case u: Update =>
+        u.where.flatMap(_.criteria).map(_.referencedIdentifiers.map(_.name)) shouldBe Some(
+          Seq("id")
+        )
+      case other => fail(s"Expected Update, got $other")
+    }
+  }
+
+  // A column sharing its table's name is a column, not a dangling qualifier — the SELECT path
+  // used to rewrite it to the empty string too.
+  it should "not mistake a column sharing its table's name for a qualifier in a SELECT" in {
+    val result = Parser("SELECT * FROM status WHERE status = 'done'")
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case s: SingleSearch =>
+        s.where.flatMap(_.criteria).map(_.referencedIdentifiers.map(_.name)) shouldBe Some(
+          Seq("status")
+        )
+      case other => fail(s"Expected SingleSearch, got $other")
+    }
   }
 
   behavior of "Parser Cluster"

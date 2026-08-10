@@ -36,7 +36,8 @@ case object NullsLast extends Expr("NULLS LAST") with NullOrdering
 case class FieldSort(
   field: Identifier,
   order: Option[SortOrder],
-  nullOrdering: Option[NullOrdering] = None
+  nullOrdering: Option[NullOrdering] = None,
+  bareTableAlias: Option[String] = None
 ) extends FunctionChain
     with Updateable {
   lazy val functions: List[Function] = field.functions
@@ -48,16 +49,26 @@ case class FieldSort(
   override def sql: String =
     s"${field.sql} $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
   override def update(request: SingleSearch): FieldSort = this.copy(
-    field = field.update(request)
+    field = field.update(request),
+    // `ORDER BY e` where `e` aliases a FROM table sorts on nothing (#159). It used to be caught
+    // downstream, because `Identifier.update` rewrote any bare name matching an alias to the
+    // empty string; that rewrite also broke a column legitimately sharing its table's name, so
+    // it is gone and the collision is recorded here, where the FROM aliases are still in scope.
+    bareTableAlias =
+      if (!field.name.contains('.') && request.tableAliases.exists(_._2 == field.name))
+        Some(field.name)
+      else
+        None
   )
-  // A sort identifier colliding with a table alias (e.g. `ORDER BY e` where `e`
-  // aliases a FROM table) leaves the alias-split with an empty column name —
-  // reject it instead of rendering a dangling qualifier (#159).
   override def validate(): Either[String, Unit] =
-    field.tableAlias match {
-      case Some(alias) if field.name.isEmpty || field.name.endsWith(".") =>
-        Left(s"Column name expected after table alias '$alias'")
-      case _ => super.validate()
+    bareTableAlias match {
+      case Some(alias) => Left(s"Column name expected after table alias '$alias'")
+      case None =>
+        field.tableAlias match {
+          case Some(alias) if field.name.isEmpty || field.name.endsWith(".") =>
+            Left(s"Column name expected after table alias '$alias'")
+          case _ => super.validate()
+        }
     }
   def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
 

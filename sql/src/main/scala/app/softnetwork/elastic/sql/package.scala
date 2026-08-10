@@ -1172,7 +1172,13 @@ package object sql {
         }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
-      val table = request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
+      // A qualifier needs something to qualify: `parts.head` is only a table alias when a column
+      // name follows it. Without the arity check a column that happens to share its table's name
+      // — `FROM status WHERE status = 'done'` — matched `tableAliases` and was rewritten to
+      // `parts.tail.mkString(".")`, i.e. the empty string, silently querying a nameless field.
+      val table =
+        if (parts.size > 1) request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
+        else None
       if (table.nonEmpty) {
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>

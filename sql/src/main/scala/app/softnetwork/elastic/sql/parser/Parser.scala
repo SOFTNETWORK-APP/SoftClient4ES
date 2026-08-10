@@ -745,6 +745,34 @@ object Parser
       case None => None
     }
 
+  /** Resolve alias-qualified identifiers in a WHERE against its own FROM clause — `o.status`
+    * becomes `status`, tagged with `table = orders` — exactly as the SELECT path does. Any
+    * production that keeps the criteria while flattening the FROM to bare index names MUST run
+    * this: without it the alias is dropped from the index list but kept in the field name, and the
+    * query targets a field that exists in no index (#212).
+    *
+    * `Select(Nil)` keeps the throwaway request's SELECT pass a no-op — the default `Select()` is
+    * `SELECT *` — leaving `update()` to do its FROM and WHERE passes and nothing else. `update()`
+    * reaches the criteria through `map`, so a `Some` WHERE can never come back `None`; callers for
+    * which a lost WHERE would be destructive assert that anyway.
+    */
+  private def resolveWhere(f: From, w: Option[Where]): Option[Where] =
+    SingleSearch(select = Select(Nil), from = f, where = w).update().where
+
+  /** A single Elasticsearch search applies one query to every index it names, so a table-qualified
+    * predicate over a multi-index FROM asks for per-index scoping that cannot be honored — whether
+    * it correlates the indices (`WHERE o.id = c.order_id`, an ANSI-89 join, #191's defect in the
+    * older syntax) or merely scopes to one of them (`WHERE orders.status = 'F'`, which would
+    * silently filter `refunds` too).
+    *
+    * Testing for "any qualifier" rather than "qualifiers from two tables" is deliberate: the
+    * narrower test lets a correlation through whenever one side fails to resolve — a function
+    * argument (`WHERE o.id = LOWER(c.id)`), or a self-join through duplicate table names, where
+    * `From.tableAliases` is keyed by table name and keeps only the last alias.
+    */
+  private def qualifiedOverManyIndices(f: From, criteria: Option[Criteria]): Boolean =
+    f.tables.size > 1 && criteria.exists(_.referencedIdentifiers.exists(_.table.isDefined))
+
   // A watcher search input maps to Elasticsearch's `search` input, which knows nothing but a list
   // of indices — there is no join engine behind it. `from` parses `a JOIN b ON …` happily, so
   // without this guard the join is dropped and the watcher silently watches `a` alone (#191).
@@ -755,13 +783,25 @@ object Parser
     from ~ opt(where) ~ withinTimeout >> { case f ~ w ~ t =>
       f.joins match {
         case Nil =>
-          success(
-            SearchWatcherInput(
-              f.tables.map(_.name).distinct,
-              w.flatMap(_.criteria),
-              t
+          val criteria = resolveWhere(f, w).flatMap(_.criteria)
+          // `FROM a, b` stays a legitimate multi-index search; only a qualifier over it is
+          // unserviceable — see `qualifiedOverManyIndices`.
+          if (qualifiedOverManyIndices(f, criteria))
+            err(
+              s"A watcher input cannot qualify a column by table when it searches several " +
+              s"indices (${f.tables.map(_.name).mkString(", ")}): one Elasticsearch search " +
+              "applies one query to all of them, so it can neither join them nor scope a " +
+              "predicate to one. Watch a single index, drop the qualifiers, or pre-join the " +
+              "sources with a MATERIALIZED VIEW and watch the view."
             )
-          )
+          else
+            success(
+              SearchWatcherInput(
+                f.tables.map(_.name).distinct,
+                criteria,
+                t
+              )
+            )
         case joins =>
           err(
             s"JOIN is not supported in a watcher input (${joins.map(_.sql.trim).mkString(" ")}): " +
@@ -1070,20 +1110,70 @@ object Parser
       CopyInto(source.value, table, fileFormat = format, onConflict = conflict)
     }
 
-  /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...] */
+  /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...]
+    *
+    * UPDATE has no FROM clause. `opt(from)` is here only to catch one being written anyway —
+    * `Parser.apply` runs `parse`, not `phrase`, so an unconsumed `FROM customers JOIN x ON …` used
+    * to be discarded in silence and the UPDATE ran against the first table alone (#213). It catches
+    * both operand orders: written before the WHERE, `where.?` yields None and this fires.
+    */
   def update: PackratParser[Update] =
     (keyword("UPDATE") ~> ident) ~ (keyword("SET") ~> repsep(
       ident ~ "=" ~ (value | scriptValue),
       separator
-    )) ~ where.? ^^ { case table ~ assigns ~ w =>
-      val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
-      Update(table, values, w)
+    )) ~ where.? ~ opt(from) >> { case table ~ assigns ~ w ~ extraFrom =>
+      extraFrom match {
+        case Some(f) =>
+          err(
+            s"UPDATE does not support a FROM clause (${f.sql.trim}): " +
+            "UPDATE targets exactly one table, named right after the UPDATE keyword. " +
+            "Filter with WHERE, or pre-join the sources with a MATERIALIZED VIEW."
+          )
+        case None =>
+          val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
+          // UPDATE keeps only the bare table name, so its WHERE needs the same qualifier
+          // resolution DELETE and watcher inputs get — `WHERE orders.id = 1` must filter on `id`.
+          success(Update(table, values, resolveWhere(From(Seq(Table(table))), w)))
+      }
     }
 
-  /** DELETE FROM table [WHERE ...] */
+  /** DELETE FROM table [WHERE ...]
+    *
+    * Parses the full FROM shape — alias and joins included — rather than a bare `ident`, then
+    * rejects what DELETE cannot express. `Parser.apply` runs `parse`, not `phrase`, so everything
+    * past the first table name used to be discarded in silence: `DELETE FROM a, b WHERE …` became
+    * `DELETE FROM a` with **no** WHERE, which the client turns into `match_all` — wiping the whole
+    * index instead of the matching rows (#213).
+    */
   def delete: PackratParser[Delete] =
-    (keyword("DELETE") ~ keyword("FROM")) ~> ident ~ where.? ^^ { case table ~ w =>
-      Delete(Table(table), w)
+    (keyword("DELETE") ~ keyword("FROM")) ~> rep1sep(table, separator) ~ where.? >> {
+      case tables ~ w =>
+        tables.flatMap(_.joins) match {
+          case Nil if tables.size > 1 =>
+            err(
+              s"DELETE targets a single table, got ${tables.map(_.name).mkString(", ")}: " +
+              "issue one DELETE per table."
+            )
+          case Nil =>
+            resolveWhere(From(tables), w) match {
+              // Fail closed. A DELETE with no WHERE is `match_all`, so a WHERE lost in resolution
+              // would empty the index — the very outcome #213 is about. `update()` reaches the
+              // criteria through `map` and cannot drop it, which is exactly why this must stay
+              // loud rather than becoming a comment claiming it cannot happen.
+              case None if w.isDefined =>
+                err(
+                  s"Could not resolve the WHERE clause of DELETE FROM ${tables.head.name}: " +
+                  "refusing to run it as an unfiltered delete."
+                )
+              case resolved => success(Delete(tables.head, resolved))
+            }
+          case joins =>
+            err(
+              s"JOIN is not supported in DELETE (${joins.map(_.sql.trim).mkString(" ")}): " +
+              "Elasticsearch deletes by query over a single index. Select the ids to remove with " +
+              "a JOIN query first, then DELETE on that key."
+            )
+        }
     }
 
   def dmlStatement: PackratParser[DmlStatement] = insert | update | delete | copy

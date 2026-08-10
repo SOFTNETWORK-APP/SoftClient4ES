@@ -224,6 +224,14 @@ WHERE condition;
 - Only top-level scalar fields or entire nested objects can be replaced.
 - Updating a specific element inside an `ARRAY<STRUCT>` is not supported.
 - Fields not present in the mapping cannot be added unless dynamic mapping is enabled.
+- `UPDATE` targets exactly one table — the one named right after the `UPDATE` keyword. There is
+  no `FROM` clause; writing one is a parse error rather than being ignored:
+
+  ```text
+  UPDATE does not support a FROM clause (FROM customers): UPDATE targets exactly one table,
+  named right after the UPDATE keyword. Filter with WHERE, or pre-join the sources with a
+  MATERIALIZED VIEW.
+  ```
 
 ---
 
@@ -243,6 +251,19 @@ WHERE condition;
 	- If provided, only matching documents are deleted.
 	- If omitted, **all documents in the index are deleted** (equivalent to `TRUNCATE TABLE`).
 - Deleting a nested field or an element inside an array is not supported; only whole documents can be removed.
+- `DELETE` targets exactly one table. A table list or a `JOIN` is a parse error — precisely
+  because the omitted-`WHERE` rule above deletes everything, so a silently dropped clause is the
+  difference between removing one document and emptying the index:
+
+  ```sql
+  DELETE FROM orders, customers WHERE orders.id = 1  -- rejected: DELETE targets a single table
+  DELETE FROM orders JOIN customers ON orders.id = customers.id  -- rejected: JOIN is not supported in DELETE
+  ```
+
+  To delete across a relationship, `SELECT` the keys with a `JOIN` query first, then `DELETE` on
+  that key.
+- A table alias is allowed and is resolved in the `WHERE`: `DELETE FROM orders o WHERE o.status =
+  'FAILED'` filters on `status`.
 
 ---
 
