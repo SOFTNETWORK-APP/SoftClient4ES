@@ -1952,6 +1952,54 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // `ALTER COLUMN … SET|ADD FIELD` is documented, and only `ADD` ever worked: `multiFields`
+  // carried its own empty fallback, so `alterColumnFields` (`ALTER COLUMN c SET <multiFields>`)
+  // matched a bare `SET` with no fields and left `FIELD raw KEYWORD` unconsumed. Before #213 that
+  // trailing input was discarded — the user's SET FIELD silently did nothing; afterwards it was a
+  // parse error. `AlterColumnField.sql` renders `SET FIELD`, so the AST could not re-parse its own
+  // rendering either.
+
+  it should "parse ALTER COLUMN ... SET FIELD as well as ADD FIELD" in {
+    val setField = Parser("ALTER TABLE users ALTER COLUMN profile SET FIELD followers INT")
+    val addField = Parser("ALTER TABLE users ALTER COLUMN profile ADD FIELD followers INT")
+    setField.isRight shouldBe true
+    // SET and ADD are synonyms here — the grammar keeps neither, so both yield the same AST.
+    setField shouldBe addField
+    setField.toOption.get match {
+      case AlterTable("users", _, Seq(AlterColumnField("profile", field, false))) =>
+        field.name shouldBe "followers"
+        field.dataType.typeId shouldBe "INT"
+      case other => fail(s"Expected a single AlterColumnField, got $other")
+    }
+  }
+
+  it should "re-parse the SQL an AlterColumnField renders" in {
+    val stmt = Parser("ALTER TABLE users ALTER COLUMN profile ADD FIELD followers INT").toOption.get
+    Parser(stmt.sql) shouldBe Right(stmt)
+  }
+
+  it should "reject an ALTER COLUMN whose SET says nothing" in {
+    // Used to parse as AlterColumnFields(c, Nil) — a statement that silently did nothing.
+    Parser("ALTER TABLE users ALTER COLUMN profile SET").isLeft shouldBe true
+  }
+
+  it should "still parse ALTER COLUMN ... SET FIELDS (...)" in {
+    val result = Parser(
+      "ALTER TABLE users ALTER COLUMN profile SET FIELDS (city VARCHAR, followers INT)"
+    )
+    result.isRight shouldBe true
+    result.toOption.get match {
+      case AlterTable("users", _, Seq(AlterColumnFields("profile", fields, false))) =>
+        fields.map(_.name) should contain inOrder ("city", "followers")
+      case other => fail(s"Expected a single AlterColumnFields, got $other")
+    }
+  }
+
+  it should "still parse a column that declares neither FIELDS nor a script" in {
+    // optionalMultiFields: the empty fallback the column definition depends on.
+    Parser("CREATE TABLE t (id INT, name VARCHAR)").isRight shouldBe true
+  }
+
   it should "parse ALTER TABLE MAPPINGS" in {
     val sql = """ALTER TABLE orders (
                 |  ADD COLUMN _last_updated TIMESTAMP DEFAULT _ingest.timestamp,

@@ -199,8 +199,18 @@ object Parser
         AlterPipeline(pipeline, ie, stmts)
     }
 
+  /** `FIELDS (…)` — required. The empty fallback belongs to `optionalMultiFields`, whose only
+    * caller is a column definition (a column need not declare sub-fields). Folding it in here made
+    * every consumer optional, and `alterColumnFields` (`ALTER COLUMN c SET <multiFields>`) then
+    * matched a bare `SET` with an empty field list: `ALTER COLUMN c SET` parsed as a no-op, and
+    * `ALTER COLUMN c SET FIELD raw KEYWORD` matched that same alternative and left `FIELD raw
+    * KEYWORD` unconsumed — so `SET FIELD` silently did nothing before #213 made trailing input an
+    * error, and could not parse at all afterwards.
+    */
   def multiFields: PackratParser[List[Column]] =
-    keyword("FIELDS") ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols) | success(Nil)
+    keyword("FIELDS") ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols)
+
+  def optionalMultiFields: PackratParser[List[Column]] = multiFields | success(Nil)
 
   def ifExists: PackratParser[Boolean] =
     opt(keyword("IF") ~ keyword("EXISTS")) ^^ {
@@ -245,7 +255,7 @@ object Parser
     (keyword("SCRIPT") ~ keyword("AS")) ~ start ~ scriptValue ~ end ^^ { case _ ~ _ ~ s ~ _ => s }
 
   def column: PackratParser[Column] =
-    ident ~ extension_type ~ (script | multiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
+    ident ~ extension_type ~ (script | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       ListMap.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
       mfs match {

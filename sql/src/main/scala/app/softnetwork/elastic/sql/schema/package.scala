@@ -1761,9 +1761,19 @@ package object schema {
               else {
                 col match {
                   case Some(c) =>
-                    val updatedFields = c.multiFields.filterNot(_.name == field.name) :+ field
-                    c.copy(multiFields = updatedFields)
-                    table
+                    // The copy is the whole point of the branch: assigning it to nothing and
+                    // returning `table` made SET|ADD FIELD a no-op that still reported success.
+                    val updated = c
+                      .copy(
+                        multiFields =
+                          c.multiFields.filterNot(_.name == field.name) :+ field.update(Some(c))
+                      )
+                      .updateStruct()
+                    table.copy(
+                      columns = table.columns.map { existing =>
+                        if (existing.name == updated.name) updated else existing
+                      }
+                    )
                   case _ => throw ColumnNotFound(columnName, table.name)
                 }
               }
@@ -1778,10 +1788,16 @@ package object schema {
               else {
                 col match {
                   case Some(c) =>
-                    c.copy(
-                      multiFields = c.multiFields.filterNot(_.name == fieldName)
+                    val updated = c
+                      .copy(
+                        multiFields = c.multiFields.filterNot(_.name == fieldName)
+                      )
+                      .updateStruct()
+                    table.copy(
+                      columns = table.columns.map { existing =>
+                        if (existing.name == updated.name) updated else existing
+                      }
                     )
-                    table
                   case _ => throw ColumnNotFound(columnName, table.name)
                 }
               }
