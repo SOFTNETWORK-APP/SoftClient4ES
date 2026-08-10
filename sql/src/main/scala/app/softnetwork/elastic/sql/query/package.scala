@@ -616,7 +616,10 @@ package object query {
     onConflict: Option[OnConflict] = None
   ) extends DmlStatement {
     override def sql: String = {
-      s"COPY INTO $targetTable FROM $source${asString(fileFormat)}${asString(onConflict)}"
+      // The grammar only accepts a quoted source literal, so render one — an unquoted path
+      // (`FROM /tmp/data.json`) is not valid SQL and cannot survive a re-parse.
+      val quoted = s"'${source.replace("\\", "\\\\").replace("'", "\\'")}'"
+      s"COPY INTO $targetTable FROM $quoted${asString(fileFormat)}${asString(onConflict)}"
     }
   }
 

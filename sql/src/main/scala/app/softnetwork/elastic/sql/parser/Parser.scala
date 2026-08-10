@@ -1094,13 +1094,36 @@ object Parser
         }
     }
 
+  /** FILE_FORMAT [=] {PARQUET | JSON | JSON_ARRAY | DELTA_LAKE} — bare or quoted, `=` optional.
+    *
+    * `FILE_FORMAT = X` is the form every published example uses (documentation, help JSON — and
+    * `FileFormat.sql` itself renders it), yet the grammar only accepted the bare `FILE_FORMAT X`:
+    * under the pre-#213 prefix parse, `opt(fileFormat)` backtracked on the `=` and the clause —
+    * plus any ON CONFLICT after it — was discarded in silence, with format auto-detection masking
+    * the loss. A FILE_FORMAT followed by anything but a known format is a hard `err` for the same
+    * reason: backtracking here can only ever mean dropping what the user wrote.
+    */
   def fileFormat: PackratParser[FileFormat] =
-    (keyword("FILE_FORMAT") ~> (
+    (keyword("FILE_FORMAT") ~ opt("=")) ~> (
       (keyword("PARQUET") ^^^ Parquet) |
       (keyword("JSON_ARRAY") ^^^ JsonArray) |
       (keyword("JSON") ^^^ Json) |
-      (keyword("DELTA_LAKE") ^^^ Delta)
-    )) ^^ { ff => ff }
+      (keyword("DELTA_LAKE") ^^^ Delta) |
+      // Quoted format names (the form dml_statements.md documents) land here; so does anything
+      // unrecognised, which must err rather than backtrack into a silent drop.
+      ((literal ^^ (_.value) | ident) >> { name =>
+        name.toUpperCase(java.util.Locale.ROOT) match {
+          case "PARQUET"    => success(Parquet)
+          case "JSON_ARRAY" => success(JsonArray)
+          case "JSON"       => success(Json)
+          case "DELTA_LAKE" => success(Delta)
+          case other =>
+            err(
+              s"Unsupported FILE_FORMAT '$other': expected PARQUET, JSON, JSON_ARRAY or DELTA_LAKE"
+            )
+        }
+      })
+    )
 
   /** COPY INTO table FROM source */
   def copy: PackratParser[CopyInto] =
@@ -1180,15 +1203,48 @@ object Parser
 
   def statement: PackratParser[Statement] = ddlStatement | dqlStatement | dmlStatement
 
+  /** Strip `--` comments and collapse newlines OUTSIDE string literals only. The previous
+    * line-based normalizer (`split("\n").map(_.split("--")(0))`) was blind to quotes: it cut `WHERE
+    * code = 'AB--12'` at the `--`, severing the literal and failing a valid statement. Literal
+    * interiors — including their backslash escapes — are copied verbatim.
+    */
+  private def normalize(query: String): String = {
+    val out = new StringBuilder(query.length)
+    var quote: Char = 0
+    var i = 0
+    while (i < query.length) {
+      val c = query.charAt(i)
+      if (quote != 0) {
+        out.append(c)
+        if (c == '\\' && i + 1 < query.length) {
+          out.append(query.charAt(i + 1))
+          i += 1
+        } else if (c == quote) {
+          quote = 0
+        }
+        i += 1
+      } else if (c == '-' && i + 1 < query.length && query.charAt(i + 1) == '-') {
+        // comment runs to end of line; the newline itself is handled by the next iteration
+        while (i < query.length && query.charAt(i) != '\n') i += 1
+      } else {
+        c match {
+          case '\'' | '"' =>
+            quote = c
+            out.append(c)
+          case '\n' | '\r' => out.append(' ')
+          case _           => out.append(c)
+        }
+        i += 1
+      }
+    }
+    out.toString
+  }
+
   def apply(
     query: String
   ): Either[ParserError, Statement] = {
     val normalizedQuery =
-      query
-        .split("\n")
-        .map(_.split("--")(0).trim)
-        .filterNot(w => w.isEmpty || w.startsWith("--"))
-        .mkString(" ")
+      normalize(query)
         // Trailing statement terminators are idiomatic SQL and every caller that splits on `;`
         // already drops them; keep tolerating them now that anything else left over is an error.
         // A run rather than one, because tools that append `;` to SQL a user already terminated

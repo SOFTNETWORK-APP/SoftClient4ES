@@ -19,10 +19,10 @@ package app.softnetwork.elastic.client
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** `GatewayApi.run`'s multi-statement contract was documented but dead: the old
-  * `split(";\\s*$")` anchors to the end of the (newline-free) input, so it could only strip a
-  * trailing `;` — measured: `"SELECT 1; SELECT 2".split(";\\s*$")` yields ONE element with the
-  * interior `;` intact, and the lenient parser then silently executed only the first statement.
+/** `GatewayApi.run`'s multi-statement contract was documented but dead: the old `split(";\\s*$")`
+  * anchors to the end of the (newline-free) input, so it could only strip a trailing `;` —
+  * measured: `"SELECT 1; SELECT 2".split(";\\s*$")` yields ONE element with the interior `;`
+  * intact, and the lenient parser then silently executed only the first statement.
   * `splitStatements` makes the documented behaviour real, and quote-aware.
   */
 class SplitStatementsSpec extends AnyFlatSpec with Matchers {

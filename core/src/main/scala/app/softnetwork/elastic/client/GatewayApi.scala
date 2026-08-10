@@ -1798,13 +1798,11 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
 
   def run(sql: String)(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     logger.info(s"📥 SQL: $sql")
-    val normalizedQuery =
-      sql
-        .split("\n")
-        .map(_.split("--")(0).trim)
-        .filterNot(w => w.isEmpty || w.startsWith("--"))
-        .mkString(" ")
-    GatewayApi.splitStatements(normalizedQuery) match {
+    // Raw input goes straight to the quote- and comment-aware splitter: a line-based
+    // pre-normalization here (`split("\n").map(_.split("--")(0))`) used to sever literals
+    // containing `--` before the splitter could protect them. Comment stripping and newline
+    // collapsing happen inside splitStatements and Parser.apply, both literal-aware.
+    GatewayApi.splitStatements(sql) match {
       case Nil =>
         val error =
           ElasticError(

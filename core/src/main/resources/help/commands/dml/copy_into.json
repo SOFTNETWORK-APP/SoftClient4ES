@@ -8,7 +8,7 @@
     "[FILE_FORMAT = {PARQUET | JSON | JSON_ARRAY | DELTA_LAKE}]",
     "[ON CONFLICT DO {NOTHING | UPDATE}]"
   ],
-  "description": "Bulk load data from a file into an Elasticsearch index. Supports JSON Lines (JSONL), JSON arrays, and CSV formats. The file format is auto-detected from extension if not specified.",
+  "description": "Bulk load data from a file into an Elasticsearch index. Supports JSON Lines, JSON arrays, PARQUET and DELTA_LAKE formats. The file format is auto-detected from the extension (and file content for .json) if not specified.",
   "clauses": [
     {
       "name": "FROM",
@@ -19,7 +19,7 @@
       "name": "FILE_FORMAT",
       "description": "Format of the source file",
       "optional": true,
-      "variants": ["JSONL (default for .jsonl)", "JSON_ARRAY (default for .json)", "CSV (default for .csv)"]
+      "variants": ["PARQUET (auto-detected for .parquet/.parq)", "JSON (JSON Lines; auto-detected for .jsonl/.ndjson)", "JSON_ARRAY (a .json file is content-sniffed as JSON or JSON_ARRAY)", "DELTA_LAKE (auto-detected from a _delta_log directory)"]
     },
     {
       "name": "ON CONFLICT DO NOTHING",
@@ -65,7 +65,7 @@
     "Document IDs are determined by PRIMARY KEY if defined"
   ],
   "limitations": [
-    "Only local file paths supported (no URLs)"
+    "Remote filesystems (e.g. s3://) require the matching Hadoop filesystem jars on the classpath"
   ],
   "seeAlso": ["INSERT"],
   "minVersion": null,

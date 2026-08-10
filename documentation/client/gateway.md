@@ -489,7 +489,7 @@ gateway.run("TRUNCATE TABLE dml_users")
 ```scala
 gateway.run("""
   COPY INTO dml_users
-  FROM 'classpath:/data/users.json'
+  FROM '/data/users.json'
 """)
 ```
 

@@ -3618,6 +3618,117 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // COPY INTO had ZERO parser-level coverage before these tests: the production was only ever
+  // exercised through the Docker integration suites, so nothing caught that `FILE_FORMAT = X` —
+  // the form used by every documented example and every integration test — never parsed. Under
+  // the pre-#213 prefix parse, `opt(fileFormat)` backtracked on the `=` and silently dropped the
+  // clause AND any ON CONFLICT after it (format auto-detection masked the loss); `phrase` turned
+  // that into a hard failure in CI, which is how this was found.
+
+  it should "parse COPY INTO with FILE_FORMAT = and ON CONFLICT DO UPDATE" in {
+    // The exact shape used by GatewayApiIntegrationSpec / ReplGatewayIntegrationSpec.
+    val sql =
+      """COPY INTO copy_into_test FROM "/tmp/data.json" FILE_FORMAT = JSON_ARRAY ON CONFLICT DO UPDATE"""
+    Parser(sql) shouldBe Right(
+      CopyInto("/tmp/data.json", "copy_into_test", Some(JsonArray), Some(OnConflict(None, true)))
+    )
+  }
+
+  it should "parse COPY INTO with a quoted FILE_FORMAT value" in {
+    // documentation/sql/dml_statements.md documents the quoted form: FILE_FORMAT = 'JSON'
+    val sql = "COPY INTO users FROM 's3://bucket/users.json' FILE_FORMAT = 'JSON'"
+    Parser(sql) shouldBe Right(
+      CopyInto("s3://bucket/users.json", "users", Some(Json), None)
+    )
+  }
+
+  it should "parse COPY INTO with FILE_FORMAT without the equals sign" in {
+    // The only form the old grammar accepted — must keep working.
+    val sql = "COPY INTO users FROM '/data/users.parquet' FILE_FORMAT PARQUET"
+    Parser(sql) shouldBe Right(
+      CopyInto("/data/users.parquet", "users", Some(Parquet), None)
+    )
+  }
+
+  it should "parse COPY INTO with a lowercase quoted FILE_FORMAT value" in {
+    val sql = "COPY INTO events FROM '/data/events' FILE_FORMAT = 'delta_lake'"
+    Parser(sql) shouldBe Right(
+      CopyInto("/data/events", "events", Some(Delta), None)
+    )
+  }
+
+  it should "parse COPY INTO with FILE_FORMAT and a conflict target" in {
+    // The CopyIntoS3IntegrationSpec shape.
+    val sql =
+      "COPY INTO scores FROM 's3://bucket/scores.json' FILE_FORMAT = JSON_ARRAY ON CONFLICT (uuid) DO UPDATE"
+    Parser(sql) shouldBe Right(
+      CopyInto(
+        "s3://bucket/scores.json",
+        "scores",
+        Some(JsonArray),
+        Some(OnConflict(Some(List("uuid")), true))
+      )
+    )
+  }
+
+  it should "parse COPY INTO without any optional clause" in {
+    val sql = """COPY INTO copy_into_test FROM "/tmp/data.jsonl""""
+    Parser(sql) shouldBe Right(CopyInto("/tmp/data.jsonl", "copy_into_test", None, None))
+  }
+
+  it should "reject an unsupported FILE_FORMAT loudly" in {
+    val result = Parser("COPY INTO users FROM '/data/users.csv' FILE_FORMAT = CSV")
+    result.isLeft shouldBe true
+    result.swap.toOption.get.msg should include("Unsupported FILE_FORMAT 'CSV'")
+  }
+
+  it should "re-parse the SQL a CopyInto renders" in {
+    // FileFormat.sql renders `FILE_FORMAT = NAME`; before the `=` was accepted the AST's own
+    // rendering did not survive a round-trip through the parser.
+    val stmt =
+      CopyInto("/tmp/data.json", "copy_into_test", Some(JsonArray), Some(OnConflict(None, true)))
+    Parser(stmt.sql) shouldBe Right(stmt)
+  }
+
+  it should "round-trip CopyInto sources that probe the normalizer and the literal parser" in {
+    // `--` in the path: the old line-based comment stripper cut the literal at the `--`.
+    // Leading whitespace: the old two-token literal parser silently skipped it after the
+    // opening quote, although LocalPath contractually preserves whitespace in COPY INTO paths.
+    Seq(
+      CopyInto("/data/export--2026.json", "t", Some(Json), None),
+      CopyInto(" /tmp/leading-space.json", "t", None, None),
+      CopyInto("\t/tmp/leading-tab.json", "t", None, None),
+      CopyInto("C:\\data\\x.json", "t", None, None)
+    ).foreach { stmt =>
+      Parser(stmt.sql) shouldBe Right(stmt)
+    }
+  }
+
+  // --- Normalization: comments and literals ---
+
+  behavior of "Parser normalization"
+
+  it should "not cut a string literal containing --" in {
+    val result = Parser("SELECT * FROM products WHERE code = 'AB--12'")
+    result.isRight shouldBe true
+    result.toOption.get.sql should include("'AB--12'")
+  }
+
+  it should "strip comments outside literals across multiple lines" in {
+    val sql =
+      """-- leading comment
+        |SELECT * FROM users -- trailing comment with an apostrophe: don't split
+        |WHERE id = 1
+        |""".stripMargin
+    Parser(sql) shouldBe Parser("SELECT * FROM users WHERE id = 1")
+  }
+
+  it should "preserve leading whitespace inside a string literal" in {
+    val result = Parser("SELECT * FROM users WHERE name = ' Bob'")
+    result.isRight shouldBe true
+    result.toOption.get.sql should include("' Bob'")
+  }
+
   it should "parse UPDATE" in {
     val sql = "UPDATE users SET name = 'Bob', age = 42 WHERE id = 1"
     val result = Parser(sql)

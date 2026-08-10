@@ -38,11 +38,16 @@ package object `type` {
 
   trait TypeParser { self: Parser =>
 
+    /** Each branch is ONE atomic regex, quotes included. Splitting it into `"'" ~> content ~> "'"`
+      * lets RegexParsers skip whitespace between the opening quote and the content, so `' Bob'`
+      * silently parsed as `'Bob'` — the literal's interior must never be subject to whitespace
+      * skipping (COPY INTO paths, for one, contractually preserve it — see LocalPath).
+      */
     def literal: PackratParser[StringValue] =
-      (("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") ^^ { str =>
-        StringValue(str.replace("\\\"", "\"").replace("\\\\", "\\"))
-      }) | (("'" ~> """([^'\\]|\\.)*""".r <~ "'") ^^ { str =>
-        StringValue(str.replace("\\'", "'").replace("\\\\", "\\"))
+      (""""([^"\\]|\\.)*"""".r ^^ { str =>
+        StringValue(str.substring(1, str.length - 1).replace("\\\"", "\"").replace("\\\\", "\\"))
+      }) | ("""'([^'\\]|\\.)*'""".r ^^ { str =>
+        StringValue(str.substring(1, str.length - 1).replace("\\'", "'").replace("\\\\", "\\"))
       })
 
     def long: PackratParser[LongValue] =

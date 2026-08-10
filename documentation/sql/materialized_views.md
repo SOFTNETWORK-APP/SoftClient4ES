@@ -417,8 +417,8 @@ CREATE TABLE IF NOT EXISTS customers (
 ### 2. Load data
 
 ```sql
-COPY INTO orders FROM '/data/orders.json' WITH (format = 'json');
-COPY INTO customers FROM '/data/customers.json' WITH (format = 'json');
+COPY INTO orders FROM '/data/orders.json' FILE_FORMAT = 'JSON';
+COPY INTO customers FROM '/data/customers.json' FILE_FORMAT = 'JSON';
 ```
 
 ### 3. Create the materialized view
