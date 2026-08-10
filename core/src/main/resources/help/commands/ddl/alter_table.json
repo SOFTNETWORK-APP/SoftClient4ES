@@ -23,7 +23,7 @@
     "ALTER COLUMN [IF EXISTS] column_name DROP NOT NULL",
     "ALTER COLUMN [IF EXISTS] column_name SET COMMENT 'text'",
     "ALTER COLUMN [IF EXISTS] column_name DROP COMMENT",
-    "ALTER COLUMN [IF EXISTS] column_name SET TYPE new_type",
+    "ALTER COLUMN [IF EXISTS] column_name SET DATA TYPE new_type",
     "ALTER COLUMN [IF EXISTS] column_name SET SCRIPT AS (expression)",
     "ALTER COLUMN [IF EXISTS] column_name DROP SCRIPT",
     "ALTER COLUMN [IF EXISTS] column_name SET OPTIONS (option = value, ...)",
@@ -87,7 +87,7 @@
       "optional": false
     },
     {
-      "name": "SET TYPE",
+      "name": "SET DATA TYPE",
       "description": "Change column data type (requires reindex)",
       "optional": false
     },

@@ -21,7 +21,9 @@ import app.softnetwork.elastic.sql.{
   BooleanValues,
   DoubleValue,
   DoubleValues,
+  IdValue,
   Identifier,
+  IngestTimestampValue,
   LongValue,
   LongValues,
   Null,
@@ -90,6 +92,16 @@ package object `type` {
 
     def value: PackratParser[Value[_]] =
       literal | pi | random | double | long | boolean | nullValue | param | array
+
+    /** The two ingest-time placeholders a column DEFAULT may carry. They live beside `value` so
+      * every value position can opt into them — `object Parser`'s `defaultVal` and `trait Parser`'s
+      * `option` both need them, and only the former could see them while they were declared in the
+      * object.
+      */
+    def ingest_id: PackratParser[Value[_]] = "_id" ^^ (_ => IdValue)
+
+    def ingest_timestamp: PackratParser[Value[_]] =
+      "_ingest.timestamp" ^^ (_ => IngestTimestampValue)
 
     def identifierWithValue: Parser[Identifier] = (value ^^ functionAsIdentifier) >> cast
 

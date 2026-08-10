@@ -307,6 +307,32 @@ CREATE TABLE users (
 PARTITIONED BY (birthdate MONTH);
 ```
 
+### Table Options (index settings)
+
+Index settings are declared with a table-level `OPTIONS (…)` clause after the column list:
+
+```sql
+CREATE TABLE users (
+  id INT,
+  name VARCHAR,
+  PRIMARY KEY (id)
+) OPTIONS (number_of_shards = 1, number_of_replicas = 0);
+```
+
+Any index setting can be passed — for example `default_pipeline` to route inserts through a
+custom ingest pipeline (see [Using Enrich Policies in Pipelines](#using-enrich-policies-in-pipelines)):
+
+```sql
+CREATE TABLE events (
+  id INT,
+  user_id KEYWORD,
+  PRIMARY KEY (id)
+) OPTIONS (default_pipeline = 'events_enriched');
+```
+
+> ⚠️ `OPTIONS`, not `WITH` — `WITH (…)` belongs to `CREATE MATERIALIZED VIEW`. A
+> `CREATE TABLE … WITH (…)` is rejected by the parser (the whole statement must parse).
+
 ---
 
 ## CREATE TABLE AS SELECT
@@ -346,10 +372,32 @@ The gateway:
 - `ALTER COLUMN column_name SET|ADD FIELD field_definition`
 - `ALTER COLUMN column_name DROP FIELD field_name`
 - `ALTER COLUMN column_name SET FIELDS (...)`
-- `SET|ADD MAPPING (key = value)`
+- `SET|ADD MAPPING key = value`
 - `DROP MAPPING key`
-- `SET|ADD SETTING (key = value)`
+- `SET|ADD SETTING key = value`
 - `DROP SETTING key`
+- `SET|ADD ALIAS alias_name = value`
+- `DROP ALIAS alias_name`
+
+### Table-level clauses take no parentheses
+
+The table-level `MAPPING`, `SETTING` and `ALIAS` clauses are written as a bare `key = value`,
+**without** parentheses — unlike the column-level `ALTER COLUMN … SET|ADD OPTION (key = value)`:
+
+```sql
+ALTER TABLE orders (
+  SET MAPPING _meta.owner = 'analytics',
+  SET SETTING index.refresh_interval = '1s',
+  SET ALIAS recent_orders = (filter = (range = (order_date = (gte = 'now-7d'))))
+);
+```
+
+The parentheses around the statement list are optional and independent of any single clause —
+`ALTER TABLE orders SET SETTING index.refresh_interval = '1s'` is equally valid.
+
+A value may be a scalar (`'1s'`, `true`, `2`), an array (`['a', 'b']`), or a nested object
+written with **parentheses**: `(key = value, key = (nested = value))`. The `{…}` brace form is
+for `STRUCT` column values in `INSERT`, and is not accepted here.
 
 ### Type Changes and Safety
 
@@ -1391,7 +1439,7 @@ CREATE TABLE events (
   event_type KEYWORD,
   timestamp TIMESTAMP,
   PRIMARY KEY (id)
-) WITH (default_pipeline = "events_enriched");
+) OPTIONS (default_pipeline = 'events_enriched');
 ```
 
 #### 6. Insert data

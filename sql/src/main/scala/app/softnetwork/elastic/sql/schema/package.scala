@@ -1013,7 +1013,7 @@ package object schema {
       }
       val defaultOpt = defaultValue.map(v => s" DEFAULT ${v.sql}").getOrElse("")
       val notNullOpt = if (notNull) " NOT NULL" else ""
-      val commentOpt = comment.map(c => s" COMMENT '$c'").getOrElse("")
+      val commentOpt = comment.map(c => s" COMMENT '${escapeStringLiteral(c)}'").getOrElse("")
       val fieldsOpt = if (multiFields.nonEmpty) {
         s" FIELDS (\n\t${multiFields.mkString(s",\n\t")}\n\t)"
       } else {
@@ -1577,7 +1577,7 @@ package object schema {
                 table.copy(columns = table.columns.filterNot(_.name == columnName))
               else throw ColumnNotFound(columnName, table.name)
             case RenameColumn(oldName, newName) =>
-              if (cols.contains(oldName))
+              if (table.cols.contains(oldName))
                 table.copy(
                   columns = table.columns.map { col =>
                     if (col.name == oldName) col.copy(name = newName) else col
@@ -1731,7 +1731,7 @@ package object schema {
               else throw ColumnNotFound(columnName, table.name)
             // multi-fields
             case AlterColumnFields(columnName, newFields, ifExists) =>
-              val col = find(columnName)
+              val col = table.find(columnName)
               val exists = col.isDefined
               if (ifExists && !exists) table
               else {
@@ -1755,15 +1755,25 @@ package object schema {
                   field,
                   ifExists
                 ) =>
-              val col = find(columnName)
+              val col = table.find(columnName)
               val exists = col.isDefined
               if (ifExists && !exists) table
               else {
                 col match {
                   case Some(c) =>
-                    val updatedFields = c.multiFields.filterNot(_.name == field.name) :+ field
-                    c.copy(multiFields = updatedFields)
-                    table
+                    // The copy is the whole point of the branch: assigning it to nothing and
+                    // returning `table` made SET|ADD FIELD a no-op that still reported success.
+                    val updated = c
+                      .copy(
+                        multiFields =
+                          c.multiFields.filterNot(_.name == field.name) :+ field.update(Some(c))
+                      )
+                      .updateStruct()
+                    table.copy(
+                      columns = table.columns.map { existing =>
+                        if (existing.name == updated.name) updated else existing
+                      }
+                    )
                   case _ => throw ColumnNotFound(columnName, table.name)
                 }
               }
@@ -1772,16 +1782,22 @@ package object schema {
                   fieldName,
                   ifExists
                 ) =>
-              val col = find(columnName)
+              val col = table.find(columnName)
               val exists = col.isDefined
               if (ifExists && !exists) table
               else {
                 col match {
                   case Some(c) =>
-                    c.copy(
-                      multiFields = c.multiFields.filterNot(_.name == fieldName)
+                    val updated = c
+                      .copy(
+                        multiFields = c.multiFields.filterNot(_.name == fieldName)
+                      )
+                      .updateStruct()
+                    table.copy(
+                      columns = table.columns.map { existing =>
+                        if (existing.name == updated.name) updated else existing
+                      }
                     )
-                    table
                   case _ => throw ColumnNotFound(columnName, table.name)
                 }
               }

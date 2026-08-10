@@ -344,12 +344,16 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     identifier.bucket.find(_.name == bucket.name) match {
       case Some(_) =>
         operator match {
+          // These feed the ES `terms` include/exclude and its regex form, so they need the value
+          // itself, never its SQL rendering: `.sql` carries the quote delimiters (which used to be
+          // stripped for EQ/NE but not for LIKE/RLIKE, embedding `'` in the regex) and, since
+          // string literals are escaped, would also carry `\\` for a value holding one backslash.
           case EQ =>
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
-                case Some(v: Value[_]) if v.sql.nonEmpty =>
+                case Some(v: Value[_]) if v.value.toString.nonEmpty =>
                   bucketIncludesExcludes.copy(values =
-                    bucketIncludesExcludes.values ++ Set(v.sql.replaceAll("'", ""))
+                    bucketIncludesExcludes.values ++ Set(v.value.toString)
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -357,9 +361,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           case NE | DIFF =>
             if ((not && maybeNot.isEmpty) || (!not && maybeNot.isDefined))
               maybeValue match {
-                case Some(v: Value[_]) if v.sql.nonEmpty =>
+                case Some(v: Value[_]) if v.value.toString.nonEmpty =>
                   bucketIncludesExcludes.copy(values =
-                    bucketIncludesExcludes.values ++ Set(v.sql.replaceAll("'", ""))
+                    bucketIncludesExcludes.values ++ Set(v.value.toString)
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -367,9 +371,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           case LIKE =>
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
-                case Some(v: StringValue) if v.sql.nonEmpty =>
+                case Some(v: StringValue) if v.value.nonEmpty =>
                   bucketIncludesExcludes.copy(regex =
-                    bucketIncludesExcludes.regex.orElse(Option(v.sql.replaceAll("%", ".*")))
+                    bucketIncludesExcludes.regex.orElse(Option(v.value.replaceAll("%", ".*")))
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -377,9 +381,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           case RLIKE =>
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
-                case Some(v: StringValue) if v.sql.nonEmpty =>
+                case Some(v: StringValue) if v.value.nonEmpty =>
                   bucketIncludesExcludes.copy(regex =
-                    bucketIncludesExcludes.regex.orElse(Option(v.sql))
+                    bucketIncludesExcludes.regex.orElse(Option(v.value))
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -892,8 +896,9 @@ case class MatchCriteria(
     identifier.bucket.find(_.name == bucket.name) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+          // The value, not its rendering — see the include/exclude note above.
           bucketIncludesExcludes.copy(regex =
-            bucketIncludesExcludes.regex.orElse(Option(value.sql))
+            bucketIncludesExcludes.regex.orElse(Option(value.value.toString))
           )
         else bucketIncludesExcludes
       case _ => bucketIncludesExcludes
