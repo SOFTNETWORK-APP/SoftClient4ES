@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client.repl
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.SoftClient4esCoreBuildInfo
+import app.softnetwork.elastic.client.GatewayApi
 import app.softnetwork.elastic.client.help.{HelpCategory, HelpRegistry, HelpRenderer}
 import app.softnetwork.elastic.client.result.{OutputFormat, QueryRows, ResultRenderer}
 import org.jline.reader._
@@ -277,7 +278,9 @@ class Repl(
   }
 
   private def executeBatch(sql: String): Unit = {
-    val statements = sql.split(";").map(_.trim).filter(_.nonEmpty)
+    // Quote-aware, not a bare split(";") — a `;` inside a string literal is not a statement
+    // boundary, and used to break batch scripts mid-literal.
+    val statements = GatewayApi.splitStatements(sql)
 
     statements.foreach { stmt =>
       println(s"\n${cyan("=>")} ${gray(stmt)}")

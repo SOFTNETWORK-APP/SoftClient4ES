@@ -46,15 +46,14 @@ It routes SQL statements to the appropriate executor:
 
 The API automatically:
 
-- normalizes SQL (removes comments, trims whitespace, drops a trailing `;`)
-- parses SQL into AST nodes — the **whole input must be one statement**: anything left over after
-  the statement is a parse error rather than being silently discarded
+- normalizes SQL (removes comments, trims whitespace)
+- splits multiple statements separated by `;` — quote-aware, so a `;` inside a string literal or a
+  quoted identifier is not a statement boundary
+- parses each statement into AST nodes — each must be **complete on its own**: anything left over
+  after a statement is a parse error rather than being silently discarded
 - dispatches to the correct executor
-- returns a typed `QueryResult`
-
-> **One statement per call.** `run("stmt1; stmt2")` is a parse error — split multi-statement
-> input on `;` client-side and call `run` per statement, as the REPL does for scripts and
-> `source` files.
+- runs the statements sequentially, stopping at the first failure, and returns the **last**
+  statement's typed `QueryResult`
 
 ---
 
