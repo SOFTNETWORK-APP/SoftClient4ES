@@ -4027,6 +4027,84 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  /** The other half of #213. The per-statement guards above only reject shapes someone enumerated;
+    * `Parser.apply` now requires the whole input to be consumed, which covers the rest. Each of
+    * these previously parsed as a prefix and ran with everything after it discarded — and on a
+    * DELETE, a discarded WHERE means `match_all`, i.e. the whole index.
+    */
+  it should "reject trailing input rather than silently discarding it" in {
+    val discarded = Seq(
+      // one letter off `WHERE`, so the alias regex's keyword lookahead misses it: `WHEREE` is
+      // taken as the table alias and `id = 1` used to be dropped, deleting every document
+      "DELETE FROM orders WHEREE id = 1",
+      "DELETE FROM orders LIMIT 10",
+      "DELETE FROM orders,",
+      "UPDATE orders SET a = 1 LIMIT 10",
+      "SELECT * FROM orders GARBAGE HERE"
+    )
+    discarded.foreach { sql =>
+      withClue(s"[$sql] ") {
+        Parser(sql).isLeft shouldBe true
+      }
+    }
+  }
+
+  /** `DELETE FROM orders customers` is NOT trailing junk and `phrase` rightly does not reject it:
+    * an alias without `AS` is standard SQL, so this is `DELETE FROM orders AS customers`. A missed
+    * comma therefore still reads as an alias — pinned here so the limit of the #213 fix is explicit
+    * rather than assumed.
+    */
+  it should "read a bare second word after a DELETE table as an alias, not a second table" in {
+    Parser("DELETE FROM orders customers").toOption.get match {
+      case d: Delete =>
+        d.table.name shouldBe "orders"
+        d.table.tableAlias.map(_.alias) shouldBe Some("customers")
+      case other => fail(s"Expected Delete, got $other")
+    }
+  }
+
+  it should "reject a trailing clause after the end of a watcher" in {
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS
+        | EVERY 5 MINUTES
+        | FROM a WITHIN 2 MINUTES
+        | ALWAYS DO
+        | log_action AS LOG "x" AT INFO
+        | END JOIN b ON a.x = b.x""".stripMargin
+    Parser(sql).isLeft shouldBe true
+  }
+
+  /** Found by the `phrase` change. The union token is `Expr("UNION ALL")`, so a bare `UNION` never
+    * matched the separator: `rep1sep` stopped after the first leg and the rest was discarded, and
+    * the query silently returned **only the first leg's rows**. `UNION` and `UNION ALL` are not
+    * synonyms — one de-duplicates — so rejecting the unimplemented one is the honest answer.
+    */
+  it should "reject a bare UNION rather than silently returning the first leg" in {
+    Parser("SELECT a FROM x UNION SELECT b FROM y").isLeft shouldBe true
+    // the supported spelling still works — see "parse UNION ALL" above for the full assertion
+    Parser("SELECT a FROM x UNION ALL SELECT b FROM y").isRight shouldBe true
+  }
+
+  /** Multi-word tokens (`GROUP BY`, `IS NOT NULL`, `UNION ALL`, …) used to match exactly one space,
+    * so keyword-aligned SQL missed the token and — under the old lenient parse — the rest of the
+    * statement was silently dropped: `WHERE a IS NOT NULL` ran as a bare `SELECT * FROM t`, every
+    * row. `TokenRegex` now accepts any whitespace run between the words; with `phrase`, a future
+    * regression here fails loudly instead of dropping clauses.
+    */
+  it should "match multi-word tokens across any whitespace" in {
+    Parser("SELECT * FROM t WHERE a IS  NOT  NULL").isRight shouldBe true
+    Parser("SELECT COUNT(*) FROM t GROUP  BY a").isRight shouldBe true
+    Parser("SELECT a FROM x UNION  ALL SELECT b FROM y").isRight shouldBe true
+  }
+
+  // A single statement terminator stays idiomatic — the REPL already strips it, but JDBC/ADBC
+  // callers pass statements verbatim.
+  it should "still accept a single trailing semicolon" in {
+    Parser("SELECT * FROM orders WHERE status = 'FAILED';").isRight shouldBe true
+    Parser("DELETE FROM orders WHERE status = 'FAILED' ;").isRight shouldBe true
+    Parser("UPDATE orders SET a = 1 WHERE b = 2;").isRight shouldBe true
+  }
+
   behavior of "Parser Cluster"
 
   it should "parse SHOW CLUSTER NAME" in {

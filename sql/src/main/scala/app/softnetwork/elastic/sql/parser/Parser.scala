@@ -1189,8 +1189,32 @@ object Parser
         .map(_.split("--")(0).trim)
         .filterNot(w => w.isEmpty || w.startsWith("--"))
         .mkString(" ")
+        // Trailing statement terminators are idiomatic SQL and every caller that splits on `;`
+        // already drops them; keep tolerating them now that anything else left over is an error.
+        // A run rather than one, because tools that append `;` to SQL a user already terminated
+        // produce `;;`. Anchored, so a `;` inside a literal is out of reach — a literal always
+        // ends in its closing quote.
+        .replaceFirst("(?:;\\s*)+$", "")
+        .trim
     val reader = new PackratReader(new CharSequenceReader(normalizedQuery))
-    parse(statement, reader) match {
+    // `phrase`, not a bare `parse` (#213): a bare `parse` succeeds on the longest matching PREFIX
+    // and silently discards the rest, so the statement that ran was not the statement written.
+    // Measured before/after on this exact grammar:
+    //
+    //   DELETE FROM orders WHEREE id = 1     ran as DELETE FROM orders  -> emptied the index
+    //   DELETE FROM orders LIMIT 10          ran as DELETE FROM orders  -> emptied the index
+    //   UPDATE orders SET a = 1 LIMIT 10     updated every document
+    //   SELECT a FROM x UNION SELECT b ...   ran as SELECT a FROM x     (bare UNION is not the
+    //                                        UNION ALL token, so the whole second leg vanished)
+    //   SELECT * FROM t WHERE a IS  NOT  NULL  ran as SELECT * FROM t   (two spaces broke the
+    //                                        token match and the WHERE was dropped — fixed in
+    //                                        TokenRegex with \s+, and now loud here if it recurs)
+    //
+    // All of those are hard errors now. The per-statement guards added for #213 cover only the
+    // shapes someone enumerated; requiring the whole input to be consumed covers the rest. The
+    // one shape this cannot catch: `DELETE FROM orders customers` stays a valid single-table
+    // DELETE, because an alias without AS is standard SQL — pinned as such in ParserSpec.
+    parse(phrase(statement), reader) match {
       case NoSuccess(msg, _) =>
         Console.err.println(msg)
         Left(ParserError(msg))

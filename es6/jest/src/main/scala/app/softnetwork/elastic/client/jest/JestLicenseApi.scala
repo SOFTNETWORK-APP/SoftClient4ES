@@ -51,13 +51,27 @@ trait JestLicenseApi extends LicenseApi with JestClientHelpers {
 
   /** Activating a licence is not idempotent — `retryable = false` so a transient fault is reported
     * rather than replayed.
+    *
+    * The boolean is read from `<license>_was_started` in the body rather than from the HTTP status
+    * (SoftClient4ES#216). `executeJestBooleanAction` maps `_.isSucceeded`, but the transformer only
+    * runs when the result already succeeded, so it could return nothing but a constant `true`.
+    * Measured against Elasticsearch 8.18.3: a *state* refusal ("Current license is basic", "Trial
+    * was already activated") is an HTTP **403** and is therefore already a failure, but a refusal
+    * for want of acknowledgement is an HTTP **200** carrying `"basic_was_started": false` — and
+    * that is the response listing what the downgrade would disable, Watcher included. This client
+    * always sends `acknowledge=true`, so that case is not reachable today; reading the field costs
+    * nothing and stops it being one dropped parameter away from reporting a licence it never got.
     */
   private[this] def executeActivateLicense(license: String): ElasticResult[Boolean] =
-    executeJestBooleanAction[JestResult](
+    executeJestAction[JestResult, Boolean](
       operation = s"enable${license.capitalize}License",
       retryable = false
     )(
       new ActivateLicense.Builder(license = license, acknowledge = true).build
+    )(jestResult =>
+      Option(jestResult.getJsonObject)
+        .flatMap(json => Option(json.get(s"${license}_was_started")))
+        .exists(_.getAsBoolean)
     )
 
 }

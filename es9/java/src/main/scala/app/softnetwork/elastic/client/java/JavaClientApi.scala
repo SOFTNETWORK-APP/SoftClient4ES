@@ -2592,7 +2592,12 @@ trait JavaClientLicenseApi extends LicenseApi with JavaClientHelpers {
         .postStartBasic(
           PostStartBasicRequest.of(builder => builder.acknowledge(true))
         )
-    )(resp => resp.acknowledged())
+    )(
+      // `basicWasStarted`, not `acknowledged`: a refusal for want of acknowledgement is an
+      // HTTP 200 whose `acknowledged` is false but whose meaning is "nothing was started"
+      // (SoftClient4ES#216). State refusals are 403 and already fail.
+      resp => resp.basicWasStarted()
+    )
 
   override private[client] def executeEnableTrialLicense(): ElasticResult[Boolean] =
     executeJavaBooleanAction(
@@ -2605,5 +2610,5 @@ trait JavaClientLicenseApi extends LicenseApi with JavaClientHelpers {
         .postStartTrial(
           PostStartTrialRequest.of(builder => builder.acknowledge(true))
         )
-    )(resp => resp.acknowledged())
+    )(resp => resp.trialWasStarted())
 }

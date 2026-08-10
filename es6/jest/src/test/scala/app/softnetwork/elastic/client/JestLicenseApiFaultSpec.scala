@@ -229,6 +229,74 @@ class JestLicenseApiFaultSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  /** SoftClient4ES#216 — the activation methods used to return a constant `true`:
+    * `executeJestBooleanAction` maps `_.isSucceeded`, but the transformer only runs when the result
+    * already succeeded. The boolean now comes from `<license>_was_started` in the body.
+    *
+    * The bodies below are the ones Elasticsearch 8.18.3 actually returned when probed. A *state*
+    * refusal is a 403 and was always a failure; the 200-with-`false` case is the acknowledgement
+    * refusal, whose body lists what the downgrade would disable.
+    */
+  private def withStubBody[T](status: Int, body: String)(f: ElasticClientApi => T): T = {
+    val server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext(
+      "/",
+      new HttpHandler {
+        override def handle(exchange: HttpExchange): Unit = {
+          val bytes = body.getBytes("UTF-8")
+          exchange.getResponseHeaders.add("Content-Type", "application/json")
+          exchange.sendResponseHeaders(status, bytes.length.toLong)
+          exchange.getResponseBody.write(bytes)
+          exchange.close()
+        }
+      }
+    )
+    server.start()
+    try {
+      val conf = ConfigFactory.parseString(
+        s"""elastic {
+           |  credentials { scheme = "http", host = "127.0.0.1", port = ${server.getAddress.getPort} }
+           |  connection-timeout = 2 s
+           |  socket-timeout = 2 s
+           |}""".stripMargin
+      )
+      f(new JestClientSpi().client(conf))
+    } finally server.stop(0)
+  }
+
+  "enableBasicLicense" should "report true when the body says the licence was started" in {
+    withStubBody(200, """{"acknowledged":true,"basic_was_started":true}""") { client =>
+      client.executeEnableBasicLicense() shouldBe ElasticSuccess(true)
+    }
+  }
+
+  it should "report false on the acknowledgement refusal, which is an HTTP 200" in {
+    withStubBody(
+      200,
+      """{"acknowledged":false,"basic_was_started":false,"error_message":"Operation failed: Needs acknowledgement."}"""
+    ) { client =>
+      client.executeEnableBasicLicense() shouldBe ElasticSuccess(false)
+    }
+  }
+
+  "enableTrialLicense" should "report true when the body says the trial was started" in {
+    withStubBody(200, """{"acknowledged":true,"trial_was_started":true,"type":"trial"}""") {
+      client =>
+        client.executeEnableTrialLicense() shouldBe ElasticSuccess(true)
+    }
+  }
+
+  // The state refusals Elasticsearch answers with a 403 — already failures, asserted so the
+  // distinction from the 200-with-false case above stays pinned.
+  it should "report a failure on the 403 state refusal" in {
+    withStubBody(
+      403,
+      """{"acknowledged":true,"trial_was_started":false,"error_message":"Operation failed: Trial was already activated."}"""
+    ) { client =>
+      client.executeEnableTrialLicense().isFailure shouldBe true
+    }
+  }
+
   /** The connection-refused cases above are `NonFatal`, so they would pass with a plain `Try` and
     * prove nothing about the half of the fix the issue actually spelled out: `NonFatal` does NOT
     * cover `LinkageError`, yet `NoClassDefFoundError` is an observed failure mode in the es6

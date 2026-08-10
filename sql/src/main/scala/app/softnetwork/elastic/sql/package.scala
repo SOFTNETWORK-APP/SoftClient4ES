@@ -835,7 +835,15 @@ package object sql {
 
   trait TokenRegex extends Token {
     def words: List[String] = List(sql)
-    lazy val regex: Regex = s"(?i)(${words.mkString("|")})\\b".r
+    // A literal space in a multi-word token (`GROUP BY`, `UNION ALL`, `IS NOT NULL`, …) matches
+    // one space and no other whitespace, so keyword-aligned SQL — `GROUP  BY`, or a newline
+    // between the words — missed the token. That used to be invisible: the production simply did
+    // not match and the rest of the statement was discarded. Now that `Parser.apply` requires the
+    // whole input to be consumed it would be a hard rejection of valid SQL, so accept any run of
+    // whitespace between the words. `\s+` cannot widen what matches otherwise: every alternative
+    // still has to match the same words in the same order.
+    lazy val regex: Regex =
+      s"(?i)(${words.map(_.replace(" ", "\\s+")).mkString("|")})\\b".r
   }
 
   trait Source extends Updateable {
