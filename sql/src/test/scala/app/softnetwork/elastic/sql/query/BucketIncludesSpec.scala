@@ -6,8 +6,8 @@ import org.scalatest.matchers.should.Matchers
 
 /** The `terms` aggregation's `include` / `exclude` (and their regex form) are derived from a HAVING
   * criterion's value. They must come from the VALUE, never from its SQL rendering: `.sql` carries
-  * the quote delimiters and, since string literals are escaped, a value holding one backslash
-  * would reach Elasticsearch holding two — an include that matches nothing.
+  * the quote delimiters and, since string literals are escaped, a value holding one backslash would
+  * reach Elasticsearch holding two — an include that matches nothing.
   */
 class BucketIncludesSpec extends AnyFlatSpec with Matchers {
 

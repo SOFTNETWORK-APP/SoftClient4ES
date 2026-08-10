@@ -18,7 +18,7 @@ class ObjectValuePathSpec extends AnyFlatSpec with Matchers {
         "type" -> StringValue("regular"),
         "columns" -> ObjectValue(
           ListMap(
-            "id" -> ObjectValue(ListMap("data_type" -> StringValue("INT"))),
+            "id"   -> ObjectValue(ListMap("data_type" -> StringValue("INT"))),
             "name" -> ObjectValue(ListMap("data_type" -> StringValue("VARCHAR")))
           )
         )
