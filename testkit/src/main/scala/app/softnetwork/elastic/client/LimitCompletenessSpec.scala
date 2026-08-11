@@ -37,8 +37,8 @@ case class LimitRow(id: String, amount: Int)
 
 /** Regression test for issue #224: a `SELECT` with an explicit `LIMIT` above the index's
   * `index.max_result_window` (ES default 10,000) failed outright, while the SAME query with no
-  * `LIMIT` succeeded and returned every row — the one-shot search path issued a single search
-  * with `size = LIMIT`, which Elasticsearch rejects whenever `from + size` exceeds the window.
+  * `LIMIT` succeeded and returned every row — the one-shot search path issued a single search with
+  * `size = LIMIT`, which Elasticsearch rejects whenever `from + size` exceeds the window.
   *
   * Row queries whose LIMIT window (`offset + limit`) exceeds the ES default window are now routed
   * through the scroll path bounded at `maxDocuments = offset + limit` (#209's routing, extended).
@@ -58,9 +58,9 @@ trait LimitCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
 
   private val index = "limit_completeness"
 
-  /** 12,000 docs — above the ES default `index.max_result_window` of 10,000, so an explicit
-    * `LIMIT 11000` can only be served by paging past the window. Zero-padded ids make ORDER BY +
-    * OFFSET content exact oracles.
+  /** 12,000 docs — above the ES default `index.max_result_window` of 10,000, so an explicit `LIMIT
+    * 11000` can only be served by paging past the window. Zero-padded ids make ORDER BY + OFFSET
+    * content exact oracles.
     */
   private val totalDocs = 12000
 
