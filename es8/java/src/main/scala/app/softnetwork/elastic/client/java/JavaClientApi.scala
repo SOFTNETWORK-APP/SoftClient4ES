@@ -1071,8 +1071,10 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
           classOf[JMap[String, Object]]
         )
     ).map { response =>
-      ElasticSuccess(Some(convertToJson(response)))
-    }
+      ElasticSuccess(Some(convertToJson(response))): ElasticResult[Option[String]]
+    }.recover(
+      asyncElasticFailure("singleSearch", Some(elasticQuery.indices.mkString(",")))
+    )
 
   override private[client] def executeMultiSearchAsync(
     elasticQueries: ElasticQueries
@@ -1089,8 +1091,14 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
       async().msearch(request, classOf[JMap[String, Object]])
     }
       .map { response =>
-        ElasticSuccess(Some(convertToJson(response)))
+        ElasticSuccess(Some(convertToJson(response))): ElasticResult[Option[String]]
       }
+      .recover(
+        asyncElasticFailure(
+          "multiSearch",
+          Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+        )
+      )
 
 }
 
