@@ -19,6 +19,7 @@ package app.softnetwork.elastic.client.java
 import app.softnetwork.elastic.client.ElasticClientHelpers
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
 
+import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
 trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
@@ -27,6 +28,71 @@ trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
   // ========================================================================
   // GENERIC METHODS FOR EXECUTING JAVA CLIENT ACTIONS
   // ========================================================================
+
+  /** Flatten an Elasticsearch failure into a message that names the ACTUAL cause.
+    *
+    * The top-level `reason` of a search failure is often just "all shards failed"
+    * (`search_phase_execution_exception`); the actionable detail — e.g. a `max_result_window`
+    * rejection (#224) — lives in the typed `rootCause` / `causedBy` tree of the ErrorCause, which
+    * is invisible outside this module (it is NOT part of any Throwable message or cause chain).
+    */
+  private[client] def elasticsearchErrorMessage(
+    operation: String,
+    ex: co.elastic.clients.elasticsearch._types.ElasticsearchException
+  ): String = {
+    val error = Option(ex.error())
+    val errorType = error.flatMap(e => Option(e.`type`()))
+    val reason = error.flatMap(e => Option(e.reason()))
+    val rootCauses =
+      error.toSeq.flatMap(_.rootCause().asScala).flatMap(rc => Option(rc.reason()))
+    val causedBy = {
+      // Walk the causedBy chain (bounded — defensive against cyclic metadata).
+      Iterator
+        .iterate(error.flatMap(e => Option(e.causedBy())))(_.flatMap(e => Option(e.causedBy())))
+        .takeWhile(_.isDefined)
+        .take(10)
+        .flatten
+        .flatMap(cb => Option(cb.reason()))
+        .toSeq
+    }
+    val reasons = (reason.toSeq ++ rootCauses ++ causedBy).distinct
+    s"Elasticsearch error during $operation: ${errorType.getOrElse("unknown")} - ${if (reasons.nonEmpty) reasons.mkString("; ")
+    else ex.getMessage}"
+  }
+
+  /** Convert a Throwable failing an asynchronous Java-client call into an ElasticFailure,
+    * unwrapping the CompletionException layer and extracting the full Elasticsearch error detail
+    * (see [[elasticsearchErrorMessage]]). Without this, an async search failure propagates as a raw
+    * failed future whose message hides the root cause (#224).
+    */
+  private[client] def asyncElasticFailure[T](
+    operation: String,
+    index: Option[String]
+  ): PartialFunction[Throwable, ElasticResult[T]] = { case t: Throwable =>
+    val unwrapped = t match {
+      case ce: java.util.concurrent.CompletionException if ce.getCause != null => ce.getCause
+      case other                                                               => other
+    }
+    val error = unwrapped match {
+      case ex: co.elastic.clients.elasticsearch._types.ElasticsearchException =>
+        ElasticError(
+          message = elasticsearchErrorMessage(operation, ex),
+          cause = Some(ex),
+          statusCode = Option(ex.status()).map(_.intValue()),
+          index = index,
+          operation = Some(operation)
+        )
+      case other =>
+        ElasticError(
+          message = s"Exception during $operation: ${other.getMessage}",
+          cause = Some(other),
+          index = index,
+          operation = Some(operation)
+        )
+    }
+    logger.warn(s"${error.message}${index.map(i => s" on index '$i'").getOrElse("")}")
+    ElasticResult.failure(error)
+  }
 
   //format:off
   /** Execute a Java Client action with a generic transformation of the result.
@@ -84,14 +150,10 @@ trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
       case Success(result) =>
         ElasticResult.success(result)
       case Failure(ex: co.elastic.clients.elasticsearch._types.ElasticsearchException) =>
-        // Extract error details from Elasticsearch exception
+        // Extract error details from Elasticsearch exception — including the rootCause /
+        // causedBy detail, without which a search failure reads "all shards failed" (#224)
         val statusCode = Option(ex.status()).map(_.intValue())
-        val errorType = Option(ex.error()).flatMap(e => Option(e.`type`()))
-        val reason = Option(ex.error()).flatMap(e => Option(e.reason()))
-
-        val message =
-          s"Elasticsearch error during $operation: ${errorType.getOrElse("unknown")} - ${reason
-            .getOrElse(ex.getMessage)}"
+        val message = elasticsearchErrorMessage(operation, ex)
         logger.warn(s"$message$indexStr")
 
         ElasticResult.failure(

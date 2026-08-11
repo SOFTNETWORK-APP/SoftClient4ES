@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  Limit,
   MultiSearch,
   SQLAggregation,
   SearchStatement,
@@ -114,11 +115,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           explodeNested = single.explodeNested
         )
         this match {
-          case scrollApi: ScrollApi if single.limit.isEmpty && single.returnsRows =>
+          case scrollApi: ScrollApi if single.returnsRows && requiresScrollPaging(single.limit) =>
             // A row query is data-bound, not time-bound: every page request below
             // carries its own timeout, so the stream always terminates.
             Await.result(
-              scrollAllRows(scrollApi, single, elasticQuery),
+              scrollRows(scrollApi, single, elasticQuery),
               Duration.Inf
             )
           case _ =>
@@ -285,7 +286,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
         )
         ElasticResult.failure(
-          error.copy(
+          enrichMaxResultWindowError(error).copy(
             operation = Some("search"),
             index = Some(elasticQuery.indices.mkString(","))
           )
@@ -390,7 +391,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           s"❌ Failed to execute multi-search for query \n$elasticQueries\n -> ${error.message}"
         )
         ElasticResult.failure(
-          error.copy(
+          enrichMaxResultWindowError(error).copy(
             operation = Some("multiSearch")
           )
         )
@@ -442,8 +443,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           collection.immutable.Seq(single.sources: _*)
         )
         this match {
-          case scrollApi: ScrollApi if single.limit.isEmpty && single.returnsRows =>
-            scrollAllRows(scrollApi, single, elasticQuery)
+          case scrollApi: ScrollApi if single.returnsRows && requiresScrollPaging(single.limit) =>
+            scrollRows(scrollApi, single, elasticQuery)
           case _ =>
             if (single.windowRowQuery)
               Future.successful(searchWithWindowEnrichment(single))
@@ -514,75 +515,97 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val sql = elasticQuery.sql
     val query = elasticQuery.query
     val indices = elasticQuery.indices.mkString(",")
-    executeSingleSearchAsync(elasticQuery).flatMap {
-      case ElasticSuccess(Some(response)) =>
-        logger.info(
-          s"✅ Successfully executed asynchronous search for query \n$elasticQuery\nin indices '$indices'"
-        )
-        val aggs = toClientAggregations(aggregations)
-        ElasticResult.fromTry(
-          parseResponse(
-            response,
-            fieldAliases,
-            aggs,
-            fields,
-            nestedHits,
-            elasticQuery.explodeNested
+    executeSingleSearchAsync(elasticQuery)
+      .flatMap {
+        case ElasticSuccess(Some(response)) =>
+          logger.info(
+            s"✅ Successfully executed asynchronous search for query \n$elasticQuery\nin indices '$indices'"
           )
-        ) match {
-          case success @ ElasticSuccess(_) =>
-            logger.info(
-              s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
+          val aggs = toClientAggregations(aggregations)
+          ElasticResult.fromTry(
+            parseResponse(
+              response,
+              fieldAliases,
+              aggs,
+              fields,
+              nestedHits,
+              elasticQuery.explodeNested
             )
-            Future.successful(
-              ElasticResult.success(
-                ElasticResponse(
-                  sql,
-                  query,
-                  success.value,
-                  fieldAliases,
-                  aggs
+          ) match {
+            case success @ ElasticSuccess(_) =>
+              logger.info(
+                s"✅ Successfully parsed search results for query \n$elasticQuery\nin indices '$indices'"
+              )
+              Future.successful(
+                ElasticResult.success(
+                  ElasticResponse(
+                    sql,
+                    query,
+                    success.value,
+                    fieldAliases,
+                    aggs
+                  )
                 )
               )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to parse search results for query \n${sql
-                .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
-            )
-            Future.successful(
-              ElasticResult.failure(
-                error.copy(
-                  operation = Some("searchAsync"),
-                  index = Some(indices)
+            case ElasticFailure(error) =>
+              logger.error(
+                s"❌ Failed to parse search results for query \n${sql
+                  .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
+              )
+              Future.successful(
+                ElasticResult.failure(
+                  error.copy(
+                    operation = Some("searchAsync"),
+                    index = Some(indices)
+                  )
                 )
               )
+          }
+        case ElasticSuccess(_) =>
+          val error =
+            ElasticError(
+              message =
+                s"Failed to execute asynchronous search for query \n$elasticQuery\nin indices '$indices'",
+              index = Some(elasticQuery.indices.mkString(",")),
+              operation = Some("searchAsync")
             )
-        }
-      case ElasticSuccess(_) =>
-        val error =
-          ElasticError(
-            message =
-              s"Failed to execute asynchronous search for query \n$elasticQuery\nin indices '$indices'",
-            index = Some(elasticQuery.indices.mkString(",")),
-            operation = Some("searchAsync")
+          logger.error(s"❌ ${error.message}")
+          Future.successful(ElasticResult.failure(error))
+        case ElasticFailure(error) =>
+          logger.error(
+            s"❌ Failed to execute asynchronous search for query \n${sql
+              .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
           )
-        logger.error(s"❌ ${error.message}")
-        Future.successful(ElasticResult.failure(error))
-      case ElasticFailure(error) =>
-        logger.error(
-          s"❌ Failed to execute asynchronous search for query \n${sql
-            .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
-        )
-        Future.successful(
+          Future.successful(
+            ElasticResult.failure(
+              enrichMaxResultWindowError(error).copy(
+                operation = Some("searchAsync"),
+                index = Some(elasticQuery.indices.mkString(","))
+              )
+            )
+          )
+      }
+      .recover {
+        // Issue #224 — some client implementations surface an execution failure as a FAILED future
+        // rather than an ElasticFailure; without this recover the raw Throwable propagates to the
+        // consumer, which typically flattens it into an opaque generic error. Honor the
+        // ElasticResult contract here (and translate a max_result_window rejection on the way).
+        case t: Throwable =>
+          logger.error(
+            s"❌ Failed to execute asynchronous search for query \n${sql
+              .getOrElse(query)}\nin indices '$indices' -> ${t.getMessage}"
+          )
           ElasticResult.failure(
-            error.copy(
-              operation = Some("searchAsync"),
-              index = Some(elasticQuery.indices.mkString(","))
+            enrichMaxResultWindowError(
+              ElasticError(
+                message = s"Failed to execute search: ${t.getMessage}",
+                cause = Some(t),
+                operation = Some("searchAsync"),
+                index = Some(indices)
+              )
             )
           )
-        )
-    }
+      }
   }
 
   /** Asynchronous multi-search with Elasticsearch queries.
@@ -611,69 +634,87 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       Option(elasticQueries.queries.flatMap(_.sql).mkString("\nUNION ALL\n"))
     )
 
-    executeMultiSearchAsync(elasticQueries).flatMap {
-      case ElasticSuccess(Some(response)) =>
-        logger.info(
-          s"✅ Successfully executed asynchronous multi-search for query \n$elasticQueries"
-        )
-        val aggs = toClientAggregations(aggregations)
-        ElasticResult.fromTry(
-          parseResponse(
-            response,
-            fieldAliases,
-            aggs,
-            fields,
-            nestedHits,
-            elasticQueries.explodeNested
+    executeMultiSearchAsync(elasticQueries)
+      .flatMap {
+        case ElasticSuccess(Some(response)) =>
+          logger.info(
+            s"✅ Successfully executed asynchronous multi-search for query \n$elasticQueries"
           )
-        ) match {
-          case success @ ElasticSuccess(_) =>
-            logger.info(
-              s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
+          val aggs = toClientAggregations(aggregations)
+          ElasticResult.fromTry(
+            parseResponse(
+              response,
+              fieldAliases,
+              aggs,
+              fields,
+              nestedHits,
+              elasticQueries.explodeNested
             )
-            Future.successful(
-              ElasticResult.success(
-                ElasticResponse(
-                  sql,
-                  query,
-                  success.value,
-                  fieldAliases,
-                  aggs
+          ) match {
+            case success @ ElasticSuccess(_) =>
+              logger.info(
+                s"✅ Successfully parsed multi-search results for query '$elasticQueries'"
+              )
+              Future.successful(
+                ElasticResult.success(
+                  ElasticResponse(
+                    sql,
+                    query,
+                    success.value,
+                    fieldAliases,
+                    aggs
+                  )
                 )
               )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to parse multi-search results for query \n$elasticQueries\n -> ${error.message}"
-            )
-            Future.successful(
-              ElasticResult.failure(
-                error.copy(
-                  operation = Some("multiSearchAsync")
+            case ElasticFailure(error) =>
+              logger.error(
+                s"❌ Failed to parse multi-search results for query \n$elasticQueries\n -> ${error.message}"
+              )
+              Future.successful(
+                ElasticResult.failure(
+                  error.copy(
+                    operation = Some("multiSearchAsync")
+                  )
                 )
               )
-            )
-        }
-      case ElasticSuccess(_) =>
-        val error =
-          ElasticError(
-            message = s"Failed to execute asynchronous multi-search for query \n$elasticQueries",
-            operation = Some("multiSearchAsync")
-          )
-        logger.error(s"❌ ${error.message}")
-        Future.successful(ElasticResult.failure(error))
-      case ElasticFailure(error) =>
-        logger.error(
-          s"❌ Failed to execute asynchronous multi-search for query \n$elasticQueries\n -> ${error.message}"
-        )
-        Future.successful(
-          ElasticResult.failure(
-            error.copy(
+          }
+        case ElasticSuccess(_) =>
+          val error =
+            ElasticError(
+              message = s"Failed to execute asynchronous multi-search for query \n$elasticQueries",
               operation = Some("multiSearchAsync")
             )
+          logger.error(s"❌ ${error.message}")
+          Future.successful(ElasticResult.failure(error))
+        case ElasticFailure(error) =>
+          logger.error(
+            s"❌ Failed to execute asynchronous multi-search for query \n$elasticQueries\n -> ${error.message}"
           )
-        )
-    }
+          Future.successful(
+            ElasticResult.failure(
+              enrichMaxResultWindowError(error).copy(
+                operation = Some("multiSearchAsync")
+              )
+            )
+          )
+      }
+      .recover {
+        // Issue #224 — same contract repair as singleSearchAsync: a client implementation may fail
+        // the future instead of returning an ElasticFailure.
+        case t: Throwable =>
+          logger.error(
+            s"❌ Failed to execute asynchronous multi-search for query \n$elasticQueries\n -> ${t.getMessage}"
+          )
+          ElasticResult.failure(
+            enrichMaxResultWindowError(
+              ElasticError(
+                message = s"Failed to execute multi-search: ${t.getMessage}",
+                cause = Some(t),
+                operation = Some("multiSearchAsync")
+              )
+            )
+          )
+      }
   }
 
   // ========================================================================
@@ -1667,19 +1708,73 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   }
 
   // ========================================================================
-  // ROW COMPLETENESS — SCROLL ROUTING (issue #209)
+  // ROW COMPLETENESS — SCROLL ROUTING (issues #209 / #224)
   // ========================================================================
 
-  /** Collect EVERY row of an un-LIMITed row query through the scroll path.
+  /** True when a row-shaped query must page through scroll instead of the one-shot search:
     *
-    * A one-shot search cannot honor "no LIMIT means every row": with no `size` Elasticsearch
-    * returns its default 10 hits, and any explicit `size` is bounded by `index.max_result_window`.
-    * The scroll path pages completely (PIT / search_after) and already handles window enrichment
-    * and script fields, so `search` / `searchAsync` route row-shaped queries with no LIMIT here.
-    * Aggregation-shaped queries must never be routed — their result is the aggregation itself,
-    * already bounded by an explicit `terms` size.
+    *   - no `LIMIT` at all (#209): a one-shot search cannot honor "no LIMIT means every row" — with
+    *     no `size` Elasticsearch returns its default 10 hits;
+    *   - an explicit `LIMIT` whose window (`offset + limit`) exceeds
+    *     [[SearchApi.DefaultMaxResultWindow]] (#224): Elasticsearch rejects a one-shot search
+    *     whenever `from + size > index.max_result_window` (default 10,000), so the SAME query would
+    *     fail with `LIMIT 20000` yet succeed with no LIMIT. The window is per-index and not probed
+    *     (a multi-index query has no single window anyway); on an index tuned HIGHER the query
+    *     pages unnecessarily but stays correct — and a >10k one-shot response is better paged
+    *     regardless.
     */
-  private[client] def scrollAllRows(
+  private def requiresScrollPaging(limit: Option[Limit]): Boolean =
+    limit match {
+      case None => true
+      case Some(l) =>
+        l.limit.toLong + l.offset.map(_.offset.toLong).getOrElse(0L) >
+          SearchApi.DefaultMaxResultWindow
+    }
+
+  /** Issue #224 — a one-shot search whose `from + size` exceeds `index.max_result_window` is
+    * rejected by Elasticsearch with an `illegal_argument_exception` that names neither the SQL
+    * `LIMIT` that produced the `size` nor the remedy — and downstream consumers often flatten it
+    * further. An index tuned BELOW the routing threshold of [[SearchApi.DefaultMaxResultWindow]]
+    * can still surface the rejection despite the scroll routing, so translate it into an actionable
+    * message here; every other error passes through unchanged.
+    */
+  private def enrichMaxResultWindowError(error: ElasticError): ElasticError = {
+    def mentionsWindow(message: String): Boolean =
+      message != null &&
+      (message.contains("max_result_window") || message.contains("Result window is too large"))
+    // The REST high-level clients (ES 6/7) surface the per-shard root cause as SUPPRESSED
+    // exceptions on an "all shards failed" wrapper, so the scan walks both chains (bounded —
+    // exception graphs can be cyclic in theory).
+    def throwableMentionsWindow(t: Throwable, depth: Int = 10): Boolean =
+      t != null && depth > 0 &&
+      (mentionsWindow(t.getMessage) ||
+      t.getSuppressed.exists(s => throwableMentionsWindow(s, depth - 1)) ||
+      throwableMentionsWindow(t.getCause, depth - 1))
+    if (mentionsWindow(error.message) || error.cause.exists(t => throwableMentionsWindow(t)))
+      error.copy(
+        message =
+          "LIMIT/OFFSET exceeds the index's `index.max_result_window` for a single search: " +
+          "lower LIMIT/OFFSET so `offset + limit` fits within the window, raise " +
+          "`index.max_result_window` on the index, or drop the LIMIT to page through every row. " +
+          s"Elasticsearch said: ${error.message}",
+        statusCode = error.statusCode.orElse(Some(400))
+      )
+    else error
+  }
+
+  /** Collect the rows of a row-shaped query through the scroll path.
+    *
+    * The scroll path pages completely (PIT / search_after) and already handles window enrichment
+    * and script fields, so `search` / `searchAsync` route here every row query that
+    * [[requiresScrollPaging]] flags: with no LIMIT the stream is unbounded (every matching row,
+    * #209); with an explicit LIMIT above the one-shot window (#224) the stream is bounded by
+    * `maxDocuments = offset + limit` (enforced by ScrollApi's `.take`) and the first `offset` rows
+    * are dropped client-side — scroll contexts reject `from`, and per-page `size` is the scroll
+    * batch size, so the statement's LIMIT is stripped before translation. Aggregation-shaped
+    * queries must never be routed — their result is the aggregation itself, already bounded by an
+    * explicit `terms` size.
+    */
+  private[client] def scrollRows(
     scrollApi: ScrollApi,
     single: SingleSearch,
     elasticQuery: ElasticQuery
@@ -1687,12 +1782,17 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     implicit val system: ActorSystem = SearchApi.scrollRoutingSystem
     implicit val ec: ExecutionContext = system.dispatcher
     val sql = elasticQuery.sql.orElse(Option(single.sql))
+    val offset = single.limit.flatMap(_.offset).map(_.offset.toLong).getOrElse(0L)
+    val maxDocuments = single.limit.map(l => offset + l.limit.toLong)
+    val statement = if (single.limit.isEmpty) single else single.copy(limit = None)
     logger.info(
-      s"▶ Row query without LIMIT — routing through scroll for row completeness:\n${sql.getOrElse(elasticQuery.query)}"
+      s"▶ Row query ${maxDocuments.fold("without LIMIT")(max => s"with LIMIT window $max above ${SearchApi.DefaultMaxResultWindow}")} — routing through scroll for row completeness:\n${sql
+        .getOrElse(elasticQuery.query)}"
     )
     scrollApi
-      .scroll(single, ScrollConfig())
+      .scroll(statement, ScrollConfig(maxDocuments = maxDocuments))
       .map(_._1)
+      .drop(offset)
       .runWith(Sink.seq)
       .map { rows =>
         logger.info(s"✅ Scroll-routed search returned ${rows.size} rows")
@@ -1725,8 +1825,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
 object SearchApi {
 
-  /** JVM-shared materializer for [[SearchApi.scrollAllRows]]. Daemonic so an un-terminated system
-    * can never keep the JVM alive — clients don't own it, so no `close()` reaches it.
+  /** Elasticsearch's default `index.max_result_window`: the ceiling on `from + size` for a one-shot
+    * search, identical across ES 6/7/8/9. Row queries whose explicit LIMIT window exceeds it are
+    * routed through scroll (#224) — see [[SearchApi.requiresScrollPaging]]. The actual per-index
+    * setting is deliberately NOT probed; an index tuned higher just pages, an index tuned lower
+    * keeps its (translated) one-shot rejection below this threshold.
+    */
+  val DefaultMaxResultWindow: Long = 10000L
+
+  /** JVM-shared materializer for [[SearchApi.scrollRows]]. Daemonic so an un-terminated system can
+    * never keep the JVM alive — clients don't own it, so no `close()` reaches it.
     */
   private[client] lazy val scrollRoutingSystem: ActorSystem =
     ActorSystem(
