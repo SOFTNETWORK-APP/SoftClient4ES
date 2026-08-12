@@ -129,7 +129,9 @@ trait ReplIntegrationTestKit
   // -------------------------------------------------------------------------
 
   private def normalizeRow(row: Map[String, Any]): Map[String, Any] = {
-    val updated = row - "_id" - "_index" - "_score" - "_version" - "_sort"
+    // `_id` only ever appears when `elastic.include-document-id` is enabled — strip it (and the
+    // get-api `_version`) so expected-row assertions stay independent of the client configuration.
+    val updated = row - "_id" - "_version"
     updated.map { entry =>
       entry._2 match {
         case m: Map[_, _] =>

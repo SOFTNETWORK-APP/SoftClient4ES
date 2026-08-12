@@ -208,6 +208,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
+    singleSearchInternal(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+
+  /** [[singleSearch]] with an explicit document-id retention decision. `retainDocumentId = true` is
+    * reserved for the window-enrichment base query, which matches rows to their ranking ordinals by
+    * document id AFTER parsing (the id is stripped again after enrichment).
+    */
+  private[client] def singleSearchInternal(
+    elasticQuery: ElasticQuery,
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     validateJson("search", elasticQuery.query) match {
       case Some(error) =>
@@ -243,7 +257,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             aggs,
             fields,
             nestedHits,
-            elasticQuery.explodeNested
+            elasticQuery.explodeNested,
+            retainDocumentId
           )
         ) match {
           case success @ ElasticSuccess(_) =>
@@ -1517,7 +1532,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
     logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
 
-    singleSearch(
+    // Retain `_id` on the parsed rows: the enrichment step matches each base row to its
+    // ranking ordinals by document id. The id is stripped after enrichment.
+    singleSearchInternal(
       ElasticQuery(
         baseQuery,
         collection.immutable.Seq(baseQuery.sources: _*),
@@ -1526,7 +1543,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       baseQuery.fieldAliases,
       baseQuery.sqlAggregations,
       extractOutputFieldNames(baseQuery),
-      baseQuery.nestedHitsMappings
+      baseQuery.nestedHitsMappings,
+      retainDocumentId = true
     )
   }
 
@@ -1600,10 +1618,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val baseRows = response.results
     val outputFields = extractOutputFieldNames(request)
 
-    // Enrich each row with window values, then normalize field order
+    // Determine ONCE whether the document ID stays in the output — never per row
+    val shouldKeepDocumentId = keepsDocumentId(outputFields)
+
+    // Enrich each row with window values, then normalize field order. The base rows carry
+    // their `_id` (see singleSearchInternal with retainDocumentId = true) for the ordinal
+    // lookup — strip it on the way out unless the document-id column is enabled or `_id`
+    // is selected. Only window-enriched rows ever pay this per-row strip.
     val enrichedRows = baseRows.map { row =>
       val enriched = enrichDocumentWithWindowValues(row, cache, request)
-      normalizeRow(enriched, outputFields)
+      val normalized = normalizeRow(enriched, outputFields)
+      if (shouldKeepDocumentId) normalized
+      else normalized - ElasticConversion.DocumentIdField
     }
 
     ElasticResult.success(response.copy(results = enrichedRows))

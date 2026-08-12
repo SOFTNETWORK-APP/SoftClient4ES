@@ -28,10 +28,29 @@ import scala.jdk.CollectionConverters._
 
 trait ElasticConversion {
 
+  import ElasticConversion.DocumentIdField
+
   // Distinctly named to avoid colliding with the `logger` member that
   // `ClientCompanion`'s self-type contributes where this trait is mixed in.
   private val conversionLogger: org.slf4j.Logger =
     org.slf4j.LoggerFactory.getLogger(getClass)
+
+  /** Whether result rows surface the Elasticsearch document id as an `_id` column. Disabled by
+    * default; wired to the `elastic.include-document-id` HOCON setting through
+    * [[ElasticClientApi]].
+    */
+  protected def includeDocumentId: Boolean = false
+
+  /** Whether result rows keep an `_id` column: either the document-id column is enabled, or the
+    * query selects `_id` explicitly. Evaluated once per parse / per stream — never per row. Only
+    * window-enrichment base rows ever carry an `_id` the user did not ask for (the ordinal lookup
+    * matches rows by document id — see `retainDocumentId` on the parse methods); the enrichment
+    * paths hoist this decision and drop the id while rebuilding each row. Plain search and scroll
+    * rows never get one injected in the first place, keeping the hot paths free of any per-row
+    * strip.
+    */
+  private[client] def keepsDocumentId(requestedFields: Seq[String]): Boolean =
+    includeDocumentId || requestedFields.contains(DocumentIdField)
 
   def convertTo[T](map: Map[String, Any])(implicit m: Manifest[T], formats: Formats): T = {
     val jValue = Extraction.decompose(map)
@@ -68,7 +87,8 @@ trait ElasticConversion {
     aggregations: ListMap[String, ClientAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    explodeNested: Boolean = true
+    explodeNested: Boolean = true,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] = {
     var json = mapper.readTree(results)
     if (json.has("responses")) {
@@ -76,10 +96,26 @@ trait ElasticConversion {
     }
     // Check if it's a multi-search response (array of responses)
     if (json.isArray) {
-      parseMultiSearchResponse(json, fieldAliases, aggregations, fields, nestedHits, explodeNested)
+      parseMultiSearchResponse(
+        json,
+        fieldAliases,
+        aggregations,
+        fields,
+        nestedHits,
+        explodeNested,
+        retainDocumentId
+      )
     } else {
       // Single search response
-      parseSingleSearchResponse(json, fieldAliases, aggregations, fields, nestedHits, explodeNested)
+      parseSingleSearchResponse(
+        json,
+        fieldAliases,
+        aggregations,
+        fields,
+        nestedHits,
+        explodeNested,
+        retainDocumentId
+      )
     }
   }
 
@@ -91,7 +127,8 @@ trait ElasticConversion {
     aggregations: ListMap[String, ClientAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    explodeNested: Boolean = true
+    explodeNested: Boolean = true,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
@@ -111,7 +148,15 @@ trait ElasticConversion {
         // Parse each response and combine all rows
         val allRows = responses.flatMap { response =>
           if (!response.has("error")) {
-            jsonToRows(response, fieldAliases, aggregations, fields, nestedHits, explodeNested)
+            jsonToRows(
+              response,
+              fieldAliases,
+              aggregations,
+              fields,
+              nestedHits,
+              explodeNested,
+              retainDocumentId
+            )
           } else {
             Seq.empty
           }
@@ -128,7 +173,8 @@ trait ElasticConversion {
     aggregations: ListMap[String, ClientAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    explodeNested: Boolean = true
+    explodeNested: Boolean = true,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       // check if it is an error response
@@ -138,7 +184,15 @@ trait ElasticConversion {
           .getOrElse("Unknown Elasticsearch error")
         throw new Exception(s"Elasticsearch error: $errorMsg")
       } else {
-        jsonToRows(json, fieldAliases, aggregations, fields, nestedHits, explodeNested)
+        jsonToRows(
+          json,
+          fieldAliases,
+          aggregations,
+          fields,
+          nestedHits,
+          explodeNested,
+          retainDocumentId
+        )
       }
     }
 
@@ -150,7 +204,8 @@ trait ElasticConversion {
     aggregations: ListMap[String, ClientAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    explodeNested: Boolean = true
+    explodeNested: Boolean = true,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
@@ -162,7 +217,7 @@ trait ElasticConversion {
     val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
-        val parsed = parseSimpleHits(hits, fieldAliases, fields)
+        val parsed = parseSimpleHits(hits, fieldAliases, fields, retainDocumentId)
         if (explodeNested) flattenInnerHits(parsed, nestedHits)
         else parsed
 
@@ -201,7 +256,7 @@ trait ElasticConversion {
           extractAllTopHits(aggs, fieldAliases, aggregations),
           aggregations
         )
-        val parsed = parseSimpleHits(hits, fieldAliases, fields)
+        val parsed = parseSimpleHits(hits, fieldAliases, fields, retainDocumentId)
         val flattened =
           if (explodeNested) flattenInnerHits(parsed, nestedHits)
           else parsed
@@ -233,12 +288,18 @@ trait ElasticConversion {
     *   all requested fields in their original SQL SELECT order (output column names). When
     *   non-empty, each row is normalized to include all requested fields (with null for missing
     *   ones) and ordered to match the SQL SELECT order.
+    * @param retainDocumentId
+    *   force the `_id` row key even when [[keepsDocumentId]] does not hold — used by
+    *   window-enrichment base queries, whose ordinal lookup matches rows by document id.
     */
   def parseSimpleHits(
     hits: List[JsonNode],
     fieldAliases: ListMap[String, String],
-    requestedFields: Seq[String] = Seq.empty
+    requestedFields: Seq[String] = Seq.empty,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
+    // One decision per parse — the per-row hot path does no `_id` work when it is not kept
+    val withDocumentId = retainDocumentId || keepsDocumentId(requestedFields)
     hits.map { hit =>
       var source = extractSource(hit, fieldAliases)
       fieldAliases.foreach(entry => {
@@ -249,7 +310,8 @@ trait ElasticConversion {
           }
         }
       })
-      val metadata = extractHitMetadata(hit)
+      val metadata =
+        if (withDocumentId) extractHitId(hit) else ListMap.empty[String, Any]
       val innerHits = extractInnerHits(hit, fieldAliases)
       val fieldsNode = Option(hit.path("fields"))
         .filter(!_.isMissingNode)
@@ -261,8 +323,8 @@ trait ElasticConversion {
   }
 
   /** Normalize a row to ensure all requested fields are present in the original SQL SELECT order.
-    * Fields missing from the row are added with null value. Extra fields (metadata like _id,
-    * _index, etc.) are appended after the requested fields.
+    * Fields missing from the row are added with null value. Extra fields (such as the internally
+    * carried `_id`) are appended after the requested fields.
     */
   protected def normalizeRow(
     row: ListMap[String, Any],
@@ -327,20 +389,19 @@ trait ElasticConversion {
     }
   }
 
-  /** Extract hit metadata (_id, _index, _score)
+  /** Extract the hit `_id`.
+    *
+    * This is the only hit metadata ever extracted: `_index`, `_score` and `_sort` are never
+    * surfaced. A parsed row carries `_id` only when [[includeDocumentId]] is enabled, the query
+    * selects `_id` explicitly, or the parse serves a window-enrichment base query (the ranking
+    * ordinal lookup in `SearchApi.enrichDocumentWithWindowValues` matches rows by document id —
+    * `retainDocumentId` on the parse methods).
     */
-  def extractHitMetadata(hit: JsonNode): ListMap[String, Any] = {
-    ListMap(
-      "_id"    -> Option(hit.get("_id")).map(_.asText()),
-      "_index" -> Option(hit.get("_index")).map(_.asText()),
-      "_score" -> Option(hit.get("_score")).map(n =>
-        if (n.isDouble || n.isFloat) n.asDouble() else n.asLong().toDouble
-      ),
-      "_sort" -> Option(hit.get("sort"))
-        .filter(_.isArray)
-        .map(sortNode => sortNode.elements().asScala.map(jsonNodeToAny(_, ListMap.empty)).toList)
-    ).collect { case (k, Some(v)) => k -> v }
-  }
+  def extractHitId(hit: JsonNode): ListMap[String, Any] =
+    Option(hit.get("_id")) match {
+      case Some(id) => ListMap(DocumentIdField -> id.asText())
+      case None     => ListMap.empty
+    }
 
   /** Extract hit _source
     */
@@ -368,9 +429,12 @@ trait ElasticConversion {
                 .elements()
                 .asScala
                 .map { innerHit =>
-                  // Extract source and metadata for each inner hit
+                  // Inner-hit `_id` is never needed internally: only expose it when the
+                  // document-id column is enabled (nested rows are out of reach of the
+                  // top-level egress strip).
                   val source = extractSource(innerHit, fieldAliases)
-                  val metadata = extractHitMetadata(innerHit)
+                  val metadata =
+                    if (includeDocumentId) extractHitId(innerHit) else ListMap.empty[String, Any]
 
                   // Recursively handle nested inner_hits if present
                   val nestedInnerHits = extractInnerHits(innerHit, fieldAliases)
@@ -813,13 +877,18 @@ trait ElasticConversion {
           // Ranking windows need every hit's `_id` for the per-row ordinal
           // lookup in `SearchApi.enrichDocumentWithWindowValues`. Skip the
           // "single-source-field → return the scalar" shortcut so the
-          // per-hit map preserves both the ORDER BY columns AND the metadata.
+          // per-hit map preserves both the ORDER BY columns AND the id.
+          // Everywhere else the per-hit `_id` is only exposed when the
+          // document-id column is enabled (these maps are nested inside
+          // aggregation values, out of reach of the top-level egress strip).
           val isRanking = agg.exists(_.ranking)
+          def optionalHitId(hit: JsonNode): ListMap[String, Any] =
+            if (includeDocumentId) extractHitId(hit) else ListMap.empty
           val processedHits = hits.map { hit =>
             val source = extractSource(hit, fieldAliases)
             if (hasMultipleValues) {
               if (isRanking) {
-                val metadata = extractHitMetadata(hit)
+                val metadata = extractHitId(hit)
                 val innerHits = extractInnerHits(hit, fieldAliases)
                 source ++ metadata ++ innerHits
               } else {
@@ -835,13 +904,13 @@ trait ElasticConversion {
                     }
                   case _ =>
                     // Multiple fields: return as object
-                    val metadata = extractHitMetadata(hit)
+                    val metadata = optionalHitId(hit)
                     val innerHits = extractInnerHits(hit, fieldAliases)
                     source ++ metadata ++ innerHits
                 }
               }
             } else {
-              val metadata = extractHitMetadata(hit)
+              val metadata = optionalHitId(hit)
               val innerHits = extractInnerHits(hit, fieldAliases)
               source ++ metadata ++ innerHits ++ ListMap("bucket_root" -> bucketRoot)
             }
@@ -990,4 +1059,10 @@ trait ElasticConversion {
   }
 }
 
-object ElasticConversion extends ElasticConversion
+object ElasticConversion extends ElasticConversion {
+
+  /** Name of the opt-in document-id column surfaced on result rows when
+    * `elastic.include-document-id` is enabled.
+    */
+  val DocumentIdField: String = "_id"
+}

@@ -100,7 +100,9 @@ trait SingleValueAggregateApi
 
           case Some(_: Map[_, _]) =>
             val typedMaps = s.asInstanceOf[Seq[Map[String, Any]]]
-            val metadataKeys = Set("_id", "_index", "_score", "_sort")
+            // `_id` is the only hit metadata a per-hit map can still carry (opt-in via
+            // `elastic.include-document-id`); it never counts as an aggregated value.
+            val metadataKeys = Set("_id")
 
             // Check if all maps have the same single non-metadata key
             val nonMetadataKeys = typedMaps.flatMap(_.keys.filterNot(metadataKeys.contains))

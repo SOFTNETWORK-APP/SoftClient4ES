@@ -523,7 +523,8 @@ Inserts documents produced by a SELECT query.
 Behavior:
 
 - Executes a scroll query.
-- Removes Elasticsearch metadata (`_id`, `_index`, `_score`, `_sort`).
+- Never writes the document id into the target documents (the optional `_id` column — see
+  `elastic.include-document-id` — is removed before indexing).
 - Maps SELECT output to INSERT columns **by name**.
 - Supports aliasing.
 - Supports INSERT without column list.

@@ -48,8 +48,8 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     parseResponse(results, ListMap.empty, ListMap.empty) match {
       case Success(rows) =>
         rows.foreach(println)
-      // Map(name -> Laptop, price -> 999.99, category -> Electronics, tags -> List(computer, portable), _id -> 1, _index -> products, _score -> 1.0)
-      // Map(name -> Mouse, price -> 29.99, category -> Electronics, _id -> 2, _index -> products, _score -> 0.8)
+      // Map(name -> Laptop, price -> 999.99, category -> Electronics, tags -> List(computer, portable))
+      // Map(name -> Mouse, price -> 29.99, category -> Electronics)
       case Failure(error) =>
         throw error
     }
@@ -86,7 +86,7 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     ) match {
       case Success(rows) =>
         rows.foreach(println)
-        // Map(name -> Alice, address -> Map(street -> 123 Main St, city -> Wonderland, country -> Fictionland), _id -> u1, _index -> users, _score -> 1.0)
+        // Map(name -> Alice, address -> Map(street -> 123 Main St, city -> Wonderland, country -> Fictionland))
         val users = rows.map(row => convertTo[User](row))
         users.foreach(println)
         // User(u1,Alice,Address(123 Main St,Wonderland,Fictionland))
@@ -1616,6 +1616,141 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     tryParseAsDateTime("1723456789000") shouldBe None
     tryParseAsDateTime("2026/08/06") shouldBe None
     tryParseAsDateTime("v1:2026") shouldBe None
+  }
+
+  // -------------------------------------------------------------------------
+  // Hit metadata: `_index` / `_score` / `_sort` are never surfaced; `_id` is
+  // carried through parsing (ranking-window lookup) and stripped at the public
+  // egress unless `elastic.include-document-id` is enabled or `_id` is selected.
+  // -------------------------------------------------------------------------
+
+  private object EnabledDocumentIdConversion extends ElasticConversion {
+    override protected def includeDocumentId: Boolean = true
+  }
+
+  private val metadataRichResponse =
+    """{
+      |  "took": 5,
+      |  "hits": {
+      |    "total": { "value": 1, "relation": "eq" },
+      |    "max_score": 1.0,
+      |    "hits": [
+      |      {
+      |        "_index": "products",
+      |        "_id": "1",
+      |        "_score": 1.0,
+      |        "sort": [999, "laptop"],
+      |        "_source": { "name": "Laptop", "price": 999.99 }
+      |      }
+      |    ]
+      |  }
+      |}""".stripMargin
+
+  "hit metadata" should "surface no metadata at all on parsed rows by default" in {
+    parseResponse(metadataRichResponse, ListMap.empty, ListMap.empty) match {
+      case Success(rows) =>
+        rows should have size 1
+        val row = rows.head
+        row("name") shouldBe "Laptop"
+        // No injection at all on the default path — the hot paths never pay a per-row strip
+        row.keySet should contain noneOf ("_id", "_index", "_score", "_sort")
+      case Failure(error) =>
+        throw error
+    }
+  }
+
+  it should "carry _id when the parse retains it for window enrichment" in {
+    parseResponse(
+      metadataRichResponse,
+      ListMap.empty,
+      ListMap.empty,
+      retainDocumentId = true
+    ) match {
+      case Success(rows) =>
+        rows.head("_id") shouldBe "1"
+        rows.head.keySet should contain noneOf ("_index", "_score", "_sort")
+      case Failure(error) =>
+        throw error
+    }
+  }
+
+  it should "carry _id when the query selects it explicitly or the column is enabled" in {
+    // Explicit selection
+    parseResponse(
+      metadataRichResponse,
+      ListMap.empty,
+      ListMap.empty,
+      fields = Seq("name", "_id")
+    ) match {
+      case Success(rows) =>
+        rows.head("_id") shouldBe "1"
+      case Failure(error) => throw error
+    }
+    // Enabled document-id column
+    EnabledDocumentIdConversion.parseResponse(
+      metadataRichResponse,
+      ListMap.empty,
+      ListMap.empty
+    ) match {
+      case Success(rows) =>
+        rows.head("_id") shouldBe "1"
+      case Failure(error) => throw error
+    }
+  }
+
+  it should "keep the document id only when enabled or selected" in {
+    // Disabled by default
+    keepsDocumentId(Seq("name")) shouldBe false
+    // Kept when the query selects `_id` explicitly
+    keepsDocumentId(Seq("name", "_id")) shouldBe true
+    // Kept when the document-id column is enabled
+    EnabledDocumentIdConversion.keepsDocumentId(Seq("name")) shouldBe true
+  }
+
+  it should "expose the inner-hit document id only when enabled" in {
+    val results =
+      """{
+        |  "took": 5,
+        |  "hits": {
+        |    "total": { "value": 1, "relation": "eq" },
+        |    "hits": [
+        |      {
+        |        "_index": "users",
+        |        "_id": "u1",
+        |        "_score": 1.0,
+        |        "_source": { "name": "Alice" },
+        |        "inner_hits": {
+        |          "orders": {
+        |            "hits": {
+        |              "hits": [
+        |                {
+        |                  "_index": "orders",
+        |                  "_id": "o1",
+        |                  "_score": 1.0,
+        |                  "_source": { "total": 42 }
+        |                }
+        |              ]
+        |            }
+        |          }
+        |        }
+        |      }
+        |    ]
+        |  }
+        |}""".stripMargin
+
+    def innerHitKeys(conversion: ElasticConversion): Set[String] =
+      conversion.parseResponse(results, ListMap.empty, ListMap.empty) match {
+        case Success(rows) =>
+          rows.head("orders") match {
+            case hits: List[_] =>
+              hits.head.asInstanceOf[ListMap[String, Any]].keySet.toSet
+            case other => fail(s"Unexpected inner hits: $other")
+          }
+        case Failure(error) => throw error
+      }
+
+    innerHitKeys(this) shouldBe Set("total")
+    innerHitKeys(EnabledDocumentIdConversion) shouldBe Set("total", "_id")
   }
 }
 

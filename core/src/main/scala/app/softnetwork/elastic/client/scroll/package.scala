@@ -29,7 +29,12 @@ package object scroll {
       true, // false = force classic scroll even where PIT/search_after is available (slower; for clusters restricting the PIT API)
     metrics: ScrollMetrics = ScrollMetrics(), // Initial scroll metrics
     retryConfig: RetryConfig = RetryConfig(), // Retry configuration
-    failOnWindowError: Option[Boolean] = None
+    failOnWindowError: Option[Boolean] = None,
+    // Internal (set by ScrollApi, not by callers): parsed pages keep the document id as an
+    // `_id` row key. True for window-enrichment base queries (the ordinal lookup matches rows
+    // by document id), when `elastic.include-document-id` is enabled, or when the query
+    // selects `_id` explicitly. False keeps the hot scroll path free of any per-row overhead.
+    retainDocumentId: Boolean = false
   )
 
   /** Scroll strategy based on query type

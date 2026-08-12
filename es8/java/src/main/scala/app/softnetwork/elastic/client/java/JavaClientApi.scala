@@ -1415,7 +1415,13 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   throw new IllegalStateException("Scroll ID is null in response")
                 }
 
-                val results = extractAllResults(Left(response), fieldAliases, aggregations)
+                val results =
+                  extractAllResults(
+                    Left(response),
+                    fieldAliases,
+                    aggregations,
+                    config.retainDocumentId
+                  )
 
                 if (results.isEmpty || scrollId == null) None
                 else Some((Some(scrollId), results))
@@ -1447,7 +1453,13 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                 }
 
                 val newScrollId = response.scrollId()
-                val results = extractAllResults(Right(response), fieldAliases, aggregations)
+                val results =
+                  extractAllResults(
+                    Right(response),
+                    fieldAliases,
+                    aggregations,
+                    config.retainDocumentId
+                  )
 
                 if (results.isEmpty) {
                   clearScroll(scrollId)
@@ -1620,7 +1632,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                     throw new IOException(s"PIT search_after failed: $errorMsg")
                   }
 
-                  val hits = extractHitsOnly(response, fieldAliases)
+                  val hits = extractHitsOnly(response, fieldAliases, config.retainDocumentId)
 
                   if (hits.isEmpty) {
                     None // end of stream — watchTermination owns the single PIT close (#202)
@@ -1733,7 +1745,8 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
   private def extractAllResults(
     response: Either[SearchResponse[JMap[String, Object]], ScrollResponse[JMap[String, Object]]],
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val jsonString =
       response match {
@@ -1744,7 +1757,8 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     parseResponse(
       jsonString,
       fieldAliases,
-      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2)),
+      retainDocumentId = retainDocumentId
     ) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} rows from response (hits + aggregations)")
@@ -1759,11 +1773,17 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     */
   private def extractHitsOnly(
     response: SearchResponse[JMap[String, Object]],
-    fieldAliases: ListMap[String, String]
+    fieldAliases: ListMap[String, String],
+    retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val jsonString = convertToJson(response)
 
-    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
+    parseResponse(
+      jsonString,
+      fieldAliases,
+      ListMap.empty,
+      retainDocumentId = retainDocumentId
+    ) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} hits from response")
         rows

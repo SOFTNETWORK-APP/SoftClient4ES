@@ -1334,7 +1334,9 @@ trait IndicesApi extends ElasticClientHelpers {
           implicit val context: ConversionContext = NativeContext
           Right(
             scroll(single).map { case (row, _) =>
-              val jsonNode: JsonNode = row - "_id" - "_index" - "_score" - "_sort"
+              // Even with `elastic.include-document-id` enabled, the id column must never be
+              // written into the target documents' _source.
+              val jsonNode: JsonNode = row - ElasticConversion.DocumentIdField
               jsonNode.toString
             }
           )
