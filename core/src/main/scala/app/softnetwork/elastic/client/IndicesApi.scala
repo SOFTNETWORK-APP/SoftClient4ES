@@ -1336,7 +1336,7 @@ trait IndicesApi extends ElasticClientHelpers {
             scroll(single).map { case (row, _) =>
               // Even with `elastic.include-document-id` enabled, the id column must never be
               // written into the target documents' _source.
-              val jsonNode: JsonNode = row - "_id"
+              val jsonNode: JsonNode = row - ElasticConversion.DocumentIdField
               jsonNode.toString
             }
           )
