@@ -116,6 +116,7 @@ import co.elastic.clients.elasticsearch.watcher.{
   WatchStatus
 }
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.google.gson.JsonParser
 
 import _root_.java.io.{IOException, StringReader}
@@ -1393,7 +1394,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   .size(config.scrollSize)
                   .build()
 
-                val response = apply().search(searchRequest, classOf[JMap[String, Object]])
+                val response = apply().search(searchRequest, classOf[ObjectNode])
 
                 if (
                   response.shards() != null && response
@@ -1435,7 +1436,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   .scroll(Time.of(t => t.time(config.keepAlive)))
                   .build()
 
-                val response = apply().scroll(scrollRequest, classOf[JMap[String, Object]])
+                val response = apply().scroll(scrollRequest, classOf[ObjectNode])
 
                 if (
                   response.shards() != null && response
@@ -1614,7 +1615,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 
                   val response = apply().search(
                     requestBuilder.build(),
-                    classOf[JMap[String, Object]]
+                    classOf[ObjectNode]
                   )
 
                   // Check errors
@@ -1743,19 +1744,21 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
     * BY, COUNT, AVG, etc.)
     */
   private def extractAllResults(
-    response: Either[SearchResponse[JMap[String, Object]], ScrollResponse[JMap[String, Object]]],
+    response: Either[SearchResponse[ObjectNode], ScrollResponse[ObjectNode]],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
-    val jsonString =
-      response match {
-        case Left(l)  => convertToJson(l)
-        case Right(r) => convertToJson(r)
-      }
+    // Single parse (softclient4es-arrow#160): hits-only pages — the scroll hot path — reuse the
+    // `_source` trees the transport already parsed; only aggregation-bearing responses (at most
+    // one per query) serialize the whole envelope, and even then at token level, never a string.
+    val aggs = response.fold(_.aggregations(), _.aggregations())
+    val jsonNode: JsonNode =
+      if (aggs != null && !aggs.isEmpty) response.fold(convertToTree(_), convertToTree(_))
+      else hitsToResponseNode(response.fold(_.hits().hits(), _.hits().hits()))
 
-    parseResponse(
-      jsonString,
+    parseSingleSearchResponse(
+      jsonNode,
       fieldAliases,
       aggregations.map(kv => kv._1 -> kv._2),
       retainDocumentId = retainDocumentId
@@ -1772,14 +1775,14 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
   /** Extract ONLY hits (for search_after optimization) Ignores aggregations for better performance
     */
   private def extractHitsOnly(
-    response: SearchResponse[JMap[String, Object]],
+    response: SearchResponse[ObjectNode],
     fieldAliases: ListMap[String, String],
     retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
-    val jsonString = convertToJson(response)
-
-    parseResponse(
-      jsonString,
+    // Single parse (softclient4es-arrow#160): the `_source` trees were parsed once by the
+    // transport; re-parent them into the envelope instead of serializing and re-parsing.
+    parseSingleSearchResponse(
+      hitsToResponseNode(response.hits().hits()),
       fieldAliases,
       ListMap.empty,
       retainDocumentId = retainDocumentId
