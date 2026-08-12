@@ -1519,7 +1519,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 }
 
                 // Extract both hits AND aggregations
-                val results = extractAllResults(response.toString, fieldAliases, aggregations)
+                val results =
+                  extractAllResults(
+                    response.toString,
+                    fieldAliases,
+                    aggregations,
+                    config.retainDocumentId
+                  )
 
                 logger.info(s"Initial scroll returned ${results.size} results, scrollId: $scrollId")
 
@@ -1548,7 +1554,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 }
 
                 val newScrollId = result.getScrollId
-                val results = extractAllResults(result.toString, fieldAliases, aggregations)
+                val results =
+                  extractAllResults(
+                    result.toString,
+                    fieldAliases,
+                    aggregations,
+                    config.retainDocumentId
+                  )
 
                 logger.debug(s"Scroll returned ${results.size} results")
 
@@ -1657,7 +1669,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
             }
 
             // Extract ONLY hits (no aggregations for search_after)
-            val hits = extractHitsOnly(response.toString, fieldAliases)
+            val hits = extractHitsOnly(response.toString, fieldAliases, config.retainDocumentId)
 
             if (hits.isEmpty) {
               None
@@ -1794,7 +1806,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                     )
                   }
 
-                  val hits = extractHitsOnly(response.toString, fieldAliases)
+                  val hits =
+                    extractHitsOnly(response.toString, fieldAliases, config.retainDocumentId)
 
                   if (hits.isEmpty) {
                     None // end of stream — watchTermination owns the single PIT close (#202)
@@ -1886,12 +1899,14 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   private def extractAllResults(
     jsonString: String,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     parseResponse(
       jsonString,
       fieldAliases,
-      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2)),
+      retainDocumentId = retainDocumentId
     ) match {
       case Success(rows) =>
         logger.debug(s"Parsed ${rows.size} rows from response")
@@ -1906,9 +1921,15 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     */
   private def extractHitsOnly(
     jsonString: String,
-    fieldAliases: ListMap[String, String]
+    fieldAliases: ListMap[String, String],
+    retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
-    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
+    parseResponse(
+      jsonString,
+      fieldAliases,
+      ListMap.empty,
+      retainDocumentId = retainDocumentId
+    ) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)

@@ -483,6 +483,11 @@ elastic {
   connection-timeout = 5s
   socket-timeout     = 30s
   
+  # Result rows
+  # When enabled, every result row surfaces the Elasticsearch document id as an
+  # `_id` column. Disabled by default: SQL results carry only the selected columns.
+  include-document-id = false
+  
   # Cluster discovery
   discovery {
     enabled   = false
@@ -516,6 +521,9 @@ export ELASTIC_CREDENTIALS_PASSWORD="secret"
 
 # Override port
 export ELASTIC_PORT=9243
+
+# Surface the document id as an `_id` column on result rows
+export ELASTIC_INCLUDE_DOCUMENT_ID=true
 ```
 
 ### Loading Configuration

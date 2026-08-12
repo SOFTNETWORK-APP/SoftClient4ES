@@ -80,7 +80,12 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
                 // Extract ALL results (hits + aggregations)
                 val results =
-                  extractAllResults(result.getJsonObject.toString, fieldAliases, aggregations)
+                  extractAllResults(
+                    result.getJsonObject.toString,
+                    fieldAliases,
+                    aggregations,
+                    config.retainDocumentId
+                  )
 
                 logger.info(
                   s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
@@ -104,7 +109,12 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 }
                 val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
                 val results =
-                  extractAllResults(result.getJsonObject.toString, fieldAliases, aggregations)
+                  extractAllResults(
+                    result.getJsonObject.toString,
+                    fieldAliases,
+                    aggregations,
+                    config.retainDocumentId
+                  )
 
                 logger.debug(s"Scroll returned ${results.size} results")
 
@@ -204,7 +214,8 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               throw new IOException(s"Search after failed: ${result.getErrorMessage}")
             }
             // Extract ONLY hits (no aggregations)
-            val hits = extractHitsOnly(result.getJsonObject.toString, fieldAliases)
+            val hits =
+              extractHitsOnly(result.getJsonObject.toString, fieldAliases, config.retainDocumentId)
 
             if (hits.isEmpty) {
               None
@@ -268,12 +279,14 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
   private def extractAllResults(
     jsonString: String,
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, SQLAggregation]
+    aggregations: ListMap[String, SQLAggregation],
+    retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     parseResponse(
       jsonString,
       fieldAliases,
-      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2))
+      aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2)),
+      retainDocumentId = retainDocumentId
     ) match {
       case Success(rows) => rows
       case Failure(ex) =>
@@ -286,10 +299,16 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     */
   private def extractHitsOnly(
     jsonString: String,
-    fieldAliases: ListMap[String, String]
+    fieldAliases: ListMap[String, String],
+    retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
 
-    parseResponse(jsonString, fieldAliases, ListMap.empty) match {
+    parseResponse(
+      jsonString,
+      fieldAliases,
+      ListMap.empty,
+      retainDocumentId = retainDocumentId
+    ) match {
       case Success(rows) => rows
       case Failure(ex) =>
         logger.error(s"Failed to parse Jest search after response: ${ex.getMessage}", ex)

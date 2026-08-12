@@ -163,6 +163,7 @@ trait ScrollApi extends ElasticClientHelpers {
         )
           return scrollWithWindowEnrichment(single, config)
 
+        val requestedFields = extractOutputFieldNames(single)
         val elasticQuery =
           ElasticQuery(
             single,
@@ -174,9 +175,11 @@ trait ScrollApi extends ElasticClientHelpers {
           elasticQuery,
           single.fieldAliases,
           single.sqlAggregations,
-          config,
+          // `_id` is injected at parse time only when it will be kept — the streamed rows
+          // need no per-row strip on this hot path.
+          config.copy(retainDocumentId = keepsDocumentId(requestedFields)),
           single.sorts.nonEmpty,
-          extractOutputFieldNames(single),
+          requestedFields,
           single.nestedHitsMappings
         )
 
@@ -486,6 +489,11 @@ trait ScrollApi extends ElasticClientHelpers {
     val baseQuery = createBaseQuery(request)
 
     // Stream and enrich
+    val outputFields = extractOutputFieldNames(request)
+
+    // Determine if we should keep the document ID in the output
+    val shouldKeepDocumentId = keepsDocumentId(outputFields)
+
     Source
       .futureSource(
         windowCacheFuture.map {
@@ -498,14 +506,19 @@ trait ScrollApi extends ElasticClientHelpers {
               ),
               baseQuery.fieldAliases,
               baseQuery.sqlAggregations,
-              config,
+              // The base rows must carry `_id`: the ordinal lookup below matches each row to
+              // its per-partition rankings by document id.
+              config.copy(retainDocumentId = true),
               baseQuery.sorts.nonEmpty,
               extractOutputFieldNames(baseQuery),
               baseQuery.nestedHitsMappings
             )
               .map { case (doc, metrics) =>
                 val enrichedDoc = enrichDocumentWithWindowValues(doc, cache, request)
-                val normalizedDoc = normalizeRow(enrichedDoc, extractOutputFieldNames(request))
+                var normalizedDoc = normalizeRow(enrichedDoc, outputFields)
+                if (!shouldKeepDocumentId) {
+                  normalizedDoc = normalizedDoc - ElasticConversion.DocumentIdField
+                }
                 (normalizedDoc, metrics)
               }
 
@@ -526,7 +539,7 @@ trait ScrollApi extends ElasticClientHelpers {
                 ),
                 baseQuery.fieldAliases,
                 baseQuery.sqlAggregations,
-                config,
+                config.copy(retainDocumentId = shouldKeepDocumentId),
                 baseQuery.sorts.nonEmpty
               )
             }

@@ -39,6 +39,9 @@ import java.time.Duration
   *   Metrics and monitoring configuration
   * @param watcher
   *   Credentials for the watcher component (if applicable)
+  * @param includeDocumentId
+  *   When enabled, result rows surface the Elasticsearch document id as an `_id` column (disabled
+  *   by default)
   */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
@@ -47,7 +50,8 @@ case class ElasticConfig(
   connectionTimeout: Duration,
   socketTimeout: Duration,
   metrics: MetricsConfig,
-  watcher: ElasticCredentials
+  watcher: ElasticCredentials,
+  includeDocumentId: Boolean = false
 )
 
 object ElasticConfig extends StrictLogging {

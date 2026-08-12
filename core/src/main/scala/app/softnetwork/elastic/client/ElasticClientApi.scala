@@ -60,4 +60,9 @@ trait ElasticClientApi
   def config: Config = ConfigFactory.load()
 
   final lazy val elasticConfig: ElasticConfig = ElasticConfig(config)
+
+  /** Result rows surface the document id as an `_id` column only when enabled through
+    * `elastic.include-document-id` (disabled by default).
+    */
+  override protected def includeDocumentId: Boolean = elasticConfig.includeDocumentId
 }
