@@ -23,6 +23,7 @@ import org.json4s.{Extraction, Formats}
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDateTime}
 import java.time.format.DateTimeFormatter
 import scala.collection.immutable.ListMap
+import scala.collection.mutable.ListBuffer
 import scala.util.Try
 import scala.jdk.CollectionConverters._
 
@@ -296,7 +297,8 @@ trait ElasticConversion {
     // Normalize all rows at the end, after all transformations (flattening, aggregation merging)
     // Filter out "*" from fields — it is an artifact of COUNT(*) and not a real column
     val effectiveFields = fields.filterNot(_ == "*")
-    rows.map(row => normalizeRow(row, effectiveFields))
+    if (effectiveFields.isEmpty) rows
+    else rows.map(rowNormalizer(effectiveFields))
   }
 
   def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
@@ -351,23 +353,116 @@ trait ElasticConversion {
   /** Normalize a row to ensure all requested fields are present in the original SQL SELECT order.
     * Fields missing from the row are added with null value. Extra fields (such as the internally
     * carried `_id`) are appended after the requested fields.
+    *
+    * Every `row.get` here is a linear scan of the `ListMap` — O(fields × row) per call. Fine for a
+    * single row; any loop or stream must hoist a [[rowNormalizer]] instead.
     */
   protected def normalizeRow(
     row: ListMap[String, Any],
     requestedFields: Seq[String]
   )(implicit context: ConversionContext): ListMap[String, Any] = {
     if (requestedFields.isEmpty) row
+    else normalizeRowOrdered(row, requestedFields, requestedFields.toSet)
+  }
+
+  /** Legacy normalization body, with the requested-name set supplied by the caller so loops can
+    * hoist it — shared by [[normalizeRow]] and [[rowNormalizer]] 's duplicate-name fallback.
+    */
+  private def normalizeRowOrdered(
+    row: ListMap[String, Any],
+    requestedFields: Seq[String],
+    requestedSet: Set[String]
+  )(implicit context: ConversionContext): ListMap[String, Any] = {
+    // Build ordered entries for requested fields, with null for missing ones
+    val ordered =
+      context match {
+        case EntityContext => requestedFields.flatMap(f => row.get(f).map(v => f -> v))
+        case _             => requestedFields.map(f => f -> row.getOrElse(f, null))
+      }
+    // Append any extra fields from the row that aren't in the requested fields list
+    val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
+    ListMap(ordered: _*) ++ extra
+  }
+
+  /** Build a single-pass normalizer over a fixed list of requested fields, for row loops and
+    * streams. Same output contract as [[normalizeRow]]: requested fields first, in SQL SELECT order
+    * — missing ones null-filled, or skipped under [[EntityContext]] — then the row's extra entries
+    * in their original order.
+    *
+    * All stream-constant work (the field order array, the name → position index, the context
+    * decision) happens once here; the returned function walks each row exactly once. A row that
+    * already carries the requested fields in order is returned as-is — possibly the SAME instance,
+    * never a copy — without any rebuild. Degenerate duplicate requested names fall back to the
+    * legacy per-row scan (with the name set still hoisted), trading speed for the exact
+    * [[normalizeRow]] semantics on that shape.
+    */
+  protected def rowNormalizer(
+    requestedFields: Seq[String]
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] = {
+    if (requestedFields.isEmpty) identity
     else {
-      // Build ordered entries for requested fields, with null for missing ones
-      val ordered =
-        context match {
-          case EntityContext => requestedFields.flatMap(f => row.get(f).map(v => f -> v))
-          case _             => requestedFields.map(f => f -> row.getOrElse(f, null))
+      val fieldArr: Array[String] = requestedFields.toArray
+      val len = fieldArr.length
+      val fieldIndex = new java.util.HashMap[String, Integer](len * 2)
+      var i = 0
+      while (i < len) {
+        fieldIndex.putIfAbsent(fieldArr(i), i)
+        i += 1
+      }
+      if (fieldIndex.size() != len) {
+        // Duplicate output names cannot hold distinct positions in a row map — keep the
+        // legacy per-row semantics for this degenerate shape, name set hoisted per stream
+        val requestedSet = requestedFields.toSet
+        row => normalizeRowOrdered(row, requestedFields, requestedSet)
+      } else {
+        val nullFillMissing = context match {
+          case EntityContext => false
+          case _             => true
         }
-      // Append any extra fields from the row that aren't in the requested fields list
-      val requestedSet = requestedFields.toSet
-      val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
-      ListMap(ordered: _*) ++ extra
+        row => {
+          val values = new Array[Any](len)
+          val seen = new Array[Boolean](len)
+          var extras: ListBuffer[(String, Any)] = null
+          var inOrder = true
+          var passthrough = false
+          var p = 0
+          val it = row.iterator
+          while (!passthrough && it.hasNext) {
+            val entry = it.next()
+            if (inOrder && fieldArr(p) == entry._1) {
+              values(p) = entry._2
+              seen(p) = true
+              p += 1
+              // All requested fields matched in order: whatever the iterator still holds are
+              // extras already in their final position — the row IS its normalized form
+              if (p == len) passthrough = true
+            } else {
+              inOrder = false
+              val idx = fieldIndex.get(entry._1)
+              if (idx ne null) {
+                values(idx.intValue) = entry._2
+                seen(idx.intValue) = true
+              } else {
+                if (extras eq null) extras = new ListBuffer[(String, Any)]
+                extras += entry
+              }
+            }
+          }
+          // An in-order strict prefix needs no rebuild either when missing fields are skipped
+          if (passthrough || (inOrder && !nullFillMissing)) row
+          else {
+            val builder = ListMap.newBuilder[String, Any]
+            var j = 0
+            while (j < len) {
+              if (seen(j)) builder += fieldArr(j) -> values(j)
+              else if (nullFillMissing) builder += fieldArr(j) -> null
+              j += 1
+            }
+            if (extras ne null) extras.foreach(builder += _)
+            builder.result()
+          }
+        }
+      }
     }
   }
 
