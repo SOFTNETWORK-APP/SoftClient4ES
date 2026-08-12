@@ -34,6 +34,7 @@ import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask, Enric
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.transform.{TransformConfig, TransformStats}
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
+import com.fasterxml.jackson.databind.JsonNode
 
 import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
@@ -202,21 +203,21 @@ trait NopeClientApi extends ElasticClientApi {
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]] = ElasticResult.success(None)
+  ): ElasticResult[Option[JsonNode]] = ElasticResult.success(None)
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]] = ElasticResult.success(None)
+  ): ElasticResult[Option[JsonNode]] = ElasticResult.success(None)
 
   override private[client] def executeSingleSearchAsync(elasticQuery: ElasticQuery)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] = Future {
+  ): Future[ElasticResult[Option[JsonNode]]] = Future {
     ElasticResult.success(None)
   }
 
   override private[client] def executeMultiSearchAsync(elasticQueries: ElasticQueries)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] = Future {
+  ): Future[ElasticResult[Option[JsonNode]]] = Future {
     ElasticResult.success(None)
   }
 

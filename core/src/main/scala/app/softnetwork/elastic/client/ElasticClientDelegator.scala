@@ -43,6 +43,7 @@ import app.softnetwork.elastic.sql.transform.{
 }
 import app.softnetwork.elastic.sql.watcher.{Watcher, WatcherStatus}
 import com.typesafe.config.Config
+import com.fasterxml.jackson.databind.JsonNode
 import org.apache.hadoop.conf.Configuration
 import org.json4s.Formats
 import org.slf4j.{Logger, LoggerFactory}
@@ -1449,22 +1450,22 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     delegate.executeSingleSearch(elasticQuery)
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     delegate.executeMultiSearch(elasticQueries)
 
   override private[client] def executeSingleSearchAsync(elasticQuery: ElasticQuery)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[JsonNode]]] =
     delegate.executeSingleSearchAsync(elasticQuery)
 
   override private[client] def executeMultiSearchAsync(elasticQueries: ElasticQueries)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[JsonNode]]] =
     delegate.executeMultiSearchAsync(elasticQueries)
 
   // ==================== ScrollApi ====================

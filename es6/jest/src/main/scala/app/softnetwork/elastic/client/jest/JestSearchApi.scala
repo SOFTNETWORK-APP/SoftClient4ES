@@ -16,7 +16,14 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.{ElasticQueries, ElasticQuery, SearchApi, SerializationApi}
+import app.softnetwork.elastic.client.{
+  mapper,
+  ElasticQueries,
+  ElasticQuery,
+  SearchApi,
+  SerializationApi
+}
+import com.fasterxml.jackson.databind.JsonNode
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.bridge.ElasticSearchRequest
@@ -66,7 +73,7 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
 
   override def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     executeJestAction(
       operation = "executeSingleSearch",
       index = Some(elasticQuery.indices.mkString(",")),
@@ -75,7 +82,10 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
       elasticQuery.search._1
     }(result =>
       if (result.isSucceeded) {
-        Some(result.getJsonString)
+        // Single parse for core (#228): Jackson reads the raw response body Jest retained —
+        // never the Gson tree re-serialized to a String. (Jest's own Gson parse is forced by
+        // its transport and cannot be bypassed.)
+        Some(mapper.readTree(result.getJsonString))
       } else {
         None
       }
@@ -83,7 +93,7 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
 
   private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     executeJestAction(
       operation = "executeMultiSearch",
       index = Some(
@@ -99,7 +109,10 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
       ).build()
     }(result =>
       if (result.isSucceeded) {
-        Some(result.getJsonString)
+        // Single parse for core (#228): Jackson reads the raw response body Jest retained —
+        // never the Gson tree re-serialized to a String. (Jest's own Gson parse is forced by
+        // its transport and cannot be bypassed.)
+        Some(mapper.readTree(result.getJsonString))
       } else {
         None
       }
@@ -107,7 +120,7 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
 
   override def executeSingleSearchAsync(
     elasticQuery: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[JsonNode]]] =
     executeAsyncJestAction(
       operation = "executeSingleSearchAsync",
       index = Some(elasticQuery.indices.mkString(",")),
@@ -116,7 +129,10 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
       elasticQuery.search._1
     }(result =>
       if (result.isSucceeded) {
-        Some(result.getJsonString)
+        // Single parse for core (#228): Jackson reads the raw response body Jest retained —
+        // never the Gson tree re-serialized to a String. (Jest's own Gson parse is forced by
+        // its transport and cannot be bypassed.)
+        Some(mapper.readTree(result.getJsonString))
       } else {
         None
       }
@@ -126,7 +142,7 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
     elasticQueries: ElasticQueries
   )(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[JsonNode]]] =
     executeAsyncJestAction(
       operation = "executeMultiSearchAsync",
       index = Some(
@@ -142,7 +158,10 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
       ).build()
     }(result =>
       if (result.isSucceeded) {
-        Some(result.getJsonString)
+        // Single parse for core (#228): Jackson reads the raw response body Jest retained —
+        // never the Gson tree re-serialized to a String. (Jest's own Gson parse is forced by
+        // its transport and cannot be bypassed.)
+        Some(mapper.readTree(result.getJsonString))
       } else {
         None
       }

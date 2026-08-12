@@ -79,9 +79,11 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 val scrollId = result.getJsonObject.get("_scroll_id").getAsString
 
                 // Extract ALL results (hits + aggregations)
+                // Single parse for core (#228): Jackson reads the raw response body Jest
+                // retained — the Gson tree is only consulted for the scroll cursor.
                 val results =
                   extractAllResults(
-                    result.getJsonObject.toString,
+                    result.getJsonString,
                     fieldAliases,
                     aggregations,
                     config.retainDocumentId
@@ -110,7 +112,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
                 val results =
                   extractAllResults(
-                    result.getJsonObject.toString,
+                    result.getJsonString,
                     fieldAliases,
                     aggregations,
                     config.retainDocumentId
@@ -126,10 +128,13 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 }
             }
           }
-        }(system, logger).recover { case ex: Exception =>
+        }(system, logger).recoverWith { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
           scrollIdOpt.foreach(clearScroll)
-          None
+          // fail the stream instead of ending it: ending here would surface a silently
+          // truncated result set as a SUCCESSFUL result (#228 review; same defect class as
+          // #209/#224)
+          Future.failed(ex)
         }
       }
       .mapConcat(identity)
@@ -214,8 +219,9 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               throw new IOException(s"Search after failed: ${result.getErrorMessage}")
             }
             // Extract ONLY hits (no aggregations)
+            // Single parse for core (#228): raw body, not the Gson tree re-serialized
             val hits =
-              extractHitsOnly(result.getJsonObject.toString, fieldAliases, config.retainDocumentId)
+              extractHitsOnly(result.getJsonString, fieldAliases, config.retainDocumentId)
 
             if (hits.isEmpty) {
               None
@@ -255,9 +261,12 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               Some((nextSearchAfter, hits))
             }
           }
-        }(system, logger).recover { case ex: Exception =>
+        }(system, logger).recoverWith { case ex: Exception =>
           logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
-          None
+          // fail the stream instead of ending it: ending here would surface a silently
+          // truncated result set as a SUCCESSFUL result (#228 review; same defect class as
+          // #209/#224)
+          Future.failed(ex)
         }
       }
       .mapConcat(identity)

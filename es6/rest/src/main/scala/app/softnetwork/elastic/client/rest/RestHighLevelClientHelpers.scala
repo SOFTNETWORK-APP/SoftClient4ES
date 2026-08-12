@@ -296,6 +296,108 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
     }
   }
 
+  /** Asynchronous variant of [[executeRestLowLevelAction]] (#228): same error mapping and status
+    * handling, driven by the low-level client's [[org.elasticsearch.client.ResponseListener]].
+    */
+  private[client] def executeAsyncRestLowLevelAction[T](
+    operation: String,
+    index: Option[String] = None,
+    retryable: Boolean = true
+  )(
+    request: => org.elasticsearch.client.Request
+  )(
+    transformer: org.elasticsearch.client.Response => T
+  )(implicit ec: scala.concurrent.ExecutionContext): scala.concurrent.Future[ElasticResult[T]] = {
+    val indexStr = index.map(i => s" on index '$i'").getOrElse("")
+    logger.debug(s"Executing low-level operation '$operation'$indexStr asynchronously")
+
+    val promise: Promise[ElasticResult[T]] = Promise()
+
+    def transform(result: org.elasticsearch.client.Response): ElasticResult[T] = {
+      val statusCode = result.getStatusLine.getStatusCode
+      if (statusCode >= 200 && statusCode < 300) {
+        Try(transformer(result)) match {
+          case Success(transformed) =>
+            logger.debug(s"Operation '$operation'$indexStr succeeded with status $statusCode")
+            ElasticResult.success(transformed)
+          case Failure(ex) =>
+            logger.error(s"Transformation failed for operation '$operation'$indexStr", ex)
+            ElasticResult.failure(
+              ElasticError(
+                message = s"Failed to transform result: ${ex.getMessage}",
+                cause = Some(ex),
+                statusCode = Some(500),
+                operation = Some(operation)
+              )
+            )
+        }
+      } else {
+        val errorMessage = Option(result.getStatusLine.getReasonPhrase)
+          .filter(_.nonEmpty)
+          .getOrElse("Unknown error")
+
+        val error = ElasticError(
+          message = errorMessage,
+          cause = None,
+          statusCode = Some(statusCode),
+          operation = Some(operation)
+        )
+
+        logError(operation, indexStr, error)
+        ElasticResult.failure(error)
+      }
+    }
+
+    try {
+      val listener = new org.elasticsearch.client.ResponseListener {
+        override def onSuccess(response: org.elasticsearch.client.Response): Unit =
+          promise.success(transform(response))
+
+        override def onFailure(ex: Exception): Unit = {
+          val (message, statusCode) = ex match {
+            case respEx: org.elasticsearch.client.ResponseException =>
+              (
+                s"HTTP error during $operation: ${respEx.getMessage}",
+                Try(respEx.getResponse.getStatusLine.getStatusCode).toOption
+              )
+            case _ =>
+              (s"Exception during $operation: ${ex.getMessage}", None)
+          }
+
+          logger.warn(s"Exception during operation '$operation'$indexStr: ${ex.getMessage}")
+
+          promise.success(
+            ElasticResult.failure(
+              ElasticError(
+                message = message,
+                cause = Some(ex),
+                statusCode = statusCode,
+                operation = Some(operation)
+              )
+            )
+          )
+        }
+      }
+
+      apply().getLowLevelClient.performRequestAsync(request, listener)
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to initiate async operation '$operation'$indexStr", ex)
+        promise.success(
+          ElasticResult.failure(
+            ElasticError(
+              message = s"Failed to initiate $operation: ${ex.getMessage}",
+              cause = Some(ex),
+              statusCode = None,
+              operation = Some(operation)
+            )
+          )
+        )
+    }
+
+    promise.future
+  }
+
   //format:off
   /** Asynchronous variant to execute a Rest High Level Client action.
     *

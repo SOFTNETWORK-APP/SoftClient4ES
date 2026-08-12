@@ -25,6 +25,7 @@ import app.softnetwork.elastic.client.scroll._
 import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.schema.TableAlias
+import com.fasterxml.jackson.databind.JsonNode
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.immutable.ListMap
@@ -308,36 +309,40 @@ trait MockElasticClientApi extends NopeClientApi {
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     ElasticResult.success(
       Some(
-        allDocumentsAsHits(
-          elasticQuery.indices.headOption.getOrElse("default_index")
+        mapper.readTree(
+          allDocumentsAsHits(
+            elasticQuery.indices.headOption.getOrElse("default_index")
+          )
         )
       )
     )
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     ElasticResult.success(
       Some(
-        allDocumentsAsHits(
-          elasticQueries.queries.head.indices.headOption.getOrElse("default_index")
+        mapper.readTree(
+          allDocumentsAsHits(
+            elasticQueries.queries.head.indices.headOption.getOrElse("default_index")
+          )
         )
       )
     )
 
   override private[client] def executeSingleSearchAsync(elasticQuery: ElasticQuery)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[JsonNode]]] =
     Future {
       executeSingleSearch(elasticQuery)
     }
 
   override private[client] def executeMultiSearchAsync(elasticQueries: ElasticQueries)(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]] =
+  ): Future[ElasticResult[Option[JsonNode]]] =
     Future {
       executeMultiSearch(elasticQueries)
     }

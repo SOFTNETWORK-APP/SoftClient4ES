@@ -89,8 +89,34 @@ trait ElasticConversion {
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
     retainDocumentId: Boolean = false
+  )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
+    Try(mapper.readTree(results)).flatMap { json =>
+      parseResponseTree(
+        json,
+        fieldAliases,
+        aggregations,
+        fields,
+        nestedHits,
+        explodeNested,
+        retainDocumentId
+      )
+    }
+
+  /** Node-level twin of [[parseResponse]] (#228): same single/multi dispatch, but the caller hands
+    * over an already-parsed Jackson tree. This is the entry the client executors use so each
+    * Elasticsearch response is parsed exactly once — never serialized back to a String for core to
+    * re-parse.
+    */
+  def parseResponseTree(
+    results: JsonNode,
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, ClientAggregation],
+    fields: Seq[String] = Seq.empty,
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    explodeNested: Boolean = true,
+    retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] = {
-    var json = mapper.readTree(results)
+    var json = results
     if (json.has("responses")) {
       json = json.get("responses")
     }

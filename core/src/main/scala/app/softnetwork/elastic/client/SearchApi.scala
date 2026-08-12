@@ -36,7 +36,7 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
-import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
+import com.fasterxml.jackson.databind.JsonNode
 import com.typesafe.config.ConfigFactory
 import org.json4s.Formats
 
@@ -251,7 +251,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
         val aggs = toClientAggregations(aggregations)
         ElasticResult.fromTry(
-          parseResponse(
+          parseResponseTree(
             response,
             fieldAliases,
             aggs,
@@ -361,7 +361,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         )
         val aggs = toClientAggregations(aggregations)
         ElasticResult.fromTry(
-          parseResponse(
+          parseResponseTree(
             response,
             fieldAliases,
             aggs,
@@ -538,7 +538,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           )
           val aggs = toClientAggregations(aggregations)
           ElasticResult.fromTry(
-            parseResponse(
+            parseResponseTree(
               response,
               fieldAliases,
               aggs,
@@ -657,7 +657,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           )
           val aggs = toClientAggregations(aggregations)
           ElasticResult.fromTry(
-            parseResponse(
+            parseResponseTree(
               response,
               fieldAliases,
               aggs,
@@ -1065,9 +1065,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         logger.info(
           s"✅ Successfully executed search with inner hits in indices '${elasticQuery.indices.mkString(",")}'"
         )
-        ElasticResult.attempt {
-          JsonParser.parseString(response).getAsJsonObject
-        } match {
+        ElasticResult.attempt(parseInnerHits[U, I](response, innerField)) match {
           case ElasticFailure(error) =>
             logger.error(
               s"❌ Failed to parse Elasticsearch response for search with inner hits in indices '${elasticQuery.indices
@@ -1079,8 +1077,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 index = Some(elasticQuery.indices.mkString(","))
               )
             )
-          case ElasticSuccess(parsedResponse) =>
-            ElasticResult.attempt(parseInnerHits[U, I](parsedResponse, innerField))
+          case success => success
         }
       case ElasticSuccess(_) =>
         val error =
@@ -1154,9 +1151,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         logger.info(
           s"✅ Successfully executed multi-search inner hits with ${elasticQueries.queries.size} queries"
         )
-        ElasticResult.attempt {
-          JsonParser.parseString(response).getAsJsonObject
-        } match {
+        ElasticResult.attempt(parseInnerHits[U, I](response, innerField)) match {
           case ElasticFailure(error) =>
             logger.error(
               s"❌ Failed to parse Elasticsearch response for multi-search inner hits with ${elasticQueries.queries.size} queries: ${error.message}"
@@ -1166,8 +1161,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 operation = Some("multisearchWithInnerHits")
               )
             )
-          case ElasticSuccess(parsedResponse) =>
-            ElasticResult.attempt(parseInnerHits[U, I](parsedResponse, innerField))
+          case success => success
         }
       case ElasticSuccess(_) =>
         val error =
@@ -1194,25 +1188,35 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   // METHODS TO IMPLEMENT
   // ========================================================================
 
+  /** Execute the search and hand back the response as an already-parsed Jackson tree (#228).
+    *
+    * The tree contract kills the historical double parse: implementations must materialize the
+    * Elasticsearch response as the Jackson tree core consumes — parsing the raw response bytes
+    * exactly once, or re-parenting `_source` trees the transport already parsed — never by
+    * serializing a typed response back to a JSON String for core to re-parse.
+    */
   private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]]
+  ): ElasticResult[Option[JsonNode]]
 
+  /** @see [[executeSingleSearch]] for the single-parse tree contract (#228). */
   private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]]
+  ): ElasticResult[Option[JsonNode]]
 
+  /** @see [[executeSingleSearch]] for the single-parse tree contract (#228). */
   private[client] def executeSingleSearchAsync(
     elasticQuery: ElasticQuery
   )(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]]
+  ): Future[ElasticResult[Option[JsonNode]]]
 
+  /** @see [[executeSingleSearch]] for the single-parse tree contract (#228). */
   private[client] def executeMultiSearchAsync(
     elasticQueries: ElasticQueries
   )(implicit
     ec: ExecutionContext
-  ): Future[ElasticResult[Option[String]]]
+  ): Future[ElasticResult[Option[JsonNode]]]
 
   // ================================================================================
   // IMPLICIT CONVERSIONS
@@ -1231,7 +1235,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   ): String
 
   private def parseInnerHits[M: Manifest: ClassTag, I: Manifest: ClassTag](
-    searchResult: JsonObject,
+    searchResult: JsonNode,
     innerField: String
   )(implicit formats: Formats): Seq[(M, Seq[I])] = {
     val mManifest = implicitly[Manifest[M]]
@@ -1243,28 +1247,31 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       s"🔍 Processing inner hits with types: M=${mClass.getSimpleName}, I=${iClass.getSimpleName}"
     )
 
-    def innerHits(result: JsonElement) = {
-      result.getAsJsonObject
-        .get("inner_hits")
-        .getAsJsonObject
-        .get(innerField)
-        .getAsJsonObject
-        .get("hits")
-        .getAsJsonObject
-        .get("hits")
-        .getAsJsonArray
-        .iterator()
+    def innerHits(result: JsonNode): Iterator[JsonNode] = {
+      val hits = result
+        .path("inner_hits")
+        .path(innerField)
+        .path("hits")
+        .path("hits")
+      if (!hits.isArray) {
+        throw new IllegalStateException(
+          s"No inner hits found for field '$innerField' in search response"
+        )
+      }
+      hits.elements().asScala
     }
 
-    val gson = new Gson()
-    val results = searchResult.get("hits").getAsJsonObject.get("hits").getAsJsonArray.iterator()
+    val hits = searchResult.path("hits").path("hits")
+    if (!hits.isArray) {
+      throw new IllegalStateException("No hits found in search response")
+    }
 
-    (for (result <- results.asScala)
+    (for (result <- hits.elements().asScala)
       yield (
         result match {
-          case obj: JsonObject =>
+          case obj if obj.isObject =>
             Try {
-              val source = gson.toJson(obj.get("_source"))
+              val source = mapper.writeValueAsString(obj.get("_source"))
               logger.debug(
                 s"Deserializing main entity ${mClass.getSimpleName} from source: $source"
               )
@@ -1275,12 +1282,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 logger.error(s"❌ Failed to deserialize main entity: ${f.getMessage}", f)
                 throw f
             }
-          case _ => serialization.read[M](result.getAsString)(formats, mManifest)
+          case other => serialization.read[M](other.asText())(formats, mManifest)
         },
-        (for (innerHit <- innerHits(result).asScala) yield innerHit match {
-          case obj: JsonObject =>
+        (for (innerHit <- innerHits(result)) yield innerHit match {
+          case obj if obj.isObject =>
             Try {
-              val source = gson.toJson(obj.get("_source"))
+              val source = mapper.writeValueAsString(obj.get("_source"))
               logger.debug(
                 s"Deserializing inner hit entity ${iClass.getSimpleName} from source: $source"
               )
@@ -1291,7 +1298,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 logger.error(s"❌ Failed to deserialize inner hit entity: ${f.getMessage}")
                 throw f
             }
-          case _ => serialization.read[I](innerHit.getAsString)(formats, iManifest)
+          case other => serialization.read[I](other.asText())(formats, iManifest)
         }).toList
       )).toList
   }
