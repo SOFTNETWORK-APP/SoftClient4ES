@@ -7,8 +7,8 @@ import scala.collection.immutable.ListMap
 
 /** Pins the single-pass [[ElasticConversion.rowNormalizer]] (#229) against the legacy
   * [[ElasticConversion.normalizeRow]] contract: requested fields first, in SQL SELECT order —
-  * missing ones null-filled (or skipped under [[EntityContext]]) — then the row's extra entries
-  * in their original order. Order is asserted on `.toList` (ListMap equality ignores order).
+  * missing ones null-filled (or skipped under [[EntityContext]]) — then the row's extra entries in
+  * their original order. Order is asserted on `.toList` (ListMap equality ignores order).
   */
 class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion {
 
@@ -92,14 +92,14 @@ class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion
 
   it should "match the legacy normalizeRow output on every shape, in both contexts" in {
     val rows = Seq(
-      ListMap[String, Any]("a" -> 1, "b" -> 2, "c" -> 3),
-      ListMap[String, Any]("c" -> 3, "b" -> 2, "a" -> 1),
+      ListMap[String, Any]("a" -> 1, "b"    -> 2, "c" -> 3),
+      ListMap[String, Any]("c" -> 3, "b"    -> 2, "a" -> 1),
       ListMap[String, Any]("b" -> 2),
-      ListMap[String, Any]("a" -> 1, "b" -> 2, "c" -> 3, "_id" -> "42"),
-      ListMap[String, Any]("x" -> 0, "c" -> 3, "y" -> 9, "a" -> 1),
-      ListMap[String, Any]("a" -> 1, "x" -> 0, "b" -> 2, "c" -> 3),
+      ListMap[String, Any]("a" -> 1, "b"    -> 2, "c" -> 3, "_id" -> "42"),
+      ListMap[String, Any]("x" -> 0, "c"    -> 3, "y" -> 9, "a"   -> 1),
+      ListMap[String, Any]("a" -> 1, "x"    -> 0, "b" -> 2, "c"   -> 3),
       ListMap[String, Any]("a" -> null, "c" -> 3),
-      ListMap[String, Any]("x" -> 0, "y" -> 9),
+      ListMap[String, Any]("x" -> 0, "y"    -> 9),
       ListMap.empty[String, Any]
     )
     for (row <- rows) {
@@ -118,19 +118,19 @@ class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion
     val stream = Seq(
       shaped,
       ListMap[String, Any]("c" -> 30, "a" -> 10),
-      ListMap[String, Any]("x" -> 0, "b" -> 200),
+      ListMap[String, Any]("x" -> 0, "b"  -> 200),
       ListMap.empty[String, Any],
       ListMap[String, Any]("a" -> 1000, "b" -> 2000, "c" -> 3000, "_id" -> "42"),
       shaped
     )
     val normalized = stream.map(normalizer)
     normalized.map(_.toList) shouldBe Seq(
-      List("a" -> 1, "b" -> 2, "c" -> 3),
-      List("a" -> 10, "b" -> null, "c" -> 30),
-      List("a" -> null, "b" -> 200, "c" -> null, "x" -> 0),
+      List("a" -> 1, "b"    -> 2, "c"    -> 3),
+      List("a" -> 10, "b"   -> null, "c" -> 30),
+      List("a" -> null, "b" -> 200, "c"  -> null, "x"   -> 0),
       List("a" -> null, "b" -> null, "c" -> null),
       List("a" -> 1000, "b" -> 2000, "c" -> 3000, "_id" -> "42"),
-      List("a" -> 1, "b" -> 2, "c" -> 3)
+      List("a" -> 1, "b"    -> 2, "c"    -> 3)
     )
     normalized.head should be theSameInstanceAs shaped
     normalized.last should be theSameInstanceAs shaped
@@ -139,7 +139,7 @@ class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion
   it should "fall back to the legacy semantics when requested fields contain duplicates" in {
     val duplicated = Seq("a", "b", "a")
     val rows = Seq(
-      ListMap[String, Any]("a" -> 1, "b" -> 2),
+      ListMap[String, Any]("a" -> 1, "b"     -> 2),
       ListMap[String, Any]("b" -> 2, "extra" -> true),
       ListMap.empty[String, Any]
     )
