@@ -32,8 +32,8 @@ import _root_.java.util.{Collections, List => JList}
   *
   * The row parser (`ElasticConversion.parseSimpleHits`) reads exactly `_id`, `_source`,
   * `inner_hits` and `fields` per hit — `hitsToResponseNode` must provide those and may omit
-  * everything else. A hit carrying `inner_hits` or `fields` must fall back to a full-fidelity
-  * node, and `convertToTree` must produce the same tree `convertToJson` round-trips to.
+  * everything else. A hit carrying `inner_hits` or `fields` must fall back to a full-fidelity node,
+  * and `convertToTree` must produce the same tree `convertToJson` round-trips to.
   */
 class JavaClientConversionSpec extends AnyWordSpec with Matchers {
 
