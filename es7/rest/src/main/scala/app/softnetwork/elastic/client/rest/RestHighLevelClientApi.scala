@@ -59,6 +59,8 @@ import app.softnetwork.elastic.utils.CronIntervalCalculator
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.google.gson.JsonParser
+import org.apache.http.entity.ContentType
+import org.apache.http.nio.entity.NByteArrayEntity
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.action.admin.indices.alias.Alias
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest
@@ -84,12 +86,7 @@ import org.elasticsearch.action.ingest.{
 import org.elasticsearch.action.search.{
   ClearScrollRequest,
   ClosePointInTimeRequest,
-  MultiSearchRequest,
-  MultiSearchResponse,
-  OpenPointInTimeRequest,
-  SearchRequest,
-  SearchResponse,
-  SearchScrollRequest
+  OpenPointInTimeRequest
 }
 import org.elasticsearch.action.support.{IndicesOptions, WriteRequest}
 import org.elasticsearch.action.support.master.AcknowledgedResponse
@@ -180,6 +177,7 @@ import org.json4s.jackson.JsonMethods
 import org.json4s.DefaultFormats
 
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import java.time.ZonedDateTime
 import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
@@ -1090,40 +1088,102 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
   ): String =
     implicitly[ElasticSearchRequest](singleSearch).query
 
+  // ==========================================================================
+  // Single-parse search execution (#228)
+  //
+  // The typed RestHighLevelClient path parsed every response three times: the
+  // client parsed the HTTP response into its typed form (pass 1), the typed
+  // form was re-serialized to a JSON String (pass 2) and core re-parsed that
+  // String into the Jackson tree the row parser consumes (pass 3). Searches now
+  // go through the low-level RestClient and the raw response entity bytes are
+  // Jackson-parsed exactly once into the tree core reads — one pass total.
+  // ==========================================================================
+
+  /** `/{indices}/{types}/_search` — empty segments are skipped and each segment is percent-encoded,
+    * mirroring the high-level client's endpoint building (types are legacy 6.x mapping types,
+    * usually absent on 7.x). Commas and wildcards stay raw; date-math characters are encoded.
+    */
+  private[rest] def searchEndpoint(indices: Seq[String], types: Seq[String]): String = {
+    val parts =
+      Seq(indices, types)
+        .map(_.filter(_.nonEmpty))
+        .filter(_.nonEmpty)
+        .map(seq => encodePathPart(seq.mkString(",")))
+    (parts :+ "_search").mkString("/", "/", "")
+  }
+
+  /** Percent-encode one path segment exactly like the high-level client's RequestConverters: the
+    * segment is made absolute so a leading `-` or `:` cannot be misread, and any slash a segment
+    * carries (date-math rounding, e.g. `<logs-{now/d}>`) is encoded manually since URI treats it as
+    * a separator.
+    */
+  private def encodePathPart(part: String): String =
+    new java.net.URI(null, null, null, -1, "/" + part, null, null).getRawPath
+      .substring(1)
+      .replaceAll("/", "%2F")
+
+  /** Jackson-parse the raw response entity bytes — the single parse of the response. */
+  private[rest] def readResponseTree(response: Response): JsonNode =
+    mapper.readTree(response.getEntity.getContent)
+
+  /** NDJSON body of a `_msearch` request. Each query body is compacted through a Jackson round-trip
+    * so a formatted query cannot break the line-delimited protocol; the header carries the indices
+    * (and legacy types when present).
+    */
+  private[rest] def msearchBody(queries: Seq[ElasticQuery]): String = {
+    val body = new StringBuilder
+    queries.foreach { q =>
+      val header = mapper.createObjectNode()
+      val indicesArray = header.putArray("index")
+      q.indices.foreach(indicesArray.add)
+      if (q.types.nonEmpty) {
+        val typesArray = header.putArray("type")
+        q.types.foreach(typesArray.add)
+      }
+      body.append(mapper.writeValueAsString(header)).append('\n')
+      body.append(mapper.writeValueAsString(mapper.readTree(q.query))).append('\n')
+    }
+    body.toString
+  }
+
+  private[rest] def msearchRequest(elasticQueries: ElasticQueries): Request = {
+    val req = new Request("POST", "/_msearch")
+    // Exactly what the typed client sent: UTF-8 bytes with a bare `application/json` content
+    // type. ES 6.x answers 406 to "application/x-ndjson; charset=UTF-8" (the charset parameter is
+    // not accepted on the NDJSON mime), and the NDJSON endpoints accept the JSON content type for
+    // line-delimited bodies on every version.
+    req.setEntity(
+      new NByteArrayEntity(
+        msearchBody(elasticQueries.queries).getBytes(StandardCharsets.UTF_8),
+        ContentType.create("application/json")
+      )
+    )
+    req
+  }
+
+  private def searchRequest(elasticQuery: ElasticQuery): Request = {
+    val req = new Request("POST", searchEndpoint(elasticQuery.indices, elasticQuery.types))
+    req.setJsonEntity(elasticQuery.query)
+    req
+  }
+
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]] =
-    executeRestAction[SearchRequest, SearchResponse, Option[String]](
+  ): ElasticResult[Option[JsonNode]] =
+    executeRestLowLevelAction[Option[JsonNode]](
       operation = "singleSearch",
       index = Some(elasticQuery.indices.mkString(",")),
       retryable = true
     )(
-      request = {
-        val req = new SearchRequest(elasticQuery.indices: _*).types(elasticQuery.types: _*)
-        val xContentParser = XContentType.JSON
-          .xContent()
-          .createParser(
-            namedXContentRegistry,
-            DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-            elasticQuery.query
-          )
-        req.source(SearchSourceBuilder.fromXContent(xContentParser))
-        req
-      }
+      request = searchRequest(elasticQuery)
     )(
-      executor = req => apply().search(req, RequestOptions.DEFAULT)
-    )(response => {
-      if (response.status() == RestStatus.OK) {
-        Some(Strings.toString(response))
-      } else {
-        None
-      }
-    })
+      transformer = response => Some(readResponseTree(response))
+    )
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]] =
-    executeRestAction[MultiSearchRequest, MultiSearchResponse, Option[String]](
+  ): ElasticResult[Option[JsonNode]] =
+    executeRestLowLevelAction[Option[JsonNode]](
       operation = "multiSearch",
       index = Some(
         elasticQueries.queries
@@ -1133,63 +1193,28 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
       ),
       retryable = true
     )(
-      request = {
-        val req = new MultiSearchRequest()
-        for (query <- elasticQueries.queries) {
-          val xContentParser = XContentType.JSON
-            .xContent()
-            .createParser(
-              namedXContentRegistry,
-              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-              query.query
-            )
-          val searchSourceBuilder = SearchSourceBuilder.fromXContent(xContentParser)
-          req.add(
-            new SearchRequest(query.indices: _*)
-              .types(query.types: _*)
-              .source(searchSourceBuilder)
-          )
-        }
-        req
-      }
+      request = msearchRequest(elasticQueries)
     )(
-      executor = req => apply().msearch(req, RequestOptions.DEFAULT)
-    )(response => Some(Strings.toString(response)))
+      transformer = response => Some(readResponseTree(response))
+    )
 
   override private[client] def executeSingleSearchAsync(
     elasticQuery: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
-    executeAsyncRestAction[SearchRequest, SearchResponse, Option[String]](
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[JsonNode]]] =
+    executeAsyncRestLowLevelAction[Option[JsonNode]](
       operation = "executeSingleSearchAsync",
       index = Some(elasticQuery.indices.mkString(",")),
       retryable = true
     )(
-      request = {
-        val req = new SearchRequest(elasticQuery.indices: _*).types(elasticQuery.types: _*)
-        val xContentParser = XContentType.JSON
-          .xContent()
-          .createParser(
-            namedXContentRegistry,
-            DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-            elasticQuery.query
-          )
-        req.source(SearchSourceBuilder.fromXContent(xContentParser))
-        req
-      }
+      request = searchRequest(elasticQuery)
     )(
-      executor = (req, listener) => apply().searchAsync(req, RequestOptions.DEFAULT, listener)
-    )(response => {
-      if (response.status() == RestStatus.OK) {
-        Some(Strings.toString(response))
-      } else {
-        None
-      }
-    })
+      transformer = response => Some(readResponseTree(response))
+    )
 
   override private[client] def executeMultiSearchAsync(
     elasticQueries: ElasticQueries
-  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
-    executeAsyncRestAction[MultiSearchRequest, MultiSearchResponse, Option[String]](
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[JsonNode]]] =
+    executeAsyncRestLowLevelAction[Option[JsonNode]](
       operation = "executeMultiSearchAsync",
       index = Some(
         elasticQueries.queries
@@ -1199,28 +1224,10 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
       ),
       retryable = true
     )(
-      request = {
-        val req = new MultiSearchRequest()
-        for (query <- elasticQueries.queries) {
-          val xContentParser = XContentType.JSON
-            .xContent()
-            .createParser(
-              namedXContentRegistry,
-              DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-              query.query
-            )
-          val searchSourceBuilder = SearchSourceBuilder.fromXContent(xContentParser)
-          req.add(
-            new SearchRequest(query.indices: _*)
-              .types(query.types: _*)
-              .source(searchSourceBuilder)
-          )
-        }
-        req
-      }
+      request = msearchRequest(elasticQueries)
     )(
-      executor = (req, listener) => apply().msearchAsync(req, RequestOptions.DEFAULT, listener)
-    )(response => Some(Strings.toString(response)))
+      transformer = response => Some(readResponseTree(response))
+    )
 
 }
 
@@ -1462,6 +1469,96 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     with RestHighLevelClientVersionApi
     with RestHighLevelClientCompanion =>
 
+  // ==========================================================================
+  // Single-parse paging (#228)
+  //
+  // Every page used to be processed three times: the RestHighLevelClient
+  // parsed the HTTP response into its typed form, `response.toString`
+  // re-serialized that form via XContent, and core `parseResponse` re-parsed
+  // the string into the Jackson tree the row parser consumes. Pages now go
+  // through the low-level RestClient and the raw response entity bytes are
+  // Jackson-parsed exactly once — the typed request builders still build the
+  // request body, only the response side changed.
+  // ==========================================================================
+
+  /** Execute a paging request through the low-level client and Jackson-parse the raw response
+    * entity bytes once.
+    *
+    * Error statuses surface as [[org.elasticsearch.client.ResponseException]] — an `IOException`,
+    * which `retryWithBackoff` would retry. The typed path never retried an error status
+    * (`ElasticsearchStatusException` is not retriable), so permanent client errors (4xx except
+    * 408/429) are rethrown as non-retriable to keep failing fast; retrying 408/429/5xx is a
+    * deliberate resilience gain on transient cluster conditions.
+    */
+  private def executeSearchPage(request: Request): JsonNode =
+    try {
+      readResponseTree(apply().getLowLevelClient.performRequest(request))
+    } catch {
+      case ex: org.elasticsearch.client.ResponseException =>
+        val status = Try(ex.getResponse.getStatusLine.getStatusCode).getOrElse(0)
+        if (status >= 400 && status < 500 && status != 408 && status != 429) {
+          throw new IllegalStateException(ex.getMessage, ex)
+        }
+        throw ex
+    }
+
+  /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
+    * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
+    * check.
+    */
+  private def shardFailures(tree: JsonNode): Option[String] = {
+    val shards = tree.path("_shards")
+    if (shards.path("failed").asInt(0) > 0) {
+      val failures = shards.path("failures")
+      val reasons =
+        if (failures.isArray && failures.size() > 0) {
+          failures
+            .elements()
+            .asScala
+            .map { failure =>
+              val reason = failure.path("reason")
+              val message = reason.path("reason")
+              if (message.isTextual) message.asText() else reason.toString
+            }
+            .mkString("; ")
+        } else {
+          "Unknown shard failure"
+        }
+      Some(reasons)
+    } else {
+      None
+    }
+  }
+
+  /** Convert a hit's `sort` array into the values fed back as `search_after` on the next page. */
+  private def sortValuesOf(sortNode: JsonNode): Array[AnyRef] =
+    sortNode
+      .elements()
+      .asScala
+      .map { value =>
+        val converted: AnyRef =
+          if (value.isTextual) value.textValue()
+          else if (value.isNumber) value.numberValue()
+          else if (value.isBoolean) java.lang.Boolean.valueOf(value.booleanValue())
+          else if (value.isNull) null
+          else
+            // sort values are scalars by contract; a container would corrupt the cursor
+            throw new IllegalStateException(
+              s"Unsupported search_after sort value of type ${value.getNodeType}: $value"
+            )
+        converted
+      }
+      .toArray
+
+  private def scrollContinuationRequest(scrollId: String, keepAlive: String): Request = {
+    val body = mapper.createObjectNode()
+    body.put("scroll", keepAlive)
+    body.put("scroll_id", scrollId)
+    val request = new Request("POST", "/_search/scroll")
+    request.setJsonEntity(mapper.writeValueAsString(body))
+    request
+  }
+
   /** Classic scroll (works for both hits and aggregations)
     */
   override private[client] def scrollClassic(
@@ -1494,25 +1591,26 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                     DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
                     query
                   )
-                // Execute the search
-                val searchRequest =
-                  new SearchRequest(elasticQuery.indices: _*)
-                    .types(elasticQuery.types: _*)
-                    .source(
-                      SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
-                    )
+                val sourceBuilder =
+                  SearchSourceBuilder.fromXContent(xContentParser).size(config.scrollSize)
 
-                searchRequest.scroll(
-                  TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
-                )
+                // Validate the keep-alive eagerly, exactly as the typed request builder did
+                TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
 
-                val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+                val request =
+                  new Request("POST", searchEndpoint(elasticQuery.indices, elasticQuery.types))
+                request.addParameter("scroll", config.keepAlive)
+                request.setJsonEntity(Strings.toString(sourceBuilder))
 
-                if (response.status() != RestStatus.OK) {
-                  throw new IOException(s"Initial scroll failed with status: ${response.status()}")
+                val tree = executeSearchPage(request)
+
+                val scrollId = tree.path("_scroll_id").textValue()
+
+                shardFailures(tree).foreach { reasons =>
+                  // the failed request still created a server-side scroll context — release it
+                  Option(scrollId).foreach(clearScroll)
+                  throw new IOException(s"Initial scroll failed: $reasons")
                 }
-
-                val scrollId = response.getScrollId
 
                 if (scrollId == null) {
                   throw new IllegalStateException("Scroll ID is null in response")
@@ -1521,7 +1619,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 // Extract both hits AND aggregations
                 val results =
                   extractAllResults(
-                    response.toString,
+                    tree,
                     fieldAliases,
                     aggregations,
                     config.retainDocumentId
@@ -1539,24 +1637,20 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 // Subsequent scroll requests
                 logger.debug(s"Fetching next scroll batch (scrollId: $scrollId)")
 
-                val scrollRequest = new SearchScrollRequest(scrollId)
-                scrollRequest.scroll(
-                  TimeValue.parseTimeValue(config.keepAlive, "scroll_timeout")
-                )
+                val tree =
+                  executeSearchPage(scrollContinuationRequest(scrollId, config.keepAlive))
 
-                val result = apply().scroll(scrollRequest, RequestOptions.DEFAULT)
-
-                if (result.status() != RestStatus.OK) {
+                shardFailures(tree).foreach { reasons =>
+                  // the cursor is spent: a retry against a cleared context can only 404, and
+                  // re-polling a scroll cursor skips rows — fail without retrying
                   clearScroll(scrollId)
-                  throw new IOException(
-                    s"Scroll continuation failed with status: ${result.status()}"
-                  )
+                  throw new IllegalStateException(s"Scroll continuation failed: $reasons")
                 }
 
-                val newScrollId = result.getScrollId
+                val newScrollId = tree.path("_scroll_id").textValue()
                 val results =
                   extractAllResults(
-                    result.toString,
+                    tree,
                     fieldAliases,
                     aggregations,
                     config.retainDocumentId
@@ -1572,10 +1666,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 }
             }
           }
-        }(system, logger).recover { case ex: Exception =>
+        }(system, logger).recoverWith { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
           scrollIdOpt.foreach(clearScroll)
-          None
+          // fail the stream instead of ending it: ending here would surface a silently
+          // truncated result set as a SUCCESSFUL result (#228 review; same defect class as
+          // #209/#224)
+          Future.failed(ex)
         }
       }
       .mapConcat(identity)
@@ -1654,29 +1751,34 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
               sourceBuilder.searchAfter(searchAfter)
             }
 
-            // Execute the search
-            val searchRequest =
-              new SearchRequest(elasticQuery.indices: _*)
-                .types(elasticQuery.types: _*)
-                .source(
-                  sourceBuilder
-                )
+            // Execute the search (single parse #228: the raw response bytes are Jackson-parsed
+            // once; a non-OK status surfaces as a ResponseException)
+            val request =
+              new Request("POST", searchEndpoint(elasticQuery.indices, elasticQuery.types))
+            request.setJsonEntity(Strings.toString(sourceBuilder))
 
-            val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+            val tree = executeSearchPage(request)
 
-            if (response.status() != RestStatus.OK) {
-              throw new IOException(s"Search after failed with status: ${response.status()}")
+            shardFailures(tree).foreach { reasons =>
+              throw new IOException(s"Search after failed: $reasons")
             }
 
             // Extract ONLY hits (no aggregations for search_after)
-            val hits = extractHitsOnly(response.toString, fieldAliases, config.retainDocumentId)
+            val hits = extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
 
             if (hits.isEmpty) {
               None
             } else {
-              val searchHits = response.getHits.getHits
-              val lastHit = searchHits.last
-              val nextSearchAfter = Option(lastHit.getSortValues)
+              val hitsArray = tree.path("hits").path("hits")
+              val lastHit = hitsArray.get(hitsArray.size() - 1)
+              val lastSort = lastHit.path("sort")
+              if (!lastSort.isArray || lastSort.size() == 0) {
+                // paging on without a cursor would refetch the same page forever
+                throw new IllegalStateException(
+                  "search_after page returned hits without sort values — cannot continue paging"
+                )
+              }
+              val nextSearchAfter = Some(sortValuesOf(lastSort))
 
               logger.debug(
                 s"Retrieved ${hits.size} hits, next search_after: ${nextSearchAfter
@@ -1690,9 +1792,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
               Some((nextSearchAfter, hits))
             }
           }
-        }(system, logger).recover { case ex: Exception =>
+        }(system, logger).recoverWith { case ex: Exception =>
           logger.error(s"Search after failed after retries: ${ex.getMessage}", ex)
-          None
+          // fail the stream instead of ending it: ending here would surface a silently
+          // truncated result set as a SUCCESSFUL result (#228 review; same defect class as
+          // #209/#224)
+          Future.failed(ex)
         }
       }
       .mapConcat(identity)
@@ -1793,36 +1898,45 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                   )
                   sourceBuilder.pointInTimeBuilder(pitBuilder)
 
-                  // Build request with PIT
-                  val searchRequest = new SearchRequest()
-                    .source(sourceBuilder)
-                    .requestCache(false) // Disable cache for PIT
+                  // Build request with PIT — no index in the path, the PIT owns the target
+                  // (single parse #228: raw response bytes Jackson-parsed once)
+                  val request = new Request("POST", "/_search")
+                  request.addParameter("request_cache", "false") // Disable cache for PIT
+                  request.setJsonEntity(Strings.toString(sourceBuilder))
 
-                  val response = apply().search(searchRequest, RequestOptions.DEFAULT)
+                  val tree = executeSearchPage(request)
 
-                  if (response.status() != RestStatus.OK) {
-                    throw new IOException(
-                      s"PIT search_after failed with status: ${response.status()}"
-                    )
+                  shardFailures(tree).foreach { reasons =>
+                    throw new IOException(s"PIT search_after failed: $reasons")
                   }
 
                   val hits =
-                    extractHitsOnly(response.toString, fieldAliases, config.retainDocumentId)
+                    extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
 
                   if (hits.isEmpty) {
                     None // end of stream — watchTermination owns the single PIT close (#202)
                   } else {
-                    val searchHits = response.getHits.getHits
-                    val lastHit = searchHits.last
-                    val nextSearchAfter = Option(lastHit.getSortValues)
+                    val hitsArray = tree.path("hits").path("hits")
+                    val lastHit = hitsArray.get(hitsArray.size() - 1)
+                    val lastSort = lastHit.path("sort")
+                    if (!lastSort.isArray || lastSort.size() == 0) {
+                      // paging on without a cursor would refetch the same page forever
+                      throw new IllegalStateException(
+                        "search_after page returned hits without sort values — cannot continue paging"
+                      )
+                    }
+                    val nextSearchAfter = Some(sortValuesOf(lastSort))
 
                     logger.debug(s"Retrieved ${hits.size} hits, continuing with PIT")
                     Some((nextSearchAfter, hits))
                   }
                 }
-              }(system, logger).recover { case ex: Exception =>
+              }(system, logger).recoverWith { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
-                None // ends the stream — watchTermination owns the single PIT close (#202)
+                // fail the stream instead of ending it: ending here would surface a silently
+                // truncated result set as a SUCCESSFUL result (#228 review; same defect class
+                // as #209/#224) — watchTermination still owns the single PIT close (#202)
+                Future.failed(ex)
               }
             }
             .watchTermination() { (_, done) =>
@@ -1897,13 +2011,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
     */
   private def extractAllResults(
-    jsonString: String,
+    json: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
-    parseResponse(
-      jsonString,
+    parseSingleSearchResponse(
+      json,
       fieldAliases,
       aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2)),
       retainDocumentId = retainDocumentId
@@ -1920,12 +2034,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   /** Extract ONLY hits (for search_after optimization)
     */
   private def extractHitsOnly(
-    jsonString: String,
+    json: JsonNode,
     fieldAliases: ListMap[String, String],
     retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
-    parseResponse(
-      jsonString,
+    parseSingleSearchResponse(
+      json,
       fieldAliases,
       ListMap.empty,
       retainDocumentId = retainDocumentId

@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client.java
 
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import co.elastic.clients.elasticsearch.core.{MsearchResponse, SearchResponse}
 import co.elastic.clients.elasticsearch.core.search.Hit
 import co.elastic.clients.json.JsonpSerializable
 import co.elastic.clients.json.jackson.{JacksonJsonpGenerator, JacksonJsonpMapper}
@@ -103,6 +104,41 @@ trait JavaClientConversion { _: JavaClientCompanion =>
         Option(hit.source()).foreach(source => hitNode.set[JsonNode]("_source", source))
       } else {
         hitsArray.add(convertToTree(hit))
+      }
+    }
+    root
+  }
+
+  /** Response tree of a one-shot search (#228), single-parse.
+    *
+    * Hits-only responses — the common row-shaped case — re-parent the `_source` trees the transport
+    * already parsed (see [[hitsToResponseNode]]); aggregation-bearing responses serialize the whole
+    * envelope once at token level via [[convertToTree]], never through a String.
+    */
+  protected def searchResponseToTree(response: SearchResponse[ObjectNode]): JsonNode =
+    if (response.aggregations() != null && !response.aggregations().isEmpty)
+      convertToTree(response)
+    else hitsToResponseNode(response.hits().hits())
+
+  /** Response tree of a multi search (#228), single-parse.
+    *
+    * The `responses` array is rebuilt item by item with the same policy as
+    * [[searchResponseToTree]]; a failed item keeps full fidelity so core still sees its `error`
+    * object.
+    */
+  protected def msearchResponseToTree(response: MsearchResponse[ObjectNode]): JsonNode = {
+    val root = JacksonConfig.objectMapper.createObjectNode()
+    val responses = root.putArray("responses")
+    response.responses().forEach { item =>
+      if (item.isResult) {
+        val result = item.result()
+        if (result.aggregations() != null && !result.aggregations().isEmpty) {
+          responses.add(convertToTree(result))
+        } else {
+          responses.add(hitsToResponseNode(result.hits().hits()))
+        }
+      } else {
+        responses.add(convertToTree(item))
       }
     }
     root

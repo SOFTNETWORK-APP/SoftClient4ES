@@ -1752,6 +1752,67 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     innerHitKeys(this) shouldBe Set("total")
     innerHitKeys(EnabledDocumentIdConversion) shouldBe Set("total", "_id")
   }
+
+  it should "dispatch an already-parsed single-search tree through parseResponseTree (#228)" in {
+    val tree = mapper.readTree(
+      """{
+        |  "took": 1,
+        |  "hits": {
+        |    "hits": [
+        |      { "_id": "1", "_source": { "name": "Laptop", "price": 999.99 } }
+        |    ]
+        |  }
+        |}""".stripMargin
+    )
+
+    parseResponseTree(tree, ListMap.empty, ListMap.empty) match {
+      case Success(rows) =>
+        rows should have size 1
+        rows.head("name") shouldBe "Laptop"
+      case Failure(error) => throw error
+    }
+  }
+
+  it should "dispatch an already-parsed multi-search tree through parseResponseTree (#228)" in {
+    val tree = mapper.readTree(
+      """{
+        |  "responses": [
+        |    { "hits": { "hits": [ { "_id": "1", "_source": { "name": "Laptop" } } ] } },
+        |    { "hits": { "hits": [ { "_id": "2", "_source": { "name": "Mouse" } } ] } }
+        |  ]
+        |}""".stripMargin
+    )
+
+    parseResponseTree(tree, ListMap.empty, ListMap.empty) match {
+      case Success(rows) =>
+        rows.map(_("name")) should contain theSameElementsAs Seq("Laptop", "Mouse")
+      case Failure(error) => throw error
+    }
+  }
+
+  it should "surface a multi-search item error from parseResponseTree (#228)" in {
+    val tree = mapper.readTree(
+      """{
+        |  "responses": [
+        |    { "hits": { "hits": [] } },
+        |    { "error": { "type": "search_phase_execution_exception", "reason": "boom" }, "status": 500 }
+        |  ]
+        |}""".stripMargin
+    )
+
+    parseResponseTree(tree, ListMap.empty, ListMap.empty) match {
+      case Success(rows) => fail(s"Expected a failure, got $rows")
+      case Failure(error) =>
+        error.getMessage should include("boom")
+    }
+  }
+
+  it should "return a Failure on a malformed response string instead of throwing (#228)" in {
+    parseResponse("{ not json", ListMap.empty, ListMap.empty) match {
+      case Success(rows) => fail(s"Expected a failure, got $rows")
+      case Failure(_)    => succeed
+    }
+  }
 }
 
 case class Products(category: String, top_products: List[Product], avg_price: Double)

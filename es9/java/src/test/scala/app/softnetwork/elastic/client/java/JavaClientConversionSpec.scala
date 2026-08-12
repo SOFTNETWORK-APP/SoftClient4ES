@@ -18,6 +18,9 @@ package app.softnetwork.elastic.client.java
 
 import app.softnetwork.elastic.client.ElasticConfig
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import co.elastic.clients.elasticsearch._types.aggregations.Aggregate
+import co.elastic.clients.elasticsearch.core.{MsearchResponse, SearchResponse}
+import co.elastic.clients.elasticsearch.core.msearch.MultiSearchResponseItem
 import co.elastic.clients.elasticsearch.core.search.Hit
 import co.elastic.clients.json.JsonData
 import com.fasterxml.jackson.databind.JsonNode
@@ -42,6 +45,10 @@ class JavaClientConversionSpec extends AnyWordSpec with Matchers {
     def envelope(hits: JList[Hit[ObjectNode]]): ObjectNode = hitsToResponseNode(hits)
     def tree(hit: Hit[ObjectNode]): JsonNode = convertToTree(hit)
     def json(hit: Hit[ObjectNode]): String = convertToJson(hit)
+    def searchTree(response: SearchResponse[ObjectNode]): JsonNode = searchResponseToTree(response)
+    def msearchTree(response: MsearchResponse[ObjectNode]): JsonNode =
+      msearchResponseToTree(response)
+    def searchJson(response: SearchResponse[ObjectNode]): String = convertToJson(response)
   }
 
   private val mapper = JacksonConfig.objectMapper
@@ -143,6 +150,85 @@ class JavaClientConversionSpec extends AnyWordSpec with Matchers {
     "produce the same tree convertToJson round-trips to" in {
       val hit = hitOf(Some("5"), Some(sourceNode()), fields = Map("f" -> JsonData.of("v")))
       Companion.tree(hit) shouldBe mapper.readTree(Companion.json(hit))
+    }
+  }
+
+  private def searchResponseOf(
+    hits: JList[Hit[ObjectNode]],
+    aggregations: Map[String, Aggregate] = Map.empty
+  ): SearchResponse[ObjectNode] =
+    SearchResponse.of[ObjectNode] { builder =>
+      builder
+        .took(1)
+        .timedOut(false)
+        .shards(s => s.total(1).successful(1).failed(0))
+        .hits(h => h.hits(hits))
+      aggregations.foreach { case (name, aggregate) => builder.aggregations(name, aggregate) }
+      builder
+    }
+
+  "searchResponseToTree" should {
+
+    "re-parent hits through the minimal envelope when the response has no aggregations" in {
+      val src = sourceNode()
+      val tree = Companion.searchTree(
+        searchResponseOf(Collections.singletonList(hitOf(Some("1"), Some(src))))
+      )
+      val hitNode = tree.path("hits").path("hits").get(0)
+      hitNode.path("_id").asText() shouldBe "1"
+      hitNode.get("_source") should be theSameInstanceAs src
+      tree.has("took") shouldBe false
+    }
+
+    "keep the exact convertToJson shape when aggregations are present" in {
+      val response = searchResponseOf(
+        Collections.singletonList(hitOf(Some("1"), Some(sourceNode()))),
+        aggregations = Map("avg_price" -> Aggregate.of(a => a.avg(v => v.value(2.5))))
+      )
+      // normalize both sides through the same parse: the token-level tree may carry
+      // LongNode/IntNode artifacts that are value-equal but not node-class-equal
+      mapper.readTree(Companion.searchTree(response).toString) shouldBe
+      mapper.readTree(Companion.searchJson(response))
+    }
+  }
+
+  "msearchResponseToTree" should {
+
+    "rebuild the responses array with per-item envelopes and full-fidelity failures" in {
+      val src = sourceNode()
+      val response = MsearchResponse.of[ObjectNode] { builder =>
+        builder
+          .took(1)
+          .responses(
+            MultiSearchResponseItem.of[ObjectNode](item =>
+              item.result(r =>
+                r.took(1)
+                  .timedOut(false)
+                  .shards(s => s.total(1).successful(1).failed(0))
+                  .hits(h => h.hits(Collections.singletonList(hitOf(Some("1"), Some(src)))))
+                  .status(200)
+              )
+            ),
+            MultiSearchResponseItem.of[ObjectNode](item =>
+              item.failure(f =>
+                f.error(e => e.`type`("search_phase_execution_exception").reason("boom"))
+                  .status(500)
+              )
+            )
+          )
+      }
+
+      val tree = Companion.msearchTree(response)
+      val responses = tree.path("responses")
+      responses.isArray shouldBe true
+      responses.size() shouldBe 2
+
+      val first = responses.get(0)
+      first.path("hits").path("hits").get(0).get("_source") should be theSameInstanceAs src
+
+      val second = responses.get(1)
+      second.path("error").path("reason").asText() shouldBe "boom"
+      second.path("status").asInt() shouldBe 500
     }
   }
 }

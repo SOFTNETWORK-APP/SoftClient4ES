@@ -1022,12 +1022,14 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
 
   override private[client] def executeSingleSearch(
     elasticQuery: ElasticQuery
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     executeJavaAction(
       operation = "singleSearch",
       index = Some(elasticQuery.indices.mkString(",")),
       retryable = true
     )(
+      // Single parse (#228): document type ObjectNode materializes each _source once as the
+      // Jackson tree core consumes — no typed-response-to-String round trip.
       apply()
         .search(
           new SearchRequest.Builder()
@@ -1036,13 +1038,13 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
               new StringReader(elasticQuery.query)
             )
             .build(),
-          classOf[JMap[String, Object]]
+          classOf[ObjectNode]
         )
-    )(resp => Some(convertToJson(resp)))
+    )(resp => Some(searchResponseToTree(resp)))
 
   override private[client] def executeMultiSearch(
     elasticQueries: ElasticQueries
-  ): ElasticResult[Option[String]] =
+  ): ElasticResult[Option[JsonNode]] =
     executeJavaAction(
       operation = "multiSearch",
       index = Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(",")),
@@ -1056,30 +1058,32 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
       }
 
       val request = new MsearchRequest.Builder().searches(items.asJava).build()
-      apply().msearch(request, classOf[JMap[String, Object]])
-    }(resp => Some(convertToJson(resp)))
+      // Single parse (#228) — see executeSingleSearch
+      apply().msearch(request, classOf[ObjectNode])
+    }(resp => Some(msearchResponseToTree(resp)))
 
   override private[client] def executeSingleSearchAsync(
     elasticQuery: ElasticQuery
-  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[JsonNode]]] =
     fromCompletableFuture(
+      // Single parse (#228) — see executeSingleSearch
       async()
         .search(
           new SearchRequest.Builder()
             .index(elasticQuery.indices.asJava)
             .withJson(new StringReader(elasticQuery.query))
             .build(),
-          classOf[JMap[String, Object]]
+          classOf[ObjectNode]
         )
     ).map { response =>
-      ElasticSuccess(Some(convertToJson(response))): ElasticResult[Option[String]]
+      ElasticSuccess(Some(searchResponseToTree(response))): ElasticResult[Option[JsonNode]]
     }.recover(
       asyncElasticFailure("singleSearch", Some(elasticQuery.indices.mkString(",")))
     )
 
   override private[client] def executeMultiSearchAsync(
     elasticQueries: ElasticQueries
-  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[String]]] =
+  )(implicit ec: ExecutionContext): Future[ElasticResult[Option[JsonNode]]] =
     fromCompletableFuture {
       val items = elasticQueries.queries.map { q =>
         new RequestItem.Builder()
@@ -1089,10 +1093,11 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
       }
 
       val request = new MsearchRequest.Builder().searches(items.asJava).build()
-      async().msearch(request, classOf[JMap[String, Object]])
+      // Single parse (#228) — see executeSingleSearch
+      async().msearch(request, classOf[ObjectNode])
     }
       .map { response =>
-        ElasticSuccess(Some(convertToJson(response))): ElasticResult[Option[String]]
+        ElasticSuccess(Some(msearchResponseToTree(response))): ElasticResult[Option[JsonNode]]
       }
       .recover(
         asyncElasticFailure(
@@ -1450,7 +1455,9 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   } else {
                     "Unknown shard failure"
                   }
-                  throw new IOException(s"Scroll continuation failed: $errorMsg")
+                  // the cursor is spent: a retry against a cleared context can only 404, and
+                  // re-polling a scroll cursor skips rows — fail without retrying
+                  throw new IllegalStateException(s"Scroll continuation failed: $errorMsg")
                 }
 
                 val newScrollId = response.scrollId()
@@ -1470,10 +1477,13 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                 }
             }
           }
-        }(system, logger).recover { case ex: Exception =>
+        }(system, logger).recoverWith { case ex: Exception =>
           logger.error(s"Scroll failed after retries: ${ex.getMessage}", ex)
           scrollIdOpt.foreach(clearScroll)
-          None
+          // fail the stream instead of ending it: ending here would surface a silently
+          // truncated result set as a SUCCESSFUL result (#228 review; same defect class as
+          // #209/#224)
+          Future.failed(ex)
         }
       }
       .mapConcat(identity)
@@ -1659,9 +1669,12 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                     Some((nextSearchAfter, hits))
                   }
                 }
-              }(system, logger).recover { case ex: Exception =>
+              }(system, logger).recoverWith { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
-                None // ends the stream — watchTermination owns the single PIT close (#202)
+                // fail the stream instead of ending it: ending here would surface a silently
+                // truncated result set as a SUCCESSFUL result (#228 review; same defect class
+                // as #209/#224) — watchTermination still owns the single PIT close (#202)
+                Future.failed(ex)
               }
             }
             .watchTermination() { (_, done) =>
