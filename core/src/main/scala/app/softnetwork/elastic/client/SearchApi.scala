@@ -1628,13 +1628,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     // Determine ONCE whether the document ID stays in the output — never per row
     val shouldKeepDocumentId = keepsDocumentId(outputFields)
 
+    // Built once for the whole result set — never per row (#229)
+    val normalizeOutputRow = rowNormalizer(outputFields)
+
     // Enrich each row with window values, then normalize field order. The base rows carry
     // their `_id` (see singleSearchInternal with retainDocumentId = true) for the ordinal
     // lookup — strip it on the way out unless the document-id column is enabled or `_id`
     // is selected. Only window-enriched rows ever pay this per-row strip.
     val enrichedRows = baseRows.map { row =>
       val enriched = enrichDocumentWithWindowValues(row, cache, request)
-      val normalized = normalizeRow(enriched, outputFields)
+      val normalized = normalizeOutputRow(enriched)
       if (shouldKeepDocumentId) normalized
       else normalized - ElasticConversion.DocumentIdField
     }

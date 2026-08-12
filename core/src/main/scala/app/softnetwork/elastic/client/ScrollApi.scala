@@ -436,18 +436,10 @@ trait ScrollApi extends ElasticClientHelpers {
     }
 
     // Normalize rows to ensure all requested fields are present (only if context is native) in the original SQL SELECT order
-    // and flatten inner hits into individual rows
+    // and flatten inner hits into individual rows. The normalizer is built ONCE per stream —
+    // each row is walked a single time, and already-shaped rows pass through untouched (#229)
     val normalized = if (fields.nonEmpty) {
-      val requestedSet = fields.toSet
-      source.map { row =>
-        val ordered =
-          context match {
-            case EntityContext => fields.flatMap(f => row.get(f).map(v => f -> v))
-            case _             => fields.map(f => f -> row.getOrElse(f, null))
-          }
-        val extra = row.filterNot { case (k, _) => requestedSet.contains(k) }
-        ListMap(ordered: _*) ++ extra
-      }
+      source.map(rowNormalizer(fields))
     } else {
       source
     }
@@ -494,6 +486,9 @@ trait ScrollApi extends ElasticClientHelpers {
     // Determine if we should keep the document ID in the output
     val shouldKeepDocumentId = keepsDocumentId(outputFields)
 
+    // Built once per stream — never per row (#229)
+    val normalizeOutputRow = rowNormalizer(outputFields)
+
     Source
       .futureSource(
         windowCacheFuture.map {
@@ -515,7 +510,7 @@ trait ScrollApi extends ElasticClientHelpers {
             )
               .map { case (doc, metrics) =>
                 val enrichedDoc = enrichDocumentWithWindowValues(doc, cache, request)
-                var normalizedDoc = normalizeRow(enrichedDoc, outputFields)
+                var normalizedDoc = normalizeOutputRow(enrichedDoc)
                 if (!shouldKeepDocumentId) {
                   normalizedDoc = normalizedDoc - ElasticConversion.DocumentIdField
                 }
