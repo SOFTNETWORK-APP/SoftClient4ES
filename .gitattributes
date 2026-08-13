@@ -1,0 +1,9 @@
+# Windows shell entry points must reach the user with CRLF line endings.
+#
+# install.cmd is documented as a `curl -O` download from raw.githubusercontent.com,
+# which serves the stored blob byte for byte — no checkout-time eol conversion ever
+# runs. `-text` keeps git from normalising the CRLF out of the blob, so the file a
+# user downloads is the file cmd.exe was designed to read. (LF-only batch files are
+# a known source of failures around labels and multi-line blocks.)
+*.cmd -text
+*.bat -text
