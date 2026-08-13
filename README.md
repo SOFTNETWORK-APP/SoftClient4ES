@@ -43,6 +43,11 @@ curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/
 irm https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1 | iex
 ```
 
+**Windows (cmd.exe, when `.ps1` files are blocked):** download `install.cmd` and `install.ps1` side by side. It takes the same flags as `install.ps1` and only launches it with `-ExecutionPolicy Bypass`, for that one process.
+```bat
+install.cmd
+```
+
 ### Connect and Query
 
 ```bash

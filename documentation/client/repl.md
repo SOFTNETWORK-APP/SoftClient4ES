@@ -88,6 +88,44 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftCli
 .\install.ps1
 ```
 
+#### Windows (cmd.exe — when `.ps1` scripts are blocked)
+
+The piped one-liner above is unaffected by the execution policy (`iex` runs a
+string, not a script file), but `.\install.ps1` on a **downloaded** file is: the
+Windows client default is `Restricted`, and the machine may also be set to
+`AllSigned`. `install.cmd` is the way in — it is a wrapper that runs
+`install.ps1` with `-ExecutionPolicy Bypass` **for that one process**, changing
+nothing on the machine and needing no elevation.
+
+Download **both** files, keep them in the same directory, then:
+
+```bat
+curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.cmd
+curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1
+install.cmd
+```
+
+`install.cmd` accepts exactly the flags `install.ps1` does and forwards them
+verbatim, so every option, default and fallback documented below applies
+unchanged — there is no second implementation to drift:
+
+```bat
+install.cmd -ListVersions -EsVersion 8
+install.cmd -Target "C:\tools\softclient4es" -EsVersion 8 -Version 0.20.4
+install.cmd -EsVersion 9 -NoExtensions
+install.cmd -Help
+```
+
+> **When even the wrapper cannot help:** `-ExecutionPolicy Bypass` is
+> deliberately overridden when the policy is enforced through **Group Policy**
+> (the `MachinePolicy` / `UserPolicy` scopes). Check with
+> `Get-ExecutionPolicy -List`: if the winning entry is one of those two scopes,
+> no wrapper can work around it — ask your administrator, or unpack an install
+> by hand from the assembly jar (see [Directory Structure](#directory-structure)).
+> Note that this affects **installing** only: the launcher the installer writes,
+> `bin\softclient4es.bat`, is a plain batch file, so *running* the REPL never
+> needs PowerShell.
+
 ### List Available Versions
 
 Before installing, you can list all available versions for a specific Elasticsearch version:
@@ -102,6 +140,12 @@ Before installing, you can list all available versions for a specific Elasticsea
 
 ```powershell
 .\install.ps1 -ListVersions -EsVersion 8
+```
+
+Or, when `.ps1` scripts are blocked, the same flags through the wrapper:
+
+```bat
+install.cmd -ListVersions -EsVersion 8
 ```
 
 **Example output:**
@@ -323,6 +367,13 @@ $env:PATH += ";$env:USERPROFILE\softclient4es\bin"
 
 ```powershell
 ~\softclient4es\uninstall.ps1
+```
+
+The installer writes the uninstaller as a `.ps1`, so a host that blocks `.ps1`
+blocks it too. Run it the same way `install.cmd` runs the installer:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\softclient4es\uninstall.ps1"
 ```
 
 ---
