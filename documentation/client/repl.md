@@ -51,6 +51,26 @@ It provides:
 > 1.5.x and the JOIN engine is built on Apache Arrow 18.x — both ship Java-11
 > bytecode. See [Extensions](#extensions-cross-index-joins-materialized-views).
 
+**On Windows you do not have to install Java yourself.** Since `0.20.4`,
+`install.ps1` (and therefore `install.cmd`) resolves Java in this order:
+
+1. `%JAVA_HOME%\bin\java.exe` — when `JAVA_HOME` is set, that is the JVM tested,
+   not whatever `java` happens to be first on `PATH`; the two frequently differ.
+2. the `java` on `PATH`, when `JAVA_HOME` is not set.
+3. Neither is present, or the one found is **below the floor** for your ES
+   version ⇒ the installer downloads a portable **Temurin 17** JDK (a zip from
+   Adoptium, never an MSI, so it needs **no administrator rights**) and unpacks
+   it to `<install>\jdk`.
+
+Java 17 satisfies both floors, so there is only ever one JDK to think about. The
+bootstrapped JDK lives **inside the install directory**: `uninstall.ps1` removes
+it along with everything else, and nothing machine-wide is modified — the
+installer sets `JAVA_HOME` and `PATH` **for its own session only**. Later
+sessions do not need them, because the generated launcher applies the same order
+and finds `<install>\jdk` by relative path.
+
+On Linux and macOS `install.sh` still expects a suitable Java to be present.
+
 ### Network Requirements
 
 - Network access to JFrog repository (`softnetwork.jfrog.io`)
@@ -97,13 +117,17 @@ Windows client default is `Restricted`, and the machine may also be set to
 `install.ps1` with `-ExecutionPolicy Bypass` **for that one process**, changing
 nothing on the machine and needing no elevation.
 
-Download **both** files, keep them in the same directory, then:
+One file is enough. If `install.ps1` is not sitting next to it, `install.cmd`
+downloads one:
 
 ```bat
 curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.cmd
-curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1
 install.cmd
 ```
+
+A local `install.ps1` always wins, so a downloaded pair stays self-consistent —
+put both files in the same directory when you want a pinned copy rather than
+whatever is on `main`.
 
 `install.cmd` accepts exactly the flags `install.ps1` does and forwards them
 verbatim, so every option, default and fallback documented below applies
@@ -163,8 +187,9 @@ install.cmd -ListVersions -EsVersion 8
     • 0.20.1
     • 0.20.2
     • 0.20.3
+    • 0.20.4
 
-  Total: 2 version(s)
+  Total: 4 version(s)
 
   To install a specific version:
     ./install.sh --es-version 8 --version <version>
@@ -192,7 +217,7 @@ install.cmd -ListVersions -EsVersion 8
 ./install.sh --list-versions --es-version 8
 
 # Install specific version
-./install.sh --es-version 8 --version 0.20.3
+./install.sh --es-version 8 --version 0.20.4
 
 # Install for Elasticsearch 9 (requires Java 17+)
 ./install.sh --es-version 9
@@ -201,7 +226,7 @@ install.cmd -ListVersions -EsVersion 8
 ./install.sh --target /opt/softclient4es
 
 # Full custom installation
-./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.20.3
+./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.20.4
 ```
 
 #### Windows
@@ -214,7 +239,7 @@ install.cmd -ListVersions -EsVersion 8
 .\install.ps1 -ListVersions -EsVersion 8
 
 # Install specific version
-.\install.ps1 -EsVersion 8 -Version 0.20.3
+.\install.ps1 -EsVersion 8 -Version 0.20.4
 
 # Install for Elasticsearch 9 (requires Java 17+)
 .\install.ps1 -EsVersion 9
@@ -223,7 +248,7 @@ install.cmd -ListVersions -EsVersion 8
 .\install.ps1 -Target "C:\tools\softclient4es"
 
 # Full custom installation
-.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.20.3
+.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.20.4
 ```
 
 ---
@@ -247,6 +272,8 @@ softclient4es/
 │                               #  + extension jars and dependencies, see Extensions)
 ├── logs/                       # Log files directory
 │   └── softclient4es.log       # (created at runtime)
+├── jdk/                        # Windows only, and ONLY when the installer had to
+│   └── bin/java.exe            #  bootstrap a JDK — the launcher prefers it
 ├── LICENSE
 ├── README.md
 ├── VERSION

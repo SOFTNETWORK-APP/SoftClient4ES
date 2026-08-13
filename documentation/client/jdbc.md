@@ -20,10 +20,10 @@ Download the self-contained fat JAR for your Elasticsearch version. The JARs are
 
 | Elasticsearch | Artifact |
 |---------------|----------|
-| ES 6.x | `softclient4es6-jdbc-driver-0.2.4.jar` |
-| ES 7.x | `softclient4es7-jdbc-driver-0.2.4.jar` |
-| ES 8.x | `softclient4es8-jdbc-driver-0.2.4.jar` |
-| ES 9.x | `softclient4es9-jdbc-driver-0.2.4.jar` |
+| ES 6.x | `softclient4es6-jdbc-driver-0.2.5.jar` |
+| ES 7.x | `softclient4es7-jdbc-driver-0.2.5.jar` |
+| ES 8.x | `softclient4es8-jdbc-driver-0.2.5.jar` |
+| ES 9.x | `softclient4es9-jdbc-driver-0.2.5.jar` |
 
 ### Build Tool Integration
 
@@ -33,20 +33,20 @@ Download the self-contained fat JAR for your Elasticsearch version. The JARs are
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.2.4</version>
+  <version>0.2.5</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.4'
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.5'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.4"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.5"
 ```
 
 ---

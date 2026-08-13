@@ -174,7 +174,7 @@ Examples:
   $0
   $0 --list-versions --es-version 8
   $0 --target /opt/softclient4es --es-version 8 --no-extensions
-  $0 -t ~/tools/softclient4es -e 7 -v 0.20.3 --no-extensions
+  $0 -t ~/tools/softclient4es -e 7 -v 0.20.4 --no-extensions
 
 Detected OS: $OS_TYPE
 
