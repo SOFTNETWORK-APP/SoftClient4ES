@@ -63,7 +63,7 @@ Examples:
   .\install.ps1
   .\install.ps1 -ListVersions -EsVersion 8
   .\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 8 -Version 1.0.0
-  .\install.ps1 -EsVersion 7 -Version 0.20.3 -NoExtensions
+  .\install.ps1 -EsVersion 7 -Version 0.20.4 -NoExtensions
 
 "@
     exit 0
@@ -122,10 +122,17 @@ function Get-RequiredJavaVersion {
     }
 }
 
-# Major version of the `java` on PATH, or 0 when it cannot be determined.
-function Get-JavaMajorVersion {
+# Major version reported by a SPECIFIC java executable, or 0 when it cannot be
+# determined. Taking the exe as a parameter is what lets JAVA_HOME and the PATH
+# `java` be probed by the same code - they routinely disagree.
+function Get-JavaMajorFromExe {
+    param([string]$Exe)
+    if (-not $Exe) { return 0 }
     try {
-        $out = (& java -version 2>&1 | Select-String -Pattern 'version' | Select-Object -First 1).ToString()
+        # Select-Object -First 1 matters: with two matching lines (e.g. a
+        # deprecation notice from _JAVA_OPTIONS) the pipeline yields an array whose
+        # ToString() is "System.Object[]", no regex matches, and the version reads 0.
+        $out = (& $Exe -version 2>&1 | Select-String -Pattern 'version' | Select-Object -First 1).ToString()
         if ($out -match '"1\.(\d+)')   { return [int]$Matches[1] }   # 1.8.x
         elseif ($out -match '"(\d+)')  { return [int]$Matches[1] }   # 11.x, 17.x
     }
@@ -133,7 +140,154 @@ function Get-JavaMajorVersion {
     return 0
 }
 
+# Major version of the `java` on PATH, or 0 when it cannot be determined.
+function Get-JavaMajorVersion {
+    $onPath = Get-Command java -ErrorAction SilentlyContinue
+    if (-not $onPath) { return 0 }
+    return (Get-JavaMajorFromExe -Exe $onPath.Source)
+}
+
 $REQUIRED_JAVA_VERSION = Get-RequiredJavaVersion -EsVer $EsVersion
+
+# The JDK this installer bootstraps when the host cannot satisfy the floor. 17
+# covers BOTH floors (11 for ES 6/7/8, 17 for ES 9), so there is one download to
+# reason about rather than two.
+$BOOTSTRAP_JAVA_VERSION = 17
+# Adoptium redirects this to the current GA Temurin 17 JDK *zip* for windows/x64 -
+# an archive, deliberately not an MSI: unpacking needs no administrator rights.
+$TEMURIN_ZIP_URL = "https://api.adoptium.net/v3/binary/latest/$BOOTSTRAP_JAVA_VERSION/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk"
+# Lives INSIDE the install tree: `uninstall.ps1` then removes it with everything
+# else, and the launcher finds it by relative path with no machine-wide state.
+$EMBEDDED_JDK_DIR = Join-Path $Target "jdk"
+
+# =============================================================================
+# Java resolution — probe, then bootstrap a portable JDK rather than give up
+# =============================================================================
+# Resolution order, and it is the SAME order the generated launcher uses, which
+# is what keeps "the installer worked" and "the REPL starts" from disagreeing:
+#
+#     <install>\jdk\bin\java.exe   (bootstrapped here, if it was needed)
+#          -> %JAVA_HOME%\bin\java.exe
+#               -> `java` on PATH
+#
+# So JAVA_HOME, when it is defined, is the thing actually tested — not the PATH
+# `java`, which is frequently a different and older JVM.
+
+# Set by Resolve-Java; read by Check-Prerequisites, the launcher writer and the
+# summary.
+$script:JavaMajor = 0
+$script:JavaSource = "not found"
+$script:EmbeddedJdkHome = $null
+
+function Install-EmbeddedJdk {
+    Write-Info "Installing a portable Temurin $BOOTSTRAP_JAVA_VERSION JDK (zip, no administrator rights)..."
+
+    $zip = Join-Path $env:TEMP "softclient4es-temurin$BOOTSTRAP_JAVA_VERSION.zip"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        # Same reason as the JAR download: Write-Progress per chunk makes a
+        # ~180 MB download on Windows PowerShell 5.1 look hung.
+        $previousProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        try {
+            Invoke-WebRequest -Uri $TEMURIN_ZIP_URL -OutFile $zip -UseBasicParsing -ErrorAction Stop
+        }
+        finally { $ProgressPreference = $previousProgress }
+
+        # The archive unpacks as jdk-17.x.y+z\ — a version-stamped directory. Unpack
+        # to a staging dir and MOVE that one level up, so the final JAVA_HOME is the
+        # fixed path <install>\jdk. The launcher hard-codes `%BASE_DIR%\jdk\bin`, and
+        # it must not have to glob for a name that changes with every Temurin build.
+        $staging = "$EMBEDDED_JDK_DIR.unpack"
+        if (Test-Path $staging)          { Remove-Item -Recurse -Force $staging }
+        if (Test-Path $EMBEDDED_JDK_DIR) { Remove-Item -Recurse -Force $EMBEDDED_JDK_DIR }
+        New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+        try {
+            Expand-Archive -Path $zip -DestinationPath $staging -Force
+
+            $inner = Get-ChildItem $staging -Directory | Select-Object -First 1
+            if (-not $inner) {
+                Write-Err "The Temurin archive did not unpack as expected (no directory inside $staging)"
+                return $null
+            }
+            Move-Item -Path $inner.FullName -Destination $EMBEDDED_JDK_DIR
+        }
+        finally {
+            Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+            Remove-Item $zip -ErrorAction SilentlyContinue
+        }
+
+        $exe = Join-Path (Join-Path $EMBEDDED_JDK_DIR "bin") "java.exe"
+        if (-not (Test-Path $exe)) {
+            Write-Err "No java.exe under $EMBEDDED_JDK_DIR after unpacking"
+            return $null
+        }
+
+        Write-Success "Installed Temurin $BOOTSTRAP_JAVA_VERSION to $EMBEDDED_JDK_DIR"
+        return $EMBEDDED_JDK_DIR
+    }
+    catch {
+        Write-Err "Could not download or unpack the Temurin JDK: $($_.Exception.Message)"
+        Write-Err "URL: $TEMURIN_ZIP_URL"
+        return $null
+    }
+}
+
+function Resolve-Java {
+    Write-Info "Resolving Java (ES$EsVersion requires ${REQUIRED_JAVA_VERSION}+)..."
+
+    # JAVA_HOME first, exactly as the launcher will. Probing the PATH `java` when
+    # JAVA_HOME is set would validate a JVM the REPL is never going to run.
+    $javaHomeExe = if ($env:JAVA_HOME) { Join-Path (Join-Path $env:JAVA_HOME "bin") "java.exe" } else { "" }
+    $jhMajor = if ($javaHomeExe -and (Test-Path $javaHomeExe)) { Get-JavaMajorFromExe -Exe $javaHomeExe } else { 0 }
+
+    if ($jhMajor -gt 0) {
+        $script:JavaMajor = $jhMajor
+        $script:JavaSource = "JAVA_HOME ($env:JAVA_HOME)"
+    }
+    else {
+        if ($env:JAVA_HOME) {
+            Write-Warn "JAVA_HOME is set to '$env:JAVA_HOME' but no usable java.exe was found under it"
+        }
+        $pathMajor = Get-JavaMajorVersion
+        if ($pathMajor -gt 0) {
+            $script:JavaMajor = $pathMajor
+            $script:JavaSource = "PATH"
+        }
+    }
+
+    if ($script:JavaMajor -ge $REQUIRED_JAVA_VERSION) {
+        Write-Success "Java $($script:JavaMajor) found via $($script:JavaSource) (required: ${REQUIRED_JAVA_VERSION}+)"
+        return $true
+    }
+
+    if ($script:JavaMajor -eq 0) {
+        Write-Warn "No usable Java found"
+    } else {
+        Write-Warn "Java $($script:JavaMajor) found via $($script:JavaSource) — below the required ${REQUIRED_JAVA_VERSION}+"
+    }
+
+    $jdkHome = Install-EmbeddedJdk
+    if (-not $jdkHome) {
+        Write-Err "Java $REQUIRED_JAVA_VERSION or higher is required for ES$EsVersion and could not be installed."
+        Write-Err "Install a JDK ${REQUIRED_JAVA_VERSION}+ manually and re-run, or set JAVA_HOME to one."
+        return $false
+    }
+
+    $script:EmbeddedJdkHome = $jdkHome
+    $script:JavaMajor = Get-JavaMajorFromExe -Exe (Join-Path (Join-Path $jdkHome "bin") "java.exe")
+    $script:JavaSource = "bundled JDK ($jdkHome)"
+
+    # SESSION scope only — deliberately not [Environment]::SetEnvironmentVariable(...,"User").
+    # A machine-wide JAVA_HOME would silently repoint every other tool on the box.
+    # Future sessions do not need it: the launcher prefers <install>\jdk directly.
+    $env:JAVA_HOME = $jdkHome
+    $env:PATH = (Join-Path $jdkHome "bin") + ";" + $env:PATH
+    Write-Success "Java $($script:JavaMajor) ready — JAVA_HOME and PATH updated for THIS session"
+
+    return $true
+}
 
 # =============================================================================
 # List Available Versions
@@ -265,6 +419,13 @@ function Resolve-LatestVersion {
 }
 
 # =============================================================================
+# Resolve Java before anything else that depends on it
+# =============================================================================
+# Runs AFTER the -ListVersions early exit (listing versions must not download a
+# JDK) and BEFORE bundle selection, which reads the resolved major.
+if (-not (Resolve-Java)) { exit 1 }
+
+# =============================================================================
 # Bundle Selection: default install = ONE self-contained -all assembly
 # =============================================================================
 # This block owns latest-resolution for BOTH paths: the bundle listing first,
@@ -296,11 +457,13 @@ if ($WITH_EXTENSIONS) {
         Write-Warn "No -all bundles published for $BUNDLE_ARTIFACT_NAME - falling back to the plain artifact"
     }
 
-    # The bundle needs Java 11+ (Arrow / logback bytecode). Check-Prerequisites
-    # aborts below the ES-version floor anyway; this keeps the fallback honest.
-    $javaMajor = Get-JavaMajorVersion
-    if ($USE_BUNDLE -and $javaMajor -gt 0 -and $javaMajor -lt 11) {
-        Write-Warn "Java $javaMajor found - the -all bundle requires Java 11+; falling back to the plain artifact"
+    # The bundle needs Java 11+ (Arrow / logback bytecode). Resolve-Java has already
+    # guaranteed >= $REQUIRED_JAVA_VERSION (11 or 17), bootstrapping a JDK if the
+    # host could not supply one, so this can only fire if that guarantee is ever
+    # weakened. Kept as a guard rather than deleted: silently shipping the bundle
+    # to a Java 8 host is a crash at first launch, not a warning.
+    if ($USE_BUNDLE -and $script:JavaMajor -gt 0 -and $script:JavaMajor -lt 11) {
+        Write-Warn "Java $($script:JavaMajor) found - the -all bundle requires Java 11+; falling back to the plain artifact"
         $USE_BUNDLE = $false
         $Version = $REQUESTED_VERSION
     }
@@ -347,30 +510,19 @@ if ($USE_BUNDLE -and -not (Test-UrlExists -Url $DOWNLOAD_URL)) {
 # Check Prerequisites
 # =============================================================================
 
+# Resolve-Java already probed, and bootstrapped a JDK if it had to. This asserts
+# the outcome rather than re-deriving it: ONE parse of `java -version` per run, so
+# a localised or multi-line output cannot be read two different ways.
 function Check-Prerequisites {
     Write-Info "Checking prerequisites..."
 
-    if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
-        Write-Err "Java is not installed."
-        Write-Err "ES$EsVersion requires Java $REQUIRED_JAVA_VERSION or higher."
-        exit 1
-    }
-
-    # One parse for the whole installer (Get-JavaMajorVersion), so a localised or
-    # multi-line `java -version` cannot be read two different ways.
-    $javaVersion = Get-JavaMajorVersion
-
-    if ($javaVersion -eq 0) {
-        Write-Warn "Could not determine Java version"
-    }
-    elseif ($javaVersion -lt $REQUIRED_JAVA_VERSION) {
+    if ($script:JavaMajor -lt $REQUIRED_JAVA_VERSION) {
         Write-Err "Java $REQUIRED_JAVA_VERSION or higher is required for ES$EsVersion."
-        Write-Err "Found: Java $javaVersion"
+        Write-Err "Resolved: Java $($script:JavaMajor) via $($script:JavaSource)"
         exit 1
     }
-    else {
-        Write-Success "Java $javaVersion found (required: ${REQUIRED_JAVA_VERSION}+)"
-    }
+
+    Write-Success "Java $($script:JavaMajor) via $($script:JavaSource) (required: ${REQUIRED_JAVA_VERSION}+)"
 }
 
 # =============================================================================
@@ -694,6 +846,19 @@ if not exist "%JAR_FILE%" (
 REM Create logs directory if it doesn't exist
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
+REM Java resolution, in the SAME order the installer used:
+REM   1. the JDK bundled into this install (present only when the installer had to
+REM      bootstrap one because the host had no Java, or too old a Java)
+REM   2. %JAVA_HOME%
+REM   3. whatever `java` is on PATH
+REM Prepending to PATH rather than calling an absolute exe keeps every `java`
+REM below unchanged and sidesteps quoting a path that contains spaces. `setlocal`
+REM at the top means this PATH edit dies with the script.
+REM Each `if` is its own line: cmd expands every %%VAR%% in a parenthesised block
+REM in ONE parse pass, so a block would not see the value just assigned.
+if exist "%BASE_DIR%\jdk\bin\java.exe" set "JAVA_HOME=%BASE_DIR%\jdk"
+if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" set "PATH=%JAVA_HOME%\bin;%PATH%"
+
 if "%JAVA_OPTS%"=="" set JAVA_OPTS=-Xmx512m
 
 REM Java major version (1.8.x -> 8, 11.x -> 11), also our Java presence check.
@@ -755,6 +920,21 @@ if (-not (Test-Path `$JarFile)) {
 # Create logs directory if it doesn't exist
 if (-not (Test-Path `$LogDir)) {
     New-Item -ItemType Directory -Path `$LogDir | Out-Null
+}
+
+# Java resolution, in the SAME order the installer used:
+#   1. the JDK bundled into this install (present only when the installer had to
+#      bootstrap one because the host had no Java, or too old a Java)
+#   2. `$env:JAVA_HOME
+#   3. whatever `java` is on PATH
+# Prepending to PATH keeps every `java` below unchanged; the assignment is
+# process-scoped, so it dies with this script.
+`$BundledJdk = Join-Path `$BaseDir "jdk"
+if (Test-Path (Join-Path `$BundledJdk "bin\java.exe")) {
+    `$env:JAVA_HOME = `$BundledJdk
+}
+if (`$env:JAVA_HOME -and (Test-Path (Join-Path `$env:JAVA_HOME "bin\java.exe"))) {
+    `$env:PATH = (Join-Path `$env:JAVA_HOME "bin") + ";" + `$env:PATH
 }
 
 # Check Java. Select-Object -First 1 matters: with two matching lines (e.g. a
@@ -869,6 +1049,7 @@ Elasticsearch:      $EsVersion
 Version:            $Version
 Scala:              $ScalaVersion
 Java Required:      ${REQUIRED_JAVA_VERSION}+
+Java In Use:        $($script:JavaMajor) via $($script:JavaSource)
 Artifact:           $ARTIFACT_NAME
 Install type:       $installType
 $licenseLine
@@ -893,6 +1074,7 @@ function Print-Summary {
     Write-Host "  Elasticsearch version:  $EsVersion"
     Write-Host "  SoftClient4ES version:  $Version"
     Write-Host "  Java required:          ${REQUIRED_JAVA_VERSION}+"
+    Write-Host "  Java in use:            $($script:JavaMajor) via $($script:JavaSource)"
     if ($USE_BUNDLE) {
         Write-Host "  Install type:           -all bundle (engine + extensions, incl. cross-index JOIN)"
     } else {
@@ -911,6 +1093,10 @@ function Print-Summary {
     Write-Host "    |   \-- $JAR_NAME"
     Write-Host "    +-- logs\"
     Write-Host "    |   \-- (runtime logs)"
+    if ($script:EmbeddedJdkHome) {
+        Write-Host "    +-- jdk\"
+        Write-Host "    |   \-- (bundled Temurin $BOOTSTRAP_JAVA_VERSION - the launcher prefers it)"
+    }
     if ($USE_BUNDLE) {
         Write-Host "    +-- licenses\"
         Write-Host "    |   \-- (per-component licences)"
