@@ -111,7 +111,48 @@ ORDER BY COUNT(*) DESC;
 -- Engineering (3), Marketing (2) survive HAVING
 ```
 
-> **Two ORDER BY gotchas:** the JOIN planner has two ordering restrictions — you cannot `ORDER BY` a **SELECT alias** (use `ORDER BY COUNT(*)`, not `ORDER BY cnt`), and you cannot `ORDER BY` a column that exists on **both** sides of the JOIN (order by a column unique to one side, e.g. `d.dept_name`, not the shared join key `d.dept_id`).
+> **SELECT aliases and ordinals work here** — since arrow-extensions **0.2.5** (REPL bundle `0.20.4`, JDBC / ADBC / Flight SQL driver `0.2.5`). `ORDER BY cnt`, `HAVING cnt > 1`, `GROUP BY` on an alias and ordinal forms such as `ORDER BY 2` all resolve against the final SELECT list *after* the join, and alias matching is case-insensitive. Two limits remain: an alias is **not** legal in `SELECT`, `ON` or `WHERE` — nothing has been computed at that point — and it must be written **bare**, since `ORDER BY d.cnt` qualifies a name no table owns and fails inside DuckDB. Before 0.2.5 all of these were rejected with `Ambiguous column`.
+>
+> **The remaining ORDER BY gotcha:** you cannot `ORDER BY` a column that exists on **both** sides of the JOIN — order by a column unique to one side, e.g. `d.dept_name`, not the shared join key `d.dept_id`.
+
+### JOIN cardinality — fan-out on a non-unique key
+
+A JOIN on a key that is **not unique** on the other side multiplies rows. That is standard SQL and the engine is doing it correctly, but it is the easiest way to get plausible-looking wrong numbers, because the row multiplication is invisible in the output.
+
+With one tenant that has **2** EU error rows, **3** US rows and **2** AP rows:
+
+```sql
+SELECT   eu.tenant_id,
+         COUNT(*)           AS eu_errors,
+         AVG(us.latency_ms) AS us_avg_latency,
+         AVG(ap.latency_ms) AS ap_avg_latency
+FROM     eu_events AS eu
+JOIN     us_events AS us ON eu.tenant_id = us.tenant_id
+JOIN     ap_events AS ap ON eu.tenant_id = ap.tenant_id
+WHERE    eu.level = 'ERROR'
+GROUP BY eu.tenant_id;
+```
+
+`eu_errors` comes back as **12** — that is 2 × 3 × 2, one row per combination. The answer meant by the query is **2**.
+
+**Why this is worse than one wrong column.** Within a group whose rows all fan out by the same factor:
+
+| Aggregate | Under fan-out |
+|---|---|
+| `COUNT`, `SUM` | **inflated** by the fan-out factor |
+| `AVG`, `MIN`, `MAX` | **unchanged** — uniform duplication preserves them |
+
+So in the example above both averages are exactly right, and only the count is wrong. Three columns out of four corroborate a result that is 6× off, and nothing in the output signals that a fan-out happened. *Do not use "the averages look sensible" as a sanity check on a JOIN.* (If the factor varies across rows within a group — because you grouped by something coarser than the join key — then `AVG` is silently weighted too, and it is wrong as well.)
+
+**What to do instead:**
+
+- Count a key from **one** side rather than rows of the joined product: `COUNT(DISTINCT eu.event_id)`.
+- Or aggregate **before** joining, so each side contributes one row per key — a materialized view per leg is the durable form of this.
+- Sanity-check the row count against the left side alone before adding aggregates.
+
+**`INNER JOIN` also drops rows.** A key absent from *any* joined table disappears from the result entirely — a tenant running in EU and US but not APAC vanishes from a query whose name says "every region". Use `LEFT JOIN` when the left side is the population you actually mean.
+
+**In Federation specifically:** each leg is staged and joined coordinator-local, so a fan-out inflates the staged intermediate *and* consumes the joined-output row cap (`maxQueryResults`, Community 10,000 / Pro 1,000,000). Hitting that cap is reported — see [Row truncation at the result cap](#row-truncation-at-the-result-cap) — but a truncated fan-out is still an answer to a question you did not ask.
 
 ### ORDER BY … LIMIT (top-N)
 
