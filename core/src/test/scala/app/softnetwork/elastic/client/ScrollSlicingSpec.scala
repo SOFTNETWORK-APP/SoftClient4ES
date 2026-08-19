@@ -67,7 +67,14 @@ class ScrollSlicingSpec
     "idx_six"  -> ElasticSuccess(shards("idx_six", 6)),
     "idx_big"  -> ElasticSuccess(shards("idx_big", 12)),
     "idx_fail" -> ElasticFailure(ElasticError("settings unavailable")),
-    "idx_bad"  -> ElasticSuccess("this is not json")
+    "idx_bad"  -> ElasticSuccess("this is not json"),
+    "idx_forbidden" -> ElasticFailure(
+      ElasticError(
+        "action [indices:monitor/settings/get] is unauthorized",
+        cause = Some(new RuntimeException("security_exception")),
+        statusCode = Some(403)
+      )
+    )
   )
 
   /** Overrides `version` (NOT `executeVersion`: VersionApi caches the first answer), the
@@ -79,18 +86,23 @@ class ScrollSlicingSpec
     esVersion: String = "8.18.3",
     ceiling: Int = ScrollConfig.DefaultMaxSlices,
     settings: Map[String, ElasticResult[String]] = defaultSettings,
-    rows: Int = 3
+    rows: Int = 3,
+    ttlMs: Long = 5 * 60 * 1000L
   ) extends NopeClientApi {
     override protected def logger: Logger = mockLogger
     override def version: ElasticResult[String] = ElasticSuccess(esVersion)
     override protected def configuredMaxSlices: Int = ceiling
+    override protected def shardCountCacheTtlMs: Long = ttlMs
 
     val pitConfig = new AtomicReference[ScrollConfig]()
     val classicConfig = new AtomicReference[ScrollConfig]()
     val pitCalls = new AtomicInteger(0)
+    val settingsCalls = new AtomicInteger(0)
 
-    override private[client] def executeLoadSettings(index: String): ElasticResult[String] =
+    override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
+      settingsCalls.incrementAndGet()
       settings.getOrElse(index, ElasticSuccess("{}"))
+    }
 
     private def page: Source[ListMap[String, Any], NotUsed] =
       Source(List.tabulate(rows)(i => ListMap[String, Any]("id" -> s"doc-$i")))
@@ -144,6 +156,15 @@ class ScrollSlicingSpec
       .warn(
         argThat[String]((s: String) =>
           s != null && s.startsWith("Could not resolve the primary shard count")
+        )
+      )
+
+  /** The DEBUG replay of a cached privilege failure. */
+  private def shardDebug(logger: Logger, times: Int): Unit =
+    verify(logger, org.mockito.Mockito.times(times))
+      .debug(
+        argThat[String]((s: String) =>
+          s != null && s.startsWith("Primary shard count for") && s.contains("still unresolved")
         )
       )
 
@@ -304,5 +325,145 @@ class ScrollSlicingSpec
     emitted should have size 4
     emitted.head._2.slices shouldBe 3
     slicedInfo(client.mockLogger, 1)
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Shard-count cache (#238, review decision 3c)
+
+  it should "serve the primary shard count from the cache within the TTL (one _settings round-trip for two extractions)" in {
+    val client = new SlicingClient(mock[Logger])
+    run(client, "SELECT id FROM idx_a").head._2.slices shouldBe 3
+    run(client, "SELECT id FROM idx_a").head._2.slices shouldBe 3
+    client.settingsCalls.get() shouldBe 1
+    slicedInfo(client.mockLogger, 2) // the per-extraction INFO line is NOT cached away
+  }
+
+  it should "key the cache by the (sorted, distinct) index set" in {
+    val client = new SlicingClient(mock[Logger])
+    run(client, "SELECT id FROM idx_a").head._2.slices shouldBe 3
+    run(client, "SELECT id FROM idx_six").head._2.slices shouldBe 6
+    client.settingsCalls.get() shouldBe 2
+    // a new SET is a new key (one lookup per expression) …
+    client.cachedPrimaryShardCount(Seq("idx_six", "idx_a", "idx_a")) shouldBe (
+      (
+        ElasticSuccess(9),
+        false
+      )
+    )
+    client.settingsCalls.get() shouldBe 4
+    // … and the same set in another order / with duplicates is the same entry
+    client.cachedPrimaryShardCount(Seq("idx_a", "idx_six")) shouldBe ((ElasticSuccess(9), true))
+    client.settingsCalls.get() shouldBe 4
+  }
+
+  it should "consult _settings again once the TTL has expired" in {
+    val client = new SlicingClient(mock[Logger], ttlMs = 0L)
+    run(client, "SELECT id FROM idx_a")
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 2
+  }
+
+  it should "NOT cache a transient lookup failure: every extraction probes again and WARNs (no RBAC blame)" in {
+    val client = new SlicingClient(mock[Logger])
+    run(client, "SELECT id FROM idx_fail").head._2.slices shouldBe 1
+    run(client, "SELECT id FROM idx_fail").head._2.slices shouldBe 1
+    client.settingsCalls.get() shouldBe 2
+    shardWarn(client.mockLogger, 2)
+    verify(client.mockLogger, org.mockito.Mockito.times(2))
+      .warn(
+        argThat[String]((s: String) => s != null && s.contains("retried on the next extraction"))
+      )
+    verify(client.mockLogger, org.mockito.Mockito.never())
+      .warn(argThat[String]((s: String) => s != null && s.contains("view_index_metadata")))
+    shardDebug(client.mockLogger, 0)
+  }
+
+  it should "cache a PRIVILEGE failure (403): ONE WARN naming the privilege per TTL, the replay at DEBUG, no stack pinned" in {
+    val client = new SlicingClient(mock[Logger])
+    run(client, "SELECT id FROM idx_forbidden").head._2.slices shouldBe 1
+    run(client, "SELECT id FROM idx_forbidden").head._2.slices shouldBe 1
+    client.settingsCalls.get() shouldBe 1
+    shardWarn(client.mockLogger, 1)
+    verify(client.mockLogger)
+      .warn(
+        argThat[String]((s: String) =>
+          s != null && s.contains("view_index_metadata") && s.contains("HTTP 403")
+        )
+      )
+    shardDebug(client.mockLogger, 1)
+    // the cached failure carries no Throwable (the original did)
+    val (cached, hit) = client.cachedPrimaryShardCount(Seq("idx_forbidden"))
+    hit shouldBe true
+    cached match {
+      case ElasticFailure(err) => err.cause shouldBe None
+      case other               => fail(s"expected a cached failure, got $other")
+    }
+  }
+
+  it should "NOT cache an expression that matches no index (a later CREATE must be seen at once)" in {
+    val client = new SlicingClient(mock[Logger])
+    // `idx_empty` is not in the settings map → NopeClientApi-style "{}" → 0 shards → sequential
+    run(client, "SELECT id FROM idx_empty").head._2.slices shouldBe 1
+    run(client, "SELECT id FROM idx_empty").head._2.slices shouldBe 1
+    client.settingsCalls.get() shouldBe 2
+    shardWarn(client.mockLogger, 0) // an empty match is not a failure
+  }
+
+  it should "clear EVERY cached count on invalidateSchema(index) — wildcard and alias keys cannot be matched by name" in {
+    val client = new SlicingClient(mock[Logger])
+    run(client, "SELECT id FROM idx_a")
+    run(client, "SELECT id FROM idx_six")
+    client.settingsCalls.get() shouldBe 2
+    client.invalidateSchema("idx_other") // unrelated name — still a full clear, by design
+    run(client, "SELECT id FROM idx_a")
+    run(client, "SELECT id FROM idx_six")
+    client.settingsCalls.get() shouldBe 4
+  }
+
+  it should "clear the cache on invalidateAllSchemas(), updateSchema(...) and a successful createIndex" in {
+    val client = new SlicingClient(mock[Logger]) {
+      // NopeClientApi answers ElasticSuccess(false) ("not created"); make the creation succeed
+      override private[client] def executeCreateIndex(
+        index: String,
+        settings: String,
+        mappings: Option[String],
+        aliases: Seq[app.softnetwork.elastic.sql.schema.TableAlias]
+      ): ElasticResult[Boolean] = ElasticSuccess(true)
+    }
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 1
+    client.invalidateAllSchemas()
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 2
+    client.updateSchema("idx_a", app.softnetwork.elastic.sql.schema.Table("idx_a", Nil))
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 3
+    client.createIndex("idx_new").get shouldBe true // NopeClientApi: ElasticSuccess(true)
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 4
+    // a no-op confirms the entry is otherwise stable
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 4
+  }
+
+  it should "resolve a cold key ONCE under concurrency (one round-trip, one WARN for 8 simultaneous extractions)" in {
+    val client = new SlicingClient(mock[Logger])
+    val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+    try {
+      val start = new java.util.concurrent.CountDownLatch(1)
+      val tasks = (1 to 8).map { _ =>
+        pool.submit(new java.util.concurrent.Callable[(ElasticResult[Int], Boolean)] {
+          def call(): (ElasticResult[Int], Boolean) = {
+            start.await()
+            client.cachedPrimaryShardCount(Seq("idx_forbidden"))
+          }
+        })
+      }
+      start.countDown()
+      val outcomes = tasks.map(_.get(30, java.util.concurrent.TimeUnit.SECONDS))
+      client.settingsCalls.get() shouldBe 1
+      outcomes.count(_._2 == false) shouldBe 1 // exactly one caller saw the miss
+      outcomes.forall(_._1.isInstanceOf[ElasticFailure]) shouldBe true
+    } finally pool.shutdownNow()
   }
 }

@@ -183,7 +183,9 @@ lazy val testkit = Project(id = "softclient4es-core-testkit", base = file("testk
     buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
     buildInfoObject := "SoftClient4esCoreTestkitBuildInfo",
     organization := "app.softnetwork.elastic",
-    name := s"softclient4es-core-testkit"
+    name := s"softclient4es-core-testkit",
+    // the template compiles against logback (SlicedScrollCompletenessSpec log capture, #238)
+    libraryDependencies += "ch.qos.logback" % "logback-classic" % Versions.logback
   )
   .enablePlugins(BuildInfoPlugin)
   .dependsOn(
@@ -224,6 +226,9 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
         "org.apache.logging.log4j" % "log4j-api" % Versions.log4j,
         //  "org.apache.logging.log4j" % "log4j-slf4j-impl"  % Versions.log4j,
         "org.apache.logging.log4j" % "log4j-core" % Versions.log4j,
+        // SlicedScrollCompletenessSpec (#238) captures the client log through logback's
+        // ListAppender at compile time — declared, not inherited from persistence-core
+        "ch.qos.logback" % "logback-classic" % Versions.logback,
         "app.softnetwork.persistence" %% "persistence-core-testkit" % Versions.genericPersistence,
         "org.testcontainers" % "testcontainers-elasticsearch" % Versions.testContainers excludeAll (jacksonExclusions: _*),
         "org.testcontainers" % "testcontainers-minio"         % Versions.testContainers,

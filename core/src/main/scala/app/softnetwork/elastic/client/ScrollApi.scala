@@ -150,6 +150,84 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   protected def configuredMaxSlices: Int = ScrollConfig.DefaultMaxSlices
 
+  /** TTL, in milliseconds, of the primary-shard-count cache consulted by sliced PIT paging (#238).
+    * Override in a subclass to change (default: 5 minutes, the schema cache's TTL). One `_settings`
+    * round-trip per distinct index set per TTL instead of one per un-LIMITed row query. What is
+    * cached: a positive count, and a **privilege** failure (HTTP 401 / 403 — the one failure class
+    * that is deterministic), so an under-privileged user sees ONE WARN per TTL instead of one per
+    * query; a transient failure (timeout, 503, index not found, unparseable payload) and an
+    * expression that matches no index are NOT cached — the next extraction probes again. Staleness
+    * is performance-only: a count that no longer matches the index changes how the PIT is split,
+    * never which rows come back. Every schema-cache write or invalidation on this client
+    * (`createIndex`, `updateSchema`, `invalidateSchema` — `DROP TABLE`, REPL `refresh` —
+    * `invalidateAllSchemas`) clears the whole shard-count cache (entries are keyed by the FROM
+    * expression, so a wildcard or alias key cannot be matched by index name); DDL issued through
+    * another client is seen after the TTL.
+    */
+  protected def shardCountCacheTtlMs: Long = 5 * 60 * 1000L
+
+  private val shardCountCache =
+    new java.util.concurrent.ConcurrentHashMap[String, (ElasticResult[Int], Long)]()
+
+  /** Above this many entries a cache miss also purges the expired ones (keys are index SETS, so a
+    * long-lived server over date-suffixed or per-tenant indices would otherwise grow without
+    * bound).
+    */
+  private val shardCountCachePurgeThreshold = 256
+
+  private def shardCountCacheable(result: ElasticResult[Int]): Boolean = result match {
+    case ElasticSuccess(shards) => shards > 0
+    case ElasticFailure(err)    => err.statusCode.exists(s => s == 401 || s == 403)
+  }
+
+  /** [[SettingsApi.primaryShardCount]] behind the TTL cache. Keyed by the sorted distinct index
+    * expressions (an index name cannot contain `,`); resolved under the map's per-key lock
+    * (`compute`), so K concurrent cold extractions of one index set issue ONE round-trip and the
+    * result is stamped after the lookup. Returns the lookup result and whether it was served from
+    * the cache — the caller logs a cached failure at DEBUG, a fresh one at WARN.
+    */
+  private[client] def cachedPrimaryShardCount(
+    indices: Seq[String]
+  ): (ElasticResult[Int], Boolean) = {
+    val key = indices.distinct.sorted.mkString(",")
+    val ttl = shardCountCacheTtlMs
+    var result: ElasticResult[Int] = null
+    var fromCache = true
+    shardCountCache.compute(
+      key,
+      (_: String, entry: (ElasticResult[Int], Long)) => {
+        if (entry != null && System.currentTimeMillis() - entry._2 < ttl) {
+          result = entry._1
+          entry
+        } else {
+          fromCache = false
+          val fresh = primaryShardCount(indices)
+          result = fresh
+          if (shardCountCacheable(fresh)) {
+            val stored = fresh match {
+              case ElasticFailure(err) =>
+                ElasticFailure(err.copy(cause = None)) // never pin a stack
+              case success => success
+            }
+            (stored, System.currentTimeMillis())
+          } else null // not cached: a null mapping removes the (expired) entry
+        }
+      }
+    )
+    if (!fromCache && shardCountCache.size() > shardCountCachePurgeThreshold) {
+      val now = System.currentTimeMillis()
+      shardCountCache
+        .entrySet()
+        .removeIf((e: java.util.Map.Entry[String, (ElasticResult[Int], Long)]) =>
+          now - e.getValue._2 >= ttl
+        )
+    }
+    (result, fromCache)
+  }
+
+  /** Drop every cached primary shard count — called on every schema-cache write or invalidation. */
+  private[client] def invalidateShardCounts(): Unit = shardCountCache.clear()
+
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
@@ -471,7 +549,10 @@ trait ScrollApi extends ElasticClientHelpers {
     * and JSON), the effective ceiling is above 1 and the cluster supports PIT slicing (7.15+). One
     * per primary shard of the resolved indices, capped by the ceiling, never above the shard count.
     * The guard order is load-bearing: no `_settings` round-trip on ORDER BY / LIMIT / opt-out / ES6
-    * / classic-scroll paths. A lookup failure degrades to sequential with one WARN.
+    * / classic-scroll paths. The shard count comes from [[cachedPrimaryShardCount]] (one
+    * `_settings` round-trip per index set per [[shardCountCacheTtlMs]]); a lookup failure degrades
+    * to sequential with a WARN — once per TTL for a privilege failure (DEBUG while the cached
+    * failure is replayed), on every extraction for a transient one.
     */
   private[client] def resolveSlices(
     elasticQuery: ElasticQuery,
@@ -489,7 +570,8 @@ trait ScrollApi extends ElasticClientHelpers {
       val targets = elasticQuery.indices.mkString(",")
       version match {
         case ElasticSuccess(v) if ElasticsearchVersion.supportsPitSlicing(v) =>
-          primaryShardCount(elasticQuery.indices) match {
+          val (lookup, cached) = cachedPrimaryShardCount(elasticQuery.indices)
+          lookup match {
             case ElasticSuccess(shards) =>
               val n = math.max(1, math.min(shards, ceiling))
               if (n > 1) {
@@ -500,9 +582,22 @@ trait ScrollApi extends ElasticClientHelpers {
                 logger.debug(s"PIT paging stays sequential: $shards primary shard(s) for $targets")
               }
               n
+            case ElasticFailure(err) if cached =>
+              logger.debug(
+                s"Primary shard count for $targets still unresolved (cached failure: ${err.message}); paging sequentially"
+              )
+              1
             case ElasticFailure(err) =>
+              // only a privilege failure is remembered (see shardCountCacheTtlMs); anything else
+              // is probed again by the next extraction, and says so
+              val why = err.statusCode match {
+                case Some(s) if s == 401 || s == 403 =>
+                  s"the lookup needs the view_index_metadata privilege on the indices (HTTP $s) — remembered for ${shardCountCacheTtlMs / 1000} s"
+                case _ =>
+                  "retried on the next extraction"
+              }
               logger.warn(
-                s"Could not resolve the primary shard count for $targets (${err.message}); paging sequentially — the lookup needs the view_index_metadata privilege on the indices; set elastic.scroll.max-slices = 1 (ELASTIC_SCROLL_MAX_SLICES) to skip it"
+                s"Could not resolve the primary shard count for $targets (${err.message}); paging sequentially — $why; set elastic.scroll.max-slices = 1 (ELASTIC_SCROLL_MAX_SLICES) to skip the lookup"
               )
               1
           }

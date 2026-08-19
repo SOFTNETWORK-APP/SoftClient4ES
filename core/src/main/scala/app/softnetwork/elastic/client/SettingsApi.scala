@@ -227,8 +227,9 @@ trait SettingsApi { _: IndicesApi =>
     * index name across expressions. Elasticsearch compares a slice `max` with the shard count of
     * the WHOLE request (`SliceBuilder.toFilter`), so the sum is the right quantity. Failures are an
     * `ElasticFailure` (the caller degrades to sequential paging — never a throw); zero keys (an
-    * empty match, `NopeClientApi`'s `"{}"`) count as 1; cross-cluster expressions (`remote:index`)
-    * have no `_settings` route and are skipped.
+    * empty match, `NopeClientApi`'s `"{}"`) sum to **0** — "nothing matched", which the caller
+    * clamps to one slice and never caches; cross-cluster expressions (`remote:index`) have no
+    * `_settings` route and are skipped.
     */
   private[client] def primaryShardCount(indices: Seq[String]): ElasticResult[Int] = {
     val perIndex = scala.collection.mutable.LinkedHashMap.empty[String, Int]
@@ -260,7 +261,7 @@ trait SettingsApi { _: IndicesApi =>
         }
       }
       .collectFirst { case f @ ElasticFailure(_) => f }
-    failure.getOrElse(ElasticSuccess(math.max(1, perIndex.values.sum)))
+    failure.getOrElse(ElasticSuccess(perIndex.values.sum))
   }
 
   // ========================================================================

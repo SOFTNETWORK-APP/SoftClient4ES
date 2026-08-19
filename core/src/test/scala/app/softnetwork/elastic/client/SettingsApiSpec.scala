@@ -491,9 +491,9 @@ class SettingsApiSpec
         api.calls.toList shouldBe List("idx_a")
       }
 
-      "return 1 when the lookup resolves to no index" in {
+      "return 0 when the lookup resolves to no index (nothing matched — never cached upstream)" in {
         val api = new ShardCountApi(Map("idx_a" -> ElasticSuccess("{}")))
-        api.primaryShardCount(Seq("idx_a")) shouldBe ElasticSuccess(1)
+        api.primaryShardCount(Seq("idx_a")) shouldBe ElasticSuccess(0)
       }
 
       "count 1 per index when number_of_shards is missing, without throwing" in {
@@ -542,8 +542,8 @@ class SettingsApiSpec
         verify(mockLogger).debug("Skipping shard lookup for cross-cluster expression 'remote:idx'")
       }
 
-      "return 1 for an empty expression list" in {
-        new ShardCountApi(Map.empty).primaryShardCount(Seq.empty) shouldBe ElasticSuccess(1)
+      "return 0 for an empty expression list (nothing to look up)" in {
+        new ShardCountApi(Map.empty).primaryShardCount(Seq.empty) shouldBe ElasticSuccess(0)
       }
     }
 

@@ -26,6 +26,9 @@ import app.softnetwork.elastic.client.spi.{ElasticClientFactory, ElasticClientSp
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.persistence.generateUUID
+import ch.qos.logback.classic.{Level, Logger => LogbackLogger}
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import com.typesafe.config.ConfigFactory
 import org.elasticsearch.client.Request
 import org.scalatest.flatspec.AnyFlatSpecLike
@@ -36,6 +39,7 @@ import scala.collection.immutable.ListMap
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.io.{Source => IoSource}
+import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
 
 /** #238 — sliced PIT row extraction: a no-`ORDER BY` extraction from an N-shard index reads `min(N,
@@ -47,6 +51,11 @@ import scala.language.implicitConversions
   *
   * The `slices == N` expectations apply only where PIT slicing exists (ES >= 7.15); completeness
   * and `slices == 1` on ES 6 / `maxSlices = Some(1)` are asserted unconditionally.
+  *
+  * `ScrollMetrics.slices` is stamped by core's policy, so (m) additionally pins that the CLIENT
+  * really opened N readers: it captures the client's own log and counts the per-slice `Starting PIT
+  * search_after … slice i/N` lines (one per reader), with a positive control so a capture bound to
+  * the wrong logger fails loudly instead of passing vacuously.
   */
 trait SlicedScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 
@@ -211,6 +220,60 @@ trait SlicedScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTes
     open shouldBe 0
   }
 
+  /** Every client logger (`LoggerFactory getLogger getClass.getName` in the companions: the SPI's
+    * anonymous subclass, `…client.java`, `…client.rest`, `…client.jest`) lives under this package,
+    * and a child's events reach the appenders of its ancestors.
+    */
+  private val clientLoggerPackage = "app.softnetwork.elastic.client"
+
+  /** Run `body` while capturing, at DEBUG, everything logged under [[clientLoggerPackage]]; returns
+    * the result and the formatted messages. The package logger is raised to DEBUG for the window
+    * (the suites run at INFO, and the per-slice line is DEBUG by design — one INFO line per
+    * extraction, AC 12) and restored afterwards; additivity is left alone so the client's own
+    * WARN/ERROR lines still reach the console. `ListAppender` extends the synchronized
+    * `AppenderBase`, so N slices logging concurrently cannot lose an event; the list is read only
+    * AFTER the appender is detached and under the appender's lock — the stream's `onTerminate`
+    * ("closing PIT") still logs from a dispatcher thread after `Await.result` returns, and a plain
+    * `ArrayList` iterated concurrently with that `add` throws `ConcurrentModificationException`
+    * (seen once on ES 9.0.3).
+    */
+  private def captureClientLog[A](body: => A): (A, Seq[String]) = {
+    val lb = LoggerFactory.getLogger(clientLoggerPackage) match {
+      case l: LogbackLogger => l
+      case other =>
+        cancel(
+          s"'$clientLoggerPackage' is not a logback logger (${other.getClass.getName}) — log capture unavailable"
+        )
+    }
+    val appender = new ListAppender[ILoggingEvent]()
+    appender.start()
+    val prevLevel = lb.getLevel
+    lb.setLevel(Level.DEBUG)
+    lb.addAppender(appender)
+    try {
+      val a = body
+      lb.detachAppender(appender)
+      val lines = appender.synchronized(appender.list.asScala.map(_.getFormattedMessage).toVector)
+      (a, lines)
+    } finally {
+      lb.detachAppender(appender) // idempotent
+      appender.stop()
+      lb.setLevel(prevLevel)
+    }
+  }
+
+  private val startLine = "Starting PIT search_after"
+  private val sliceSuffix = "slice (\\d+)/(\\d+)\\)".r
+
+  /** The distinct `(slice, of)` pairs among the captured start lines — distinct because the line is
+    * logged inside the page retry, so a retried first page re-logs its reader's start.
+    */
+  private def readers(lines: Seq[String]): Seq[(Int, Int)] =
+    lines
+      .filter(_.startsWith(startLine))
+      .flatMap(l => sliceSuffix.findFirstMatchIn(l).map(m => (m.group(1).toInt, m.group(2).toInt)))
+      .distinct
+
   // ---- (a) one shard -------------------------------------------------------------------------
 
   "a no-ORDER-BY extraction from a 1-shard index" should "be complete and sequential (slices = 1)" in {
@@ -326,6 +389,52 @@ trait SlicedScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTes
       // 6,000 rows in 250-row batches on the merged stream
       rows.last._2.totalBatches shouldBe (threeShardDocs / 250).toLong
       rows.last._2.totalDocuments shouldBe threeShardDocs.toLong
+    }
+  }
+
+  // ---- (m) the CLIENT really opens N readers — not only core's `ScrollMetrics.slices` ----------
+
+  "the client" should "open exactly one PIT reader per resolved slice, and exactly one when sequential" in {
+    assume(
+      client.version.toOption.exists(ElasticsearchVersion.supportsPit),
+      "PIT paging (and its 'Starting PIT search_after' line) needs ES >= 7.12"
+    )
+    val n = expectedSlices(6)
+
+    val (rows, lines) = captureClientLog {
+      run(s"SELECT id FROM $sixShards", Some(ScrollConfig(scrollSize = 500)))
+    }
+    rows should have size sixShardDocs.toLong
+    rows.head._2.slices shouldBe n
+    val starts = lines.filter(_.startsWith(startLine))
+    // positive control: the capture IS bound to the logger the client writes to
+    withClue(s"captured ${lines.size} line(s) under '$clientLoggerPackage' — ") {
+      starts should not be empty
+    }
+    val opened = readers(lines)
+    withClue(s"readers: ${starts.mkString(" | ")} — ") {
+      if (pitSlicing) {
+        // one reader per slice: `slice i/N` for every i in 0 until N, nothing else
+        opened.map(_._2).distinct shouldBe Seq(n)
+        opened.map(_._1).sorted shouldBe (0 until n)
+        starts.filterNot(l => sliceSuffix.findFirstIn(l).isDefined) shouldBe empty
+      } else {
+        // 7.12–7.14: PIT without slicing — a single reader, no slice suffix
+        opened shouldBe empty
+        starts.distinct should have size 1
+      }
+    }
+    log.info(s"✓ client readers: ${if (pitSlicing) opened.size else 1} (expected $n)")
+
+    // the sequential opt-out opens exactly ONE reader, without a slice suffix
+    val (seqRows, seqLines) = captureClientLog {
+      run(s"SELECT id FROM $sixShards", Some(ScrollConfig(scrollSize = 500, maxSlices = Some(1))))
+    }
+    seqRows should have size sixShardDocs.toLong
+    val seqStarts = seqLines.filter(_.startsWith(startLine))
+    withClue(s"sequential readers: ${seqStarts.mkString(" | ")} — ") {
+      readers(seqLines) shouldBe empty
+      seqStarts.distinct should have size 1 // one reader (a retried first page re-logs the same)
     }
   }
 }

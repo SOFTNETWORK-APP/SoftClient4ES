@@ -161,10 +161,23 @@ clock improve when shards and nodes are added.
 | ES < 7.15 (PIT without slicing) | 1 |
 | Otherwise | `max(1, min(Σ number_of_shards of the resolved indices, ceiling))` |
 
-The shard count is read once per extraction from `GET <indices>/_settings` (the indices a wildcard,
-alias or data stream resolves to are summed and deduplicated). If that lookup fails — e.g. the
-credentials lack the `view_index_metadata` privilege — the extraction logs one WARN and pages
-sequentially; it never fails. `ScrollMetrics.slices` reports the resolved count on every row.
+The shard count comes from `GET <indices>/_settings` (the indices a wildcard, alias or data stream
+resolves to are summed and deduplicated) and is **cached per index set for 5 minutes** — the same
+TTL as the schema cache (`shardCountCacheTtlMs`, overridable in a subclass) — so a workload of many
+small un-LIMITed queries pays one round-trip per table per TTL, not one per query (concurrent cold
+extractions of the same set share one lookup). What is remembered: a positive count, and a
+**privilege** failure (HTTP 401/403 — the credentials lack `view_index_metadata`), for which the
+extraction logs **one WARN per TTL** naming the privilege (DEBUG while the cached failure is
+replayed). A transient failure (timeout, 503, index not found, unparseable payload) is **not**
+cached — every extraction probes again and logs its WARN — and neither is an expression that
+matches no index, so a table created right after is seen at once. The lookup never fails the
+extraction: it degrades to sequential paging. A stale count is a performance matter only (it changes
+how the PIT is split, never which rows come back); every schema-cache write or invalidation on the
+same client — `createIndex`, `updateSchema`, `invalidateSchema` (REPL `refresh [table]`, `DROP
+TABLE`), `invalidateAllSchemas()` — clears the whole shard-count cache (entries are keyed by the
+`FROM` expression, so a wildcard or alias key cannot be matched by index name); DDL issued through
+another client is seen after the TTL. `ScrollMetrics.slices` reports the resolved count on every
+row.
 
 **Ceiling and opt-out:**
 
