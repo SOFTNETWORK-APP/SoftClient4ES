@@ -92,7 +92,14 @@ import org.elasticsearch.action.support.{IndicesOptions, WriteRequest}
 import org.elasticsearch.action.support.master.AcknowledgedResponse
 import org.elasticsearch.action.update.{UpdateRequest, UpdateResponse}
 import org.elasticsearch.action.{ActionListener, DocWriteRequest, DocWriteResponse}
-import org.elasticsearch.client.{GetAliasesResponse, Request, RequestOptions, Response}
+import org.elasticsearch.client.{
+  GetAliasesResponse,
+  Request,
+  RequestOptions,
+  Response,
+  ResponseException,
+  ResponseListener
+}
 import org.elasticsearch.client.core.{CountRequest, CountResponse}
 import org.elasticsearch.client.enrich.{
   DeletePolicyRequest,
@@ -1467,6 +1474,7 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientSearchApi
     with RestHighLevelClientVersionApi
+    with RestHighLevelClientSettingsApi
     with RestHighLevelClientCompanion =>
 
   // ==========================================================================
@@ -1494,13 +1502,41 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     try {
       readResponseTree(apply().getLowLevelClient.performRequest(request))
     } catch {
-      case ex: org.elasticsearch.client.ResponseException =>
-        val status = Try(ex.getResponse.getStatusLine.getStatusCode).getOrElse(0)
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new IllegalStateException(ex.getMessage, ex)
-        }
-        throw ex
+      case ex: ResponseException if isNonRetriable4xx(ex) =>
+        throw new IllegalStateException(ex.getMessage, ex)
     }
+
+  /** Asynchronous sibling of [[executeSearchPage]] for the PIT paging path (#238): the request
+    * travels through `performRequestAsync`, so no dispatcher thread blocks on the wire; the
+    * (heap-buffered) entity is Jackson-parsed on `ec` — the caller's dispatcher, never the IO
+    * reactor. `performRequestAsync` reports an error status through `onFailure(ResponseException)`
+    * without any `CompletionException` wrapper, so retry semantics hold by construction; the same
+    * 4xx-except-408/429 statuses are made non-retriable as on the synchronous path.
+    */
+  private def executeSearchPageAsync(request: Request)(implicit
+    ec: ExecutionContext
+  ): Future[JsonNode] = {
+    val promise = Promise[Response]()
+    apply().getLowLevelClient.performRequestAsync(
+      request,
+      new ResponseListener {
+        override def onSuccess(response: Response): Unit = promise.trySuccess(response)
+        override def onFailure(exception: Exception): Unit = promise.tryFailure(exception)
+      }
+    )
+    promise.future
+      .map(readResponseTree)
+      .recoverWith {
+        case re: ResponseException if isNonRetriable4xx(re) =>
+          Future.failed(new IllegalStateException(re.getMessage, re))
+      }
+  }
+
+  /** 4xx except 408 / 429: a permanent client error that must fail fast rather than be retried
+    * (`ResponseException` is an `IOException`, which `retryWithBackoff` would otherwise retry).
+    */
+  private def isNonRetriable4xx(re: ResponseException): Boolean =
+    statusOf(re).exists(status => status >= 400 && status < 500 && status != 408 && status != 429)
 
   /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
     * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
@@ -1832,105 +1868,113 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
           Source
             .unfoldAsync[Option[Array[Object]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
               retryWithBackoff(config.retryConfig) {
-                Future {
-                  searchAfterOpt match {
-                    case None =>
-                      logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
-                    case Some(values) =>
+                // The request is built on the stage thread (cheap) and a synchronous failure stays
+                // inside the Future chain (retry / stream failure), never an escape out of
+                // unfoldAsync.
+                Future
+                  .fromTry(Try {
+                    searchAfterOpt match {
+                      case None =>
+                        logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
+                      case Some(values) =>
+                        logger.debug(
+                          s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
+                            s"[${values.take(3).mkString(", ")}...]"
+                          else values.mkString(", ")})"
+                        )
+                    }
+
+                    // Parse query
+                    val xContentParser = XContentType.JSON
+                      .xContent()
+                      .createParser(
+                        namedXContentRegistry,
+                        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                        elasticQuery.query
+                      )
+
+                    val sourceBuilder = SearchSourceBuilder
+                      .fromXContent(xContentParser)
+                      .size(config.scrollSize)
+                      // The paging path never reads hits.total — computing it costs ~30% of the
+                      // ES-side CPU per page (#200)
+                      .trackTotalHits(false)
+
+                    // Check if sorts already exist in the query
+                    if (!hasSorts && sourceBuilder.sorts() == null) {
+                      // _doc, NOT _shard_doc: a primary _shard_doc sort defeats the doc-id skip
+                      // optimisation on ES 8 / Lucene 9 (#197); harmless but not needed on 7.x
+                      // either. Under a PIT (>= 7.12) ES appends _shard_doc as an automatic
+                      // tiebreaker, so _doc is a total order and row-complete across shards.
                       logger.debug(
-                        s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
-                          s"[${values.take(3).mkString(", ")}...]"
-                        else values.mkString(", ")})"
+                        "No sort fields in query for PIT search_after, adding default _doc sort."
                       )
-                  }
+                      sourceBuilder.sort("_doc", SortOrder.ASC)
+                    } else if (hasSorts && sourceBuilder.sorts() != null) {
+                      // Sorts already present, check that a tie-breaker exists
+                      val hasShardDocSort = sourceBuilder.sorts().asScala.exists {
+                        case fieldSort: FieldSortBuilder =>
+                          fieldSort.getFieldName == "_shard_doc" || fieldSort.getFieldName == "_id"
+                        case _ =>
+                          false
+                      }
 
-                  // Parse query
-                  val xContentParser = XContentType.JSON
-                    .xContent()
-                    .createParser(
-                      namedXContentRegistry,
-                      DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-                      elasticQuery.query
+                      if (!hasShardDocSort) {
+                        // Add _id as tie-breaker
+                        logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
+                        sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                      }
+                    }
+
+                    // Add search_after
+                    searchAfterOpt.foreach { searchAfter =>
+                      sourceBuilder.searchAfter(searchAfter)
+                    }
+
+                    // Set PIT
+                    val pitBuilder = new PointInTimeBuilder(pitId)
+                    pitBuilder.setKeepAlive(
+                      TimeValue.parseTimeValue(config.keepAlive, "pit_keep_alive")
                     )
+                    sourceBuilder.pointInTimeBuilder(pitBuilder)
 
-                  val sourceBuilder = SearchSourceBuilder
-                    .fromXContent(xContentParser)
-                    .size(config.scrollSize)
-                    // The paging path never reads hits.total — computing it costs ~30% of the
-                    // ES-side CPU per page (#200)
-                    .trackTotalHits(false)
-
-                  // Check if sorts already exist in the query
-                  if (!hasSorts && sourceBuilder.sorts() == null) {
-                    // _doc, NOT _shard_doc: a primary _shard_doc sort defeats the doc-id skip
-                    // optimisation on ES 8 / Lucene 9 (#197); harmless but not needed on 7.x
-                    // either. Under a PIT (>= 7.12) ES appends _shard_doc as an automatic
-                    // tiebreaker, so _doc is a total order and row-complete across shards.
-                    logger.debug(
-                      "No sort fields in query for PIT search_after, adding default _doc sort."
-                    )
-                    sourceBuilder.sort("_doc", SortOrder.ASC)
-                  } else if (hasSorts && sourceBuilder.sorts() != null) {
-                    // Sorts already present, check that a tie-breaker exists
-                    val hasShardDocSort = sourceBuilder.sorts().asScala.exists {
-                      case fieldSort: FieldSortBuilder =>
-                        fieldSort.getFieldName == "_shard_doc" || fieldSort.getFieldName == "_id"
-                      case _ =>
-                        false
+                    // Build request with PIT — no index in the path, the PIT owns the target
+                    // (single parse #228: raw response bytes Jackson-parsed once)
+                    val request = new Request("POST", "/_search")
+                    request.addParameter("request_cache", "false") // Disable cache for PIT
+                    request.setJsonEntity(Strings.toString(sourceBuilder))
+                    request
+                  })
+                  .flatMap { request =>
+                    // Asynchronous page fetch (#238): no dispatcher thread blocks on the wire.
+                    executeSearchPageAsync(request)
+                  }
+                  .map { tree =>
+                    shardFailures(tree).foreach { reasons =>
+                      throw new IOException(s"PIT search_after failed: $reasons")
                     }
 
-                    if (!hasShardDocSort) {
-                      // Add _id as tie-breaker
-                      logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
-                      sourceBuilder.sort("_shard_doc", SortOrder.ASC)
+                    val hits =
+                      extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
+
+                    if (hits.isEmpty) {
+                      None // end of stream — watchTermination owns the single PIT close (#202)
+                    } else {
+                      val hitsArray = tree.path("hits").path("hits")
+                      val lastHit = hitsArray.get(hitsArray.size() - 1)
+                      val lastSort = lastHit.path("sort")
+                      if (!lastSort.isArray || lastSort.size() == 0) {
+                        // paging on without a cursor would refetch the same page forever
+                        throw new IllegalStateException(
+                          "search_after page returned hits without sort values — cannot continue paging"
+                        )
+                      }
+                      val nextSearchAfter = Some(sortValuesOf(lastSort))
+
+                      logger.debug(s"Retrieved ${hits.size} hits, continuing with PIT")
+                      Some((nextSearchAfter, hits))
                     }
                   }
-
-                  // Add search_after
-                  searchAfterOpt.foreach { searchAfter =>
-                    sourceBuilder.searchAfter(searchAfter)
-                  }
-
-                  // Set PIT
-                  val pitBuilder = new PointInTimeBuilder(pitId)
-                  pitBuilder.setKeepAlive(
-                    TimeValue.parseTimeValue(config.keepAlive, "pit_keep_alive")
-                  )
-                  sourceBuilder.pointInTimeBuilder(pitBuilder)
-
-                  // Build request with PIT — no index in the path, the PIT owns the target
-                  // (single parse #228: raw response bytes Jackson-parsed once)
-                  val request = new Request("POST", "/_search")
-                  request.addParameter("request_cache", "false") // Disable cache for PIT
-                  request.setJsonEntity(Strings.toString(sourceBuilder))
-
-                  val tree = executeSearchPage(request)
-
-                  shardFailures(tree).foreach { reasons =>
-                    throw new IOException(s"PIT search_after failed: $reasons")
-                  }
-
-                  val hits =
-                    extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
-
-                  if (hits.isEmpty) {
-                    None // end of stream — watchTermination owns the single PIT close (#202)
-                  } else {
-                    val hitsArray = tree.path("hits").path("hits")
-                    val lastHit = hitsArray.get(hitsArray.size() - 1)
-                    val lastSort = lastHit.path("sort")
-                    if (!lastSort.isArray || lastSort.size() == 0) {
-                      // paging on without a cursor would refetch the same page forever
-                      throw new IllegalStateException(
-                        "search_after page returned hits without sort values — cannot continue paging"
-                      )
-                    }
-                    val nextSearchAfter = Some(sortValuesOf(lastSort))
-
-                    logger.debug(s"Retrieved ${hits.size} hits, continuing with PIT")
-                    Some((nextSearchAfter, hits))
-                  }
-                }
               }(system, logger).recoverWith { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
                 // fail the stream instead of ending it: ending here would surface a silently
@@ -2032,6 +2076,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
   }
 
   /** Extract ONLY hits (for search_after optimization)
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`): returning an empty
+    * page here used to read as "end of stream" and surfaced a silently truncated result as a
+    * success (#238, same defect class as #228 / #209 / #224).
     */
   private def extractHitsOnly(
     json: JsonNode,
@@ -2046,8 +2094,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     ) match {
       case Success(rows) => rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(s"Failed to parse PIT page: ${ex.getMessage}", ex)
     }
   }
 

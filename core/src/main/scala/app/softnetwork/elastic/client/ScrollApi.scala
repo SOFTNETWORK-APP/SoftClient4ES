@@ -122,17 +122,30 @@ import scala.util.{Failure, Success}
   *   [[https://www.elastic.co/guide/en/elasticsearch/reference/7.10/point-in-time-api.html PIT API Documentation]]
   */
 trait ScrollApi extends ElasticClientHelpers {
-  _: VersionApi with SearchApi =>
+  _: VersionApi with SearchApi with SettingsApi =>
 
   // ========================================================================
   // MAIN SCROLL METHODS
   // ========================================================================
 
+  /** The scroll configuration used when a caller passes none (#238): page size from
+    * `elastic.scroll.size`, slice ceiling inherited (`maxSlices = None`) from
+    * [[configuredMaxSlices]]. A `def`, never a `val`: `ScrollMetrics.startTime` is a constructor
+    * default and must be fresh per stream. Overridden by [[ElasticClientApi]] with the HOCON
+    * values; the base keeps the historical `ScrollConfig()` defaults.
+    */
+  def defaultScrollConfig: ScrollConfig = ScrollConfig()
+
+  /** The ceiling on concurrent PIT slices applied when a [[ScrollConfig]] leaves `maxSlices` unset
+    * (`elastic.scroll.max-slices`, #238). `1` is a complete opt-out.
+    */
+  protected def configuredMaxSlices: Int = ScrollConfig.DefaultMaxSlices
+
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
     statement: SearchStatement,
-    config: ScrollConfig = ScrollConfig()
+    config: ScrollConfig = defaultScrollConfig
   )(implicit
     system: ActorSystem,
     context: ConversionContext
@@ -224,7 +237,11 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Typed scroll source converting results into typed entities from an SQL query
     *
     * @note
-    *   This method provides compile-time SQL validation via macros.
+    *   This method provides compile-time SQL validation via macros. Macro applications do not
+    *   support default arguments (scalac: "macro applications do not support named and/or default
+    *   arguments"), so `config` must always be passed explicitly — use [[defaultScrollConfig]] (or
+    *   a `.copy` of it) to keep the `elastic.scroll` settings; [[scrollAsUnchecked]] does apply it
+    *   when omitted.
     *
     * @param sql
     *   - SQL query
@@ -273,7 +290,7 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   def scrollAsUnchecked[T](
     sql: SelectStatement,
-    config: ScrollConfig = ScrollConfig()
+    config: ScrollConfig = defaultScrollConfig
   )(implicit
     system: ActorSystem,
     m: Manifest[T],

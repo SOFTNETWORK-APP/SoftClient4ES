@@ -42,6 +42,9 @@ import java.time.Duration
  * @param includeDocumentId
  *   When enabled, result rows surface the Elasticsearch document id as an `_id` column (disabled
  *   by default)
+ * @param scroll
+ *   Paged row extraction settings (`elastic.scroll`: page size and the ceiling on concurrent PIT
+ *   slices, #238)
   */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
@@ -51,7 +54,8 @@ case class ElasticConfig(
   socketTimeout: Duration,
   metrics: MetricsConfig,
   watcher: ElasticCredentials,
-  includeDocumentId: Boolean = false)
+  includeDocumentId: Boolean = false,
+  scroll: ScrollSettings = ScrollSettings())
 
 object ElasticConfig extends StrictLogging {
   def apply(config: Config): ElasticConfig = {

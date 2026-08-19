@@ -27,13 +27,15 @@ import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import co.elastic.clients.transport.rest_client.RestClientTransport
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
+import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
 import org.apache.http.message.BasicHeader
 import org.elasticsearch.client.{RestClient, RestClientBuilder}
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.util.concurrent.CompletableFuture
+import java.util.concurrent.{CompletableFuture, CompletionException, ExecutionException}
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.{Future, Promise}
+import scala.util.Try
 
 import scala.jdk.CollectionConverters._
 
@@ -54,8 +56,11 @@ trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
           )
           c
         } else {
-          // Another thread initialized while we were waiting
-          asyncRef.get().get
+          // Another thread initialized while we were waiting: release OUR transport (its own
+          // pool + IO reactor would otherwise leak) and use theirs — re-read rather than `.get`,
+          // a concurrent close() may have cleared the reference in between
+          Try(c.close())
+          async()
         }
     }
   }
@@ -70,7 +75,33 @@ trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
     }
   }
 
-  /** Build RestClientBuilder with authentication
+  /** Close the sync client AND the async transport (#238): the async client owns its own RestClient
+    * pool, and the PIT paging path now runs on it. Idempotent.
+    */
+  override def close(): Unit = {
+    super.close()
+    asyncRef.getAndSet(None).foreach { c =>
+      Try {
+        c.close()
+        logger.info("Elasticsearch async Client closed successfully")
+      }.recover { case ex: Exception =>
+        logger.warn(s"Error closing Elasticsearch async Client: ${ex.getMessage}", ex)
+      }
+    }
+  }
+
+  /** REST connection pool sized to the slice ceiling (#238 — `ScrollSettings.restPoolPerRoute` /
+    * `restPoolTotal`): an extraction may hold up to `elastic.scroll.max-slices` page requests in
+    * flight per route on top of the PIT open / close and `_settings` calls sharing the route.
+    */
+  private def withPoolSizing(httpClient: HttpAsyncClientBuilder): HttpAsyncClientBuilder =
+    httpClient
+      .setMaxConnPerRoute(elasticConfig.scroll.restPoolPerRoute)
+      .setMaxConnTotal(elasticConfig.scroll.restPoolTotal)
+
+  /** Build RestClientBuilder with authentication. ONE `setHttpClientConfigCallback` per builder (a
+    * second call replaces the first): the auth branch yields a function and the pool sizing is
+    * composed with it in a single callback.
     */
   private def buildRestClient(): RestClientBuilder = {
     val httpHost = parseHttpHost(elasticConfig.credentials.url)
@@ -84,44 +115,47 @@ trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
       }
 
     // Authenticate
-    elasticConfig.credentials.authMethod match {
-      case Some(BasicAuth) if elasticConfig.credentials.username.nonEmpty =>
-        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
-          val credentialsProvider = new BasicCredentialsProvider()
-          credentialsProvider.setCredentials(
-            AuthScope.ANY,
-            new UsernamePasswordCredentials(
-              elasticConfig.credentials.username,
-              elasticConfig.credentials.password
+    val authenticate: HttpAsyncClientBuilder => HttpAsyncClientBuilder =
+      elasticConfig.credentials.authMethod match {
+        case Some(BasicAuth) if elasticConfig.credentials.username.nonEmpty =>
+          httpClientConfigCallback => {
+            val credentialsProvider = new BasicCredentialsProvider()
+            credentialsProvider.setCredentials(
+              AuthScope.ANY,
+              new UsernamePasswordCredentials(
+                elasticConfig.credentials.username,
+                elasticConfig.credentials.password
+              )
             )
-          )
-          httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
-        }
-      case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
-        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
-          httpClientConfigCallback.setDefaultHeaders(
-            Seq(
-              new BasicHeader(
-                "Authorization",
-                ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
-              )
-            ).asJava
-          )
-        }
-      case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
-        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
-          httpClientConfigCallback.setDefaultHeaders(
-            Seq(
-              new BasicHeader(
-                "Authorization",
-                BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
-              )
-            ).asJava
-          )
-        }
-      case _ => // No authentication
-        builder
-    }
+            httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
+          }
+        case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
+          httpClientConfigCallback =>
+            httpClientConfigCallback.setDefaultHeaders(
+              Seq(
+                new BasicHeader(
+                  "Authorization",
+                  ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
+                )
+              ).asJava
+            )
+        case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
+          httpClientConfigCallback =>
+            httpClientConfigCallback.setDefaultHeaders(
+              Seq(
+                new BasicHeader(
+                  "Authorization",
+                  BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
+                )
+              ).asJava
+            )
+        case _ => // No authentication
+          identity
+      }
+
+    builder.setHttpClientConfigCallback(httpClientConfigCallback =>
+      withPoolSizing(authenticate(httpClientConfigCallback))
+    )
   }
 
   private def buildTransport(): RestClientTransport = {
@@ -159,13 +193,36 @@ trait JavaClientCompanion extends ElasticClientCompanion[ElasticsearchClient] {
     }
   }
 
+  /** Bridge a Java `CompletableFuture` to a Scala `Future`.
+    *
+    * `whenComplete` hands over the failure wrapped in a `CompletionException` when the stage failed
+    * upstream; that wrapper is unwrapped here (#238) so the cause — e.g. the `IOException` /
+    * `SocketTimeoutException` that `isRetriableError` matches — reaches `retryWithBackoff`. Without
+    * it the asynchronous PIT paging path would silently never retry.
+    */
   def fromCompletableFuture[T](cf: CompletableFuture[T]): Future[T] = {
     val promise = Promise[T]()
     cf.whenComplete { (result: T, err: Throwable) =>
-      if (err != null) promise.failure(err)
+      if (err != null) promise.failure(JavaClientCompanion.unwrapCompletion(err))
       else promise.success(result)
     }
     promise.future
+  }
+
+}
+
+object JavaClientCompanion {
+
+  /** Strip the `CompletionException` / `ExecutionException` layers a failed `CompletableFuture`
+    * chain adds (bounded — a dependent stage may wrap an already wrapped failure).
+    */
+  @scala.annotation.tailrec
+  def unwrapCompletion(t: Throwable, depth: Int = 8): Throwable = t match {
+    case ce: CompletionException if ce.getCause != null && depth > 0 =>
+      unwrapCompletion(ce.getCause, depth - 1)
+    case ee: ExecutionException if ee.getCause != null && depth > 0 =>
+      unwrapCompletion(ee.getCause, depth - 1)
+    case other => other
   }
 
 }

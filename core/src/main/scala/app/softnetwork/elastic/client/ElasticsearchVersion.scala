@@ -92,6 +92,16 @@ object ElasticsearchVersion {
     isAtLeast(version, 7, 12)
   }
 
+  /** Check if PIT slicing is usable (ES >= 7.15).
+    *
+    * `slice` + `pit` in one search request exists from 7.15 (elastic/elasticsearch#74457); on
+    * 7.12–7.14 a PIT extraction pages sequentially (#238). Under a PIT, slices are contiguous
+    * doc-id ranges split first across shards — not the `_id` hash filter of sliced scroll.
+    */
+  def supportsPitSlicing(version: String): Boolean = {
+    isAtLeast(version, 7, 15)
+  }
+
   /** Check if version is ES 8+
     */
   def isEs8OrHigher(version: String): Boolean = {

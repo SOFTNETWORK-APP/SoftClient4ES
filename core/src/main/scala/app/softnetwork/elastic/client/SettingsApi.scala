@@ -24,6 +24,8 @@ import app.softnetwork.elastic.client.result.{
 }
 import com.google.gson.JsonParser
 
+import scala.jdk.CollectionConverters._
+
 /** Settings management API.
   */
 trait SettingsApi { _: IndicesApi =>
@@ -217,6 +219,48 @@ trait SettingsApi { _: IndicesApi =>
           }
       }
     }
+  }
+
+  /** #238 — primary shard count of a PIT over `indices`: the sum of `index.number_of_shards` over
+    * every concrete index the expressions resolve to (aliases, wildcards, data streams — one
+    * top-level key per concrete index, the shape `loadSettings` parses), deduplicated by concrete
+    * index name across expressions. Elasticsearch compares a slice `max` with the shard count of
+    * the WHOLE request (`SliceBuilder.toFilter`), so the sum is the right quantity. Failures are an
+    * `ElasticFailure` (the caller degrades to sequential paging — never a throw); zero keys (an
+    * empty match, `NopeClientApi`'s `"{}"`) count as 1; cross-cluster expressions (`remote:index`)
+    * have no `_settings` route and are skipped.
+    */
+  private[client] def primaryShardCount(indices: Seq[String]): ElasticResult[Int] = {
+    val perIndex = scala.collection.mutable.LinkedHashMap.empty[String, Int]
+    val failure = indices.distinct.iterator
+      .filter { expr =>
+        val crossCluster = expr.contains(":")
+        if (crossCluster) {
+          logger.debug(s"Skipping shard lookup for cross-cluster expression '$expr'")
+        }
+        !crossCluster
+      }
+      .map { expr =>
+        executeLoadSettings(expr).flatMap { json =>
+          ElasticResult.attempt {
+            JsonParser.parseString(json).getAsJsonObject.entrySet().asScala.foreach { e =>
+              val n = Option(e.getValue)
+                .filter(_.isJsonObject)
+                .map(_.getAsJsonObject)
+                .flatMap(o => Option(o.getAsJsonObject("settings")))
+                .flatMap(s => Option(s.getAsJsonObject("index")))
+                .flatMap(i => Option(i.get("number_of_shards")))
+                .map(_.getAsString) // a string on every client; number-safe too
+                .filter(s => s.nonEmpty && s.forall(_.isDigit))
+                .map(_.toInt)
+                .getOrElse(1)
+              perIndex.getOrElseUpdate(e.getKey, n)
+            }
+          }
+        }
+      }
+      .collectFirst { case f @ ElasticFailure(_) => f }
+    failure.getOrElse(ElasticSuccess(math.max(1, perIndex.values.sum)))
   }
 
   // ========================================================================

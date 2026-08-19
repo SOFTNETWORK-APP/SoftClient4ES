@@ -1367,7 +1367,10 @@ trait JavaClientBulkApi extends BulkApi with JavaClientHelpers {
   *   [[ScrollApi]] for scroll operations
   */
 trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
-  _: JavaClientVersionApi with JavaClientSearchApi with JavaClientCompanion =>
+  _: JavaClientVersionApi
+    with JavaClientSearchApi
+    with JavaClientSettingsApi
+    with JavaClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */
@@ -1536,139 +1539,135 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
           Source
             .unfoldAsync[Option[Seq[Any]], Seq[ListMap[String, Any]]](None) { searchAfterOpt =>
               retryWithBackoff(config.retryConfig) {
-                Future {
-                  searchAfterOpt match {
-                    case None =>
-                      logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
-                    case Some(values) =>
-                      logger.debug(
-                        s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
-                          s"[${values.take(3).mkString(", ")}...]"
-                        else values.mkString(", ")})"
-                      )
-                  }
-
-                  // Build search request with PIT
-                  val requestBuilder = new SearchRequest.Builder()
-                    .size(config.scrollSize)
-                    .pit(
-                      PointInTimeReference
-                        .of(p => p.id(pitId).keepAlive(Time.of(t => t.time(config.keepAlive))))
-                    )
-
-                  // Parse query to add query clause (not indices, they're in PIT)
-                  val queryJson = JsonParser.parseString(elasticQuery.query).getAsJsonObject
-
-                  // Extract query clause if present
-                  if (queryJson.has("query")) {
-                    requestBuilder.withJson(new StringReader(elasticQuery.query))
-                  }
-
-                  // The paging path never reads hits.total — computing it costs ~30% of the
-                  // ES-side CPU per page (#200). Set after withJson so the query cannot re-enable it.
-                  requestBuilder.trackTotalHits(TrackHits.of(t => t.enabled(false)))
-
-                  // Check if sorts already exist in the query
-                  if (!hasSorts && !queryJson.has("sort")) {
-                    // _doc, NOT _shard_doc: from ES 8 / Lucene 9 a primary _shard_doc sort
-                    // defeats the doc-id skip optimisation and every page re-scans the whole
-                    // index (#197). Under a PIT (>= 7.12) ES appends _shard_doc as an automatic
-                    // tiebreaker, so _doc is a total order and row-complete across shards.
-                    logger.debug(
-                      "No sort fields in query for PIT search_after, adding default _doc sort."
-                    )
-                    requestBuilder.sort(
-                      SortOptions.of { sortBuilder =>
-                        sortBuilder.field(
-                          FieldSort.of(fieldSortBuilder =>
-                            fieldSortBuilder.field("_doc").order(SortOrder.Asc)
-                          )
+                // The request is built on the stage thread (cheap) and a synchronous failure stays
+                // inside the Future chain (retry / stream failure), never an escape out of
+                // unfoldAsync.
+                Future
+                  .fromTry(Try {
+                    searchAfterOpt match {
+                      case None =>
+                        logger.info(s"Starting PIT search_after (pitId: ${pitId.take(20)}...)")
+                      case Some(values) =>
+                        logger.debug(
+                          s"Fetching next PIT search_after batch (after: ${if (values.length > 3)
+                            s"[${values.take(3).mkString(", ")}...]"
+                          else values.mkString(", ")})"
                         )
-                      }
-                    )
-                  } else if (hasSorts && queryJson.has("sort")) {
-                    // Sorts already present, check that a tie-breaker exists
-                    val existingSorts = queryJson.getAsJsonArray("sort")
-                    val hasShardDocSort = existingSorts.asScala.exists { sortElem =>
-                      sortElem.isJsonObject && (
-                        sortElem.getAsJsonObject.has("_shard_doc") ||
-                        sortElem.getAsJsonObject.has("_id")
-                      )
                     }
-                    if (!hasShardDocSort) {
-                      // Add _id as tie-breaker
-                      logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
+
+                    // Build search request with PIT
+                    val requestBuilder = new SearchRequest.Builder()
+                      .size(config.scrollSize)
+                      .pit(
+                        PointInTimeReference
+                          .of(p => p.id(pitId).keepAlive(Time.of(t => t.time(config.keepAlive))))
+                      )
+
+                    // Parse query to add query clause (not indices, they're in PIT)
+                    val queryJson = JsonParser.parseString(elasticQuery.query).getAsJsonObject
+
+                    // Extract query clause if present
+                    if (queryJson.has("query")) {
+                      requestBuilder.withJson(new StringReader(elasticQuery.query))
+                    }
+
+                    // The paging path never reads hits.total — computing it costs ~30% of the
+                    // ES-side CPU per page (#200). Set after withJson so the query cannot re-enable it.
+                    requestBuilder.trackTotalHits(TrackHits.of(t => t.enabled(false)))
+
+                    // Check if sorts already exist in the query
+                    if (!hasSorts && !queryJson.has("sort")) {
+                      // _doc, NOT _shard_doc: from ES 8 / Lucene 9 a primary _shard_doc sort
+                      // defeats the doc-id skip optimisation and every page re-scans the whole
+                      // index (#197). Under a PIT (>= 7.12) ES appends _shard_doc as an automatic
+                      // tiebreaker, so _doc is a total order and row-complete across shards.
+                      logger.debug(
+                        "No sort fields in query for PIT search_after, adding default _doc sort."
+                      )
                       requestBuilder.sort(
                         SortOptions.of { sortBuilder =>
                           sortBuilder.field(
                             FieldSort.of(fieldSortBuilder =>
-                              fieldSortBuilder.field("_shard_doc").order(SortOrder.Asc)
+                              fieldSortBuilder.field("_doc").order(SortOrder.Asc)
                             )
                           )
                         }
                       )
-                    }
-                  }
-
-                  // Add search_after if available
-                  searchAfterOpt.foreach { searchAfter =>
-                    val fieldValues: Seq[FieldValue] = searchAfter.map {
-                      case s: String  => FieldValue.of(s)
-                      case i: Int     => FieldValue.of(i.toLong)
-                      case l: Long    => FieldValue.of(l)
-                      case d: Double  => FieldValue.of(d)
-                      case b: Boolean => FieldValue.of(b)
-                      case other      => FieldValue.of(other.toString)
-                    }
-                    requestBuilder.searchAfter(fieldValues.asJava)
-                  }
-
-                  val response = apply().search(
-                    requestBuilder.build(),
-                    classOf[ObjectNode]
-                  )
-
-                  // Check errors
-                  if (
-                    response.shards() != null &&
-                    response.shards().failed() != null &&
-                    response.shards().failed().intValue() > 0
-                  ) {
-                    val failures = response.shards().failures()
-                    val errorMsg = if (failures != null && !failures.isEmpty) {
-                      failures.asScala.map(_.reason()).mkString("; ")
-                    } else {
-                      "Unknown shard failure"
-                    }
-                    throw new IOException(s"PIT search_after failed: $errorMsg")
-                  }
-
-                  val hits = extractHitsOnly(response, fieldAliases, config.retainDocumentId)
-
-                  if (hits.isEmpty) {
-                    None // end of stream — watchTermination owns the single PIT close (#202)
-                  } else {
-                    val lastHit = response.hits().hits().asScala.lastOption
-                    val nextSearchAfter = lastHit.flatMap { hit =>
-                      val sortValues = hit.sort().asScala
-                      if (sortValues.nonEmpty) {
-                        Some(sortValues.map { fieldValue =>
-                          if (fieldValue.isString) fieldValue.stringValue()
-                          else if (fieldValue.isDouble) fieldValue.doubleValue()
-                          else if (fieldValue.isLong) fieldValue.longValue()
-                          else if (fieldValue.isBoolean) fieldValue.booleanValue()
-                          else if (fieldValue.isNull) null
-                          else fieldValue.toString
-                        }.toSeq)
-                      } else {
-                        None
+                    } else if (hasSorts && queryJson.has("sort")) {
+                      // Sorts already present, check that a tie-breaker exists
+                      val existingSorts = queryJson.getAsJsonArray("sort")
+                      val hasShardDocSort = existingSorts.asScala.exists { sortElem =>
+                        sortElem.isJsonObject && (
+                          sortElem.getAsJsonObject.has("_shard_doc") ||
+                          sortElem.getAsJsonObject.has("_id")
+                        )
+                      }
+                      if (!hasShardDocSort) {
+                        // Add _id as tie-breaker
+                        logger.debug("Adding _shard_doc as tie-breaker to existing sorts")
+                        requestBuilder.sort(
+                          SortOptions.of { sortBuilder =>
+                            sortBuilder.field(
+                              FieldSort.of(fieldSortBuilder =>
+                                fieldSortBuilder.field("_shard_doc").order(SortOrder.Asc)
+                              )
+                            )
+                          }
+                        )
                       }
                     }
 
-                    logger.debug(s"Retrieved ${hits.size} documents, continuing with PIT")
-                    Some((nextSearchAfter, hits))
+                    // Add search_after if available
+                    searchAfterOpt.foreach { searchAfter =>
+                      requestBuilder.searchAfter(toFieldValues(searchAfter).asJava)
+                    }
+
+                    requestBuilder.build()
+                  })
+                  .flatMap { request =>
+                    // Asynchronous page fetch (#238): no dispatcher thread blocks on the wire.
+                    // fromCompletableFuture unwraps CompletionException so a transient IOException
+                    // still reaches retryWithBackoff. NOTE: the typed client decodes the page
+                    // (SearchResponse[ObjectNode]) on the transport's completion thread — the
+                    // RestClient IO reactor — before this future completes; only the row
+                    // extraction below runs on system.dispatcher.
+                    fromCompletableFuture(async().search(request, classOf[ObjectNode]))
                   }
-                }
+                  .map { response =>
+                    // Row extraction on system.dispatcher.
+                    // Check errors
+                    if (
+                      response.shards() != null &&
+                      response.shards().failed() != null &&
+                      response.shards().failed().intValue() > 0
+                    ) {
+                      val failures = response.shards().failures()
+                      val errorMsg = if (failures != null && !failures.isEmpty) {
+                        failures.asScala.map(_.reason()).mkString("; ")
+                      } else {
+                        "Unknown shard failure"
+                      }
+                      throw new IOException(s"PIT search_after failed: $errorMsg")
+                    }
+
+                    val hits = extractHitsOnly(response, fieldAliases, config.retainDocumentId)
+
+                    if (hits.isEmpty) {
+                      None // end of stream — watchTermination owns the single PIT close (#202)
+                    } else {
+                      val sortValues = response.hits().hits().asScala.last.sort().asScala
+                      if (sortValues.isEmpty) {
+                        // paging on without a cursor would refetch the same page forever
+                        throw new IllegalStateException(
+                          "search_after page returned hits without sort values — cannot continue paging"
+                        )
+                      }
+                      val nextSearchAfter = Some(sortValues.map(toScalaSortValue).toSeq)
+
+                      logger.debug(s"Retrieved ${hits.size} documents, continuing with PIT")
+                      Some((nextSearchAfter, hits))
+                    }
+                  }
               }(system, logger).recoverWith { case ex: Exception =>
                 logger.error(s"PIT search_after failed after retries: ${ex.getMessage}", ex)
                 // fail the stream instead of ending it: ending here would surface a silently
@@ -1700,6 +1699,26 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
       }
       .mapMaterializedValue(_ => NotUsed)
   }
+
+  /** `search_after` cursor values → typed `FieldValue`s for the next page request. */
+  private def toFieldValues(searchAfter: Seq[Any]): Seq[FieldValue] =
+    searchAfter.map {
+      case s: String  => FieldValue.of(s)
+      case i: Int     => FieldValue.of(i.toLong)
+      case l: Long    => FieldValue.of(l)
+      case d: Double  => FieldValue.of(d)
+      case b: Boolean => FieldValue.of(b)
+      case other      => FieldValue.of(other.toString)
+    }
+
+  /** A hit's `sort` value → the Scala value fed back as `search_after`. */
+  private def toScalaSortValue(fieldValue: FieldValue): Any =
+    if (fieldValue.isString) fieldValue.stringValue()
+    else if (fieldValue.isDouble) fieldValue.doubleValue()
+    else if (fieldValue.isLong) fieldValue.longValue()
+    else if (fieldValue.isBoolean) fieldValue.booleanValue()
+    else if (fieldValue.isNull) null
+    else fieldValue.toString
 
   /** Open a Point In Time
     */
@@ -1786,6 +1805,10 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
   }
 
   /** Extract ONLY hits (for search_after optimization) Ignores aggregations for better performance
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`): returning an empty
+    * page here used to read as "end of stream" and surfaced a silently truncated result as a
+    * success (#238, same defect class as #228 / #209 / #224).
     */
   private def extractHitsOnly(
     response: SearchResponse[ObjectNode],
@@ -1804,8 +1827,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
         logger.debug(s"Parsed ${rows.size} hits from response")
         rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(s"Failed to parse PIT page: ${ex.getMessage}", ex)
     }
   }
 

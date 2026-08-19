@@ -449,6 +449,104 @@ class SettingsApiSpec
       }
     }
 
+    // #238 — the shard count a sliced PIT extraction is sized from. Payloads mirror the shape
+    // every client's executeLoadSettings returns (MockElasticClientApi): one top-level key per
+    // concrete index → settings → index → number_of_shards (a string).
+    "primaryShardCount" should {
+
+      def shards(n: String): String = s"""{"settings":{"index":{"number_of_shards":"$n"}}}"""
+
+      class ShardCountApi(responses: Map[String, ElasticResult[String]]) extends NopeClientApi {
+        override protected def logger: Logger = mockLogger
+        val calls = scala.collection.mutable.ListBuffer.empty[String]
+        override private[client] def executeLoadSettings(index: String): ElasticResult[String] = {
+          calls += index
+          responses.getOrElse(index, ElasticSuccess("{}"))
+        }
+      }
+
+      "sum number_of_shards over the concrete indices of every expression" in {
+        val api = new ShardCountApi(
+          Map(
+            "idx_a" -> ElasticSuccess(s"""{"idx_a":${shards("3")}}"""),
+            "idx_b" -> ElasticSuccess(s"""{"idx_b":${shards("2")}}""")
+          )
+        )
+        api.primaryShardCount(Seq("idx_a", "idx_b")) shouldBe ElasticSuccess(5)
+      }
+
+      "count a concrete index once when several expressions resolve to it" in {
+        val api = new ShardCountApi(
+          Map(
+            "idx_*" -> ElasticSuccess(s"""{"idx_a":${shards("3")},"idx_b":${shards("2")}}"""),
+            "idx_a" -> ElasticSuccess(s"""{"idx_a":${shards("3")}}""")
+          )
+        )
+        api.primaryShardCount(Seq("idx_*", "idx_a")) shouldBe ElasticSuccess(5)
+      }
+
+      "look a duplicated expression up once" in {
+        val api = new ShardCountApi(Map("idx_a" -> ElasticSuccess(s"""{"idx_a":${shards("3")}}""")))
+        api.primaryShardCount(Seq("idx_a", "idx_a")) shouldBe ElasticSuccess(3)
+        api.calls.toList shouldBe List("idx_a")
+      }
+
+      "return 1 when the lookup resolves to no index" in {
+        val api = new ShardCountApi(Map("idx_a" -> ElasticSuccess("{}")))
+        api.primaryShardCount(Seq("idx_a")) shouldBe ElasticSuccess(1)
+      }
+
+      "count 1 per index when number_of_shards is missing, without throwing" in {
+        val api = new ShardCountApi(
+          Map(
+            "idx_a" -> ElasticSuccess(
+              """{"idx_a":{"settings":{"index":{"number_of_replicas":"1"}}}}"""
+            ),
+            "idx_b" -> ElasticSuccess("""{"idx_b":{"settings":{}}}""")
+          )
+        )
+        api.primaryShardCount(Seq("idx_a", "idx_b")) shouldBe ElasticSuccess(2)
+      }
+
+      "count 1 for a non-numeric number_of_shards" in {
+        val api =
+          new ShardCountApi(Map("idx_a" -> ElasticSuccess(s"""{"idx_a":${shards("three")}}""")))
+        api.primaryShardCount(Seq("idx_a")) shouldBe ElasticSuccess(1)
+      }
+
+      "accept a numeric number_of_shards" in {
+        val api = new ShardCountApi(
+          Map(
+            "idx_a" -> ElasticSuccess("""{"idx_a":{"settings":{"index":{"number_of_shards":6}}}}""")
+          )
+        )
+        api.primaryShardCount(Seq("idx_a")) shouldBe ElasticSuccess(6)
+      }
+
+      "pass an executeLoadSettings failure through as ElasticFailure" in {
+        val api = new ShardCountApi(Map("idx_a" -> ElasticFailure(ElasticError("boom"))))
+        val result = api.primaryShardCount(Seq("idx_a"))
+        result.isFailure shouldBe true
+        result.error.get.message shouldBe "boom"
+      }
+
+      "turn a malformed payload into ElasticFailure, never a throw" in {
+        val api = new ShardCountApi(Map("idx_a" -> ElasticSuccess("not json at all")))
+        api.primaryShardCount(Seq("idx_a")).isFailure shouldBe true
+      }
+
+      "skip cross-cluster expressions at DEBUG and never look them up" in {
+        val api = new ShardCountApi(Map("idx_a" -> ElasticSuccess(s"""{"idx_a":${shards("3")}}""")))
+        api.primaryShardCount(Seq("remote:idx", "idx_a")) shouldBe ElasticSuccess(3)
+        api.calls.toList shouldBe List("idx_a")
+        verify(mockLogger).debug("Skipping shard lookup for cross-cluster expression 'remote:idx'")
+      }
+
+      "return 1 for an empty expression list" in {
+        new ShardCountApi(Map.empty).primaryShardCount(Seq.empty) shouldBe ElasticSuccess(1)
+      }
+    }
+
     "loadSettings" should {
 
       "successfully load settings for existing index" in {
