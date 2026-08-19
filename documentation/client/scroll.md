@@ -46,12 +46,18 @@ The API automatically selects the best strategy based on your query and the Elas
 
 **Strategy Selection Matrix:**
 
-| ES Version      | Aggregations  | Strategy                         |
-|-----------------|---------------|----------------------------------|
-| 7.10+           | No            | PIT + search_after (recommended) |
-| 7.10+           | Yes           | Classic scroll                   |
-| < 7.10          | No            | search_after                     |
-| < 7.10          | Yes           | Classic scroll                   |
+| ES Version      | Aggregations  | Strategy                                                                 |
+|-----------------|---------------|--------------------------------------------------------------------------|
+| 7.15+           | No            | PIT + search_after, **sliced** when no `ORDER BY` / no `LIMIT`: one reader per primary shard (0.21.0+) |
+| 7.12+           | No            | PIT + search_after (recommended)                                         |
+| 7.12+           | Yes           | Classic scroll                                                           |
+| < 7.12          | No            | search_after                                                             |
+| < 7.12          | Yes           | Classic scroll                                                           |
+
+PIT paging is gated at 7.12 (not 7.10, where the PIT API first appeared): the `_shard_doc`
+tiebreaker Elasticsearch appends under a PIT only exists from 7.12, and without it a paged
+extraction silently drops rows across shards. PIT *slicing* (`slice` + `pit` in one request)
+exists from 7.15.
 
 ---
 
@@ -60,7 +66,7 @@ The API automatically selects the best strategy based on your query and the Elas
 ```scala
 sealed trait ScrollStrategy
 
-// Point In Time + search_after (ES 7.10+, best performance)
+// Point In Time + search_after (ES 7.12+, best performance; sliced from 7.15)
 case object UsePIT extends ScrollStrategy
 
 // search_after only (efficient, no server state)
@@ -106,7 +112,7 @@ def scrollAsUnchecked[T](
 
 ### Point In Time (PIT) + search_after
 
-**Best for:** ES 7.10+, large result sets, no aggregations
+**Best for:** ES 7.12+, large result sets, no aggregations
 
 **Advantages:**
 - ✅ Consistent snapshot across pagination
@@ -117,10 +123,10 @@ def scrollAsUnchecked[T](
 
 **Limitations:**
 - ❌ Not supported with aggregations
-- ❌ Requires ES 7.10+
+- ❌ Requires ES 7.12+
 
 ```scala
-// Automatically used for ES 7.10+ without aggregations
+// Automatically used for ES 7.12+ without aggregations
 val query = SQLQuery(
   query = """
     SELECT id, name, price
@@ -136,9 +142,74 @@ client.scroll(query).runWith(Sink.seq)
 
 ---
 
+### Sliced PIT paging (ES 7.15+)
+
+**Default since 0.21.0.** A no-`ORDER BY`, no-`LIMIT` extraction from an N-shard index opens **one**
+PIT and reads `min(N, max-slices)` slices of it concurrently — one reader per primary shard — merged
+page by page into the single stream you already consume. The sequential pipeline was latency-bound
+(one round-trip per page, every page fanning out to every shard); slicing is what makes the wall
+clock improve when shards and nodes are added.
+
+**How the slice count is derived (once per stream, in core):**
+
+| Condition | Slices |
+|-----------|--------|
+| Strategy is not PIT + search_after (aggregations, classic scroll opt-out, ES < 7.12) | 1 |
+| The statement has an `ORDER BY` (AST or JSON `sort`) | 1 |
+| The statement has an explicit `LIMIT` (incl. the `LIMIT > max_result_window` route) | 1 |
+| Effective ceiling `maxSlices.getOrElse(elastic.scroll.max-slices)` is `<= 1` | 1 |
+| ES < 7.15 (PIT without slicing) | 1 |
+| Otherwise | `max(1, min(Σ number_of_shards of the resolved indices, ceiling))` |
+
+The shard count is read once per extraction from `GET <indices>/_settings` (the indices a wildcard,
+alias or data stream resolves to are summed and deduplicated). If that lookup fails — e.g. the
+credentials lack the `view_index_metadata` privilege — the extraction logs one WARN and pages
+sequentially; it never fails. `ScrollMetrics.slices` reports the resolved count on every row.
+
+**Ceiling and opt-out:**
+
+```scala
+// Per call — Some(n) is explicit, n <= 1 pages sequentially
+client.scroll(query, ScrollConfig(maxSlices = Some(2)))
+
+// Everywhere — HOCON or environment; 1 disables slicing on every path, INCLUDING explicit
+// ScrollConfig(...) values that leave maxSlices = None (the default)
+//   elastic.scroll.max-slices = 1          ELASTIC_SCROLL_MAX_SLICES=1
+```
+
+`ScrollConfig.maxSlices` is an `Option` on purpose: `None` inherits the client's configured ceiling,
+so the HOCON / environment switch is a real kill switch even for callers that build their own
+`ScrollConfig`. The default ceiling is `ScrollConfig.DefaultMaxSlices = 8`: one slice per primary
+shard up to 8, under the REST client's per-route pool — which the es7 / es8 / es9 clients now size
+from `max-slices` (`max(10, max-slices + 2)` per route). Slices are never configured above the shard
+count (an explicit ceiling below it is still a whole-shard split on the Elasticsearch side).
+
+**What changes for consumers:**
+
+- Row order of an un-ordered extraction **interleaves across slices** (it was incidentally
+  `_doc`-ordered before). Add an `ORDER BY` when order matters — ordered statements stay sequential.
+- A licence-quota-capped result (`maxDocuments`) is now an **arbitrary subset** of the matching
+  rows, not a stable prefix.
+- `SELECT *` column metadata derived from the first row (JDBC, Arrow) may vary between runs on
+  heterogeneous multi-shard indices.
+- In-flight memory is bounded by about `2 × slices × scrollSize` rows plus `slices` raw page
+  responses (each slice keeps one page in flight while the previous one drains).
+- The PIT is opened lazily (at materialization) and closed exactly once — on completion, failure
+  or cancellation — whatever the slice count; a failing slice fails the whole stream (never a
+  silently truncated result). A cancel that lands while the PIT-open round-trip is in flight is
+  also handled (the PIT is closed as soon as its id arrives); the residual window is microseconds.
+- Above the ceiling the load is uneven: 12 shards with `max-slices = 8` gives four slices that
+  read two shards each and four that read one — the wall clock follows the two-shard slices.
+  "One reader per primary shard" holds up to the ceiling.
+- The REST pool is per client and sized to the ceiling for ONE extraction; concurrent sliced
+  extractions on the same client share it and queue (they still complete — measured k = 4 at 34 s
+  vs 48 s sequential — but do not scale linearly).
+
+---
+
 ### search_after
 
-**Best for:** ES < 7.10, large result sets, no aggregations
+**Best for:** ES < 7.12, large result sets, no aggregations
 
 **Advantages:**
 - ✅ No server-side state
@@ -152,7 +223,7 @@ client.scroll(query).runWith(Sink.seq)
 - ⚠️ No consistent snapshot (data can change between pages)
 
 ```scala
-// Automatically used for ES < 7.10 without aggregations
+// Automatically used for ES < 7.12 without aggregations
 val query = SQLQuery(
   query = """
     SELECT id, name, price
@@ -228,20 +299,34 @@ case class ScrollConfig(
   metrics: ScrollMetrics = ScrollMetrics(),
 
   // Retry configuration
-  retryConfig: RetryConfig = RetryConfig()
+  retryConfig: RetryConfig = RetryConfig(),
+
+  // Ceiling on concurrent PIT slices for a no-ORDER-BY extraction (ES 7.15+, 0.21.0+).
+  // None = inherit the client's `elastic.scroll.max-slices`; Some(n) explicit, n <= 1 sequential
+  maxSlices: Option[Int] = None,
+
+  // Internal (set by ScrollApi, not by callers): the slice count resolved for this stream
+  slices: Int = 1
 )
 ```
+
+When no configuration is passed, `client.scroll(query)` uses `client.defaultScrollConfig`: the page
+size comes from `elastic.scroll.size` and the slice ceiling from `elastic.scroll.max-slices`
+(see [Sliced PIT paging](#sliced-pit-paging-es-715)). An explicit `ScrollConfig(...)` keeps its
+explicit fields but still inherits the configured ceiling through `maxSlices = None`.
 
 **Configuration Options:**
 
 | Parameter           | Type            | Default           | Description                                  |
 |---------------------|-----------------|-------------------|----------------------------------------------|
-| `scrollSize`        | `Int`           | `1000`            | Number of documents per batch                |
-| `keepAlive`         | `String`        | `"1m"`            | Scroll context timeout (classic scroll only) |
-| `maxDocuments`      | `Option[Long]`  | `None`            | Maximum documents to retrieve                |
+| `scrollSize`        | `Int`           | `1000`            | Number of documents per batch (`elastic.scroll.size` when omitted) |
+| `keepAlive`         | `String`        | `"1m"`            | Scroll / PIT context keep-alive              |
+| `maxDocuments`      | `Option[Long]`  | `None`            | Maximum documents to retrieve (binds on the merged total when sliced) |
 | `preferSearchAfter` | `Boolean`       | `true`            | Prefer search_after when available           |
 | `logEvery`          | `Int`           | `10`              | Log progress every N batches                 |
 | `metrics`           | `ScrollMetrics` | `ScrollMetrics()` | Initial metrics state                        |
+| `maxSlices`         | `Option[Int]`   | `None`            | Ceiling on concurrent PIT slices; `None` inherits `elastic.scroll.max-slices` (default 8), `Some(1)` pages sequentially |
+| `slices`            | `Int`           | `1`               | Internal — the resolved slice count (read it on `ScrollMetrics.slices`) |
 
 ---
 
@@ -252,7 +337,8 @@ case class ScrollMetrics(
   totalDocuments: Long = 0,
   totalBatches: Int = 0,
   startTime: Long = System.currentTimeMillis(),
-  endTime: Option[Long] = None
+  endTime: Option[Long] = None,
+  slices: Int = 1 // PIT slices merged into this stream (1 = sequential)
 ) {
   // Calculate duration in milliseconds
   def duration: Long = endTime.getOrElse(System.currentTimeMillis()) - startTime
@@ -276,6 +362,7 @@ case class ScrollMetrics(
 | `totalBatches`       | `Int`          | Total batches processed        |
 | `startTime`          | `Long`         | Start timestamp (milliseconds) |
 | `endTime`            | `Option[Long]` | End timestamp (milliseconds)   |
+| `slices`             | `Int`          | PIT slices merged into this stream (1 = sequential) |
 | `duration`           | `Long`         | Total duration (milliseconds)  |
 | `documentsPerSecond` | `Double`       | Throughput rate                |
 
@@ -468,7 +555,9 @@ val query =
     WHERE category = 'electronics'
   """
 
-client.scrollAs[Product](query)
+// scrollAs is a macro: the config must be passed explicitly (macro applications take no default
+// arguments) — `client.defaultScrollConfig` carries the `elastic.scroll` settings
+client.scrollAs[Product](query, client.defaultScrollConfig)
   .map { case (product, _) =>
     ProductSummary(
       name = product.name,
@@ -1361,8 +1450,8 @@ val query = SQLQuery(
 )
 
 // Automatically uses:
-// - PIT + search_after for ES 7.10+ (best performance)
-// - search_after for ES < 7.10
+// - PIT + search_after for ES 7.12+ (best performance; sliced from 7.15)
+// - search_after for ES < 7.12
 // - Classic scroll for aggregations
 
 client.scroll(query).runWith(Sink.seq)
@@ -1727,7 +1816,7 @@ The **Scroll API** provides:
 
 | Feature | PIT + search_after | search_after | Classic Scroll |
 |---------|-------------------|--------------|----------------|
-| **ES Version** | 7.10+ | All | All |
+| **ES Version** | 7.12+ (sliced 7.15+) | All | All |
 | **Aggregations** | ❌ | ❌ | ✅ |
 | **Consistent Snapshot** | ✅ | ❌ | ✅ |
 | **Deep Pagination** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
@@ -1737,8 +1826,8 @@ The **Scroll API** provides:
 
 **When to Use:**
 
-- **PIT + search_after**: ES 7.10+, large datasets, no aggregations (recommended)
-- **search_after**: ES < 7.10, large datasets, no aggregations
+- **PIT + search_after**: ES 7.12+, large datasets, no aggregations (recommended; sliced one-reader-per-shard from 7.15)
+- **search_after**: ES < 7.12, large datasets, no aggregations
 - **Classic scroll**: Any version with aggregations, or when consistent snapshot is required
 
 **Best Practices:**

@@ -143,4 +143,19 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     rows should have size totalDocs.toLong
     rows.map(_._1("id").toString).toSet should have size totalDocs.toLong
   }
+
+  it should "return every row exactly once with slicing disabled (maxSlices = Some(1))" in {
+    // #238 — the sequential PIT path keeps its own multi-shard completeness guard now that the
+    // default path slices on ES 7.15+; on ES 6 this is simply the search_after path
+    val source = client.scroll(
+      SelectStatement(s"SELECT id FROM $index"),
+      ScrollConfig(scrollSize = 100, maxSlices = Some(1))
+    )
+
+    val rows = Await.result(source.runWith(Sink.seq), 5.minutes)
+
+    rows should have size totalDocs.toLong
+    rows.map(_._1("id").toString).toSet should have size totalDocs.toLong
+    rows.head._2.slices shouldBe 1
+  }
 }

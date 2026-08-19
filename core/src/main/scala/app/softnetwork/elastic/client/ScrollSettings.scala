@@ -22,8 +22,9 @@ import app.softnetwork.elastic.client.scroll.ScrollConfig
   *
   * @param size
   *   rows per page (`elastic.scroll.size`, `ELASTIC_SCROLL_SIZE`): larger pages cut round-trips
-  *   linearly and raise in-flight memory linearly. Must be positive; on the PIT / search_after path
-  *   it is also bounded by the index's `max_result_window` (10,000 by default)
+  *   linearly and raise in-flight memory linearly. Must be positive. Not validated here: on the PIT
+  *   / search_after path Elasticsearch rejects a page larger than the index's `max_result_window`
+  *   (10,000 by default), so keep `size` at or below it
   * @param maxSlices
   *   ceiling on concurrent PIT slices for a no-ORDER-BY extraction (`elastic.scroll.max-slices`,
   *   `ELASTIC_SCROLL_MAX_SLICES`, ES 7.15+): the effective count is min(primary shards,
@@ -46,5 +47,5 @@ case class ScrollSettings(
   def restPoolPerRoute: Int = math.max(10, maxSlices + 2)
 
   /** REST connection pool total; the Apache default (30) is the floor. */
-  def restPoolTotal: Int = math.max(30, restPoolPerRoute * 3)
+  def restPoolTotal: Int = math.max(30, math.min(restPoolPerRoute, Int.MaxValue / 3) * 3)
 }

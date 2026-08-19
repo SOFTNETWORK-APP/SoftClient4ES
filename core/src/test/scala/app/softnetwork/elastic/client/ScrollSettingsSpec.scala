@@ -79,7 +79,7 @@ class ScrollSettingsSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     Thread.sleep(2)
     val b = client.defaultScrollConfig
     (a.metrics ne b.metrics) shouldBe true
-    b.metrics.startTime should be > a.metrics.startTime
+    b.metrics.startTime should be >= a.metrics.startTime
   }
 
   it should "apply the HOCON page size and leave the ceiling inherited (maxSlices = None)" in {

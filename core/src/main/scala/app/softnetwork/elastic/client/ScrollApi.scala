@@ -79,15 +79,24 @@ import scala.util.{Failure, Success}
   * The implementation automatically selects the most efficient strategy:
   *
   * {{{
-  * ┌─────────────────┬───────────────┬──────────────────────────────────┐
-  * │ ES Version      │ Aggregations  │ Strategy                         │
-  * ├─────────────────┼───────────────┼──────────────────────────────────┤
-  * │ 7.12+           │ No            │ PIT + search_after (recommended) │
-  * │ 7.12+           │ Yes           │ Classic scroll                   │
-  * │ < 7.12          │ No            │ search_after                     │
-  * │ < 7.12          │ Yes           │ Classic scroll                   │
-  * └─────────────────┴───────────────┴──────────────────────────────────┘
+  * ┌─────────────────┬───────────────┬──────────────────────────────────────────────────┐
+  * │ ES Version      │ Aggregations  │ Strategy                                         │
+  * ├─────────────────┼───────────────┼──────────────────────────────────────────────────┤
+  * │ 7.15+           │ No            │ PIT + search_after, SLICED when no ORDER BY / no  │
+  * │                 │               │ LIMIT: one reader per primary shard (#238)       │
+  * │ 7.12+           │ No            │ PIT + search_after (recommended)                 │
+  * │ 7.12+           │ Yes           │ Classic scroll                                   │
+  * │ < 7.12          │ No            │ search_after                                     │
+  * │ < 7.12          │ Yes           │ Classic scroll                                   │
+  * └─────────────────┴───────────────┴──────────────────────────────────────────────────┘
   * }}}
+  *
+  * '''Sliced PIT paging''' (ES 7.15+, #238): a no-`ORDER BY`, no-`LIMIT` extraction opens ONE PIT
+  * and reads `min(primary shards, max-slices)` slices of it concurrently, merged page by page into
+  * the single stream the caller consumes. The slice count is resolved once per stream by
+  * [[ScrollApi]] (`ScrollMetrics.slices` reports it); the ceiling comes from
+  * [[ScrollConfig.maxSlices]] or, when unset, `elastic.scroll.max-slices` (`1` = sequential). Row
+  * order interleaves across slices; quota-capped results are an arbitrary subset.
   *
   * [[ScrollConfig.preferSearchAfter]] ` = false` overrides the no-aggregation rows and forces
   * classic scroll on every version — an operational opt-out for clusters that restrict the PIT API.
@@ -169,12 +178,15 @@ trait ScrollApi extends ElasticClientHelpers {
 
       // Single search
       case single: SingleSearch =>
+        // #238 — an explicit LIMIT keeps the sequential PIT path on EVERY branch, including the
+        // window-enrichment branch below (createBaseQuery keeps the LIMIT — AC 6).
+        val config0 = if (single.limit.isDefined) config.copy(maxSlices = Some(1)) else config
         if (
           single.windowFunctions.exists(_.isWindowing) && (!single.select.fields.forall(
             _.isAggregation
           ) || single.scriptFields.nonEmpty)
         )
-          return scrollWithWindowEnrichment(single, config)
+          return scrollWithWindowEnrichment(single, config0)
 
         val requestedFields = extractOutputFieldNames(single)
         val elasticQuery =
@@ -190,7 +202,7 @@ trait ScrollApi extends ElasticClientHelpers {
           single.sqlAggregations,
           // `_id` is injected at parse time only when it will be kept — the streamed rows
           // need no per-row strip on this hot path.
-          config.copy(retainDocumentId = keepsDocumentId(requestedFields)),
+          config0.copy(retainDocumentId = keepsDocumentId(requestedFields)),
           single.sorts.nonEmpty,
           requestedFields,
           single.nestedHitsMappings
@@ -308,7 +320,7 @@ trait ScrollApi extends ElasticClientHelpers {
 
   /** Determine the best scroll strategy based on the query
     */
-  private def determineScrollStrategy(
+  private[client] def determineScrollStrategy(
     elasticQuery: ElasticQuery,
     aggregations: ListMap[String, SQLAggregation],
     config: ScrollConfig
@@ -343,13 +355,20 @@ trait ScrollApi extends ElasticClientHelpers {
     }
   }
 
-  /** Scroll with metrics tracking
+  /** Scroll with metrics tracking.
+    *
+    * The strategy and the slice count (#238) are resolved ONCE per stream, off the caller's thread:
+    * the shard lookup behind [[resolveSlices]] is blocking HTTP and `scroll(...)` is built eagerly
+    * by gateway / JDBC / `Await` callers. `requested` is the caller's configuration; the resolved
+    * `config` bound below is what every downstream read uses — `maxDocuments`, `scrollSize`,
+    * `metrics`, `logEvery` and the zero-row metrics fallback included. A strategy / version failure
+    * surfaces as a failed stream (it used to be a synchronous throw).
     */
   private def scrollWithMetrics(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    config: ScrollConfig,
+    requested: ScrollConfig,
     hasSorts: Boolean = false,
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty
@@ -360,48 +379,74 @@ trait ScrollApi extends ElasticClientHelpers {
 
     implicit val ec: ExecutionContext = system.dispatcher
 
-    val metricsPromise = Promise[ScrollMetrics]()
-
-    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts, fields, nestedHits)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
-      .grouped(config.scrollSize)
-      .statefulMapConcat { () =>
-        var metrics = config.metrics // Thread-safe as statefulMapConcat is single-threaded
-        batch => {
-          metrics = metrics.copy(
-            totalDocuments = metrics.totalDocuments + batch.size,
-            totalBatches = metrics.totalBatches + 1
-          )
-
-          if (metrics.totalBatches % config.logEvery == 0) {
-            logger.info(
-              s"Scroll progress: ${metrics.totalDocuments} docs, " +
-              s"${metrics.totalBatches} batches, " +
-              s"${metrics.documentsPerSecond} docs/sec"
+    Source
+      .lazyFutureSource { () =>
+        // resolved on first demand (never for a source that is built but not run), inside
+        // `blocking`: the version / `_settings` round-trips are blocking HTTP on the dispatcher
+        Future {
+          scala.concurrent.blocking {
+            val strategy = determineScrollStrategy(elasticQuery, aggregations, requested)
+            val slices = resolveSlices(elasticQuery, strategy, requested, hasSorts)
+            (
+              strategy,
+              requested.copy(slices = slices, metrics = requested.metrics.copy(slices = slices))
             )
           }
-          batch.map(doc => (doc, metrics))
-        }
+        }.map { case (strategy, config) =>
+          val metricsPromise = Promise[ScrollMetrics]()
 
+          scroll(
+            elasticQuery,
+            fieldAliases,
+            aggregations,
+            config,
+            hasSorts,
+            fields,
+            nestedHits,
+            strategy
+          )
+            .take(config.maxDocuments.getOrElse(Long.MaxValue))
+            .grouped(config.scrollSize)
+            .statefulMapConcat { () =>
+              var metrics = config.metrics // Thread-safe as statefulMapConcat is single-threaded
+              batch => {
+                metrics = metrics.copy(
+                  totalDocuments = metrics.totalDocuments + batch.size,
+                  totalBatches = metrics.totalBatches + 1
+                )
+
+                if (metrics.totalBatches % config.logEvery == 0) {
+                  logger.info(
+                    s"Scroll progress: ${metrics.totalDocuments} docs, " +
+                    s"${metrics.totalBatches} batches, " +
+                    s"${metrics.documentsPerSecond} docs/sec"
+                  )
+                }
+                batch.map(doc => (doc, metrics))
+              }
+
+            }
+            .alsoTo(Sink.lastOption.mapMaterializedValue { lastFuture =>
+              lastFuture
+                .map(opt =>
+                  opt.map(_._2).getOrElse(config.metrics)
+                ) // Get final metrics or fallback to current
+                .onComplete {
+                  case Success(finalMetrics) =>
+                    val completed = finalMetrics.complete
+                    logger.info(
+                      s"Scroll completed: ${completed.totalDocuments} docs in ${completed.duration}ms " +
+                      s"(${completed.documentsPerSecond} docs/sec)"
+                    )
+                    metricsPromise.success(completed)
+                  case Failure(ex) =>
+                    logger.error("Failed to get final metrics", ex)
+                    metricsPromise.failure(ex)
+                }(system.dispatcher)
+            })
+            .mapMaterializedValue(_ => NotUsed)
+        }
       }
-      .alsoTo(Sink.lastOption.mapMaterializedValue { lastFuture =>
-        lastFuture
-          .map(opt =>
-            opt.map(_._2).getOrElse(config.metrics)
-          ) // Get final metrics or fallback to current
-          .onComplete {
-            case Success(finalMetrics) =>
-              val completed = finalMetrics.complete
-              logger.info(
-                s"Scroll completed: ${completed.totalDocuments} docs in ${completed.duration}ms " +
-                s"(${completed.documentsPerSecond} docs/sec)"
-              )
-              metricsPromise.success(completed)
-            case Failure(ex) =>
-              logger.error("Failed to get final metrics", ex)
-              metricsPromise.failure(ex)
-          }(system.dispatcher)
-      })
       .mapMaterializedValue(_ => NotUsed)
   }
 
@@ -414,7 +459,67 @@ trait ScrollApi extends ElasticClientHelpers {
     }
   }
 
-  /** Create a scrolling source for JSON query with automatic strategy
+  private def hasSortClause(query: String): Boolean = {
+    try {
+      (parse(query) \ "sort") != JNothing
+    } catch {
+      case _: Exception => false
+    }
+  }
+
+  /** #238 — slices for this stream: 1 unless the strategy is [[UsePIT]], no sort is present (AST
+    * and JSON), the effective ceiling is above 1 and the cluster supports PIT slicing (7.15+). One
+    * per primary shard of the resolved indices, capped by the ceiling, never above the shard count.
+    * The guard order is load-bearing: no `_settings` round-trip on ORDER BY / LIMIT / opt-out / ES6
+    * / classic-scroll paths. A lookup failure degrades to sequential with one WARN.
+    */
+  private[client] def resolveSlices(
+    elasticQuery: ElasticQuery,
+    strategy: ScrollStrategy,
+    config: ScrollConfig,
+    hasSorts: Boolean
+  ): Int = {
+    val ceiling = config.maxSlices.getOrElse(configuredMaxSlices)
+    if (strategy != UsePIT || hasSorts || ceiling <= 1 || hasSortClause(elasticQuery.query)) {
+      logger.debug(
+        s"PIT slicing not applicable (strategy $strategy, sorted $hasSorts, max-slices $ceiling); paging sequentially"
+      )
+      1
+    } else {
+      val targets = elasticQuery.indices.mkString(",")
+      version match {
+        case ElasticSuccess(v) if ElasticsearchVersion.supportsPitSlicing(v) =>
+          primaryShardCount(elasticQuery.indices) match {
+            case ElasticSuccess(shards) =>
+              val n = math.max(1, math.min(shards, ceiling))
+              if (n > 1) {
+                logger.info(
+                  s"Sliced PIT paging: $n slices over $shards primary shards (max-slices $ceiling, page ${config.scrollSize}) for $targets"
+                )
+              } else {
+                logger.debug(s"PIT paging stays sequential: $shards primary shard(s) for $targets")
+              }
+              n
+            case ElasticFailure(err) =>
+              logger.warn(
+                s"Could not resolve the primary shard count for $targets (${err.message}); paging sequentially — the lookup needs the view_index_metadata privilege on the indices; set elastic.scroll.max-slices = 1 (ELASTIC_SCROLL_MAX_SLICES) to skip it"
+              )
+              1
+          }
+        case ElasticSuccess(v) =>
+          logger.debug(s"ES version $v has PIT but no PIT slicing (7.15+); paging sequentially")
+          1
+        case ElasticFailure(err) =>
+          // unreachable in practice (UsePIT implies a cached, successful version) — degrade, never throw
+          logger.warn(
+            s"Could not read the Elasticsearch version (${err.message}); paging sequentially"
+          )
+          1
+      }
+    }
+  }
+
+  /** Create a scrolling source for JSON query with the resolved strategy
     */
   private def scroll(
     elasticQuery: ElasticQuery,
@@ -423,13 +528,12 @@ trait ScrollApi extends ElasticClientHelpers {
     config: ScrollConfig,
     hasSorts: Boolean,
     fields: Seq[String],
-    nestedHits: Map[String, Seq[(String, String)]]
+    nestedHits: Map[String, Seq[(String, String)]],
+    strategy: ScrollStrategy
   )(implicit
     system: ActorSystem,
     context: ConversionContext
   ): Source[ListMap[String, Any], NotUsed] = {
-    val strategy = determineScrollStrategy(elasticQuery, aggregations, config)
-
     logger.info(
       s"Using scroll strategy: $strategy for query \n$elasticQuery"
     )

@@ -156,7 +156,7 @@ trait SQLQueryValidator {
            |  scrollAs[Product](\"\"\"SELECT id, name FROM products\"\"\".stripMargin)
            |
            |❌ For dynamic queries, use:
-           |  scrollAsUnchecked[Product](SelectStatement(dynamicSql), ScrollConfig())
+           |  scrollAsUnchecked[Product](SelectStatement(dynamicSql))
            |
            |""".stripMargin
         )

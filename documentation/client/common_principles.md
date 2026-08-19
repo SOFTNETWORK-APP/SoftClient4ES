@@ -488,6 +488,16 @@ elastic {
   # `_id` column. Disabled by default: SQL results carry only the selected columns.
   include-document-id = false
   
+  # Paged row extraction (scroll / PIT + search_after) — 0.21.0+
+  scroll {
+    # Rows per page. Larger pages cut round-trips linearly and raise in-flight memory linearly.
+    size       = 1000
+    # Ceiling on concurrent PIT slices for a no-ORDER-BY extraction (ES 7.15+). The effective
+    # count is min(primary shards, max-slices); 1 disables slicing (sequential paging) for every
+    # ScrollConfig that leaves maxSlices unset — an explicit Some(n) still wins.
+    max-slices = 8
+  }
+  
   # Cluster discovery
   discovery {
     enabled   = false
@@ -524,6 +534,12 @@ export ELASTIC_PORT=9243
 
 # Surface the document id as an `_id` column on result rows
 export ELASTIC_INCLUDE_DOCUMENT_ID=true
+
+# Paged row extraction (0.21.0+): rows per page, and the ceiling on concurrent PIT slices
+# for a no-ORDER-BY extraction (ES 7.15+); 1 disables slicing everywhere a ScrollConfig leaves
+# maxSlices unset (the default) — an explicit ScrollConfig(maxSlices = Some(n)) still wins
+export ELASTIC_SCROLL_SIZE=1000
+export ELASTIC_SCROLL_MAX_SLICES=8
 ```
 
 ### Loading Configuration

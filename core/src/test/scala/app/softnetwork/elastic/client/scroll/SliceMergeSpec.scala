@@ -50,8 +50,8 @@ class SliceMergeSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll wi
     val calls = new AtomicInteger(0)
     val last = new AtomicReference[Try[Done]]()
     val onTerminate: Try[Done] => Unit = { t =>
+      last.set(t) // before the counter the tests wait on, so `last` is never read as null
       calls.incrementAndGet()
-      last.set(t)
     }
   }
 
