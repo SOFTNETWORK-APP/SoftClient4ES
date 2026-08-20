@@ -174,10 +174,12 @@ matches no index, so a table created right after is seen at once. The lookup nev
 extraction: it degrades to sequential paging. A stale count is a performance matter only (it changes
 how the PIT is split, never which rows come back); every schema-cache write or invalidation on the
 same client — `createIndex`, `updateSchema`, `invalidateSchema` (REPL `refresh [table]`, `DROP
-TABLE`), `invalidateAllSchemas()` — clears the whole shard-count cache (entries are keyed by the
-`FROM` expression, so a wildcard or alias key cannot be matched by index name); DDL issued through
-another client is seen after the TTL. `ScrollMetrics.slices` reports the resolved count on every
-row.
+TABLE`) — drops the cached counts **naming that index**, and `invalidateAllSchemas()` drops all of
+them. Cache keys are the statement's `FROM` expressions, so the match is made per expression and by
+case-insensitive **prefix**: invalidating `orders` drops the entries for `orders`, `orders_2026`,
+`orders*` and any multi-index set containing them, but not an unrelated wildcard (`logs-*`) or an
+alias that the index merely happens to match — those, like DDL issued through another client, are
+seen after the TTL. `ScrollMetrics.slices` reports the resolved count on every row.
 
 **Ceiling and opt-out:**
 

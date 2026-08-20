@@ -62,12 +62,14 @@ class ScrollSlicingSpec
     s"""{"$index":{"settings":{"index":{"number_of_shards":"$n"}}}}"""
 
   private val defaultSettings: Map[String, ElasticResult[String]] = Map(
-    "idx_a"    -> ElasticSuccess(shards("idx_a", 3)),
-    "idx_one"  -> ElasticSuccess(shards("idx_one", 1)),
-    "idx_six"  -> ElasticSuccess(shards("idx_six", 6)),
-    "idx_big"  -> ElasticSuccess(shards("idx_big", 12)),
-    "idx_fail" -> ElasticFailure(ElasticError("settings unavailable")),
-    "idx_bad"  -> ElasticSuccess("this is not json"),
+    "idx_a"      -> ElasticSuccess(shards("idx_a", 3)),
+    "idx_a_2026" -> ElasticSuccess(shards("idx_a_2026", 2)), // `idx_a` is a PREFIX of it
+    "idx_one"    -> ElasticSuccess(shards("idx_one", 1)),
+    "idx_six"    -> ElasticSuccess(shards("idx_six", 6)),
+    "*_six"      -> ElasticSuccess(shards("idx_six", 6)), // a wildcard `idx_six` does NOT prefix
+    "idx_big"    -> ElasticSuccess(shards("idx_big", 12)),
+    "idx_fail"   -> ElasticFailure(ElasticError("settings unavailable")),
+    "idx_bad"    -> ElasticSuccess("this is not json"),
     "idx_forbidden" -> ElasticFailure(
       ElasticError(
         "action [indices:monitor/settings/get] is unauthorized",
@@ -409,18 +411,52 @@ class ScrollSlicingSpec
     shardWarn(client.mockLogger, 0) // an empty match is not a failure
   }
 
-  it should "clear EVERY cached count on invalidateSchema(index) — wildcard and alias keys cannot be matched by name" in {
+  it should "drop only the cached counts naming the index on invalidateSchema(index), by case-insensitive prefix" in {
     val client = new SlicingClient(mock[Logger])
     run(client, "SELECT id FROM idx_a")
     run(client, "SELECT id FROM idx_six")
     client.settingsCalls.get() shouldBe 2
-    client.invalidateSchema("idx_other") // unrelated name — still a full clear, by design
+
+    // an unrelated index leaves both entries in place …
+    client.invalidateSchema("idx_other")
     run(client, "SELECT id FROM idx_a")
     run(client, "SELECT id FROM idx_six")
+    client.settingsCalls.get() shouldBe 2
+
+    // … the named one drops ONLY its own entry …
+    client.invalidateSchema("idx_a")
+    run(client, "SELECT id FROM idx_six")
+    client.settingsCalls.get() shouldBe 2
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 3
+
+    // … case-insensitively …
+    client.invalidateSchema("IDX_A")
+    run(client, "SELECT id FROM idx_a")
     client.settingsCalls.get() shouldBe 4
+
+    // … as a PREFIX (the index is the stem of the cached expression) …
+    client.cachedPrimaryShardCount(Seq("idx_a_2026"))._2 shouldBe false
+    client.settingsCalls.get() shouldBe 5
+    client.cachedPrimaryShardCount(Seq("idx_a_2026"))._2 shouldBe true
+    client.invalidateSchema("idx_a")
+    client.cachedPrimaryShardCount(Seq("idx_a_2026"))._2 shouldBe false
+    client.settingsCalls.get() shouldBe 6
+
+    // … and per EXPRESSION inside a multi-index key (order in the key is alphabetical, so a
+    // whole-key startsWith would miss this one)
+    client.cachedPrimaryShardCount(Seq("idx_a", "idx_six"))._2 shouldBe false
+    client.cachedPrimaryShardCount(Seq("idx_a", "idx_six"))._2 shouldBe true
+    client.invalidateSchema("idx_six")
+    client.cachedPrimaryShardCount(Seq("idx_a", "idx_six"))._2 shouldBe false
+
+    // a key the index does not prefix survives (documented limitation: `logs-*`, aliases)
+    client.cachedPrimaryShardCount(Seq("*_six"))._2 shouldBe false
+    client.invalidateSchema("idx_six")
+    client.cachedPrimaryShardCount(Seq("*_six"))._2 shouldBe true
   }
 
-  it should "clear the cache on invalidateAllSchemas(), updateSchema(...) and a successful createIndex" in {
+  it should "drop the counts naming the index on updateSchema(...) and a successful createIndex, everything on invalidateAllSchemas()" in {
     val client = new SlicingClient(mock[Logger]) {
       // NopeClientApi answers ElasticSuccess(false) ("not created"); make the creation succeed
       override private[client] def executeCreateIndex(
@@ -432,18 +468,33 @@ class ScrollSlicingSpec
     }
     run(client, "SELECT id FROM idx_a")
     client.settingsCalls.get() shouldBe 1
-    client.invalidateAllSchemas()
+
+    // updateSchema (ALTER TABLE may have reindexed into a different shard count) — targeted
+    client.updateSchema("idx_six", app.softnetwork.elastic.sql.schema.Table("idx_six", Nil))
     run(client, "SELECT id FROM idx_a")
-    client.settingsCalls.get() shouldBe 2
+    client.settingsCalls.get() shouldBe 1
     client.updateSchema("idx_a", app.softnetwork.elastic.sql.schema.Table("idx_a", Nil))
     run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 2
+
+    // createIndex — targeted: an unrelated creation leaves the entry, `idx_a…` drops it
+    client.createIndex("idx_new").get shouldBe true
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 2
+    client.createIndex("idx_a_2026").get shouldBe true // idx_a is NOT a prefix of the cached key…
+    run(client, "SELECT id FROM idx_a")
+    client.settingsCalls.get() shouldBe 2
+    client.createIndex("idx_a").get shouldBe true // …this one is
+    run(client, "SELECT id FROM idx_a")
     client.settingsCalls.get() shouldBe 3
-    client.createIndex("idx_new").get shouldBe true // NopeClientApi: ElasticSuccess(true)
-    run(client, "SELECT id FROM idx_a")
+
+    // invalidateAllSchemas() clears everything, whatever the key
+    run(client, "SELECT id FROM idx_six")
     client.settingsCalls.get() shouldBe 4
-    // a no-op confirms the entry is otherwise stable
+    client.invalidateAllSchemas()
     run(client, "SELECT id FROM idx_a")
-    client.settingsCalls.get() shouldBe 4
+    run(client, "SELECT id FROM idx_six")
+    client.settingsCalls.get() shouldBe 6
   }
 
   it should "resolve a cold key ONCE under concurrency (one round-trip, one WARN for 8 simultaneous extractions)" in {

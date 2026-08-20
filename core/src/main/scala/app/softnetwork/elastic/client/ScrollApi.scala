@@ -36,7 +36,7 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
-import org.json4s.{Formats, JNothing}
+import org.json4s.{Formats, JNothing, JValue}
 import org.json4s.jackson.JsonMethods.parse
 
 import scala.collection.immutable.ListMap
@@ -159,10 +159,10 @@ trait ScrollApi extends ElasticClientHelpers {
     * expression that matches no index are NOT cached — the next extraction probes again. Staleness
     * is performance-only: a count that no longer matches the index changes how the PIT is split,
     * never which rows come back. Every schema-cache write or invalidation on this client
-    * (`createIndex`, `updateSchema`, `invalidateSchema` — `DROP TABLE`, REPL `refresh` —
-    * `invalidateAllSchemas`) clears the whole shard-count cache (entries are keyed by the FROM
-    * expression, so a wildcard or alias key cannot be matched by index name); DDL issued through
-    * another client is seen after the TTL.
+    * (`createIndex`, `updateSchema`, `invalidateSchema` — `DROP TABLE`, REPL `refresh`) drops the
+    * counts naming that index — see [[invalidateShardCounts]] for the match rule — and
+    * `invalidateAllSchemas` drops all of them; DDL issued through another client, and an entry
+    * whose expression the index does not prefix, are seen after the TTL.
     */
   protected def shardCountCacheTtlMs: Long = 5 * 60 * 1000L
 
@@ -225,8 +225,27 @@ trait ScrollApi extends ElasticClientHelpers {
     (result, fromCache)
   }
 
-  /** Drop every cached primary shard count — called on every schema-cache write or invalidation. */
-  private[client] def invalidateShardCounts(): Unit = shardCountCache.clear()
+  /** Drop cached primary shard counts — called on every schema-cache write or invalidation.
+    *
+    * With an `index`, only the entries naming it are dropped: cache keys are the sorted, joined
+    * FROM expressions of a statement, so the match is made **per expression** and by
+    * case-insensitive PREFIX (an index name is lower-case on the wire, and a prefix catches the
+    * expressions an index name is the stem of — `orders` drops `orders`, `orders_2026`, `orders*` —
+    * as well as the sets containing them). Expressions that do NOT start with the index — an
+    * unrelated wildcard `logs-*` that the new index nevertheless matches, or an alias — keep their
+    * cached count until the TTL; that is a performance matter only (it changes how a PIT is split,
+    * never which rows come back). `None` drops everything.
+    */
+  private[client] def invalidateShardCounts(index: Option[String] = None): Unit = index match {
+    case Some(i) if i.nonEmpty =>
+      val prefix = i.toLowerCase
+      shardCountCache
+        .keySet()
+        .removeIf((k: String) => k.split(',').exists(_.toLowerCase.startsWith(prefix)))
+      ()
+    case _ =>
+      shardCountCache.clear()
+  }
 
   /** Create a scrolling source with automatic strategy selection
     */
@@ -396,19 +415,30 @@ trait ScrollApi extends ElasticClientHelpers {
   // PRIVATE METHODS
   // ========================================================================
 
+  /** The query body parsed ONCE per stream — `JNothing` when it is not valid JSON (both readers
+    * treat that as "clause absent", their historical behaviour). Both the strategy decision (`aggs`
+    * / `aggregations`) and the slice decision (`sort`) read this tree instead of parsing the same
+    * string twice per extraction. It is a per-stream cost, not a per-page one.
+    */
+  private def parseQueryBody(query: String): JValue =
+    try parse(query)
+    catch { case _: Exception => JNothing }
+
   /** Determine the best scroll strategy based on the query
     */
   private[client] def determineScrollStrategy(
     elasticQuery: ElasticQuery,
     aggregations: ListMap[String, SQLAggregation],
-    config: ScrollConfig
+    config: ScrollConfig,
+    queryBody: JValue
   ): ScrollStrategy = {
     // If aggregations are present, use classic scrolling
     if (aggregations.nonEmpty) {
       UseScroll
     } else {
-      // Check if the query contains aggregations in the JSON
-      if (hasAggregations(elasticQuery.query)) {
+      // Check if the query contains aggregations in the JSON: `sqlAggregations` carries the METRIC
+      // aggregations only, so a bucket-only GROUP BY reaches here with an empty map (load-bearing).
+      if (hasAggregations(queryBody)) {
         UseScroll
       } else if (!config.preferSearchAfter) {
         // Operational opt-out (#201): classic scroll is slower than fixed PIT (9.55 s vs
@@ -463,8 +493,10 @@ trait ScrollApi extends ElasticClientHelpers {
         // `blocking`: the version / `_settings` round-trips are blocking HTTP on the dispatcher
         Future {
           scala.concurrent.blocking {
-            val strategy = determineScrollStrategy(elasticQuery, aggregations, requested)
-            val slices = resolveSlices(elasticQuery, strategy, requested, hasSorts)
+            // ONE parse of the request body for both decisions (strategy: `aggs`; slices: `sort`)
+            val queryBody = parseQueryBody(elasticQuery.query)
+            val strategy = determineScrollStrategy(elasticQuery, aggregations, requested, queryBody)
+            val slices = resolveSlices(elasticQuery, strategy, requested, hasSorts, queryBody)
             (
               strategy,
               requested.copy(slices = slices, metrics = requested.metrics.copy(slices = slices))
@@ -528,22 +560,19 @@ trait ScrollApi extends ElasticClientHelpers {
       .mapMaterializedValue(_ => NotUsed)
   }
 
-  private def hasAggregations(query: String): Boolean = {
-    try {
-      val json = parse(query)
-      (json \ "aggregations") != JNothing || (json \ "aggs") != JNothing
-    } catch {
-      case _: Exception => false
-    }
-  }
+  private def hasAggregations(queryBody: JValue): Boolean =
+    (queryBody \ "aggregations") != JNothing || (queryBody \ "aggs") != JNothing
 
-  private def hasSortClause(query: String): Boolean = {
-    try {
-      (parse(query) \ "sort") != JNothing
-    } catch {
-      case _: Exception => false
-    }
-  }
+  /** Belt and braces for the slice guard: a TOP-LEVEL `sort` in the request body.
+    *
+    * Redundant against today's single entry point — the bridge emits the top-level `sort` from
+    * `orderBy.sorts` and from nothing else, which is exactly what the `hasSorts` flag reads from
+    * the AST — so it can only agree with it. It is kept (free, now that the body is parsed once for
+    * the strategy) because the failure it guards is a WRONG ANSWER, not a slowdown: a query that
+    * asked for an order, sliced, comes back interleaved. Any future path that reaches
+    * [[scrollWithMetrics]] with a hand-written body stays correct by construction.
+    */
+  private def hasSortClause(queryBody: JValue): Boolean = (queryBody \ "sort") != JNothing
 
   /** #238 — slices for this stream: 1 unless the strategy is [[UsePIT]], no sort is present (AST
     * and JSON), the effective ceiling is above 1 and the cluster supports PIT slicing (7.15+). One
@@ -558,10 +587,11 @@ trait ScrollApi extends ElasticClientHelpers {
     elasticQuery: ElasticQuery,
     strategy: ScrollStrategy,
     config: ScrollConfig,
-    hasSorts: Boolean
+    hasSorts: Boolean,
+    queryBody: JValue
   ): Int = {
     val ceiling = config.maxSlices.getOrElse(configuredMaxSlices)
-    if (strategy != UsePIT || hasSorts || ceiling <= 1 || hasSortClause(elasticQuery.query)) {
+    if (strategy != UsePIT || hasSorts || ceiling <= 1 || hasSortClause(queryBody)) {
       logger.debug(
         s"PIT slicing not applicable (strategy $strategy, sorted $hasSorts, max-slices $ceiling); paging sequentially"
       )
