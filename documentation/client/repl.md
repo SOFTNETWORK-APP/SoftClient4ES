@@ -54,20 +54,33 @@ It provides:
 **On Windows you do not have to install Java yourself.** Since `0.20.4`,
 `install.ps1` (and therefore `install.cmd`) resolves Java in this order:
 
-1. `%JAVA_HOME%\bin\java.exe` — when `JAVA_HOME` is set, that is the JVM tested,
+1. `<install>\jdk\bin\java.exe` — a JDK a previous run bootstrapped into the
+   same install directory. It is reused as it stands, so re-running the
+   installer (to upgrade, to add `-NoExtensions`, to retry a failed download)
+   never downloads the ~180 MB Temurin zip a second time.
+2. `%JAVA_HOME%\bin\java.exe` — when `JAVA_HOME` is set, that is the JVM tested,
    not whatever `java` happens to be first on `PATH`; the two frequently differ.
-2. the `java` on `PATH`, when `JAVA_HOME` is not set.
-3. Neither is present, or the one found is **below the floor** for your ES
+3. the `java` on `PATH`, when `JAVA_HOME` is not set.
+4. None of those is present, or the one found is **below the floor** for your ES
    version ⇒ the installer downloads a portable **Temurin 17** JDK (a zip from
    Adoptium, never an MSI, so it needs **no administrator rights**) and unpacks
-   it to `<install>\jdk`.
+   it to `<install>\jdk`. The new JDK is unpacked and checked before any
+   existing one is removed, so a failed download never leaves you without a JVM.
 
 Java 17 satisfies both floors, so there is only ever one JDK to think about. The
 bootstrapped JDK lives **inside the install directory**: `uninstall.ps1` removes
 it along with everything else, and nothing machine-wide is modified — the
 installer sets `JAVA_HOME` and `PATH` **for its own session only**. Later
 sessions do not need them, because the generated launcher applies the same order
-and finds `<install>\jdk` by relative path.
+and finds `<install>\jdk` by relative path — and refuses to start, naming the
+version it found, if that JVM turns out to be below the floor (a stale
+`JAVA_HOME` is the usual cause) rather than letting the JVM fail with
+`UnsupportedClassVersionError`.
+
+If an install fails part way through — a version that does not exist, an
+unreachable repository — a bootstrapped JDK is left in place on purpose and the
+installer says where it is: the next attempt reuses it. Delete the install
+directory if you are not going to retry.
 
 On Linux and macOS `install.sh` still expects a suitable Java to be present.
 
@@ -126,8 +139,22 @@ install.cmd
 ```
 
 A local `install.ps1` always wins, so a downloaded pair stays self-consistent —
-put both files in the same directory when you want a pinned copy rather than
-whatever is on `main`.
+put both files in the same directory when you want a specific `install.ps1`.
+
+What the fallback fetches is **pinned to a release tag, not to `main`**, and is
+checked against a SHA-256 recorded in `install.cmd` before it is run; a mismatch
+is a hard failure, and the download goes to a fresh temporary directory that is
+removed when the run ends. So `install.cmd` on its own installs with the
+installer of the release it belongs to, never with whatever is currently on
+`main`. To use `main`'s installer instead:
+
+```bat
+set SOFTCLIENT4ES_INSTALL_REF=main
+install.cmd
+```
+
+That drops the integrity check — the pinned hash belongs to the pinned tag —
+and `install.cmd` says so unless you also set `SOFTCLIENT4ES_INSTALL_SHA256`.
 
 `install.cmd` accepts exactly the flags `install.ps1` does and forwards them
 verbatim, so every option, default and fallback documented below applies

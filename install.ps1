@@ -174,10 +174,27 @@ $EMBEDDED_JDK_DIR = Join-Path $Target "jdk"
 # `java`, which is frequently a different and older JVM.
 
 # Set by Resolve-Java; read by Check-Prerequisites, the launcher writer and the
-# summary.
+# summary. $script:EmbeddedJdkHome is also what tells the failure path that this
+# install depends on a JDK under $Target.
 $script:JavaMajor = 0
 $script:JavaSource = "not found"
 $script:EmbeddedJdkHome = $null
+
+# Point this run at a JDK inside the install tree - the one the launcher will use.
+# SESSION scope only, deliberately not [Environment]::SetEnvironmentVariable(...,"User"):
+# a machine-wide JAVA_HOME would silently repoint every other tool on the box, and
+# would dangle after uninstall. Later sessions need nothing - the launcher finds
+# <install>\jdk by relative path.
+function Use-EmbeddedJdk {
+    param([string]$JdkHome, [int]$Major)
+
+    $script:EmbeddedJdkHome = $JdkHome
+    $script:JavaMajor = $Major
+    $script:JavaSource = "bundled JDK ($JdkHome)"
+
+    $env:JAVA_HOME = $JdkHome
+    $env:PATH = (Join-Path $JdkHome "bin") + ";" + $env:PATH
+}
 
 function Install-EmbeddedJdk {
     Write-Info "Installing a portable Temurin $BOOTSTRAP_JAVA_VERSION JDK (zip, no administrator rights)..."
@@ -198,9 +215,16 @@ function Install-EmbeddedJdk {
         # to a staging dir and MOVE that one level up, so the final JAVA_HOME is the
         # fixed path <install>\jdk. The launcher hard-codes `%BASE_DIR%\jdk\bin`, and
         # it must not have to glob for a name that changes with every Temurin build.
+        #
+        # Stage, verify, THEN swap: an existing <install>\jdk is removed only once a
+        # usable replacement is on disk. The unpack needs the 180 MB zip plus ~300 MB
+        # expanded plus the ~309 MB jar in the same tree, so running out of disk lands
+        # squarely in this window, and deleting first left a previously working
+        # install with no JVM at all — broken by the very installer the user would
+        # then re-run to fix it (issue #234). $staging is scratch by construction, so
+        # clearing that one up front is fine.
         $staging = "$EMBEDDED_JDK_DIR.unpack"
-        if (Test-Path $staging)          { Remove-Item -Recurse -Force $staging }
-        if (Test-Path $EMBEDDED_JDK_DIR) { Remove-Item -Recurse -Force $EMBEDDED_JDK_DIR }
+        if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
         New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
         try {
@@ -211,6 +235,13 @@ function Install-EmbeddedJdk {
                 Write-Err "The Temurin archive did not unpack as expected (no directory inside $staging)"
                 return $null
             }
+            if (-not (Test-Path (Join-Path (Join-Path $inner.FullName "bin") "java.exe"))) {
+                Write-Err "The Temurin archive did not unpack as expected (no bin\java.exe under $($inner.FullName))"
+                return $null
+            }
+
+            # Known-good from here: the previous JDK, if any, can go.
+            if (Test-Path $EMBEDDED_JDK_DIR) { Remove-Item -Recurse -Force $EMBEDDED_JDK_DIR }
             Move-Item -Path $inner.FullName -Destination $EMBEDDED_JDK_DIR
         }
         finally {
@@ -237,35 +268,58 @@ function Install-EmbeddedJdk {
 function Resolve-Java {
     Write-Info "Resolving Java (ES$EsVersion requires ${REQUIRED_JAVA_VERSION}+)..."
 
-    # JAVA_HOME first, exactly as the launcher will. Probing the PATH `java` when
-    # JAVA_HOME is set would validate a JVM the REPL is never going to run.
-    $javaHomeExe = if ($env:JAVA_HOME) { Join-Path (Join-Path $env:JAVA_HOME "bin") "java.exe" } else { "" }
-    $jhMajor = if ($javaHomeExe -and (Test-Path $javaHomeExe)) { Get-JavaMajorFromExe -Exe $javaHomeExe } else { 0 }
+    # <install>\jdk first — the JDK a previous run of this installer bootstrapped,
+    # and the first thing both generated launchers look at. Without this probe every
+    # re-run downloads the ~180 MB Temurin zip again and unpacks it over a perfectly
+    # good JDK (JAVA_HOME is set for the session only, so a later shell has nothing
+    # pointing at it either), and the installer contradicts the resolution order its
+    # own launchers document (issue #233).
+    $bundledExe = Join-Path (Join-Path $EMBEDDED_JDK_DIR "bin") "java.exe"
+    $bundledMajor = if (Test-Path $bundledExe) { Get-JavaMajorFromExe -Exe $bundledExe } else { 0 }
 
-    if ($jhMajor -gt 0) {
-        $script:JavaMajor = $jhMajor
-        $script:JavaSource = "JAVA_HOME ($env:JAVA_HOME)"
-    }
-    else {
-        if ($env:JAVA_HOME) {
-            Write-Warn "JAVA_HOME is set to '$env:JAVA_HOME' but no usable java.exe was found under it"
-        }
-        $pathMajor = Get-JavaMajorVersion
-        if ($pathMajor -gt 0) {
-            $script:JavaMajor = $pathMajor
-            $script:JavaSource = "PATH"
-        }
-    }
-
-    if ($script:JavaMajor -ge $REQUIRED_JAVA_VERSION) {
-        Write-Success "Java $($script:JavaMajor) found via $($script:JavaSource) (required: ${REQUIRED_JAVA_VERSION}+)"
+    if ($bundledMajor -ge $REQUIRED_JAVA_VERSION) {
+        Use-EmbeddedJdk -JdkHome $EMBEDDED_JDK_DIR -Major $bundledMajor
+        Write-Success "Java $bundledMajor found via $($script:JavaSource) (required: ${REQUIRED_JAVA_VERSION}+) — nothing to download"
         return $true
     }
 
-    if ($script:JavaMajor -eq 0) {
-        Write-Warn "No usable Java found"
-    } else {
-        Write-Warn "Java $($script:JavaMajor) found via $($script:JavaSource) — below the required ${REQUIRED_JAVA_VERSION}+"
+    if ($bundledMajor -gt 0) {
+        # The launcher prefers <install>\jdk whenever java.exe is there, so a bundled
+        # JDK below the floor cannot be left in place and worked around with JAVA_HOME
+        # — it has to be replaced. Straight to the bootstrap, which swaps it out.
+        Write-Warn "The JDK bundled at $EMBEDDED_JDK_DIR is Java $bundledMajor — below the required ${REQUIRED_JAVA_VERSION}+; replacing it"
+    }
+    else {
+        # Then JAVA_HOME, exactly as the launcher will. Probing the PATH `java` when
+        # JAVA_HOME is set would validate a JVM the REPL is never going to run.
+        $javaHomeExe = if ($env:JAVA_HOME) { Join-Path (Join-Path $env:JAVA_HOME "bin") "java.exe" } else { "" }
+        $jhMajor = if ($javaHomeExe -and (Test-Path $javaHomeExe)) { Get-JavaMajorFromExe -Exe $javaHomeExe } else { 0 }
+
+        if ($jhMajor -gt 0) {
+            $script:JavaMajor = $jhMajor
+            $script:JavaSource = "JAVA_HOME ($env:JAVA_HOME)"
+        }
+        else {
+            if ($env:JAVA_HOME) {
+                Write-Warn "JAVA_HOME is set to '$env:JAVA_HOME' but no usable java.exe was found under it"
+            }
+            $pathMajor = Get-JavaMajorVersion
+            if ($pathMajor -gt 0) {
+                $script:JavaMajor = $pathMajor
+                $script:JavaSource = "PATH"
+            }
+        }
+
+        if ($script:JavaMajor -ge $REQUIRED_JAVA_VERSION) {
+            Write-Success "Java $($script:JavaMajor) found via $($script:JavaSource) (required: ${REQUIRED_JAVA_VERSION}+)"
+            return $true
+        }
+
+        if ($script:JavaMajor -eq 0) {
+            Write-Warn "No usable Java found"
+        } else {
+            Write-Warn "Java $($script:JavaMajor) found via $($script:JavaSource) — below the required ${REQUIRED_JAVA_VERSION}+"
+        }
     }
 
     $jdkHome = Install-EmbeddedJdk
@@ -275,15 +329,7 @@ function Resolve-Java {
         return $false
     }
 
-    $script:EmbeddedJdkHome = $jdkHome
-    $script:JavaMajor = Get-JavaMajorFromExe -Exe (Join-Path (Join-Path $jdkHome "bin") "java.exe")
-    $script:JavaSource = "bundled JDK ($jdkHome)"
-
-    # SESSION scope only — deliberately not [Environment]::SetEnvironmentVariable(...,"User").
-    # A machine-wide JAVA_HOME would silently repoint every other tool on the box.
-    # Future sessions do not need it: the launcher prefers <install>\jdk directly.
-    $env:JAVA_HOME = $jdkHome
-    $env:PATH = (Join-Path $jdkHome "bin") + ";" + $env:PATH
+    Use-EmbeddedJdk -JdkHome $jdkHome -Major (Get-JavaMajorFromExe -Exe (Join-Path (Join-Path $jdkHome "bin") "java.exe"))
     Write-Success "Java $($script:JavaMajor) ready — JAVA_HOME and PATH updated for THIS session"
 
     return $true
@@ -292,6 +338,16 @@ function Resolve-Java {
 # =============================================================================
 # List Available Versions
 # =============================================================================
+
+# One listing per artifact per run. The pre-flight below consults the same lists
+# the bundle-selection block does, and an HTTP call that has already been answered
+# must not be paid for - or answered differently - twice in one run.
+$script:VersionListings = @{}
+
+# Why a listing failed, kept for the pre-flight: -Quiet has to stay silent (a
+# missing -all bundle is a normal, expected 404) but a genuine outage must not
+# reach the user as a bare "no versions found".
+$script:LastListingError = $null
 
 function Get-AvailableVersions {
     param(
@@ -302,6 +358,10 @@ function Get-AvailableVersions {
         # artifact; the plain path keeps the original fail-hard behaviour.
         [switch]$Quiet
     )
+
+    if ($script:VersionListings.ContainsKey($Artifact)) {
+        return $script:VersionListings[$Artifact]
+    }
 
     $apiUrl = "${JFROG_API_URL}/${Artifact}"
 
@@ -315,9 +375,15 @@ function Get-AvailableVersions {
             Where-Object { $_ -notmatch '^\.' } |
             Sort-Object { [Version]($_ -replace '-SNAPSHOT', '.0' -replace '[^0-9.]', '') }
 
+        # Successes only: a listing that failed keeps its own semantics (fail hard,
+        # or empty under -Quiet) if it is asked for again.
+        $versions = @($versions)
+        if ($versions.Count -gt 0) { $script:VersionListings[$Artifact] = $versions }
+
         return $versions
     }
     catch {
+        $script:LastListingError = $_.Exception.Message
         if ($Quiet) { return @() }
         Write-Err "Failed to fetch versions from repository"
         Write-Err "Artifact: $Artifact"
@@ -419,10 +485,47 @@ function Resolve-LatestVersion {
 }
 
 # =============================================================================
+# Pre-flight: settle the inputs before anything large is downloaded
+# =============================================================================
+# Resolving Java can write ~300 MB into $Target, and it used to be the FIRST thing
+# to touch the disk - so a typo in -Version, an artifact that does not exist for
+# the chosen -EsVersion / -ScalaVersion, or an unreachable repository was only
+# discovered by Download-Jar, leaving an orphaned jdk\ behind that nothing in the
+# failure output even mentioned (issue #236). The listings are the same two cheap
+# calls bundle selection makes below, memoised, so this costs nothing.
+function Test-RequestedVersion {
+    $artifacts = @()
+    if ($WITH_EXTENSIONS) { $artifacts += $BUNDLE_ARTIFACT_NAME }
+    $artifacts += $PLAIN_ARTIFACT_NAME
+
+    $known = @()
+    foreach ($artifact in $artifacts) {
+        $known += @(Get-AvailableVersions -Artifact $artifact -Quiet)
+    }
+
+    if ($known.Count -eq 0) {
+        Write-Err "No versions found for $($artifacts -join ' or ')"
+        Write-Err "Check -EsVersion $EsVersion and -ScalaVersion $ScalaVersion, and that the repository is reachable:"
+        Write-Err $JFROG_API_URL
+        if ($script:LastListingError) { Write-Err $script:LastListingError }
+        exit 1
+    }
+
+    if ($Version -ne "latest" -and $known -notcontains $Version) {
+        Write-Err "Version '$Version' is not published for $($artifacts -join ' or ')"
+        Write-Err "Run with -ListVersions to see available versions."
+        exit 1
+    }
+}
+
+Test-RequestedVersion
+
+# =============================================================================
 # Resolve Java before anything else that depends on it
 # =============================================================================
 # Runs AFTER the -ListVersions early exit (listing versions must not download a
-# JDK) and BEFORE bundle selection, which reads the resolved major.
+# JDK), AFTER the pre-flight above (a bad -Version must not cost a JDK download)
+# and BEFORE bundle selection, which reads the resolved major.
 if (-not (Resolve-Java)) { exit 1 }
 
 # =============================================================================
@@ -875,6 +978,20 @@ if not defined JVER (
 )
 for /f "tokens=1,2 delims=." %%a in ("%JVER%") do if "%%a"=="1" (set JAVA_MAJOR=%%b) else (set JAVA_MAJOR=%%a)
 
+REM Refuse a JVM below the floor instead of letting it fail with
+REM UnsupportedClassVersionError, which names a class-file version rather than a
+REM Java one and reads as a broken install. The .ps1 launcher has always had this
+REM check; the .bat computed JAVA_MAJOR and spent it only on --add-opens, so a
+REM stale %JAVA_HOME% - which outranks the PATH here, deliberately, because that
+REM is the JVM the installer probed - silently won (issue #235).
+REM The "not 0" guard keeps parity with the .ps1 launcher: refuse only a version
+REM we positively read as too low, never one we failed to parse.
+if not "%JAVA_MAJOR%"=="0" if %JAVA_MAJOR% LSS %REQUIRED_JAVA% (
+    echo Error: Java %REQUIRED_JAVA%+ is required. Found: Java %JAVA_MAJOR% >&2
+    if defined JAVA_HOME echo        JAVA_HOME takes precedence over the PATH here - point it at a Java %REQUIRED_JAVA%+ JDK, or clear it. >&2
+    exit /b 1
+)
+
 REM The extensions (Apache Arrow / DuckDB) need reflective access on Java 9+.
 REM JAVA_MAJOR is initialised to 0 above so this comparison always has a left
 REM operand (an empty one is a cmd syntax error that aborts the whole script).
@@ -954,6 +1071,9 @@ try {
 
     if (`$javaVersion -gt 0 -and `$javaVersion -lt `$RequiredJava) {
         Write-Error "Java `$RequiredJava+ is required. Found: Java `$javaVersion"
+        if (`$env:JAVA_HOME) {
+            Write-Error "JAVA_HOME takes precedence over the PATH here - point it at a Java `$RequiredJava+ JDK, or clear it."
+        }
         exit 1
     }
 }
@@ -1144,15 +1264,31 @@ Write-Host "  SoftClient4ES Installer" -ForegroundColor Cyan
 Write-Host "==================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-Check-Prerequisites
-Create-Directories
-Download-Jar
-Extract-BundleLicenses
-Show-LicenseNotice
-Download-Docs
-Create-Config
-Create-LogbackConfig    # <-- Création du fichier logback.xml
-Create-Launcher
-Create-Uninstaller
-Create-VersionInfo
-Print-Summary
+# The finally runs on `exit` too, so it covers every failure path below - which is
+# the point: whatever went wrong, the user is told about the JDK sitting in $Target
+# rather than discovering ~300 MB of it later (issue #236).
+$script:InstallCompleted = $false
+try {
+    Check-Prerequisites
+    Create-Directories
+    Download-Jar
+    Extract-BundleLicenses
+    Show-LicenseNotice
+    Download-Docs
+    Create-Config
+    Create-LogbackConfig    # <-- Création du fichier logback.xml
+    Create-Launcher
+    Create-Uninstaller
+    Create-VersionInfo
+    Print-Summary
+    $script:InstallCompleted = $true
+}
+finally {
+    if (-not $script:InstallCompleted -and $script:EmbeddedJdkHome) {
+        Write-Host ""
+        Write-Warn "The install did not complete. A portable Temurin $BOOTSTRAP_JAVA_VERSION JDK (~300 MB) is at:"
+        Write-Warn "  $($script:EmbeddedJdkHome)"
+        Write-Warn "It is kept on purpose - a re-run reuses it instead of downloading it again."
+        Write-Warn "Delete that directory if you are not going to retry."
+    }
+}

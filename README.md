@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/
 irm https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.ps1 | iex
 ```
 
-**Windows (cmd.exe, when `.ps1` files are blocked):** one file — it fetches `install.ps1` if it is not beside it, takes the same flags, and only launches it with `-ExecutionPolicy Bypass`, for that one process.
+**Windows (cmd.exe, when `.ps1` files are blocked):** one file — it fetches `install.ps1` if it is not beside it (from a pinned release tag, SHA-256 verified), takes the same flags, and only launches it with `-ExecutionPolicy Bypass`, for that one process.
 ```bat
 curl -O https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/install.cmd && install.cmd
 ```
