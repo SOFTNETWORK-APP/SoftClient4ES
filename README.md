@@ -216,10 +216,10 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch Version | Artifact                               |
 |-----------------------|----------------------------------------|
-| ES 6.x                | `softclient4es6-jdbc-driver-0.2.5.jar` |
-| ES 7.x                | `softclient4es7-jdbc-driver-0.2.5.jar` |
-| ES 8.x                | `softclient4es8-jdbc-driver-0.2.5.jar` |
-| ES 9.x                | `softclient4es9-jdbc-driver-0.2.5.jar` |
+| ES 6.x                | `softclient4es6-jdbc-driver-0.3.0.jar` |
+| ES 7.x                | `softclient4es7-jdbc-driver-0.3.0.jar` |
+| ES 8.x                | `softclient4es8-jdbc-driver-0.3.0.jar` |
+| ES 9.x                | `softclient4es9-jdbc-driver-0.3.0.jar` |
 
 > **Java 11+ recommended** (17+ for ES 9.x): **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
@@ -236,20 +236,20 @@ Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.2.5</version>
+  <version>0.3.0</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.2.5'
+implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.3.0'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.2.5"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.3.0"
 ```
 
 The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
@@ -337,13 +337,13 @@ For programmatic access, add SoftClient4ES to your project.
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.20.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.21.0"
 // Add the community extensions for materialized views (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.2.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.3.0"
 // Add the arrow extensions for cross-index JOIN (required for JOINs; Java 11+)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.2.5"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.0"
 // Add the JDBC driver if you want to use it from Scala (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.2.5"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.3.0"
 ```
 
 ```scala

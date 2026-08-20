@@ -58,8 +58,8 @@ A SQL table corresponds to:
 
 | SQL Definition                          | Elasticsearch Structure                            |
 |-----------------------------------------|----------------------------------------------------|
-| `CREATE TABLE` without `PARTITIONED BY` | **Concrete index**                                 |
-| `CREATE TABLE` with `PARTITIONED BY`    | **Index template** (legacy ES6 or composable ES7+) |
+| `CREATE TABLE` without `PARTITION BY`   | **Concrete index**                                 |
+| `CREATE TABLE` with `PARTITION BY`      | **Index template** (legacy ES6 or composable ES7+) |
 
 ### Index-backed table (no partitioning)
 
@@ -79,13 +79,17 @@ Creates:
 
 ### Template-backed table (with partitioning)
 
+The clause is `PARTITION BY <column> (<granularity>)` — the column first, the granularity in
+parentheses after it. The parentheses are required when a granularity is given; omit the
+granularity entirely and it defaults to `DAY`.
+
 ```sql
 CREATE TABLE users (
   id INT,
   birthdate DATE,
   PRIMARY KEY (id)
 )
-PARTITIONED BY (birthdate MONTH);
+PARTITION BY birthdate (MONTH);
 ```
 
 Creates:
@@ -304,7 +308,7 @@ CREATE TABLE users (
   birthdate DATE,
   PRIMARY KEY (id)
 )
-PARTITIONED BY (birthdate MONTH);
+PARTITION BY birthdate (MONTH);
 ```
 
 ### Table Options (index settings)
