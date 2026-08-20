@@ -283,8 +283,10 @@ class CoreDqlExtension extends ExtensionSpi {
     client: ElasticClientApi
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val context: ConversionContext = NativeContext
+    // The client's configured defaults (page size, slice ceiling — #238) plus the quota cap; the
+    // cap is `.take(max)` on the MERGED stream, so it binds on the total whatever the slicing.
     val source =
-      client.scroll(single, ScrollConfig(maxDocuments = Some(max.toLong)))
+      client.scroll(single, client.defaultScrollConfig.copy(maxDocuments = Some(max.toLong)))
     val warning =
       s"Result capped to $max rows (license quota). " +
       s"Add an explicit LIMIT <= $max, or upgrade for more rows."

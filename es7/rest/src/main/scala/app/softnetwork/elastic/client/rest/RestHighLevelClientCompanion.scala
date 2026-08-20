@@ -25,6 +25,7 @@ import app.softnetwork.elastic.client.{
 import org.elasticsearch.client.{RequestOptions, RestClient, RestClientBuilder, RestHighLevelClient}
 import org.apache.http.auth.{AuthScope, UsernamePasswordCredentials}
 import org.apache.http.impl.client.BasicCredentialsProvider
+import org.apache.http.impl.nio.client.HttpAsyncClientBuilder
 import org.apache.http.message.BasicHeader
 import org.elasticsearch.search.SearchModule
 import org.elasticsearch.common.settings.Settings
@@ -63,7 +64,18 @@ trait RestHighLevelClientCompanion extends ElasticClientCompanion[RestHighLevelC
     }
   }
 
-  /** Build RestClientBuilder with authentication
+  /** REST connection pool sized to the slice ceiling (#238 — `ScrollSettings.restPoolPerRoute` /
+    * `restPoolTotal`): an extraction may hold up to `elastic.scroll.max-slices` page requests in
+    * flight per route on top of the PIT open / close and `_settings` calls sharing the route.
+    */
+  private def withPoolSizing(httpClient: HttpAsyncClientBuilder): HttpAsyncClientBuilder =
+    httpClient
+      .setMaxConnPerRoute(elasticConfig.scroll.restPoolPerRoute)
+      .setMaxConnTotal(elasticConfig.scroll.restPoolTotal)
+
+  /** Build RestClientBuilder with authentication. ONE `setHttpClientConfigCallback` per builder (a
+    * second call replaces the first): the auth branch yields a function and the pool sizing is
+    * composed with it in a single callback.
     */
   private def buildRestClient(): RestClientBuilder = {
     val httpHost = parseHttpHost(elasticConfig.credentials.url)
@@ -77,44 +89,47 @@ trait RestHighLevelClientCompanion extends ElasticClientCompanion[RestHighLevelC
       }
 
     // Authenticate
-    elasticConfig.credentials.authMethod match {
-      case Some(BasicAuth) if elasticConfig.credentials.username.nonEmpty =>
-        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
-          val credentialsProvider = new BasicCredentialsProvider()
-          credentialsProvider.setCredentials(
-            AuthScope.ANY,
-            new UsernamePasswordCredentials(
-              elasticConfig.credentials.username,
-              elasticConfig.credentials.password
+    val authenticate: HttpAsyncClientBuilder => HttpAsyncClientBuilder =
+      elasticConfig.credentials.authMethod match {
+        case Some(BasicAuth) if elasticConfig.credentials.username.nonEmpty =>
+          httpClientConfigCallback => {
+            val credentialsProvider = new BasicCredentialsProvider()
+            credentialsProvider.setCredentials(
+              AuthScope.ANY,
+              new UsernamePasswordCredentials(
+                elasticConfig.credentials.username,
+                elasticConfig.credentials.password
+              )
             )
-          )
-          httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
-        }
-      case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
-        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
-          httpClientConfigCallback.setDefaultHeaders(
-            Seq(
-              new BasicHeader(
-                "Authorization",
-                ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
-              )
-            ).asJava
-          )
-        }
-      case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
-        builder.setHttpClientConfigCallback { httpClientConfigCallback =>
-          httpClientConfigCallback.setDefaultHeaders(
-            Seq(
-              new BasicHeader(
-                "Authorization",
-                BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
-              )
-            ).asJava
-          )
-        }
-      case _ => // No authentication
-        builder
-    }
+            httpClientConfigCallback.setDefaultCredentialsProvider(credentialsProvider)
+          }
+        case Some(ApiKeyAuth) if elasticConfig.credentials.encodedApiKey.exists(_.nonEmpty) =>
+          httpClientConfigCallback =>
+            httpClientConfigCallback.setDefaultHeaders(
+              Seq(
+                new BasicHeader(
+                  "Authorization",
+                  ApiKeyAuth.createAuthHeader(elasticConfig.credentials)
+                )
+              ).asJava
+            )
+        case Some(BearerTokenAuth) if elasticConfig.credentials.bearerToken.exists(_.nonEmpty) =>
+          httpClientConfigCallback =>
+            httpClientConfigCallback.setDefaultHeaders(
+              Seq(
+                new BasicHeader(
+                  "Authorization",
+                  BearerTokenAuth.createAuthHeader(elasticConfig.credentials)
+                )
+              ).asJava
+            )
+        case _ => // No authentication
+          identity
+      }
+
+    builder.setHttpClientConfigCallback(httpClientConfigCallback =>
+      withPoolSizing(authenticate(httpClientConfigCallback))
+    )
   }
 
   /** Test connection to Elasticsearch cluster

@@ -1435,6 +1435,7 @@ trait RestHighLevelClientBulkApi extends BulkApi with RestHighLevelClientHelpers
 trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientVersionApi
     with RestHighLevelClientSearchApi
+    with RestHighLevelClientSettingsApi
     with RestHighLevelClientCompanion =>
 
   // ==========================================================================

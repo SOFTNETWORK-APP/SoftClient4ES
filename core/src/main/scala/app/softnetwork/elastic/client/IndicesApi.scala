@@ -195,6 +195,9 @@ trait IndicesApi extends ElasticClientHelpers {
 
     executeCreateIndex(index, settings, updatedMappings, aliases) match {
       case success @ ElasticSuccess(true) =>
+        // #238 — a shard count cached for an expression this index is the stem of (a name probed
+        // before it existed, `orders*` before the load) must not survive the creation
+        invalidateShardCounts(Some(index))
         logger.info(s"✅ Index '$index' created successfully")
         success
       case success @ ElasticSuccess(_) =>
@@ -230,16 +233,20 @@ trait IndicesApi extends ElasticClientHelpers {
 
   def updateSchema(index: String, schema: Schema): Unit = {
     schemaCache.put(index, (schema, System.currentTimeMillis()))
+    // #238 — ALTER TABLE may have reindexed into a different shard count
+    invalidateShardCounts(Some(index))
     logger.debug(s"📦 Schema cache updated for '$index'")
   }
 
   def invalidateSchema(index: String): Unit = {
     schemaCache.remove(index)
+    invalidateShardCounts(Some(index)) // #238 — the sliced-paging shard counts follow the schema
     logger.info(s"🗑️ Schema cache invalidated for '$index'")
   }
 
   def invalidateAllSchemas(): Unit = {
     schemaCache.clear()
+    invalidateShardCounts()
     logger.info("🗑️ All schema caches invalidated")
   }
 

@@ -36,7 +36,7 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
-import org.json4s.{Formats, JNothing}
+import org.json4s.{Formats, JNothing, JValue}
 import org.json4s.jackson.JsonMethods.parse
 
 import scala.collection.immutable.ListMap
@@ -79,15 +79,24 @@ import scala.util.{Failure, Success}
   * The implementation automatically selects the most efficient strategy:
   *
   * {{{
-  * ┌─────────────────┬───────────────┬──────────────────────────────────┐
-  * │ ES Version      │ Aggregations  │ Strategy                         │
-  * ├─────────────────┼───────────────┼──────────────────────────────────┤
-  * │ 7.12+           │ No            │ PIT + search_after (recommended) │
-  * │ 7.12+           │ Yes           │ Classic scroll                   │
-  * │ < 7.12          │ No            │ search_after                     │
-  * │ < 7.12          │ Yes           │ Classic scroll                   │
-  * └─────────────────┴───────────────┴──────────────────────────────────┘
+  * ┌─────────────────┬───────────────┬──────────────────────────────────────────────────┐
+  * │ ES Version      │ Aggregations  │ Strategy                                         │
+  * ├─────────────────┼───────────────┼──────────────────────────────────────────────────┤
+  * │ 7.15+           │ No            │ PIT + search_after, SLICED when no ORDER BY / no  │
+  * │                 │               │ LIMIT: one reader per primary shard (#238)       │
+  * │ 7.12+           │ No            │ PIT + search_after (recommended)                 │
+  * │ 7.12+           │ Yes           │ Classic scroll                                   │
+  * │ < 7.12          │ No            │ search_after                                     │
+  * │ < 7.12          │ Yes           │ Classic scroll                                   │
+  * └─────────────────┴───────────────┴──────────────────────────────────────────────────┘
   * }}}
+  *
+  * '''Sliced PIT paging''' (ES 7.15+, #238): a no-`ORDER BY`, no-`LIMIT` extraction opens ONE PIT
+  * and reads `min(primary shards, max-slices)` slices of it concurrently, merged page by page into
+  * the single stream the caller consumes. The slice count is resolved once per stream by
+  * [[ScrollApi]] (`ScrollMetrics.slices` reports it); the ceiling comes from
+  * [[ScrollConfig.maxSlices]] or, when unset, `elastic.scroll.max-slices` (`1` = sequential). Row
+  * order interleaves across slices; quota-capped results are an arbitrary subset.
   *
   * [[ScrollConfig.preferSearchAfter]] ` = false` overrides the no-aggregation rows and forces
   * classic scroll on every version — an operational opt-out for clusters that restrict the PIT API.
@@ -122,17 +131,127 @@ import scala.util.{Failure, Success}
   *   [[https://www.elastic.co/guide/en/elasticsearch/reference/7.10/point-in-time-api.html PIT API Documentation]]
   */
 trait ScrollApi extends ElasticClientHelpers {
-  _: VersionApi with SearchApi =>
+  _: VersionApi with SearchApi with SettingsApi =>
 
   // ========================================================================
   // MAIN SCROLL METHODS
   // ========================================================================
 
+  /** The scroll configuration used when a caller passes none (#238): page size from
+    * `elastic.scroll.size`, slice ceiling inherited (`maxSlices = None`) from
+    * [[configuredMaxSlices]]. A `def`, never a `val`: `ScrollMetrics.startTime` is a constructor
+    * default and must be fresh per stream. Overridden by [[ElasticClientApi]] with the HOCON
+    * values; the base keeps the historical `ScrollConfig()` defaults.
+    */
+  def defaultScrollConfig: ScrollConfig = ScrollConfig()
+
+  /** The ceiling on concurrent PIT slices applied when a [[ScrollConfig]] leaves `maxSlices` unset
+    * (`elastic.scroll.max-slices`, #238). `1` is a complete opt-out.
+    */
+  protected def configuredMaxSlices: Int = ScrollConfig.DefaultMaxSlices
+
+  /** TTL, in milliseconds, of the primary-shard-count cache consulted by sliced PIT paging (#238).
+    * Override in a subclass to change (default: 5 minutes, the schema cache's TTL). One `_settings`
+    * round-trip per distinct index set per TTL instead of one per un-LIMITed row query. What is
+    * cached: a positive count, and a **privilege** failure (HTTP 401 / 403 — the one failure class
+    * that is deterministic), so an under-privileged user sees ONE WARN per TTL instead of one per
+    * query; a transient failure (timeout, 503, index not found, unparseable payload) and an
+    * expression that matches no index are NOT cached — the next extraction probes again. Staleness
+    * is performance-only: a count that no longer matches the index changes how the PIT is split,
+    * never which rows come back. Every schema-cache write or invalidation on this client
+    * (`createIndex`, `updateSchema`, `invalidateSchema` — `DROP TABLE`, REPL `refresh`) drops the
+    * counts naming that index — see [[invalidateShardCounts]] for the match rule — and
+    * `invalidateAllSchemas` drops all of them; DDL issued through another client, and an entry
+    * whose expression the index does not prefix, are seen after the TTL.
+    */
+  protected def shardCountCacheTtlMs: Long = 5 * 60 * 1000L
+
+  private val shardCountCache =
+    new java.util.concurrent.ConcurrentHashMap[String, (ElasticResult[Int], Long)]()
+
+  /** Above this many entries a cache miss also purges the expired ones (keys are index SETS, so a
+    * long-lived server over date-suffixed or per-tenant indices would otherwise grow without
+    * bound).
+    */
+  private val shardCountCachePurgeThreshold = 256
+
+  private def shardCountCacheable(result: ElasticResult[Int]): Boolean = result match {
+    case ElasticSuccess(shards) => shards > 0
+    case ElasticFailure(err)    => err.statusCode.exists(s => s == 401 || s == 403)
+  }
+
+  /** [[SettingsApi.primaryShardCount]] behind the TTL cache. Keyed by the sorted distinct index
+    * expressions (an index name cannot contain `,`); resolved under the map's per-key lock
+    * (`compute`), so K concurrent cold extractions of one index set issue ONE round-trip and the
+    * result is stamped after the lookup. Returns the lookup result and whether it was served from
+    * the cache — the caller logs a cached failure at DEBUG, a fresh one at WARN.
+    */
+  private[client] def cachedPrimaryShardCount(
+    indices: Seq[String]
+  ): (ElasticResult[Int], Boolean) = {
+    val key = indices.distinct.sorted.mkString(",")
+    val ttl = shardCountCacheTtlMs
+    var result: ElasticResult[Int] = null
+    var fromCache = true
+    shardCountCache.compute(
+      key,
+      (_: String, entry: (ElasticResult[Int], Long)) => {
+        if (entry != null && System.currentTimeMillis() - entry._2 < ttl) {
+          result = entry._1
+          entry
+        } else {
+          fromCache = false
+          val fresh = primaryShardCount(indices)
+          result = fresh
+          if (shardCountCacheable(fresh)) {
+            val stored = fresh match {
+              case ElasticFailure(err) =>
+                ElasticFailure(err.copy(cause = None)) // never pin a stack
+              case success => success
+            }
+            (stored, System.currentTimeMillis())
+          } else null // not cached: a null mapping removes the (expired) entry
+        }
+      }
+    )
+    if (!fromCache && shardCountCache.size() > shardCountCachePurgeThreshold) {
+      val now = System.currentTimeMillis()
+      shardCountCache
+        .entrySet()
+        .removeIf((e: java.util.Map.Entry[String, (ElasticResult[Int], Long)]) =>
+          now - e.getValue._2 >= ttl
+        )
+    }
+    (result, fromCache)
+  }
+
+  /** Drop cached primary shard counts — called on every schema-cache write or invalidation.
+    *
+    * With an `index`, only the entries naming it are dropped: cache keys are the sorted, joined
+    * FROM expressions of a statement, so the match is made **per expression** and by
+    * case-insensitive PREFIX (an index name is lower-case on the wire, and a prefix catches the
+    * expressions an index name is the stem of — `orders` drops `orders`, `orders_2026`, `orders*` —
+    * as well as the sets containing them). Expressions that do NOT start with the index — an
+    * unrelated wildcard `logs-*` that the new index nevertheless matches, or an alias — keep their
+    * cached count until the TTL; that is a performance matter only (it changes how a PIT is split,
+    * never which rows come back). `None` drops everything.
+    */
+  private[client] def invalidateShardCounts(index: Option[String] = None): Unit = index match {
+    case Some(i) if i.nonEmpty =>
+      val prefix = i.toLowerCase
+      shardCountCache
+        .keySet()
+        .removeIf((k: String) => k.split(',').exists(_.toLowerCase.startsWith(prefix)))
+      ()
+    case _ =>
+      shardCountCache.clear()
+  }
+
   /** Create a scrolling source with automatic strategy selection
     */
   def scroll(
     statement: SearchStatement,
-    config: ScrollConfig = ScrollConfig()
+    config: ScrollConfig = defaultScrollConfig
   )(implicit
     system: ActorSystem,
     context: ConversionContext
@@ -156,12 +275,15 @@ trait ScrollApi extends ElasticClientHelpers {
 
       // Single search
       case single: SingleSearch =>
+        // #238 — an explicit LIMIT keeps the sequential PIT path on EVERY branch, including the
+        // window-enrichment branch below (createBaseQuery keeps the LIMIT — AC 6).
+        val config0 = if (single.limit.isDefined) config.copy(maxSlices = Some(1)) else config
         if (
           single.windowFunctions.exists(_.isWindowing) && (!single.select.fields.forall(
             _.isAggregation
           ) || single.scriptFields.nonEmpty)
         )
-          return scrollWithWindowEnrichment(single, config)
+          return scrollWithWindowEnrichment(single, config0)
 
         val requestedFields = extractOutputFieldNames(single)
         val elasticQuery =
@@ -177,7 +299,7 @@ trait ScrollApi extends ElasticClientHelpers {
           single.sqlAggregations,
           // `_id` is injected at parse time only when it will be kept — the streamed rows
           // need no per-row strip on this hot path.
-          config.copy(retainDocumentId = keepsDocumentId(requestedFields)),
+          config0.copy(retainDocumentId = keepsDocumentId(requestedFields)),
           single.sorts.nonEmpty,
           requestedFields,
           single.nestedHitsMappings
@@ -224,7 +346,11 @@ trait ScrollApi extends ElasticClientHelpers {
   /** Typed scroll source converting results into typed entities from an SQL query
     *
     * @note
-    *   This method provides compile-time SQL validation via macros.
+    *   This method provides compile-time SQL validation via macros. Macro applications do not
+    *   support default arguments (scalac: "macro applications do not support named and/or default
+    *   arguments"), so `config` must always be passed explicitly — use [[defaultScrollConfig]] (or
+    *   a `.copy` of it) to keep the `elastic.scroll` settings; [[scrollAsUnchecked]] does apply it
+    *   when omitted.
     *
     * @param sql
     *   - SQL query
@@ -273,7 +399,7 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   def scrollAsUnchecked[T](
     sql: SelectStatement,
-    config: ScrollConfig = ScrollConfig()
+    config: ScrollConfig = defaultScrollConfig
   )(implicit
     system: ActorSystem,
     m: Manifest[T],
@@ -289,19 +415,30 @@ trait ScrollApi extends ElasticClientHelpers {
   // PRIVATE METHODS
   // ========================================================================
 
+  /** The query body parsed ONCE per stream — `JNothing` when it is not valid JSON (both readers
+    * treat that as "clause absent", their historical behaviour). Both the strategy decision (`aggs`
+    * / `aggregations`) and the slice decision (`sort`) read this tree instead of parsing the same
+    * string twice per extraction. It is a per-stream cost, not a per-page one.
+    */
+  private def parseQueryBody(query: String): JValue =
+    try parse(query)
+    catch { case _: Exception => JNothing }
+
   /** Determine the best scroll strategy based on the query
     */
-  private def determineScrollStrategy(
+  private[client] def determineScrollStrategy(
     elasticQuery: ElasticQuery,
     aggregations: ListMap[String, SQLAggregation],
-    config: ScrollConfig
+    config: ScrollConfig,
+    queryBody: JValue
   ): ScrollStrategy = {
     // If aggregations are present, use classic scrolling
     if (aggregations.nonEmpty) {
       UseScroll
     } else {
-      // Check if the query contains aggregations in the JSON
-      if (hasAggregations(elasticQuery.query)) {
+      // Check if the query contains aggregations in the JSON: `sqlAggregations` carries the METRIC
+      // aggregations only, so a bucket-only GROUP BY reaches here with an empty map (load-bearing).
+      if (hasAggregations(queryBody)) {
         UseScroll
       } else if (!config.preferSearchAfter) {
         // Operational opt-out (#201): classic scroll is slower than fixed PIT (9.55 s vs
@@ -326,13 +463,20 @@ trait ScrollApi extends ElasticClientHelpers {
     }
   }
 
-  /** Scroll with metrics tracking
+  /** Scroll with metrics tracking.
+    *
+    * The strategy and the slice count (#238) are resolved ONCE per stream, off the caller's thread:
+    * the shard lookup behind [[resolveSlices]] is blocking HTTP and `scroll(...)` is built eagerly
+    * by gateway / JDBC / `Await` callers. `requested` is the caller's configuration; the resolved
+    * `config` bound below is what every downstream read uses — `maxDocuments`, `scrollSize`,
+    * `metrics`, `logEvery` and the zero-row metrics fallback included. A strategy / version failure
+    * surfaces as a failed stream (it used to be a synchronous throw).
     */
   private def scrollWithMetrics(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
-    config: ScrollConfig,
+    requested: ScrollConfig,
     hasSorts: Boolean = false,
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty
@@ -343,61 +487,164 @@ trait ScrollApi extends ElasticClientHelpers {
 
     implicit val ec: ExecutionContext = system.dispatcher
 
-    val metricsPromise = Promise[ScrollMetrics]()
-
-    scroll(elasticQuery, fieldAliases, aggregations, config, hasSorts, fields, nestedHits)
-      .take(config.maxDocuments.getOrElse(Long.MaxValue))
-      .grouped(config.scrollSize)
-      .statefulMapConcat { () =>
-        var metrics = config.metrics // Thread-safe as statefulMapConcat is single-threaded
-        batch => {
-          metrics = metrics.copy(
-            totalDocuments = metrics.totalDocuments + batch.size,
-            totalBatches = metrics.totalBatches + 1
-          )
-
-          if (metrics.totalBatches % config.logEvery == 0) {
-            logger.info(
-              s"Scroll progress: ${metrics.totalDocuments} docs, " +
-              s"${metrics.totalBatches} batches, " +
-              s"${metrics.documentsPerSecond} docs/sec"
+    Source
+      .lazyFutureSource { () =>
+        // resolved on first demand (never for a source that is built but not run), inside
+        // `blocking`: the version / `_settings` round-trips are blocking HTTP on the dispatcher
+        Future {
+          scala.concurrent.blocking {
+            // ONE parse of the request body for both decisions (strategy: `aggs`; slices: `sort`)
+            val queryBody = parseQueryBody(elasticQuery.query)
+            val strategy = determineScrollStrategy(elasticQuery, aggregations, requested, queryBody)
+            val slices = resolveSlices(elasticQuery, strategy, requested, hasSorts, queryBody)
+            (
+              strategy,
+              requested.copy(slices = slices, metrics = requested.metrics.copy(slices = slices))
             )
           }
-          batch.map(doc => (doc, metrics))
-        }
+        }.map { case (strategy, config) =>
+          val metricsPromise = Promise[ScrollMetrics]()
 
+          scroll(
+            elasticQuery,
+            fieldAliases,
+            aggregations,
+            config,
+            hasSorts,
+            fields,
+            nestedHits,
+            strategy
+          )
+            .take(config.maxDocuments.getOrElse(Long.MaxValue))
+            .grouped(config.scrollSize)
+            .statefulMapConcat { () =>
+              var metrics = config.metrics // Thread-safe as statefulMapConcat is single-threaded
+              batch => {
+                metrics = metrics.copy(
+                  totalDocuments = metrics.totalDocuments + batch.size,
+                  totalBatches = metrics.totalBatches + 1
+                )
+
+                if (metrics.totalBatches % config.logEvery == 0) {
+                  logger.info(
+                    s"Scroll progress: ${metrics.totalDocuments} docs, " +
+                    s"${metrics.totalBatches} batches, " +
+                    s"${metrics.documentsPerSecond} docs/sec"
+                  )
+                }
+                batch.map(doc => (doc, metrics))
+              }
+
+            }
+            .alsoTo(Sink.lastOption.mapMaterializedValue { lastFuture =>
+              lastFuture
+                .map(opt =>
+                  opt.map(_._2).getOrElse(config.metrics)
+                ) // Get final metrics or fallback to current
+                .onComplete {
+                  case Success(finalMetrics) =>
+                    val completed = finalMetrics.complete
+                    logger.info(
+                      s"Scroll completed: ${completed.totalDocuments} docs in ${completed.duration}ms " +
+                      s"(${completed.documentsPerSecond} docs/sec)"
+                    )
+                    metricsPromise.success(completed)
+                  case Failure(ex) =>
+                    logger.error("Failed to get final metrics", ex)
+                    metricsPromise.failure(ex)
+                }(system.dispatcher)
+            })
+            .mapMaterializedValue(_ => NotUsed)
+        }
       }
-      .alsoTo(Sink.lastOption.mapMaterializedValue { lastFuture =>
-        lastFuture
-          .map(opt =>
-            opt.map(_._2).getOrElse(config.metrics)
-          ) // Get final metrics or fallback to current
-          .onComplete {
-            case Success(finalMetrics) =>
-              val completed = finalMetrics.complete
-              logger.info(
-                s"Scroll completed: ${completed.totalDocuments} docs in ${completed.duration}ms " +
-                s"(${completed.documentsPerSecond} docs/sec)"
-              )
-              metricsPromise.success(completed)
-            case Failure(ex) =>
-              logger.error("Failed to get final metrics", ex)
-              metricsPromise.failure(ex)
-          }(system.dispatcher)
-      })
       .mapMaterializedValue(_ => NotUsed)
   }
 
-  private def hasAggregations(query: String): Boolean = {
-    try {
-      val json = parse(query)
-      (json \ "aggregations") != JNothing || (json \ "aggs") != JNothing
-    } catch {
-      case _: Exception => false
+  private def hasAggregations(queryBody: JValue): Boolean =
+    (queryBody \ "aggregations") != JNothing || (queryBody \ "aggs") != JNothing
+
+  /** Belt and braces for the slice guard: a TOP-LEVEL `sort` in the request body.
+    *
+    * Redundant against today's single entry point — the bridge emits the top-level `sort` from
+    * `orderBy.sorts` and from nothing else, which is exactly what the `hasSorts` flag reads from
+    * the AST — so it can only agree with it. It is kept (free, now that the body is parsed once for
+    * the strategy) because the failure it guards is a WRONG ANSWER, not a slowdown: a query that
+    * asked for an order, sliced, comes back interleaved. Any future path that reaches
+    * [[scrollWithMetrics]] with a hand-written body stays correct by construction.
+    */
+  private def hasSortClause(queryBody: JValue): Boolean = (queryBody \ "sort") != JNothing
+
+  /** #238 — slices for this stream: 1 unless the strategy is [[UsePIT]], no sort is present (AST
+    * and JSON), the effective ceiling is above 1 and the cluster supports PIT slicing (7.15+). One
+    * per primary shard of the resolved indices, capped by the ceiling, never above the shard count.
+    * The guard order is load-bearing: no `_settings` round-trip on ORDER BY / LIMIT / opt-out / ES6
+    * / classic-scroll paths. The shard count comes from [[cachedPrimaryShardCount]] (one
+    * `_settings` round-trip per index set per [[shardCountCacheTtlMs]]); a lookup failure degrades
+    * to sequential with a WARN — once per TTL for a privilege failure (DEBUG while the cached
+    * failure is replayed), on every extraction for a transient one.
+    */
+  private[client] def resolveSlices(
+    elasticQuery: ElasticQuery,
+    strategy: ScrollStrategy,
+    config: ScrollConfig,
+    hasSorts: Boolean,
+    queryBody: JValue
+  ): Int = {
+    val ceiling = config.maxSlices.getOrElse(configuredMaxSlices)
+    if (strategy != UsePIT || hasSorts || ceiling <= 1 || hasSortClause(queryBody)) {
+      logger.debug(
+        s"PIT slicing not applicable (strategy $strategy, sorted $hasSorts, max-slices $ceiling); paging sequentially"
+      )
+      1
+    } else {
+      val targets = elasticQuery.indices.mkString(",")
+      version match {
+        case ElasticSuccess(v) if ElasticsearchVersion.supportsPitSlicing(v) =>
+          val (lookup, cached) = cachedPrimaryShardCount(elasticQuery.indices)
+          lookup match {
+            case ElasticSuccess(shards) =>
+              val n = math.max(1, math.min(shards, ceiling))
+              if (n > 1) {
+                logger.info(
+                  s"Sliced PIT paging: $n slices over $shards primary shards (max-slices $ceiling, page ${config.scrollSize}) for $targets"
+                )
+              } else {
+                logger.debug(s"PIT paging stays sequential: $shards primary shard(s) for $targets")
+              }
+              n
+            case ElasticFailure(err) if cached =>
+              logger.debug(
+                s"Primary shard count for $targets still unresolved (cached failure: ${err.message}); paging sequentially"
+              )
+              1
+            case ElasticFailure(err) =>
+              // only a privilege failure is remembered (see shardCountCacheTtlMs); anything else
+              // is probed again by the next extraction, and says so
+              val why = err.statusCode match {
+                case Some(s) if s == 401 || s == 403 =>
+                  s"the lookup needs the view_index_metadata privilege on the indices (HTTP $s) — remembered for ${shardCountCacheTtlMs / 1000} s"
+                case _ =>
+                  "retried on the next extraction"
+              }
+              logger.warn(
+                s"Could not resolve the primary shard count for $targets (${err.message}); paging sequentially — $why; set elastic.scroll.max-slices = 1 (ELASTIC_SCROLL_MAX_SLICES) to skip the lookup"
+              )
+              1
+          }
+        case ElasticSuccess(v) =>
+          logger.debug(s"ES version $v has PIT but no PIT slicing (7.15+); paging sequentially")
+          1
+        case ElasticFailure(err) =>
+          // unreachable in practice (UsePIT implies a cached, successful version) — degrade, never throw
+          logger.warn(
+            s"Could not read the Elasticsearch version (${err.message}); paging sequentially"
+          )
+          1
+      }
     }
   }
 
-  /** Create a scrolling source for JSON query with automatic strategy
+  /** Create a scrolling source for JSON query with the resolved strategy
     */
   private def scroll(
     elasticQuery: ElasticQuery,
@@ -406,13 +653,12 @@ trait ScrollApi extends ElasticClientHelpers {
     config: ScrollConfig,
     hasSorts: Boolean,
     fields: Seq[String],
-    nestedHits: Map[String, Seq[(String, String)]]
+    nestedHits: Map[String, Seq[(String, String)]],
+    strategy: ScrollStrategy
   )(implicit
     system: ActorSystem,
     context: ConversionContext
   ): Source[ListMap[String, Any], NotUsed] = {
-    val strategy = determineScrollStrategy(elasticQuery, aggregations, config)
-
     logger.info(
       s"Using scroll strategy: $strategy for query \n$elasticQuery"
     )

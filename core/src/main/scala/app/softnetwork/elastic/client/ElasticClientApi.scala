@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.common.ClientCompanion
+import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import com.typesafe.config.{Config, ConfigFactory}
 import org.slf4j.Logger
@@ -65,4 +66,14 @@ trait ElasticClientApi
     * `elastic.include-document-id` (disabled by default).
     */
   override protected def includeDocumentId: Boolean = elasticConfig.includeDocumentId
+
+  /** Paged row extraction defaults come from `elastic.scroll` (#238): the page size is applied
+    * here, the slice ceiling is inherited through `maxSlices = None` so an explicit
+    * `ScrollConfig(...)` still honours the HOCON/env opt-out. A `def` — see
+    * [[ScrollApi.defaultScrollConfig]].
+    */
+  override def defaultScrollConfig: ScrollConfig =
+    ScrollConfig(scrollSize = elasticConfig.scroll.size)
+
+  override protected def configuredMaxSlices: Int = elasticConfig.scroll.maxSlices
 }

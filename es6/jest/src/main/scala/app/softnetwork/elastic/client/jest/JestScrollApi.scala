@@ -39,7 +39,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
 trait JestScrollApi extends ScrollApi with JestClientHelpers {
-  _: JestVersionApi with JestSearchApi with JestClientCompanion =>
+  _: JestVersionApi with JestSearchApi with JestSettingsApi with JestClientCompanion =>
 
   /** Classic scroll (works for both hits and aggregations)
     */

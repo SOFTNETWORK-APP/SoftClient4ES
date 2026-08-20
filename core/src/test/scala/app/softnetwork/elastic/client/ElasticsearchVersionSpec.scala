@@ -65,6 +65,29 @@ class ElasticsearchVersionSpec extends AnyWordSpec with Matchers {
     }
   }
 
+  "ElasticsearchVersion.supportsPitSlicing" should {
+    // slice + pit in ONE search request exists from 7.15 (elastic/elasticsearch#74457), not 7.10
+    // as the #238 issue text said; 7.12–7.14 keep PIT but page sequentially.
+    "return true for ES >= 7.15" in {
+      ElasticsearchVersion.supportsPitSlicing("7.15.0") shouldBe true
+      ElasticsearchVersion.supportsPitSlicing("7.17.29") shouldBe true
+      ElasticsearchVersion.supportsPitSlicing("8.18.3") shouldBe true
+      ElasticsearchVersion.supportsPitSlicing("9.0.3") shouldBe true
+    }
+
+    "return false for ES < 7.15 (PIT without slicing on 7.12-7.14)" in {
+      ElasticsearchVersion.supportsPitSlicing("7.14.2") shouldBe false
+      ElasticsearchVersion.supportsPitSlicing("7.12.0") shouldBe false
+      ElasticsearchVersion.supportsPitSlicing("7.10.0") shouldBe false
+      ElasticsearchVersion.supportsPitSlicing("6.8.23") shouldBe false
+    }
+
+    "keep supportsPit at 7.12" in {
+      ElasticsearchVersion.supportsPit("7.12.0") shouldBe true
+      ElasticsearchVersion.supportsPit("7.11.2") shouldBe false
+    }
+  }
+
   "ElasticsearchVersion.isEs8OrHigher" should {
     "return true for ES >= 8.0" in {
       ElasticsearchVersion.isEs8OrHigher("8.0.0") shouldBe true

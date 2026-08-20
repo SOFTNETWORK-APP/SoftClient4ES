@@ -357,7 +357,8 @@ val results = client.search(SQLQuery("SELECT * FROM users WHERE age > 25"))
 // Type-safe queries with compile-time validation
 case class User(id: String, name: String, age: Int)
 val users: Source[User, NotUsed] = client.scrollAs[User](
-  "SELECT id, name, age FROM users WHERE active = true"
+  "SELECT id, name, age FROM users WHERE active = true",
+  client.defaultScrollConfig // the macro needs an explicit config; this one carries elastic.scroll.*
 )
 ```
 

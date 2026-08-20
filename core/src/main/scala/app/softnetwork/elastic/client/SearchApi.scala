@@ -1825,8 +1825,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
       s"▶ Row query ${maxDocuments.fold("without LIMIT")(max => s"with LIMIT window $max above ${SearchApi.DefaultMaxResultWindow}")} — routing through scroll for row completeness:\n${sql
         .getOrElse(elasticQuery.query)}"
     )
+    // #238 — an explicit LIMIT keeps the sequential PIT path (the `.drop(offset)` below needs a
+    // deterministic `_doc` order); the statement's LIMIT was stripped above, so ScrollApi's own
+    // clamp cannot see it and the clamp must be applied here. The no-LIMIT branch inherits the
+    // configured ceiling (`maxSlices = None`).
     scrollApi
-      .scroll(statement, ScrollConfig(maxDocuments = maxDocuments))
+      .scroll(
+        statement,
+        scrollApi.defaultScrollConfig.copy(
+          maxDocuments = maxDocuments,
+          maxSlices = if (single.limit.isDefined) Some(1) else None
+        )
+      )
       .map(_._1)
       .drop(offset)
       .runWith(Sink.seq)
