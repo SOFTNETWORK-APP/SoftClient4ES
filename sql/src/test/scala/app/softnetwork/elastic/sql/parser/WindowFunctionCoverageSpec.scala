@@ -111,9 +111,10 @@ class WindowFunctionCoverageSpec extends AnyFlatSpec with Matchers {
     *
     * `ARRAY_AGG`'s inline `LIMIT` is parsed and kept on the AST, but `emitsLimitInOver` is false
     * for everything except ranking windows, so the rendering drops it. Any consumer that
-    * round-trips SQL through the AST — the REPL, JOIN reconstruction — loses the bound silently.
-    * See SoftClient4ES issue for the render/parse asymmetry; `dql_statements.md` documents this
-    * `LIMIT` as meaningful.
+    * round-trips SQL through the AST — the REPL, JOIN reconstruction — loses the bound. Worse,
+    * `ArrayAgg.update` then falls back to `request.limit`, so the statement's own LIMIT is
+    * substituted for the inline one — a different answer, not an error. See issue #247. Pinned to
+    * today's behaviour on purpose: fixing #247 makes this test fail, which is the point.
     */
   it should "drop ARRAY_AGG's inline LIMIT when rendering (known asymmetry)" in {
     val written = "ARRAY_AGG(tag) OVER (PARTITION BY product ORDER BY ts ASC LIMIT 10) AS t"
