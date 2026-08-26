@@ -412,7 +412,9 @@ Window functions operate over a logical window of rows defined by `OVER (PARTITI
 Supported window functions include:
 
 - `SUM(expr) OVER (...)`
-- `COUNT(expr) OVER (...)`
+- `AVG(expr) OVER (...)`
+- `MIN(expr) OVER (...)` / `MAX(expr) OVER (...)`
+- `COUNT(expr) OVER (...)`, including `COUNT(DISTINCT expr) OVER (...)`
 - `STDDEV(expr) OVER (PARTITION BY ...)` and its `_SAMP` / `_POP` variants
 - `VARIANCE(expr) OVER (PARTITION BY ...)` and its `_SAMP` / `_POP` variants
 - `FIRST_VALUE(expr) OVER (...)`
@@ -421,6 +423,13 @@ Supported window functions include:
 - `ROW_NUMBER() OVER ([PARTITION BY ...] ORDER BY ...)`
 - `RANK() OVER ([PARTITION BY ...] ORDER BY ...)`
 - `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY ...)`
+- `PERCENTILE_CONT(p) OVER (PARTITION BY ... ORDER BY column)` and `PERCENTILE_DISC(p) OVER (...)`
+
+`PERCENTILE_CONT` / `PERCENTILE_DISC` accept four equivalent spellings — the `OVER (... ORDER BY column)`
+form above, `WITHIN GROUP (ORDER BY column)`, the two combined, and the `(column, p)` shorthand. All four
+**normalize to the same canonical rendering**, `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column) [OVER
+(PARTITION BY ...)]`, so a statement round-tripped through the engine comes back in that form rather than
+the one you typed. See [Aggregate Functions](functions_aggregate.md#function-percentile_cont--percentile_disc).
 
 #### Basic window example
 
