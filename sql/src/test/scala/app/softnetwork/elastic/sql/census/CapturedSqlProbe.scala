@@ -33,24 +33,24 @@ import scala.collection.mutable.ListBuffer
   *
   * {{{
   * sbt "sql/Test/runMain app.softnetwork.elastic.sql.census.CapturedSqlProbe \
-  *      <corpus.csv> <out.csv> [<census.csv>]"
+  *       <corpus.csv> <out.csv> [<census.csv>]"
   * }}}
   *
   * When the census path is omitted it is resolved as `epic-19-function-census.csv` beside the
-  * corpus. A missing input is a loud failed task naming the absolute path (a thrown exception,
-  * not `sys.exit`: this build never forks, so `run` executes in the sbt JVM where `sys.exit`
-  * would go through sbt's TrapExit).
+  * corpus. A missing input is a loud failed task naming the absolute path (a thrown exception, not
+  * `sys.exit`: this build never forks, so `run` executes in the sbt JVM where `sys.exit` would go
+  * through sbt's TrapExit).
   *
   * Per corpus row it emits: the `Parser` verdict (`parses` | `parse_error`) with the verbatim
   * `ParserError.msg`; the debound verdict for `?`-bearing rows that fail (AD-4 branch 1); one
   * sub-row per statement of a multi-statement capture, split the way the product splits (AD-4
   * branch 2, semantics copied from `GatewayApi.splitStatements`); the projected-field function
-  * class names; the census ids resolved from the observed spellings (`census_ids_for`, AD-5 -
-  * a list, ALL candidates of a token when the form is undecidable, tie-breaker T4); and the
+  * class names; the census ids resolved from the observed spellings (`census_ids_for`, AD-5 - a
+  * list, ALL candidates of a token when the form is undecidable, tie-breaker T4); and the
   * `unmatched_spellings` scan backed by the real `SQLKeywords` registry.
   *
-  * `Parser.apply` can THROW instead of returning Left (issue #250, three WhereParser sites);
-  * every parse here is wrapped in a Throwable catch and recorded as a verdict, never a crash.
+  * `Parser.apply` can THROW instead of returning Left (issue #250, three WhereParser sites); every
+  * parse here is wrapped in a Throwable catch and recorded as a verdict, never a crash.
   */
 object CapturedSqlProbe {
 
@@ -212,8 +212,8 @@ object CapturedSqlProbe {
     )
   }
 
-  /** Issue #250: Parser.apply can throw ValidationError instead of returning Left. Catch
-    * everything and keep the run alive - a crash here is a verdict, not a failure of the probe.
+  /** Issue #250: Parser.apply can throw ValidationError instead of returning Left. Catch everything
+    * and keep the run alive - a crash here is a verdict, not a failure of the probe.
     */
   private def parse(sql: String): (String, String, Option[Statement]) =
     try {
@@ -243,8 +243,8 @@ object CapturedSqlProbe {
       case _ => Nil
     }
 
-  /** AD-5's census_ids_for: resolve every observed spelling to census rows. Returns
-    * (all resolved ids, the subset resolved only at token level, reason-when-empty).
+  /** AD-5's census_ids_for: resolve every observed spelling to census rows. Returns (all resolved
+    * ids, the subset resolved only at token level, reason-when-empty).
     */
   private def resolveAll(
     stmt: String,
@@ -268,12 +268,12 @@ object CapturedSqlProbe {
     (resolved.toList.distinct, tokenOnly.toList.distinct, "")
   }
 
-  /** Resolve one observed spelling against its candidate census rows (one row per FORM).
-    * Decidable discriminator: the set of form keywords (FROM/FOR/IN/WITHIN GROUP/ORDER BY/
-    * PARTITION BY) present inside the observed call's parentheses, compared against the same
-    * set computed from each candidate's own example_sql. Exactly one candidate agreeing ->
-    * form-level. Anything else -> ALL candidates, token-only (T4: inflating is the safe error).
-    * Returns (ids, undecidedAtTokenLevel).
+  /** Resolve one observed spelling against its candidate census rows (one row per FORM). Decidable
+    * discriminator: the set of form keywords (FROM/FOR/IN/WITHIN GROUP/ORDER BY/ PARTITION BY)
+    * present inside the observed call's parentheses, compared against the same set computed from
+    * each candidate's own example_sql. Exactly one candidate agreeing -> form-level. Anything else
+    * -> ALL candidates, token-only (T4: inflating is the safe error). Returns (ids,
+    * undecidedAtTokenLevel).
     */
   private[census] def censusIdsFor(
     spelling: String,
@@ -326,9 +326,9 @@ object CapturedSqlProbe {
     }
   }
 
-  /** unmatched_spellings (corpus schema): call-shaped names in the comment-stripped,
-    * string-masked statement that are (a) not census spellings/aliases, (b) not registry
-    * clause/statement/literal words, and (c) not preceded by FROM/JOIN (table functions).
+  /** unmatched_spellings (corpus schema): call-shaped names in the comment-stripped, string-masked
+    * statement that are (a) not census spellings/aliases, (b) not registry clause/statement/literal
+    * words, and (c) not preceded by FROM/JOIN (table functions).
     */
   private def unmatchedSpellings(
     strippedMasked: String,
@@ -352,11 +352,11 @@ object CapturedSqlProbe {
   private def keywordExclusions(): Set[String] = {
     val clauseWords = SQLKeywords.clauseTokens.flatMap(SQLKeywords.wordsOf).map(_.toUpperCase)
     (clauseWords.toSet ++ SQLKeywords.statementWords.map(_.toUpperCase)
-      ++ SQLKeywords.literalWords.map(_.toUpperCase) ++ Set("VALUES", "CAST", "IF"))
+    ++ SQLKeywords.literalWords.map(_.toUpperCase) ++ Set("VALUES", "CAST", "IF"))
   }
 
-  /** Statement split with the product's semantics - copied from GatewayApi.splitStatements
-    * (core module, not on the sql classpath; ~30 lines duplicated deliberately, Rule of Three).
+  /** Statement split with the product's semantics - copied from GatewayApi.splitStatements (core
+    * module, not on the sql classpath; ~30 lines duplicated deliberately, Rule of Three).
     */
   private[census] def splitStatements(sql: String): List[String] = {
     val statements = ListBuffer.empty[String]
@@ -604,8 +604,8 @@ object CapturedSqlProbe {
     Files.write(target, (lines.mkString("\n") + "\n").getBytes(StandardCharsets.UTF_8))
   }
 
-  /** Deterministic resolver/scanner assertions on synthetic inputs, run before every probe so
-    * a broken discriminator fails loudly instead of writing plausible wrong resolutions.
+  /** Deterministic resolver/scanner assertions on synthetic inputs, run before every probe so a
+    * broken discriminator fails loudly instead of writing plausible wrong resolutions.
     */
   private def selfCheck(): Unit = {
     val fromFor = CensusRow(
@@ -643,7 +643,9 @@ object CapturedSqlProbe {
     require(hasPlaceholder("SELECT * FROM t WHERE a = ?"), "selfCheck: hasPlaceholder")
     require(!hasPlaceholder("SELECT '?' FROM t"), "selfCheck: '?' in a literal is not a param")
     require(
-      debind("SELECT * FROM t WHERE a = ? AND b = '?'") == "SELECT * FROM t WHERE a = 0 AND b = '?'",
+      debind(
+        "SELECT * FROM t WHERE a = ? AND b = '?'"
+      ) == "SELECT * FROM t WHERE a = 0 AND b = '?'",
       "selfCheck: debind"
     )
     require(
