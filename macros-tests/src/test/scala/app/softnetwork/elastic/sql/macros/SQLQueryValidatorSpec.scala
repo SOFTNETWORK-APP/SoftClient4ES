@@ -146,6 +146,19 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
+  it should "REJECT a FROM-less SELECT (issue #251 — the handshake is not a search)" in {
+    // Since story 20.9, `SELECT 1` PARSES (FromlessSelect). searchAs must still refuse it —
+    // with a clean c.abort naming the statement kind, never a macro MatchError.
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Product
+
+      TestElasticClientApi.searchAs[Product](
+        "SELECT 1"
+      )""")
+  }
+
   it should "REJECT query with invalid field names" in {
     assertDoesNotCompile("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi

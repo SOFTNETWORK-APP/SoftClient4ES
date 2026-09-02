@@ -402,6 +402,166 @@ package object query {
       ListMap(requests.flatMap(_.fieldAliases).distinct: _*)
   }
 
+  /** FROM-less SELECT of constant scalar expressions — the connection/health idiom of the
+    * JDBC/SQLAlchemy ecosystem (issue #251): Tableau re-issues `SELECT 1` on every interaction,
+    * Superset's connect test sends `SELECT 1` and its engine probe `SELECT 1 LIMIT 100`.
+    *
+    * EXECUTED AGAINST ELASTICSEARCH (lead direction 2026-09-02): the select-list is rewritten to a
+    * SingleSearch over the dedicated handshake index and rides the existing SQL to Painless
+    * translation as script_fields — a locally-answered handshake would report "connected" against a
+    * dead cluster. Deliberately NOT a SearchStatement: the PUBLIC statement must never reach
+    * SearchApi / the scroll machinery or the SingleSearch quota arm; only the INTERNAL rewrite
+    * (toSingleSearch, always LIMIT 1) executes, below those seams.
+    */
+  case class FromlessSelect(
+    // NO default for `select`: Select()'s own default is `SELECT *`
+    // (fields = Seq(Field(Identifier("*"))), query/Select.scala) — a no-arg
+    // FromlessSelect() would construct exactly the statement this class rejects.
+    select: Select,
+    limit: Option[Limit] = None
+  ) extends DqlStatement {
+
+    override def sql: String = s"$select${asString(limit)}"
+
+    /** Output column names, SELECT-list order: explicit alias, else the rendered expression
+      * (`SELECT 1` -> "1") — the convention hosts already accept (19.4 shim, MySQL family). The
+      * internal `__cN` computed aliases (Select.fieldsWithComputedAliases) name the ES script
+      * fields only; result assembly maps them back to these names.
+      */
+    lazy val columnNames: Seq[String] =
+      select.fields.map(f => f.fieldAlias.map(_.alias).getOrElse(f.identifier.identifierName))
+
+    /** The execution rewrite: exactly what the parser's `single` production would build for `SELECT
+      * <items> FROM <dummyIndex> LIMIT 1` (Parser.single maps through .update(); programmatic
+      * SingleSearch(...).update() is the established #212 pattern). ALWAYS `LIMIT 1`: the
+      * statement's own LIMIT/OFFSET are applied on the assembled row by the executor (AD-12) and
+      * must never leak here — a host's LIMIT 11000 would otherwise flip `requiresScrollPaging` and
+      * route a handshake into scroll/PIT.
+      */
+    def toSingleSearch(dummyIndex: String): SingleSearch =
+      SingleSearch(
+        select = select,
+        from = From(Seq(Table(dummyIndex))),
+        where = None,
+        limit = Some(Limit(1, None))
+      ).update()
+
+    /** ListMap rows silently collapse duplicate keys (PD-3). */
+    private def checkDuplicateColumns(): Either[String, Unit] = {
+      val dupes = columnNames.diff(columnNames.distinct).distinct
+      if (dupes.nonEmpty)
+        Left(
+          s"Duplicate column name(s) ${dupes.mkString(", ")} in FROM-less SELECT: " +
+          "alias each expression distinctly"
+        )
+      else Right(())
+    }
+
+    /** `Limit.validate()` is the Validation-trait default no-op and the `long` regex accepts a
+      * sign, so `LIMIT -5` (and a negatively-wrapping Int overflow like `LIMIT 4294967291`,
+      * LimitParser's `.toInt`) would silently yield zero rows through `take(negative)` — reject
+      * loudly instead (AD-8). Honest bound: an overflow that wraps POSITIVE is indistinguishable
+      * from that literal once Limit holds an Int — pre-existing LimitParser behaviour, every
+      * statement kind.
+      */
+    private def checkLimit(): Either[String, Unit] =
+      limit match {
+        case Some(l) if l.limit < 0 || l.offset.exists(_.offset < 0) =>
+          Left(s"LIMIT/OFFSET must be non-negative in FROM-less SELECT, got${l.sql}")
+        case _ => Right(())
+      }
+
+    /** One field's acceptance guard — the lead's rule: literals or Painless-translatable scalars
+      * with NO document-field reference; no window functions; no aggregations. ORDER IS
+      * LOAD-BEARING: hasWindow FIRST (WindowFunction extends AggregateFunction,
+      * function/aggregate/package.scala — aggregation-first makes the window reject dead code and
+      * mislabels it); then aggregation; then `*`; then the field's OWN name (a bare
+      * `Identifier("col")` has empty `functions` so its `dependencies` is EMPTY —
+      * Function.dependencies filters on the walked identifiers, not the root); then `dependencies`
+      * for names embedded through functions (`UPPER(col)`, `COALESCE(col,1)`); then the placeholder
+      * walk.
+      */
+    private def checkField(f: Field): Either[String, Unit] =
+      if (f.identifier.hasWindow)
+        Left(s"Window function '${f.identifier.identifierName}' requires a FROM clause")
+      else if (f.hasAggregation)
+        Left(s"Aggregation '${f.identifier.identifierName}' requires a FROM clause")
+      else if (f.identifier.name == "*")
+        Left("SELECT * requires a FROM clause")
+      else if (f.identifier.name.nonEmpty)
+        Left(s"Column reference '${f.identifier.name}' requires a FROM clause")
+      else
+        f.identifier.dependencies.headOption match {
+          case Some(dep) => Left(s"Column reference '${dep.name}' requires a FROM clause")
+          case None      => FromlessSelect.checkPlaceholders(f.identifier)
+        }
+
+    override def validate(): Either[String, Unit] =
+      for {
+        _ <- select.except match {
+          case Some(_) => Left("EXCEPT(...) requires a FROM clause")
+          case None    => Right(())
+        }
+        _ <- checkLimit()
+        _ <- checkDuplicateColumns()
+        _ <- select.fields.foldLeft[Either[String, Unit]](Right(())) { (acc, f) =>
+          acc.flatMap(_ => checkField(f))
+        }
+      } yield ()
+  }
+
+  object FromlessSelect {
+
+    /** Reject non-constant placeholder Values ANYWHERE in the expression tree (walk shape mirrors
+      * FunctionUtils.funIdentifiers / aggregateFunctions, function/package.scala):
+      *   - ParamValue renders `params.paramValue`; a nested unbound `?` reads as painless NULL at
+      *     ES — the silent-NULL #253 class, re-closed here for the ES path. (Top-level `SELECT ?`
+      *     is the only host-reachable shape — JDBC substitutes `?` textually before core sees the
+      *     SQL — but raw gateway.run callers can nest it.)
+      *   - IdValue / IngestTimestampValue render moustache `{{...}}` templates — not query-context
+      *     painless (programmatic-only; no select-position production).
+      *   - Values (array literals) render multi-element painless lists, defeating the 1-element
+      *     script_fields unwrap contract (AD-11). Every arm verified against the real classes;
+      *     extend deliberately when a new container production appears — never by falling through.
+      *     Arm ORDER is load-bearing: Conversion embeds its operand and overrides `args` to empty
+      *     (before FunctionN); Identifier extends FunctionChain (before FunctionChain).
+      */
+    private[query] def checkPlaceholders(f: function.Function): Either[String, Unit] =
+      f match {
+        case ParamValue =>
+          Left("Unbound parameter '?' is not supported without a FROM clause")
+        case IdValue | IngestTimestampValue =>
+          Left("Ingest placeholder is not supported without a FROM clause")
+        case vs: Values[_, _] =>
+          Left(s"Array literal ${vs.sql} is not supported without a FROM clause")
+        case c: function.convert.Conversion =>
+          // Conversion EMBEDS its operand (value: PainlessScript) and its args are empty
+          c.value match {
+            case g: function.Function => checkPlaceholders(g)
+            case _                    => Right(())
+          }
+        case id: Identifier =>
+          id.functions.foldLeft[Either[String, Unit]](Right(())) { (acc, g) =>
+            acc.flatMap(_ => checkPlaceholders(g))
+          }
+        case fn: function.FunctionN[_, _] =>
+          // covers BinaryFunction (args = List(left, right)), hence ArithmeticExpression
+          // operands, COALESCE/NULLIF/GREATEST/LEAST args, ...
+          fn.args.foldLeft[Either[String, Unit]](Right(())) { (acc, a) =>
+            a match {
+              case g: function.Function => acc.flatMap(_ => checkPlaceholders(g))
+              case _                    => acc
+            }
+          }
+        case fwi: function.FunctionWithIdentifier => checkPlaceholders(fwi.identifier)
+        case fc: function.FunctionChain =>
+          fc.functions.foldLeft[Either[String, Unit]](Right(())) { (acc, g) =>
+            acc.flatMap(_ => checkPlaceholders(g))
+          }
+        case _ => Right(())
+      }
+  }
+
   sealed trait DmlStatement extends Statement
 
   case class OnConflict(target: Option[Seq[String]], doUpdate: Boolean) extends Token {

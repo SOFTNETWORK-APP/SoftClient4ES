@@ -180,6 +180,18 @@ trait SQLQueryValidator {
           c.abort(c.enclosingPosition, "❌ Empty multi-search query")
         }
 
+      // Issue #251 — SELECT without FROM now PARSES (FromlessSelect, the connection
+      // handshake). It is not a search over documents, so searchAs/scrollAs cannot type it:
+      // abort cleanly naming the statement kind instead of falling through to a macro
+      // MatchError (a raw scalac crash).
+      case Right(other) =>
+        c.abort(
+          c.enclosingPosition,
+          s"❌ Not a search statement (${other.getClass.getSimpleName}): $sqlQuery\n" +
+          "searchAs/scrollAs require a SELECT ... FROM ... query; " +
+          "run FROM-less SELECTs through GatewayApi.run instead."
+        )
+
       case Left(error) =>
         c.abort(
           c.enclosingPosition,

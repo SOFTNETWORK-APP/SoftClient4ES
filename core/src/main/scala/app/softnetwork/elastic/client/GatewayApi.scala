@@ -56,6 +56,7 @@ import app.softnetwork.elastic.sql.query.{
   DropWatcher,
   EnrichPolicyStatement,
   ExecuteEnrichPolicy,
+  FromlessSelect,
   Insert,
   LicenseStatement,
   MultiSearch,
@@ -541,16 +542,23 @@ class TableExecutor(
             Future.successful(
               ElasticResult.success(
                 QueryRows(
-                  mappings.map { case (index, mappings) =>
-                    ListMap(
-                      "name" -> index,
-                      "type" -> mappings.tableType.name.toUpperCase,
-                      "pk"   -> mappings.primaryKey.mkString(","),
-                      "partitioned" -> mappings.partitionBy
-                        .map(p => s"PARTITION BY ${p.column} (${p.granularity})")
-                        .getOrElse("")
-                    )
-                  }.toSeq
+                  mappings
+                    // Issue #251/AD-10 — the handshake index is infrastructure, not a table:
+                    // never listed, ANY pattern. This one seam also covers jdbc getTables and
+                    // Flight GET_TABLES (both execute SHOW TABLES through gateway.run).
+                    // DESCRIBE TABLE deliberately still works on it.
+                    .filterNot { case (index, _) => index == GatewayApi.HandshakeIndex }
+                    .map { case (index, mappings) =>
+                      ListMap(
+                        "name" -> index,
+                        "type" -> mappings.tableType.name.toUpperCase,
+                        "pk"   -> mappings.primaryKey.mkString(","),
+                        "partitioned" -> mappings.partitionBy
+                          .map(p => s"PARTITION BY ${p.column} (${p.granularity})")
+                          .getOrElse("")
+                      )
+                    }
+                    .toSeq
                 )
               )
             )
@@ -1677,6 +1685,40 @@ class LicenseExecutor(
     exp.map(_.toString).getOrElse("never")
 }
 
+/** Issue #251 (story 20.9) — FROM-less SELECT: Painless handshake AGAINST Elasticsearch. The
+  * statement's LIMIT/OFFSET are applied engine-side on the one assembled row, AFTER the ES
+  * round-trip (AD-12) — `LIMIT 0` still connection-checks (AD-8), and the internal rewrite always
+  * carries its own `LIMIT 1` so it can never reach scroll/PIT.
+  */
+class FromlessSelectExecutor(
+  evaluator: HandshakeEvaluator,
+  logger: Logger
+) extends Executor[FromlessSelect] {
+
+  override def execute(
+    statement: FromlessSelect
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // run(statement) never calls validate(): a programmatic FromlessSelect reaches this
+    // executor without the parser's gate — re-run the guards (surviving review critical #5).
+    statement.validate() match {
+      case Left(reason) =>
+        val error =
+          ElasticError(message = reason, statusCode = Some(400), operation = Some("sql"))
+        logger.error(s"❌ ${error.message}")
+        Future.successful(ElasticFailure(error))
+      case Right(_) =>
+        evaluator.evaluateHandshake(statement).map {
+          case ElasticSuccess(row) =>
+            val offset = statement.limit.flatMap(_.offset).map(_.offset).getOrElse(0)
+            val max = statement.limit.map(_.limit).getOrElse(1)
+            ElasticSuccess(QueryRows(Seq(row).drop(offset).take(max)))
+          case ElasticFailure(error) => ElasticFailure(error)
+        }
+    }
+  }
+}
+
 class DqlRouterExecutor(
   searchExec: SearchExecutor,
   pipelineExec: PipelineExecutor,
@@ -1684,7 +1726,8 @@ class DqlRouterExecutor(
   watcherExec: WatcherExecutor,
   policyExec: EnrichPolicyExecutor,
   clusterExec: ClusterExecutor,
-  licenseExec: LicenseExecutor
+  licenseExec: LicenseExecutor,
+  fromlessExec: FromlessSelectExecutor // issue #251 — see the story 20.9 AD-4′ arity note
 ) extends Executor[DqlStatement] {
 
   override def execute(
@@ -1698,6 +1741,8 @@ class DqlRouterExecutor(
     case e: EnrichPolicyStatement => policyExec.execute(e)
     case c: ClusterStatement      => clusterExec.execute(c)
     case l: LicenseStatement      => licenseExec.execute(l)
+    // Issue #251 — FROM-less SELECT: Painless handshake AGAINST Elasticsearch.
+    case f: FromlessSelect => fromlessExec.execute(f)
 
     case _ =>
       Future.successful(
@@ -1775,6 +1820,18 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     strategy = licenseRefreshStrategy // No longer Option — NopRefreshStrategy for Community
   )
 
+  /** Issue #251 — the seam behind the FROM-less SELECT handshake. Today's backend searches the
+    * dedicated handshake index; a future Painless-execute-API backend swaps in HERE, touching
+    * nothing else (AD-4′).
+    */
+  lazy val handshakeEvaluator: HandshakeEvaluator =
+    new SearchHandshakeEvaluator(api = this, logger = logger)
+
+  lazy val fromlessSelectExecutor = new FromlessSelectExecutor(
+    evaluator = handshakeEvaluator,
+    logger = logger
+  )
+
   lazy val dqlExecutor = new DqlRouterExecutor(
     searchExec = searchExecutor,
     pipelineExec = pipelineExecutor,
@@ -1782,7 +1839,8 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     watcherExec = watcherExecutor,
     policyExec = policyExecutor,
     clusterExec = clusterExecutor,
-    licenseExec = licenseExecutor
+    licenseExec = licenseExecutor,
+    fromlessExec = fromlessSelectExecutor
   )
 
   lazy val ddlExecutor = new DdlRouterExecutor(
@@ -2074,6 +2132,27 @@ object GatewayApi {
     val safeReason = if (shownReason.isEmpty) NoParserReason else shownReason
     s"$ParseRejectionPrefix [${excerpt(statement)}]: $safeReason"
   }
+
+  /** Issue #251 — the dedicated FROM-less-handshake index. NOT dot-prefixed (ES 8+
+    * deprecation-warns dot-prefixed non-system creation — and the deprecation LOG itself creates a
+    * `.ds-*` index, the measured all_templates trap); product-prefixed so operators can attribute
+    * it; excluded from SHOW TABLES by TableExecutor (AD-10).
+    */
+  val HandshakeIndex: String = "softclient4es_handshake"
+
+  /** 1 shard / 0 replicas: single-node clusters stay green. NEVER defaultSettings (ngram). */
+  private[client] val HandshakeSettings: String =
+    """{"index": {"number_of_shards": 1, "number_of_replicas": 0}}"""
+
+  /** index.hidden exists only from ES 7.7 — used when the cluster supports it (AD-9/AD-10). */
+  private[client] val HandshakeSettingsHidden: String =
+    """{"index": {"number_of_shards": 1, "number_of_replicas": 0, "hidden": true}}"""
+
+  private[client] val HandshakeMapping: String =
+    """{"properties": {"dummy": {"type": "keyword"}}}"""
+
+  private[client] val HandshakeDocId: String = "1"
+  private[client] val HandshakeDoc: String = """{"dummy": "dummy"}"""
 
   /** Split a normalized SQL string into statements on top-level `;`.
     *

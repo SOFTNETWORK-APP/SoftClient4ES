@@ -99,6 +99,13 @@ object Parser
     case s        => MultiSearch(s)
   }
 
+  /** FROM-less SELECT (issue #251): the same select-list grammar, no FROM, optional LIMIT. `SELECT
+    * 1 LIMIT 100` must parse — it is Superset's engine probe AND what the Flight sidecar's own
+    * schemaProbeSql rewrites `SELECT 1` into.
+    */
+  def fromlessSelect: PackratParser[FromlessSelect] =
+    select ~ limit.? ^^ { case s ~ l => FromlessSelect(s, l) }
+
   def row: PackratParser[List[Value[_]]] =
     lparen ~> repsep(array_of_struct | struct | value, comma) <~ rparen
 
@@ -1099,6 +1106,11 @@ object Parser
 
   def dqlStatement: PackratParser[DqlStatement] = {
     searchStatement |
+    // Issue #251 — FROM-less SELECT. MUST stay immediately AFTER searchStatement: `|` commits
+    // to the first SUCCEEDING alternative, and searchStatement FAILS (not partially succeeds)
+    // on FROM-less input because `single` requires `from`; placing fromlessSelect first would
+    // commit to the prefix parse and break every `SELECT ... FROM ...`. Do not reorder.
+    fromlessSelect |
     showTables |
     showTable |
     showCreateTable |

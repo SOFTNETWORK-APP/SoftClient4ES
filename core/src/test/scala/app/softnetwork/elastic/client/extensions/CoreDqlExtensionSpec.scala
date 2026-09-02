@@ -25,7 +25,7 @@ import app.softnetwork.elastic.client.scroll.{ScrollConfig, ScrollMetrics}
 import app.softnetwork.elastic.licensing._
 import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{SearchStatement, SelectStatement, SingleSearch}
+import app.softnetwork.elastic.sql.query.{Limit, SearchStatement, SelectStatement, SingleSearch}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -447,6 +447,45 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     val (collector, res) =
       runWithCollector("SELECT a, b FROM idx", Quota.Enterprise, LicenseType.Enterprise)
     res shouldBe a[ElasticSuccess[_]]
+    capHits(collector).values.toSet shouldBe Set(0L)
+  }
+
+  // ---- Story 20.9 / issue #251: FROM-less SELECT takes the no-cap arm (AC 9) ----
+
+  behavior of "CoreDqlExtension FROM-less handshake routing (story 20.9)"
+
+  it should "route a FromlessSelect down the structural no-cap arm — no quota, no cap-hit, never scroll" in {
+    // Pinned so a future cap refactor cannot silently start metering handshakes: FromlessSelect
+    // is neither SingleSearch nor SelectStatement, so checkQuotasAndExecute must fall through to
+    // `case _ => client.dqlExecutor.execute(dql)` — no cap applied, no CapHitKind.QueryResults
+    // increment. The INTERNAL rewrite then executes BELOW this seam as an ordinary SingleSearch
+    // carrying its own LIMIT 1 (never re-capped, never re-metered, can never reach scroll).
+    val parsed = Parser("SELECT 1") match {
+      case Right(s) => s
+      case Left(e)  => fail(s"parse failed: ${e.msg}")
+    }
+    val collector = new TelemetryCollector
+    val client = new RecordingClient()
+    val ext = new CoreDqlExtension()
+    ext.initialize(
+      ConfigFactory.empty(),
+      strategy(managerWithQuota(Quota.Community, LicenseType.Community), collector)
+    )
+    val res = Await.result(ext.execute(parsed, client), 5.seconds)
+
+    res shouldBe a[ElasticSuccess[_]] // RecordingClient's canned searchAsync answers the rewrite
+    // never the scroll path — the rewrite's own LIMIT 1 keeps requiresScrollPaging false
+    client.scrolledStatement.get() shouldBe null
+    client.scrolledConfig.get() shouldBe null
+    // what reached the search seam is the INTERNAL rewrite: handshake index, LIMIT 1 — proof the
+    // statement crossed the extension seam uncapped and the rewrite was built below it
+    client.searchedStatement.get() match {
+      case s: SingleSearch =>
+        s.from.tables.map(_.name) shouldBe Seq(GatewayApi.HandshakeIndex)
+        s.limit shouldBe Some(Limit(1, None))
+      case other => fail(s"expected the handshake rewrite via searchAsync, got $other")
+    }
+    // no cap-hit of ANY kind
     capHits(collector).values.toSet shouldBe Set(0L)
   }
 }
