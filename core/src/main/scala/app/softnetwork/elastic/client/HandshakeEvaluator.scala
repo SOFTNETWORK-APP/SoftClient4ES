@@ -189,14 +189,18 @@ class SearchHandshakeEvaluator(
 
   /** PD-6/OQ-6 recommendation (lead-confirmed default): keep the original failure — status
     * included, never invented — and append the pre-creation guidance for read-only BI service
-    * accounts.
+    * accounts. Both routes are named (lead review of PR #268): the SQL one for an administrator
+    * connected through SoftClient4ES itself, the REST one for curl/Kibana.
     */
   private def withGuidance(f: ElasticFailure): ElasticFailure =
     ElasticFailure(
       f.elasticError.copy(
         message = s"${f.elasticError.message} — FROM-less SELECT executes a Painless handshake " +
           s"against index '$HandshakeIndex'. If this client must stay read-only, create it " +
-          s"once as an administrator: PUT /$HandshakeIndex " +
+          s"once as an administrator — via SQL: CREATE TABLE IF NOT EXISTS $HandshakeIndex " +
+          s"""(dummy KEYWORD) OPTIONS (settings = (number_of_shards = "1", """ +
+          s"""number_of_replicas = "0")); INSERT INTO $HandshakeIndex (dummy) VALUES ('dummy'); """ +
+          s"or via REST: PUT /$HandshakeIndex " +
           s"""{"settings": {"number_of_shards": 1, "number_of_replicas": 0}, """ +
           s""""mappings": $HandshakeMapping} then PUT /$HandshakeIndex/_doc/$HandshakeDocId """ +
           s"$HandshakeDoc — the driver then uses it read-only.",

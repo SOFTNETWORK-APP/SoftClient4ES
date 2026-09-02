@@ -138,7 +138,8 @@ the read-only account only needs the `read` privilege on `softclient4es_handshak
 Through SoftClient4ES itself (REPL, JDBC, or any connected client, with a privileged account):
 
 ```sql
-CREATE TABLE IF NOT EXISTS softclient4es_handshake (dummy KEYWORD);
+CREATE TABLE IF NOT EXISTS softclient4es_handshake (dummy KEYWORD)
+OPTIONS (settings = (number_of_shards = "1", number_of_replicas = "0"));
 INSERT INTO softclient4es_handshake (dummy) VALUES ('dummy');
 ```
 
@@ -159,7 +160,7 @@ PUT /softclient4es_handshake/_doc/1
 ```
 
 Without pre-creation, a read-only session's first `SELECT 1` fails with the cluster's own
-security error (status preserved) plus an appended message carrying the REST form of this
+security error (status preserved) plus an appended message naming both routes of this
 guidance.
 
 ### What stays rejected
