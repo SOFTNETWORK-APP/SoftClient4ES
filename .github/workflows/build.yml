@@ -46,6 +46,8 @@ jobs:
       run: sudo sysctl -w vm.max_map_count=262144
     - name: Cross Compile
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt + compile
+    - name: log4j closure guard
+      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt checkLog4j
     - name: Run tests
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt compile test
 

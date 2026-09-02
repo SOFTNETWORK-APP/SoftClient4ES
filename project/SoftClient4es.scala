@@ -7,6 +7,21 @@ trait SoftClient4es {
 
   def elasticSearchMajorVersion(esVersion: String): Int = esVersion.split("\\.").head.toInt
 
+  /** The log4j version the given Elasticsearch major's own POM declares for log4j-api / log4j-core.
+    *
+    * The source of truth is `org.elasticsearch:elasticsearch:<esVersion>`'s POM — re-read it
+    * whenever `Versions.es{6,7,8,9}` moves. Client closures never use this (they inherit the API
+    * transitively — see `elasticDependencies`); it exists so the ONE artifact class that
+    * deliberately ships a log4j implementation, `softclient4es{N}-core-testkit`, cannot drift away
+    * from the API version its Elasticsearch supplies.
+    */
+  def log4jVersion(esVersion: String): String =
+    elasticSearchMajorVersion(esVersion) match {
+      case 6 | 7 => "2.17.1" // ES 6.8.23 / 7.17.29 declare 2.17.1
+      case 8 | 9 => "2.19.0" // ES 8.18.3 / 9.0.3 declare 2.19.0
+      case _     => Versions.log4j
+    }
+
   lazy val jacksonExclusions: Seq[ExclusionRule] = Seq(
     ExclusionRule(organization = "com.fasterxml.jackson.core"),
     ExclusionRule(organization = "com.fasterxml.jackson.dataformat"),
@@ -31,6 +46,11 @@ trait SoftClient4es {
     ExclusionRule(organization = "org.slf4j", name = "slf4j-log4j12"),
     ExclusionRule(organization = "org.slf4j", name = "slf4j-reload4j"),
     ExclusionRule(organization = "log4j", name = "log4j"),
+    // ch.qos.reload4j is the maintained log4j 1.x fork Hadoop 3.4 actually logs through — a helper
+    // named "exclude log4j" that lets the drop-in fork through ships a logging backend anyway.
+    // Found by checkLog4jClosure on its first run (story 20.2): hadoop-client → hadoop-auth/-common
+    // delivered reload4j-1.2.22.jar onto EVERY client closure despite this excludeAll.
+    ExclusionRule(organization = "ch.qos.reload4j"),
     ExclusionRule(organization = "org.apache.logging.log4j")
   )
 
@@ -68,32 +88,18 @@ trait SoftClient4es {
       case 6 =>
         Seq(
           "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"),
-          "com.sksamuel.elastic4s" %% "elastic4s-http" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch"),
-          // Same story as ES7 below (issue #168): ES6's elastic4s-http pulls
-          // elasticsearch-rest-high-level-client 6.8.x, whose <clinit> hard-references
-          // org.apache.logging.log4j.LogManager (log4j-api), while excludeSlf4jAndLog4j strips
-          // every org.apache.logging.log4j artifact from the closure. Without this explicit
-          // re-add the published softclient4es6-rest-client — and therefore the plain es6 REPL —
-          // crashes on the first ES call with
-          //   NoClassDefFoundError: org/apache/logging/log4j/LogManager.
-          // Versions.log4j (2.17.1) matches the log4j the ES 6.8.23 server bundles; only the
-          // log4j-api surface is needed client-side (no provider required — log4j-api falls
-          // back to its no-op/SimpleLogger provider, which is fine for the cli).
-          "org.apache.logging.log4j" % "log4j-api" % Versions.log4j
+          "com.sksamuel.elastic4s" %% "elastic4s-http" % Versions.elastic64s exclude ("org.elasticsearch", "elasticsearch")
+          // (#168) The explicit log4j-api re-add that used to live here is gone: elasticDependencies
+          // no longer excludes log4j-api from `org.elasticsearch:elasticsearch`, so every major gets
+          // the API transitively at the version its own ES release declares. NB the comment this
+          // replaces blamed `excludeSlf4jAndLog4j` — that helper is never applied to an ES
+          // dependency (only to parquet/avro/hadoop/gcs in core/build.sbt); the culprit was always
+          // the log4j-api exclusion in elasticDependencies.
         )
       case 7 =>
         Seq(
-          "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"),
-          // ES7's elastic4s-core pulls elasticsearch-rest-high-level-client, whose <clinit>
-          // hard-references org.apache.logging.log4j.LogManager (log4j-api). elasticDependencies
-          // excludes log4j-api from elasticsearch while log4j-core still arrives transitively, so
-          // without this the published softclient4es7-rest-client — and therefore the es7 REPL,
-          // the es7 JDBC driver and the arrow es7 sidecar — crash on the first ES call with
-          //   NoClassDefFoundError: org/apache/logging/log4j/LogManager.
-          // Versions.log4j (2.17.1) matches the log4j-core ES 7.17 bundles, keeping the pair
-          // aligned. (ES6's RHLC has the same LogManager hard reference — handled above, see
-          // issue #168; ES8/9 use the new Java client.)
-          "org.apache.logging.log4j" % "log4j-api" % Versions.log4j
+          "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
+          // (#168 / jdbc#33 / arrow#167) log4j-api arrives transitively — see elasticDependencies.
         )
       case 8 =>
         Seq(
@@ -136,7 +142,25 @@ trait SoftClient4es {
     elasticSearchMajorVersion(esVersion) match {
       case 6 | 7 | 8 | 9 =>
         Seq(
-          "org.elasticsearch" % "elasticsearch" % esVersion exclude ("org.apache.logging.log4j", "log4j-api") exclude ("org.slf4j", "slf4j-api") excludeAll (jacksonExclusions *)
+          // ONE RULE, ALL FOUR MAJORS (#168 / jdbc#33 / arrow#167): an Elasticsearch client closure
+          // carries the log4j *API* and never a log4j *implementation*.
+          //   - The API is REQUIRED: Elasticsearch's own classes hard-reference
+          //     org.apache.logging.log4j.LogManager in <clinit>. Excluding it — which this line used
+          //     to do — is what made the es6 REPL (#168) and then the es8/es9 drivers (jdbc#33,
+          //     arrow#167) die with NoClassDefFoundError. Its version is NOT ours to pick: it is
+          //     whatever `org.elasticsearch:elasticsearch:<esVersion>` declares (2.17.1 on ES 6.8 /
+          //     7.17, 2.19.0 on ES 8.18 / 9.0), so it is right by construction on the next ES bump.
+          //   - The IMPLEMENTATION is excluded: nothing on a client path needs a logging backend,
+          //     and shipping one inside an in-process JDBC/ADBC driver installs a log4j provider in
+          //     the HOST's JVM (the es8 fat jar shipped log4j-core plus a dangling
+          //     META-INF/services/org.apache.logging.log4j.spi.Provider — Tableau error 1CA83880).
+          //     log4j2-ecs-layout is a log4j-core plugin and goes with it — and so does
+          //     ecs-logging-core, which ES 8/9 declare as a SEPARATE direct dependency (it exists
+          //     only to serve the layout; with the layout gone it is dead weight in every fat jar).
+          // log4j-api with no provider falls back to SimpleLogger — exactly what ES 6 has always
+          // shipped (its log4j-core is <optional>true</optional> upstream and never resolved).
+          // Guarded by `checkLog4jClosure` (build.sbt) — a dependencyTree read is not evidence.
+          "org.elasticsearch" % "elasticsearch" % esVersion exclude ("org.apache.logging.log4j", "log4j-core") exclude ("co.elastic.logging", "log4j2-ecs-layout") exclude ("co.elastic.logging", "ecs-logging-core") exclude ("org.slf4j", "slf4j-api") excludeAll (jacksonExclusions *)
         ).map(_.excludeAll(jacksonExclusions *))
       case _ => Seq.empty
     }

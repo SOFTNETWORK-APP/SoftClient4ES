@@ -20,7 +20,7 @@ ThisBuild / organization := "app.softnetwork"
 
 name := "softclient4es"
 
-ThisBuild / version := "0.21.0"
+ThisBuild / version := "0.22.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := scala213
 
@@ -99,6 +99,73 @@ ThisBuild / libraryDependencies ++= Seq(
 ThisBuild / libraryDependencySchemes += "org.scala-lang.modules" %% "scala-xml" % VersionScheme.Always
 
 Test / parallelExecution := false
+
+// ── #168 / jdbc#33 / arrow#167 — log4j closure guard ─────────────────────────────────────────────
+// The rule: an Elasticsearch client closure carries the log4j API and never a log4j implementation.
+// Asserted on the RESOLVED external artifact set — the jars that publishing pulls and that every
+// downstream assembly consumes. A `dependencyTree` read is NOT evidence of what ships
+// (project_es7_bridge_empty_publish_incident: a publish without copyBridge produced a manifest-only
+// jar that no tree would have revealed).
+lazy val checkLog4jClosure =
+  taskKey[Unit](
+    "Fail if this module's runtime closure carries a log4j implementation or lacks log4j-api"
+  )
+
+// The implementation set is EXPLICIT and covers every log4j backend/bridge, not just log4j-core:
+// a gate named "no implementation" that only knows one artifact name is a gate that passes on the
+// next one somebody adds.
+val log4jImplPrefixes = Seq(
+  "log4j-core-",
+  "log4j2-ecs-layout-",
+  "log4j-layout-template-json-",
+  "log4j-slf4j-impl-",
+  "log4j-slf4j2-impl-",
+  "log4j-to-slf4j-",
+  "log4j-jpl-",
+  "log4j-1.2-api-",
+  "log4j-jul-",
+  "log4j-jcl-",
+  "log4j-1.",
+  "reload4j-",
+  // slf4j->log4j BINDING jars: they route a host's slf4j into a log4j 1.x impl — Hadoop delivers
+  // them PAIRED with reload4j, and a gate that sees only one half of the pair is half a gate.
+  "slf4j-log4j12-",
+  "slf4j-reload4j-"
+)
+
+lazy val log4jClosureSettings: Seq[Setting[_]] = Seq(
+  checkLog4jClosure := {
+    val log = streams.value.log
+    val jars = (Runtime / managedClasspath).value.map(_.data.getName)
+    val expected = log4jVersion(elasticSearchVersion.value)
+    val impl = jars.filter(n => log4jImplPrefixes.exists(n.startsWith))
+    // require a digit right after the prefix: `log4j-api-kotlin-*` / `log4j-api-scala_*` must not
+    // satisfy the presence check (the version comparison below would still fail loudly, but with a
+    // misleading message naming the wrong artifact)
+    val api = jars.filter(n => n.matches("log4j-api-\\d.*\\.jar")).distinct
+    if (impl.nonEmpty)
+      throw new MessageOnlyException(
+        s"${name.value}: log4j IMPLEMENTATION on the runtime closure: ${impl.mkString(", ")}. " +
+        "A client closure carries the API only - see elasticDependencies (#168 / jdbc#33 / arrow#167). " +
+        "If the offender is NOT the Elasticsearch server jar, exclude it at ITS root - do not weaken this."
+      )
+    if (api.isEmpty)
+      throw new MessageOnlyException(
+        s"${name.value}: no log4j-api on the runtime closure. Elasticsearch's own classes " +
+        "hard-reference org.apache.logging.log4j.LogManager in <clinit> - this is #168."
+      )
+    // AC-2 is a VERSION claim, and it is the only part a count cannot prove: sbt's conflict manager
+    // evicts to one version per (org, name) BEFORE managedClasspath exists, so `api.size` is 1 by
+    // construction. Compare the resolved name to what THIS module's Elasticsearch declares instead.
+    if (api.head != s"log4j-api-$expected.jar")
+      throw new MessageOnlyException(
+        s"${name.value}: resolved ${api.head}, expected log4j-api-$expected.jar for Elasticsearch " +
+        s"${elasticSearchVersion.value}. Either an ES bump moved log4j (update SoftClient4es.log4jVersion " +
+        "from that ES POM, same commit) or something re-declares log4j-api by hand."
+      )
+    log.info(s"${name.value}: log4j closure OK (${api.head}, no implementation)")
+  }
+)
 
 lazy val licensing = project
   .in(file("licensing"))
@@ -223,9 +290,16 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       name := projectId,
       libraryDependencies ++= elasticDependencies(elasticSearchVersion.value) ++
       elastic4sTestkitDependencies(elasticSearchVersion.value) ++ Seq(
-        "org.apache.logging.log4j" % "log4j-api" % Versions.log4j,
-        //  "org.apache.logging.log4j" % "log4j-slf4j-impl"  % Versions.log4j,
-        "org.apache.logging.log4j" % "log4j-core" % Versions.log4j,
+        // AD-3 / #168: elasticDependencies deliberately strips the log4j IMPLEMENTATION from every
+        // client closure. The testkit is the ONE artifact class that wants one — tests configure
+        // logging — so it re-adds it here, explicitly, at the version this ES major declares
+        // (log4jVersion), so it can never sit next to a different log4j-api. Do NOT copy this line
+        // into a client module. The explicit log4j-api re-add is gone: the API arrives transitively
+        // from `org.elasticsearch:elasticsearch` at that same version — a second declaration is
+        // exactly how the pair drifts. (Same block exists in testkit/build.sbt; es6/testkit/build.sbt
+        // defers to this one — keep them in step.)
+        "org.apache.logging.log4j" % "log4j-core" % log4jVersion(esVersion),
+        //  "org.apache.logging.log4j" % "log4j-slf4j-impl"  % log4jVersion(esVersion),
         // SlicedScrollCompletenessSpec (#238) captures the client log through logback's
         // ListAppender at compile time — declared, not inherited from persistence-core
         "ch.qos.logback" % "logback-classic" % Versions.logback,
@@ -275,6 +349,8 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     .settings(
       Defaults.itSettings,
       moduleSettings,
+      // every generated bridge is a shipped artifact — guard its log4j closure (#168)
+      log4jClosureSettings,
       elasticSearchVersion := esVersion,
       organization := "app.softnetwork.elastic",
       name := projectId,
@@ -298,6 +374,8 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
     .settings(
       moduleSettings,
       app.softnetwork.Info.infoSettings,
+      // the cli assembly is the artifact a user downloads — guard its log4j closure (#168)
+      log4jClosureSettings,
       elasticSearchVersion := esVersion,
       buildInfoKeys += BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
       buildInfoObject := "SoftClient4esClientBuildInfo",
@@ -359,6 +437,8 @@ lazy val es6bridge = project
   .settings(
     Defaults.itSettings,
     moduleSettings,
+    // hand-maintained es6 bridge (not bridgeProject) — wire the log4j guard explicitly (#168)
+    log4jClosureSettings,
     elasticSearchVersion := Versions.es6
   )
   .dependsOn(
@@ -373,6 +453,7 @@ lazy val es6rest = project
   .settings(
     Defaults.itSettings,
     moduleSettings,
+    log4jClosureSettings,
     elasticSearchVersion := Versions.es6
   )
   .dependsOn(
@@ -397,6 +478,7 @@ lazy val es6jest = project
   .settings(
     Defaults.itSettings,
     moduleSettings,
+    log4jClosureSettings,
     elasticSearchVersion := Versions.es6
   )
   .dependsOn(
@@ -436,6 +518,7 @@ lazy val es7rest = project
   .settings(
     Defaults.itSettings,
     moduleSettings,
+    log4jClosureSettings,
     elasticSearchVersion := Versions.es7
   )
   .dependsOn(
@@ -480,6 +563,7 @@ lazy val es8java = project
   .settings(
     Defaults.itSettings,
     moduleSettings,
+    log4jClosureSettings,
     elasticSearchVersion := Versions.es8
   )
   .dependsOn(
@@ -534,6 +618,7 @@ lazy val es9java = project
   .settings(
     Defaults.itSettings,
     moduleSettings,
+    log4jClosureSettings,
     scalaVersion := scala213,
     crossScalaVersions := Seq(scala213),
     elasticSearchVersion := Versions.es9,
@@ -598,3 +683,17 @@ lazy val root = project
     es8,
     es9
   )
+
+// #168 / jdbc#33 / arrow#167 — every shipped ES artifact: 5 clients, 4 bridges, 4 cli assemblies.
+// NOT the testkits (they deliberately carry a log4j impl — AD-3) and NOT core/sql/persistence
+// (no ES closure: the missing-api branch would fail them, correctly).
+// ⚠️ ids ≠ val names: es6's bridge id is `es6bridge`; es7/8/9 bridges are
+// `softclient4es{N}-sql-bridge`. Never prefix with `+` (es9 is Scala 2.13-only).
+addCommandAlias(
+  "checkLog4j",
+  "; es6rest/checkLog4jClosure; es6jest/checkLog4jClosure; es7rest/checkLog4jClosure" +
+  "; es8java/checkLog4jClosure; es9java/checkLog4jClosure" +
+  "; es6bridge/checkLog4jClosure; softclient4es7-sql-bridge/checkLog4jClosure" +
+  "; softclient4es8-sql-bridge/checkLog4jClosure; softclient4es9-sql-bridge/checkLog4jClosure" +
+  "; es6cli/checkLog4jClosure; es7cli/checkLog4jClosure; es8cli/checkLog4jClosure; es9cli/checkLog4jClosure"
+)
