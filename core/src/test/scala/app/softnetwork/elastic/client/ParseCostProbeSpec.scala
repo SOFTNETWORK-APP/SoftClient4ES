@@ -32,16 +32,23 @@ import org.scalatest.matchers.should.Matchers
   *
   * The assertion is on the MEDIAN, not a tail: a p99/max on a shared CI box measures GC pauses, not
   * parsing (a 9 ms `max` was observed on the 3.2 KB body while the 10× larger body maxed at 0.12
-  * ms). The ceiling is deliberately ~15× the worst measured median — it catches a change that makes
-  * body inspection categorically expensive, never a slow machine.
+  * ms). The ceiling catches a change that makes body inspection categorically expensive, never a
+  * slow machine.
+  *
+  * Measured 2026-09-02 (loaded shared GitHub runners, SoftClient4ES#269): p50 1.35-1.42 ms at 32 KB
+  * — >20× the Apple-silicon median, so the original 1 ms ceiling (~15× that local median) flunked
+  * runs whose diff never touched the parse. The ceiling is therefore calibrated against the slowest
+  * machine that runs this suite: ~7× the worst CI-observed median, still ~150× the local one — a
+  * categorical regression (a parser swap, an accidental re-parse loop) blows past it on any
+  * machine; a slow runner does not.
   */
 class ParseCostProbeSpec extends AnyFlatSpec with Matchers {
 
   private val Warmup = 500
   private val Runs = 500
 
-  /** ~15× the worst measured median (0.067 ms), in nanoseconds. */
-  private val MedianCeilingNanos = 1000000L // 1 ms
+  /** ~7× the worst CI-observed median (1.42 ms on a shared GitHub runner, #269), in nanoseconds. */
+  private val MedianCeilingNanos = 10000000L // 10 ms
 
   private def sourceFields(n: Int): String =
     (1 to n).map(i => s""""field_$i"""").mkString(",")
@@ -90,7 +97,7 @@ class ParseCostProbeSpec extends AnyFlatSpec with Matchers {
     p50
   }
 
-  "the per-stream request-body parse" should "stay far below the 1 ms budget on every realistic body" in {
+  "the per-stream request-body parse" should "stay below the median budget on every realistic body" in {
     Seq(
       "small"        -> small,
       "typical"      -> typical,
