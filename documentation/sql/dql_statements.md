@@ -133,7 +133,19 @@ deleted automatically.
 
 If the account the BI tool connects with cannot create indices, have an administrator
 pre-create and seed the index once — lazy creation then becomes a no-op existence probe, and
-the read-only account only needs the `read` privilege on `softclient4es_handshake`:
+the read-only account only needs the `read` privilege on `softclient4es_handshake`.
+
+Through SoftClient4ES itself (REPL, JDBC, or any connected client, with a privileged account):
+
+```sql
+CREATE TABLE IF NOT EXISTS softclient4es_handshake (dummy KEYWORD);
+INSERT INTO softclient4es_handshake (dummy) VALUES ('dummy');
+```
+
+The `CREATE TABLE IF NOT EXISTS` is a no-op when the index already exists; re-running the
+`INSERT` just adds another row, which is harmless — the handshake reads a single one.
+
+Or directly against Elasticsearch:
 
 ```
 PUT /softclient4es_handshake
@@ -147,7 +159,8 @@ PUT /softclient4es_handshake/_doc/1
 ```
 
 Without pre-creation, a read-only session's first `SELECT 1` fails with the cluster's own
-security error (status preserved) plus an appended message carrying exactly this guidance.
+security error (status preserved) plus an appended message carrying the REST form of this
+guidance.
 
 ### What stays rejected
 
