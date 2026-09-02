@@ -40,10 +40,11 @@ object Versions {
 
   val elastic94s = "9.0.0"
 
-  // 2.17.1 = the version Elasticsearch 7.17 bundles for log4j-core (post-log4shell). Keeping
-  // log4j-api aligned with that transitive core is REQUIRED: ES7's RestHighLevelClient.<clinit>
-  // hard-references org.apache.logging.log4j.LogManager, and elasticDependencies excludes log4j-api
-  // from elasticsearch while log4j-core still arrives transitively — see elastic4sDependencies(7).
+  // Fallback for an Elasticsearch major with no entry in SoftClient4es.log4jVersion — the ONLY
+  // consumer of this val is log4jVersion's `case _` arm. Client closures do NOT use it: they
+  // inherit log4j-api transitively from `org.elasticsearch:elasticsearch`, whose own POM pins the
+  // version (2.17.1 on ES 6/7, 2.19.0 on ES 8/9) — see elasticDependencies (#168 / jdbc#33 /
+  // arrow#167). The core-testkits' deliberate log4j implementation goes through log4jVersion.
   val log4j = "2.17.1"
 
   val testContainers = "2.0.2"
