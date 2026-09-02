@@ -1486,7 +1486,12 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     val res = client.run(invalidSql).futureValue
 
     res.isFailure shouldBe true
-    res.toEither.left.get.message should include("Error parsing schema DDL statement")
+    val error = res.toEither.left.get
+    // jdbc#35 — `run` is the front door for DQL, DML and DDL alike; a rejection must not claim the
+    // statement was schema DDL, and it must echo what was rejected (BI tools show this verbatim).
+    error.message should include("Error parsing SQL statement")
+    error.message should include(invalidSql)
+    error.message should not include "schema DDL"
   }
 
   // ---------------------------------------------------------------------------
@@ -1498,7 +1503,49 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     val res = client.run(unsupportedSql).futureValue
 
     res.isFailure shouldBe true
-    res.toEither.left.get.message should include("Error parsing schema DDL statement")
+    val error = res.toEither.left.get
+    error.message should include("Error parsing SQL statement")
+    error.message should include(unsupportedSql)
+    error.message should not include "schema DDL"
+  }
+
+  // ---------------------------------------------------------------------------
+  // jdbc#35 — a rejected DQL statement is not a schema DDL error
+  // ---------------------------------------------------------------------------
+
+  it should "not report a rejected SELECT as a schema DDL error" in {
+    val invalidDql = "SELECT * FRM users"
+    val res = client.run(invalidDql).futureValue
+
+    res.isFailure shouldBe true
+    val error = res.toEither.left.get
+    error.message should include("Error parsing SQL statement")
+    error.message should include(invalidDql)
+    error.message should not include "schema DDL"
+    error.operation shouldBe Some("sql")
+    error.statusCode shouldBe Some(400)
+  }
+
+  // ---------------------------------------------------------------------------
+  // AC-4 — the failing member of a batch is named, at position 2
+  // ---------------------------------------------------------------------------
+
+  // This case belongs HERE and not in the core unit spec: the property is "a rejection AFTER a
+  // statement that actually ran is the one reported", and only a live cluster can make the first
+  // statement succeed. The unit spec's batch test puts the failure at position 1, where "the
+  // failing statement" and "the first statement" are indistinguishable.
+  // `SHOW TABLES LIKE ...` is the cheapest statement this suite already proves works (see the
+  // `SHOW TABLES LIKE 'show_%'` cases earlier in this file); the pattern is chosen to match
+  // nothing so the case is independent of every fixture.
+  it should "name the failing statement of a multi-statement batch" in {
+    val res = client.run("SHOW TABLES LIKE 'no_such_prefix_%'; SELECT * FRM users").futureValue
+
+    res.isFailure shouldBe true
+    val error = res.toEither.left.get
+    error.message should include("Error parsing SQL statement")
+    error.message should include("SELECT * FRM users")
+    error.message should not include "SHOW TABLES"
+    error.operation shouldBe Some("sql")
   }
 
   // ===========================================================================

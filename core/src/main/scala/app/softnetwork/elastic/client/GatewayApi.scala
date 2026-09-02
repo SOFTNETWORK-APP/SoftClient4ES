@@ -1819,20 +1819,37 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
               case Right(statement) =>
                 run(statement)
               case Left(l) =>
-                // parsing error
+                // Parse rejection. `run` is the front door for DQL, DML AND DDL, so the message must
+                // not claim a statement class — and it cannot know one: `ParserError` is a bare
+                // string (see GatewayApi.ParseRejectionPrefix). Echo the statement instead and let
+                // the reader classify it; BI tools surface this text verbatim (jdbc#35).
+                // `l.msg` is passed through RAW on purpose: bounding and sanitising it is
+                // parseRejectionMessage's job, so both routes get it identically.
                 val error =
                   ElasticError(
-                    message = s"Error parsing schema DDL statement: ${l.msg}",
+                    message = GatewayApi.parseRejectionMessage(statement, l.msg),
                     statusCode = Some(400),
-                    operation = Some("schema")
+                    operation = Some("sql")
                   )
                 logger.error(s"❌ ${error.message}")
                 Future.successful(ElasticFailure(error))
             }
 
           case ElasticFailure(elasticError) =>
-            // parsing error
-            Future.successful(ElasticFailure(elasticError.copy(operation = Some("schema"))))
+            // The other rejection route: `Parser.apply` THREW instead of returning `Left`
+            // (SoftClient4ES#250 — three `throw ValidationError` sites in `WhereParser`), and
+            // `ElasticResult.attempt` wrapped it as "Operation failed: <msg>" with no status and no
+            // operation. Relabel it exactly like the `Left` branch so a caller cannot tell the two
+            // routes apart, and so nothing here changes when #250 folds this route into `Left`.
+            // `statusCode` is deliberately left as `attempt` set it (None): `attempt` catches ANY
+            // NonFatal, so an internal fault must not be asserted to be a client-side 400.
+            val error = elasticError.copy(
+              message = GatewayApi
+                .parseRejectionMessage(statement, GatewayApi.parseFailureReason(elasticError)),
+              operation = Some("sql")
+            )
+            logger.error(s"❌ ${error.message}")
+            Future.successful(ElasticFailure(error))
         }
 
       case statements =>
@@ -1905,6 +1922,158 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
 }
 
 object GatewayApi {
+
+  /** Prefix of every parse rejection `run(sql: String)` returns.
+    *
+    * It says SQL, not "schema DDL" (jdbc#35). `run` is the single front door for DQL, DML '''and'''
+    * DDL, and the statement that failed to parse has no known kind: `Parser.apply` hands back
+    * `Left(ParserError(msg: String))` (`sql/.../parser/Parser.scala:1352,1365`) — a bare string
+    * with no AST, no position and no statement class. So the message names what it can actually
+    * observe (the statement, and the parser's reason) and nothing it cannot.
+    *
+    * The `Error parsing` stem is deliberate, not inherited by accident: it is what
+    * `ReplGatewayIntegrationSpec` asserts, and it is the wording jdbc#35 itself proposed.
+    */
+  private[client] val ParseRejectionPrefix: String = "Error parsing SQL statement"
+
+  /** Budget for EACH part of a parse-rejection message — the statement excerpt and the parser's
+    * reason alike. One constant, applied uniformly, one sentence: '''no part of a parse-rejection
+    * message exceeds MaxExcerpt characters'''.
+    *
+    * Bounding only the statement would have been incoherent
+    * (`feedback_constant_uniform_justification`): the justification is the medium — a narrow BI
+    * error dialog — and it binds both halves. It is also not hypothetical that the reason needs it.
+    * `Parser.apply` maps post-parse `validate()` failures to `Left(ParserError(msg))` too, and
+    * those messages embed whole AST renderings — `sql/.../query/From.scala` repeats `"ON clause
+    * $this ..."` nine times, and `Parser.scala:312` echoes the '''entire SCRIPT body''' into
+    * `"Invalid SCRIPT AS expression ($body): $msg"`. Unbounded, one of those buries the diagnosis
+    * and re-exposes a whole script inside an error dialog.
+    *
+    * An excerpt NEVER exceeds this many characters — the ellipsis is inside the budget, not added
+    * to it, so the constant means what its name says. Whole-message ceiling: prefix + brackets +
+    * MaxExcerpt + ": " + MaxExcerpt, i.e. under 500 characters for every input.
+    */
+  private[client] val MaxExcerpt: Int = 200
+
+  /** ASCII on purpose — see the encoding rule in the story's build facts. */
+  private[client] val ExcerptEllipsis: String = "..."
+
+  /** How the budget is split when a part is too long: head + ellipsis + tail.
+    *
+    * '''A prefix alone would not do the job this story exists for.''' Epic 19 measured 89/89
+    * Tableau-emitted statements rejected, and every one of them opens with the same long, fully
+    * quoted SELECT list — so the first 200 characters identify the TOOL, not the QUERY, and AC-2
+    * ("names the offending statement") would be satisfied only on paper. Keeping the tail keeps the
+    * discriminating part — the FROM / WHERE / GROUP BY, and the region a parse error usually sits
+    * in. It also defuses the `/* app=Tableau ... */` banner case: block comments are stripped by
+    * '''neither''' `splitStatements` (which handles `--` only) '''nor''' `Parser.normalize`, so a
+    * long leading banner would consume a prefix-only excerpt whole and hide the statement
+    * completely — with a tail, the statement still shows. Hand-typed SQL, the story's other
+    * audience, is short enough to be echoed whole and is unaffected. 120 + 3 + 77 = 200 exactly.
+    */
+  private[client] val ExcerptHead: Int = 120
+  private[client] val ExcerptTail: Int = MaxExcerpt - ExcerptHead - ExcerptEllipsis.length
+
+  /** Runs of whitespace '''and control characters''' collapse to one space.
+    *
+    * Not cosmetics — this is the story's one security control. An excerpt is attacker-influenced
+    * text (it is the caller's own statement) that lands in a log record, in a `SQLException`
+    * message, and in a BI error dialog. Collapsing newlines is what stops a crafted statement from
+    * forging a second log line; collapsing the rest of the C0 controls is what stops an ANSI escape
+    * from reaching the terminal that renders the REPL's error output. Java's `\s` is ASCII-only and
+    * covers NONE of ESC / NUL / BEL, so `\p{Cntrl}` is required alongside it; U+0085, U+2028 and
+    * U+2029 are added because renderers treat them as line breaks. Written as `\\u` escapes so the
+    * source stays ASCII.
+    */
+  private val ExcerptNoise: String = "[\\s\\p{Cntrl}\\u0085\\u2028\\u2029]+"
+
+  /** Never split a surrogate pair when cutting an excerpt.
+    *
+    * `String.take` / `substring` count UTF-16 code units, so a naive cut at a fixed offset can emit
+    * a lone surrogate. That string is not valid UTF-16, and it is re-encoded at least twice on its
+    * way to the analyst (`SQLException` then the host's own serialisation; a log file's charset).
+    * Moving the cut by one character is always safe and costs at most one character of the budget.
+    */
+  private def cutBefore(s: String, at: Int): Int =
+    if (at > 0 && Character.isHighSurrogate(s.charAt(at - 1))) at - 1 else at
+
+  private def cutAfter(s: String, at: Int): Int =
+    if (at < s.length && Character.isLowSurrogate(s.charAt(at))) at + 1 else at
+
+  /** Single-line, length-bounded rendering of one message part — '''display only'''.
+    *
+    * Used for BOTH halves of a parse-rejection message (the statement and the parser's reason), so
+    * the bound is uniform and neither half can bury the other.
+    *
+    * This is NOT `Parser.normalize` and must never be used as one: it is quote-blind and collapses
+    * whitespace inside string literals too. Nothing parses, splits or matches on its output — and
+    * nothing may start to, because a statement may legitimately contain `]` (`SELECT a[1] FRM t`, a
+    * measured rejection) and would make the enclosing `[...]` framing ambiguous to any consumer
+    * naive enough to try. Stripping `]` was considered and REJECTED: it would corrupt the display
+    * of valid SQL in order to protect a consumer that must not exist.
+    *
+    * TRAP — for the statement half this receives the '''post-split''' statement, not the caller's
+    * raw input: `splitStatements` has already replaced each `--` comment with a space and consumed
+    * the separating `;`. Stated here because it is what makes `message should include(<raw sql>)` a
+    * safe assertion only for inputs free of comments, `;` and repeated whitespace.
+    *
+    * Post-condition: `excerpt(s).length <= MaxExcerpt`, for every `s`.
+    */
+  private[client] def excerpt(text: String): String = {
+    val oneLine = text.replaceAll(ExcerptNoise, " ").trim
+    if (oneLine.length <= MaxExcerpt) oneLine
+    else {
+      val head = oneLine.substring(0, cutBefore(oneLine, ExcerptHead))
+      val tail = oneLine.substring(cutAfter(oneLine, oneLine.length - ExcerptTail))
+      head + ExcerptEllipsis + tail
+    }
+  }
+
+  /** Last-resort reason text. A message ending `...]: ` with nothing after the colon is exactly the
+    * shape AC-2 forbids, so the reason is never allowed to be empty.
+    */
+  private[client] val NoParserReason: String = "no reason reported by the parser"
+
+  /** The reason to quote when the parser THREW rather than returned `Left` (SoftClient4ES#250).
+    *
+    * `ElasticResult.attempt` has already flattened the throwable into `message = "Operation failed:
+    * <ex msg>"`, `cause = Some(ex)`, so the useful text is the cause's own message.
+    *
+    * It deliberately does '''not''' fall back to `error.message`. `attempt` interpolates a null
+    * message straight into its wrapper, so a cause with no message yields the literal `"Operation
+    * failed: null"` (`result/package.scala:253-266`) — relaying that would violate AC-2 and
+    * contradict this story's own "the message never says Operation failed" assertion. The fallback
+    * is the exception's class name instead: strictly more useful, and it makes an internal fault
+    * visibly different from a grammar rejection at a glance.
+    *
+    * Extracted as a named function for one reason: neither the null nor the blank branch is
+    * reachable through `run` (no parser exception carries a null message today), so inline they
+    * would ship with zero coverage.
+    */
+  private[client] def parseFailureReason(error: ElasticError): String = {
+    def nonBlank(s: String): Option[String] = Option(s).map(_.trim).filter(_.nonEmpty)
+    error.cause
+      .flatMap(ex => nonBlank(ex.getMessage).orElse(nonBlank(ex.getClass.getName)))
+      .getOrElse(NoParserReason)
+  }
+
+  /** The one message builder both parse-rejection routes of `run(sql: String)` go through.
+    *
+    * Sharing it is the point: the routes differ only in how the parser failed (returned `Left` vs
+    * threw, SoftClient4ES#250), and a caller must not be able to tell them apart. It also means
+    * that when #250 moves the thrown route onto the `Left` branch, no message changes.
+    *
+    * It owns BOTH message-shape invariants so neither route can lose one: each half is bounded and
+    * single-lined by `excerpt`, and the reason half is never empty. The empty guard belongs here
+    * and not only in `parseFailureReason`, because `ParserError(msg)` carries no non-empty
+    * invariant either (`Parser.scala:1365`) — the `Left` route can hand over a blank string just as
+    * easily.
+    */
+  private[client] def parseRejectionMessage(statement: String, reason: String): String = {
+    val shownReason = excerpt(reason)
+    val safeReason = if (shownReason.isEmpty) NoParserReason else shownReason
+    s"$ParseRejectionPrefix [${excerpt(statement)}]: $safeReason"
+  }
 
   /** Split a normalized SQL string into statements on top-level `;`.
     *

@@ -521,8 +521,18 @@ Example:
 
 ```scala
 gateway.run("BAD SQL")
-→ ElasticFailure(ElasticError(message = "Error parsing schema DDL statement: ..."))
+→ ElasticFailure(
+    ElasticError(
+      message   = "Error parsing SQL statement [BAD SQL]: <parser reason>",
+      statusCode = Some(400),
+      operation  = Some("sql")
+    )
+  )
 ```
+
+The statement and the parser's reason are each rendered on a single line and capped at
+200 characters; a longer one keeps its head and its tail with `...` between them. A `...` inside
+the message is therefore a display bound, not the parser's own text.
 
 ---
 
