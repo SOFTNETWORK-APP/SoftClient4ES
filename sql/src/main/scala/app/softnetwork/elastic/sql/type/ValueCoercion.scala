@@ -137,6 +137,22 @@ object ValueCoercion {
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to DECIMAL")
   }
 
+  /** Coerce a runtime value to a `java.sql.Date`.
+    *
+    * A `Number` is read as **epoch milliseconds**, the shape Elasticsearch returns for a `date`
+    * field whose `_source` stores the value numerically (`"event_ts": 1735689600000`) — ES's
+    * default `date` format is `strict_date_optional_time||epoch_millis`, and
+    * `ElasticConversion.jsonNodeToAny` only attempts a temporal parse on TEXTUAL nodes, so a
+    * numeric date arrives here as a `java.lang.Long`. Without this arm every such value fell to the
+    * catch-all and threw `Cannot convert java.lang.Long to DATE`, which took down the whole
+    * cross-index JOIN leg (softclient4es-arrow#168) and `ResultSet.getDate` with it. The sibling
+    * [[coerceToTimestamp]] has always had this arm; the asymmetry was unintentional.
+    *
+    * Deliberately NOT mirrored in [[coerceToTime]]: a bare number in a TIME position is ambiguous
+    * (epoch millis vs millis-of-day), Elasticsearch has no `time` mapping token — `SQLTypes.Time`
+    * is unreachable from an ES mapping, which resolves `"date"` to `SQLTypes.Date` — and no defect
+    * has been reported there. Add it when a real value shape demands it, not by symmetry.
+    */
   def coerceToDate(value: Any): java.sql.Date = value match {
     case null                         => null
     case d: java.sql.Date             => d
@@ -154,6 +170,7 @@ object ValueCoercion {
     case s: String =>
       try { java.sql.Date.valueOf(s) }
       catch { case _: Exception => throw new java.sql.SQLException(s"Cannot parse '$s' as DATE") }
+    case n: Number => new java.sql.Date(n.longValue())
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to DATE")
   }

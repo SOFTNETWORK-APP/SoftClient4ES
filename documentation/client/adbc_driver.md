@@ -122,13 +122,13 @@ adbc.elastic {
 }
 
 elastic.credentials {
-  host     = "localhost"  # env: ES_HOST
-  port     = 9200         # env: ES_PORT
+  host     = "localhost"  # env: ELASTIC_HOST
+  port     = 9200         # env: ELASTIC_PORT
   # Choose one authentication method:
-  user     = "elastic"    # env: ES_USER      (username/password)
-  password = "changeme"   # env: ES_PASSWORD
-  # api-key  = ""         # env: ES_API_KEY   (API key)
-  # bearer   = ""         # env: ES_BEARER    (bearer token)
+  username = "elastic"    # env: ELASTIC_CREDENTIALS_USERNAME (username/password)
+  password = "changeme"   # env: ELASTIC_CREDENTIALS_PASSWORD
+  # api-key      = ""     # env: ELASTIC_CREDENTIALS_API_KEY      (API key)
+  # bearer-token = ""     # env: ELASTIC_CREDENTIALS_BEARER_TOKEN (bearer token)
 }
 ```
 
