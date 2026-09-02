@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.client.result.DmlResult
+import app.softnetwork.elastic.client.result.{DmlResult, ElasticSuccess}
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
@@ -1469,6 +1469,100 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   it should "drop a pipeline" in {
     val sql = "DROP PIPELINE IF EXISTS user_pipeline;"
     assertDdl(System.nanoTime(), client.run(sql).futureValue)
+  }
+
+  // ===========================================================================
+  // 5b. FROM-less SELECT — the connection handshake (story 20.9 / issue #251)
+  // ===========================================================================
+
+  behavior of "FROM-less SELECT handshake"
+
+  it should "answer the FROM-less connection handshake against the live cluster" in {
+    // issue #251 — the Tableau/Superset connect idiom, executed as Painless AGAINST ES
+    var rows = assertQueryRows(System.nanoTime(), client.run("SELECT 1").futureValue)
+    rows shouldBe Seq(Map("1" -> 1)) // Integer via Jackson — NOT List(1): AC 7's unwrap
+    // PD-4: the value round-trips ES JSON as Jackson's smallest type — INTEGER, not BIGINT
+    // (Scala's cooperative equality makes `shouldBe 1` pass for a Long too — pin the class)
+    rows.head("1").isInstanceOf[Int] shouldBe true
+    rows = assertQueryRows(System.nanoTime(), client.run("SELECT 1 LIMIT 100").futureValue)
+    rows.size shouldBe 1
+    rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SELECT 1 AS ok, UPPER('x') AS u, 1+1 AS two").futureValue
+    )
+    rows.head("ok") shouldBe 1
+    rows.head("u") shouldBe "X"
+    rows.head("two") shouldBe 2
+    // constant cast — '125'::BIGINT arrives as the VALUE's own type (Jackson smallest — PD-4)
+    rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SELECT '125'::BIGINT AS c").futureValue
+    )
+    rows.head("c") shouldBe 125
+    // OQ-2 rows (PD-5, dev-verified): interval arithmetic and CASE over constants ride the
+    // same FROM-ful painless pipeline — value truth asserted on the live cluster
+    rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SELECT CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END AS c").futureValue
+    )
+    rows.head("c") shouldBe "a"
+    rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SELECT CURRENT_DATE - INTERVAL 1 DAY AS d").futureValue
+    )
+    Option(rows.head("d")) should not be None
+  }
+
+  it should "return NULL, fresh RANDOM values and honour LIMIT 0 on the handshake path" in {
+    // NULL literal — the empty/absent-fields assembly on real ES (AC 7)
+    var rows = assertQueryRows(System.nanoTime(), client.run("SELECT NULL AS n").futureValue)
+    rows.size shouldBe 1
+    Option(rows.head("n")) shouldBe None
+    // RANDOM is painless Math.random() — fresh per execution (AD-7′)
+    val r1 =
+      assertQueryRows(System.nanoTime(), client.run("SELECT RANDOM AS r").futureValue).head("r")
+    val r2 =
+      assertQueryRows(System.nanoTime(), client.run("SELECT RANDOM AS r").futureValue).head("r")
+    r1 should not be r2
+    // LIMIT 0 returns zero rows but the round-trip still executed (AD-8)
+    rows = assertQueryRows(System.nanoTime(), client.run("SELECT 1 LIMIT 0").futureValue)
+    rows shouldBe Seq.empty
+  }
+
+  it should "latch one clock per FROM-less statement" in {
+    // AD-6′ — one __now__ per search request, byte-equal items (the C7 guarantee, re-derived)
+    val rows = assertQueryRows(
+      System.nanoTime(),
+      client.run("SELECT CURRENT_TIMESTAMP AS a, CURRENT_TIMESTAMP AS b").futureValue
+    )
+    rows.head("a") shouldBe rows.head("b")
+  }
+
+  it should "fail loudly at execution on a broken constant script" in {
+    // SELECT 1/0 PARSES (no local evaluation any more) and fails on ES with a script error —
+    // loud, inherited FROM-ful semantics. Message deliberately unpinned (grammar/ES-internal).
+    val res = client.run("SELECT 1/0").futureValue
+    res.isFailure shouldBe true
+  }
+
+  it should "keep the handshake index invisible to SHOW TABLES while it exists" in {
+    // the handshake tests above ran => the index exists...
+    client.indexExists(GatewayApi.HandshakeIndex, pattern = false) shouldBe ElasticSuccess(true)
+    // ...but no SHOW TABLES pattern ever lists it (AC 6 — the ONE seam covering jdbc getTables
+    // and Flight GET_TABLES; the ':74' dot-pattern assertion above is untouched: non-dot name).
+    val all = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES").futureValue)
+    all.map(_("name")) should not contain GatewayApi.HandshakeIndex
+    val like = assertQueryRows(
+      System.nanoTime(),
+      client.run("SHOW TABLES LIKE 'softclient4es%'").futureValue
+    )
+    like shouldBe Seq.empty
+    // DESCRIBE TABLE deliberately still works on it (debuggability — AD-10)
+    val describe = assertQueryRows(
+      System.nanoTime(),
+      client.run(s"DESCRIBE TABLE ${GatewayApi.HandshakeIndex}").futureValue
+    )
+    describe.exists(_("Field") == "dummy") shouldBe true
   }
 
   // ===========================================================================

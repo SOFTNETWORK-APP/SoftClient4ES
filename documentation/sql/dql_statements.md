@@ -23,6 +23,7 @@ DQL supports:
 ## Table of Contents
 
 - [SELECT](#select)
+- [FROM-less SELECT (connection handshake)](#from-less-select-connection-handshake)
 - [WHERE](#where)
 - [ORDER BY](#order-by)
 - [LIMIT / OFFSET](#limit--offset)
@@ -82,6 +83,101 @@ ORDER BY id ASC;
 - `profile` is a `STRUCT` column.
 - `profile.city` and `profile.followers` access nested fields.
 - Aliases (`AS full_name`, `AS city`) are returned as column names.
+
+---
+
+## FROM-less SELECT (connection handshake)
+
+`SELECT` without a `FROM` clause is the connection/health idiom of the JDBC/SQLAlchemy
+ecosystem: Tableau re-issues `SELECT 1` on every interaction, Superset's connection test sends
+`SELECT 1`, its engine probe sends `SELECT 1 LIMIT 100`, and connection pools use it as
+`connectionTestQuery`. All of these are supported:
+
+```sql
+SELECT 1;
+SELECT 1 AS x;
+SELECT 1 LIMIT 100;
+SELECT 1 AS ok, UPPER('x') AS u, 1+1 AS two;
+SELECT CURRENT_TIMESTAMP AS ts;
+SELECT '125'::BIGINT AS c;
+```
+
+Each returns **exactly one row**. Column names follow the usual convention: an explicit alias
+wins, otherwise the rendered expression (`SELECT 1` yields a column named `1`).
+
+### Connection-check semantics
+
+A FROM-less `SELECT` **executes against the Elasticsearch cluster** — the select-list is
+translated to Painless and evaluated by ES, exactly like the same expressions in a FROM-ful
+query. Consequently, **with the cluster unreachable, `SELECT 1` fails** with the propagated
+connection error. A green handshake genuinely means "connected"; a pool's
+`connectionTestQuery = SELECT 1` is a real connection test.
+
+### The handshake index
+
+The first FROM-less `SELECT` on a client lazily creates a dedicated index in the cluster:
+
+- name: `softclient4es_handshake`
+- settings: 1 shard, 0 replicas (single-node clusters stay green); `index.hidden: true` on
+  ES ≥ 7.7
+- mapping: a single `dummy` keyword field
+- content: one seeded document (`PUT /softclient4es_handshake/_doc/1 {"dummy": "dummy"}`)
+
+Creation is race-safe and idempotent, and happens once per client lifecycle. The index is
+**never listed by `SHOW TABLES`** (any pattern) — which also keeps it out of JDBC
+`DatabaseMetaData.getTables` and Arrow Flight `GET_TABLES` browsing. `DESCRIBE TABLE
+softclient4es_handshake` still works, deliberately, for debuggability. The index is never
+deleted automatically.
+
+#### Read-only BI service accounts
+
+If the account the BI tool connects with cannot create indices, have an administrator
+pre-create and seed the index once — lazy creation then becomes a no-op existence probe, and
+the read-only account only needs the `read` privilege on `softclient4es_handshake`.
+
+Through SoftClient4ES itself (REPL, JDBC, or any connected client, with a privileged account):
+
+```sql
+CREATE TABLE IF NOT EXISTS softclient4es_handshake (dummy KEYWORD)
+OPTIONS (settings = (number_of_shards = "1", number_of_replicas = "0"));
+INSERT INTO softclient4es_handshake (dummy) VALUES ('dummy');
+```
+
+The `CREATE TABLE IF NOT EXISTS` is a no-op when the index already exists; re-running the
+`INSERT` just adds another row, which is harmless — the handshake reads a single one.
+
+Or directly against Elasticsearch:
+
+```
+PUT /softclient4es_handshake
+{
+  "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+  "mappings": {"properties": {"dummy": {"type": "keyword"}}}
+}
+
+PUT /softclient4es_handshake/_doc/1
+{"dummy": "dummy"}
+```
+
+Without pre-creation, a read-only session's first `SELECT 1` fails with the cluster's own
+security error (status preserved) plus an appended message naming both routes of this
+guidance.
+
+### What stays rejected
+
+The select-list must be constant scalar expressions — literals or Painless-translatable
+functions of literals. Rejected with a named reason (`... requires a FROM clause`):
+
+- column references — `SELECT col`, including embedded ones (`SELECT UPPER(col)`)
+- `SELECT *`
+- aggregations (`SELECT COUNT(*)`) and window functions
+- `EXCEPT(...)`, duplicate output column names, unbound `?` parameters, array literals,
+  negative `LIMIT`/`OFFSET`
+
+Rejected at the grammar level: `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `UNION ALL`
+after a FROM-less select-list, and `DISTINCT` literals. Note that `CAST('125' AS BIGINT)`
+does not parse (a pre-existing grammar gap for literal operands) — use the `'125'::BIGINT`
+spelling for constant casts.
 
 ---
 

@@ -1262,6 +1262,19 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
   }
 
   // =========================================================================
+  // 6b. FROM-less SELECT — the connection handshake (story 20.9 / issue #251)
+  // =========================================================================
+
+  behavior of "REPL - FROM-less SELECT handshake"
+
+  it should "answer SELECT 1 through the REPL gateway path" in {
+    // issue #251 — the connect idiom the 20.8 live-acceptance venue exercises: one row,
+    // column named "1", INTEGER value, executed AGAINST the live cluster.
+    val rows = assertQueryRows(System.nanoTime(), executeSync("SELECT 1"))
+    rows shouldBe Seq(Map("1" -> 1))
+  }
+
+  // =========================================================================
   // 7. Error handling
   // =========================================================================
 
