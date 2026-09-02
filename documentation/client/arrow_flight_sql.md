@@ -30,10 +30,10 @@ There are two Flight SQL servers, and these quickstarts cover only the first:
 
 ```bash
 docker run -p 32010:32010 \
-  -e ES_HOST=elasticsearch \
-  -e ES_PORT=9200 \
-  -e ES_USER=elastic \
-  -e ES_PASSWORD=changeme \
+  -e ELASTIC_HOST=elasticsearch \
+  -e ELASTIC_PORT=9200 \
+  -e ELASTIC_CREDENTIALS_USERNAME=elastic \
+  -e ELASTIC_CREDENTIALS_PASSWORD=changeme \
   softnetwork/softclient4es8-arrow-flight-sql:latest
 ```
 
@@ -133,10 +133,10 @@ arrow.flight {
 }
 
 elastic.credentials {
-  host     = "localhost"    # env: ES_HOST
-  port     = 9200           # env: ES_PORT
-  user     = "elastic"      # env: ES_USER
-  password = "changeme"     # env: ES_PASSWORD
+  host     = "localhost"    # env: ELASTIC_HOST (ELASTIC_IP wins when both are set)
+  port     = 9200           # env: ELASTIC_PORT
+  username = "elastic"      # env: ELASTIC_CREDENTIALS_USERNAME
+  password = "changeme"     # env: ELASTIC_CREDENTIALS_PASSWORD
 }
 ```
 
