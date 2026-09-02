@@ -28,6 +28,17 @@ object HelpJsonLoader {
 
   private val basePath = "help"
 
+  /** Function help categories under `help/functions`. `HelpCorpusSpec` asserts this list equals the
+    * directories actually present: a category missing here is loaded by nobody and its help is
+    * invisible in the REPL **with no error** — that is how `help/functions/json` hid (roadmap Epic
+    * 31).
+    */
+  private[help] val functionCategories: List[String] =
+    List("aggregate", "conditional", "conversion", "date", "geo", "numeric", "string")
+
+  /** Command help categories under `help/commands`. Same contract as `functionCategories`. */
+  private[help] val commandCategories: List[String] = List("ddl", "dml", "dql")
+
   /** Load all help entries from JSON files
     */
   def loadAll(): HelpDatabase = {
@@ -44,9 +55,7 @@ object HelpJsonLoader {
   /** Load SQL commands from JSON files
     */
   private def loadCommands(): Map[String, SqlCommandHelp] = {
-    val categories = List("ddl", "dml", "dql")
-
-    categories.flatMap { category =>
+    commandCategories.flatMap { category =>
       loadJsonFilesFromDirectory(s"$basePath/commands/$category").flatMap { json =>
         Try {
           val cmd = parse(json).extract[SqlCommandJson]
@@ -59,17 +68,7 @@ object HelpJsonLoader {
   /** Load functions from JSON files
     */
   private def loadFunctions(): Map[String, FunctionHelp] = {
-    val categories = List(
-      "aggregate",
-      "conditional",
-      "conversion",
-      "date",
-      "geo",
-      "numeric",
-      "string"
-    )
-
-    categories.flatMap { category =>
+    functionCategories.flatMap { category =>
       loadJsonFilesFromDirectory(s"$basePath/functions/$category").flatMap { json =>
         Try {
           val fn = parse(json).extract[FunctionJson]
