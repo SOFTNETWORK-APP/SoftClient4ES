@@ -531,4 +531,18 @@ object SQLKeywords {
       .map(_.replaceAll("\\\\s\\+", " ").trim.replaceAll("\\s+", " ").toUpperCase)
       .filter(p => p.contains(" ") && p.split(" ").forall(_.matches("[A-Z][A-Z0-9_]*")))
       .toSet
+
+  /** Every accepted spelling of a FUNCTION name — canonical `sql` plus every `words` alias,
+    * uppercase.
+    *
+    * Deliberately NOT `allWords`: `IF` (:382), `JSON_ARRAY` (:389) and `TRUNCATE` (:437) are parser
+    * words as DDL/DML `statementWords`, not as functions, so an `allWords` membership test silently
+    * accepts help documents for three functions that do not exist.
+    *
+    * Deliberately NOT `functionTokens.map(_.sql)` either: 54 of the accepted spellings are aliases
+    * (`SAFE_CAST` for `TRY_CAST`, `DISTANCE` for `ST_DISTANCE`, `MONTHOFYEAR` computed at runtime
+    * by `TimeField.words`), and `wordsOf` is the single owner of the `\s+`-before-uppercase
+    * normalisation.
+    */
+  lazy val functionWords: Set[String] = functionTokens.flatMap(wordsOf).toSet
 }
