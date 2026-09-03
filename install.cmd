@@ -19,7 +19,7 @@ rem
 rem      install.cmd
 rem      install.cmd -ListVersions -EsVersion 8
 rem      install.cmd -Target "C:\tools\softclient4es" -EsVersion 8 -Version 1.0.0
-rem      install.cmd -EsVersion 7 -Version 0.21.0 -NoExtensions
+rem      install.cmd -EsVersion 7 -Version 0.22.0 -NoExtensions
 rem      install.cmd -Help
 rem
 rem  Caveat worth knowing: -ExecutionPolicy Bypass is overridden when the policy
@@ -53,8 +53,8 @@ rem  The pinned hash belongs to the pinned tag, so overriding the ref drops the
 rem  integrity check unless SOFTCLIENT4ES_INSTALL_SHA256 supplies another one -
 rem  and says so when it does not.
 rem ---------------------------------------------------------------------------
-set "PS1_REF=v0.21.0"
-set "PS1_SHA256=e1275bd269c8bb922d28827b6c74e965bbe7b5139b4e16138bacaac7c03912ae"
+set "PS1_REF=v0.22.0"
+set "PS1_SHA256=6a31198e68170eaca9fb05b6418713c6f7669d08f7bf46e9ed9cc622de0ae5c4"
 
 rem One `if` per line, never a parenthesised block: cmd expands every %VAR% in a
 rem block in ONE parse pass, before running any line in it.
