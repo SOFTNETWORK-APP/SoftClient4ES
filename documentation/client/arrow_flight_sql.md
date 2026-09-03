@@ -49,15 +49,15 @@ Available images per ES version:
 ### Fat JAR
 
 ```bash
-java -jar softclient4es8-arrow-flight-sql-0.3.0.jar
+java -jar softclient4es8-arrow-flight-sql-0.3.1.jar
 ```
 
 | Elasticsearch | Artifact |
 |---------------|----------|
-| ES 6.x | `softclient4es6-arrow-flight-sql-0.3.0.jar` |
-| ES 7.x | `softclient4es7-arrow-flight-sql-0.3.0.jar` |
-| ES 8.x | `softclient4es8-arrow-flight-sql-0.3.0.jar` |
-| ES 9.x | `softclient4es9-arrow-flight-sql-0.3.0.jar` |
+| ES 6.x | `softclient4es6-arrow-flight-sql-0.3.1.jar` |
+| ES 7.x | `softclient4es7-arrow-flight-sql-0.3.1.jar` |
+| ES 8.x | `softclient4es8-arrow-flight-sql-0.3.1.jar` |
+| ES 9.x | `softclient4es9-arrow-flight-sql-0.3.1.jar` |
 
 ---
 
