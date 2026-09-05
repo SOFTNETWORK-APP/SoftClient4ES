@@ -108,9 +108,40 @@ package object time {
     def intervalFunction: PackratParser[TransformFunction[SQLTemporal, SQLTemporal]] =
       add_interval | substract_interval
 
+    /** `quotedIdentifier` MUST precede `identifierWithValue` (story 21.1 AD-13).
+      *
+      * This production is slot 3 of `valueExpr`, slot 2 of the 21-occurrence operand idiom, slot 3
+      * of `aggWithFunction` and slot 2 of all four conversion productions -- i.e. it is the operand
+      * reading of the whole dialect. `identifierWithValue` reaches `TypeParser.literal`, whose
+      * FIRST alternative is a DOUBLE-QUOTED string, so without this line a double-quoted lexeme is
+      * a `StringValue` here.
+      *
+      * That is not merely a missing feature, it breaks the render contract: `Identifier.sql` emits
+      * ONE canonical delimiter, the ANSI double quote (the only one DuckDB accepts -- the Flight
+      * sidecar's JOIN planner feeds `identifier.sql` into a DuckDB SELECT list). So a backticked
+      * operand renders as `MAX("amount")`, and reading that back as a string made `Parser(stmt.sql)
+      * != Right(stmt)` -- a rendering that silently changes an aggregate into an aggregate over a
+      * constant. `MaterializedViewExtension` persists exactly that string and runs
+      * `client.run(alter.sql)`, so it was a live corruption, not a cosmetic one.
+      *
+      * Measured consequence, deliberate: `MAX("salary")`, `CAST("col" AS BIGINT)`,
+      * `DATE_TRUNC("event_ts", MONTH)` and `UPPER("abc")` now read the double-quoted lexeme as a
+      * COLUMN where they used to read it as a string.
+      *
+      * VALUE positions are untouched -- `WHERE a = "x"`, `>`, `BETWEEN`, `IN` and `LIKE` each list
+      * `literal` ahead of the identifier in their OWN alternation, so they still read a string.
+      * Note this does NOT extend to `date_parse` / `datetime_parse`: they list `literal` fourth,
+      * BEHIND this production, so their first operand flips with the rest of the operand family
+      * (`DATE_PARSE("2024-01-01", ...)` is now the column named `2024-01-01`; the documented
+      * single-quoted spelling is unaffected). Measured both ways -- an ordering audit that reads
+      * only the tail of an alternative list gets this wrong.
+      *
+      * No alternation ORDER moves anywhere; this adds an alternative.
+      */
     def identifierWithIntervalFunction: PackratParser[Identifier] =
       ((identifierWithTransformation |
       identifierWithFunction |
+      quotedIdentifier |
       identifierWithValue |
       identifier) ~ rep(intervalFunction) ^^ { case i ~ f =>
         i.withFunctions(f ++ i.functions)

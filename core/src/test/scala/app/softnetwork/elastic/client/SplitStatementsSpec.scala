@@ -96,4 +96,41 @@ class SplitStatementsSpec extends AnyFlatSpec with Matchers {
   it should "handle a comment on the last line without a trailing newline" in {
     GatewayApi.splitStatements("SELECT 1; -- done") shouldBe List("SELECT 1")
   }
+
+  // ── backticked identifiers (#252, story 21.1) ────────────────────────────────────────────────
+  // The scanner tracked `'` and `"` only. Once the grammar accepts a backticked identifier, a `;`
+  // or a `--` inside one reaches here as an unquoted character and splits or truncates a valid
+  // statement — a silent corruption, not an error.
+
+  it should "not split on a semicolon inside a backticked identifier" in {
+    GatewayApi.splitStatements("SELECT `a;b` FROM t") shouldBe List("SELECT `a;b` FROM t")
+  }
+
+  it should "not start a comment on a double dash inside a backticked identifier" in {
+    GatewayApi.splitStatements("SELECT `a--b` FROM t; SELECT 1") shouldBe
+    List("SELECT `a--b` FROM t", "SELECT 1")
+  }
+
+  // Doubling needs no special case in the scanner: the first backtick closes the quote, the second
+  // re-opens it, the net state is balanced and the text is copied verbatim. This test is what makes
+  // that reasoning a fact rather than an argument.
+  it should "leave the quote state balanced across a doubled backtick" in {
+    GatewayApi.splitStatements("SELECT `a``b` FROM t; SELECT 1") shouldBe
+    List("SELECT `a``b` FROM t", "SELECT 1")
+  }
+
+  // Inside backticks a backslash is an ordinary character — the only escape is a doubled backtick.
+  // Treating it as an escape would consume the closing delimiter and swallow the rest of the script.
+  it should "not treat a backslash inside a backticked identifier as an escape" in {
+    GatewayApi.splitStatements("SELECT `a\\` FROM t; SELECT 1") shouldBe
+    List("SELECT `a\\` FROM t", "SELECT 1")
+  }
+
+  // The backslash escape must STILL apply inside single- and double-quoted spans. The existing
+  // backslash test covers `'`; this is its `"` twin, and it is the guard on the condition added to
+  // the scanner alongside the backtick.
+  it should "still honor a backslash-escaped double quote" in {
+    GatewayApi.splitStatements("""SELECT "a\"b;c" FROM t; SELECT 2""") shouldBe
+    List("""SELECT "a\"b;c" FROM t""", "SELECT 2")
+  }
 }
