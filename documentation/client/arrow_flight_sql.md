@@ -116,7 +116,10 @@ ORDER BY revenue DESC;
 
 ## Live Demo
 
+The compose file is `demo/docker-compose.yml` — run these from the `demo/` directory:
+
 ```bash
+cd demo
 docker compose --profile duckdb up          # DuckDB + Python pipeline
 docker compose --profile superset-flight up # Apache Superset BI dashboards
 ```

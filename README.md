@@ -288,21 +288,28 @@ duckdb.sql("SELECT category, SUM(total_price) AS revenue FROM table GROUP BY cat
 
 ### Live Demo
 
+All three profiles live in the same compose file, `demo/docker-compose.yml` — run every command
+below from the `demo/` directory. Note that `superset-flight` and `grafana` both publish host port
+`32010`, so start one at a time.
+
 #### DuckDB + Python pipeline
 
 ```bash
+cd demo
 docker compose --profile duckdb up
 ```
 
 #### Apache Superset BI dashboards
 
 ```bash
+cd demo
 docker compose --profile superset-flight up
 ```
 
 #### Grafana dashboards
 
 ```bash
+cd demo
 docker compose --profile grafana up
 ```
 
