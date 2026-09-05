@@ -4,11 +4,15 @@ SoftClient4ES connects to common BI and SQL tools through the **JDBC driver** (`
 
 Where a supported connection path exists, a full step-by-step guide — connect, browse your indices, and run a cross-index JOIN — lives on the website. This page is an index; the website carries the screenshots and per-tool detail, and states the blocker for the tools that cannot connect.
 
-## Tested, Compatible, and no supported path
+## Tested, Compatible, Unproven, and no path today
 
-**Tested** tools are exercised against SoftClient4ES. **Compatible** tools speak a working protocol but
-have not been through formal regression (best-effort). A third group cannot connect at all, for reasons
-on the tool's own side.
+Four tiers, each a different claim:
+
+- **Tested** — exercised against SoftClient4ES.
+- **Compatible** — speaks a working protocol, but has not been through formal regression (best-effort).
+- **Unproven** — a connection path exists on paper, but nobody has connected it yet. Not a promise.
+- **No path today** — cannot connect without software that does not exist, for reasons on the tool's
+  own side.
 
 | Tool | Status | Path | Guide |
 |---|---|---|---|
@@ -16,13 +20,12 @@ on the tool's own side.
 | DBeaver | Tested | JDBC or Arrow Flight SQL | https://softclient4es.dev/integrations/dbeaver/ |
 | Grafana | Tested (via Arrow Flight SQL) | Arrow Flight SQL | https://softclient4es.dev/integrations/grafana/ |
 | Tableau | Compatible (not formally tested) | JDBC | https://softclient4es.dev/integrations/tableau/ |
-| Metabase | **No supported connection path** — Metabase has no generic JDBC database type; anything else needs a community driver plugin | — | https://softclient4es.dev/integrations/metabase/ |
-| Power BI | **No supported connection path** — Power Query has no JDBC connector (its generic connectors are ODBC and OData); the one candidate, a generic Arrow Flight SQL ODBC driver, is unproven | — | https://softclient4es.dev/integrations/power-bi/ |
-| Looker | **No supported connection path** — Looker-maintained drivers only, with a per-dialect JDBC parameter allowlist. Structural, not commercial: a licence would not close it | — | — |
-| dbt | **No supported connection path** — a dedicated adapter plugin is mandatory; no generic JDBC/ODBC adapter exists and no SoftClient4ES adapter exists | — | — |
+| Power BI | **Unproven** — Power Query's generic connectors are ODBC and OData, never JDBC. The one candidate path is a generic Arrow Flight SQL ODBC driver pointed at the sidecar; it has not been connected yet | ODBC (unproven) | https://softclient4es.dev/integrations/power-bi/ |
+| Metabase | **No path today** — Metabase has no generic JDBC database type. Connecting needs a community driver plugin, and we do not ship one | — | https://softclient4es.dev/integrations/metabase/ |
+| Looker | **No path today** — Looker-maintained drivers only, with a per-dialect JDBC parameter allowlist. Structural, not commercial: a licence would not close it | — | — |
 
-*(Each "no supported connection path" blocker was checked against the vendor's own connection
-documentation — Metabase, Microsoft Power Query, Looker and dbt — on 2026-08-31 and 2026-09-01.)*
+*(Each blocker was checked against the vendor's own connection documentation — Metabase, Microsoft
+Power Query and Looker — on 2026-08-31 and 2026-09-01.)*
 
 ## Honest-gap note
 

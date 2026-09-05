@@ -10,23 +10,26 @@ SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — in
 
 Two different things can stop a BI tool here, and it is worth separating them.
 
+### One tool has a path nobody has walked yet
+
+- **Power BI** — Power Query's generic connectors are ODBC and OData, never JDBC. The one candidate path
+  is a generic Arrow Flight SQL ODBC driver pointed at the sidecar. It is **unproven**: nobody has
+  connected it, so treat it as a lead to follow rather than a supported route.
+  See [Power BI](../client/bi_tools.md).
+
 ### Some tools cannot connect at all — and that is on their side
 
 - **Metabase** — no generic JDBC database type exists; anything not on Metabase's own driver list needs a
   community driver plugin, which is code nobody has written for SoftClient4ES. See [Metabase](../client/bi_tools.md).
-- **Power BI** — Power Query has no JDBC connector; its generic connectors are ODBC and OData. The only
-  candidate path is a generic Arrow Flight SQL ODBC driver, which is unproven. See [Power BI](../client/bi_tools.md).
 - **Looker** — Looker connects only through drivers it maintains itself, and it allowlists JDBC parameters
   per dialect, so a customer-supplied driver cannot be introduced. This gap is **structural, not
   commercial** — a licence would not close it.
-- **dbt** — dbt requires a dedicated adapter plugin per platform. There is no generic JDBC or ODBC adapter,
-  and no SoftClient4ES adapter.
 
-None of these is a gap we can close from our side: each one needs either a change by the vendor or a driver
-or adapter plugin that nobody has written.
+Neither is a gap we can close from our side: each needs either a change by the vendor or a driver plugin
+that nobody has written.
 
-*(Each blocker checked against the vendor's own connection documentation — Metabase, Microsoft Power Query,
-Looker and dbt — on 2026-08-31 and 2026-09-01.)*
+*(Each blocker checked against the vendor's own connection documentation — Metabase, Microsoft Power Query
+and Looker — on 2026-08-31 and 2026-09-01.)*
 
 ### Tools that connect, but generate SQL we do not accept yet
 
