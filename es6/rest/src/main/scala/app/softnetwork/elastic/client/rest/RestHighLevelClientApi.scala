@@ -1585,21 +1585,37 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                   throw new IllegalStateException("Scroll ID is null in response")
                 }
 
-                // Extract both hits AND aggregations
-                val results =
-                  extractAllResults(
-                    tree,
-                    fieldAliases,
-                    aggregations,
-                    config.retainDocumentId
+                val rawHits = tree.path("hits").path("hits").size()
+
+                try {
+                  // Extract both hits AND aggregations
+                  val results =
+                    extractAllResults(
+                      tree,
+                      fieldAliases,
+                      aggregations,
+                      config.retainDocumentId
+                    )
+
+                  logger.info(
+                    s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
                   )
 
-                logger.info(s"Initial scroll returned ${results.size} results, scrollId: $scrollId")
-
-                if (results.isEmpty) {
-                  None
-                } else {
-                  Some((Some(scrollId), results))
+                  // End of stream is decided on the RAW page (#241): a page that carried hits but
+                  // produced no rows is a silent drop and must fail the stream, not end it.
+                  if (endOfScrollPage(results.size, rawHits, s"Initial scroll page [$scrollId]")) {
+                    // nothing left to read — release the context we just opened
+                    clearScroll(scrollId)
+                    None
+                  } else {
+                    Some((Some(scrollId), results))
+                  }
+                } catch {
+                  case ex: Throwable =>
+                    // `scrollIdOpt` is still None on the first page, so the stream-level recovery
+                    // below cannot release the context opened just above (AD-S1-2)
+                    clearScroll(scrollId)
+                    throw ex
                 }
 
               case Some(scrollId) =>
@@ -1617,21 +1633,31 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 }
 
                 val newScrollId = tree.path("_scroll_id").textValue()
-                val results =
-                  extractAllResults(
-                    tree,
-                    fieldAliases,
-                    aggregations,
-                    config.retainDocumentId
-                  )
+                val rawHits = tree.path("hits").path("hits").size()
 
-                logger.debug(s"Scroll returned ${results.size} results")
+                try {
+                  val results =
+                    extractAllResults(
+                      tree,
+                      fieldAliases,
+                      aggregations,
+                      config.retainDocumentId
+                    )
 
-                if (results.isEmpty) {
-                  clearScroll(scrollId)
-                  None
-                } else {
-                  Some((Some(newScrollId), results))
+                  logger.debug(s"Scroll returned ${results.size} results")
+
+                  if (endOfScrollPage(results.size, rawHits, s"Scroll page [$scrollId]")) {
+                    clearScroll(scrollId)
+                    None
+                  } else {
+                    Some((Some(newScrollId), results))
+                  }
+                } catch {
+                  case ex: Throwable =>
+                    // the cursor already advanced: the stream-level recovery below only releases
+                    // the spent `scrollId`, so release the new one here too (AD-S1-2)
+                    Option(newScrollId).filter(_ != scrollId).foreach(clearScroll)
+                    throw ex
                 }
             }
           }
@@ -1732,10 +1758,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
             // Extract ONLY hits (no aggregations for search_after)
             val hits = extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
 
-            if (hits.isEmpty) {
+            val hitsArray = tree.path("hits").path("hits")
+
+            // End of stream is decided on the RAW page (#241), never on the converted rows
+            if (endOfScrollPage(hits.size, hitsArray.size(), "search_after page")) {
               None
             } else {
-              val hitsArray = tree.path("hits").path("hits")
               val lastHit = hitsArray.get(hitsArray.size() - 1)
               val lastSort = lastHit.path("sort")
               if (!lastSort.isArray || lastSort.size() == 0) {
@@ -1778,8 +1806,12 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`): returning an empty
+    * page here used to read as "end of stream" and surfaced a silently truncated result as a
+    * success (#241/#217, same defect class as #228 / #209 / #224).
     */
-  private def extractAllResults(
+  private[client] def extractAllResults(
     json: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
@@ -1795,14 +1827,17 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
         logger.debug(s"Parsed ${rows.size} rows from response")
         rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse scroll response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(s"Failed to parse scroll page: ${ex.getMessage}", ex)
     }
   }
 
   /** Extract ONLY hits (for search_after optimization)
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`) — see
+    * [[extractAllResults]]. ES 6 has no PIT, so this is the only deep-paging alternative to the
+    * classic scroll on this client.
     */
-  private def extractHitsOnly(
+  private[client] def extractHitsOnly(
     json: JsonNode,
     fieldAliases: ListMap[String, String],
     retainDocumentId: Boolean
@@ -1815,8 +1850,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     ) match {
       case Success(rows) => rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse search after response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(
+          s"Failed to parse search_after page: ${ex.getMessage}",
+          ex
+        )
     }
   }
 

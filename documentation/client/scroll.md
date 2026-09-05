@@ -693,6 +693,19 @@ The API automatically handles:
 - ✅ Elasticsearch errors
 - ✅ Connection issues
 
+### A page that cannot be read fails the stream
+
+**Since 0.23.0.** Every paging path — classic scroll, `search_after` and PIT — decides
+end-of-stream on the **raw** page, never on the converted rows, and a page whose body cannot be
+converted raises a non-retriable `IllegalStateException` that fails the stream. Earlier versions
+logged the conversion failure and returned an empty page, which the paging loop read as "no more
+data": the consumer received a **silently truncated** result set presented as a success. Extractions
+that used to "succeed" with fewer rows now fail loudly, so a `recover`/`recoverWith` on the stream
+is the right place to decide what a partial read means for your application.
+
+The failure is deliberately **not** retried: a scroll cursor that has already advanced cannot be
+re-polled without skipping rows.
+
 ```scala
 // Automatic error handling is built-in
 client.scroll(query).runWith(Sink.seq).recover {

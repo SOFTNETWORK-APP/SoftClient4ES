@@ -1426,16 +1426,33 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   throw new IllegalStateException("Scroll ID is null in response")
                 }
 
-                val results =
-                  extractAllResults(
-                    Left(response),
-                    fieldAliases,
-                    aggregations,
-                    config.retainDocumentId
-                  )
+                val rawHits = response.hits().hits().size()
 
-                if (results.isEmpty || scrollId == null) None
-                else Some((Some(scrollId), results))
+                try {
+                  val results =
+                    extractAllResults(
+                      Left(response),
+                      fieldAliases,
+                      aggregations,
+                      config.retainDocumentId
+                    )
+
+                  // End of stream is decided on the RAW page (#241): a page that carried hits but
+                  // produced no rows is a silent drop and must fail the stream, not end it.
+                  if (endOfScrollPage(results.size, rawHits, s"Initial scroll page [$scrollId]")) {
+                    // nothing left to read — release the context we just opened
+                    clearScroll(scrollId)
+                    None
+                  } else {
+                    Some((Some(scrollId), results))
+                  }
+                } catch {
+                  case ex: Throwable =>
+                    // `scrollIdOpt` is still None on the first page, so the stream-level recovery
+                    // below cannot release the context opened just above (AD-S1-2)
+                    clearScroll(scrollId)
+                    throw ex
+                }
 
               case Some(scrollId) =>
                 // Subsequent scroll
@@ -1466,19 +1483,29 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                 }
 
                 val newScrollId = response.scrollId()
-                val results =
-                  extractAllResults(
-                    Right(response),
-                    fieldAliases,
-                    aggregations,
-                    config.retainDocumentId
-                  )
+                val rawHits = response.hits().hits().size()
 
-                if (results.isEmpty) {
-                  clearScroll(scrollId)
-                  None
-                } else {
-                  Some((Some(newScrollId), results))
+                try {
+                  val results =
+                    extractAllResults(
+                      Right(response),
+                      fieldAliases,
+                      aggregations,
+                      config.retainDocumentId
+                    )
+
+                  if (endOfScrollPage(results.size, rawHits, s"Scroll page [$scrollId]")) {
+                    clearScroll(scrollId)
+                    None
+                  } else {
+                    Some((Some(newScrollId), results))
+                  }
+                } catch {
+                  case ex: Throwable =>
+                    // the cursor already advanced: the stream-level recovery below only releases
+                    // the spent `scrollId`, so release the new one here too (AD-S1-2)
+                    Option(newScrollId).filter(_ != scrollId).foreach(clearScroll)
+                    throw ex
                 }
             }
           }
@@ -1836,8 +1863,12 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
 
   /** Extract ALL results: hits + aggregations This is crucial for queries with aggregations (GROUP
     * BY, COUNT, AVG, etc.)
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`): returning an empty
+    * page here used to read as "end of stream" and surfaced a silently truncated result as a
+    * success (#241/#217, same defect class as #228 / #209 / #224).
     */
-  private def extractAllResults(
+  private[client] def extractAllResults(
     response: Either[SearchResponse[ObjectNode], ScrollResponse[ObjectNode]],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
@@ -1861,8 +1892,7 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
         logger.debug(s"Parsed ${rows.size} rows from response (hits + aggregations)")
         rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse scroll response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(s"Failed to parse scroll page: ${ex.getMessage}", ex)
     }
   }
 
