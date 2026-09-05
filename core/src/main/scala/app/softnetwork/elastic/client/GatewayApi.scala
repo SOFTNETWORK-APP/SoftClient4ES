@@ -1871,41 +1871,34 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
         logger.error(s"❌ ${error.message}")
         Future.successful(ElasticFailure(error))
       case statement :: Nil =>
-        ElasticResult.attempt(Parser(statement)) match {
-          case ElasticSuccess(parsedStatement) =>
-            parsedStatement match {
-              case Right(statement) =>
-                run(statement)
-              case Left(l) =>
-                // Parse rejection. `run` is the front door for DQL, DML AND DDL, so the message must
-                // not claim a statement class — and it cannot know one: `ParserError` is a bare
-                // string (see GatewayApi.ParseRejectionPrefix). Echo the statement instead and let
-                // the reader classify it; BI tools surface this text verbatim (jdbc#35).
-                // `l.msg` is passed through RAW on purpose: bounding and sanitising it is
-                // parseRejectionMessage's job, so both routes get it identically.
-                val error =
-                  ElasticError(
-                    message = GatewayApi.parseRejectionMessage(statement, l.msg),
-                    statusCode = Some(400),
-                    operation = Some("sql")
-                  )
-                logger.error(s"❌ ${error.message}")
-                Future.successful(ElasticFailure(error))
-            }
-
-          case ElasticFailure(elasticError) =>
-            // The other rejection route: `Parser.apply` THREW instead of returning `Left`
-            // (SoftClient4ES#250 — three `throw ValidationError` sites in `WhereParser`), and
-            // `ElasticResult.attempt` wrapped it as "Operation failed: <msg>" with no status and no
-            // operation. Relabel it exactly like the `Left` branch so a caller cannot tell the two
-            // routes apart, and so nothing here changes when #250 folds this route into `Left`.
-            // `statusCode` is deliberately left as `attempt` set it (None): `attempt` catches ANY
-            // NonFatal, so an internal fault must not be asserted to be a client-side 400.
-            val error = elasticError.copy(
-              message = GatewayApi
-                .parseRejectionMessage(statement, GatewayApi.parseFailureReason(elasticError)),
-              operation = Some("sql")
-            )
+        // `Parser.apply` is total since #250: it returns `Left` for every NonFatal rejection, so
+        // the `ElasticResult.attempt` wrapper this used to carry — and its `ElasticFailure` branch,
+        // which relabelled a thrown rejection — are gone. `attempt` catches exactly `NonFatal` and
+        // so does `Parser.apply`, which makes that branch unreachable rather than merely unlikely.
+        // What changes for a caller: the inputs that used to throw now get an honest
+        // `statusCode = Some(400)` instead of `None`, and a failure originating BELOW the grammar
+        // arrives as `Internal parser error: <Class>[: <detail>]` so it stays distinguishable.
+        Parser(statement) match {
+          case Right(parsed) =>
+            run(parsed)
+          case Left(l) =>
+            // Parse rejection. `run` is the front door for DQL, DML AND DDL, so the message must
+            // not claim a statement class — and it cannot know one: `ParserError` is a bare
+            // string (see GatewayApi.ParseRejectionPrefix). Echo the statement instead and let
+            // the reader classify it; BI tools surface this text verbatim (jdbc#35).
+            // `l.msg` is passed through RAW on purpose: bounding and sanitising it is
+            // parseRejectionMessage's job.
+            val error =
+              ElasticError(
+                message = GatewayApi.parseRejectionMessage(statement, l.msg),
+                // `l.cause` is set ONLY by `Parser.apply`'s NonFatal boundary catch (#250 AD-10);
+                // a grammar rejection carries None. `ElasticError extends Throwable(message,
+                // cause.orNull)`, so this restores exactly the stack trace `ElasticResult.attempt`
+                // used to supply for an internal parser fault.
+                cause = l.cause,
+                statusCode = Some(400),
+                operation = Some("sql")
+              )
             logger.error(s"❌ ${error.message}")
             Future.successful(ElasticFailure(error))
         }
@@ -1985,9 +1978,10 @@ object GatewayApi {
     *
     * It says SQL, not "schema DDL" (jdbc#35). `run` is the single front door for DQL, DML '''and'''
     * DDL, and the statement that failed to parse has no known kind: `Parser.apply` hands back
-    * `Left(ParserError(msg: String))` (`sql/.../parser/Parser.scala:1352,1365`) — a bare string
-    * with no AST, no position and no statement class. So the message names what it can actually
-    * observe (the statement, and the parser's reason) and nothing it cannot.
+    * `Left(ParserError(msg, cause))` — a reason string with no AST, no position and no statement
+    * class (`cause` is set only for an internal fault, #250 AD-10, and carries a stack trace, not a
+    * classification). So the message names what it can actually observe (the statement, and the
+    * parser's reason) and nothing it cannot.
     *
     * The `Error parsing` stem is deliberate, not inherited by accident: it is what
     * `ReplGatewayIntegrationSpec` asserts, and it is the wording jdbc#35 itself proposed.
@@ -2001,11 +1995,11 @@ object GatewayApi {
     * Bounding only the statement would have been incoherent
     * (`feedback_constant_uniform_justification`): the justification is the medium — a narrow BI
     * error dialog — and it binds both halves. It is also not hypothetical that the reason needs it.
-    * `Parser.apply` maps post-parse `validate()` failures to `Left(ParserError(msg))` too, and
-    * those messages embed whole AST renderings — `sql/.../query/From.scala` repeats `"ON clause
-    * $this ..."` nine times, and `Parser.scala:312` echoes the '''entire SCRIPT body''' into
-    * `"Invalid SCRIPT AS expression ($body): $msg"`. Unbounded, one of those buries the diagnosis
-    * and re-exposes a whole script inside an error dialog.
+    * `Parser.apply` maps post-parse `validate()` failures to a `Left` too, and those messages embed
+    * whole AST renderings — `sql/.../query/From.scala` repeats `"ON clause $this ..."` nine times,
+    * and `Parser.scala:312` echoes the '''entire SCRIPT body''' into `"Invalid SCRIPT AS expression
+    * ($body): $msg"`. Unbounded, one of those buries the diagnosis and re-exposes a whole script
+    * inside an error dialog.
     *
     * An excerpt NEVER exceeds this many characters — the ellipsis is inside the budget, not added
     * to it, so the constant means what its name says. Whole-message ceiling: prefix + brackets +
@@ -2092,40 +2086,16 @@ object GatewayApi {
     */
   private[client] val NoParserReason: String = "no reason reported by the parser"
 
-  /** The reason to quote when the parser THREW rather than returned `Left` (SoftClient4ES#250).
+  /** The one message builder every parse rejection of `run(sql: String)` goes through.
     *
-    * `ElasticResult.attempt` has already flattened the throwable into `message = "Operation failed:
-    * <ex msg>"`, `cause = Some(ex)`, so the useful text is the cause's own message.
+    * Since #250 there is only one route: `Parser.apply` is total for `NonFatal`, so the thrown
+    * route it used to share this builder with is gone. A failure raised BELOW the grammar arrives
+    * here as `Parser.InternalParseFailure: <Class>[: <detail>]`, which is what keeps an internal
+    * fault distinguishable from a syntax error now that both carry `400`.
     *
-    * It deliberately does '''not''' fall back to `error.message`. `attempt` interpolates a null
-    * message straight into its wrapper, so a cause with no message yields the literal `"Operation
-    * failed: null"` (`result/package.scala:253-266`) — relaying that would violate AC-2 and
-    * contradict this story's own "the message never says Operation failed" assertion. The fallback
-    * is the exception's class name instead: strictly more useful, and it makes an internal fault
-    * visibly different from a grammar rejection at a glance.
-    *
-    * Extracted as a named function for one reason: neither the null nor the blank branch is
-    * reachable through `run` (no parser exception carries a null message today), so inline they
-    * would ship with zero coverage.
-    */
-  private[client] def parseFailureReason(error: ElasticError): String = {
-    def nonBlank(s: String): Option[String] = Option(s).map(_.trim).filter(_.nonEmpty)
-    error.cause
-      .flatMap(ex => nonBlank(ex.getMessage).orElse(nonBlank(ex.getClass.getName)))
-      .getOrElse(NoParserReason)
-  }
-
-  /** The one message builder both parse-rejection routes of `run(sql: String)` go through.
-    *
-    * Sharing it is the point: the routes differ only in how the parser failed (returned `Left` vs
-    * threw, SoftClient4ES#250), and a caller must not be able to tell them apart. It also means
-    * that when #250 moves the thrown route onto the `Left` branch, no message changes.
-    *
-    * It owns BOTH message-shape invariants so neither route can lose one: each half is bounded and
-    * single-lined by `excerpt`, and the reason half is never empty. The empty guard belongs here
-    * and not only in `parseFailureReason`, because `ParserError(msg)` carries no non-empty
-    * invariant either (`Parser.scala:1365`) — the `Left` route can hand over a blank string just as
-    * easily.
+    * It owns BOTH message-shape invariants: each half is bounded and single-lined by `excerpt`, and
+    * the reason half is never empty — `ParserError(msg)` carries no non-empty invariant, so it can
+    * hand over a blank string.
     */
   private[client] def parseRejectionMessage(statement: String, reason: String): String = {
     val shownReason = excerpt(reason)

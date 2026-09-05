@@ -45,36 +45,46 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
     *   ElasticResult[Boolean] indicating success or failure
     */
   def pipeline(sql: String): ElasticResult[Boolean] = {
-    ElasticResult.attempt(Parser(sql)) match {
-      case ElasticSuccess(parsedStatement) =>
-        parsedStatement match {
-
-          case Right(statement) =>
-            statement match {
-              case ddl: PipelineStatement =>
-                pipeline(ddl)
-              case _ =>
-                val error =
-                  ElasticError(
-                    message = s"Unsupported pipeline DDL statement: $statement",
-                    statusCode = Some(400),
-                    operation = Some("pipeline")
-                  )
-                logger.error(s"❌ ${error.message}")
-                ElasticResult.failure(error)
-            }
-          case Left(l) =>
+    // `Parser.apply` is total since #250, so the `ElasticResult.attempt` wrapper and its
+    // `ElasticFailure` branch are gone: `attempt` catches exactly `NonFatal` and so does
+    // `Parser.apply`, which makes that branch unreachable. Inputs that used to throw now get
+    // `Error parsing pipeline DDL statement: ...` with `Some(400)` instead of
+    // `Operation failed: ...` with no status.
+    Parser(sql) match {
+      case Right(statement) =>
+        statement match {
+          case ddl: PipelineStatement =>
+            pipeline(ddl)
+          case _ =>
             val error =
               ElasticError(
-                message = s"Error parsing pipeline DDL statement: ${l.msg}",
+                message = s"Unsupported pipeline DDL statement: $statement",
                 statusCode = Some(400),
                 operation = Some("pipeline")
               )
             logger.error(s"❌ ${error.message}")
             ElasticResult.failure(error)
         }
-      case ElasticFailure(elasticError) =>
-        ElasticResult.failure(elasticError.copy(operation = Some("pipeline")))
+      case Left(l) =>
+        val error =
+          ElasticError(
+            // #250 - the reason is BOUNDED and single-lined by the same `excerpt` the SQL route
+            // uses. That is a security control, not cosmetics: `excerpt` collapses control
+            // characters and line separators, and this story is precisely what widened what
+            // `l.msg` can carry (a `validate()` failure embedding a whole AST, or an
+            // `Internal parser error: <Class>: <detail>` built from an arbitrary exception
+            // message). The pipeline-specific PREFIX stays - `pipeline(sql)` is a dedicated DDL
+            // entry point, so naming the statement class here is accurate, unlike `run(sql)`
+            // which is the front door for DQL, DML and DDL alike (jdbc#35 / story 20.4).
+            message = s"Error parsing pipeline DDL statement: ${GatewayApi.excerpt(l.msg)}",
+            // Set ONLY by `Parser.apply`'s NonFatal boundary catch (#250); a grammar rejection
+            // carries None. Restores the stack trace `ElasticResult.attempt` used to supply.
+            cause = l.cause,
+            statusCode = Some(400),
+            operation = Some("pipeline")
+          )
+        logger.error(s"❌ ${error.message}")
+        ElasticResult.failure(error)
     }
   }
 

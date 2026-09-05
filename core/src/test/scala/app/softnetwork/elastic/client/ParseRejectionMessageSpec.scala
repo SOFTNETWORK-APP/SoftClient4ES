@@ -101,28 +101,71 @@ class ParseRejectionMessageSpec extends AnyFlatSpec with Matchers with BeforeAnd
     error.statusCode shouldBe Some(400)
   }
 
-  // The OTHER rejection route: SoftClient4ES#250 — `Parser.apply` THROWS `ValidationError` here
-  // instead of returning `Left` (measured on this exact input; it is jOOQ's rendering of RLIKE).
-  // The MESSAGE assertions are route-agnostic by design: both routes must produce the same shape.
-  it should "report a THROWN parse failure with the same neutral wording" in {
+  // jOOQ's rendering of RLIKE, which is the measured #250 repro: `Parser.apply` used to THROW
+  // `ValidationError("Unbalanced parentheses")` on this input instead of returning `Left`, and the
+  // rejection reached a caller with NO status at all. Since #250 it takes the ordinary `Left`
+  // route, so the improvement is pinned here where the defect used to be.
+  //
+  // The reason TEXT is deliberately not asserted: `Unbalanced parentheses` is the `sql` module's
+  // string and ParserTotalitySpec owns it; `core` must not couple to a parser literal.
+  it should "report a WHERE-clause rejection with the same neutral wording" in {
     val sql = "select id from emp where (name like_regex 'Jo.*')"
-    assertRejection(sql, rejectionOf(sql))
+    val error = rejectionOf(sql)
+    assertRejection(sql, error)
+    error.statusCode shouldBe Some(400)
   }
 
-  // ...but shape assertions alone cannot FAIL if site 2 regresses, because site 1 satisfies them
-  // too. These two are the route's only discriminators — site 1 always yields `statusCode =
-  // Some(400)` and no cause — and they pin the two decisions AD-5 and Task 1.3 state explicitly:
-  // `statusCode` is left exactly as `ElasticResult.attempt` set it, and `copy` preserves the cause.
-  // Without them a dev can rebuild the error from scratch at site 2, break three recorded decisions,
-  // and watch every test stay green.
+  // #250 AD-10 — this replaces the old "leave statusCode and cause exactly as attempt produced
+  // them on the thrown route" pin, which went red (as its own comment predicted) once the throw
+  // became a `Left`. The CAPABILITY it pinned must not vanish with the route that carried it:
+  // `ElasticResult.attempt` used to supply the `Throwable` cause, and `ElasticError extends
+  // Throwable(message, cause.orNull)`, so an internal parser fault is the only thing that ever
+  // produces a stack trace here. `ParserError.cause` now carries it.
   //
-  // TRAP — this test is EXPECTED to go red when #250 lands and the throw becomes a `Left`. That is
-  // the signal, not a defect: delete it then (site 1 already covers the shape). Do not weaken it now
-  // to make it survive a change that has not happened.
-  it should "leave statusCode and cause exactly as attempt produced them on the thrown route" in {
-    val error = rejectionOf("select id from emp where (name like_regex 'Jo.*')")
-    error.statusCode shouldBe None
+  // `SELECT a, b FROM t GROUP BY 0` is measured: `SingleSearch.bucketNames` indexes
+  // `select.fields(n - 1)` with no bounds check, from inside `single`'s combinator action.
+  // Ordinal-bucket SEMANTICS belong to story 21.3 / #253 — when 21.3 rejects this in `validate()`
+  // the `Internal parser error` label legitimately changes; RETARGET this assertion, and keep the
+  // status/operation/cause ones, which are #250's contract.
+  it should "report an internal parser fault with an honest status and a preserved cause" in {
+    val error = rejectionOf("SELECT a, b FROM t GROUP BY 0")
+    error.message should include("Internal parser error")
+    error.statusCode shouldBe Some(400)
+    error.operation shouldBe Some("sql")
     error.cause shouldBe defined
+  }
+
+  // AD-4 — `PipelineApi.pipeline(sql)` carried the identical dead `ElasticFailure` branch and had
+  // ZERO coverage. Its fold changes BOTH the message (`Operation failed: ...` ->
+  // `Error parsing pipeline DDL statement: ...`) and the status (`None` -> `Some(400)`), so it is
+  // exercised here. `NopeClientApi` is an `ElasticClientApi`, so this stays Docker-free.
+  it should "report a pipeline DDL parse rejection with an honest status" in {
+    client.pipeline("CREATE PIPELINE p AS SELECT a FROM t WHERE (b = 1") match {
+      case ElasticFailure(error) =>
+        error.message should startWith("Error parsing pipeline DDL statement")
+        error.message should not include "Operation failed"
+        error.statusCode shouldBe Some(400)
+        error.operation shouldBe Some("pipeline")
+      case other => fail(s"Expected a pipeline parse failure, got: $other")
+    }
+  }
+
+  // The pipeline route's `cause = l.cause` is only exercised by an INTERNAL fault - the test above
+  // feeds a grammar rejection, where the cause is `None` by design, so it cannot see the field at
+  // all. `pipeline(sql)` parses any statement before checking it is a `PipelineStatement`, so the
+  // measured AST crasher reaches it. Also pins that the reason is BOUNDED here as it is on the SQL
+  // route: `excerpt` collapses control characters and line separators.
+  it should "preserve the cause and bound the reason on the pipeline internal-fault route" in {
+    client.pipeline("SELECT a, b FROM t GROUP BY 0") match {
+      case ElasticFailure(error) =>
+        error.message should startWith("Error parsing pipeline DDL statement")
+        error.message should include("Internal parser error")
+        error.message.linesIterator.size shouldBe 1
+        error.statusCode shouldBe Some(400)
+        error.operation shouldBe Some("pipeline")
+        error.cause shouldBe defined
+      case other => fail(s"Expected a pipeline internal-fault failure, got: $other")
+    }
   }
 
   // The multi-statement branch has no message of its own — `run(statement)` inside the fold is the
@@ -252,46 +295,12 @@ class ParseRejectionMessageSpec extends AnyFlatSpec with Matchers with BeforeAnd
     message should startWith("Error parsing SQL statement [SELECT 1]: ")
   }
 
-  // `ParserError(msg)` has no non-empty invariant either (`Parser.scala:1365`), so the `Left` route
-  // can hand over a blank reason exactly as the thrown route can. The message must never end in
-  // `]: ` with nothing after the colon (AC-2).
+  // `ParserError(msg)` carries no non-empty invariant, so the parser can hand over a blank reason.
+  // The message must never end in `]: ` with nothing after the colon (AC-2).
   it should "never emit an empty reason, whichever route supplied it" in {
     GatewayApi.parseRejectionMessage("SELECT 1", "   ") shouldBe
     s"Error parsing SQL statement [SELECT 1]: ${GatewayApi.NoParserReason}"
     GatewayApi.parseRejectionMessage("SELECT 1", "") should not endWith "]: "
   }
 
-  behavior of "GatewayApi.parseFailureReason"
-
-  // Branch 1 — the live one: `ElasticResult.attempt` wrapped a thrown parser exception.
-  it should "prefer the cause's own message over attempt's wrapper" in {
-    val wrapped = new IllegalStateException("Unbalanced parentheses")
-    GatewayApi.parseFailureReason(
-      ElasticError("Operation failed: Unbalanced parentheses", cause = Some(wrapped))
-    ) shouldBe "Unbalanced parentheses"
-  }
-
-  // Branch 2 — unreachable through `run` today, which is exactly why it is tested here. Note what
-  // it must NOT return: `attempt` interpolates a null message into its own wrapper, so relaying
-  // `error.message` would put the literal "Operation failed: null" in front of the analyst.
-  it should "use the cause's class name when its message is null, never attempt's wrapper" in {
-    val reason = GatewayApi.parseFailureReason(
-      ElasticError("Operation failed: null", cause = Some(new RuntimeException()))
-    )
-    reason shouldBe classOf[RuntimeException].getName
-    reason should not include "Operation failed"
-  }
-
-  // Branch 3 — a blank cause message would render as `[...]: ` with nothing after the colon.
-  it should "use the cause's class name when its message is blank" in {
-    GatewayApi.parseFailureReason(
-      ElasticError("Operation failed:", cause = Some(new IllegalArgumentException("   ")))
-    ) shouldBe classOf[IllegalArgumentException].getName
-  }
-
-  // Branch 4 — defensive: `ElasticResult.attempt` always sets a cause, so this cannot arise at
-  // site 2. It exists so the function is total and can never return an empty reason.
-  it should "never return an empty reason when there is no cause at all" in {
-    GatewayApi.parseFailureReason(ElasticError("whatever")) shouldBe GatewayApi.NoParserReason
-  }
 }

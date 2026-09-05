@@ -48,10 +48,15 @@ trait FromParser {
   def join_type: PackratParser[JoinType] =
     inner_join | left_join | right_join | full_join | cross_join
 
-  def on: PackratParser[On] = On.regex ~> whereCriteria ^^ { rawTokens =>
-    On(
-      processTokens(rawTokens).getOrElse(throw new Exception("ON clause requires criteria"))
-    )
+  def on: PackratParser[On] = On.regex ~> whereCriteria >> { rawTokens =>
+    // `On(criteria: Criteria)` is not optional (query/From.scala), which is why an ON whose
+    // criteria resolve to nothing used to `throw new Exception`. #250: `err`, like every other
+    // rejection in this package - see `WhereParser.where` for the full reasoning.
+    processTokens(rawTokens) match {
+      case Right(Some(criteria)) => success(On(criteria))
+      case Right(None)           => err("ON clause requires criteria")
+      case Left(reason)          => err(reason)
+    }
   }
 
   def source: PackratParser[(Identifier, Option[Alias])] = identifier ~ alias.? ^^ { case i ~ a =>
