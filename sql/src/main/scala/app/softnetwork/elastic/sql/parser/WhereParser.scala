@@ -265,10 +265,23 @@ trait WhereParser {
 
   /** The token stream inside a relation predicate's parentheses.
     *
-    * The same alternatives `whereCriteria` offers, with ONE deliberate omission: a bare `end` is
-    * NOT an alternative, because the closing parenthesis belongs to the relation predicate itself.
-    * Without that omission `rep1` would swallow it (and everything after it) and the enclosing `~
-    * end` could never match - `rep1` does not backtrack.
+    * `whereCriteria` is `rep1(allPredicate | allCriteria | start | or | and | end | then_case)`.
+    * This is that alternation minus THREE of those, and the differences are ENUMERATED rather than
+    * summarised, because the correctness claim rests on exactly which ones are missing:
+    *
+    *   - a bare `end` is omitted - the closing parenthesis belongs to the relation predicate, and
+    *     `rep1` does NOT backtrack, so leaving it in would let the repetition swallow that `)` and
+    *     everything after it, after which the enclosing end could never match;
+    *   - a bare `start` is omitted for the mirror reason: an opening parenthesis must only ever be
+    *     consumed by `relationGroup`, together with its OWN closing one, which is what keeps the
+    *     two balanced and lets sub-groups nest;
+    *   - `then_case` is omitted because a bare `THEN` cannot appear in a relation body (a `CASE`
+    *     expression inside one is consumed whole by `criteria` - measured).
+    *
+    * Every criteria-bearing alternative is shared, so a shape added to `whereCriteria` is reachable
+    * here too. What KEEPS them in step is the property test *"reduce a relation body to exactly the
+    * tree the same expression produces at top level"* (`ParserTotalitySpec`): if one alternation
+    * gains a shape the other cannot reach, the two trees stop being equal and it fails.
     */
   private def relationTokens: PackratParser[List[Token]] =
     rep1(
@@ -292,6 +305,16 @@ trait WhereParser {
     * Reducing the tokens with `processTokens` - the same function `where`, `having`, `on` and
     * `case_condition` use - is the point: `NESTED(X)` now produces exactly the criteria tree `WHERE
     * X` produces, so associativity, grouping and NOT handling cannot drift between the two.
+    */
+  /** ⚠️ The `err`s below are non-backtracking, and that is deliberate: they fire only AFTER `start
+    * ~> relationTokens <~ end` has committed, i.e. after `CHILD(` has actually matched. A column
+    * literally NAMED `child` / `nested` / `parent` is therefore untouched - `Child.regex` matches,
+    * the following `start` fails with a `Failure` (not an `Error`), and the alternation falls
+    * through to `criteria` exactly as before. Measured, and pinned by *"still treat a column named
+    * like a relation as an ordinary column"*.
+    *
+    * `relation` names the relation in the `Right(None)` message, which IS reachable: `child(child.a
+    * = 1 AND)` yields *"CHILD clause requires criteria"* (pinned).
     */
   private def relationCriteria(relation: String): PackratParser[Criteria] =
     start ~> relationTokens <~ end >> { tokens =>

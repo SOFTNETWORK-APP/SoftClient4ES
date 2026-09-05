@@ -95,6 +95,18 @@ object Queries {
     "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 = 2 AND child.identifier3 = 3 AND child.identifier4 = 4)"
   val parentPredicateN =
     "SELECT * FROM Table WHERE parent(parent.identifier2 = 2 AND parent.identifier3 = 3 AND parent.identifier4 = 4)"
+  // OR + a genuine PARENT-level criterion. Guards the MIRROR-IMAGE bug of the one 21.4 fixed:
+  // an implementation that OVER-scopes (pulls `identifier1` inside the relation) passes every
+  // all-inside assertion, so only a mixed shape can detect it.
+  val childPredicateNOrWithParentCriterion =
+    "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 = 2 OR child.identifier3 = 3 OR child.identifier4 = 4)"
+  // NESTED is only meaningful once `JOIN UNNEST(...) AS <alias>` has DECLARED the path: without
+  // one, `buildNestedTrees(criteria.nestedElements)` is Nil and the bridge emits `match_all`
+  // (pre-existing, all arities - docs/issues/local-21.4-nested-without-declared-path.md). The
+  // N-ary NESTED assertion therefore uses the declared spelling, which is the one that can be
+  // wrong in an interesting way.
+  val nestedPredicateNDeclared =
+    "SELECT * FROM Table JOIN UNNEST(Table.nested) AS nested WHERE nested(nested.identifier2 = 2 AND nested.identifier3 = 3 AND nested.identifier4 = 4)"
   val inLiteralExpression = "SELECT * FROM Table WHERE identifier IN ('val1','val2','val3')"
   val inNumericalExpressionWithIntValues = "SELECT * FROM Table WHERE identifier IN (1,2,3)"
   val inNumericalExpressionWithDoubleValues =

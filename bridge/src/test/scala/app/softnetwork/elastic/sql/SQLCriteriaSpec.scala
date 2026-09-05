@@ -805,6 +805,128 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s", "")
   }
 
+  // 🔴 NESTED, the relation whose ES translation must DERIVE its `path` from the criteria rather
+  // than being told it (`ElasticNested`, `query/Where.scala` - first-match `orElse`). It was the
+  // one variant with no query-level assertion, and it is the one most likely to be quietly wrong,
+  // so it gets its own. Note the emission FLATTENS the conjunction into a single `filter` array
+  // rather than nesting `bool`s the way `has_child` does - asserting the exact shape is the point.
+  it should "filter nested predicate with three criteria, all scoped inside the relation" in {
+    asQuery(nestedPredicateNDeclared) shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "nested": {
+        |            "path": "nested",
+        |            "query": {
+        |              "bool": {
+        |                "filter": [
+        |                  {
+        |                    "term": {
+        |                      "nested.identifier2": {
+        |                        "value": 2
+        |                      }
+        |                    }
+        |                  },
+        |                  {
+        |                    "term": {
+        |                      "nested.identifier3": {
+        |                        "value": 3
+        |                      }
+        |                    }
+        |                  },
+        |                  {
+        |                    "term": {
+        |                      "nested.identifier4": {
+        |                        "value": 4
+        |                      }
+        |                    }
+        |                  }
+        |                ]
+        |              }
+        |            },
+        |            "inner_hits": {
+        |              "name": "nested"
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  // The MIRROR-IMAGE guard. Every other new assertion proves nothing LEAKS OUT of the relation;
+  // this one proves nothing is wrongly pulled IN. `identifier1` is a genuine parent-level criterion
+  // and must stay in the outer bool while all three OR-ed child criteria stay inside the has_child.
+  // An over-scoping implementation passes all the all-inside assertions and fails only this one.
+  it should "keep a parent-level criterion outside an N-ary OR child predicate" in {
+    asQuery(childPredicateNOrWithParentCriterion) shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "term": {
+        |            "identifier1": {
+        |              "value": 1
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "has_child": {
+        |            "type": "child",
+        |            "score_mode": "none",
+        |            "query": {
+        |              "bool": {
+        |                "filter": [
+        |                  {
+        |                    "bool": {
+        |                      "should": [
+        |                        {
+        |                          "bool": {
+        |                            "should": [
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier2": {
+        |                                    "value": 2
+        |                                  }
+        |                                }
+        |                              },
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier3": {
+        |                                    "value": 3
+        |                                  }
+        |                                }
+        |                              }
+        |                            ]
+        |                          }
+        |                        },
+        |                        {
+        |                          "term": {
+        |                            "child.identifier4": {
+        |                              "value": 4
+        |                            }
+        |                          }
+        |                        }
+        |                      ]
+        |                    }
+        |                  }
+        |                ]
+        |              }
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
   it should "filter child criteria" in {
     asQuery(childCriteria) shouldBe
     """

@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.query.{Criteria, ElasticRelation, SingleSearch}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -217,37 +218,83 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
   //   `WHERE id = 1 AND child(a = 2 AND b = 3 AND c = 4)`
   //     parsed as `WHERE id = 1 AND CHILD(a = 2) AND b = 3 AND c = 4`
   // with `b` and `c` escaping onto the PARENT document, and with `OR` the operator itself spanning
-  // the relation boundary. The parenthesised form now takes N criteria reduced by `processTokens`,
-  // so `NESTED(X)` produces exactly the tree `WHERE X` produces.
+  // the relation boundary.
   //
-  // 🔴 THE PROOF OF CORRECTNESS IS THE GENERATED ES QUERY, NOT THE PARSE - a statement that parses
-  // and still scopes wrongly is worse than the loud failure it replaced. That assertion lives in
-  // the bridge specs (`SQLCriteriaSpec`, "filter child predicate with three criteria" and its
-  // siblings), in BOTH the `bridge/` template and the hand-maintained `es6/bridge/` copy.
+  // 🔴 Identifiers here are DOTTED ON PURPOSE (`child.a`, not `a`). `has_child.type` /
+  // `has_parent.parent_type` are derived from the FIRST criterion's leading name segment
+  // (`query/Where.scala` `rtype`), so `child(a = 1 AND b = 2)` emits the nonsense `"type": "a"`.
+  // An unqualified acceptance row would be certifying that nonsense as correct.
   it should "parse a relation predicate with three or more criteria" in {
     Seq(
       "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.a = 2 AND child.b = 3 AND child.c = 4)",
-      "SELECT * FROM Table WHERE a = 1 AND child(x = 1 OR y = 2 OR z = 3)",
-      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2 AND c = 3)",
-      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2 AND c = 3)",
-      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2 OR c = 3)",
+      "SELECT * FROM Table WHERE a = 1 AND child(child.x = 1 OR child.y = 2 OR child.z = 3)",
+      "SELECT * FROM Table WHERE parent(parent.a = 1 AND parent.b = 2 AND parent.c = 3)",
+      "SELECT * FROM Table WHERE child(child.a = 1 AND child.b = 2 OR child.c = 3)",
       // a parenthesised sub-group INSIDE the relation - `relationGroup` matches a `(` with its own
       // `)` and re-emits both, so `processTokens` rebuilds the group exactly as at top level
-      "SELECT * FROM Table WHERE nested(a = 1 AND (b = 2 OR c = 3))",
-      "SELECT * FROM Table WHERE a = 1 AND child(x = 1 AND y = 2 AND z = 3) OR b = 2"
+      "SELECT * FROM Table WHERE child(child.a = 1 AND (child.b = 2 OR child.c = 3))",
+      "SELECT * FROM Table WHERE a = 1 AND child(child.x = 1 AND child.y = 2 AND child.z = 3) OR b = 2",
+      // NESTED is only meaningful once `JOIN UNNEST` has declared the path - see the KNOWN
+      // PRE-EXISTING DEFECT test further down for what happens when it has not.
+      "SELECT * FROM Table JOIN UNNEST(Table.nested) AS nested WHERE nested(nested.a = 1 AND nested.b = 2 AND nested.c = 3)"
     ).foreach(sql => withClue(s"[$sql] ") { Parser(sql).isRight shouldBe true })
   }
 
-  // Every AST `.sql` must re-parse to an EQUAL AST (project_ast_render_roundtrip_family):
-  // parseable-ification can turn a loud failure into silent corruption, and the N-ary render is
-  // new surface.
+  // 🔴 THE CLAIM, STATED EXECUTABLY. The whole correctness argument for this design is that the
+  // relation body is reduced by `processTokens` - the same function `where`/`having`/`on` use - so
+  // that `CHILD(X)` contains exactly the criteria tree `WHERE X` produces. Asserting a couple of
+  // all-AND and all-OR shapes could not prove it: those are association-INSENSITIVE, so they show
+  // that nesting exists, not that it is the RIGHT nesting.
+  //
+  // This property compares the two trees STRUCTURALLY (`==`, not rendered text) across shapes that
+  // do distinguish associativity and precedence. It also guards the hand-copied alternation: if
+  // someone adds an alternative to `whereCriteria` and forgets `relationTokens`, a shape using it
+  // stops being equivalent and this test fails - which is the only thing keeping the two in step.
+  it should "reduce a relation body to exactly the tree the same expression produces at top level" in {
+    def whereCriteriaOf(sql: String): Option[Criteria] =
+      Parser(sql).toOption
+        .collect { case s: SingleSearch => s }
+        .flatMap(_.where)
+        .flatMap(_.criteria)
+
+    Seq(
+      "child.a = 1",
+      "child.a = 1 AND child.b = 2",
+      "child.a = 1 AND child.b = 2 AND child.c = 3",
+      "child.a = 1 OR child.b = 2 OR child.c = 3",
+      "child.a = 1 AND child.b = 2 OR child.c = 3",
+      "child.a = 1 OR child.b = 2 AND child.c = 3",
+      "(child.a = 1 OR child.b = 2) AND child.c = 3",
+      "child.a = 1 AND (child.b = 2 OR child.c = 3)",
+      "child.a = 1 AND NOT child.b = 2 AND NOT child.c = 3",
+      "NOT child.a = 1"
+    ).foreach { shape =>
+      val top = whereCriteriaOf(s"SELECT * FROM t WHERE $shape")
+      val inRelation = whereCriteriaOf(s"SELECT * FROM t WHERE child($shape)").collect {
+        case r: ElasticRelation => r.criteria
+      }
+      withClue(s"[$shape] top=[$top] inRelation=[$inRelation] ") {
+        top shouldBe defined
+        inRelation shouldBe defined
+        inRelation shouldBe top
+      }
+    }
+  }
+
+  // Every AST `.sql` must re-parse to an EQUAL AST (project_ast_render_roundtrip_family).
+  // ⚠️ NOT is deliberately absent here: `NOT c = 3` renders as `c NOT = 3`, which does NOT re-parse.
+  // That render defect is PRE-EXISTING and identical at top level (`WHERE NOT a = 1` renders
+  // `a NOT = 1` on `main` too), but 3-criteria relations were rejected before, so this commit makes
+  // it newly REACHABLE inside a relation. Recorded in
+  // docs/issues/local-21.4-not-render-asymmetry.md; deliberately not pinned, because pinning a
+  // broken round-trip reads as a contract.
   it should "round-trip an N-ary relation predicate through its own render" in {
     Seq(
       "SELECT * FROM Table WHERE child(child.a = 2 AND child.b = 3 AND child.c = 4)",
-      "SELECT * FROM Table WHERE child(x = 1 OR y = 2 OR z = 3)",
-      "SELECT * FROM Table WHERE nested(a = 1 AND (b = 2 OR c = 3))",
-      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2 AND c = 3)",
-      "SELECT * FROM Table WHERE nested a = 1"
+      "SELECT * FROM Table WHERE child(child.x = 1 OR child.y = 2 OR child.z = 3)",
+      "SELECT * FROM Table WHERE child(child.a = 1 AND (child.b = 2 OR child.c = 3))",
+      "SELECT * FROM Table WHERE parent(parent.a = 1 AND parent.b = 2 AND parent.c = 3)",
+      "SELECT * FROM Table WHERE nested nested.a = 1"
     ).foreach { sql =>
       val parsed = Parser(sql)
       withClue(s"[$sql] ") { parsed.isRight shouldBe true }
@@ -256,34 +303,55 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // The regression BOUNDARY. The two-criteria form always worked (it matched the binary
-  // `predicate`); it must keep working, and it is the single thing most likely to break when the
-  // arity is generalised.
+  // The regression BOUNDARY. The one- and two-criteria forms always worked (two matched the binary
+  // `predicate`); they are the single thing most likely to break when the arity is generalised.
   it should "still accept a relation predicate with one or two criteria" in {
     Seq(
-      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2)",
-      "SELECT * FROM Table WHERE child(a = 1 AND b = 2)",
-      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2)",
-      "SELECT * FROM Table WHERE child(a = 1)",
+      "SELECT * FROM Table WHERE child(child.a = 1 AND child.b = 2)",
+      "SELECT * FROM Table WHERE parent(parent.a = 1 AND parent.b = 2)",
+      "SELECT * FROM Table WHERE child(child.a = 1)",
       "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier3 = 3)",
       "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 > 2 OR child.identifier3 = 3)",
-      // the paren-LESS form, which is what `nestedCriteria` is now for
-      "SELECT * FROM Table WHERE nested a = 1"
+      // the paren-LESS form, which is what `nestedCriteria` / `childCriteria` are now for
+      "SELECT * FROM Table WHERE child child.a = 1"
     ).foreach(sql => withClue(s"[$sql] ") { Parser(sql).isRight shouldBe true })
   }
 
-  // 🔴 The KNOWN GAP recorded earlier in this story is now CLOSED. The old
+  // 🔴 The KNOWN GAP recorded earlier in this story is CLOSED. The old
   // `X.regex ~ start.? ~ criteria ~ end.?` form let a `(` be consumed with NO matching `)` and
   // nothing noticed, so `WHERE child(a = 1 AND b = 2` parsed as `CHILD(a = 1) AND b = 2`. The
   // optional delimiters are gone: an opening parenthesis now commits to the predicate form, which
-  // requires the closing one. The reason text is a grammar-internal `phrase` message and is
-  // deliberately NOT pinned.
+  // requires the closing one.
+  //
+  // The reason text is a grammar-internal `phrase` message (`end of input expected`) and is NOT
+  // pinned - it is not ours and it is unstable. That makes the rejection half weak on its own, so
+  // the discriminating companion is the POSITIVE control below it: the same statements WITH the
+  // closing parenthesis must still parse. Together they say "the paren is what decides", which a
+  // test that merely observed a Left could not.
   it should "reject an unmatched opening parenthesis in a relation predicate" in {
     Seq(
-      "SELECT * FROM Table WHERE child(a = 1 AND b = 2",
-      "SELECT * FROM Table WHERE child(a = 1",
-      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2 AND c = 3",
-      "SELECT * FROM Table WHERE child()"
+      "SELECT * FROM Table WHERE child(child.a = 1 AND child.b = 2",
+      "SELECT * FROM Table WHERE child(child.a = 1",
+      "SELECT * FROM Table WHERE nested(nested.a = 1 AND nested.b = 2 AND nested.c = 3"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") { noException should be thrownBy Parser(sql) }
+      withClue(s"[$sql] ") { Parser(sql).isLeft shouldBe true }
+      withClue(s"[$sql] msg=[${reasonOf(sql)}] ") {
+        reasonOf(sql) should not startWith Parser.InternalParseFailure
+      }
+      // the positive control: the SAME statement closed parses
+      withClue(s"[$sql)] ") { Parser(s"$sql)").isRight shouldBe true }
+    }
+  }
+
+  // Balanced, but empty. `relationTokens` is `rep1`, so it fails inside the repetition rather than
+  // reaching `relationCriteria`'s `Right(None)` arm - a different path from the one above, hence a
+  // test of its own rather than a row in it.
+  it should "reject an empty relation predicate" in {
+    Seq(
+      "SELECT * FROM Table WHERE child()",
+      "SELECT * FROM Table WHERE nested()",
+      "SELECT * FROM Table WHERE parent()"
     ).foreach { sql =>
       withClue(s"[$sql] ") { noException should be thrownBy Parser(sql) }
       withClue(s"[$sql] ") { Parser(sql).isLeft shouldBe true }
@@ -291,6 +359,58 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
         reasonOf(sql) should not startWith Parser.InternalParseFailure
       }
     }
+  }
+
+  // 🔴 NEWLY REACHABLE degenerate token streams. `relationTokens` accepts `(or | and)` as a
+  // standalone element in any position and lets `allCriteria` fire twice in a row, so streams that
+  // could never previously reach `processTokens` from a relation body now can. In a story whose
+  // subject is totality, that surface must be exercised - with the full contract, because
+  // `noException` + `isLeft` alone would pass even if the code threw and the boundary catch caught
+  // it. Messages are MEASURED, and they are our own `err` literals, so pinning them is safe.
+  it should "reject a degenerate relation body without throwing" in {
+    rejects("SELECT * FROM Table WHERE child(AND)", "Invalid stack state for predicate creation")
+    rejects("SELECT * FROM Table WHERE child(OR OR)", "Invalid stack state for predicate creation")
+    rejects(
+      "SELECT * FROM Table WHERE child(AND child.a = 1)",
+      "Invalid stack state for predicate creation"
+    )
+    rejects(
+      "SELECT * FROM Table WHERE child(child.a = 1 child.b = 2)",
+      "Invalid stack state for predicate creation"
+    )
+    // reaches `relationCriteria`'s `Right(None)` arm, which is what makes its `relation` parameter
+    // load-bearing rather than decorative - the message NAMES the relation
+    rejects("SELECT * FROM Table WHERE child(child.a = 1 AND)", "CHILD clause requires criteria")
+    rejects("SELECT * FROM Table WHERE nested(nested.a = 1 OR)", "NESTED clause requires criteria")
+    rejects("SELECT * FROM Table WHERE parent(parent.a = 1 AND)", "PARENT clause requires criteria")
+  }
+
+  // `err` inside `relationCriteria` is non-backtracking, so it is worth proving it fires only AFTER
+  // `child(` has committed. A column literally NAMED `child`/`nested`/`parent` must still work:
+  // `Child.regex` matches, `start` then fails, and that is a `Failure` (not an `Error`), so the
+  // alternation falls through to `criteria` as it always did.
+  it should "still treat a column named like a relation as an ordinary column" in {
+    Seq(
+      "SELECT * FROM Table WHERE child = 1",
+      "SELECT * FROM Table WHERE child = 1 AND a = 2",
+      "SELECT * FROM Table WHERE nested = 1",
+      "SELECT * FROM Table WHERE parent > 3"
+    ).foreach(sql => withClue(s"[$sql] ") { Parser(sql).isRight shouldBe true })
+  }
+
+  // 🔴 KNOWN PRE-EXISTING DEFECT, pinned so this story cannot be read as certifying it.
+  // `NESTED(...)` WITHOUT a `JOIN UNNEST(...) AS <alias>` to declare the path emits
+  // `{"match_all":{}}` - the criteria are DISCARDED and every document matches
+  // (`bridge/.../ElasticBridge.scala`, `buildNestedTrees(criteria.nestedElements)` is `Nil`).
+  // Measured identical at arity 1, 2 and 3, so it is NOT caused by this commit - but arity >= 3
+  // used to be rejected, so this commit makes it newly REACHABLE. The statement parses; only the
+  // emitted query is wrong, which is why the bridge specs assert the DECLARED-path spelling.
+  // Recorded in docs/issues/local-21.4-nested-without-declared-path.md.
+  // When that defect is fixed this test is DELETED, not retargeted - it pins a defect.
+  it should "parse an undeclared-path NESTED, which is a known pre-existing emission defect" in {
+    Parser(
+      "SELECT * FROM Table WHERE nested(nested.a = 1 AND nested.b = 2 AND nested.c = 3)"
+    ).isRight shouldBe true
   }
 
   // --- the residual the grammar cannot own (boundary catch) ---------------------------------
