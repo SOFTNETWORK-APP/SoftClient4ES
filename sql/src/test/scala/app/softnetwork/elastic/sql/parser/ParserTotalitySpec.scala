@@ -207,57 +207,90 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // 🔴 COLLATERAL of the OQ-6 arm, found by the code review and MEASURED in both directions by
-  // reverting that single arm. These inputs are BALANCED - the user's parentheses match - but the
-  // token stream handed to `processTokensHelper` is not, because
-  // `nestedPredicate`/`childPredicate`/`parentPredicate` take a strictly BINARY `predicate`
-  // (`criteria ~ (and|or) ~ not.? ~ criteria`). With a THIRD criterion they fail and the parser
-  // falls back to `nestedCriteria`/`childCriteria`/`parentCriteria`
-  // (`X.regex ~ start.? ~ criteria ~ end.?`), whose `start.?` eats the `(` while its `end.?` does
-  // not fire - so the `)` arrives unowned.
-  //
-  // BEFORE this story these parsed, with the relation scope SILENTLY COLLAPSED to the first
-  // criterion and the rest escaping onto the parent document:
-  //   `WHERE id = 1 AND child(a = 2 AND b = 3 AND c = 4)`
-  //     -> `WHERE id = 1 AND CHILD(a = 2) AND b = 3 AND c = 4`
-  //   `WHERE a = 1 AND child(x = 1 OR y = 2 OR z = 3)`
-  //     -> `WHERE a = 1 AND CHILD(x = 1) OR y = 2 OR z = 3`
-  // A query that runs and returns the WRONG ROWS - the #213 family. Rejecting is strictly better,
-  // so it is kept and pinned; the grammar asymmetry that causes it belongs to a later story
-  // (docs/issues/local-21.4-relation-predicate-paren-asymmetry.md). When that story lands these
-  // inputs must PARSE, and this test is DELETED, not retargeted - it pins a defect, not a contract.
-  it should "reject a relation predicate with three or more criteria (was a silent wrong answer)" in {
-    rejects(
-      "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.a = 2 AND child.b = 3 AND child.c = 4)",
-      "Unbalanced parentheses"
-    )
-    rejects(
-      "SELECT * FROM Table WHERE a = 1 AND child(x = 1 OR y = 2 OR z = 3)",
-      "Unbalanced parentheses"
-    )
-    rejects("SELECT * FROM Table WHERE nested(a = 1 AND b = 2 AND c = 3)", "Unbalanced parentheses")
-    rejects("SELECT * FROM Table WHERE parent(a = 1 AND b = 2 AND c = 3)", "Unbalanced parentheses")
-  }
+  // --- N-ARY relation predicates: the review finding, now FIXED at its source ----------------
 
-  // The BOUNDARY of that regression, pinned so a later fix cannot quietly move it: the TWO-criteria
-  // form goes through `nestedPredicate`/`childPredicate`/`parentPredicate`, which own both parens,
-  // and is unaffected. The `accepted` list below stopped exactly here, which is why the review
-  // found the three-criteria break and this suite did not.
-  it should "still accept a relation predicate with exactly two criteria" in {
+  // `NESTED`/`CHILD`/`PARENT` used to take a strictly BINARY `predicate`
+  // (`criteria ~ (and|or) ~ not.? ~ criteria`), so THREE OR MORE criteria could not match it and
+  // fell through to the `X.regex ~ start.? ~ criteria ~ end.?` form - whose `start.?` swallowed the
+  // `(` while its `end.?` never fired. MEASURED before the fix: not a syntax error but a SILENT
+  // WRONG ANSWER -
+  //   `WHERE id = 1 AND child(a = 2 AND b = 3 AND c = 4)`
+  //     parsed as `WHERE id = 1 AND CHILD(a = 2) AND b = 3 AND c = 4`
+  // with `b` and `c` escaping onto the PARENT document, and with `OR` the operator itself spanning
+  // the relation boundary. The parenthesised form now takes N criteria reduced by `processTokens`,
+  // so `NESTED(X)` produces exactly the tree `WHERE X` produces.
+  //
+  // 🔴 THE PROOF OF CORRECTNESS IS THE GENERATED ES QUERY, NOT THE PARSE - a statement that parses
+  // and still scopes wrongly is worse than the loud failure it replaced. That assertion lives in
+  // the bridge specs (`SQLCriteriaSpec`, "filter child predicate with three criteria" and its
+  // siblings), in BOTH the `bridge/` template and the hand-maintained `es6/bridge/` copy.
+  it should "parse a relation predicate with three or more criteria" in {
     Seq(
-      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2)",
-      "SELECT * FROM Table WHERE child(a = 1 AND b = 2)",
-      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2)"
+      "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.a = 2 AND child.b = 3 AND child.c = 4)",
+      "SELECT * FROM Table WHERE a = 1 AND child(x = 1 OR y = 2 OR z = 3)",
+      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2 AND c = 3)",
+      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2 AND c = 3)",
+      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2 OR c = 3)",
+      // a parenthesised sub-group INSIDE the relation - `relationGroup` matches a `(` with its own
+      // `)` and re-emits both, so `processTokens` rebuilds the group exactly as at top level
+      "SELECT * FROM Table WHERE nested(a = 1 AND (b = 2 OR c = 3))",
+      "SELECT * FROM Table WHERE a = 1 AND child(x = 1 AND y = 2 AND z = 3) OR b = 2"
     ).foreach(sql => withClue(s"[$sql] ") { Parser(sql).isRight shouldBe true })
   }
 
-  // The twin hole the OQ-6 arm does NOT reach, pinned as a KNOWN GAP so it is visible: an unmatched
-  // OPENING paren is swallowed by `start.?` and never reported. After this story the grammar
-  // therefore rejects a balanced relation predicate and accepts an unbalanced one. Recorded in the
-  // same local issue record; when it is fixed, this expectation flips to a rejection.
-  it should "still accept an unmatched opening parenthesis in a relation predicate (KNOWN GAP)" in {
-    Parser("SELECT * FROM Table WHERE child(a = 1 AND b = 2").map(_.sql) shouldBe
-    Right("SELECT * FROM Table WHERE CHILD(a = 1) AND b = 2")
+  // Every AST `.sql` must re-parse to an EQUAL AST (project_ast_render_roundtrip_family):
+  // parseable-ification can turn a loud failure into silent corruption, and the N-ary render is
+  // new surface.
+  it should "round-trip an N-ary relation predicate through its own render" in {
+    Seq(
+      "SELECT * FROM Table WHERE child(child.a = 2 AND child.b = 3 AND child.c = 4)",
+      "SELECT * FROM Table WHERE child(x = 1 OR y = 2 OR z = 3)",
+      "SELECT * FROM Table WHERE nested(a = 1 AND (b = 2 OR c = 3))",
+      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2 AND c = 3)",
+      "SELECT * FROM Table WHERE nested a = 1"
+    ).foreach { sql =>
+      val parsed = Parser(sql)
+      withClue(s"[$sql] ") { parsed.isRight shouldBe true }
+      val rendered = parsed.toOption.get.sql
+      withClue(s"[$sql] rendered=[$rendered] ") { Parser(rendered) shouldBe parsed }
+    }
+  }
+
+  // The regression BOUNDARY. The two-criteria form always worked (it matched the binary
+  // `predicate`); it must keep working, and it is the single thing most likely to break when the
+  // arity is generalised.
+  it should "still accept a relation predicate with one or two criteria" in {
+    Seq(
+      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2)",
+      "SELECT * FROM Table WHERE child(a = 1 AND b = 2)",
+      "SELECT * FROM Table WHERE parent(a = 1 AND b = 2)",
+      "SELECT * FROM Table WHERE child(a = 1)",
+      "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier3 = 3)",
+      "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 > 2 OR child.identifier3 = 3)",
+      // the paren-LESS form, which is what `nestedCriteria` is now for
+      "SELECT * FROM Table WHERE nested a = 1"
+    ).foreach(sql => withClue(s"[$sql] ") { Parser(sql).isRight shouldBe true })
+  }
+
+  // 🔴 The KNOWN GAP recorded earlier in this story is now CLOSED. The old
+  // `X.regex ~ start.? ~ criteria ~ end.?` form let a `(` be consumed with NO matching `)` and
+  // nothing noticed, so `WHERE child(a = 1 AND b = 2` parsed as `CHILD(a = 1) AND b = 2`. The
+  // optional delimiters are gone: an opening parenthesis now commits to the predicate form, which
+  // requires the closing one. The reason text is a grammar-internal `phrase` message and is
+  // deliberately NOT pinned.
+  it should "reject an unmatched opening parenthesis in a relation predicate" in {
+    Seq(
+      "SELECT * FROM Table WHERE child(a = 1 AND b = 2",
+      "SELECT * FROM Table WHERE child(a = 1",
+      "SELECT * FROM Table WHERE nested(a = 1 AND b = 2 AND c = 3",
+      "SELECT * FROM Table WHERE child()"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") { noException should be thrownBy Parser(sql) }
+      withClue(s"[$sql] ") { Parser(sql).isLeft shouldBe true }
+      withClue(s"[$sql] msg=[${reasonOf(sql)}] ") {
+        reasonOf(sql) should not startWith Parser.InternalParseFailure
+      }
+    }
   }
 
   // --- the residual the grammar cannot own (boundary catch) ---------------------------------

@@ -550,6 +550,262 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |}""".stripMargin.replaceAll("\\s", "")
   }
 
+  // Story 21.4 / #250 - N-ARY relation predicates, and the reason this assertion is on the
+  // GENERATED QUERY rather than on the parse.
+  //
+  // `NESTED`/`CHILD`/`PARENT` used to take a strictly BINARY `predicate`, so three or more criteria
+  // fell through to a form whose `start.?` swallowed the `(` while its `end.?` never fired. The
+  // result was NOT a syntax error: it PARSED, with the relation scope collapsed to the FIRST
+  // criterion and the rest escaping onto the PARENT document. Measured before the fix, the query
+  // below was emitted with `child.identifier3` and `child.identifier4` as PARENT-level filters,
+  // i.e. matched against the wrong documents entirely - the #205/#253 silent-wrong-answer family.
+  //
+  // What this pins: all THREE terms inside the single `has_child.query`, and NOTHING leaking into
+  // the outer bool. A parse-only assertion could not have caught the defect.
+  it should "filter child predicate with three criteria, all scoped inside the relation" in {
+    asQuery(childPredicateN) shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "has_child": {
+        |            "type": "child",
+        |            "score_mode": "none",
+        |            "query": {
+        |              "bool": {
+        |                "filter": [
+        |                  {
+        |                    "bool": {
+        |                      "filter": [
+        |                        {
+        |                          "bool": {
+        |                            "filter": [
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier2": {
+        |                                    "value": 2
+        |                                  }
+        |                                }
+        |                              },
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier3": {
+        |                                    "value": 3
+        |                                  }
+        |                                }
+        |                              }
+        |                            ]
+        |                          }
+        |                        },
+        |                        {
+        |                          "term": {
+        |                            "child.identifier4": {
+        |                              "value": 4
+        |                            }
+        |                          }
+        |                        }
+        |                      ]
+        |                    }
+        |                  }
+        |                ]
+        |              }
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  // The sharpest version of the defect: with OR, the operator itself used to span the relation
+  // boundary (`CHILD(x = 1) OR y = 2 OR z = 3`), so a parent document matched if EITHER it had a
+  // matching child OR its own field matched. Every `should` must now be inside the has_child.
+  it should "filter child predicate with three OR criteria, all scoped inside the relation" in {
+    asQuery(childPredicateNOr) shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "has_child": {
+        |            "type": "child",
+        |            "score_mode": "none",
+        |            "query": {
+        |              "bool": {
+        |                "filter": [
+        |                  {
+        |                    "bool": {
+        |                      "should": [
+        |                        {
+        |                          "bool": {
+        |                            "should": [
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier2": {
+        |                                    "value": 2
+        |                                  }
+        |                                }
+        |                              },
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier3": {
+        |                                    "value": 3
+        |                                  }
+        |                                }
+        |                              }
+        |                            ]
+        |                          }
+        |                        },
+        |                        {
+        |                          "term": {
+        |                            "child.identifier4": {
+        |                              "value": 4
+        |                            }
+        |                          }
+        |                        }
+        |                      ]
+        |                    }
+        |                  }
+        |                ]
+        |              }
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  // The mixed case, which is what distinguishes "scoped correctly" from "everything moved inside":
+  // `identifier1` is a genuine PARENT-level criterion and must stay in the outer bool, while all
+  // three child criteria stay inside the has_child.
+  it should "keep a parent-level criterion outside an N-ary child predicate" in {
+    asQuery(childPredicateNWithParentCriterion) shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "term": {
+        |            "identifier1": {
+        |              "value": 1
+        |            }
+        |          }
+        |        },
+        |        {
+        |          "has_child": {
+        |            "type": "child",
+        |            "score_mode": "none",
+        |            "query": {
+        |              "bool": {
+        |                "filter": [
+        |                  {
+        |                    "bool": {
+        |                      "filter": [
+        |                        {
+        |                          "bool": {
+        |                            "filter": [
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier2": {
+        |                                    "value": 2
+        |                                  }
+        |                                }
+        |                              },
+        |                              {
+        |                                "term": {
+        |                                  "child.identifier3": {
+        |                                    "value": 3
+        |                                  }
+        |                                }
+        |                              }
+        |                            ]
+        |                          }
+        |                        },
+        |                        {
+        |                          "term": {
+        |                            "child.identifier4": {
+        |                              "value": 4
+        |                            }
+        |                          }
+        |                        }
+        |                      ]
+        |                    }
+        |                  }
+        |                ]
+        |              }
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "filter parent predicate with three criteria, all scoped inside the relation" in {
+    asQuery(parentPredicateN) shouldBe
+    """
+        |{
+        |  "query": {
+        |    "bool": {
+        |      "filter": [
+        |        {
+        |          "has_parent": {
+        |            "parent_type": "parent",
+        |            "query": {
+        |              "bool": {
+        |                "filter": [
+        |                  {
+        |                    "bool": {
+        |                      "filter": [
+        |                        {
+        |                          "bool": {
+        |                            "filter": [
+        |                              {
+        |                                "term": {
+        |                                  "parent.identifier2": {
+        |                                    "value": 2
+        |                                  }
+        |                                }
+        |                              },
+        |                              {
+        |                                "term": {
+        |                                  "parent.identifier3": {
+        |                                    "value": 3
+        |                                  }
+        |                                }
+        |                              }
+        |                            ]
+        |                          }
+        |                        },
+        |                        {
+        |                          "term": {
+        |                            "parent.identifier4": {
+        |                              "value": 4
+        |                            }
+        |                          }
+        |                        }
+        |                      ]
+        |                    }
+        |                  }
+        |                ]
+        |              }
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
   it should "filter child criteria" in {
     asQuery(childCriteria) shouldBe
     """

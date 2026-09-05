@@ -83,6 +83,18 @@ object Queries {
     "SELECT * FROM Table WHERE identifier1 = 1 AND parent(parent.identifier2 > 2 OR parent.identifier3 = 3)"
   val parentCriteria =
     "SELECT * FROM Table WHERE identifier1 = 1 AND parent(parent.identifier3 = 3)"
+  // Story 21.4 / #250 - N-ARY relation predicates. Before the fix these could not match the
+  // strictly BINARY `predicate`, fell through to the `start.? ... end.?` criteria form, and parsed
+  // with the relation scope SILENTLY COLLAPSED to the first criterion, the rest escaping onto the
+  // PARENT document. The bridge specs assert the generated ES query, which is where that mattered.
+  val childPredicateN =
+    "SELECT * FROM Table WHERE child(child.identifier2 = 2 AND child.identifier3 = 3 AND child.identifier4 = 4)"
+  val childPredicateNOr =
+    "SELECT * FROM Table WHERE child(child.identifier2 = 2 OR child.identifier3 = 3 OR child.identifier4 = 4)"
+  val childPredicateNWithParentCriterion =
+    "SELECT * FROM Table WHERE identifier1 = 1 AND child(child.identifier2 = 2 AND child.identifier3 = 3 AND child.identifier4 = 4)"
+  val parentPredicateN =
+    "SELECT * FROM Table WHERE parent(parent.identifier2 = 2 AND parent.identifier3 = 3 AND parent.identifier4 = 4)"
   val inLiteralExpression = "SELECT * FROM Table WHERE identifier IN ('val1','val2','val3')"
   val inNumericalExpressionWithIntValues = "SELECT * FROM Table WHERE identifier IN (1,2,3)"
   val inNumericalExpressionWithDoubleValues =

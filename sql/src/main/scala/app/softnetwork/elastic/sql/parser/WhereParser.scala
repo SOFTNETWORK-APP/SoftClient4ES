@@ -254,31 +254,90 @@ trait WhereParser {
     case l ~ o ~ n ~ r => Predicate(l, o, r, n)
   }
 
+  /** One balanced parenthesised group INSIDE a relation predicate, re-emitted as tokens.
+    *
+    * It matches a `(` together with its OWN `)` and hands both back, so `processTokens` sees
+    * exactly the token shape it sees at top level and builds the same tree (including
+    * `Predicate.group = true`, which is what renders the parentheses back).
+    */
+  private def relationGroup: PackratParser[List[Token]] =
+    start ~ relationTokens ~ end ^^ { case s ~ ts ~ e => (s :: ts) :+ e }
+
+  /** The token stream inside a relation predicate's parentheses.
+    *
+    * The same alternatives `whereCriteria` offers, with ONE deliberate omission: a bare `end` is
+    * NOT an alternative, because the closing parenthesis belongs to the relation predicate itself.
+    * Without that omission `rep1` would swallow it (and everything after it) and the enclosing `~
+    * end` could never match - `rep1` does not backtrack.
+    */
+  private def relationTokens: PackratParser[List[Token]] =
+    rep1(
+      relationGroup |
+      allPredicate ^^ (c => List(c: Token)) |
+      allCriteria ^^ (t => List(t)) |
+      (or | and) ^^ (o => List(o: Token))
+    ) ^^ (_.flatten)
+
+  /** `( <N criteria joined by AND / OR, with optional sub-groups> )` for a relation predicate.
+    *
+    * #250 / story 21.4. This REPLACES `start ~ predicate ~ end`. `predicate` is strictly BINARY
+    * (`criteria ~ (and|or) ~ not.? ~ criteria`), so a relation predicate with THREE OR MORE
+    * criteria could not match it and fell through to the old `X.regex ~ start.? ~ criteria ~ end.?`
+    * form - whose `start.?` swallowed the `(` while its `end.?` never fired. The measured
+    * consequence was a SILENT WRONG ANSWER, not a syntax error: `WHERE id = 1 AND child(a = 2 AND b
+    * = 3 AND c = 4)` parsed as `WHERE id = 1 AND CHILD(a = 2) AND b = 3 AND c = 4`
+    * i.e. the relation scope collapsed to the FIRST criterion and the other two escaped onto the
+    * PARENT document; with `OR` the operator itself spanned the relation boundary.
+    *
+    * Reducing the tokens with `processTokens` - the same function `where`, `having`, `on` and
+    * `case_condition` use - is the point: `NESTED(X)` now produces exactly the criteria tree `WHERE
+    * X` produces, so associativity, grouping and NOT handling cannot drift between the two.
+    */
+  private def relationCriteria(relation: String): PackratParser[Criteria] =
+    start ~> relationTokens <~ end >> { tokens =>
+      processTokens(tokens) match {
+        case Right(Some(c)) => success(c)
+        case Right(None)    => err(s"$relation clause requires criteria")
+        case Left(reason)   => err(reason)
+      }
+    }
+
+  /** The PAREN-LESS form, e.g. `NESTED a = 1`. The parenthesised form - any arity - belongs to
+    * `nestedPredicate` below.
+    *
+    * The optional `start.?` / `end.?` this used to carry are GONE (#250): they let a `(` be
+    * consumed with no matching `)` and nothing notice, so `WHERE child(a = 1 AND b = 2` parsed
+    * happily as `CHILD(a = 1) AND b = 2`. An opening parenthesis now commits to `childPredicate`,
+    * which requires the closing one.
+    */
   def nestedCriteria: PackratParser[ElasticRelation] =
-    Nested.regex ~ start.? ~ criteria ~ end.? ^^ { case _ ~ _ ~ c ~ _ =>
+    Nested.regex ~> criteria ^^ { c =>
       ElasticNested(c, None, fromCriteria = false)
     }
 
-  def nestedPredicate: PackratParser[ElasticRelation] = Nested.regex ~ start ~ predicate ~ end ^^ {
-    case _ ~ _ ~ p ~ _ => ElasticNested(p, None, fromCriteria = false)
+  def nestedPredicate: PackratParser[ElasticRelation] =
+    Nested.regex ~> relationCriteria("NESTED") ^^ { c =>
+      ElasticNested(c, None, fromCriteria = false)
+    }
+
+  def childCriteria: PackratParser[ElasticRelation] = Child.regex ~> criteria ^^ { c =>
+    ElasticChild(c)
   }
 
-  def childCriteria: PackratParser[ElasticRelation] = Child.regex ~ start.? ~ criteria ~ end.? ^^ {
-    case _ ~ _ ~ c ~ _ => ElasticChild(c)
-  }
-
-  def childPredicate: PackratParser[ElasticRelation] = Child.regex ~ start ~ predicate ~ end ^^ {
-    case _ ~ _ ~ p ~ _ => ElasticChild(p)
-  }
+  def childPredicate: PackratParser[ElasticRelation] =
+    Child.regex ~> relationCriteria("CHILD") ^^ { c =>
+      ElasticChild(c)
+    }
 
   def parentCriteria: PackratParser[ElasticRelation] =
-    Parent.regex ~ start.? ~ criteria ~ end.? ^^ { case _ ~ _ ~ c ~ _ =>
+    Parent.regex ~> criteria ^^ { c =>
       ElasticParent(c)
     }
 
-  def parentPredicate: PackratParser[ElasticRelation] = Parent.regex ~ start ~ predicate ~ end ^^ {
-    case _ ~ _ ~ p ~ _ => ElasticParent(p)
-  }
+  def parentPredicate: PackratParser[ElasticRelation] =
+    Parent.regex ~> relationCriteria("PARENT") ^^ { c =>
+      ElasticParent(c)
+    }
 
   private def allPredicate: PackratParser[Criteria] =
     nestedPredicate | childPredicate | parentPredicate | predicate
