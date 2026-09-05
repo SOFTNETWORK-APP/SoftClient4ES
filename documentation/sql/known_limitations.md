@@ -85,7 +85,7 @@ WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
 
 The parser rejects this — `IN` accepts only literal value lists today, not a nested `SELECT`. Rewrite it as an explicit JOIN (fully supported), or wait for the next release where the subquery form lands as-is.
 
-## Quoted identifiers — three residual limits
+## Quoted identifiers — two residual limits
 
 Quoted column names and aliases work in both spellings — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers). Three things they do **not** cover yet:
@@ -102,10 +102,10 @@ Quoted column names and aliases work in both spellings — see
   Elasticsearch field whose own name contains a dot. Quoting makes it *look* as though there should
   be; there is not.
 
-- **An arithmetic expression cannot START with a quoted operand, unparenthesised.**
-  `` SELECT `amount` + 1 `` and `SELECT "amount" + 1` are rejected, while `SELECT amount + 1`,
-  `` SELECT (`amount` + 1) `` and `` SELECT MAX(`amount` + 1) `` all work. Wrap the expression in
-  parentheses — which is what every BI tool emits for a calculation anyway.
+- **A dot and the name part after it must be adjacent.** `SELECT a.b` is a qualified name;
+  `SELECT a . b` is rejected, and so is a name left with a trailing dot (`ORDER BY b. DESC`). This
+  is deliberate: when the dot was allowed to float, `ORDER BY b. DESC` silently parsed as a column
+  named `b.DESC` sorted *ascending*.
 
 ## Coming in the upcoming release (Quarter 1 2027)
 

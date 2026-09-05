@@ -1827,13 +1827,15 @@ trait Parser
     */
   private val bareNextPartStr = s"$barePartChars+"
 
-  /** Both regexes are compiled ONCE, as `val`s, exactly like `identifierRegex` above.
-    * `bareFirstPartStr` interpolates the reserved-keyword alternation, and `String.r` is
-    * `Pattern.compile` -- calling it inside a `def` recompiles it on every construction of the
-    * hottest production in the grammar, now also once per `rep` iteration.
+  /** Compiled ONCE, as a `val`, exactly like `identifierRegex` above. `bareFirstPartStr`
+    * interpolates the reserved-keyword alternation, and `String.r` is `Pattern.compile` -- calling
+    * it inside a `def` recompiles it on every construction of the hottest production in the
+    * grammar.
+    *
+    * `bareNextPartStr` has no regex of its own: it is interpolated into `nameTailPartStr`, which
+    * owns the separator so the dot and the part cannot be split by whitespace (#285).
     */
   private val bareFirstPartRegex: Regex = bareFirstPartStr.r
-  private val bareNextPartRegex: Regex = bareNextPartStr.r
 
   private def quotedPart: PackratParser[(String, Boolean)] =
     quotedNameRegex ^^ (lexeme => (unquoteName(lexeme), true))
@@ -1841,11 +1843,36 @@ trait Parser
   private def bareFirstPart: PackratParser[(String, Boolean)] =
     bareFirstPartRegex ^^ (n => (n, false))
 
-  private def bareNextPart: PackratParser[(String, Boolean)] =
-    bareNextPartRegex ^^ (n => (n, false))
+  /** One dot-separated tail element, **separator included**, matched as a SINGLE regex so the dot
+    * and the part that follows it must be ADJACENT.
+    *
+    * `RegexParsers` skips whitespace before every terminal, so the earlier `rep("." ~> part)`
+    * spelling let a name ending in a dot swallow the next word across whitespace (#285): `ORDER BY
+    * b. DESC` parsed as `ORDER BY "b.DESC" ASC` and the sort direction vanished **silently**.
+    * Owning the dot closes that -- after `b` the tail cannot match `. DESC`, so `b` is the name and
+    * `DESC` is the direction -- and it also restores the pre-21.1 rejection of `SELECT a . b`,
+    * which the part-split had widened into an acceptance.
+    *
+    * Residual, deliberately accepted: whitespace BEFORE the dot is still skipped by the enclosing
+    * `rep`, so `SELECT a .b` reads as `a.b`. That is a tolerance of an odd spelling, not a silent
+    * reading change -- no clause is mis-parsed and nothing is lost.
+    */
+  private val nameTailPartStr =
+    s"""\\.(?:$doubleQuotedNameStr|$backQuotedNameStr|$bareNextPartStr)"""
 
-  private def nameTail: PackratParser[List[(String, Boolean)]] =
-    rep("." ~> (quotedPart | bareNextPart))
+  /** Compiled once, for the same reason as `bareFirstPartRegex`. */
+  private val nameTailPartRegex: Regex = nameTailPartStr.r
+
+  private def nameTailPart: PackratParser[(String, Boolean)] =
+    nameTailPartRegex ^^ { lexeme =>
+      val part = lexeme.substring(1) // drop the leading dot, which this regex owns
+      part.charAt(0) match {
+        case '"' | '`' => (unquoteName(part), true)
+        case _         => (part, false)
+      }
+    }
+
+  private def nameTail: PackratParser[List[(String, Boolean)]] = rep(nameTailPart)
 
   private def joinNameParts(parts: List[(String, Boolean)]): (String, Boolean) =
     (parts.map(_._1).mkString("."), parts.exists(_._2))
@@ -1886,6 +1913,31 @@ trait Parser
     (Distinct.regex.? ~ quotedQualifiedName ^^ { case d ~ nq =>
       GenericIdentifier(nq._1, None, d.isDefined, quoted = nq._2)
     }) >> cast
+
+  /** `quotedIdentifier`, but it declines to match when an arithmetic operator follows it (#284).
+    *
+    * The four clause-level productions -- `SelectParser.field`, `GroupByParser.bucketWithFunction`,
+    * `OrderByParser.fieldWithFunction` and `WhereParser.any_identifier` -- all list
+    * `quotedIdentifier` AHEAD of `identifierWithArithmeticExpression`, and `|` commits to the first
+    * SUCCEEDING alternative. So a quoted lexeme at the HEAD of an arithmetic expression was
+    * consumed alone and the operator was left unconsumed: ``SELECT `amount` + 1`` failed with `end
+    * of input expected`, while ``SELECT (`amount` + 1)`` and ``SELECT MAX(`amount` + 1)`` both
+    * worked.
+    *
+    * That ordering cannot simply be reversed. It is what makes `SELECT "category"` a COLUMN rather
+    * than a string literal, because a double-quoted lexeme also matches `TypeParser.literal` (story
+    * 21.1 AD-3). A one-token LOOKAHEAD is the narrow fix: it changes only which alternative wins
+    * when an operator is genuinely next, and `not(...)` consumes nothing, so every other input
+    * reaches `quotedIdentifier` exactly as before.
+    *
+    * Deliberately NOT applied to `quotedIdentifier` itself. In OPERAND position -- inside
+    * `identifierWithIntervalFunction`, reached from `factor` -- `quotedIdentifier` matching the
+    * bare name is precisely what lets `arithmeticExpressionLevel1`'s `rep` pick up the rest of the
+    * expression. Guarding it there would push the operand down to `identifierWithValue` and turn it
+    * back into a string, which is the AD-13 corruption in reverse.
+    */
+  def quotedIdentifierUnlessArithmetic: PackratParser[Identifier] =
+    quotedIdentifier <~ not(add | subtract | multiply | divide | modulo)
 
   /** THE identifier production. Quoting is folded in here rather than sprinkled over the ~35 sites
     * that end in `| identifier` -- the four-alternative operand idiom alone occurs 21 times -- so a

@@ -95,7 +95,8 @@ trait WhereParser {
   def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   private def any_identifier: PackratParser[Identifier] =
-    quotedIdentifier |
+    // #284 - see quotedIdentifierUnlessArithmetic.
+    quotedIdentifierUnlessArithmetic |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithWindowFunction |
