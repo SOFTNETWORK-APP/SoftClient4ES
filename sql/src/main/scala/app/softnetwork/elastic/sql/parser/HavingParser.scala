@@ -21,10 +21,16 @@ import app.softnetwork.elastic.sql.query.Having
 trait HavingParser {
   self: Parser with WhereParser =>
 
-  def having: PackratParser[Having] = Having.regex ~> whereCriteria ^^ { rawTokens =>
-    Having(
-      processTokens(rawTokens)
-    )
+  def having: PackratParser[Having] = Having.regex ~> whereCriteria >> { rawTokens =>
+    // `err`, not `throw` and not `failure` (#250) - same treatment as `WhereParser.where`, whose
+    // comment carries the full reasoning. `~>` binds tighter than `>>`.
+    processTokens(rawTokens) match {
+      case Right(Some(criteria)) => success(Having(Some(criteria)))
+      // A dangling `AND` / `OR` used to leave `Having(None)`, which renders as no clause at all:
+      // `... GROUP BY b HAVING n > 1 AND` silently dropped the HAVING and returned a wrong answer.
+      case Right(None)  => err("HAVING clause requires criteria")
+      case Left(reason) => err(reason)
+    }
   }
 
 }

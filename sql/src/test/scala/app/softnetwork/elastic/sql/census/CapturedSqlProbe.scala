@@ -49,8 +49,9 @@ import scala.collection.mutable.ListBuffer
   * list, ALL candidates of a token when the form is undecidable, tie-breaker T4); and the
   * `unmatched_spellings` scan backed by the real `SQLKeywords` registry.
   *
-  * `Parser.apply` can THROW instead of returning Left (issue #250, three WhereParser sites); every
-  * parse here is wrapped in a Throwable catch and recorded as a verdict, never a crash.
+  * `Parser.apply` used to THROW instead of returning Left (issue #250, five parser sites - the
+  * issue named three); it is now total for `NonFatal`. Every parse here stays wrapped in a
+  * Throwable catch and recorded as a verdict, never a crash - see `parse` for why it is kept.
   */
 object CapturedSqlProbe {
 
@@ -212,8 +213,11 @@ object CapturedSqlProbe {
     )
   }
 
-  /** Issue #250: Parser.apply can throw ValidationError instead of returning Left. Catch everything
-    * and keep the run alive - a crash here is a verdict, not a failure of the probe.
+  /** Issue #250 is FIXED: `Parser.apply` is total for `NonFatal` and returns `Left` for every
+    * rejection, so this catch is near-dead. It is KEPT on purpose - it also covers a throwable
+    * `NonFatal` deliberately excludes (a StackOverflowError from a pathologically nested parse) and
+    * any future regression, and a crash here must stay a verdict rather than a failure of the probe
+    * that would abandon the whole corpus run.
     */
   private def parse(sql: String): (String, String, Option[Statement]) =
     try {
@@ -225,7 +229,7 @@ object CapturedSqlProbe {
       case t: Throwable =>
         (
           "parse_error",
-          s"Parser threw ${t.getClass.getSimpleName} instead of Left (#250): ${t.getMessage}",
+          s"Parser threw ${t.getClass.getSimpleName} instead of returning Left: ${t.getMessage}",
           None
         )
     }

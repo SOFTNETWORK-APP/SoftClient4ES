@@ -43,6 +43,12 @@ import scala.util.matching.Regex
   */
 class DialectCensusSpec extends AnyFlatSpec with Matchers {
 
+  /** Placeholder for a clue that has no parser reason to show (the statement parsed). A named val,
+    * not an inline literal: a nested double quote inside a `${...}` block of a SINGLE-LINE
+    * s-interpolation does not lex on Scala 2.12, and `+ sql/test` is the only gate that sees it.
+    */
+  private val NoReason: String = "-"
+
   // --- source location (AD-6: `read` + candidate roots copied from SQLKeywordsSpec) --------
   private val repoRootCandidates = Seq(new File("."), new File(".."), new File("../.."))
   private def repoRoot: Option[File] =
@@ -152,11 +158,14 @@ class DialectCensusSpec extends AnyFlatSpec with Matchers {
   // --- layer 2: every example is real SQL --------------------------------------------------
   it should "parse every example statement through the real parser" in {
     checkAll(DialectCensus.entries, "example parse")(e => s"${e.id} :: ${e.exampleSql}") { e =>
+      val parsed = Parser(e.exampleSql)
+      val reason = parsed.swap.toOption.map(_.msg).getOrElse(NoReason)
       withClue(
         "`Parser` is `phrase`-anchored (Parser.scala) - the WHOLE statement must be consumed. " +
-        "Parser.apply also prints the combinator message to stderr; with parallel suites that " +
-        "message is detached from this failure, so read stderr as a whole.\n"
-      ) { Parser(e.exampleSql).isRight shouldBe true }
+        "Since #250 `Parser.apply` no longer prints the combinator message to stderr, so the " +
+        "reason is not written anywhere by the parser itself - it is reported here instead.\n" +
+        s"reason: $reason\n"
+      ) { parsed.isRight shouldBe true }
     }
   }
 

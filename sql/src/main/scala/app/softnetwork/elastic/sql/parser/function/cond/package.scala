@@ -89,14 +89,22 @@ package object cond {
     def end_case: PackratParser[EndCase.type] = END.regex ^^ (_ => EndCase)
 
     def case_condition: Parser[(PainlessScript, PainlessScript)] =
-      when_case ~ (whereCriteria | valueExpr) ~ then_case.? ~ valueExpr ^^ { case _ ~ c ~ _ ~ r =>
+      when_case ~ (whereCriteria | valueExpr) ~ then_case.? ~ valueExpr >> { case _ ~ c ~ _ ~ r =>
         c match {
-          case p: PainlessScript => p -> r
+          case p: PainlessScript => success(p -> r)
           case rawTokens: List[Token] =>
             processTokens(rawTokens) match {
-              case Some(criteria) => criteria -> r
-              case _              => Null     -> r
+              case Right(Some(criteria)) => success(criteria -> r)
+              // UNCHANGED behaviour: an empty WHEN legitimately means `Null` here, so this arm is
+              // deliberately NOT the `err` that `where` / `having` now emit for the same shape.
+              case Right(None)  => success(Null -> r)
+              case Left(reason) => err(reason)
             }
+          // #250 - this match had NO default arm. A MatchError escapes `Parser.apply` exactly like
+          // a `throw`, and the ParserTotalitySpec source scan cannot see it (there is no `throw`
+          // token), so it would land in the boundary catch as an internal parser error. The 20.9
+          // `searchAs` MatchError is the recorded precedent for this shape.
+          case other => err(s"Unsupported WHEN expression: ${other.getClass.getSimpleName}")
         }
       }
 

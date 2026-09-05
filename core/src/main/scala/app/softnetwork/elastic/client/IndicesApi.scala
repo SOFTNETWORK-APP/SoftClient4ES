@@ -1487,7 +1487,13 @@ trait IndicesApi extends ElasticClientHelpers {
         case Left(err) =>
           ElasticFailure(
             ElasticError(
+              // #250 AD-10 - carry the cause. It is set ONLY by `Parser.apply`'s NonFatal
+              // boundary catch (a fault raised BELOW the grammar, in the AST update pass), and
+              // `ElasticError extends Throwable(message, cause.orNull)`, so this is the only
+              // stack trace an internal parser fault ever produces. A grammar rejection leaves it
+              // None. Before #250 this site took a raw throw instead.
               operation = Some("updateByQuery"),
+              cause = err.cause,
               statusCode = Some(400),
               index = Some(index),
               message = s"Invalid SQL query: ${err.msg}"
@@ -1611,7 +1617,9 @@ trait IndicesApi extends ElasticClientHelpers {
       case Left(err) =>
         Left(
           ElasticError(
+            // #250 AD-10 - see the updateByQuery site above.
             operation = Some("deleteByQuery"),
+            cause = err.cause,
             statusCode = Some(400),
             index = Some(index),
             message = s"Invalid SQL query: ${err.msg}"
@@ -1827,7 +1835,9 @@ trait IndicesApi extends ElasticClientHelpers {
       case Left(err) =>
         ElasticFailure(
           ElasticError(
+            // #250 AD-10 - see the updateByQuery site above.
             operation = Some("insertByQuery"),
+            cause = err.cause,
             statusCode = Some(400),
             index = Some(index),
             message = s"Invalid SQL: ${err.msg}"

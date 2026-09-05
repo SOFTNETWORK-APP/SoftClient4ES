@@ -65,12 +65,17 @@ package object math {
       }
 
     def identifierWithArithmeticExpression: Parser[Identifier] =
-      (arithmeticExpressionLevel2 ^^ {
-        case af: ArithmeticExpression  => Identifier(af)
-        case id: Identifier            => id
-        case f: FunctionWithIdentifier => f.identifier
-        case f: Function               => Identifier(f)
-        case other                     => throw new Exception(s"Unexpected expression $other")
+      (arithmeticExpressionLevel2 >> {
+        case af: ArithmeticExpression  => success(Identifier(af))
+        case id: Identifier            => success(id)
+        case f: FunctionWithIdentifier => success(f.identifier)
+        case f: Function               => success(Identifier(f))
+        // #250 - defensive arm: every `valueExpr` alternative yields an Identifier today, so this
+        // is believed unreachable, which is exactly why it must not be a `throw`. Story 21.1 is
+        // about to add alternatives to `valueExpr` (quoted identifiers), changing that
+        // reachability. `^^` became `>>` for this one arm; the cost is one extra allocation per
+        // application of the grammar's hottest production.
+        case other => err(s"Unexpected expression $other")
       }) >> cast
 
   }

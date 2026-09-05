@@ -67,6 +67,7 @@ import app.softnetwork.elastic.sql.watcher.{
 import scala.collection.immutable.ListMap
 import scala.language.implicitConversions
 import scala.language.existentials
+import scala.util.control.NonFatal
 import scala.util.matching.Regex
 import scala.util.parsing.combinator.{PackratParsers, RegexParsers}
 import scala.util.parsing.input.CharSequenceReader
@@ -716,8 +717,11 @@ object Parser
       separator
     ) ~ end.? >> { case _ ~ ie ~ table ~ s ~ stmts ~ e =>
       // `err`, not `throw`: these run inside a combinator, and `Parser.apply` is typed
-      // `Either[ParserError, Statement]` — a raw exception escapes that signature and only
-      // `GatewayApi` happens to wrap the call in `ElasticResult.attempt`.
+      // `Either[ParserError, Statement]` — a raw exception escapes that signature, and five
+      // production call sites match on that Either with no `try` of their own
+      // (SQLImplicits.queryToStatement, IndicesApi x3, the searchAs macro). Since #250 the
+      // rule holds for the whole package: `Parser.apply` is total for NonFatal and no `throw`
+      // may return here (ParserTotalitySpec's source scan enforces it).
       if (s.isDefined && e.isEmpty) {
         err("Mismatched closing parentheses in ALTER TABLE statement")
       } else if (s.isEmpty && e.isDefined) {
@@ -1328,45 +1332,111 @@ object Parser
     out.toString
   }
 
+  /** Prefix for the one failure mode `err(...)` cannot reach: a throw from the AST, not the
+    * grammar.
+    *
+    * `single` calls `.update()` inside its combinator action (see `def single` above), so the whole
+    * AST-update surface runs during the parse. TWO sites on that surface throw today, measured:
+    * `SingleSearch.bucketNames` (query/package.scala:125) indexes `select.fields(n - 1)` with no
+    * bounds check, so `GROUP BY 0` raises IndexOutOfBoundsException(-1) and `GROUP BY 9` over two
+    * columns raises IndexOutOfBoundsException(8); `Bucket.update` (query/GroupBy.scala:76) raises
+    * IllegalArgumentException on `GROUP BY -1`. Both are three frames below any combinator and no
+    * `err` conversion reaches them, so this catch is the only thing that keeps `apply`'s
+    * `Either[ParserError, Statement]` honest for the five call sites that wrap it in no `try` of
+    * their own (SQLImplicits.queryToStatement, IndicesApi x3, the searchAs macro).
+    *
+    * Note that `bucketNames` crashes on a bare INDEX, not on a `throw` - no source scan can ever
+    * see it, which is why ParserTotalitySpec covers this surface by INPUT instead.
+    *
+    * Totality is claimed for `NonFatal` only: `VirtualMachineError` (a StackOverflowError from a
+    * pathologically nested parse) still escapes, deliberately - turning a runaway recursion into a
+    * tidy 400 would make it a denial-of-service amplifier.
+    *
+    * The prefix keeps the 400 the caller now gets from reading as "your syntax is bad" when it is
+    * not. Ordinal-bucket semantics belong to story 21.3 / issue #253.
+    */
+  val InternalParseFailure: String = "Internal parser error"
+
   def apply(
     query: String
   ): Either[ParserError, Statement] = {
-    val normalizedQuery =
-      normalize(query)
-        // Trailing statement terminators are idiomatic SQL and every caller that splits on `;`
-        // already drops them; keep tolerating them now that anything else left over is an error.
-        // A run rather than one, because tools that append `;` to SQL a user already terminated
-        // produce `;;`. Anchored, so a `;` inside a literal is out of reach — a literal always
-        // ends in its closing quote.
-        .replaceFirst("(?:;\\s*)+$", "")
-        .trim
-    val reader = new PackratReader(new CharSequenceReader(normalizedQuery))
-    // `phrase`, not a bare `parse` (#213): a bare `parse` succeeds on the longest matching PREFIX
-    // and silently discards the rest, so the statement that ran was not the statement written.
-    // Measured before/after on this exact grammar:
-    //
-    //   DELETE FROM orders WHEREE id = 1     ran as DELETE FROM orders  -> emptied the index
-    //   DELETE FROM orders LIMIT 10          ran as DELETE FROM orders  -> emptied the index
-    //   UPDATE orders SET a = 1 LIMIT 10     updated every document
-    //   SELECT a FROM x UNION SELECT b ...   ran as SELECT a FROM x     (bare UNION is not the
-    //                                        UNION ALL token, so the whole second leg vanished)
-    //   SELECT * FROM t WHERE a IS  NOT  NULL  ran as SELECT * FROM t   (two spaces broke the
-    //                                        token match and the WHERE was dropped — fixed in
-    //                                        TokenRegex with \s+, and now loud here if it recurs)
-    //
-    // All of those are hard errors now. The per-statement guards added for #213 cover only the
-    // shapes someone enumerated; requiring the whole input to be consumed covers the rest. The
-    // one shape this cannot catch: `DELETE FROM orders customers` stays a valid single-table
-    // DELETE, because an alias without AS is standard SQL — pinned as such in ParserSpec.
-    parse(phrase(statement), reader) match {
-      case NoSuccess(msg, _) =>
-        Console.err.println(msg)
-        Left(ParserError(msg))
-      case Success(result, _) =>
-        result.validate() match {
-          case Left(error) => Left(ParserError(error))
-          case _           => Right(result)
-        }
+    try {
+      val normalizedQuery =
+        normalize(query)
+          // Trailing statement terminators are idiomatic SQL and every caller that splits on `;`
+          // already drops them; keep tolerating them now that anything else left over is an error.
+          // A run rather than one, because tools that append `;` to SQL a user already terminated
+          // produce `;;`. Anchored, so a `;` inside a literal is out of reach — a literal always
+          // ends in its closing quote.
+          .replaceFirst("(?:;\\s*)+$", "")
+          .trim
+      val reader = new PackratReader(new CharSequenceReader(normalizedQuery))
+      // `phrase`, not a bare `parse` (#213): a bare `parse` succeeds on the longest matching PREFIX
+      // and silently discards the rest, so the statement that ran was not the statement written.
+      // Measured before/after on this exact grammar:
+      //
+      //   DELETE FROM orders WHEREE id = 1     ran as DELETE FROM orders  -> emptied the index
+      //   DELETE FROM orders LIMIT 10          ran as DELETE FROM orders  -> emptied the index
+      //   UPDATE orders SET a = 1 LIMIT 10     updated every document
+      //   SELECT a FROM x UNION SELECT b ...   ran as SELECT a FROM x     (bare UNION is not the
+      //                                        UNION ALL token, so the whole second leg vanished)
+      //   SELECT * FROM t WHERE a IS  NOT  NULL  ran as SELECT * FROM t   (two spaces broke the
+      //                                        token match and the WHERE was dropped — fixed in
+      //                                        TokenRegex with \s+, and now loud here if it recurs)
+      //
+      // All of those are hard errors now. The per-statement guards added for #213 cover only the
+      // shapes someone enumerated; requiring the whole input to be consumed covers the rest. The
+      // one shape this cannot catch: `DELETE FROM orders customers` stays a valid single-table
+      // DELETE, because an alias without AS is standard SQL — pinned as such in ParserSpec.
+      parse(phrase(statement), reader) match {
+        case NoSuccess(msg, _) =>
+          Left(ParserError(msg))
+        case Success(result, _) =>
+          result.validate() match {
+            case Left(error) => Left(ParserError(error))
+            case _           => Right(result)
+          }
+      }
+    } catch {
+      // #250. Totality is claimed for `NonFatal` only: VirtualMachineError (a StackOverflowError
+      // from a pathologically nested parse), ControlThrowable, LinkageError and
+      // InterruptedException still escape, deliberately - swallowing those would hide a broken JVM
+      // as a SQL error. Every rejection the GRAMMAR owns is an `err(...)` and arrives above as a
+      // NoSuccess; this branch is reached from the AST surface described on `InternalParseFailure`
+      // and from a null input to `normalize`.
+      //
+      // What keeps it that way, precisely: ParserTotalitySpec's source scan is scoped to
+      // `parser/**` ONLY, so it polices the GRAMMAR half and nothing else. It does NOT cover the
+      // AST surface under `query/**` that `.update()` drags in - and could not, since
+      // `bucketNames` crashes on a bare index with no `throw` token to find. That residual is
+      // covered by INPUT instead (ParserTotalitySpec's GROUP BY cases) and is handed to story
+      // 21.3 / #253.
+      //
+      // The exception CLASS is always in the message. Measured: `GROUP BY 0` throws an
+      // IndexOutOfBoundsException whose entire message is "-1", and `Internal parser error: -1`
+      // tells a reader nothing. `getMessage` can also be null - `ElasticResult.attempt` already
+      // ships the "Operation failed: null" bug from exactly that.
+      //
+      // The cause is CARRIED, not discarded: `ElasticResult.attempt` used to supply it and `core`
+      // reads `error.cause`. Dropping it would delete the only stack trace an internal parser
+      // fault ever produces. A grammar rejection keeps `cause = None` - a user's syntax error has
+      // no interesting stack.
+      case NonFatal(e) =>
+        // 🔴 The two accessors below can THEMSELVES throw, which would escape `apply` and defeat
+        // the totality this branch exists to provide: `Class.getSimpleName` raises
+        // `InternalError: Malformed class name` on JDK 8 for some Scala inner/anonymous classes
+        // (and the drivers promise JDK 8 for ES 6/7/8), and a custom `Throwable` may override
+        // `getMessage` to throw. Neither is reachable with the exceptions measured on this path -
+        // all named JDK classes on JDK 11 - which is exactly why they are guarded rather than
+        // trusted. `getSimpleName` also returns "" for an anonymous class, which would render
+        // `Internal parser error: : -1`.
+        def safely(read: => String, fallback: String): String =
+          try Option(read).map(_.trim).filter(_.nonEmpty).getOrElse(fallback)
+          catch { case NonFatal(_) => fallback }
+        val className = safely(e.getClass.getSimpleName, safely(e.getClass.getName, "Throwable"))
+        val message = safely(e.getMessage, "")
+        val detail = if (message.isEmpty) "" else s": $message"
+        Left(ParserError(s"$InternalParseFailure: $className$detail", Some(e)))
     }
   }
 
@@ -1374,7 +1444,22 @@ object Parser
 
 trait CompilationError
 
-case class ParserError(msg: String) extends CompilationError
+/** `cause` is set ONLY by `Parser.apply`'s NonFatal boundary catch (#250). A grammar rejection - an
+  * `err(...)` or a `validate()` Left - leaves it `None`: a user's syntax error has no interesting
+  * stack, and attaching one would put a parser internal in front of a BI user for no reason.
+  *
+  * Defaulted, so every existing `ParserError(msg)` construction compiles unchanged. It IS a
+  * binary-compatibility change for the `sql` module (case-class arity); there are no destructuring
+  * `case ParserError(m)` patterns anywhere in this repo or in any sibling repo.
+  *
+  * Two further consequences of putting a `Throwable` in a case class, stated because they are easy
+  * to trip over: the generated `equals`/`hashCode` now include `cause`, and a `Throwable` compares
+  * by IDENTITY - so two internal-fault results for the SAME input are never `==` to each other
+  * (grammar rejections, whose cause is `None`, still compare by message as before). And `toString`
+  * renders the whole throwable. Compare `.msg`, never the `ParserError` value, on the
+  * internal-fault route.
+  */
+case class ParserError(msg: String, cause: Option[Throwable] = None) extends CompilationError
 
 trait Parser
     extends RegexParsers
