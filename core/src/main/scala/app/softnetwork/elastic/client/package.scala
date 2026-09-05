@@ -335,6 +335,41 @@ package object client extends SerializationApi {
     case _ => false
   }
 
+  /** End-of-stream decision for one scroll / `search_after` page (SoftClient4ES#241, #217).
+    *
+    * The stream ends on the RAW page, never on the converted rows. A page that carried raw hits but
+    * produced no rows is a silently dropped page: ending the stream there surfaces a truncated
+    * result set as a SUCCESSFUL one — the defect class of #205 / #207 / #209 / #224 / #238.
+    *
+    * A non-empty `rows` always continues, so aggregation-shaped pages — which legitimately produce
+    * rows with zero raw hits — are unaffected. Note this is deliberately a structural invariant
+    * rather than a reproduced defect path: `ElasticConversion.jsonToRows` yields one row per hit on
+    * every branch that sees a non-empty `hits.hits`, so no shape reaches the failure arm today. It
+    * exists so that a future converter change — a filtering context, a per-row validation, a new
+    * client — cannot re-introduce silent truncation without failing loudly first.
+    *
+    * The exception type is load-bearing: [[isRetriableError]] retries `IOException` /
+    * `SocketTimeoutException`, and a retried page failure would re-poll a spent scroll cursor,
+    * which SKIPS rows. `IllegalStateException` is not retriable and propagates to the stream.
+    *
+    * @param rows
+    *   number of converted rows the page produced
+    * @param rawHits
+    *   number of raw hits the page carried
+    * @param page
+    *   description of the page, used in the failure message (by-name: built only on failure)
+    * @return
+    *   true when the page legitimately ends the stream
+    */
+  private[client] def endOfScrollPage(rows: Int, rawHits: Int, page: => String): Boolean =
+    if (rows > 0) false
+    else if (rawHits > 0)
+      throw new IllegalStateException(
+        s"$page carried $rawHits hit(s) but produced no rows — refusing to end the stream on a " +
+        "silently dropped page"
+      )
+    else true
+
   /** Aggregation types
     */
   object AggregationType extends Enumeration {

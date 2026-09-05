@@ -20,6 +20,7 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.{
+  endOfScrollPage,
   retryWithBackoff,
   ClientAggregation,
   ConversionContext,
@@ -29,6 +30,7 @@ import app.softnetwork.elastic.client.{
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
+import io.searchbox.client.JestResult
 import io.searchbox.core.{ClearScroll, Search, SearchScroll}
 import io.searchbox.params.Parameters
 
@@ -78,25 +80,39 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
                 val scrollId = result.getJsonObject.get("_scroll_id").getAsString
 
-                // Extract ALL results (hits + aggregations)
-                // Single parse for core (#228): Jackson reads the raw response body Jest
-                // retained — the Gson tree is only consulted for the scroll cursor.
-                val results =
-                  extractAllResults(
-                    result.getJsonString,
-                    fieldAliases,
-                    aggregations,
-                    config.retainDocumentId
+                val rawHits = rawHitCount(result)
+
+                try {
+                  // Extract ALL results (hits + aggregations)
+                  // Single parse for core (#228): Jackson reads the raw response body Jest
+                  // retained — the Gson tree is only consulted for the scroll cursor.
+                  val results =
+                    extractAllResults(
+                      result.getJsonString,
+                      fieldAliases,
+                      aggregations,
+                      config.retainDocumentId
+                    )
+
+                  logger.info(
+                    s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
                   )
 
-                logger.info(
-                  s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
-                )
-
-                if (results.isEmpty) {
-                  None
-                } else {
-                  Some((Some(scrollId), results))
+                  // End of stream is decided on the RAW page (#241): a page that carried hits but
+                  // produced no rows is a silent drop and must fail the stream, not end it.
+                  if (endOfScrollPage(results.size, rawHits, s"Initial scroll page [$scrollId]")) {
+                    // nothing left to read — release the context we just opened
+                    clearScroll(scrollId)
+                    None
+                  } else {
+                    Some((Some(scrollId), results))
+                  }
+                } catch {
+                  case ex: Throwable =>
+                    // `scrollIdOpt` is still None on the first page, so the stream-level recovery
+                    // below cannot release the context opened just above (AD-S1-2)
+                    clearScroll(scrollId)
+                    throw ex
                 }
 
               case Some(scrollId) =>
@@ -110,21 +126,31 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                   throw new IOException(s"Scroll failed: ${result.getErrorMessage}")
                 }
                 val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
-                val results =
-                  extractAllResults(
-                    result.getJsonString,
-                    fieldAliases,
-                    aggregations,
-                    config.retainDocumentId
-                  )
+                val rawHits = rawHitCount(result)
 
-                logger.debug(s"Scroll returned ${results.size} results")
+                try {
+                  val results =
+                    extractAllResults(
+                      result.getJsonString,
+                      fieldAliases,
+                      aggregations,
+                      config.retainDocumentId
+                    )
 
-                if (results.isEmpty) {
-                  clearScroll(scrollId)
-                  None
-                } else {
-                  Some((Some(newScrollId), results))
+                  logger.debug(s"Scroll returned ${results.size} results")
+
+                  if (endOfScrollPage(results.size, rawHits, s"Scroll page [$scrollId]")) {
+                    clearScroll(scrollId)
+                    None
+                  } else {
+                    Some((Some(newScrollId), results))
+                  }
+                } catch {
+                  case ex: Throwable =>
+                    // the cursor already advanced: the stream-level recovery below only releases
+                    // the spent `scrollId`, so release the new one here too (AD-S1-2)
+                    Option(newScrollId).filter(_ != scrollId).foreach(clearScroll)
+                    throw ex
                 }
             }
           }
@@ -223,7 +249,8 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
             val hits =
               extractHitsOnly(result.getJsonString, fieldAliases, config.retainDocumentId)
 
-            if (hits.isEmpty) {
+            // End of stream is decided on the RAW page (#241), never on the converted rows
+            if (endOfScrollPage(hits.size, rawHitCount(result), "search_after page")) {
               None
             } else {
               val hitsArray = result.getJsonObject
@@ -283,9 +310,21 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
   ): Source[ListMap[String, Any], NotUsed] =
     throw new NotImplementedError("PIT search after not implemented for Elasticsearch 6")
 
-  /** Extract ALL results: hits + aggregations
+  /** Number of RAW hits the page carried — the end-of-stream signal (#241).
+    *
+    * One Gson tree read per page (the tree Jest already parsed), never per row. A response with no
+    * `hits` section — an aggregation-only page — legitimately reports 0.
     */
-  private def extractAllResults(
+  private def rawHitCount(result: JestResult): Int =
+    Try(result.getJsonObject.getAsJsonObject("hits").getAsJsonArray("hits").size()).getOrElse(0)
+
+  /** Extract ALL results: hits + aggregations
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`): returning an empty
+    * page here used to read as "end of stream" and surfaced a silently truncated result as a
+    * success (#241/#217, same defect class as #228 / #209 / #224).
+    */
+  private[client] def extractAllResults(
     jsonString: String,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
@@ -299,14 +338,17 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     ) match {
       case Success(rows) => rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse Jest scroll response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(s"Failed to parse scroll page: ${ex.getMessage}", ex)
     }
   }
 
   /** Extract ONLY hits (for search_after)
+    *
+    * A parse failure FAILS the page (non-retriable `IllegalStateException`) — see
+    * [[extractAllResults]]. Jest has no PIT path (`pitSearchAfter` is a `NotImplementedError`), so
+    * `search_after` is this client's only deep-paging alternative to the classic scroll.
     */
-  private def extractHitsOnly(
+  private[client] def extractHitsOnly(
     jsonString: String,
     fieldAliases: ListMap[String, String],
     retainDocumentId: Boolean
@@ -320,8 +362,10 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     ) match {
       case Success(rows) => rows
       case Failure(ex) =>
-        logger.error(s"Failed to parse Jest search after response: ${ex.getMessage}", ex)
-        Seq.empty
+        throw new IllegalStateException(
+          s"Failed to parse search_after page: ${ex.getMessage}",
+          ex
+        )
     }
   }
 
