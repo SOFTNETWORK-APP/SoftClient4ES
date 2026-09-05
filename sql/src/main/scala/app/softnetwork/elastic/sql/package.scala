@@ -63,6 +63,22 @@ package object sql {
   def escapeStringLiteral(value: String): String =
     value.replace("\\", "\\\\").replace("'", "\\'")
 
+  /** Re-emits a name that was written quoted.
+    *
+    * The canonical delimiter is the ANSI SQL-92 double quote and an embedded one is DOUBLED — the
+    * SQL-standard escape, and exactly the form `Parser.quotedNameRegex` reads back, which is what
+    * makes `Parser(identifier.sql)` a fixed point. Backticks are ACCEPTED on input (every Tableau
+    * generic-JDBC connection emits them) and deliberately never emitted: the only consumer of this
+    * rendering is our own re-parse — `MaterializedViewExtension` runs `client.run(alter.sql)` and
+    * writes the same string into a user-runnable artifact — so one canonical spelling beats echoing
+    * whichever spelling the caller happened to use.
+    *
+    * NEVER use this on a path that reaches Elasticsearch: an ES field name is `Identifier.name`,
+    * unquoted. Same rule as `escapeStringLiteral` above.
+    */
+  def quoteIdentifier(name: String): String =
+    "\"" + name.replace("\"", "\"\"") + "\""
+
   /** Base trait for all tokens
     */
   trait Token extends Serializable with Validation {
@@ -816,7 +832,13 @@ package object sql {
 
   case object Alias extends Expr("AS") with TokenRegex
 
-  case class Alias(alias: String) extends Expr(s" ${Alias.sql} $alias")
+  /** `quoted` mirrors `Identifier.quoted` (story 21.1 AD-1): it records that the alias was written
+    * inside quotes, so `.sql` can re-emit it and re-parse to an equal AST. `alias` itself stays the
+    * bare string -- it is what `Field.fieldAlias`, `scriptName` and the script_fields keys use, and
+    * none of those may ever see a delimiter.
+    */
+  case class Alias(alias: String, quoted: Boolean = false)
+      extends Expr(s" ${Alias.sql} ${if (quoted) quoteIdentifier(alias) else alias}")
 
   object AliasUtils {
     private val MaxAliasLength = 50
@@ -873,6 +895,14 @@ package object sql {
     def tableAlias: Option[String]
     def table: Option[String]
     def distinct: Boolean
+
+    /** True iff any part of this name was written inside quotes -- `"col"`, a backticked `col`, or
+      * a qualified mix of the two. It records ONLY that quoting was used, never which delimiter:
+      * the two spellings denote the same column, so they must produce EQUAL ASTs (story 21.1 AD-1).
+      * Consumed by `sql` alone; `name`, `identifierName`, `path` and everything that reaches
+      * Elasticsearch stay unquoted.
+      */
+    def quoted: Boolean
     def nested: Boolean
     def nestedElement: Option[NestedElement]
     def limit: Option[Limit]
@@ -897,13 +927,25 @@ package object sql {
         case Some(a) => parts = a +: (if (nested) parts.tail else parts)
         case _       =>
       }
-      val sql = {
-        if (distinct) {
-          s"$Distinct ${parts.mkString(".")}".trim
-        } else {
-          parts.mkString(".").trim
-        }
-      }
+      // Quote EACH dot-separated part -- `"e"."category"`, not `"e.category"`. Both re-parse to the
+      // same AST as far as THIS parser is concerned, so the tie is broken downstream:
+      // softclient4es-arrow's JoinPlanner builds its DuckDB SELECT list out of `identifier.sql`,
+      // and DuckDB reads `"e.category"` as one column literally named `e.category` -- a binder
+      // error -- where `"e"."category"` is the qualified reference the statement means.
+      val rendered =
+        if (quoted)
+          // NOT trimmed, unlike the bare branch below: a quoted name means exactly what is inside
+          // the delimiters, so `` `a ` `` is the field `a ` and trimming it would render `"a"` and
+          // re-parse to a DIFFERENT field. (Measured: trimming per part broke the fixed point for
+          // every name with an edge space.)
+          //
+          // An EMPTY part is never quoted: `""` is not an identifier in the grammar (the content
+          // quantifier is `+`), so emitting one would produce a rendering that cannot be re-parsed.
+          // Unreachable today -- `Parser.unquoteName` cannot return "" -- but the fixed point is
+          // the whole contract, so it is a guard, not an assumption.
+          parts.map(p => if (p.isEmpty) p else quoteIdentifier(p)).mkString(".")
+        else parts.mkString(".").trim
+      val sql = if (distinct) s"$Distinct $rendered".trim else rendered
       functions.reverse.foldLeft(sql)((expr, fun) => {
         fun.toSQL(expr)
       })
@@ -1157,7 +1199,10 @@ package object sql {
     nestedElement: Option[NestedElement] = None,
     bucketPath: String = "",
     col: Option[Column] = None,
-    table: Option[String] = None
+    table: Option[String] = None,
+    // Appended LAST and defaulted so every positional construction in this repo and downstream
+    // keeps compiling, and so all ~20 `this.copy(...)` sites in `update` carry it through for free.
+    quoted: Boolean = false
   ) extends Identifier {
 
     def withFunctions(functions: List[Function]): Identifier = this.copy(functions = functions)

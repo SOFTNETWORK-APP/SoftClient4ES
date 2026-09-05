@@ -292,14 +292,18 @@ object Parser
         while (i < source.length && closing < 0) {
           val c = source.charAt(i)
           if (quote != 0) {
-            if (c == '\\') i += 1
+            // As in `normalize`: a backslash is an escape inside `'...'` and `"..."` only. Inside
+            // backticks it is data.
+            if (c == '\\' && quote != '`') i += 1
             else if (c == quote) quote = 0
           } else
             c match {
-              case '\'' | '"' => quote = c
-              case '('        => depth += 1
-              case ')'        => depth -= 1; if (depth == 0) closing = i
-              case _          => ()
+              // Without the backtick a `)` inside a backticked identifier closes the SCRIPT AS body
+              // early -- the #219/#220 paren-greed failure mode, in a new disguise.
+              case '\'' | '"' | '`' => quote = c
+              case '('              => depth += 1
+              case ')'              => depth -= 1; if (depth == 0) closing = i
+              case _                => ()
             }
           i += 1
         }
@@ -1308,7 +1312,10 @@ object Parser
       val c = query.charAt(i)
       if (quote != 0) {
         out.append(c)
-        if (c == '\\' && i + 1 < query.length) {
+        // A backslash escapes inside a single- or double-quoted run -- the grammar's own literal
+        // and identifier productions read it that way -- but NOT inside a backticked identifier,
+        // where the only escape is a doubled backtick and a backslash is an ordinary character.
+        if (c == '\\' && quote != '`' && i + 1 < query.length) {
           out.append(query.charAt(i + 1))
           i += 1
         } else if (c == quote) {
@@ -1320,7 +1327,10 @@ object Parser
         while (i < query.length && query.charAt(i) != '\n') i += 1
       } else {
         c match {
-          case '\'' | '"' =>
+          // The backtick joins the quote set for #252: without it a `--` inside a backticked
+          // identifier is read as a comment and deletes the rest of the statement -- a silent
+          // truncation, not an error.
+          case '\'' | '"' | '`' =>
             quote = c
             out.append(c)
           case '\n' | '\r' => out.append(' ')
@@ -1730,24 +1740,160 @@ trait Parser
   private val identifierRegexStr =
     s"""(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[\\*a-zA-Z_\\-][a-zA-Z0-9_\\-.\\[\\]\\*]*"""
 
+  /** Unchanged, and now with exactly ONE caller: `FromParser.table`. The FROM table surface moves
+    * in story 21.2 under the #85 ruling (the parser PRESERVES -- `Table.parts` -- and never
+    * interprets a qualifier); swapping in `qualifiedName` here would silently turn `FROM
+    * "elastic".bi_events` from index `bi_events` into index `elastic.bi_events`.
+    */
   val identifierRegex: Regex = identifierRegexStr.r // scala.util.matching.Regex
 
-  def quotedIdentifier: PackratParser[Identifier] =
-    ("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") ^^ { str =>
-      GenericIdentifier(
-        str.replace("\\\"", "\"").replace("\\\\", "\\"),
-        None,
-        distinct = false
-      )
-    }
+  // -----------------------------------------------------------------------------------------------
+  // Quoted identifiers (#252). ONE lexing surface, shared by `identifier`, `quotedIdentifier` and
+  // `alias`, so a new production cannot forget it and the two styles cannot drift apart.
+  // -----------------------------------------------------------------------------------------------
 
+  private val doubleQuoteChar = "\""
+
+  /** ANSI SQL-92 delimited identifier. Two escapes are accepted:
+    *   - `""` -- the SQL standard, and what every generator that quotes at all emits;
+    *   - a backslash before the delimiter or before itself -- non-standard, but what this
+    *     production has always accepted, so nothing that parses today stops parsing. Deliberately
+    *     NOT extended to the backtick style below.
+    *
+    * The content quantifier is `+`, not `*`: an EMPTY `""` is a valid empty STRING literal
+    * (`TypeParser.literal`) and must keep falling through to it rather than becoming a nameless
+    * column.
+    */
+  private val doubleQuotedNameStr =
+    doubleQuoteChar + """(?:[^"\\]|""|\\.)+""" + doubleQuoteChar
+
+  /** MySQL delimited identifier -- the spelling every Tableau generic-JDBC connection emits. Only
+    * the standard doubled-backtick escape; a backslash is an ordinary character here.
+    */
+  private val backQuotedNameStr = "`(?:[^`]|``)+`"
+
+  /** One quoted lexeme, either style, delimiters included. */
+  val quotedNameRegex: Regex = s"(?:$doubleQuotedNameStr|$backQuotedNameStr)".r
+
+  /** Strips the delimiters and un-escapes, in ONE left-to-right pass.
+    *
+    * `Parser.normalize` was rewritten from a line-based pass into a scan for the same reason: one
+    * pass is obviously correct without a case analysis, and it is the shape story 21.5 shares as
+    * `unescapeStringLiteral(content, delimiter)`.
+    *
+    * Merge note (story 21.1 AD-11 item 4): whichever of 21.1 / 21.5 lands second folds the `q ==
+    * '"'` interior onto that shared function; the backtick arm stays local (doubling only -- AD-5
+    * forbids backslash semantics inside backticks, and the shared function would collapse a doubled
+    * backslash).
+    */
+  private def unquoteName(lexeme: String): String = {
+    val q = lexeme.charAt(0)
+    val last = lexeme.length - 1
+    val out = new StringBuilder(lexeme.length)
+    var i = 1
+    while (i < last) {
+      val c = lexeme.charAt(i)
+      if (c == q && i + 1 < last && lexeme.charAt(i + 1) == q) {
+        out.append(q)
+        i += 2
+      } else if (c == '\\' && q == '"' && i + 1 < last) {
+        out.append(lexeme.charAt(i + 1))
+        i += 2
+      } else {
+        out.append(c)
+        i += 1
+      }
+    }
+    out.toString
+  }
+
+  /** The characters an UNQUOTED name part may contain -- `identifierRegexStr`'s class minus the
+    * dot, which `qualifiedName` consumes as the separator between parts.
+    */
+  private val barePartChars = """[a-zA-Z0-9_\-\[\]\*]"""
+
+  /** The FIRST part keeps `identifierRegexStr`'s reserved-word guard and its "no leading digit"
+    * rule. Dropping the guard here would let `SELECT FROM t` read `FROM` as a column name.
+    */
+  private val bareFirstPartStr =
+    s"""(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[\\*a-zA-Z_\\-]$barePartChars*"""
+
+  /** Every part AFTER the first has neither guard.
+    *
+    * `identifierRegex` matches a whole dotted name with ONE regex, so its negative lookahead only
+    * ever applied at offset 0: `t.from`, `doc.count`, `order.min` and `item.first` all parse today
+    * as one identifier, and `logs-2025.03` has a digit-leading second part. Re-applying the guard
+    * (or the leading-digit rule) per part would newly reject every one of them.
+    */
+  private val bareNextPartStr = s"$barePartChars+"
+
+  /** Both regexes are compiled ONCE, as `val`s, exactly like `identifierRegex` above.
+    * `bareFirstPartStr` interpolates the reserved-keyword alternation, and `String.r` is
+    * `Pattern.compile` -- calling it inside a `def` recompiles it on every construction of the
+    * hottest production in the grammar, now also once per `rep` iteration.
+    */
+  private val bareFirstPartRegex: Regex = bareFirstPartStr.r
+  private val bareNextPartRegex: Regex = bareNextPartStr.r
+
+  private def quotedPart: PackratParser[(String, Boolean)] =
+    quotedNameRegex ^^ (lexeme => (unquoteName(lexeme), true))
+
+  private def bareFirstPart: PackratParser[(String, Boolean)] =
+    bareFirstPartRegex ^^ (n => (n, false))
+
+  private def bareNextPart: PackratParser[(String, Boolean)] =
+    bareNextPartRegex ^^ (n => (n, false))
+
+  private def nameTail: PackratParser[List[(String, Boolean)]] =
+    rep("." ~> (quotedPart | bareNextPart))
+
+  private def joinNameParts(parts: List[(String, Boolean)]): (String, Boolean) =
+    (parts.map(_._1).mkString("."), parts.exists(_._2))
+
+  /** One dot-separated name; each part is independently bare or quoted. The `Boolean` is true iff
+    * ANY part was quoted -- that single bit is everything `Identifier.sql` needs to re-emit the
+    * quoting (story 21.1 AD-1). Style is not retained: a backticked `a` and `"a"` denote the same
+    * column and must produce equal ASTs.
+    *
+    * PUBLIC on purpose: story 21.2 rewrites `FromParser.table` on top of this so the FROM/JOIN
+    * surface cannot become a second lexer.
+    */
+  def qualifiedName: PackratParser[(String, Boolean)] =
+    (quotedPart | bareFirstPart) ~ nameTail ^^ { case h ~ t => joinNameParts(h :: t) }
+
+  /** `qualifiedName`, but the FIRST part must be quoted -- which makes `quotedIdentifier` a strict
+    * subset of `identifier` and lets every existing `quotedIdentifier | ...` alternation keep its
+    * exact current behaviour.
+    */
+  def quotedQualifiedName: PackratParser[(String, Boolean)] =
+    quotedPart ~ nameTail ^^ { case h ~ t => joinNameParts(h :: t) }
+
+  /** Kept, and kept FIRST in `SelectParser.field`, `GroupByParser.bucketWithFunction`,
+    * `OrderByParser.fieldWithFunction` and `WhereParser.any_identifier`/`isNull`/`isNotNull`, for
+    * one load-bearing reason: a double-quoted lexeme also matches `TypeParser.literal`, and each of
+    * those productions has a LATER alternative that reaches it
+    * (`identifierWithArithmeticExpression` -> `factor` -> `valueExpr` ->
+    * `identifierWithIntervalFunction` -> `identifierWithValue`). Delete this production and rely on
+    * the quoting now folded into `identifier`, and `SELECT "category"` / `GROUP BY "category"` /
+    * `ORDER BY "category"` all flip from a column reference to a string literal. Ordering there is
+    * not style.
+    *
+    * It is ALSO the operand-position reading, since story 21.1 AD-13 placed it immediately before
+    * `identifierWithValue` inside `identifierWithIntervalFunction` -- see that call site for why
+    * the alternative had to exist for the render to be a fixed point.
+    */
+  def quotedIdentifier: PackratParser[Identifier] =
+    (Distinct.regex.? ~ quotedQualifiedName ^^ { case d ~ nq =>
+      GenericIdentifier(nq._1, None, d.isDefined, quoted = nq._2)
+    }) >> cast
+
+  /** THE identifier production. Quoting is folded in here rather than sprinkled over the ~35 sites
+    * that end in `| identifier` -- the four-alternative operand idiom alone occurs 21 times -- so a
+    * production added later inherits it instead of having to remember it.
+    */
   def identifier: PackratParser[Identifier] =
-    (Distinct.regex.? ~ identifierRegex ^^ { case d ~ i =>
-      GenericIdentifier(
-        i,
-        None,
-        d.isDefined
-      )
+    (Distinct.regex.? ~ qualifiedName ^^ { case d ~ nq =>
+      GenericIdentifier(nq._1, None, d.isDefined, quoted = nq._2)
     }) >> cast
 
   def identifierWithTransformation: PackratParser[Identifier] =
@@ -1794,11 +1940,28 @@ trait Parser
   private val regexAlias =
     s"""\\b(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[a-zA-Z0-9_.]*""".stripMargin
 
-  def alias: PackratParser[Alias] = Alias.regex.? ~ regexAlias.r ^^ { case _ ~ b => Alias(b) }
+  /** Compiled once, for the same reason as `bareFirstPartRegex`: this string interpolates the
+    * reserved-keyword alternation and `alias` is tried after every field, every JOIN source and
+    * every table.
+    */
+  private val regexAliasRegex: Regex = regexAlias.r
 
+  /** The quoted form comes FIRST: `regexAlias`'s class is `*`, so it matches the empty string, and
+    * only its leading word boundary stops it succeeding in front of a delimiter. Relying on that is
+    * one refactor away from an empty alias silently winning.
+    *
+    * All four alias positions ride this one production -- the SELECT list (`SelectParser.field`),
+    * `UNNEST(...) alias`, a JOIN source's alias and the FROM table's alias (`FromParser`) -- so a
+    * backticked table alias and `SELECT a AS "my col"` are the same fix.
+    */
+  def alias: PackratParser[Alias] =
+    Alias.regex.? ~ (quotedNameRegex ^^ (l => Alias(unquoteName(l), quoted = true)) |
+    regexAliasRegex ^^ (b => Alias(b))) ^^ { case _ ~ a => a }
+
+  /** Retained for `SelectParser.field`'s `(quotedAlias | alias)`, and now a strict subset of
+    * `alias` -- same lexeme, same un-escaping, same `quoted` bit.
+    */
   def quotedAlias: PackratParser[Alias] =
-    Alias.regex.? ~ ("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") ^^ { case _ ~ b =>
-      Alias(b.replace("\\\"", "\"").replace("\\\\", "\\"))
-    }
+    Alias.regex.? ~ quotedNameRegex ^^ { case _ ~ l => Alias(unquoteName(l), quoted = true) }
 
 }

@@ -4610,4 +4610,51 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     "\"percentiles\"".r.findAllIn(query).length shouldBe 1
   }
 
+  // ── #252 / story 21.1 — quoted identifiers must not reach Elasticsearch ─────────────────────
+  // The AST records that a name was written quoted, and `Identifier.sql` re-emits the delimiter.
+  // Nothing on the ES path may: a field name, a term key, an aggregation field, a sort key, a
+  // `_source.includes` entry and a Painless `doc[...]` access are all the BARE name.
+  //
+  // Asserting that the quoted spellings PARSE would certify nothing — the bit is invisible until
+  // the query is emitted, so this asserts the emitted JSON is byte-identical to the unquoted
+  // spelling's.
+
+  "a quoted identifier" should "emit exactly the query the unquoted spelling emits" in {
+    val bare: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM bi_events WHERE category = 'a'")
+    val backtick: ElasticSearchRequest =
+      SelectStatement("SELECT `category` FROM bi_events WHERE `category` = 'a'")
+    val ansi: ElasticSearchRequest =
+      SelectStatement("SELECT \"category\" FROM bi_events WHERE \"category\" = 'a'")
+    backtick.query shouldBe bare.query
+    ansi.query shouldBe bare.query
+    bare.query should not include "`"
+    bare.query should include("\"category\"")
+  }
+
+  it should "emit a bare field for a quoted GROUP BY, ORDER BY and alias" in {
+    val grouped: ElasticSearchRequest =
+      SelectStatement("SELECT `category`, COUNT(id) AS `n` FROM bi_events GROUP BY `category`")
+    grouped.query should include("\"terms\":{\"field\":\"category\"")
+    grouped.query should include("\"n\":{")
+
+    val sorted: ElasticSearchRequest =
+      SelectStatement("SELECT id FROM bi_events ORDER BY `event_ts` DESC")
+    sorted.query should include("\"sort\":[{\"event_ts\":{\"order\":\"desc\"}}]")
+
+    val scripted: ElasticSearchRequest =
+      SelectStatement("SELECT UPPER(`category`) AS u FROM bi_events")
+    scripted.query should include("doc['category']")
+  }
+
+  // Story 21.1 AD-13: a double-quoted operand inside an aggregate used to be a STRING, so this
+  // emitted a script over the constant 'amount' rather than an aggregation over the field. Pinning
+  // the emitted JSON is the only assertion that can tell those two apart.
+  it should "aggregate the FIELD named by a double-quoted operand, not a string constant" in {
+    val ansi: ElasticSearchRequest = SelectStatement("SELECT MAX(\"amount\") AS m FROM bi_events")
+    val backtick: ElasticSearchRequest = SelectStatement("SELECT MAX(`amount`) AS m FROM bi_events")
+    ansi.query should include("\"max\":{\"field\":\"amount\"}")
+    backtick.query shouldBe ansi.query
+  }
+
 }

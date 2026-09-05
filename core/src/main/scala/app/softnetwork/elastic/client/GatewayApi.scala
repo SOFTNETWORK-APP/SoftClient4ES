@@ -2132,11 +2132,12 @@ object GatewayApi {
     * under the old lenient parse. The documented contract ("splits multiple statements separated by
     * `;`") is now real.
     *
-    * Quote-aware: a `;` inside a single-quoted literal or a double-quoted identifier is not a
-    * boundary. Backslash escapes are honored inside quotes, matching the grammar's literal rule
-    * (`([^'\\]|\\.)*`). An unterminated quote consumes to the end of the input — the parser then
-    * reports the malformed statement itself, which beats guessing where it was meant to end. Empty
-    * fragments (`;;`, a trailing `;`) are dropped.
+    * Quote-aware: a `;` inside a single-quoted literal, a double-quoted identifier or a backticked
+    * identifier is not a boundary. Backslash escapes are honored inside single- and double-quoted
+    * runs, matching the grammar's literal rule (`([^'\\]|\\.)*`); inside backticks the only escape
+    * is a doubled backtick, so a backslash there is data. An unterminated quote consumes to the end
+    * of the input — the parser then reports the malformed statement itself, which beats guessing
+    * where it was meant to end. Empty fragments (`;;`, a trailing `;`) are dropped.
     */
   private[client] def splitStatements(sql: String): List[String] = {
     val statements = scala.collection.mutable.ListBuffer.empty[String]
@@ -2147,7 +2148,11 @@ object GatewayApi {
       val c = sql.charAt(i)
       if (quote != 0) {
         current.append(c)
-        if (c == '\\' && i + 1 < sql.length) {
+        // A backslash is an escape inside `'...'` and `"..."` -- matching the grammar's literal
+        // rule -- but NOT inside a backticked identifier, where the only escape is a doubled
+        // backtick. Treating it as one there would eat the closing delimiter and swallow the rest
+        // of the script.
+        if (c == '\\' && quote != '`' && i + 1 < sql.length) {
           current.append(sql.charAt(i + 1))
           i += 1
         } else if (c == quote) {
@@ -2165,7 +2170,10 @@ object GatewayApi {
         current.append(' ')
       } else {
         c match {
-          case '\'' | '"' =>
+          // Backticked identifiers (#252) join the quote set, or a `;` inside one splits the
+          // statement in two -- both halves malformed, and the REPL batch path feeds RAW script
+          // text straight through here.
+          case '\'' | '"' | '`' =>
             quote = c
             current.append(c)
           case ';' =>

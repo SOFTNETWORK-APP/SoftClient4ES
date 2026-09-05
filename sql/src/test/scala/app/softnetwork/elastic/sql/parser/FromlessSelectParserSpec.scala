@@ -108,8 +108,23 @@ class FromlessSelectParserSpec extends AnyFlatSpec with Matchers {
       "SELECT 1 GROUP BY 1",
       "SELECT 1 HAVING 1=1",
       "SELECT 1 UNION ALL SELECT 2",
-      "SELECT DISTINCT 1",
-      "SELECT 1 AS `x`" // backtick aliases stay #252's acceptance row
+      "SELECT DISTINCT 1"
     ).foreach { s => withClue(s"[$s]: ")(Parser(s).isLeft shouldBe true) }
+  }
+
+  // `SELECT 1 AS `x`` used to sit in the reject list above, carrying the comment "backtick aliases
+  // stay #252's acceptance row". Story 21.1 is that row: `alias` now accepts a quoted lexeme in all
+  // four alias positions, so the pin moves from "rejected" to "accepted" rather than being deleted —
+  // it recorded a pending capability, not a defect.
+  it should "accept a quoted alias, which story 21.1 (#252) added" in {
+    Seq("SELECT 1 AS `x`", "SELECT 1 AS \"x\"").foreach { s =>
+      withClue(s"[$s]: ") {
+        Parser(s) match {
+          case Right(f: FromlessSelect) =>
+            f.select.fields.head.fieldAlias.map(_.alias) shouldBe Some("x")
+          case other => fail(s"expected a FromlessSelect, got $other")
+        }
+      }
+    }
   }
 }

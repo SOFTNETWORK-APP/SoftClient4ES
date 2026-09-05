@@ -51,6 +51,28 @@ WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
 
 The parser rejects this — `IN` accepts only literal value lists today, not a nested `SELECT`. Rewrite it as an explicit JOIN (fully supported), or wait for the next release where the subquery form lands as-is.
 
+## Quoted identifiers — three residual limits
+
+Quoted column names and aliases work in both spellings — see
+[Quoted identifiers](dql_statements.md#quoted-identifiers). Three things they do **not** cover yet:
+
+- **The table name is not quotable.** `` FROM `bi_events` ``, `FROM "bi_events"`,
+  `` FROM `elastic`.`bi_events` `` and `FROM "elastic"."bi_events"` are all rejected. The table's
+  *alias* is quotable (``FROM bi_events `e` ``), and so is every column, including in a `JOIN`'s
+  `ON` clause. This is the next piece of quoting work; until it lands, send the table name bare.
+  The catalog-prefixed `` FROM `prod_us`.orders `` examples in [joins.md](joins.md) belong to the
+  same gap, as do the ``INSERT INTO `prod_eu`.dest`` / ``CREATE TABLE `prod_eu`.dest`` forms.
+
+- **A dot inside a quoted name is still a qualifier.** `` SELECT `a.b` FROM t `` is read as the
+  column `b` qualified by `a`, exactly as `SELECT a.b` is — there is no way to address an
+  Elasticsearch field whose own name contains a dot. Quoting makes it *look* as though there should
+  be; there is not.
+
+- **An arithmetic expression cannot START with a quoted operand, unparenthesised.**
+  `` SELECT `amount` + 1 `` and `SELECT "amount" + 1` are rejected, while `SELECT amount + 1`,
+  `` SELECT (`amount` + 1) `` and `` SELECT MAX(`amount` + 1) `` all work. Wrap the expression in
+  parentheses — which is what every BI tool emits for a calculation anyway.
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).

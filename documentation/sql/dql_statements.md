@@ -23,6 +23,7 @@ DQL supports:
 ## Table of Contents
 
 - [SELECT](#select)
+- [Quoted identifiers](#quoted-identifiers)
 - [FROM-less SELECT (connection handshake)](#from-less-select-connection-handshake)
 - [WHERE](#where)
 - [ORDER BY](#order-by)
@@ -83,6 +84,75 @@ ORDER BY id ASC;
 - `profile` is a `STRUCT` column.
 - `profile.city` and `profile.followers` access nested fields.
 - Aliases (`AS full_name`, `AS city`) are returned as column names.
+
+---
+
+## Quoted identifiers
+
+A column name or an alias may be written **quoted**, in either of two spellings — the ANSI SQL-92
+double quote or the MySQL backtick. Both are accepted everywhere an identifier is accepted, and both
+denote the same column.
+
+```sql
+SELECT `category`, COUNT(id) AS `n`
+FROM bi_events
+WHERE "category" IS NOT NULL
+GROUP BY `category`
+ORDER BY `category` ASC;
+```
+
+Quoting is what lets a name be used that the bare spelling cannot express:
+
+| Written | Meaning |
+| ------- | ------- |
+| `` SELECT `select` `` | a column literally named `select` — a quoted name bypasses the reserved-word rule |
+| `` SELECT `my col` `` | a column whose name contains a space |
+| `` SELECT `Category` `` | case is preserved **verbatim**; Elasticsearch field names are case-sensitive |
+| `` SELECT `1` `` | the column *named* `1`, never the first column by position |
+| `` SELECT `e`.`category` FROM bi_events e `` | each part of a qualified name may be quoted independently — `` e.`category` `` and `` `e`.category `` are the same thing |
+
+#### Escaping
+
+The delimiter is escaped by **doubling** it, in both spellings:
+
+```sql
+SELECT `a``b`,  -- the column named  a`b
+       "a""b"   -- the column named  a"b
+FROM t;
+```
+
+Inside a **double-quoted** name a backslash also escapes the next character (`"a\"b"` is the column
+`a"b`). That form is not standard and is kept only because this engine has always accepted it; it is
+deliberately **not** available inside backticks, where a backslash is an ordinary character.
+
+An empty pair of double quotes (`""`) is **not** an identifier — it is the empty string literal, the
+same as `''`. An empty pair of backticks is rejected.
+
+#### How a quoted name is rendered back
+
+Statements are re-rendered with **one** canonical delimiter, the ANSI double quote, whichever
+spelling was written. A rendered statement always re-parses to the same query, so
+`` SELECT `category` `` comes back as `SELECT "category"`. Only names that were *written* quoted are
+re-emitted quoted; a bare name stays bare.
+
+#### Double quotes are also string delimiters, in value position
+
+This engine accepts a double-quoted string literal, so `"x"` is read as a **string** wherever a
+value is expected and as a **column** wherever a name is expected:
+
+```sql
+SELECT MAX("amount")            -- column  amount
+FROM   bi_events
+WHERE  category = "premium";    -- string  'premium'
+```
+
+Use single quotes for strings and backticks for names if you would rather not rely on position.
+
+#### Not yet quotable: the table name
+
+The name after `FROM` (and after `JOIN`) is **not** quotable in this release —
+`` FROM `bi_events` `` and `FROM "bi_events"` are rejected. The table's *alias* is quotable
+(``FROM bi_events `e` ``). See [known limitations](known_limitations.md).
 
 ---
 
