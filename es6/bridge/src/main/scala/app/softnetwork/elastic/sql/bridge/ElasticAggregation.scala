@@ -673,7 +673,10 @@ object ElasticAggregation {
   private def extractMetricNames(condition: String): Seq[String] = {
     // Pattern to extract "params.XXX"
     val pattern = "params\\.([a-zA-Z_][a-zA-Z0-9_]*)".r
-    pattern.findAllMatchIn(condition).map(_.group(1)).toSeq
+    // `params.__now__` is the request clock the bridge binds itself, not a metric: left in, it
+    // resolved Unknown and made every nested-level HAVING with `now - interval ...` drop its
+    // condition silently (Unknown is only tolerated at root level).
+    pattern.findAllMatchIn(condition).map(_.group(1)).filterNot(_ == "__now__").toSeq
   }
 
   // HELPER: Check if a path is a direct child

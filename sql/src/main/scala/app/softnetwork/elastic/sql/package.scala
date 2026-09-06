@@ -917,7 +917,10 @@ package object sql {
     lazy val allMetricsPath: Map[String, String] = {
       metricName match {
         case Some(name) => Map(name -> name)
-        case _          => Map.empty
+        // The alias of a SELECT `bucket_script` item referenced from HAVING (`... AS d ... HAVING
+        // d > 3`): the selector reads the sibling pipeline aggregation by that name.
+        case _ if hasAggregation && fieldAlias.isDefined => Map(aliasOrName -> aliasOrName)
+        case _                                           => Map.empty
       }
     }
 

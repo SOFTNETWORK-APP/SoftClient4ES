@@ -1204,6 +1204,75 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     )
   }
 
+  it should "filter on a bucket_script through its alias (R2-1)" in {
+    // The bucket_selector reads the sibling pipeline aggregation by name; only Paris (30 - 25 = 5)
+    // clears 3. Before the fix the alias was a bare name, the selector was dropped, all came back.
+    val sql =
+      """SELECT city, MAX(age) - MIN(age) AS age_range FROM having_naming
+        |WHERE age IS NOT NULL
+        |GROUP BY city HAVING age_range > 3;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(sql).futureValue,
+      Seq(Map("city" -> "Paris", "age_range" -> 5.0))
+    )
+  }
+
+  it should "apply BETWEEN, IN and NOT to aggregates in HAVING (AC 4b, R2-2, R2-3)" in {
+    // COUNT(name): Paris 2, others 1 (Nice included -- its NAME is set, only its age is missing).
+    val between =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING COUNT(name) BETWEEN 2 AND 3;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(between).futureValue,
+      Seq(Map("city" -> "Paris"))
+    )
+
+    val notBetween =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING COUNT(name) NOT BETWEEN 2 AND 3;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(notBetween).futureValue,
+      Seq(Map("city" -> "Lyon"), Map("city" -> "Marseille"), Map("city" -> "Nice"))
+    )
+
+    // MAX(age): Paris 30, Lyon 40, Marseille 50, Nice missing.
+    val in =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING MAX(age) IN (40, 50);""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(in).futureValue,
+      Seq(Map("city" -> "Lyon"), Map("city" -> "Marseille"))
+    )
+
+    // `A AND NOT B`: the NOT belongs to the RIGHT operand (it used to negate the left one), and a
+    // bucket whose metric is missing (Nice) must still fail `NOT MAX(age) > 45`, as in SQL.
+    val andNot =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING COUNT(*) >= 1 AND NOT MAX(age) > 45;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(andNot).futureValue,
+      Seq(Map("city" -> "Paris"), Map("city" -> "Lyon"))
+    )
+  }
+
+  it should "reject an aggregate in WHERE instead of silently dropping it (lead to confirm)" in {
+    val sql =
+      """SELECT city FROM having_naming
+        |WHERE COUNT(name) > 1
+        |GROUP BY city;""".stripMargin
+    val res = client.run(sql).futureValue
+    renderResults(System.nanoTime(), res)
+    res.isSuccess shouldBe false
+    res.error.map(_.message).getOrElse("") should include(
+      "Aggregate functions are not allowed in WHERE"
+    )
+  }
+
   // ---------------------------------------------------------------------------
   // Arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE
   // ---------------------------------------------------------------------------

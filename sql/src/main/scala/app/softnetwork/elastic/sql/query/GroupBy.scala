@@ -165,18 +165,29 @@ object MetricSelectorScript {
           case AND | OR => op.painless(None)
           case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
         }
-        val not = maybeNot.nonEmpty
-        if (group || not)
-          s"${maybeNot.map(_ => "!").getOrElse("")}($leftStr) $opStr ($rightStr)"
-        else
-          s"$leftStr $opStr $rightStr"
+        // `A AND NOT B`: the parser attaches the NOT to the RIGHT criteria (`Predicate.sql` and
+        // `asFilter` agree); this used to prefix the LEFT one -- the exact complement of what was
+        // asked. The negation is pushed INTO the right-hand expression when it is a single one
+        // (`NOT MAX(x) > 45` renders `(params.max_x == null ? false : (params.max_x <= 45))`), so a
+        // bucket whose metric is missing still fails the test -- `!(guard ? false : ...)` would let
+        // it through, against SQL's three-valued NOT and the AC 4b contract. A compound right side
+        // falls back to `!( ... )`.
+        maybeNot match {
+          case Some(_) =>
+            negated(right) match {
+              case Some(n) => s"($leftStr) $opStr ${metricSelector(n)}"
+              case None    => s"($leftStr) $opStr !($rightStr)"
+            }
+          case None if group => s"($leftStr) $opStr ($rightStr)"
+          case None          => s"$leftStr $opStr $rightStr"
+        }
       }
 
     case relation: ElasticRelation => metricSelector(relation.criteria)
 
     case _: MultiMatchCriteria => "1 == 1"
 
-    case e: Expression if e.isAggregation =>
+    case e: Expression if e.isAggregation || e.referencesBucketMetric =>
       // NO FILTERING: the script is generated for all metrics. The context-free rendering of an
       // aggregate predicate IS the bucket-pipeline rendering (`Expression.bucketPipelinePainless`):
       // `params.<metric>` reads, null-guarded, one parenthesised expression, temporal literal
@@ -185,6 +196,18 @@ object MetricSelectorScript {
       // because the predicate happened to end with it.
       e.painless(None)
     case _ => "1 == 1"
+  }
+
+  /** The single expression `c` with its own NOT toggled, when `c` is one that carries a NOT. */
+  private def negated(c: Criteria): Option[Criteria] = {
+    def toggle(not: Option[NOT.type]): Option[NOT.type] = if (not.isDefined) None else Some(NOT)
+    c match {
+      case e: GenericExpression => Some(e.copy(maybeNot = toggle(e.maybeNot)))
+      case e: Comparison        => Some(e.copy(maybeNot = toggle(e.maybeNot)))
+      case e: BetweenExpr       => Some(e.copy(maybeNot = toggle(e.maybeNot)))
+      case e: InExpr[_, _]      => Some(e.copy(maybeNot = toggle(e.maybeNot)))
+      case _                    => None
+    }
   }
 }
 

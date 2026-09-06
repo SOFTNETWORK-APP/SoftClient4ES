@@ -519,6 +519,13 @@ ORDER BY COUNT(*) DESC;
   wrap a transform (`HAVING MAX(YEAR(birthdate)) > 1990`, `ORDER BY MAX(ABS(age)) DESC`).
 - Arithmetic over aggregates is computed per group (`MAX(price) - MIN(price) AS price_range`); the
   operands are computed as hidden aggregations of the group.
+- `HAVING` may reference a `SELECT` aggregate by its alias (`COUNT(*) AS cnt ... HAVING cnt > 1`),
+  including the alias of an arithmetic expression over aggregates (`... AS price_range ... HAVING
+  price_range > 10`); `BETWEEN`, `IN` and `NOT` apply to aggregates as to columns.
+- Rejected with an explicit error: arithmetic over aggregates written inline in `HAVING`
+  (`HAVING MAX(price) - MIN(price) > 10` — alias it in `SELECT` and reference the alias), an
+  aggregate function inside `WHERE` (use `HAVING`), and an alias that names one aggregate in
+  `SELECT` and a different one in `HAVING` / `ORDER BY`.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
   script null-checks every metric before comparing it.

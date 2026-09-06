@@ -227,6 +227,120 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
     ).mkString
   }
 
+  "BETWEEN over an aggregate" should "read the guarded metric as two comparisons (AC 4b)" in {
+    // The document form rendered the chained `1 <= p <= 5`, which Painless rejects.
+    queryOf("SELECT id FROM t GROUP BY id HAVING COUNT(x) BETWEEN 1 AND 5") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"count_x":{"value_count":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x"},""",
+      """"script":{"source":"(params.count_x == null ? false : (params.count_x >= 1 && params.count_x <= 5))"}}}}}}}"""
+    ).mkString
+  }
+
+  it should "keep its NOT (AC 4b)" in {
+    queryOf("SELECT id FROM t GROUP BY id HAVING COUNT(x) NOT BETWEEN 1 AND 5") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"count_x":{"value_count":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x"},""",
+      """"script":{"source":"(params.count_x == null ? false : (!(params.count_x >= 1 && params.count_x <= 5)))"}}}}}}}"""
+    ).mkString
+  }
+
+  "IN over an aggregate" should "read the guarded metric through a list membership (AC 4b)" in {
+    queryOf("SELECT id FROM t GROUP BY id HAVING MAX(x) IN (1, 2)") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"max_x":{"max":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
+      """"script":{"source":"(params.max_x == null ? false : ([1,2].contains(params.max_x)))"}}}}}}}"""
+    ).mkString
+  }
+
+  it should "keep its NOT (AC 4b)" in {
+    queryOf("SELECT id FROM t GROUP BY id HAVING MAX(x) NOT IN (1, 2)") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"max_x":{"max":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
+      """"script":{"source":"(params.max_x == null ? false : (!([1,2].contains(params.max_x))))"}}}}}}}"""
+    ).mkString
+  }
+
+  "A AND NOT B" should "negate the RIGHT operand, inside its guard (R2-2)" in {
+    // The selector used to prefix `!` to the LEFT operand -- the exact complement of what was asked.
+    // The NOT is pushed into the right-hand comparison (`> 3` becomes `<= 3`) so a bucket whose
+    // metric is missing still fails it, as SQL's three-valued NOT would.
+    queryOf("SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND NOT MAX(x) > 3") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"count_x":{"value_count":{"field":"x"}},"max_x":{"max":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x","max_x":"max_x"},""",
+      """"script":{"source":"((params.count_x == null ? false : (params.count_x > 5))) && """,
+      """(params.max_x == null ? false : (params.max_x <= 3))"}}}}}}}"""
+    ).mkString
+  }
+
+  it should "negate a leading NOT the same way" in {
+    queryOf("SELECT id FROM t GROUP BY id HAVING NOT MAX(x) > 3") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"max_x":{"max":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
+      """"script":{"source":"(params.max_x == null ? false : (params.max_x <= 3))"}}}}}}}"""
+    ).mkString
+  }
+
+  "a HAVING that references a bucket_script by its alias" should "read the sibling pipeline aggregation (R2-1)" in {
+    // `d` used to stay a bare identifier: no metric, `1 == 1`, no having_filter -- every group back.
+    queryOf("SELECT id, MAX(x) - MIN(x) AS d FROM t GROUP BY id HAVING d > 3") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"d":{"bucket_script":{"buckets_path":{"max_x":"max_x","min_x":"min_x"},""",
+      """"script":"params.max_x - params.min_x"}},""",
+      """"max_x":{"max":{"field":"x"}},"min_x":{"min":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"d":"d"},""",
+      """"script":{"source":"(params.d == null ? false : (params.d > 3))"}}}}}}}"""
+    ).mkString
+  }
+
+  "a nested-level HAVING with now - interval" should "keep its condition (R2-6)" in {
+    // `params.__now__` is the request clock, not a metric; resolved as Unknown it dropped the whole
+    // condition inside a nested bucket (Unknown is only tolerated at root level).
+    queryOf(
+      """SELECT e.domain FROM customers c JOIN UNNEST(c.emails) AS e
+        |GROUP BY e.domain HAVING MAX(e.sent) > now - interval 7 day""".stripMargin
+    ) shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"e":{"nested":{"path":"emails"},""",
+      """"aggs":{"e.domain":{"terms":{"field":"emails.domain","size":65536,"min_doc_count":1},""",
+      """"aggs":{"max_e_sent":{"max":{"field":"emails.sent"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"max_e_sent":"max_e_sent"},""",
+      """"script":{"source":"(params.max_e_sent == null ? false : (params.max_e_sent > """,
+      """ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)""",
+      """.toInstant().toEpochMilli()))","params":{"__now__":1767139200000}}}}}}}}}}"""
+    ).mkString
+  }
+
+  "the validator" should "reject the shapes the pipeline cannot express, loudly" in {
+    Seq(
+      "SELECT id FROM t GROUP BY id HAVING MAX(x) - MIN(x) > 3" ->
+      "HAVING cannot combine aggregates arithmetically inline",
+      "SELECT id FROM t WHERE COUNT(x) > 5 GROUP BY id" ->
+      "Aggregate functions are not allowed in WHERE",
+      "SELECT id, MIN(x) AS max_x FROM t GROUP BY id HAVING MAX(x) > 3" ->
+      "Alias 'max_x' names a SELECT aggregate and a different aggregate"
+    ).foreach { case (sql, reason) =>
+      withClue(s"[$sql] ") {
+        val rejected = app.softnetwork.elastic.sql.parser.Parser(sql).swap.toOption.map(_.msg)
+        rejected shouldBe defined
+        rejected.get should include(reason)
+        // A boundary catch would ALSO yield a Left carrying the reason -- assert it is the grammar's.
+        rejected.get should not startWith app.softnetwork.elastic.sql.parser.Parser.InternalParseFailure
+      }
+    }
+  }
+
   "ORDER BY over a transformed aggregate" should "name its aggregation (issue #223)" in {
     // The sub-aggregation key and the `order` key were both `""`.
     queryOf(
@@ -274,6 +388,17 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
     "SELECT id, COUNT(x) FROM t GROUP BY id HAVING COUNT(x) > 5",
     "SELECT id, COUNT(x) AS cnt FROM t GROUP BY id HAVING cnt > 5",
     "SELECT id, MAX(YEAR(createdAt)) AS y FROM t GROUP BY id HAVING y > 2020 AND COUNT(x) > 1",
+    "SELECT id FROM t GROUP BY id HAVING COUNT(x) BETWEEN 1 AND 5",
+    "SELECT id FROM t GROUP BY id HAVING COUNT(x) NOT BETWEEN 1 AND 5",
+    "SELECT id FROM t GROUP BY id HAVING MAX(x) IN (1, 2)",
+    "SELECT id FROM t GROUP BY id HAVING MAX(x) NOT IN (1, 2)",
+    "SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND NOT MAX(x) > 3",
+    "SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND NOT MAX(x) IN (1, 2)",
+    "SELECT id FROM t GROUP BY id HAVING NOT MAX(x) > 3",
+    "SELECT id, MAX(x) - MIN(x) AS d FROM t GROUP BY id HAVING d > 3",
+    "SELECT id, COUNT(x) AS cnt FROM t GROUP BY id HAVING COUNT(x) > 1 ORDER BY COUNT(x) DESC",
+    """SELECT e.domain FROM customers c JOIN UNNEST(c.emails) AS e
+      |GROUP BY e.domain HAVING MAX(e.sent) > now - interval 7 day""".stripMargin,
     "SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND MAX(x) > 3",
     "SELECT id, COUNT(x) AS c FROM t GROUP BY id HAVING MAX(x) > 3 ORDER BY MIN(x) DESC",
     "SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND COUNT(DISTINCT x) > 2",
@@ -339,6 +464,10 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
     shapes.foreach { sql =>
       withClue(s"[$sql] ") {
         val root = mapper.readTree(queryOf(sql))
+        // A HAVING whose selector was dropped (the nested-level class this story fixed) would leave
+        // nothing below to check -- the guard must not pass vacuously.
+        if (sql.toUpperCase.contains("HAVING"))
+          valuesOf(root, "bucket_selector") should not be empty
         val pipelines = valuesOf(root, "bucket_selector") ++ valuesOf(root, "bucket_script")
         pipelines.foreach { pipeline =>
           val declared = pipeline.get("buckets_path").fieldNames().asScala.toSet

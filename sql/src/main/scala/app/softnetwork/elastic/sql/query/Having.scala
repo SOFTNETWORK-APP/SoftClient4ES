@@ -34,8 +34,11 @@ case object Having extends Expr("HAVING") with TokenRegex {
     criteria: Criteria,
     request: SingleSearch
   ): Criteria = {
+    // Aggregates AND arithmetic over aggregates (`MAX(x) - MIN(x) AS d`): the latter is a
+    // `bucket_script`, and a `bucket_selector` may read a sibling pipeline aggregation by name.
     val aliased: Map[String, Identifier] = request.select.fields.collect {
-      case f if f.isAggregation && f.fieldAlias.isDefined => f.fieldAlias.get.alias -> f.identifier
+      case f if (f.isAggregation || f.isBucketScript) && f.fieldAlias.isDefined =>
+        f.fieldAlias.get.alias -> f.identifier
     }.toMap
     if (aliased.isEmpty) return criteria
 

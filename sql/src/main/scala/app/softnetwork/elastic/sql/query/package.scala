@@ -267,8 +267,10 @@ package object query {
 
     // Aggregations referenced only in HAVING, WHERE, or ORDER BY clauses (not in SELECT)
     private lazy val auxiliaryAggs: Seq[Field] = {
-      val selectAggNames = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet ++
-        selectAggs.map(_.identifier.identifierName).toSet
+      // Dedup against SELECT by EXPRESSION only. Matching by alias too let a user alias hijack a
+      // derived metric name -- `SELECT MIN(x) AS max_x ... HAVING MAX(x) > 3` read MIN under
+      // `params.max_x`; such a collision is now rejected by `validate()` instead.
+      val selectAggNames = selectAggs.map(_.identifier.identifierName).toSet
       val havingAggs = having
         .flatMap(_.criteria)
         .map(_.extractAggregationFields)
@@ -294,10 +296,7 @@ package object query {
       // Dedup by name, keeping the first occurrence IN ORDER -- a `groupBy` here hashed the order,
       // so the emitted `aggs` shuffled between runs and could not be pinned.
       (havingAggs ++ whereAggs ++ orderByAggs ++ bucketScriptAggs)
-        .filterNot(f =>
-          f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
-          selectAggNames.contains(f.identifier.identifierName)
-        )
+        .filterNot(f => selectAggNames.contains(f.identifier.identifierName))
         .foldLeft(Seq.empty[Field]) { (acc, f) =>
           if (acc.exists(_.fieldAlias.map(_.alias) == f.fieldAlias.map(_.alias))) acc else acc :+ f
         }
@@ -338,6 +337,52 @@ package object query {
         _ <- having.map(_.validate()).getOrElse(Right(()))
         _ <- orderBy.map(_.validate()).getOrElse(Right(()))
         _ <- limit.map(_.validate()).getOrElse(Right(()))
+        _ <- {
+          // An aggregate in WHERE has no document-level query form: the bridge rendered it as
+          // `match_all` and the predicate was silently DROPPED while its aggregation was still
+          // created (BIDC-2 T2b). Loud over silent (the #205 / #280 rule). Lead to confirm the
+          // product choice (reject, as here, vs rewrite as HAVING).
+          where
+            .flatMap(_.criteria)
+            .map(_.extractAggregationFields)
+            .getOrElse(Nil)
+            .headOption match {
+            case Some(f) =>
+              Left(
+                s"Aggregate functions are not allowed in WHERE (found ${f.identifier.sql}); use HAVING"
+              )
+            case None => Right(())
+          }
+        }
+        _ <- {
+          // Arithmetic over aggregates written INLINE in HAVING (`HAVING MAX(x) - MIN(x) > 3`) has no
+          // aggregation to read from and was silently dropped. Alias it in SELECT and reference the
+          // alias (`... AS d ... HAVING d > 3`), which IS supported (Having.resolveAggregateAliases).
+          having
+            .flatMap(_.criteria)
+            .map(_.referencedIdentifiers)
+            .getOrElse(Nil)
+            .find(id => !id.isAggregation && id.hasAggregation && id.fieldAlias.isEmpty) match {
+            case Some(id) =>
+              Left(
+                s"HAVING cannot combine aggregates arithmetically inline (${id.sql}); alias the expression in SELECT and reference the alias"
+              )
+            case None => Right(())
+          }
+        }
+        _ <- {
+          // A HAVING / ORDER BY aggregate whose derived name equals a SELECT alias of a DIFFERENT
+          // aggregate (`SELECT MIN(x) AS max_x ... HAVING MAX(x) > 3`) would read the wrong metric
+          // under that name -- reject instead of colliding.
+          val selectAliases = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet
+          auxiliaryAggs.flatMap(_.fieldAlias.map(_.alias)).find(selectAliases.contains) match {
+            case Some(alias) =>
+              Left(
+                s"Alias '$alias' names a SELECT aggregate and a different aggregate referenced in HAVING or ORDER BY; rename one of them"
+              )
+            case None => Right(())
+          }
+        }
         /*_ <- {
           // validate that having clauses are only applied when group by is present
           if (having.isDefined && groupBy.isEmpty) {

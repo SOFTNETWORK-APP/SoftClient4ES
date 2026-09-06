@@ -537,9 +537,26 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * swallow the right-hand side of an OR. A temporal literal on the right is converted to epoch
     * millis, which is what a date metric arrives in.
     */
-  private def bucketPipelinePainless: String = {
-    val metrics: Seq[Identifier] =
-      identifier +: maybeValue.collect { case id: Identifier if id.isAggregation => id }.toSeq
+  protected def bucketPipelinePainless: String = {
+    val param = identifier.metricParam
+    operator match {
+      // A null test IS the guard -- guarding it again would render the contradiction
+      // `(p == null ? false : (p == null))`. Unreachable from SQL today (`IS NULL` takes a bare
+      // name), kept total so a grammar widening cannot ship it.
+      case IS_NULL     => s"$param == null"
+      case IS_NOT_NULL => s"$param != null"
+      case _ =>
+        val metrics: Seq[Identifier] =
+          identifier +: maybeValue.collect { case id: Identifier if id.isAggregation => id }.toSeq
+        val guard = metrics.map(id => s"${id.metricParam} == null").mkString(" || ")
+        s"($guard ? false : $painlessNot(${bucketPipelineCheck(param)}))"
+    }
+  }
+
+  /** The comparison body of the bucket-pipeline rendering, `param` (= `params.<metric>`) against
+    * the right-hand side. BETWEEN and IN, whose `painless` never goes through `check`, override it.
+    */
+  protected def bucketPipelineCheck(param: String): String = {
     val rhs = painlessValue(None)
     val value = maybeValue match {
       case Some(v) if operator.isInstanceOf[ComparisonOperator] && !v.isAggregation =>
@@ -551,13 +568,21 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         }
       case _ => rhs
     }
-    val guard = metrics.map(id => s"${id.metricParam} == null").mkString(" || ")
-    s"($guard ? false : $painlessNot(${check(None, identifier.metricParam, value)}))"
+    check(None, param, value)
   }
+
+  /** True when this predicate reads a bucket-pipeline metric: an aggregate, or the alias of a
+    * SELECT `bucket_script` item (`MAX(x) - MIN(x) AS d ... HAVING d > 3` -- the alias is resolved
+    * by `Having.resolveAggregateAliases`, so the identifier is the arithmetic wrapper carrying `d`
+    * as its alias; Elasticsearch lets a `bucket_selector` read a sibling pipeline aggregation by
+    * name).
+    */
+  def referencesBucketMetric: Boolean =
+    identifier.isAggregation || (identifier.hasAggregation && identifier.fieldAlias.isDefined)
 
   override def painless(context: Option[PainlessContext]): String = {
     // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
-    if (context.isEmpty && identifier.isAggregation) return bucketPipelinePainless
+    if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
     val innerLeft = left(context)
     context match {
       case Some(ctx) =>
@@ -793,8 +818,18 @@ case class InExpr[R, +T <: Value[R]](
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
-  override def painless(context: Option[PainlessContext]): String =
+  override def painless(context: Option[PainlessContext]): String = {
+    if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
     s"$painlessNot${identifier.painless(context)}$painlessOp(${painlessValue(context)})"
+  }
+
+  // `[v1,v2].contains(params.<metric>)` -- the guarded bucket form of `<aggregate> IN (v1, v2)`.
+  // IN is a ComparisonOperator, so `painlessNot` is "" (a comparison folds its NOT into the
+  // operator, which this form never uses): the negation is rendered here.
+  override protected def bucketPipelineCheck(param: String): String = {
+    val membership = s"${values.painless(None)}.contains($param)"
+    if (maybeNot.isDefined) s"!($membership)" else membership
+  }
 
 }
 
@@ -826,6 +861,7 @@ case class BetweenExpr(
   }
 
   override def painless(context: Option[PainlessContext]): String = {
+    if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
     context match {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
@@ -842,6 +878,14 @@ case class BetweenExpr(
       return s"def left = ${left(context)}; left == null ? false : $painlessNot(${fromTo.from} <= left <= ${fromTo.to})"
     }
     s"$painlessNot(${fromTo.from} <= ${left(context)} <= ${fromTo.to})"
+  }
+
+  // The guarded bucket form of `<aggregate> BETWEEN a AND b` -- two comparisons, not the chained
+  // `a <= p <= b` the document form used (Painless rejects `boolean <= int`). BETWEEN is a
+  // ComparisonOperator, so `painlessNot` is "": the negation is rendered here.
+  override protected def bucketPipelineCheck(param: String): String = {
+    val range = s"$param >= ${fromTo.from} && $param <= ${fromTo.to}"
+    if (maybeNot.isDefined) s"!($range)" else range
   }
 
 }
