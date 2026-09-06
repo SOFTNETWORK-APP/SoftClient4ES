@@ -20,6 +20,7 @@ import app.softnetwork.elastic.client.java.{JavaClientApi, JavaClientSearchBodyS
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query.{SelectStatement, SingleSearch}
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.sksamuel.elastic4s.requests.searches.aggs.{AbstractAggregation, Aggregation}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
@@ -76,6 +77,14 @@ class JavaClientExtendedStatsEmissionSpec extends AnyWordSpec with Matchers {
 
   private val partition = """"terms":{"field":"id","size":65536,"min_doc_count":1}"""
 
+  /** The script of every ScriptedExtendedStatsAggregation marker in the aggregation tree. */
+  private def markerScriptsOf(aggs: Iterable[AbstractAggregation]): Seq[String] =
+    aggs.toSeq.flatMap {
+      case m: ScriptedExtendedStatsAggregation => m.inner.script.map(_.script).toSeq
+      case a: Aggregation                      => markerScriptsOf(a.subaggs)
+      case _                                   => Seq.empty
+    }
+
   "the ES 8/9 client" should {
 
     "emit the script of STDDEV over a field-derived transform (plain bind) -- issue #222" in {
@@ -127,22 +136,21 @@ class JavaClientExtendedStatsEmissionSpec extends AnyWordSpec with Matchers {
       )
     }
 
-    "never carry a null-unsafe transform script (lead directive 2026-09-06)" in {
-      // The scripts reaching Elasticsearch for the first time through this module are the metric
-      // scripts the other aggregates already use: a `def paramN = (doc[..].size() == 0 ? null : ..)`
-      // preamble and a null-guarded result. Nothing dereferences a `? null :` group.
+    "render the marker's script VERBATIM -- the script the bridge's null-safety guard vets" in {
+      // The null-safety rule (lead directive 2026-09-06) has ONE owner: AggregationNamingSpec's
+      // marker-tree guard in the bridge template (and its es6 twin). What this module adds is the
+      // rendering, so what it must prove is that the rendered `script.source` is byte-for-byte the
+      // script carried by the ScriptedExtendedStatsAggregation marker that guard walks.
       family.foreach { fn =>
         Seq(plain(fn, "YEAR(createdAt)"), windowed(fn, "ABS(salary)")).foreach { sql =>
           withClue(s"[$sql] ") {
-            val root = mapper.readTree(emitted(sql))
-            val scripts = root.findValues("script").asScala.flatMap { s =>
+            val request: ElasticSearchRequest = requestToElasticSearchRequest(single(sql))
+            val vetted = markerScriptsOf(request.search.aggs)
+            vetted should have size 1
+            val rendered = mapper.readTree(emitted(sql)).findValues("script").asScala.flatMap { s =>
               Option(s.get("source")).map(_.asText())
             }
-            scripts should not be empty
-            scripts.foreach { script =>
-              script should not include ")."
-              script should not include "doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.YEAR)."
-            }
+            rendered shouldBe vetted
           }
         }
       }
