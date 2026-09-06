@@ -1273,6 +1273,33 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     )
   }
 
+  it should "reject an aggregate in a DELETE or UPDATE WHERE and touch nothing (S2-2, lead to confirm)" in {
+    // Before: the predicate became `match_all` -- the DELETE wiped the index, the UPDATE hit every
+    // document. The count and the ages must be exactly what they were.
+    val snapshot =
+      "SELECT COUNT(*) AS n, MAX(age) AS oldest, MIN(age) AS youngest FROM having_naming;"
+    val before = collectRows(System.nanoTime(), client.run(snapshot).futureValue)
+    before shouldBe Seq(Map("n" -> 5, "oldest" -> 50.0, "youngest" -> 25.0))
+
+    val delete = client.run("DELETE FROM having_naming WHERE COUNT(name) > 1;").futureValue
+    renderResults(System.nanoTime(), delete)
+    delete.isSuccess shouldBe false
+    delete.error.map(_.message).getOrElse("") should include(
+      "Aggregate functions are not allowed in WHERE"
+    )
+
+    val update =
+      client.run("UPDATE having_naming SET age = 0 WHERE COUNT(name) > 1;").futureValue
+    renderResults(System.nanoTime(), update)
+    update.isSuccess shouldBe false
+    update.error.map(_.message).getOrElse("") should include(
+      "Aggregate functions are not allowed in WHERE"
+    )
+
+    val after = collectRows(System.nanoTime(), client.run(snapshot).futureValue)
+    after shouldBe before
+  }
+
   // ---------------------------------------------------------------------------
   // Arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE
   // ---------------------------------------------------------------------------

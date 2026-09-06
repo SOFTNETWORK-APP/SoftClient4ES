@@ -176,7 +176,9 @@ object MetricSelectorScript {
           case Some(_) =>
             negated(right) match {
               case Some(n) => s"($leftStr) $opStr ${metricSelector(n)}"
-              case None    => s"($leftStr) $opStr !($rightStr)"
+              // Grammar-unreachable today (`NOT (A AND B)` in HAVING is a parse rejection); kept
+              // as the total fallback for a compound right side.
+              case None => s"($leftStr) $opStr !($rightStr)"
             }
           case None if group => s"($leftStr) $opStr ($rightStr)"
           case None          => s"$leftStr $opStr $rightStr"

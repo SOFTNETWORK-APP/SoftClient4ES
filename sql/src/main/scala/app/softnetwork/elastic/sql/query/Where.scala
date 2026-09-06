@@ -1072,8 +1072,20 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
     this.copy(criteria = criteria.map(_.update(request)))
 
   override def validate(): Either[String, Unit] = criteria match {
-    case Some(c) => c.validate()
-    case _       => Right(())
+    case Some(c) =>
+      // An aggregate has no document-level query form: the bridge rendered it as `match_all` and
+      // the predicate was silently DROPPED -- a wrong group set for a SELECT, EVERY document for a
+      // DELETE or UPDATE (#280 family). Checked here, not in SingleSearch.validate(), so every
+      // statement kind that carries a WHERE is covered. Lead to confirm the product choice (reject,
+      // as here, vs rewrite as HAVING under a GROUP BY).
+      c.extractAggregationFields.headOption match {
+        case Some(f) =>
+          Left(
+            s"Aggregate functions are not allowed in WHERE (found ${f.identifier.sql}); use HAVING"
+          )
+        case None => c.validate()
+      }
+    case _ => Right(())
   }
 
   def nestedElements: Seq[NestedElement] = criteria match {

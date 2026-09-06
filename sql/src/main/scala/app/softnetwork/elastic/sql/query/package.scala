@@ -337,23 +337,8 @@ package object query {
         _ <- having.map(_.validate()).getOrElse(Right(()))
         _ <- orderBy.map(_.validate()).getOrElse(Right(()))
         _ <- limit.map(_.validate()).getOrElse(Right(()))
-        _ <- {
-          // An aggregate in WHERE has no document-level query form: the bridge rendered it as
-          // `match_all` and the predicate was silently DROPPED while its aggregation was still
-          // created (BIDC-2 T2b). Loud over silent (the #205 / #280 rule). Lead to confirm the
-          // product choice (reject, as here, vs rewrite as HAVING).
-          where
-            .flatMap(_.criteria)
-            .map(_.extractAggregationFields)
-            .getOrElse(Nil)
-            .headOption match {
-            case Some(f) =>
-              Left(
-                s"Aggregate functions are not allowed in WHERE (found ${f.identifier.sql}); use HAVING"
-              )
-            case None => Right(())
-          }
-        }
+        // (An aggregate in WHERE is rejected by Where.validate() itself -- run above through
+        // `where.map(_.validate())` -- so DELETE / UPDATE are covered too; see there.)
         _ <- {
           // Arithmetic over aggregates written INLINE in HAVING (`HAVING MAX(x) - MIN(x) > 3`) has no
           // aggregation to read from and was silently dropped. Alias it in SELECT and reference the
@@ -766,6 +751,11 @@ package object query {
       }
       .mkString(", ")}${where.map(w => s"${w.sql}").getOrElse("")}"
 
+    // The parse path validates every statement kind; without this, an aggregate in a DML WHERE
+    // (`UPDATE t SET ... WHERE COUNT(x) > 5`) slipped through as `match_all` and touched EVERY
+    // document (BIDC-2 review, S2-2).
+    override def validate(): Either[String, Unit] = where.map(_.validate()).getOrElse(Right(()))
+
     lazy val customPipeline: IngestPipeline = IngestPipeline(
       s"update-$table-${Instant.now.toEpochMilli}",
       IngestPipelineType.Custom,
@@ -788,6 +778,9 @@ package object query {
   case class Delete(table: Table, where: Option[Where]) extends DmlStatement {
     override def sql: String =
       s"DELETE FROM ${table.name}${asString(where)}"
+
+    // `DELETE FROM t WHERE COUNT(x) > 5` used to become `match_all` and WIPE the index (S2-2).
+    override def validate(): Either[String, Unit] = where.map(_.validate()).getOrElse(Right(()))
   }
 
   sealed trait FileFormat extends Token {

@@ -38,6 +38,25 @@ class HavingAggregateResolutionSpec extends AnyFlatSpec with Matchers {
     msg should not startWith Parser.InternalParseFailure
   }
 
+  it should "be rejected in DELETE and UPDATE too, where the drop touched every document (S2-2)" in {
+    // `DELETE FROM t WHERE COUNT(x) > 5` became `match_all` and wiped the index; the same UPDATE
+    // updated every row. The check lives in Where.validate() so every statement kind gets it.
+    Seq(
+      "DELETE FROM t WHERE COUNT(x) > 5",
+      "UPDATE t SET a = 1 WHERE COUNT(x) > 5",
+      "DELETE FROM t WHERE id = 1 AND MAX(x) > 5"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val msg = rejection(sql)
+        msg should include("Aggregate functions are not allowed in WHERE")
+        msg should not startWith Parser.InternalParseFailure
+      }
+    }
+    // The plain forms are untouched.
+    Parser("DELETE FROM t WHERE id = 1").isRight shouldBe true
+    Parser("UPDATE t SET a = 1 WHERE id = 1").isRight shouldBe true
+  }
+
   "arithmetic over aggregates written inline in HAVING" should "be rejected, naming the remedy" in {
     // No aggregation to read from: it was silently dropped. Aliased in SELECT it is supported.
     val msg = rejection("SELECT id FROM t GROUP BY id HAVING MAX(x) - MIN(x) > 3")
