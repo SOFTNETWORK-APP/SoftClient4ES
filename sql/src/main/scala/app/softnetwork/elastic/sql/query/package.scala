@@ -32,6 +32,7 @@ import app.softnetwork.elastic.sql.schema.{
   Table => Schema,
   TableType
 }
+import app.softnetwork.elastic.sql.function.FunctionUtils
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -266,8 +267,10 @@ package object query {
 
     // Aggregations referenced only in HAVING, WHERE, or ORDER BY clauses (not in SELECT)
     private lazy val auxiliaryAggs: Seq[Field] = {
-      val selectAggNames = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet ++
-        selectAggs.map(_.identifier.identifierName).toSet
+      // Dedup against SELECT by EXPRESSION only. Matching by alias too let a user alias hijack a
+      // derived metric name -- `SELECT MIN(x) AS max_x ... HAVING MAX(x) > 3` read MIN under
+      // `params.max_x`; such a collision is now rejected by `validate()` instead.
+      val selectAggNames = selectAggs.map(_.identifier.identifierName).toSet
       val havingAggs = having
         .flatMap(_.criteria)
         .map(_.extractAggregationFields)
@@ -279,14 +282,24 @@ package object query {
       val orderByAggs = orderBy
         .map(_.sorts.flatMap(_.extractAggregationFields))
         .getOrElse(Seq.empty)
-      (havingAggs ++ whereAggs ++ orderByAggs)
-        .filterNot(f =>
-          f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
-          selectAggNames.contains(f.identifier.identifierName)
-        )
-        .groupBy(_.fieldAlias.map(_.alias))
-        .map(_._2.head)
-        .toSeq
+      // Aggregates nested inside a SELECT bucket script (`MAX(x) - MIN(x) AS d`): the script reads
+      // each as `params.<metricName>`, so each must exist as its own aggregation. None was ever
+      // created -- the bucket_script shipped with a self-referencing buckets_path and its operands
+      // collapsed onto one name (issue #54). The wrapper identifier itself (its head is the
+      // arithmetic expression, not an aggregate) is excluded by `isAggregation`; an operand that is
+      // also a SELECT item is excluded below like any other auxiliary candidate.
+      val bucketScriptAggs = selectAggs
+        .filter(_.isBucketScript)
+        .flatMap(f => FunctionUtils.funIdentifiers(f.identifier))
+        .filter(_.isAggregation)
+        .flatMap(id => id.metricName.map(name => Field(id, Some(Alias(name)))))
+      // Dedup by name, keeping the first occurrence IN ORDER -- a `groupBy` here hashed the order,
+      // so the emitted `aggs` shuffled between runs and could not be pinned.
+      (havingAggs ++ whereAggs ++ orderByAggs ++ bucketScriptAggs)
+        .filterNot(f => selectAggNames.contains(f.identifier.identifierName))
+        .foldLeft(Seq.empty[Field]) { (acc, f) =>
+          if (acc.exists(_.fieldAlias.map(_.alias) == f.fieldAlias.map(_.alias))) acc else acc :+ f
+        }
     }
 
     lazy val aggregates: Seq[Field] = selectAggs ++ auxiliaryAggs
@@ -324,6 +337,37 @@ package object query {
         _ <- having.map(_.validate()).getOrElse(Right(()))
         _ <- orderBy.map(_.validate()).getOrElse(Right(()))
         _ <- limit.map(_.validate()).getOrElse(Right(()))
+        // (An aggregate in WHERE is rejected by Where.validate() itself -- run above through
+        // `where.map(_.validate())` -- so DELETE / UPDATE are covered too; see there.)
+        _ <- {
+          // Arithmetic over aggregates written INLINE in HAVING (`HAVING MAX(x) - MIN(x) > 3`) has no
+          // aggregation to read from and was silently dropped. Alias it in SELECT and reference the
+          // alias (`... AS d ... HAVING d > 3`), which IS supported (Having.resolveAggregateAliases).
+          having
+            .flatMap(_.criteria)
+            .map(_.referencedIdentifiers)
+            .getOrElse(Nil)
+            .find(id => !id.isAggregation && id.hasAggregation && id.fieldAlias.isEmpty) match {
+            case Some(id) =>
+              Left(
+                s"HAVING cannot combine aggregates arithmetically inline (${id.sql}); alias the expression in SELECT and reference the alias"
+              )
+            case None => Right(())
+          }
+        }
+        _ <- {
+          // A HAVING / ORDER BY aggregate whose derived name equals a SELECT alias of a DIFFERENT
+          // aggregate (`SELECT MIN(x) AS max_x ... HAVING MAX(x) > 3`) would read the wrong metric
+          // under that name -- reject instead of colliding.
+          val selectAliases = selectAggs.flatMap(_.fieldAlias.map(_.alias)).toSet
+          auxiliaryAggs.flatMap(_.fieldAlias.map(_.alias)).find(selectAliases.contains) match {
+            case Some(alias) =>
+              Left(
+                s"Alias '$alias' names a SELECT aggregate and a different aggregate referenced in HAVING or ORDER BY; rename one of them"
+              )
+            case None => Right(())
+          }
+        }
         /*_ <- {
           // validate that having clauses are only applied when group by is present
           if (having.isDefined && groupBy.isEmpty) {
@@ -707,6 +751,11 @@ package object query {
       }
       .mkString(", ")}${where.map(w => s"${w.sql}").getOrElse("")}"
 
+    // The parse path validates every statement kind; without this, an aggregate in a DML WHERE
+    // (`UPDATE t SET ... WHERE COUNT(x) > 5`) slipped through as `match_all` and touched EVERY
+    // document (BIDC-2 review, S2-2).
+    override def validate(): Either[String, Unit] = where.map(_.validate()).getOrElse(Right(()))
+
     lazy val customPipeline: IngestPipeline = IngestPipeline(
       s"update-$table-${Instant.now.toEpochMilli}",
       IngestPipelineType.Custom,
@@ -729,6 +778,9 @@ package object query {
   case class Delete(table: Table, where: Option[Where]) extends DmlStatement {
     override def sql: String =
       s"DELETE FROM ${table.name}${asString(where)}"
+
+    // `DELETE FROM t WHERE COUNT(x) > 5` used to become `match_all` and WIPE the index (S2-2).
+    override def validate(): Either[String, Unit] = where.map(_.validate()).getOrElse(Right(()))
   }
 
   sealed trait FileFormat extends Token {
@@ -1465,7 +1517,9 @@ package object query {
       } else if (enrichFields.isEmpty) {
         Left("Enrich fields cannot be empty")
       } else {
-        Right(())
+        // The source WHERE is a document-level filter: an aggregate in it is dropped by
+        // ElasticCriteria and the policy would enrich from EVERY source document (match_all).
+        where.map(_.validate()).getOrElse(Right(()))
       }
     }
   }

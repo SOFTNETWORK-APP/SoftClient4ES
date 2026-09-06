@@ -917,7 +917,10 @@ package object sql {
     lazy val allMetricsPath: Map[String, String] = {
       metricName match {
         case Some(name) => Map(name -> name)
-        case _          => Map.empty
+        // The alias of a SELECT `bucket_script` item referenced from HAVING (`... AS d ... HAVING
+        // d > 3`): the selector reads the sibling pipeline aggregation by that name.
+        case _ if hasAggregation && fieldAlias.isDefined => Map(aliasOrName -> aliasOrName)
+        case _                                           => Map.empty
       }
     }
 
@@ -977,29 +980,46 @@ package object sql {
       }
 
     lazy val paramName: String =
-      if (isAggregation && functions.size == 1) s"params.${metricName.getOrElse(aliasOrName)}"
+      if (isAggregation && functions.size == 1) metricParam
       else if (path.nonEmpty)
         s"doc['$path'].value"
       else ""
 
+    /** The name an AGGREGATE identifier is addressed by in a bucket pipeline: the `buckets_path`
+      * key, the `params.<name>` a `bucket_selector` / `bucket_script` reads, and -- when the
+      * aggregate is not itself a SELECT item -- the name of the auxiliary aggregation created for
+      * it (`Criteria.extractAggregationFields` / `FieldSort.extractAggregationFields` alias the
+      * synthesised Field with it, and both `SQLAggregation.fromField` and the bridge name the
+      * aggregation after that alias). One rule, one name: the path resolves by construction.
+      *
+      * Aliased: the alias. Un-aliased: a name derived from the WHOLE expression, never the bare
+      * field name. The bare name collapsed distinct aggregates over one field (`COUNT(x)` and
+      * `MAX(x)` were both `x`; `auxiliaryAggs` dedups by name, so the second silently vanished and
+      * every HAVING term compared the first -- issue #54), let a dotted field leak into a `params.`
+      * key (`params.emails.address` is a nested-property read Painless rejects, and the selector's
+      * name scanner then dropped the condition altogether), and named an aggregate over a
+      * self-contained function (`MAX(ABS(salary))`, whose identifier has no field-derived `name`)
+      * `""` (issue #223). `COUNT(*)` keeps its long-standing `count_all` / `count_distinct_all`.
+      */
     lazy val metricName: Option[String] =
-      aggregateFunction match {
-        case Some(af) =>
+      aggregateFunction.map { af =>
+        fieldAlias.getOrElse {
           af match {
-            case COUNT | _: CountAgg =>
-              aliasOrName match {
-                case "*" =>
-                  if (distinct) {
-                    Some(s"count_distinct_all")
-                  } else {
-                    Some(s"count_all")
-                  }
-                case _ => Some(aliasOrName)
-              }
-            case _ => Some(aliasOrName)
+            case COUNT | _: CountAgg if name == "*" =>
+              if (distinct) "count_distinct_all" else "count_all"
+            case _ =>
+              val operand = if (distinct) s"$Distinct $name" else name
+              AliasUtils.normalize(
+                functions.reverse.foldLeft(operand)((expr, fun) => fun.toSQL(expr))
+              )
           }
-        case _ => None
+        }
       }
+
+    /** How a bucket pipeline script reads this aggregate: the metric Elasticsearch already
+      * computed, published under `buckets_path` as [[metricName]].
+      */
+    lazy val metricParam: String = s"params.${metricName.getOrElse(aliasOrName)}"
 
     lazy val script: Option[String] =
       if (isTemporal) {
@@ -1091,6 +1111,13 @@ package object sql {
       else this.baseType
 
     override def painless(context: Option[PainlessContext]): String = {
+      // A context-free rendering of an AGGREGATE is a bucket-pipeline rendering (`bucket_selector`
+      // for HAVING, `bucket_script` for arithmetic over aggregates): there is no document to read,
+      // only the metric Elasticsearch already computed, published under `buckets_path`. The
+      // transform chain (`MAX(YEAR(x))`) belongs to the METRIC aggregation's own script, rendered by
+      // the context-bearing call below; re-applying it here produced a `doc[...]` read -- which a
+      // bucket script cannot do -- and a doubled transform in the selector (issue #223).
+      if (context.isEmpty && isAggregation) return metricParam
       val orderedFunctions = FunctionUtils.transformFunctions(this).reverse
       var currType = this.originalType
       currType match {

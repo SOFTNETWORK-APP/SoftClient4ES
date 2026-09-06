@@ -640,44 +640,16 @@ object ElasticAggregation {
     val conditions = parseConditions(fullScript)
     //    println(s"[DEBUG] conditions = $conditions")
 
-    // Filter based on availability in buckets_path
+    // Keep a condition only when every metric it reads is one extractMetricsPathForBucket publishes
+    // for this very bucket -- both go through resolveBucketMetric, so the emitted script can never
+    // read a `params.<x>` that buckets_path does not declare. A name no aggregation carries is an
+    // opaque script parameter (`params.__now__`) at root level and unresolvable inside a nested one.
     val relevantConditions = conditions.filter { condition =>
-      val metricNames = extractMetricNames(condition)
-      //      println(s"[DEBUG] condition = $condition, metricNames = $metricNames")
-
-      metricNames.forall { metricName =>
-        allElasticAggregations.find(agg =>
-          agg.aggName == metricName || agg.field == metricName
-        ) match {
-          case Some(elasticAgg) =>
-            val metricBucketPath = elasticAgg.nestedElement
-              .map(_.nestedPath)
-              .getOrElse("")
-
-            //            println(
-            //              s"[DEBUG] metricName = $metricName, metricBucketPath = $metricBucketPath, aggType = ${elasticAgg.agg.getClass.getSimpleName}"
-            //            )
-
-            val belongsToLevel = metricBucketPath == currentNestedPath
-
-            val isDirectChildAndAccessible =
-              if (isDirectChild(metricBucketPath, currentNestedPath)) {
-                // Check if it's a "global" metric (cardinality, etc.)
-                elasticAgg.isGlobalMetric
-              } else {
-                false
-              }
-
-            val result = belongsToLevel || isDirectChildAndAccessible
-
-            //            println(
-            //              s"[DEBUG] belongsToLevel = $belongsToLevel, isDirectChildAndAccessible = $isDirectChildAndAccessible, result = $result"
-            //            )
-            result
-
-          case None =>
-            //            println(s"[DEBUG] metricName = $metricName NOT FOUND")
-            currentNestedPath.isEmpty
+      extractMetricNames(condition).forall { metricName =>
+        resolveBucketMetric(metricName, currentNestedPath, allElasticAggregations) match {
+          case Resolved(_) => true
+          case Unknown     => currentNestedPath.isEmpty
+          case OutOfScope  => false
         }
       }
     }
@@ -705,7 +677,10 @@ object ElasticAggregation {
   private def extractMetricNames(condition: String): Seq[String] = {
     // Pattern to extract "params.XXX"
     val pattern = "params\\.([a-zA-Z_][a-zA-Z0-9_]*)".r
-    pattern.findAllMatchIn(condition).map(_.group(1)).toSeq
+    // `params.__now__` is the request clock the bridge binds itself, not a metric: left in, it
+    // resolved Unknown and made every nested-level HAVING with `now - interval ...` drop its
+    // condition silently (Unknown is only tolerated at root level).
+    pattern.findAllMatchIn(condition).map(_.group(1)).filterNot(_ == "__now__").toSeq
   }
 
   // HELPER: Check if a path is a direct child
@@ -717,6 +692,46 @@ object ElasticAggregation {
       childPath.count(_ == '>') == parentPath.count(_ == '>') + 1
     }
   }
+
+  /** How a metric a bucket pipeline reads (`params.<metricName>`) resolves against the aggregations
+    * of the bucket being built. ONE resolver feeds both the `bucket_selector` script (which
+    * conditions survive) and its `buckets_path` (which names are published), so the two cannot
+    * drift.
+    */
+  private sealed trait MetricResolution
+
+  /** Addressable from this bucket. `path` is the `buckets_path` value: the aggregation's LOCAL name
+    * -- `agg.name`, the name the elastic4s aggregation was built with, never the `.`-joined
+    * `aggName` a nested aggregation carries (issue #54) -- or `<child nested agg>><local name>` for
+    * a global metric of a direct nested child.
+    */
+  private case class Resolved(path: String) extends MetricResolution
+
+  /** Exists, but at a level this bucket cannot address (a bucket-level metric of a child, or
+    * another branch entirely).
+    */
+  private case object OutOfScope extends MetricResolution
+
+  /** No aggregation carries this name. */
+  private case object Unknown extends MetricResolution
+
+  private def resolveBucketMetric(
+    metricName: String,
+    currentNestedPath: String,
+    allElasticAggregations: Seq[ElasticAggregation]
+  ): MetricResolution =
+    allElasticAggregations.find(agg => agg.aggName == metricName || agg.field == metricName) match {
+      case Some(elasticAgg) =>
+        val metricBucketPath = elasticAgg.nestedElement.map(_.nestedPath).getOrElse("")
+        if (metricBucketPath == currentNestedPath)
+          Resolved(elasticAgg.agg.name)
+        else if (isDirectChild(metricBucketPath, currentNestedPath) && elasticAgg.isGlobalMetric) {
+          val childNestedName = elasticAgg.nestedElement.map(_.innerHitsName).getOrElse("")
+          Resolved(s"$childNestedName>${elasticAgg.agg.name}")
+        } else
+          OutOfScope
+      case None => Unknown
+    }
 
   def extractMetricsPathForBucketScript(
     bucketScriptAggregation: BucketScriptAggregation,
@@ -782,62 +797,14 @@ object ElasticAggregation {
     //    println(s"[DEBUG extractMetricsPath] currentBucketPath = $currentBucketPath")
     //    println(s"[DEBUG extractMetricsPath] allMetricsPaths = $allMetricsPaths")
 
-    // Filter and adapt the paths for this bucket
-    val result = allMetricsPaths.flatMap { case (metricName, _) =>
-      allElasticAggregations.find(agg =>
-        agg.aggName == metricName || agg.field == metricName
-      ) match {
-        case Some(elasticAgg) =>
-          val metricBucketPath = elasticAgg.nestedElement
-            .map(_.nestedPath)
-            .getOrElse("")
-
-          //          println(
-          //            s"[DEBUG extractMetricsPath] metricName = $metricName, metricBucketPath = $metricBucketPath, aggType = ${elasticAgg.agg.getClass.getSimpleName}"
-          //          )
-
-          if (metricBucketPath == currentBucketPath) {
-            // Metric of the same level
-            //            println(s"[DEBUG extractMetricsPath] Same level: $metricName -> $metricName")
-            Some(metricName -> metricName)
-
-          } else if (isDirectChild(metricBucketPath, currentBucketPath)) {
-            // Metric of a direct child
-
-            // CHECK if it is a "global" metric (cardinality, etc.) or a bucket metric (avg, sum, etc.)
-            val isGlobalMetric = elasticAgg.isGlobalMetric
-
-            if (isGlobalMetric) {
-              // Global metric: can be referenced from the parent
-              val childNestedName = elasticAgg.nestedElement
-                .map(_.innerHitsName)
-                .getOrElse("")
-              //              println(
-              //                s"[DEBUG extractMetricsPath] Direct child (global metric): $metricName -> $childNestedName>$metricName"
-              //              )
-              Some(metricName -> s"$childNestedName>$metricName")
-            } else {
-              // Bucket metric: cannot be referenced from the parent
-              //              println(
-              //                s"[DEBUG extractMetricsPath] Direct child (bucket metric): $metricName -> SKIP (bucket-level metric)"
-              //              )
-              None
-            }
-
-          } else {
-            // A different level of metric
-            //            println(s"[DEBUG extractMetricsPath] Other level: $metricName -> SKIP")
-            None
-          }
-
-        case None =>
-          //          println(s"[DEBUG extractMetricsPath] Not found: $metricName -> SKIP")
-          None
+    // Publish, under the name the script reads, the path of the aggregation that carries it --
+    // resolved by the very rule metricSelectorForBucket filtered the script with.
+    allMetricsPaths.flatMap { case (metricName, _) =>
+      resolveBucketMetric(metricName, currentBucketPath, allElasticAggregations) match {
+        case Resolved(path) => Some(metricName -> path)
+        case _              => None
       }
     }
-
-    //    println(s"[DEBUG extractMetricsPath] result = $result")
-    result
   }
 }
 

@@ -388,7 +388,10 @@ package object client extends SerializationApi {
     // PERCENTILE_CONT / PERCENTILE_DISC — both back the ES `percentiles`
     // aggregation; the requested percentile key (e.g. "99.0") is carried on
     // ClientAggregation.aggResultField and projected from the response `values`.
-    PercentileCont, PercentileDisc = Value
+    PercentileCont, PercentileDisc,
+    // Arithmetic over aggregates (`MAX(x) - MIN(x) AS d`) — an ES `bucket_script` pipeline
+    // aggregation whose result is a plain `value` node (issue #54, BIDC-2).
+    BucketScript = Value
   }
 
   /** Client Aggregation
@@ -478,6 +481,9 @@ package object client extends SerializationApi {
         }
       case p: PercentileAgg =>
         if (p.cont) AggregationType.PercentileCont else AggregationType.PercentileDisc
+      // The bridge has always emitted the bucket_script; this arm was the missing piece that made
+      // every arithmetic-over-aggregates statement fail here, before reaching Elasticsearch.
+      case _: BucketScriptAggregation => AggregationType.BucketScript
       case _ => throw new IllegalArgumentException(s"Unsupported aggregation type: ${agg.aggType}")
     }
     // `extended_stats` is multi-key — pick which one to project. Plain
