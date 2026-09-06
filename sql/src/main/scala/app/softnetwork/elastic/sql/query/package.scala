@@ -485,7 +485,11 @@ package object query {
     def toSingleSearch(dummyIndex: String): SingleSearch =
       SingleSearch(
         select = select,
-        from = From(Seq(Table(dummyIndex))),
+        // `parts` is spelled out rather than left at its `Nil` default so this rewrite really is
+        // the AST `FromParser.table` would build for the same text — otherwise the "generated SQL
+        // is a fixed point" test compares a `Table` with no parts against a parsed one that has
+        // them and fails on a rendering that is byte-identical (story 21.2).
+        from = From(Seq(Table(dummyIndex, parts = Seq(NamePart(dummyIndex, quoted = false))))),
         where = None,
         limit = Some(Limit(1, None))
       ).update()
@@ -776,8 +780,13 @@ package object query {
   }
 
   case class Delete(table: Table, where: Option[Where]) extends DmlStatement {
+    // `Table.render`, not `table.name`: DELETE routes through `FromParser.table` (widened from a
+    // bare `ident` for #213), so it can carry a quoted qualifier — and `table.name` is the BARE
+    // index, which would delete the qualifier from the rendering and break the `Parser(stmt.sql)
+    // == Right(stmt)` fixed point. It is deliberately not `table.sql`: a DELETE has no alias and
+    // no joins to render (story 21.2).
     override def sql: String =
-      s"DELETE FROM ${table.name}${asString(where)}"
+      s"DELETE FROM ${Table.render(table.parts, table.name)}${asString(where)}"
 
     // `DELETE FROM t WHERE COUNT(x) > 5` used to become `match_all` and WIPE the index (S2-2).
     override def validate(): Either[String, Unit] = where.map(_.validate()).getOrElse(Right(()))

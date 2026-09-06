@@ -24,6 +24,7 @@ DQL supports:
 
 - [SELECT](#select)
 - [Quoted identifiers](#quoted-identifiers)
+- [Qualified and quoted table names](#qualified-and-quoted-table-names)
 - [FROM-less SELECT (connection handshake)](#from-less-select-connection-handshake)
 - [WHERE](#where)
 - [ORDER BY](#order-by)
@@ -148,11 +149,83 @@ WHERE  category = "premium";    -- string  'premium'
 
 Use single quotes for strings and backticks for names if you would rather not rely on position.
 
-#### Not yet quotable: the table name
+---
 
-The name after `FROM` (and after `JOIN`) is **not** quotable in this release —
-`` FROM `bi_events` `` and `FROM "bi_events"` are rejected. The table's *alias* is quotable
-(``FROM bi_events `e` ``). See [known limitations](known_limitations.md).
+## Qualified and quoted table names
+
+The name after `FROM` (and after `JOIN`, and after `DELETE FROM`) may be written quoted, in either
+spelling, and may carry a qualifier:
+
+```sql
+SELECT category FROM `bi_events`;
+SELECT category FROM "bi_events";
+SELECT category FROM `elastic`.`bi_events` `bi_events`;
+SELECT category FROM "elastic"."bi_events" AS e;
+SELECT o.id FROM `elastic`.`orders` o JOIN `elastic`.`customers` c ON o.cid = c.id;
+```
+
+### Quoting is what makes a dot a qualifier
+
+Elasticsearch index names may themselves contain dots (`logs-2025.03`), so a bare dot can never be
+a separator. **A qualifier is a leading run of parts that are each quoted AND each followed by a
+dot; the index name is everything after that run.** Nothing else separates the two readings.
+
+| Written | Index read | Qualifier |
+| ------- | ---------- | --------- |
+| `FROM bi_events` | `bi_events` | — |
+| `FROM elastic.bi_events` | `elastic.bi_events` | — (a bare dot is part of the name) |
+| `FROM logs-2025.03` | `logs-2025.03` | — |
+| `FROM "elastic".bi_events` | `bi_events` | `elastic` |
+| ``FROM `elastic`.bi_events`` | `bi_events` | `elastic` |
+| `FROM "elastic"."bi_events"` | `bi_events` | `elastic` |
+| `FROM "logs-2025.03"` | `logs-2025.03` | — (the dot is *inside* the quotes) |
+| `FROM "elasticsearch"."prod-cluster"."bi_events"` | `bi_events` | `elasticsearch`, `prod-cluster` |
+
+The rule is the same in `FROM`, in every `JOIN` form and in `DELETE FROM`, so one statement can
+never read one index on one leg and a different one on another.
+
+> ⚠️ **The two quote styles are interchangeable to the engine, but not yet on the federation
+> path.** Federation recognises a cross-cluster prefix by matching ``` `catalog`.table ``` on the
+> raw SQL before parsing — a BACKTICKED qualifier followed by a BARE table name. A fully quoted
+> ``FROM `prod_us`.`orders` `` is not matched, so the leg is forwarded to the default cluster
+> rather than the one named. Until that is fixed, leave the table name itself unquoted when you
+> qualify it for Federation. See [known limitations](known_limitations.md).
+
+### What the qualifier means
+
+**The engine records it and does not interpret it.** The qualifier never becomes part of the index
+name and is never resolved by the parser: what a leading qualifier *means* depends on who is
+asking. The JDBC driver and the Flight SQL producer advertise it as the **schema** (the cluster
+name; the catalog is the constant `elasticsearch`); Federation reads it as a **catalog** — a
+`servers.<name>` alias, as in [joins.md](joins.md). A BI tool simply echoes back whatever schema
+our own driver advertised, which is why a qualifier that names nothing in particular is accepted
+rather than rejected.
+
+Practically: send the qualifier your tool generates, and the engine will read the index you meant.
+
+### What changed for a JOIN leg
+
+Before this release a `JOIN` source went through the column-name rules, which JOIN the parts of a
+dotted name — so `JOIN "prod_us".customers c` read the index `prod_us.customers` while the `FROM`
+leg of the same statement dropped its qualifier. Both legs now follow the table rule and read
+`customers`. **If you were relying on a quoted `JOIN` qualifier becoming part of the index name,
+that statement now reads a different index** — write the dotted name unquoted
+(`JOIN prod_us.customers c`) to keep the old reading.
+
+### It is preserved when the statement is rendered back
+
+Qualifiers used to be dropped from the re-rendered SQL. They are not any more — a rendered
+statement carries the qualifier the original had, canonicalised to the ANSI double quote:
+
+```sql
+SELECT category FROM `elastic`.`bi_events`
+-- renders as
+SELECT category FROM "elastic"."bi_events"
+```
+
+Unlike a column name, a table name is quoted as **one lexeme** — `FROM "logs-2025.03"`, never
+`FROM "logs-2025"."03"` — because a table name's dots are literal while a column name's separate
+the alias from the field.
 
 ---
 

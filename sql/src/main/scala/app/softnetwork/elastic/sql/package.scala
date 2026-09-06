@@ -79,6 +79,22 @@ package object sql {
   def quoteIdentifier(name: String): String =
     "\"" + name.replace("\"", "\"\"") + "\""
 
+  /** One part of a table reference, exactly as the statement wrote it (#85 — story 21.2 AD-1).
+    *
+    * `value` is the raw content (un-escaped for a quoted part); `quoted` records whether it was
+    * written quoted. A quoted part is ONE lexeme whatever it contains — its internal dots are NEVER
+    * split, no part is ever dropped, and no part is ever assigned a role (catalog / schema /
+    * federation server alias): interpretation belongs to the resolver, which knows the venue.
+    *
+    * That is not a stylistic preference. The same lexeme means different things at different venues
+    * — the JDBC driver and the Flight SQL producer read one qualifier as the SCHEMA (the cluster;
+    * the catalog is the constant `elasticsearch`), the federation join planner reads it as a
+    * CATALOG (a `servers.<name>` alias), and BigQuery writes `proj.ds.tbl` as one backticked lexeme
+    * whose internal dots separate. A grammar that picked one of those readings would have to be
+    * rewritten the day heterogeneous federation lands.
+    */
+  case class NamePart(value: String, quoted: Boolean)
+
   /** Base trait for all tokens
     */
   trait Token extends Serializable with Validation {

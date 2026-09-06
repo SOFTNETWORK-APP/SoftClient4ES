@@ -85,27 +85,68 @@ WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
 
 The parser rejects this — `IN` accepts only literal value lists today, not a nested `SELECT`. Rewrite it as an explicit JOIN (fully supported), or wait for the next release where the subquery form lands as-is.
 
-## Quoted identifiers — two residual limits
+## Quoted identifiers — residual limits
 
-Quoted column names and aliases work in both spellings — see
-[Quoted identifiers](dql_statements.md#quoted-identifiers). Three things they do **not** cover yet:
+Quoted column names, aliases and **table names** work in both spellings — see
+[Quoted identifiers](dql_statements.md#quoted-identifiers) and
+[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Five things
+they do **not** cover yet:
 
-- **The table name is not quotable.** `` FROM `bi_events` ``, `FROM "bi_events"`,
-  `` FROM `elastic`.`bi_events` `` and `FROM "elastic"."bi_events"` are all rejected. The table's
-  *alias* is quotable (``FROM bi_events `e` ``), and so is every column, including in a `JOIN`'s
-  `ON` clause. This is the next piece of quoting work; until it lands, send the table name bare.
-  The catalog-prefixed `` FROM `prod_us`.orders `` examples in [joins.md](joins.md) belong to the
-  same gap, as do the ``INSERT INTO `prod_eu`.dest`` / ``CREATE TABLE `prod_eu`.dest`` forms.
+- **`INSERT`, `UPDATE`, `CREATE`, `DROP` and `ALTER` names are not quotable.**
+  ``INSERT INTO `prod_eu`.dest``, `INSERT INTO "prod_eu".dest`, ``UPDATE `orders` SET …`` and
+  `CREATE TABLE "dest" ("c" INTEGER)` are all rejected — and so are quoted **column** names in
+  those statements (`UPDATE tbl SET "a" = 1`). `SELECT` and `DELETE` are unaffected, because both
+  route through the `FROM` table surface. This is the next piece of quoting work; until it lands,
+  send DML/DDL names bare. The ``INSERT INTO `prod_eu`.dest`` / ``CREATE TABLE `prod_eu`.dest``
+  examples in [joins.md](joins.md) belong to that gap; the ``FROM `prod_us`.orders`` ones do not —
+  they work.
 
-- **A dot inside a quoted name is still a qualifier.** `` SELECT `a.b` FROM t `` is read as the
-  column `b` qualified by `a`, exactly as `SELECT a.b` is — there is no way to address an
-  Elasticsearch field whose own name contains a dot. Quoting makes it *look* as though there should
-  be; there is not.
+- **Quoting each part of a dotted index name splits it.** ``FROM `logs-2025`.`03` `` reads index
+  `03` under the qualifier `logs-2025`, because a quoted part followed by a dot is a qualifier by
+  definition. Write the whole name as one lexeme instead — ``FROM `logs-2025.03` `` or
+  `FROM "logs-2025.03"` — or leave it bare (`FROM logs-2025.03`). All three read the index
+  `logs-2025.03`.
 
-- **A dot and the name part after it must be adjacent.** `SELECT a.b` is a qualified name;
-  `SELECT a . b` is rejected, and so is a name left with a trailing dot (`ORDER BY b. DESC`). This
-  is deliberate: when the dot was allowed to float, `ORDER BY b. DESC` silently parsed as a column
-  named `b.DESC` sorted *ascending*.
+- **A qualifier must be quoted from the FIRST part.** `FROM elastic."bi_events"` mixes the
+  spellings, so the leading run of quoted parts is empty and the whole operand is read as ONE index
+  name, `elastic.bi_events`. Quote the first part too (`FROM "elastic"."bi_events"`) if you meant
+  `elastic` as a qualifier, or leave both bare if you meant the dotted index name.
+
+- **A dot inside a quoted COLUMN name is still a qualifier.** `` SELECT `a.b` FROM t `` is read as
+  the column `b` qualified by `a`, exactly as `SELECT a.b` is — there is no way to address an
+  Elasticsearch field whose own name contains a dot. (A quoted *table* name is the opposite: its
+  dots are literal.) Quoting makes it *look* as though there should be; there is not.
+
+- **A dot and the name part after it must be adjacent — in a column name.** `SELECT a.b` is a
+  qualified name; `SELECT a . b` is rejected, and so is a name left with a trailing dot
+  (`ORDER BY b. DESC`). This is deliberate: when the dot was allowed to float, `ORDER BY b. DESC`
+  silently parsed as a column named `b.DESC` sorted *ascending*. A **table**-name qualifier is
+  deliberately more tolerant (`FROM "elastic" . bi_events` is accepted), because that spelling has
+  always been accepted there and tightening it would have moved which index the statement reads.
+
+- **A qualifier shares a namespace with a real dotted index name.** When one `FROM` names the same
+  index under two different qualifiers, the engine tells the two apart by their qualified reference
+  — so `SELECT a FROM a.orders q, "a".orders o, "b".orders p` uses `a.orders` both as a real index
+  (what `q` reads) and as the qualified reference of `"a".orders`. Both readings of that statement
+  are wrong, it was already wrong before, and it is not worth machinery: do not qualify two
+  same-named indices with a name that is itself a real index.
+
+> ⚠️ **Federation reads a qualifier differently from the engine.** A cross-cluster statement whose
+> table names are FULLY quoted — ``FROM `prod_us`.`orders` `` rather than ``FROM `prod_us`.orders``
+> — is not recognised by Federation's catalog pre-processor, so it is forwarded to the default
+> cluster instead of the one you named. Before this release such a statement failed loudly in the
+> parser; now it parses, so the mis-routing is silent. **On the federation path, leave the table
+> name itself unquoted** (`` `prod_us`.orders ``) until this is fixed — see
+> [joins.md](joins.md#row-2--cross-cluster-conveyor).
+
+## Temporary tables are not supported
+
+Tableau's connection-capability probe issues a `CREATE TABLE` / `DROP TABLE` pair against a
+`#`-prefixed name, and its SQL-92 dialect issues `CREATE LOCAL TEMPORARY TABLE`. The
+`LOCAL TEMPORARY` form is rejected: an Elasticsearch index is global, permanent and not
+session-scoped, so there is nothing for the engine to honestly answer "yes" to. Whether a plain
+`CREATE TABLE` against a probe-shaped name should be honoured is a separate open question about
+`CREATE TABLE` semantics, not a quoting one.
 
 ## `STDDEV` / `VARIANCE` over a transformed expression — Elasticsearch 6 refuses it
 

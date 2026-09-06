@@ -295,6 +295,12 @@ object TemporalLiterals {
 
   /** The identifier's column in `schema`, unless the identifier belongs to a cross-index JOIN
     * source (`joinSources`): that table's mapping is not the one in hand.
+    *
+    * 🔴 `joinSources` must be keyed the way `Identifier.table` is — i.e. `From.joinSourceKeys`, not
+    * the bare `joinAliases` source names. `Identifier.table` IS a `From.tableAliases` key, and
+    * since story 21.2 that key is the QUALIFIED reference whenever a bare index name is ambiguous
+    * inside one FROM. Comparing a qualified `table` against a bare set silently stops this guard
+    * firing, and the literal is then resolved against the wrong index's schema.
     */
   private def temporalColumn(
     identifier: GenericIdentifier,
@@ -346,7 +352,9 @@ object TemporalLiterals {
   def apply(search: SingleSearch, schema: Schema): Either[String, SingleSearch] =
     search.where.flatMap(_.criteria) match {
       case Some(criteria) =>
-        val joinSources: Set[String] = search.from.joinAliases.values.map(_._1).toSet
+        // `joinSourceKeys`, NOT `joinAliases.values.map(_._1)`: the comparison below is against
+        // `Identifier.table`, which is a `tableAliases` KEY (story 21.2 AD-6'). See `temporalColumn`.
+        val joinSources: Set[String] = search.from.joinSourceKeys
         rewrite(criteria, schema, joinSources).map { rewritten =>
           if (rewritten eq criteria) search
           else search.copy(where = Some(Where(Some(rewritten))))

@@ -7,6 +7,7 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   IngestTimestampValue,
   IntValue,
+  NamePart,
   Null,
   ObjectValue,
   StringValue,
@@ -1401,6 +1402,33 @@ class ParserSpec extends AnyFlatSpec with Matchers {
         ss.from.mainTable.name shouldBe "ecommerce"
       case _ => fail("Expected SingleSearch")
     }
+  }
+
+  // Story 21.2 EXTENDS the #57 block above; the four tests it carries stay exactly as they were,
+  // because #57's rule — a QUOTED prefix is a schema qualifier and is not part of the index name,
+  // an UNQUOTED dot is — is the shipped decision this story generalises rather than replaces.
+
+  it should "preserve the previously-discarded schema prefix in Table.parts (#85)" in {
+    Parser("""SELECT * FROM "default".ecommerce""").toOption.get match {
+      case ss: SingleSearch =>
+        ss.from.mainTable.name shouldBe "ecommerce"
+        ss.from.mainTable.parts shouldBe Seq(
+          NamePart("default", quoted = true),
+          NamePart("ecommerce", quoted = false)
+        )
+        // The index read is UNCHANGED — that is the point of preserving rather than joining.
+        ss.sources shouldBe Seq("ecommerce")
+        // ... and the render no longer deletes the qualifier it matched.
+        ss.sql shouldBe """SELECT * FROM "default".ecommerce"""
+      case other => fail(s"Expected SingleSearch, got $other")
+    }
+  }
+
+  it should "accept a backtick schema prefix identically to a double-quoted one (#252)" in {
+    val dq = Parser("""SELECT * FROM "default".ecommerce""").toOption.get
+    val bt = Parser("SELECT * FROM `default`.ecommerce").toOption.get
+    // Style is not retained: the two spellings produce EQUAL ASTs (story 21.1 AD-1 rule 1).
+    bt shouldBe dq
   }
 
   // --- DDL ---

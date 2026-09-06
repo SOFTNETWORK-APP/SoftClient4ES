@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.{Alias, Identifier}
+import app.softnetwork.elastic.sql.GenericIdentifier
 import app.softnetwork.elastic.sql.query.{
   CrossJoin,
   From,
@@ -59,33 +59,53 @@ trait FromParser {
     }
   }
 
-  def source: PackratParser[(Identifier, Option[Alias])] = identifier ~ alias.? ^^ { case i ~ a =>
-    (i, a)
-  }
+  /** A JOIN's table source.
+    *
+    * Returns a partially-built `StandardJoin` (no join type, no ON) so that `(unnest | source)` is
+    * a `PackratParser[Join]`. It used to be a `Parser[Any]` destructured with `case (i: Identifier,
+    * a: Option[Alias])` — an unchecked erasure pattern. Typing it here removes the warning and the
+    * class of bug it hides.
+    *
+    * 🔴 It takes `tableParts`, NOT the bare `identifier`. After story 21.1 `identifier` is
+    * quoting-aware and JOINS dot-separated parts, which is right for a column (`alias.column`) and
+    * wrong for an index. MEASURED on `origin/main` BEFORE this story: `JOIN "prod_us".customers c`
+    * parses and reads index `prod_us.customers` while the FROM side of the same statement reads
+    * `customers` — one statement, two rules, no error. This production is what closes that.
+    *
+    * `quoted = false` on the `GenericIdentifier` is deliberate, and it is the single most likely
+    * mistake in this story: `Identifier.sql` quotes PER dot-separated part, which is correct for
+    * `alias.column` and fatal for an index name whose dot is literal — `` JOIN `logs-2025.03` c ``
+    * would render `"logs-2025"."03"` and re-parse as qualifier `logs-2025` + index `03`.
+    * `StandardJoin.sql` renders each `NamePart` as ONE lexeme instead (21.2 AD-5).
+    */
+  def source: PackratParser[StandardJoin] =
+    tableParts ~ alias.? ^^ { case ps ~ a =>
+      StandardJoin(
+        source = GenericIdentifier(ps.last.value),
+        joinType = None,
+        on = None,
+        alias = a,
+        parts = ps
+      )
+    }
 
   def join: PackratParser[Join] = opt(join_type) ~ Join.regex ~ (unnest | source) ~ opt(on) ^^ {
-    case jt ~ _ ~ t ~ o =>
-      t match {
-        case u: Unnest =>
-          u // Unnest cannot have a join type or an ON clause
-        case (i: Identifier, a: Option[Alias]) =>
-          StandardJoin(
-            source = i,
-            joinType = jt,
-            on = o,
-            alias = a
-          )
-      }
+    case _ ~ _ ~ (u: Unnest) ~ _ =>
+      u // Unnest cannot have a join type or an ON clause
+    case jt ~ _ ~ (sj: StandardJoin) ~ o =>
+      sj.copy(joinType = jt, on = o)
   }
 
-  // Optional quoted schema prefix: "schema". (ignored — Elasticsearch has no schema concept)
-  // Only quoted schemas are stripped; unquoted dots are part of ES index names (e.g. logs-2025.03)
-  private def quotedSchemaPrefix: PackratParser[String] =
-    ("\"" ~> """([^"\\]|\\.)*""".r <~ "\"") <~ "."
-
+  /** The FROM (and DELETE, and CTAS/MV/WATCHER body) table reference.
+    *
+    * `Table.name` is `parts.last.value` — STRUCTURALLY the last part, never an interpretation. The
+    * qualifier the leading `rep` in `tableParts` matched is preserved in `parts` instead of being
+    * discarded, which is what the `quotedSchemaPrefix` this replaces used to do (#85): the render
+    * no longer deletes a clause the statement carried.
+    */
   def table: PackratParser[Table] =
-    opt(quotedSchemaPrefix) ~ identifierRegex ~ alias.? ~ rep(join) ^^ { case _ ~ i ~ a ~ js =>
-      Table(i, a, js)
+    tableParts ~ alias.? ~ rep(join) ^^ { case ps ~ a ~ js =>
+      Table(ps.last.value, a, js, parts = ps)
     }
 
   def from: PackratParser[From] = From.regex ~ rep1sep(table, separator) ^^ { case _ ~ tables =>

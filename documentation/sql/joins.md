@@ -244,6 +244,8 @@ A Row-2 operation has its **target** in a different cluster from its **source**.
 
 Cross-cluster references use **backtick-quoted catalog prefixes** — the catalog name is the Federation `servers.<name>` alias, which Federation strips before forwarding each leg's SELECT to its source cluster.
 
+> ⚠️ **Quote the catalog prefix, not the table name.** Federation matches ``` `catalog`.table ``` on the raw SQL before parsing — a backticked prefix followed by a BARE table name. A fully quoted ``` `prod_us`.`orders` ``` is not matched, and the leg is forwarded to the default cluster instead of the one named. The engine itself accepts either spelling (see [Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names)); the federation pre-processor does not.
+
 Examples are transcribed from the SoftClient4ES Federation integration test suite.
 
 **Cross-cluster INSERT-with-JOIN** — the source SELECT runs on `prod_us`, conveyed to `prod_eu`:
