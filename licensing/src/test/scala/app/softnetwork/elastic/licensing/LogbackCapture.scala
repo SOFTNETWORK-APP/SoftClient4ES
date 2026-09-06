@@ -48,7 +48,16 @@ object LogbackCapture {
   def capture[A](loggerName: String, level: Level)(body: => A): (A, Seq[Captured]) = {
     val logger = logbackLogger(loggerName)
     val capturingThread = Thread.currentThread().getName
-    val appender = new ListAppender[ILoggingEvent]()
+    // logback 1.5 stamps an event's thread name LAZILY (on the first getThreadName()), and a plain
+    // ListAppender only stores the event - so the thread filter below must not depend on some
+    // other appender (a root console appender) having forced the stamp. Prepare the event on the
+    // logging thread ourselves, whatever the root configuration is.
+    val appender = new ListAppender[ILoggingEvent]() {
+      override protected def append(e: ILoggingEvent): Unit = {
+        e.prepareForDeferredProcessing()
+        super.append(e)
+      }
+    }
     appender.start()
     val previousLevel = logger.getLevel
     logger.setLevel(level)
