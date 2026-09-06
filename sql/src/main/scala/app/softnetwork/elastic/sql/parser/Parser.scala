@@ -1737,15 +1737,11 @@ trait Parser
 //    "port"
   )
 
-  private val identifierRegexStr =
-    s"""(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[\\*a-zA-Z_\\-][a-zA-Z0-9_\\-.\\[\\]\\*]*"""
-
-  /** Unchanged, and now with exactly ONE caller: `FromParser.table`. The FROM table surface moves
-    * in story 21.2 under the #85 ruling (the parser PRESERVES -- `Table.parts` -- and never
-    * interprets a qualifier); swapping in `qualifiedName` here would silently turn `FROM
-    * "elastic".bi_events` from index `bi_events` into index `elastic.bi_events`.
-    */
-  val identifierRegex: Regex = identifierRegexStr.r // scala.util.matching.Regex
+  // `identifierRegexStr` / `identifierRegex` lived here until story 21.2. Story 21.1 rewrote
+  // `identifier` onto `qualifiedName` and 21.2 rewrote `FromParser.table` onto `tableParts`, which
+  // left them with zero callers in this repo and zero in jdbc / arrow / extensions -- so they were
+  // deleted rather than kept as a second, drifting lexing surface. Their reserved-word guard and
+  // character class live on in `bareFirstPartStr` / `bareNextPartStr` below.
 
   // -----------------------------------------------------------------------------------------------
   // Quoted identifiers (#252). ONE lexing surface, shared by `identifier`, `quotedIdentifier` and
@@ -1807,29 +1803,31 @@ trait Parser
     out.toString
   }
 
-  /** The characters an UNQUOTED name part may contain -- `identifierRegexStr`'s class minus the
-    * dot, which `qualifiedName` consumes as the separator between parts.
+  /** The characters an UNQUOTED name part may contain -- the character class of the pre-21.1
+    * whole-name `identifierRegexStr` (deleted in 21.2) minus the dot, which `qualifiedName`
+    * consumes as the separator between parts.
     */
   private val barePartChars = """[a-zA-Z0-9_\-\[\]\*]"""
 
-  /** The FIRST part keeps `identifierRegexStr`'s reserved-word guard and its "no leading digit"
-    * rule. Dropping the guard here would let `SELECT FROM t` read `FROM` as a column name.
+  /** The FIRST part keeps the reserved-word guard and the "no leading digit" rule the deleted
+    * whole-name regex carried. Dropping the guard here would let `SELECT FROM t` read `FROM` as a
+    * column name.
     */
   private val bareFirstPartStr =
     s"""(?i)(?!(?:${reservedKeywords.mkString("|")})\\b)[\\*a-zA-Z_\\-]$barePartChars*"""
 
   /** Every part AFTER the first has neither guard.
     *
-    * `identifierRegex` matches a whole dotted name with ONE regex, so its negative lookahead only
+    * The pre-21.1 whole-name regex matched a dotted name in ONE go, so its negative lookahead only
     * ever applied at offset 0: `t.from`, `doc.count`, `order.min` and `item.first` all parse today
     * as one identifier, and `logs-2025.03` has a digit-leading second part. Re-applying the guard
     * (or the leading-digit rule) per part would newly reject every one of them.
     */
   private val bareNextPartStr = s"$barePartChars+"
 
-  /** Compiled ONCE, as a `val`, exactly like `identifierRegex` above. `bareFirstPartStr`
-    * interpolates the reserved-keyword alternation, and `String.r` is `Pattern.compile` -- calling
-    * it inside a `def` recompiles it on every construction of the hottest production in the
+  /** Compiled ONCE, as a `val`, never inside a `def`. `bareFirstPartStr` interpolates the
+    * reserved-keyword alternation, and `String.r` is `Pattern.compile` -- calling it inside a `def`
+    * recompiles a 131-alternative regex on every construction of the hottest production in the
     * grammar.
     *
     * `bareNextPartStr` has no regex of its own: it is interpolated into `nameTailPartStr`, which
@@ -1894,6 +1892,62 @@ trait Parser
     */
   def quotedQualifiedName: PackratParser[(String, Boolean)] =
     quotedPart ~ nameTail ^^ { case h ~ t => joinNameParts(h :: t) }
+
+  /** One QUOTED name part consumed as a leading TABLE-name qualifier: `` `prod_us`. `` or
+    * `"elastic".`.
+    *
+    * 🔴 The quoting IS the discriminator, and that asymmetry is deliberate. An UNQUOTED dot belongs
+    * to the index name: `logs-2025.03` is one Elasticsearch index, and `elastic.bi_events` has
+    * always been read as one. There is nothing else in the statement that separates "qualifier"
+    * from "name that contains a dot", so a design that split on dots would move 48 of the 99
+    * captured BI statements onto an index that does not exist (story 21.2 AD-1, measured).
+    *
+    * What the qualifier MEANS is deliberately not decided here -- the parser preserves, the
+    * resolver interprets (#85).
+    *
+    * 🔴 The dot is a SEPARATE terminal here, unlike `nameTailPart` above which owns its dot. That
+    * is not an oversight and it must not be "unified": `RegexParsers` skips whitespace before every
+    * terminal, so this production accepts `"elastic" . bi_events` and `"elastic" .bi_events`
+    * exactly as the `quotedSchemaPrefix` it replaces did (both MEASURED parsing on `origin/main`,
+    * both reading index `bi_events`). Folding the dot into one adjacency-strict regex would make
+    * `"elastic" .bi_events` fall through to `qualifiedName`, whose tail WOULD match `.bi_events`,
+    * and the statement would silently start reading index `elastic.bi_events` -- a renderer-free
+    * index move on an input that works today. Preserving today's reading outranks symmetry.
+    *
+    * `quotedPart` is private to this trait; this is its one FROM-side export.
+    */
+  def qualifierPart: PackratParser[NamePart] =
+    quotedPart <~ "." ^^ (p => NamePart(p._1, quoted = true))
+
+  /** A table reference as the ordered part list the statement wrote -- never split, never
+    * role-assigned, never dropped (#85, story 21.2 AD-1).
+    *
+    * Shape: the maximal LEADING run of quoted-part-followed-by-a-dot qualifiers, then the name
+    * (21.1's `qualifiedName`, which JOINS a mixed tail into one lexeme) -- so the name is always
+    * the LAST part, and `Table.name` is `parts.last.value` structurally rather than interpretively.
+    *
+    * `qualifiedName` is used JOINED on purpose. `"sch".a.b` must resolve to index `a.b` (measured
+    * on `origin/main`), and `elastic."bi_events"` -- whose FIRST part is bare, so the qualifier run
+    * is empty -- must resolve to the single index name `elastic.bi_events`. Splitting the tail into
+    * separate parts would render it `"elastic"."bi_events"`, which re-parses as qualifier `elastic`
+    * + index `bi_events`: a different index, manufactured by the renderer.
+    *
+    * `rep`, not `opt`: story 20.3 (jdbc#34) made the JDBC driver advertise BOTH a catalog (the
+    * constant `elasticsearch`) and a schema (the discovered cluster name), so a catalog-aware
+    * generator can emit `"elasticsearch"."prod-cluster"."bi_events"`. No captured statement does
+    * today; `rep` costs one character and removes the whole class of failure. Each level stays its
+    * OWN part -- nothing is joined; the resolver assigns roles.
+    *
+    * `rep` is greedy and a FAILED iteration consumes nothing, which is exactly what is wanted here:
+    * for `"elastic"."bi_events"` the second iteration fails at the missing dot without consuming,
+    * so the qualifier run is [elastic] and `qualifiedName` gets `"bi_events"`. `rep` does NOT
+    * backtrack into a SUCCESSFUL iteration, so `FROM "elastic".` fails the whole production rather
+    * than re-trying with zero qualifiers -- also wanted, and pinned.
+    *
+    * PUBLIC because `FromParser` has `self: Parser with ... =>` and can only see public members.
+    */
+  def tableParts: PackratParser[Seq[NamePart]] =
+    rep(qualifierPart) ~ qualifiedName ^^ { case ps ~ nq => ps :+ NamePart(nq._1, nq._2) }
 
   /** Kept, and kept FIRST in `SelectParser.field`, `GroupByParser.bucketWithFunction`,
     * `OrderByParser.fieldWithFunction` and `WhereParser.any_identifier`/`isNull`/`isNotNull`, for

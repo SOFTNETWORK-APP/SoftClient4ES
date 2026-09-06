@@ -647,13 +647,22 @@ class QuotedIdentifierSpec extends AnyFlatSpec with Matchers {
     parses("SELECT `category` FROM bi_events LIMIT 1")
   }
 
-  it should "leave the four FROM-position rows to story 21.2" in {
-    // Rows 2, 3, 5 and 7. `FromParser.table` still consumes `identifierRegex` directly, together
-    // with `quotedSchemaPrefix`, which DISCARDS the prefix — swapping it here would silently turn
-    // `FROM "elastic".bi_events` into index `elastic.bi_events`. 21.2 owns it, with #85.
-    rejected("SELECT category FROM `bi_events` LIMIT 1")
-    rejected("SELECT category FROM \"bi_events\" LIMIT 1")
-    rejected("SELECT category FROM `elastic`.`bi_events` LIMIT 1")
-    rejected("SELECT category FROM \"elastic\".\"bi_events\" LIMIT 1")
+  it should "have the four FROM-position rows story 21.2 delivered" in {
+    // RETARGETED, not deleted (story 21.2). This pin recorded a PENDING CAPABILITY — "rows 2, 3, 5
+    // and 7 are 21.2's, with #85" — not a defect, so it follows the contract-pin rule: retarget to
+    // the delivered behaviour. 21.2 rewrote `FromParser.table` onto `tableParts`, which preserves
+    // the qualifier in `Table.parts` instead of discarding it. The full ten-row matrix, with the
+    // resolved index and part list per row, lives in `QuotedTableNameSpec`.
+    parses("SELECT category FROM `bi_events` LIMIT 1")
+    parses("SELECT category FROM \"bi_events\" LIMIT 1")
+    parses("SELECT category FROM `elastic`.`bi_events` LIMIT 1")
+    parses("SELECT category FROM \"elastic\".\"bi_events\" LIMIT 1")
+    // The index each of them reads — a verdict alone cannot see an index move.
+    Seq(
+      "SELECT category FROM `bi_events` LIMIT 1",
+      "SELECT category FROM \"bi_events\" LIMIT 1",
+      "SELECT category FROM `elastic`.`bi_events` LIMIT 1",
+      "SELECT category FROM \"elastic\".\"bi_events\" LIMIT 1"
+    ).foreach(s => withClue(s"[$s] ") { single(s).sources shouldBe Seq("bi_events") })
   }
 }

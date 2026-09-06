@@ -2862,7 +2862,8 @@ object DialectCensus {
       AnsiAdjacent,
       s"PostgreSQL 16: FROM - $PgSel ; MySQL 8.4: FROM - $MySel",
       RequestShape,
-      "table name = index/alias/pattern; a quoted schema prefix is accepted and ignored"
+      "table name = index/alias/pattern; a quoted qualifier (either quote style) is accepted, " +
+      "preserved in the AST as Table.parts and not used as part of the index name"
     ),
     e(
       "clause.where.filter",
