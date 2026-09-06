@@ -268,6 +268,31 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
     ).mkString
   }
 
+  // `COUNT(x) IN (…)` was REJECTED by the shared Expression.validate (BIGINT vs ARRAY<BIGINT>) until
+  // the third look, so it never reached the emission: the MAX pins above could not cover it. A
+  // `value_count` metric arrives on the buckets_path as a number too, so the guarded `==` chain is
+  // the same shape -- the S2-1 defect (Integer literals vs a boxed Double) was exactly a typing
+  // mismatch that a parse-level pin cannot see.
+  it should "emit the same guarded chain for a COUNT metric, newly accepted (T3-3)" in {
+    queryOf("SELECT id FROM t GROUP BY id HAVING COUNT(x) IN (1, 2)") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"count_x":{"value_count":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x"},""",
+      """"script":{"source":"(params.count_x == null ? false : (params.count_x == 1 || params.count_x == 2))"}}}}}}}"""
+    ).mkString
+  }
+
+  it should "keep the NOT of a COUNT metric (T3-3)" in {
+    queryOf("SELECT id FROM t GROUP BY id HAVING COUNT(x) NOT IN (1, 2)") shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"id":{""",
+      terms,
+      ""","aggs":{"count_x":{"value_count":{"field":"x"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x"},""",
+      """"script":{"source":"(params.count_x == null ? false : (!(params.count_x == 1 || params.count_x == 2)))"}}}}}}}"""
+    ).mkString
+  }
+
   "A AND NOT B" should "negate the RIGHT operand, inside its guard (R2-2)" in {
     // The selector used to prefix `!` to the LEFT operand -- the exact complement of what was asked.
     // The NOT is pushed into the right-hand comparison (`> 3` becomes `<= 3`) so a bucket whose
@@ -392,6 +417,8 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
     "SELECT id FROM t GROUP BY id HAVING COUNT(x) NOT BETWEEN 1 AND 5",
     "SELECT id FROM t GROUP BY id HAVING MAX(x) IN (1, 2)",
     "SELECT id FROM t GROUP BY id HAVING MAX(x) NOT IN (1, 2)",
+    "SELECT id FROM t GROUP BY id HAVING COUNT(x) IN (1, 2)",
+    "SELECT id FROM t GROUP BY id HAVING COUNT(x) NOT IN (1, 2)",
     "SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND NOT MAX(x) > 3",
     "SELECT id FROM t GROUP BY id HAVING COUNT(x) > 5 AND NOT MAX(x) IN (1, 2)",
     "SELECT id FROM t GROUP BY id HAVING NOT MAX(x) > 3",

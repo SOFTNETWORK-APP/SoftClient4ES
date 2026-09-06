@@ -1248,6 +1248,20 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       Seq(Map("city" -> "Lyon"), Map("city" -> "Marseille"))
     )
 
+    // The same over a COUNT metric, which the type validator rejected until the third look (T3-3)
+    // so it had never reached a cluster: `value_count` comes back as a long on the buckets_path
+    // while the literals are Integers -- the S2-1 boxing class of defect. COUNT(name): Paris 2,
+    // Lyon 1, Marseille 1, Nice 1, so exactly one bucket may pass (an all-pass or an empty result
+    // both fail this assertion).
+    val countIn =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING COUNT(name) IN (2, 3);""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(countIn).futureValue,
+      Seq(Map("city" -> "Paris"))
+    )
+
     // `A AND NOT B`: the NOT belongs to the RIGHT operand (it used to negate the left one), and a
     // bucket whose metric is missing (Nice) must still fail `NOT MAX(age) > 45`, as in SQL.
     val andNot =
