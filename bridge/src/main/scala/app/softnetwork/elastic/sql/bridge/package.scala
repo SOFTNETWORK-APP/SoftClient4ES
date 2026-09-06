@@ -438,9 +438,14 @@ package object bridge {
     }
   }
 
+  // `serializer` is the seam of issue #222: an ES-major-aware client module puts its own
+  // SearchBodySerializer in implicit scope of this conversion; with none in scope the default
+  // argument applies (the one-argument elastic4s builder, refusing a transform-bearing
+  // extended_stats). Same defaulted-implicit pattern as `contextType`.
   implicit def requestToElasticSearchRequest(request: SingleSearch)(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    serializer: SearchBodySerializer = SearchBodySerializer.Default
   ): ElasticSearchRequest =
     ElasticSearchRequest(
       request.sql,
@@ -453,7 +458,8 @@ package object bridge {
       request,
       request.buckets,
       request.having.flatMap(_.criteria),
-      request.orderBy.map(_.sorts).getOrElse(Seq.empty)
+      request.orderBy.map(_.sorts).getOrElse(Seq.empty),
+      serializer = serializer
     ).minScore(request.score)
 
   /** Merge percentile ElasticAggregations that share a value column / `cont` flag / partition into
@@ -1087,6 +1093,8 @@ package object bridge {
   implicit def queryToJson(
     query: Query
   ): JsonNode = {
+    // Query-only body (no aggregations): audited exempt from the SearchBodySerializer seam
+    // (issue #222) -- there is no extended_stats here for a serializer to render or refuse.
     JacksonBuilder.toNode(
       SearchBodyBuilderFn(
         ElasticApi.search("") query {
@@ -1124,11 +1132,14 @@ package object bridge {
     ElasticBridge(filter)
   }
 
+  // The second serialisation door (issue #222): each aggregation's own single-aggregation body is
+  // rendered through the same injected SearchBodySerializer as ElasticSearchRequest.query.
   implicit def sqlQueryToAggregations(
     query: SelectStatement
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    serializer: SearchBodySerializer = SearchBodySerializer.Default
   ): Seq[ElasticAggregation] = {
     import query._
     statement
@@ -1143,35 +1154,32 @@ package object bridge {
                   .flatMap(_.criteria.map(ElasticCriteria(_).asQuery()))
                   .getOrElse(matchAllQuery())
 
+              val body: SearchRequest =
+                aggregation.aggType match {
+                  case COUNT if aggregation.sourceField.equalsIgnoreCase("_id") =>
+                    ElasticApi.search("") query {
+                      queryFiltered
+                    }
+                  case _ =>
+                    ElasticApi.search("") query {
+                      queryFiltered
+                    } aggregations {
+                      val filtered =
+                        filteredAgg match {
+                          case Some(filtered) => filtered.subAggregations(aggregation.agg)
+                          case _              => aggregation.agg
+                        }
+                      aggregation.nestedAgg match {
+                        case Some(nested) => nested.subAggregations(filtered)
+                        case _            => filtered
+                      }
+                    } size 0
+                }
+
               aggregation.copy(
                 sources = l.sources,
                 query = Some(
-                  (aggregation.aggType match {
-                    case COUNT if aggregation.sourceField.equalsIgnoreCase("_id") =>
-                      SearchBodyBuilderFn(
-                        ElasticApi.search("") query {
-                          queryFiltered
-                        }
-                      )
-                    case _ =>
-                      SearchBodyBuilderFn(
-                        ElasticApi.search("") query {
-                          queryFiltered
-                        }
-                        aggregations {
-                          val filtered =
-                            filteredAgg match {
-                              case Some(filtered) => filtered.subAggregations(aggregation.agg)
-                              case _              => aggregation.agg
-                            }
-                          aggregation.nestedAgg match {
-                            case Some(nested) => nested.subAggregations(filtered)
-                            case _            => filtered
-                          }
-                        }
-                        size 0
-                      )
-                  }).string.replace("\"version\":true,", "") /*FIXME*/
+                  serializer.serialize(body).replace("\"version\":true,", "") /*FIXME*/
                 )
               )
             })

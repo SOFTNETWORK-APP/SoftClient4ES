@@ -1016,6 +1016,14 @@ trait JavaClientGetApi extends GetApi with JavaClientHelpers {
 trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
   _: JavaClientCompanion =>
 
+  /** Issue #222 -- the search-body serializer every `SingleSearch` conversion made from this trait
+    * picks up (implicit scope of the bridge's `requestToElasticSearchRequest` /
+    * `sqlQueryToAggregations`): elastic4s's two-argument builder with the handler that renders an
+    * `extended_stats` over a transformed expression WITH its script. See
+    * [[JavaClientSearchBodySerializer]].
+    */
+  implicit def searchBodySerializer: SearchBodySerializer = JavaClientSearchBodySerializer
+
   override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query

@@ -116,6 +116,29 @@ class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
 
     implicit val context: ConversionContext = NativeContext
 
+    // The SQL -> Elasticsearch translation runs SYNCHRONOUSLY inside `searchAsync` / `scroll`,
+    // before any Future exists. A client module may REFUSE a statement there by throwing a
+    // status-bearing `ElasticError` (issue #222: STDDEV / VARIANCE over a transformed expression on
+    // ES 6 / ES 7, where the library cannot emit the aggregation script); this boundary turns that
+    // deliberate refusal into the `ElasticFailure` every other DQL error is, so BI tools see an
+    // honest 400 instead of a raw exception. Anything else escaping translation keeps its current
+    // (thrown) route -- a totality boundary for the whole translation layer is a separate change.
+    try dispatch(statement)
+    catch {
+      case refusal: ElasticError =>
+        logger.error(s"❌ ${refusal.message}")
+        Future.successful(ElasticFailure(refusal.copy(operation = Some("dql"))))
+    }
+  }
+
+  private def dispatch(
+    statement: SearchStatement
+  )(implicit
+    system: ActorSystem,
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[QueryResult]] = {
+
     statement match {
 
       // ============================

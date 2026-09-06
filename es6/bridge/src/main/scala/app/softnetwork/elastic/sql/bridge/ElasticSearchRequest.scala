@@ -16,9 +16,8 @@
 
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.query.{Bucket, Criteria, Except, Field, FieldSort, Limit}
+import app.softnetwork.elastic.sql.query.{Bucket, Criteria, Except, Field, FieldSort}
 import com.sksamuel.elastic4s.searches.SearchRequest
-import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 
 case class ElasticSearchRequest(
   sql: String,
@@ -31,7 +30,10 @@ case class ElasticSearchRequest(
   search: SearchRequest,
   buckets: Seq[Bucket] = Seq.empty,
   having: Option[Criteria] = None,
-  sorts: Seq[FieldSort] = Seq.empty
+  sorts: Seq[FieldSort] = Seq.empty,
+  // The body serializer the client module injected through the SingleSearch conversion (issue
+  // #222); Default = the one-argument elastic4s builder, refusing a transform-bearing extended_stats.
+  serializer: SearchBodySerializer = SearchBodySerializer.Default
 ) {
   def minScore(score: Option[Double]): ElasticSearchRequest = {
     score match {
@@ -40,6 +42,12 @@ case class ElasticSearchRequest(
     }
   }
 
+  /** True when this request carries `STDDEV` / `VARIANCE` (any of the `extended_stats` family) over
+    * a TRANSFORMED expression -- plain (`STDDEV(YEAR(x))`) or windowed (`... OVER (PARTITION BY
+    * ...)`). The shape a client module must either render with its script or refuse (issue #222).
+    */
+  def hasTransformExtendedStats: Boolean = SearchBodySerializer.hasTransformExtendedStats(search)
+
   def query: String =
-    SearchBodyBuilderFn(search).string.replace("\"version\":true,", "") /*FIXME*/
+    serializer.serialize(search).replace("\"version\":true,", "") /*FIXME*/
 }
