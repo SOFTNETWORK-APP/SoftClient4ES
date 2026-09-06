@@ -22,7 +22,9 @@ trait SelectParser {
   self: Parser with WhereParser =>
 
   def field: PackratParser[Field] =
-    (quotedIdentifier |
+    // #284: decline the quoted lexeme when an arithmetic operator follows, so
+    // `SELECT `amount` + 1` reaches identifierWithArithmeticExpression below.
+    (quotedIdentifierUnlessArithmetic |
     identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithWindowFunction |

@@ -263,30 +263,66 @@ class QuotedIdentifierSpec extends AnyFlatSpec with Matchers {
     firstFieldName("SELECT SUM(`bi_events`.`amount`) AS s FROM bi_events") shouldBe "amount"
   }
 
-  /** MEASURED LIMITATION, both spellings, unchanged by this story.
+  /** #284 — FIXED. An unparenthesised arithmetic expression may be headed by a quoted operand.
     *
-    * `quotedIdentifier` is the FIRST alternative of `SelectParser.field` and of
-    * `WhereParser.any_identifier`, and `|` commits to the first SUCCEEDING alternative, so a quoted
-    * lexeme at the head of an arithmetic expression is consumed alone and the operator is left
-    * unconsumed. That ordering is exactly what makes `SELECT "category"` a column rather than a
-    * string, so it cannot be relaxed here.
+    * It used to be rejected with `end of input expected`, in both spellings: the four clause-level
+    * productions list `quotedIdentifier` AHEAD of `identifierWithArithmeticExpression` and `|`
+    * commits to the first SUCCEEDING alternative, so the quoted lexeme was consumed alone and the
+    * operator was left unconsumed. That ordering could not simply be reversed — it is what makes
+    * `SELECT "category"` a column rather than a string (AD-3) — so the fix is the one-token
+    * LOOKAHEAD in `quotedIdentifierUnlessArithmetic`, which declines to match only when an operator
+    * is genuinely next.
     *
-    * `SELECT "amount" + 1` is rejected on the unmodified tree for this same reason (measured, with
-    * `end of input expected` — NOT the type error an earlier reading of the code predicted), so
-    * this is a pre-existing limitation the backtick spelling inherits, not a regression. The
-    * parenthesised form — which is what every BI tool emits for a calculation — works.
+    * Asserting `isRight` alone would be a certification, not a test: the whole point is that the
+    * operand is the COLUMN, so the AST is asserted too.
     */
-  it should "reject an UNPARENTHESISED arithmetic expression headed by a quoted operand" in {
-    rejected("SELECT `amount` + 1 AS a FROM t")
-    rejected("SELECT \"amount\" + 1 AS a FROM t")
-    rejected("SELECT id FROM t WHERE `amount` + 1 > 5")
-    // The bare spelling has no such limitation — `quotedIdentifier` cannot match it at all.
+  it should "accept an UNPARENTHESISED arithmetic expression headed by a quoted operand (#284)" in {
+    parses("SELECT `amount` + 1 AS a FROM t")
+    parses("SELECT \"amount\" + 1 AS a FROM t")
+    parses("SELECT id FROM t WHERE `amount` + 1 > 5")
+    parses("SELECT `amount` - 1 AS a FROM t")
+    parses("SELECT `amount` * 2 AS a FROM t")
+    parses("SELECT `amount` / 2 AS a FROM t")
+    parses("SELECT `amount` % 2 AS a FROM t")
+    parses("SELECT `a`.`amount` + 1 AS x FROM t a")
+    parses("SELECT `amount` + `qty` AS a FROM t")
+    parses("SELECT `category`, SUM(`amount` + 1) AS a FROM t GROUP BY `category`")
+    parses("SELECT id FROM t ORDER BY `amount` + 1 DESC")
+    // NOT a quoting limit: a bare `amount + 1` beside a GROUP BY is rejected identically, by
+    // `validate()` and not by the grammar. Pinned as a pair so the two reasons stay distinguishable.
+    rejected("SELECT `category`, `amount` + 1 AS a FROM t GROUP BY `category`")
+    rejected("SELECT category, amount + 1 AS a FROM t GROUP BY category")
+
+    // The operand is the COLUMN, not the string — the reading the lookahead has to preserve. The
+    // render carries the canonical quoting, so the arithmetic reads `"amount" + 1`.
+    Parser("SELECT `amount` + 1 AS a FROM t").toOption.get.sql should include("\"amount\" + 1")
+    Parser("SELECT \"amount\" + 1 AS a FROM t").toOption.get.sql should include("\"amount\" + 1")
+    single("SELECT `amount` + 1 AS a FROM t").select.fields.head.identifier.sql should
+    include("\"amount\"")
+
+    // The bare spelling never had the limitation.
     parses("SELECT amount + 1 AS a FROM t")
     parses("SELECT id FROM t WHERE amount + 1 > 5")
-    // …and the parenthesised and nested forms work for the quoted spellings.
+    // …and the parenthesised and nested forms keep working.
     parses("SELECT (`amount` + 1) AS a FROM t")
     parses("SELECT (\"amount\" + 1) AS a FROM t")
     parses("SELECT MAX(`amount` + 1) AS a FROM t")
+  }
+
+  /** The guard is a LOOKAHEAD, so it must consume nothing. If `not(...)` ever became a consuming
+    * parser, or the guard were applied to `quotedIdentifier` itself rather than to the clause-level
+    * alternative, these would break — each is a quoted operand with NO operator after it, in each
+    * of the four guarded productions.
+    */
+  it should "leave a quoted identifier with no operator after it completely unaffected" in {
+    firstFieldName("SELECT `category` FROM t") shouldBe "category"
+    single("SELECT `category`, COUNT(id) AS n FROM t GROUP BY `category`").sql should
+    include("GROUP BY \"category\"")
+    single("SELECT id FROM t ORDER BY `event_ts` DESC").sql should include("\"event_ts\"")
+    single("SELECT id FROM t WHERE `category` = 'a'").sql should include("\"category\"")
+    // A minus sign that is part of the NAME, not an operator, must still be part of the name.
+    firstFieldName("SELECT `logs-2025` FROM t") shouldBe "logs-2025"
+    firstFieldName("SELECT logs-2025.03 FROM t") shouldBe "logs-2025.03"
   }
 
   "a quoted identifier inside SCRIPT AS" should "parse" in {
@@ -439,28 +475,44 @@ class QuotedIdentifierSpec extends AnyFlatSpec with Matchers {
     s.sql should include("\"e\".\"category\"")
   }
 
-  "whitespace around the dot separator" should "be tolerated" in {
-    // A widening: rejected on the unmodified tree with `end of input expected`.
-    firstFieldName("SELECT a . b FROM t") shouldBe "a.b"
+  /** #285 — FIXED. A name ending in a dot no longer swallows the word that follows it.
+    *
+    * `nameTail` used to be `rep("." ~> part)`, and RegexParsers skips whitespace before every
+    * terminal, so the dot and the next word were joined even when separated. The ORDER BY case was
+    * SILENT — the direction was absorbed into the name and the sort quietly became ASC. The
+    * separator now belongs to `nameTailPartRegex`, so the dot and the part must be adjacent.
+    */
+  it should "not let a name ending in a dot swallow the next word (#285)" in {
+    // The silent one, now LOUD. The tail cannot match `. DESC` across the space, so the dangling
+    // dot is left unconsumed and `phrase` rejects the statement. A trailing dot is not a name, and
+    // a rejection is the honest answer — what must never happen again is the old silent
+    // `ORDER BY "b.DESC" ASC`, where the direction was absorbed into the column name.
+    rejected("SELECT a FROM t ORDER BY b. DESC")
+    Parser("SELECT a FROM t ORDER BY b. DESC").swap.toOption.get.msg should not include "b.DESC"
+    // Same shape in a SELECT list: a loud rejection rather than the column `a.AS`.
+    rejected("SELECT a. AS x FROM t")
+    // A well-formed qualified name is unaffected.
+    single("SELECT a FROM t ORDER BY b.c DESC").sql should include("ORDER BY b.c DESC")
+    firstFieldName("SELECT a.b FROM t") shouldBe "a.b"
+    firstFieldName("SELECT logs-2025.03 FROM t") shouldBe "logs-2025.03"
+    firstFieldName("SELECT a.[0] FROM t") shouldBe "a.[0]"
+    // Quoted tail parts are joined by the same regex, so they get the same adjacency rule.
+    single("SELECT `e`.`category` FROM bi_events e").sql should include("\"e\".\"category\"")
+    rejected("SELECT a FROM t ORDER BY `b`. DESC")
   }
 
-  /** The cost of that widening, measured in review and pinned so it is a decision.
+  /** Fixing #285 reverted a widening story 21.1 had pinned: `SELECT a . b` parsed as `a.b` while
+    * the dot was a free-standing terminal. It is a rejection again, as it was before 21.1 — the
+    * spacing is not a spelling anything emits, and the adjacency rule is what closes the silent
+    * ORDER BY defect. Pinned so the revert is a decision.
     *
-    * `nameTail` is `rep("." ~> part)` and RegexParsers skips whitespace before every terminal, so a
-    * name ending in a DOT swallows whatever word follows it — including a keyword. Both inputs
-    * below are malformed SQL whose old parse was equally nonsense (`identifierRegex` matched the
-    * trailing dot, giving the field `b.` / `a.`), so this is a change of one broken reading for
-    * another, not a regression of any valid query. It is pinned because the ORDER BY case is
-    * SILENT: the direction is absorbed into the name and the sort quietly becomes ASC.
-    *
-    * Closing it means making the dot and the part one whitespace-free regex, which would also
-    * revert the widening pinned just above. Recorded, not fixed.
+    * Residual, deliberately accepted: whitespace BEFORE the dot is still skipped by the enclosing
+    * `rep`, so `SELECT a .b` reads as `a.b`. That is a tolerance of an odd spelling — nothing is
+    * lost and no clause is mis-parsed — not a silent reading change.
     */
-  it should "swallow the following word when a name ends in a dot — malformed input, pinned" in {
-    firstFieldName("SELECT a. AS x FROM t") shouldBe "a.AS"
-    single("SELECT a FROM t ORDER BY b. DESC").sql should include("ORDER BY b.DESC ASC")
-    // A well-formed qualified name is unaffected — the direction survives.
-    single("SELECT a FROM t ORDER BY b.c DESC").sql should include("ORDER BY b.c DESC")
+  it should "reject a dot separated from its part by whitespace on BOTH sides" in {
+    rejected("SELECT a . b FROM t")
+    firstFieldName("SELECT a .b FROM t") shouldBe "a.b"
   }
 
   /** The scanners now treat a backtick as a quote opener, so an ODD backtick outside any quoted run
