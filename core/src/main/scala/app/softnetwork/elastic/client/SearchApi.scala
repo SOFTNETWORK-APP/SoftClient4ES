@@ -36,6 +36,7 @@ import app.softnetwork.elastic.sql.query.{
   SelectStatement,
   SingleSearch
 }
+import app.softnetwork.elastic.sql.query.TemporalLiterals
 import com.fasterxml.jackson.databind.JsonNode
 import com.typesafe.config.ConfigFactory
 import org.json4s.Formats
@@ -73,6 +74,111 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     else fields.map(f => f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
   }
 
+  /** Issue #276 -- resolve the string literals a WHERE clause compares against `date`-mapped
+    * columns (see [[TemporalLiterals]]) BEFORE the statement is rendered into an Elasticsearch
+    * query. Runs ONCE per statement, on the AST -- never per hit.
+    *
+    * Covered entry points: every `SingleSearch -> ElasticQuery` seam -- [[search]] /
+    * [[searchAsync]] (the single statement and each `UNION ALL` request), the inner-hits search and
+    * `ScrollApi.scroll` -- hence `GatewayApi.run` (REPL, JDBC driver, Flight SQL sidecar and its
+    * cross-index JOIN legs, which re-enter `gateway.run`) transitively.
+    *
+    * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when the WHERE carries
+    * no candidate literal, when the FROM does not name exactly ONE concrete index (several sources,
+    * a `*` wildcard or a `,` list), when this client is not an [[IndicesApi]], and when the schema
+    * cannot be loaded (alias without a template, unknown index, cluster error or a thrown lookup)
+    * -- the literal is then forwarded exactly as before. The schema comes from
+    * [[IndicesApi.loadSchema]] 's 5-minute cache, so a miss costs one `GET <index>` per index per
+    * TTL. A literal that cannot be a date under a fully-understood mapping format is a `400` that
+    * names the literal and the field, instead of Elasticsearch's
+    * `search_phase_execution_exception`.
+    *
+    * `loadSchema` caches successes only, so a source it cannot resolve -- an ALIAS on the es8/es9
+    * clients (`executeGetIndex` looks the alias up as a key and finds nothing), an unknown index
+    * without a template -- would otherwise cost one failed lookup (two round trips + WARN lines)
+    * per statement. [[temporalLiteralSchemaMisses]] remembers such a source for
+    * [[temporalLiteralSchemaMissTtlMs]] and skips the lookup; the literal is verbatim either way.
+    */
+  protected def resolveTemporalLiterals(single: SingleSearch): ElasticResult[SingleSearch] = {
+    if (!TemporalLiterals.hasCandidates(single)) return ElasticResult.success(single)
+    single.sources.distinct match {
+      case Seq(source) if !source.contains("*") && !source.contains(",") =>
+        this match {
+          case indices: IndicesApi if !temporalLiteralSchemaMissed(source) =>
+            Try(indices.loadSchema(source)) match {
+              case Success(ElasticSuccess(schema)) =>
+                temporalLiteralSchemaMisses.remove(source)
+                TemporalLiterals(single, schema) match {
+                  case Right(resolved) =>
+                    if (resolved ne single)
+                      logger.debug(
+                        s"Temporal literals resolved against the mapping of '$source':${resolved.where
+                          .map(_.sql)
+                          .getOrElse("")}"
+                      )
+                    ElasticResult.success(resolved)
+                  case Left(reason) =>
+                    logger.error(s"❌ $reason")
+                    ElasticResult.failure(
+                      ElasticError(
+                        message = reason,
+                        statusCode = Some(400),
+                        index = Some(source),
+                        operation = Some("search")
+                      )
+                    )
+                }
+              case Success(ElasticFailure(error)) =>
+                temporalLiteralSchemaMisses.put(source, System.currentTimeMillis())
+                logger.debug(
+                  s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
+                )
+                ElasticResult.success(single)
+              case Failure(e) =>
+                temporalLiteralSchemaMisses.put(source, System.currentTimeMillis())
+                logger.debug(
+                  s"Schema lookup for '$source' failed with ${e.getClass.getName} - temporal literals forwarded verbatim"
+                )
+                ElasticResult.success(single)
+            }
+          case _ => ElasticResult.success(single)
+        }
+      case _ => ElasticResult.success(single)
+    }
+  }
+
+  /** Sources whose schema could not be loaded, with the time of the miss (see
+    * [[resolveTemporalLiterals]]). Per client instance, like the schema cache it shadows.
+    */
+  private val temporalLiteralSchemaMisses =
+    new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
+
+  /** How long a failed schema lookup is remembered -- the schema cache's own default TTL. */
+  protected def temporalLiteralSchemaMissTtlMs: Long = 5 * 60 * 1000L
+
+  private def temporalLiteralSchemaMissed(source: String): Boolean =
+    Option(temporalLiteralSchemaMisses.get(source)).exists { missedAt =>
+      System.currentTimeMillis() - missedAt < temporalLiteralSchemaMissTtlMs
+    }
+
+  /** [[resolveTemporalLiterals]] over every request of a `UNION ALL`; the first rejection wins. */
+  protected def resolveTemporalLiterals(multiple: MultiSearch): ElasticResult[MultiSearch] = {
+    val zero: ElasticResult[Seq[SingleSearch]] = ElasticResult.success(Seq.empty)
+    multiple.requests.foldLeft(zero) {
+      case (ElasticSuccess(acc), request) =>
+        resolveTemporalLiterals(request) match {
+          case ElasticSuccess(resolved) => ElasticResult.success(acc :+ resolved)
+          case ElasticFailure(error)    => ElasticResult.failure(error)
+        }
+      case (failure, _) => failure
+    } match {
+      case ElasticSuccess(resolved) =>
+        val unchanged = resolved.zip(multiple.requests).forall { case (a, b) => a eq b }
+        ElasticResult.success(if (unchanged) multiple else multiple.copy(requests = resolved))
+      case ElasticFailure(error) => ElasticResult.failure(error)
+    }
+  }
+
   // ========================================================================
   // PUBLIC METHODS
   // ========================================================================
@@ -107,7 +213,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               )
             )
         }
-      case single: SingleSearch =>
+      case parsed: SingleSearch =>
+        // #276 -- resolve temporal literals against the mapped `date` columns BEFORE rendering
+        val single = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return ElasticResult.failure(error)
+        }
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*),
@@ -135,7 +246,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               )
         }
 
-      case multiple: MultiSearch =>
+      case parsed: MultiSearch =>
+        val multiple = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return ElasticResult.failure(error)
+        }
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -452,7 +567,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             )
         }
 
-      case single: SingleSearch =>
+      case parsed: SingleSearch =>
+        // #276 -- resolve temporal literals against the mapped `date` columns BEFORE rendering
+        val single = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
+        }
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*)
@@ -473,7 +593,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               )
         }
 
-      case multiple: MultiSearch =>
+      case parsed: MultiSearch =>
+        val multiple = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
+        }
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -989,14 +1113,22 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   ): ElasticResult[Seq[(U, Seq[I])]] = {
     implicit def timestamp: Long = System.currentTimeMillis()
     sql.statement match {
-      case Some(single: SingleSearch) =>
+      case Some(parsed: SingleSearch) =>
+        val single = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return ElasticResult.failure(error)
+        }
         val elasticQuery = ElasticQuery(
           single,
           collection.immutable.Seq(single.sources: _*)
         )
         singleSearchWithInnerHits[U, I](elasticQuery, innerField)
 
-      case Some(multiple: MultiSearch) =>
+      case Some(parsed: MultiSearch) =>
+        val multiple = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return ElasticResult.failure(error)
+        }
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(

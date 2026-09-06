@@ -286,6 +286,34 @@ WHERE age BETWEEN 20 AND 50
   AND (name LIKE 'A%' OR name RLIKE '.*o.*');
 ```
 
+### Temporal literals against `date` columns
+
+A string literal compared to a column mapped as `date` (with `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`,
+`BETWEEN` or `IN`) is resolved against the column's mapping **format** before the query is sent to
+Elasticsearch, so the SQL-standard spelling a BI tool emits selects the same rows as the ISO one:
+
+```sql
+WHERE event_ts >= '2026-06-04 00:00:00.000000'   -- what Superset / SQLAlchemy render
+WHERE event_ts >= '2026-06-04 00:00:00'
+WHERE event_ts >= '2026-06-04T00:00:00'          -- what Elasticsearch's default format accepts
+```
+
+- Under the default format (`strict_date_optional_time||epoch_millis`) the space separator is
+  rewritten to `T`; fraction digits and a trailing zone offset are preserved. ISO literals,
+  date-only literals, epoch milliseconds and date math (`now-1d/d`) are forwarded verbatim.
+- A column with a custom `format` (for example `yyyy-MM-dd HH:mm:ss`) keeps working as before: a
+  literal its format already parses is never rewritten.
+- A literal that cannot be a date under the default format fails with an error naming the literal
+  and the field (HTTP 400) instead of a raw Elasticsearch `search_phase_execution_exception`.
+- `keyword`/`text` columns, `LIKE`/`RLIKE` patterns, function-wrapped columns (`YEAR(event_ts)`),
+  `date_nanos` columns and `HAVING` conditions are never touched.
+- The resolution needs the index mapping, loaded through the schema cache (one lookup per index
+  every 5 minutes, and only for statements whose `WHERE` compares a string literal to a column).
+  When the statement reads several indices or a wildcard, joins another index (`JOIN` sources keep
+  their literals), or the mapping cannot be loaded (an index alias, for instance), the literal is
+  forwarded verbatim as in previous releases; a failed mapping lookup is remembered for 5 minutes
+  so it is not retried on every statement.
+
 ---
 
 ## ORDER BY
