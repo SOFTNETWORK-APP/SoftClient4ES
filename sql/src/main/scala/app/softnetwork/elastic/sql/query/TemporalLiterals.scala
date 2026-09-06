@@ -53,12 +53,13 @@ import scala.util.matching.Regex
   *      `format: "yyyy-MM-dd HH:mm:ss"` column parses the space form TODAY and must keep working;
   *   1. if the mapping accepts an ISO optional-time built-in: a literal of the RECOGNISED calendar
   *      shape -- `yyyy-MM-dd`, optionally followed by a `T` or ONE SPACE, a time `HH[:mm[:ss[.f]]]`
-  *      and a zone (`Z`, an offset or a zone id) -- has its date and time validated with
-  *      `java.time`; the space form is then rewritten with a `T` (fraction digits and zone kept, a
-  *      lower-case `z` upper-cased); an ISO form is forwarded verbatim. A literal that merely
-  *      STARTS like an ISO date (a signed or 5-digit year, `2026-6-4`, `T1:02:03`, an ordinal or
-  *      week date, a tail this recogniser does not model) is forwarded verbatim: Elasticsearch
-  *      decides;
+  *      and a zone (`Z` or an offset `+01` / `+0100` / `+01:00` / `+01:00:00`) -- has its date and
+  *      time validated with `java.time`; the space form is then rewritten with a `T` (fraction
+  *      digits and offset kept, a lower-case `z` upper-cased); an ISO form is forwarded verbatim. A
+  *      literal that merely STARTS like an ISO date (a signed or 5-digit year, `2026-6-4`,
+  *      `T1:02:03`, an ordinal or week date, a zone id such as `UTC` or `GMT+1`, an offset in
+  *      another shape, any tail this recogniser does not model) is forwarded verbatim:
+  *      Elasticsearch decides;
   *   1. a literal is REJECTED -- with a message naming the literal, the field and the format --
   *      only when it cannot be an ISO date at all (it does not even start with a year) or carries
   *      an INVALID recognised calendar/time component (`2026-02-30`, `T24:00:00`), and only when
@@ -68,8 +69,10 @@ import scala.util.matching.Regex
   *
   * The accept set was measured against the real Elasticsearch parsers of 6.8.23, 7.17.29, 8.18.3
   * and 9.0.3 (`DateFormatter.forPattern(spec).toDateMathParser()`): every REJECT above fails on all
-  * four, every VERBATIM is a no-op, every rewritten value is accepted on all four (a zone id after
-  * the time is 7+ only -- as it is when the user types the `T` form).
+  * four, every VERBATIM is a no-op, and every value the rewrite can produce -- a `T` form with an
+  * optional fraction and an optional `Z` / `+01` / `+0100` / `+01:00` / `+01:00:00` -- is accepted
+  * on all four. Zone shapes some majors reject (`+010000` on 7.17, `GMT+1` on 6.8/7.17, the mixed
+  * `+0100:00` / `+01:0000` everywhere) are never produced: their inputs are forwarded verbatim.
   *
   * The schema-absent path (no schema attached, statement over several indices, wildcard source,
   * schema lookup failure) is the CALLER's decision and means "forward verbatim" -- this object
@@ -114,9 +117,12 @@ object TemporalLiterals {
 
   private val IsoTime = "\\d{2}(?::\\d{2}(?::\\d{2}(?:[.,]\\d{1,9})?)?)?"
 
-  /** `Z`, an offset (`+01`, `+0100`, `+01:00`, `+01:00:00`) or a zone id (`UTC`, `Europe/Paris`).
+  /** `Z` or an offset in one of the FOUR shapes every Elasticsearch major accepts after a time:
+    * `+01`, `+0100`, `+01:00`, `+01:00:00`. Anything else (`+010000`, a mixed `+0100:00`, a zone id
+    * such as `UTC` or `GMT+1` -- accepted only by some majors) is left to the date-like fallback,
+    * i.e. forwarded verbatim, never rewritten.
     */
-  private val IsoZone = "Z|z|[+-]\\d{2}(?::?\\d{2}(?::?\\d{2})?)?|[A-Za-z][A-Za-z0-9_+\\-/]*"
+  private val IsoZone = "Z|z|[+-]\\d{2}(?::\\d{2}(?::\\d{2})?|\\d{2})?"
 
   /** The RECOGNISED calendar shape: a strict `yyyy-MM-dd`, optionally followed by a `T` or ONE
     * space, an optional time and an optional zone. Groups: date, separator, time, zone.

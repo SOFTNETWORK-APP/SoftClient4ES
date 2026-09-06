@@ -31,13 +31,18 @@ import scala.collection.immutable.ListMap
   * columns. The bridge emission is asserted in `TemporalLiteralQuerySpec` (bridge module) and the
   * core seam in `TemporalLiteralSearchSpec` (core module); this spec pins the RULES.
   */
-/** What the oracle expects of a literal: forwarded, rejected, or rewritten to `to`. */
-sealed trait Expected
-case object Verbatim extends Expected
-case object Reject extends Expected
-final case class Rewrite(to: String) extends Expected
+object TemporalLiteralsSpec {
+
+  /** What the oracle expects of a literal: forwarded, rejected, or rewritten to `to`. */
+  sealed trait Expected
+  case object Verbatim extends Expected
+  case object Reject extends Expected
+  final case class Rewrite(to: String) extends Expected
+}
 
 class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
+
+  import TemporalLiteralsSpec._
 
   private val default = FieldFormat(TemporalLiterals.DefaultDateFormat)
   private val custom = FieldFormat("yyyy-MM-dd HH:mm:ss")
@@ -145,8 +150,13 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     "2026-06-04 10:30:15z"          -> Rewrite("2026-06-04T10:30:15Z"),
     "2026-06-04 23:59:59,5"         -> Rewrite("2026-06-04T23:59:59,5"),
     "2026-06-04 10:30:15.123456789" -> Rewrite("2026-06-04T10:30:15.123456789"),
-    "2026-06-04 10:30:15UTC"        -> Rewrite("2026-06-04T10:30:15UTC"),
     "2026-06-04 10:30:15||+1d"      -> Rewrite("2026-06-04T10:30:15||+1d"),
+    // -- zone shapes some majors reject are never produced by the rewrite: verbatim (R4-13)
+    "2026-06-04 10:30:15UTC"      -> Verbatim, // zone id: 7+ only
+    "2026-06-04 10:30:15GMT+1"    -> Verbatim, // 6.8 / 7.17 reject it
+    "2026-06-04 10:30:15+010000"  -> Verbatim, // 7.17 rejects it
+    "2026-06-04 10:30:15+0100:00" -> Verbatim, // every major rejects it
+    "2026-06-04 10:30:15+01:0000" -> Verbatim, // every major rejects it
     // -- ISO forms Elasticsearch accepts: verbatim
     "2026-06-04"                      -> Verbatim,
     "2026-06"                         -> Verbatim,
