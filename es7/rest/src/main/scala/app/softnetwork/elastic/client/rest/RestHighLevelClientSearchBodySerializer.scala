@@ -30,18 +30,18 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{AbstractAggregation, Aggre
   * ES 9 modules render through: on the 7.x line both `SearchBodyBuilderFn.apply` and
   * `AggregationBuilderFn.apply` are one-argument, and no custom handler can be injected.
   *
-  * That is the whole reason a third behaviour exists beside *render* (ES 8 / ES 9) and *refuse*
-  * (ES 6). The version-agnostic bridge template binds a transform-bearing `extended_stats` to
-  * [[ScriptedExtendedStatsAggregation]] — a type elastic4s does not know — so handing it to the
-  * 7.x builder would raise `NotImplementedError`. Here the marker is simply substituted back for
-  * the `ExtendedStatsAggregation` it wraps, throughout the aggregation tree, and the resulting
-  * request is serialised by the stock builder, which now renders the script itself.
+  * That is the whole reason a third behaviour exists beside *render* (ES 8 / ES 9) and *refuse* (ES
+  * 6). The version-agnostic bridge template binds a transform-bearing `extended_stats` to
+  * [[ScriptedExtendedStatsAggregation]] — a type elastic4s does not know — so handing it to the 7.x
+  * builder would raise `NotImplementedError`. Here the marker is simply substituted back for the
+  * `ExtendedStatsAggregation` it wraps, throughout the aggregation tree, and the resulting request
+  * is serialised by the stock builder, which now renders the script itself.
   *
   * The template stays version-agnostic: it knows only that a marker exists, never which majors can
   * render it. The unwrap lives HERE rather than on `SearchBodySerializer` because it is not shared
   * behaviour — ES 8 / ES 9 must NOT unwrap (their pinned elastic4s, 8.18.2 / 9.0.0, still drops the
-  * script; they need the marker to reach their handler) and ES 6 must not either (it refuses).
-  * One major needs it today, so it is written once, where it is true (Rule of Three).
+  * script; they need the marker to reach their handler) and ES 6 must not either (it refuses). One
+  * major needs it today, so it is written once, where it is true (Rule of Three).
   *
   * Watch item (spec AD-S3-3 / AD-S3-4): when an 8.x / 9.x release carrying elastic4s#4106 / #4100
   * exists and those pins move, the ES 8 / ES 9 handler retires the same way and the marker can be

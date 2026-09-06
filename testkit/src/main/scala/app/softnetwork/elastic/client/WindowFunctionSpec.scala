@@ -2179,8 +2179,8 @@ trait WindowFunctionSpec
       |FROM emp
       |LIMIT 100""".stripMargin
 
-  /** ES 6: the same statement is refused on the gateway route (REPL / JDBC / Arrow -- an honest
-    * 400 naming the major) AND on the direct client API (the same `ElasticError`, thrown).
+  /** ES 6: the same statement is refused on the gateway route (REPL / JDBC / Arrow -- an honest 400
+    * naming the major) AND on the direct client API (the same `ElasticError`, thrown).
     */
   private def assertRefusedOnThisMajor(sql: String): Unit = {
     val major = elasticsearchMajor

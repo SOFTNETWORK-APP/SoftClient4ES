@@ -476,10 +476,10 @@ All six map to a single Elasticsearch `extended_stats` aggregation per call; the
 variants require **Elasticsearch 7.7+**; population variants work on Elasticsearch 6+.
 
 Over a **transformed** operand (`STDDEV(YEAR(hire_date))`, `VARIANCE(ABS(salary))`, plain or
-windowed) the statistic is computed over the transform on **Elasticsearch 8+**; on Elasticsearch 6
-and 7 the query is **refused** with a `400` naming the release, because the client library cannot
-emit the aggregation script there and used to return the statistic of the raw field silently. See
-[STDDEV / VARIANCE family](functions_aggregate.md#function-stddev--variance-family).
+windowed) the statistic is computed over the transform on **Elasticsearch 7 and later**; on
+Elasticsearch 6 the query is **refused** with a `400` naming the release, because the client library
+cannot emit the aggregation script there and used to return the statistic of the raw field silently.
+See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev--variance-family).
 
 ### Percentiles — `PERCENTILE_CONT` / `PERCENTILE_DISC`
 
