@@ -1,7 +1,6 @@
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.query.SingleSearch
@@ -11,7 +10,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
-import scala.concurrent.Await
 import scala.concurrent.duration._
 
 /** Issue #222 (story BIDC-3) -- the ONE core boundary the per-major refusal relies on.
@@ -24,9 +22,10 @@ import scala.concurrent.duration._
   * explicit LIMIT) AND the `CoreDqlExtension`'s quota-capped scroll (an un-LIMITed row query),
   * which calls `client.scroll` directly and never enters the executor. That second route is why
   * the boundary lives in `run`, not in `SearchExecutor`: a first cut there let the refusal escape
-  * as a raw exception on exactly the path BI tools take for a plain projection. One route
-  * translates LAZILY (the windowed row query's scroll): there the refusal fails the stream when it
-  * is materialised -- loud, never silent -- and that surface is pinned too.
+  * as a raw exception on exactly the path BI tools take for a plain projection. The windowed row
+  * query's scroll used to translate LAZILY (inside the stream's Future); its translation is now
+  * hoisted onto the calling thread so the contract is uniform: a refusal known at translation time
+  * is answered at `run`, on every route.
   *
   * Docker-free: a `NopeClientApi` whose `singleSearchToJsonQuery` refuses like a client module.
   */
@@ -88,24 +87,17 @@ class GatewayRefusalBoundarySpec
     assertRefused(client.run("SELECT id, name FROM t").futureValue)
   }
 
-  it should "surface it on the windowed row route (un-LIMITed STDDEV OVER PARTITION BY) when the stream runs" in {
-    // The quota-capped scroll of a WINDOWED row query builds its source lazily
-    // (`scrollWithWindowEnrichment` -> `Source.futureSource`), so the translation -- and the
-    // refusal -- happen when the stream is materialised, not when `run` returns. The refusal is
-    // still the same status-bearing ElasticError, and it FAILS the stream: nothing is returned
-    // silently. Pinned here so the surface is known, not assumed.
-    client
-      .run("SELECT id, name, STDDEV(YEAR(createdAt)) OVER (PARTITION BY id) AS s FROM t")
-      .futureValue match {
-      case ElasticFailure(error) =>
-        error.message shouldBe refusalMessage
-        error.statusCode shouldBe Some(400)
-      case ElasticSuccess(QueryStream(stream, _)) =>
-        val failure = intercept[ElasticError](Await.result(stream.runWith(Sink.seq), 5.seconds))
-        failure.message shouldBe refusalMessage
-        failure.statusCode shouldBe Some(400)
-      case other => fail(s"a refused translation must fail, got $other")
-    }
+  it should "surface it on the windowed row route (un-LIMITed STDDEV OVER PARTITION BY)" in {
+    // The quota-capped scroll of a WINDOWED row query executes its window aggregations inside a
+    // Future and builds its source lazily. The TRANSLATION, where the refusal is raised, runs on
+    // the calling thread BEFORE either exists (ScrollApi.scrollWithWindowEnrichment), so the
+    // refusal is answered here, at `run` -- a first cut deferred it into the stream, where it only
+    // surfaced once somebody materialised the source.
+    assertRefused(
+      client
+        .run("SELECT id, name, STDDEV(YEAR(createdAt)) OVER (PARTITION BY id) AS s FROM t")
+        .futureValue
+    )
   }
 
   it should "not manufacture a refusal for a client that does not refuse" in {

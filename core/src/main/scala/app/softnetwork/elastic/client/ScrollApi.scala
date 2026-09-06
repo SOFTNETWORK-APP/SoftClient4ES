@@ -719,12 +719,23 @@ trait ScrollApi extends ElasticClientHelpers {
 
     logger.info(s"🪟 Scrolling with ${request.windowFunctions.size} window functions")
 
-    // Execute window aggregations first
-    val windowCacheFuture: Future[ElasticResult[WindowCache]] =
-      Future(executeWindowAggregations(request))
+    // Translate BOTH requests on the calling thread, before any Future or Source exists (issue
+    // #222): a client module's refusal (a status-bearing ElasticError raised by the translation)
+    // must reach `GatewayApi.run` as an ElasticFailure, exactly as on the one-shot routes -- not
+    // sit inside a lazily-built stream that only fails once someone materialises it.
+    val (aggRequest, aggQuery) = windowAggregationQuery(request)
 
     // Create base query without window functions
     val baseQuery = createBaseQuery(request)
+    val baseElasticQuery = ElasticQuery(
+      baseQuery,
+      collection.immutable.Seq(baseQuery.sources: _*),
+      sql = Some(baseQuery.sql)
+    )
+
+    // Execute window aggregations first
+    val windowCacheFuture: Future[ElasticResult[WindowCache]] =
+      Future(executeWindowAggregations(request, aggRequest, aggQuery))
 
     // Stream and enrich
     val outputFields = extractOutputFieldNames(request)
@@ -740,11 +751,7 @@ trait ScrollApi extends ElasticClientHelpers {
         windowCacheFuture.map {
           case ElasticSuccess(cache) =>
             scrollWithMetrics(
-              ElasticQuery(
-                baseQuery,
-                collection.immutable.Seq(baseQuery.sources: _*),
-                sql = Some(baseQuery.sql)
-              ),
+              baseElasticQuery,
               baseQuery.fieldAliases,
               baseQuery.sqlAggregations,
               // The base rows must carry `_id`: the ordinal lookup below matches each row to
@@ -774,10 +781,7 @@ trait ScrollApi extends ElasticClientHelpers {
               // Fallback: return base results without enrichment
               logger.warn("⚠️ Falling back to base results without window enrichment")
               scrollWithMetrics(
-                ElasticQuery(
-                  baseQuery,
-                  collection.immutable.Seq(baseQuery.sources: _*)
-                ),
+                baseElasticQuery,
                 baseQuery.fieldAliases,
                 baseQuery.sqlAggregations,
                 config.copy(retainDocumentId = shouldKeepDocumentId),
