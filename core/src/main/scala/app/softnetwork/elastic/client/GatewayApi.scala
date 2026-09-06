@@ -116,29 +116,6 @@ class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
 
     implicit val context: ConversionContext = NativeContext
 
-    // The SQL -> Elasticsearch translation runs SYNCHRONOUSLY inside `searchAsync` / `scroll`,
-    // before any Future exists. A client module may REFUSE a statement there by throwing a
-    // status-bearing `ElasticError` (issue #222: STDDEV / VARIANCE over a transformed expression on
-    // ES 6 / ES 7, where the library cannot emit the aggregation script); this boundary turns that
-    // deliberate refusal into the `ElasticFailure` every other DQL error is, so BI tools see an
-    // honest 400 instead of a raw exception. Anything else escaping translation keeps its current
-    // (thrown) route -- a totality boundary for the whole translation layer is a separate change.
-    try dispatch(statement)
-    catch {
-      case refusal: ElasticError =>
-        logger.error(s"❌ ${refusal.message}")
-        Future.successful(ElasticFailure(refusal.copy(operation = Some("dql"))))
-    }
-  }
-
-  private def dispatch(
-    statement: SearchStatement
-  )(implicit
-    system: ActorSystem,
-    ec: ExecutionContext,
-    context: ConversionContext
-  ): Future[ElasticResult[QueryResult]] = {
-
     statement match {
 
       // ============================
@@ -1953,6 +1930,32 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     statement: Statement
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
+
+    // The SQL -> Elasticsearch translation runs SYNCHRONOUSLY inside `searchAsync` / `scroll`,
+    // before any Future exists, on every route below -- the extension route included
+    // (`CoreDqlExtension`'s quota-capped scroll calls `client.scroll` directly and never enters an
+    // executor). A client module may REFUSE a statement there by throwing a status-bearing
+    // `ElasticError` (issue #222: STDDEV / VARIANCE over a transformed expression on ES 6 / ES 7,
+    // where the library cannot emit the aggregation script). This ONE boundary, at the front door
+    // every route converges on, turns that deliberate refusal into the `ElasticFailure` every other
+    // error is, so the REPL, JDBC and Arrow see an honest 400 instead of a raw exception. Anything
+    // else escaping translation keeps its current (thrown) route -- a `NonFatal` totality boundary
+    // for the whole translation layer is #250's shape and a separate change.
+    try dispatch(statement)
+    catch {
+      case refusal: ElasticError =>
+        logger.error(s"❌ ${refusal.message}")
+        val operation = statement match {
+          case _: DqlStatement => Some("dql") // the relabel every DQL executor failure carries
+          case _               => refusal.operation
+        }
+        Future.successful(ElasticFailure(refusal.copy(operation = operation)))
+    }
+  }
+
+  private def dispatch(
+    statement: Statement
+  )(implicit system: ActorSystem, ec: ExecutionContext): Future[ElasticResult[QueryResult]] = {
 
     // ✅ TRY EXTENSIONS FIRST
     extensionRegistry.findHandler(statement) match {

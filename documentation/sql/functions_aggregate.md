@@ -1245,6 +1245,15 @@ STDDEV(expr) OVER (PARTITION BY partition_expr, ...)
 - `NULL` values are ignored.
 - The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Consequently the sample variants — including the default `STDDEV` / `VARIANCE` — require Elasticsearch 7.7+. On older clusters the column is returned as `null` and a warning is logged.
 - Each call emits its own `extended_stats` aggregation; two stat calls over the same column emit two aggregations.
+- **Transformed operands are per-major** (`STDDEV(YEAR(created_at))`, `VARIANCE(ABS(salary))`, `STDDEV_POP(DATE_TRUNC(ts, MONTH))`, plain or windowed). The Elasticsearch client library the driver builds on drops the aggregation script of an `extended_stats` on every line (elastic4s#4100), so:
+
+  | Elasticsearch | `STDDEV(f(x))` / `VARIANCE(f(x))` |
+  |---------------|-----------------------------------|
+  | 8.x, 9.x      | Computed over the transform — the driver emits the script itself. |
+  | 7.x           | **Refused** with a `400` naming the release (`STDDEV/VARIANCE over a transformed expression is not supported on Elasticsearch 7 …`). Lifted when the upstream fix reaches the 7.17 line. |
+  | 6.x           | **Refused** the same way, permanently (unmaintained library line). |
+
+  Before this rule, every release silently returned the statistic of the **raw** field (or an empty `extended_stats` Elasticsearch rejected). A raw-field operand (`STDDEV(salary)`) is unaffected on every release.
 
 **Examples:**
 ```sql

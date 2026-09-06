@@ -72,6 +72,28 @@ package object window {
     vs_salary: Option[Double] = None
   )
 
+  /** Issue #222 (story BIDC-3) — the `extended_stats` family over a TRANSFORMED expression
+    * (`YEAR(hire_date)`), per department. Four projections of one `extended_stats` whose value is
+    * the year, not the raw `hire_date` millis.
+    */
+  case class DepartmentYearStats(
+    department: String,
+    sd_year: Option[Double] = None,
+    vs_year: Option[Double] = None,
+    vp_year: Option[Double] = None,
+    sdp_year: Option[Double] = None
+  )
+
+  /** Issue #222 (story BIDC-3) — the windowed twin: every row carries its department's sample
+    * standard deviation of `YEAR(hire_date)`.
+    */
+  case class EmployeeYearStats(
+    department: String,
+    name: String,
+    hire_date: String,
+    sd_year: Option[Double] = None
+  )
+
   /** Story 14.5 — PERCENTILE_CONT integration shape. Each field is one percentile projected from a
     * single ES `percentiles` aggregation per call.
     */
