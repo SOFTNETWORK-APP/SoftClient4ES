@@ -37,14 +37,14 @@ import java.time.Duration
   *   Socket operation timeout
   * @param metrics
   *   Metrics and monitoring configuration
- * @param watcher
- *   Credentials for the watcher component (if applicable)
- * @param includeDocumentId
- *   When enabled, result rows surface the Elasticsearch document id as an `_id` column (disabled
- *   by default)
- * @param scroll
- *   Paged row extraction settings (`elastic.scroll`: page size and the ceiling on concurrent PIT
- *   slices, #238)
+  * @param watcher
+  *   Credentials for the watcher component (if applicable)
+  * @param includeDocumentId
+  *   When enabled, result rows surface the Elasticsearch document id as an `_id` column (disabled
+  *   by default)
+  * @param scroll
+  *   Paged row extraction settings (`elastic.scroll`: page size and the ceiling on concurrent PIT
+  *   slices, #238)
   */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
@@ -55,12 +55,13 @@ case class ElasticConfig(
   metrics: MetricsConfig,
   watcher: ElasticCredentials,
   includeDocumentId: Boolean = false,
-  scroll: ScrollSettings = ScrollSettings())
+  scroll: ScrollSettings = ScrollSettings()
+)
 
 object ElasticConfig extends StrictLogging {
 
-  /** The `elastic.*` defaults shipped in this jar (`softnetwork-elastic.conf`), resolved against the
-    * classloader that loaded this class rather than the thread context classloader: under a
+  /** The `elastic.*` defaults shipped in this jar (`softnetwork-elastic.conf`), resolved against
+    * the classloader that loaded this class rather than the thread context classloader: under a
     * host-owned blind TCCL `ConfigFactory.load(name)` finds nothing and every client creation fails
     * on configuration before it can even look for a provider (#258).
     */
