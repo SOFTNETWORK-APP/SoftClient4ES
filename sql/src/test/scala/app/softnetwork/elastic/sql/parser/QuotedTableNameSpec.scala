@@ -96,8 +96,17 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // -- AC-2 - rows 1, 4, 6, 9, 10 must be BYTE-IDENTICAL to the pre-story behaviour -----------
-  it should "not move the index of any statement that parsed before this story" in {
+  // -- AC-2 - the shapes whose resolved index must be BYTE-IDENTICAL to the pre-story behaviour
+  //
+  // Stated exactly, because AC-2's own wording ("the index a statement reads NEVER changes for any
+  // statement that parses today") is measurably too strong against the CURRENT main: two shapes do
+  // move, and both move from a wrong index to the right one, because story 21.1 made them parse
+  // where this story's older baseline had them rejected --
+  //   `FROM elastic."bi_events"` : main reads index `elastic.` -> branch reads `elastic.bi_events`
+  //   `JOIN "prod_us".customers` : main reads `prod_us.customers` -> branch reads `customers`
+  // Both are pinned below, in their own tests. What this one protects is AC-2's SUBSTANCE: no
+  // statement resolves to a JOINED qualifier+name, the outcome AD-1 option (c) was rejected for.
+  it should "not move the index of any statement whose reading was already correct" in {
     single("SELECT category FROM bi_events").sources shouldBe Seq("bi_events")
     single("SELECT category FROM elastic.bi_events").sources shouldBe Seq("elastic.bi_events")
     single("""SELECT category FROM "elastic".bi_events""").sources shouldBe Seq("bi_events")
@@ -342,6 +351,46 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     single("SELECT a FROM orders o, orders p").from.tableAliases shouldBe ListMap("orders" -> "p")
   }
 
+  it should "disambiguate only the ambiguous half of a MIXED qualified/bare FROM (AD-6)" in {
+    // One leg qualified, one bare, same index name: the bare name IS ambiguous (two distinct
+    // qualified references, `orders` and `prod_eu.orders`), so both keys survive and the bare leg
+    // keeps its own bare key.
+    single(
+      """SELECT o.id FROM orders o JOIN "prod_eu".orders p ON o.cid = p.id"""
+    ).from.tableAliases shouldBe
+    ListMap("orders" -> "o", "prod_eu.orders" -> "p")
+  }
+
+  it should "key an ambiguous name qualified and every other name bare, in one statement (AD-6)" in {
+    // `orders` is ambiguous and gets qualified keys; `customers` is not, and stays bare. The two
+    // rules coexist inside a single FROM.
+    single(
+      """SELECT o.id FROM "prod_us".orders o, "prod_eu".orders p, customers c"""
+    ).from.tableAliases shouldBe
+    ListMap("prod_us.orders" -> "o", "prod_eu.orders" -> "p", "customers" -> "c")
+  }
+
+  it should "keep From.joinSourceKeys in step with Identifier.table (AD-6 companion)" in {
+    // 🔴 `Identifier.table` IS a `tableAliases` key, so in the ambiguous branch it is the QUALIFIED
+    // reference. Anything in `sql` that compares it against an index name must use the same key
+    // language: `TemporalLiterals`' cross-index join-leg guard compared it against the bare
+    // `joinAliases` source names and stopped firing for exactly this statement until it was routed
+    // through `From.joinSourceKeys`.
+    val ss = single("""SELECT o.a, p.b FROM orders o JOIN "prod_eu".orders p ON o.cid = p.id""")
+    ss.from.joinSourceKeys shouldBe Set("prod_eu.orders")
+    val pTable =
+      ss.select.fields.map(_.identifier).find(_.tableAlias.contains("p")).flatMap(_.table)
+    pTable shouldBe Some("prod_eu.orders")
+    pTable.exists(ss.from.joinSourceKeys.contains) shouldBe true
+    // ... and the unambiguous case keeps BOTH sides bare, exactly as before this story.
+    val plain = single("SELECT o.a, c.b FROM orders o JOIN customers c ON o.cid = c.id")
+    plain.from.joinSourceKeys shouldBe Set("customers")
+    plain.select.fields
+      .map(_.identifier)
+      .find(_.tableAlias.contains("c"))
+      .flatMap(_.table) shouldBe Some("customers")
+  }
+
   it should "reject an expression where a JOIN source is required (N2)" in {
     // MEASURED on origin/main BEFORE this story: both of these PARSED, because `FromParser.source`
     // took the full `identifier` production — so a JOIN source could carry a `::` cast or a
@@ -386,6 +435,25 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     rejected("""SELECT category FROM "" """) // empty lexeme is not an identifier (21.1 AD-5)
     rejected("SELECT category FROM ``")
     rejected("""SELECT category FROM "elastic".""")
+  }
+
+  it should "let #191's multi-index watcher guard fire on a cross-qualifier FROM (AD-6)" in {
+    // UNDECLARED BEHAVIOUR CHANGE, now pinned. `Parser.qualifiedOverManyIndices` rejects a
+    // table-qualified predicate over a multi-index watcher FROM, and it tests `_.table.isDefined`
+    // — so it was defeated whenever the alias map dropped an alias. AD-6 keeps both aliases for two
+    // tables differing only by qualifier, so `o` now resolves and the guard fires. This statement
+    // is ACCEPTED before this story and REJECTED after: #191's guard finally catching a statement
+    // it always meant to catch.
+    rejected(
+      """CREATE OR REPLACE WATCHER my_watcher AS EVERY 5 MINUTES FROM "a".orders o, """ +
+      """"b".orders p WHERE o.x = 1 WITHIN 2 MINUTES ALWAYS DO LOG_ACTION LOG 'x' END"""
+    )
+    // A WHOLLY unqualified self-join still defeats it, exactly as before — the alias map has
+    // nothing to disambiguate, so `o` does not resolve and no identifier carries a table.
+    Parser(
+      "CREATE OR REPLACE WATCHER my_watcher AS EVERY 5 MINUTES FROM orders o, orders p " +
+      "WHERE o.x = 1 WITHIN 2 MINUTES ALWAYS DO LOG_ACTION LOG 'x' END"
+    ).isRight shouldBe true
   }
 
   it should "still reject the DML and DDL name surface story 21.7 owns" in {

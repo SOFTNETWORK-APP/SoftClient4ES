@@ -184,6 +184,13 @@ dot; the index name is everything after that run.** Nothing else separates the t
 The rule is the same in `FROM`, in every `JOIN` form and in `DELETE FROM`, so one statement can
 never read one index on one leg and a different one on another.
 
+> ⚠️ **The two quote styles are interchangeable to the engine, but not yet on the federation
+> path.** Federation recognises a cross-cluster prefix by matching ``` `catalog`.table ``` on the
+> raw SQL before parsing — a BACKTICKED qualifier followed by a BARE table name. A fully quoted
+> ``FROM `prod_us`.`orders` `` is not matched, so the leg is forwarded to the default cluster
+> rather than the one named. Until that is fixed, leave the table name itself unquoted when you
+> qualify it for Federation. See [known limitations](known_limitations.md).
+
 ### What the qualifier means
 
 **The engine records it and does not interpret it.** The qualifier never becomes part of the index
@@ -195,6 +202,15 @@ our own driver advertised, which is why a qualifier that names nothing in partic
 rather than rejected.
 
 Practically: send the qualifier your tool generates, and the engine will read the index you meant.
+
+### What changed for a JOIN leg
+
+Before this release a `JOIN` source went through the column-name rules, which JOIN the parts of a
+dotted name — so `JOIN "prod_us".customers c` read the index `prod_us.customers` while the `FROM`
+leg of the same statement dropped its qualifier. Both legs now follow the table rule and read
+`customers`. **If you were relying on a quoted `JOIN` qualifier becoming part of the index name,
+that statement now reads a different index** — write the dotted name unquoted
+(`JOIN prod_us.customers c`) to keep the old reading.
 
 ### It is preserved when the statement is rendered back
 

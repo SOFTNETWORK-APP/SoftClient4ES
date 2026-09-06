@@ -89,7 +89,7 @@ The parser rejects this — `IN` accepts only literal value lists today, not a n
 
 Quoted column names, aliases and **table names** work in both spellings — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers) and
-[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Four things
+[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Five things
 they do **not** cover yet:
 
 - **`INSERT`, `UPDATE`, `CREATE`, `DROP` and `ALTER` names are not quotable.**
@@ -123,6 +123,21 @@ they do **not** cover yet:
   silently parsed as a column named `b.DESC` sorted *ascending*. A **table**-name qualifier is
   deliberately more tolerant (`FROM "elastic" . bi_events` is accepted), because that spelling has
   always been accepted there and tightening it would have moved which index the statement reads.
+
+- **A qualifier shares a namespace with a real dotted index name.** When one `FROM` names the same
+  index under two different qualifiers, the engine tells the two apart by their qualified reference
+  — so `SELECT a FROM a.orders q, "a".orders o, "b".orders p` uses `a.orders` both as a real index
+  (what `q` reads) and as the qualified reference of `"a".orders`. Both readings of that statement
+  are wrong, it was already wrong before, and it is not worth machinery: do not qualify two
+  same-named indices with a name that is itself a real index.
+
+> ⚠️ **Federation reads a qualifier differently from the engine.** A cross-cluster statement whose
+> table names are FULLY quoted — ``FROM `prod_us`.`orders` `` rather than ``FROM `prod_us`.orders``
+> — is not recognised by Federation's catalog pre-processor, so it is forwarded to the default
+> cluster instead of the one you named. Before this release such a statement failed loudly in the
+> parser; now it parses, so the mis-routing is silent. **On the federation path, leave the table
+> name itself unquoted** (`` `prod_us`.orders ``) until this is fixed — see
+> [joins.md](joins.md#row-2--cross-cluster-conveyor).
 
 ## Temporary tables are not supported
 
