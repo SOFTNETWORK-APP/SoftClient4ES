@@ -40,10 +40,10 @@ import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequ
   * this serializer is byte-identical to the one-argument default for any request without a marker.
   *
   * The handler renders what `ExtendedStatsAggregationBuilder` renders -- `field`, `sigma`,
-  * `missing` -- PLUS the `script` (through the same `ScriptBuilderFn` the Stats / Max / Avg builders
-  * use), then the sub-aggregations and metadata. Watch item (spec AD-S3-3): when elastic4s#4100
-  * ships and `Versions.elastic84s` / `elastic94s` move past it, the marker can be bound back to the
-  * library type and this handler deleted.
+  * `missing` -- PLUS the `script` (through the same `ScriptBuilderFn` the Stats / Max / Avg
+  * builders use), then the sub-aggregations and metadata. Watch item (spec AD-S3-3): when
+  * elastic4s#4100 ships and `Versions.elastic84s` / `elastic94s` move past it, the marker can be
+  * bound back to the library type and this handler deleted.
   *
   * Kept byte-identical between the ES 8 and ES 9 modules (their elastic4s builders are identical).
   */

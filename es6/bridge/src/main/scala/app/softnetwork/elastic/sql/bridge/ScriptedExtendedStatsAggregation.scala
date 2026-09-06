@@ -23,18 +23,18 @@ import com.sksamuel.elastic4s.searches.aggs.{
 }
 
 /** An `extended_stats` aggregation over a TRANSFORMED expression -- `STDDEV(YEAR(createdAt))`,
-  * `VARIANCE(ABS(salary))` and the rest of the family (issue #222). Hand-maintained ES 6 twin of the
-  * bridge template's marker (elastic4s 6.7.8 package names; same contract).
+  * `VARIANCE(ABS(salary))` and the rest of the family (issue #222). Hand-maintained ES 6 twin of
+  * the bridge template's marker (elastic4s 6.7.8 package names; same contract).
   *
   * elastic4s's own `ExtendedStatsAggregationBuilder` never emits `agg.script`, so an
   * `ExtendedStatsAggregation` carrying a script silently serialises as the statistic of the RAW
   * field -- or as `extended_stats: {}` when there is no raw field to fall back on. The bridge
   * therefore binds a transform-bearing extended_stats to this marker instead of to the library type
   * it wraps. The 6.x line has no script-emitting builder and no customisation seam, so the marker
-  * is never rendered here: [[SearchBodySerializer.Default]] refuses it with a named message, and the
-  * ES 6 client modules (REST and Jest) refuse it with an `ElasticError` naming their major. Left to
-  * elastic4s, it would still fail loudly (`AggregationBuilderFn`'s `NotImplementedError`) -- it can
-  * never leave as silently-wrong JSON.
+  * is never rendered here: [[SearchBodySerializer.Default]] refuses it with a named message, and
+  * the ES 6 client modules (REST and Jest) refuse it with an `ElasticError` naming their major.
+  * Left to elastic4s, it would still fail loudly (`AggregationBuilderFn`'s `NotImplementedError`)
+  * -- it can never leave as silently-wrong JSON.
   */
 final case class ScriptedExtendedStatsAggregation(inner: ExtendedStatsAggregation)
     extends Aggregation {

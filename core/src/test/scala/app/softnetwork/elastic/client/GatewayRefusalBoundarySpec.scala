@@ -17,13 +17,13 @@ import scala.concurrent.duration._
   * The SQL -> Elasticsearch translation runs synchronously inside `searchAsync` / `scroll`, before
   * any Future exists. A client module refuses a statement there by throwing a status-bearing
   * `ElasticError` (the ES 6 / ES 7 modules do so for STDDEV / VARIANCE over a transformed
-  * expression). `GatewayApi.run` must surface that refusal as the `ElasticFailure` every other error
-  * is -- on EVERY route a DQL statement can take: the `SearchExecutor` (aggregation-shaped, or an
-  * explicit LIMIT) AND the `CoreDqlExtension`'s quota-capped scroll (an un-LIMITed row query),
-  * which calls `client.scroll` directly and never enters the executor. That second route is why
-  * the boundary lives in `run`, not in `SearchExecutor`: a first cut there let the refusal escape
-  * as a raw exception on exactly the path BI tools take for a plain projection. The windowed row
-  * query's scroll used to translate LAZILY (inside the stream's Future); its translation is now
+  * expression). `GatewayApi.run` must surface that refusal as the `ElasticFailure` every other
+  * error is -- on EVERY route a DQL statement can take: the `SearchExecutor` (aggregation-shaped,
+  * or an explicit LIMIT) AND the `CoreDqlExtension`'s quota-capped scroll (an un-LIMITed row
+  * query), which calls `client.scroll` directly and never enters the executor. That second route is
+  * why the boundary lives in `run`, not in `SearchExecutor`: a first cut there let the refusal
+  * escape as a raw exception on exactly the path BI tools take for a plain projection. The windowed
+  * row query's scroll used to translate LAZILY (inside the stream's Future); its translation is now
   * hoisted onto the calling thread so the contract is uniform: a refusal known at translation time
   * is answered at `run`, on every route.
   *

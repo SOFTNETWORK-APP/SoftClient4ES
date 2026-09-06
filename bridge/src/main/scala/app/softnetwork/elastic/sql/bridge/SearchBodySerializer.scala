@@ -22,11 +22,11 @@ import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequ
   *
   * The bridge is a shared template: `copyBridge` copies these sources byte-for-byte into the ES 7,
   * ES 8 and ES 9 modules, which compile them against elastic4s 7.17.x (one-argument
-  * `SearchBodyBuilderFn`) and 8.x / 9.x (two-argument, with a `customAggregation` handler). Anything
-  * a single major can do therefore lives in that major's CLIENT module and is injected here: the
-  * client module puts an implicit `SearchBodySerializer` in scope of the `SingleSearch` conversions
-  * (`requestToElasticSearchRequest`, `sqlQueryToAggregations`), and every serialisation door
-  * consumes it. Without one, [[SearchBodySerializer.Default]] applies.
+  * `SearchBodyBuilderFn`) and 8.x / 9.x (two-argument, with a `customAggregation` handler).
+  * Anything a single major can do therefore lives in that major's CLIENT module and is injected
+  * here: the client module puts an implicit `SearchBodySerializer` in scope of the `SingleSearch`
+  * conversions (`requestToElasticSearchRequest`, `sqlQueryToAggregations`), and every serialisation
+  * door consumes it. Without one, [[SearchBodySerializer.Default]] applies.
   */
 trait SearchBodySerializer {
 
@@ -37,7 +37,8 @@ trait SearchBodySerializer {
 object SearchBodySerializer {
 
   /** True when the request carries an `extended_stats` over a transformed expression -- any
-    * [[ScriptedExtendedStatsAggregation]] anywhere in its aggregation tree (plain or windowed bind).
+    * [[ScriptedExtendedStatsAggregation]] anywhere in its aggregation tree (plain or windowed
+    * bind).
     */
   def hasTransformExtendedStats(search: SearchRequest): Boolean =
     ScriptedExtendedStatsAggregation.existsIn(search.aggs)

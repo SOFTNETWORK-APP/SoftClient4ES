@@ -207,7 +207,8 @@ object ElasticAggregation {
             // Issue #222 -- a transform-bearing extended_stats is bound to the bridge's own marker:
             // elastic4s's ExtendedStatsAggregationBuilder drops `script`, so the library type
             // would serialise as the statistic of the raw field. See ScriptedExtendedStatsAggregation.
-            (name, s) => ScriptedExtendedStatsAggregation(extendedStatsAgg(name, sourceField).script(s))
+            (name, s) =>
+              ScriptedExtendedStatsAggregation(extendedStatsAgg(name, sourceField).script(s))
           )
         case th: WindowFunction =>
           th.window match {
@@ -234,9 +235,10 @@ object ElasticAggregation {
               aggWithFieldOrScript(
                 extendedStatsAgg,
                 // Issue #222 -- a transform-bearing extended_stats is bound to the bridge's own marker:
-            // elastic4s's ExtendedStatsAggregationBuilder drops `script`, so the library type
-            // would serialise as the statistic of the raw field. See ScriptedExtendedStatsAggregation.
-            (name, s) => ScriptedExtendedStatsAggregation(extendedStatsAgg(name, sourceField).script(s))
+                // elastic4s's ExtendedStatsAggregationBuilder drops `script`, so the library type
+                // would serialise as the statistic of the raw field. See ScriptedExtendedStatsAggregation.
+                (name, s) =>
+                  ScriptedExtendedStatsAggregation(extendedStatsAgg(name, sourceField).script(s))
               )
             case PERCENTILE_CONT | PERCENTILE_DISC =>
               // Both map to ES `percentiles` (TDigest). One call → one percent;

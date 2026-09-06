@@ -12,12 +12,12 @@ import java.time.ZonedDateTime
 /** Issue #222 (story BIDC-3): `STDDEV` / `VARIANCE` (the `extended_stats` family) over a
   * TRANSFORMED expression -- the shared bridge template's half.
   *
-  * The template cannot render the shape (that needs the ES 8 / ES 9 client modules' serializer),
-  * so what it owns is asserted here: the shape DISCRIMINATOR, both binds (plain and windowed) and
-  * both doors; the marker carrying field + script; the Default serializer's LOUD, named refusal
-  * instead of the silent raw-field statistic the library used to emit; and the raw-field
-  * `extended_stats` emission, pinned byte-for-byte (AC 4 -- these fixtures did not exist before and
-  * they must not move).
+  * The template cannot render the shape (that needs the ES 8 / ES 9 client modules' serializer), so
+  * what it owns is asserted here: the shape DISCRIMINATOR, both binds (plain and windowed) and both
+  * doors; the marker carrying field + script; the Default serializer's LOUD, named refusal instead
+  * of the silent raw-field statistic the library used to emit; and the raw-field `extended_stats`
+  * emission, pinned byte-for-byte (AC 4 -- these fixtures did not exist before and they must not
+  * move).
   *
   * Captured on the base commit (T2, both bridge copies, both doors), before the fix:
   * `STDDEV(YEAR(createdAt))` -> `"extended_stats":{"field":"createdAt"}` (no script: the standard
@@ -49,7 +49,9 @@ class ExtendedStatsEmissionSpec extends AnyFlatSpec with Matchers {
     s"SELECT id, name, $fn($operand) OVER (PARTITION BY id) AS s FROM t"
 
   /** Every marker in the aggregation tree of `search`. */
-  private def markersOf(aggs: Iterable[AbstractAggregation]): Seq[ScriptedExtendedStatsAggregation] =
+  private def markersOf(
+    aggs: Iterable[AbstractAggregation]
+  ): Seq[ScriptedExtendedStatsAggregation] =
     aggs.toSeq.flatMap {
       case m: ScriptedExtendedStatsAggregation => Seq(m)
       case a: Aggregation                      => markersOf(a.subaggs)
@@ -96,7 +98,9 @@ class ExtendedStatsEmissionSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "be false for a transform inside ANOTHER aggregate (MAX emits its own script)" in {
-    requestOf("SELECT id, MAX(YEAR(createdAt)) AS m FROM t GROUP BY id").hasTransformExtendedStats shouldBe false
+    requestOf(
+      "SELECT id, MAX(YEAR(createdAt)) AS m FROM t GROUP BY id"
+    ).hasTransformExtendedStats shouldBe false
   }
 
   it should "flag the aggregation itself on the sqlQueryToAggregations door" in {

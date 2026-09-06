@@ -1386,10 +1386,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   /** The window-aggregation request of `request` and its TRANSLATION to an Elasticsearch body.
     *
     * Kept separate from the execution (issue #222): the translation is where a client module may
-    * REFUSE the statement (a status-bearing `ElasticError`, e.g. STDDEV / VARIANCE over a transformed
-    * expression on ES 6 / ES 7), and a refusal known at translation time must be answered at
-    * `GatewayApi.run` -- so a caller that executes asynchronously translates here FIRST, on the
-    * calling thread, and only then schedules the execution.
+    * REFUSE the statement (a status-bearing `ElasticError`, e.g. STDDEV / VARIANCE over a
+    * transformed expression on ES 6 / ES 7), and a refusal known at translation time must be
+    * answered at `GatewayApi.run` -- so a caller that executes asynchronously translates here
+    * FIRST, on the calling thread, and only then schedules the execution.
     */
   private[client] def windowAggregationQuery(
     request: SingleSearch

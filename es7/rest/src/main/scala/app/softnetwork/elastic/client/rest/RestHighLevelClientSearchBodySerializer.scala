@@ -26,8 +26,8 @@ import com.sksamuel.elastic4s.requests.searches.SearchRequest
   *
   * elastic4s 7.17.x has neither a script-emitting `ExtendedStatsAggregationBuilder` nor the
   * `customAggregation` seam the ES 8 / ES 9 modules use to render one, so this module cannot
-  * compute the statistic over the transform; it used to compute it silently over the RAW field.
-  * The refusal is an `ElasticError` with status 400 so it reaches the caller as an honest failure.
+  * compute the statistic over the transform; it used to compute it silently over the RAW field. The
+  * refusal is an `ElasticError` with status 400 so it reaches the caller as an honest failure.
   * Watch item (spec AD-S3-3): when the elastic4s#4100 backport lands on the 7.17 line and
   * `Versions.elastic74s` moves past it, replace the refusal with a rendering handler.
   */

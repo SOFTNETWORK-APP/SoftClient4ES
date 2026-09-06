@@ -30,8 +30,8 @@ import org.scalatest.wordspec.AnyWordSpec
 /** Issue #222 (story BIDC-3) -- the ES 6 REST-client half: `STDDEV` / `VARIANCE` (the whole
   * `extended_stats` family) over a TRANSFORMED expression is REFUSED before any JSON exists, with a
   * named `ElasticError` (status 400), for BOTH binds and on BOTH serialisation doors -- never
-  * executed against the raw field, which is what elastic4s 6.x's script-dropping builder used to
-  * do silently. A raw-field extended_stats is untouched.
+  * executed against the raw field, which is what elastic4s 6.x's script-dropping builder used to do
+  * silently. A raw-field extended_stats is untouched.
   *
   * No Docker: `ElasticClientCompanion` builds the underlying client lazily and `apply()` is never
   * called, so nothing here touches the network.

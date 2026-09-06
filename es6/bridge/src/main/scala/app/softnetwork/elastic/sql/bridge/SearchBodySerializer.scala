@@ -23,8 +23,8 @@ import com.sksamuel.elastic4s.searches.SearchRequest
   * twin of the bridge template's seam (elastic4s 6.7.8 package names; same contract).
   *
   * The ES 6 client modules (REST and Jest) put an implicit `SearchBodySerializer` in scope of the
-  * `SingleSearch` conversions (`requestToElasticSearchRequest`, `sqlQueryToAggregations`), and every
-  * serialisation door consumes it. Without one, [[SearchBodySerializer.Default]] applies.
+  * `SingleSearch` conversions (`requestToElasticSearchRequest`, `sqlQueryToAggregations`), and
+  * every serialisation door consumes it. Without one, [[SearchBodySerializer.Default]] applies.
   */
 trait SearchBodySerializer {
 
@@ -35,7 +35,8 @@ trait SearchBodySerializer {
 object SearchBodySerializer {
 
   /** True when the request carries an `extended_stats` over a transformed expression -- any
-    * [[ScriptedExtendedStatsAggregation]] anywhere in its aggregation tree (plain or windowed bind).
+    * [[ScriptedExtendedStatsAggregation]] anywhere in its aggregation tree (plain or windowed
+    * bind).
     */
   def hasTransformExtendedStats(search: SearchRequest): Boolean =
     ScriptedExtendedStatsAggregation.existsIn(search.aggs)

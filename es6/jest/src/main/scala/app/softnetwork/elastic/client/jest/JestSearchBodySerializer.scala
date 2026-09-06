@@ -20,16 +20,16 @@ import app.softnetwork.elastic.client.result.ElasticError
 import app.softnetwork.elastic.sql.bridge.SearchBodySerializer
 import com.sksamuel.elastic4s.searches.SearchRequest
 
-/** The ES 6 (Jest) search-body serializer (issue #222): the default one-argument elastic4s builder, with a
-  * LOUD refusal of `STDDEV` / `VARIANCE` (any of the `extended_stats` family) over a transformed
-  * expression -- plain or windowed -- BEFORE any JSON exists.
+/** The ES 6 (Jest) search-body serializer (issue #222): the default one-argument elastic4s builder,
+  * with a LOUD refusal of `STDDEV` / `VARIANCE` (any of the `extended_stats` family) over a
+  * transformed expression -- plain or windowed -- BEFORE any JSON exists.
   *
   * elastic4s 6.7.8 has neither a script-emitting `ExtendedStatsAggregationBuilder` nor the
   * `customAggregation` seam the ES 8 / ES 9 modules use to render one, so this module cannot
-  * compute the statistic over the transform; it used to compute it silently over the RAW field.
-  * The refusal is an `ElasticError` with status 400 so it reaches the caller as an honest failure.
-  * The 6.x elastic4s line is unmaintained: there is no upstream path (spec R-1b), so unlike the
-  * ES 7 module this refusal is permanent.
+  * compute the statistic over the transform; it used to compute it silently over the RAW field. The
+  * refusal is an `ElasticError` with status 400 so it reaches the caller as an honest failure. The
+  * 6.x elastic4s line is unmaintained: there is no upstream path (spec R-1b), so unlike the ES 7
+  * module this refusal is permanent.
   */
 object JestSearchBodySerializer extends SearchBodySerializer {
 

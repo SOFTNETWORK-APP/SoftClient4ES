@@ -33,9 +33,9 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{
   * marker instead of to the library type it wraps. A marker is a type elastic4s does not know, so:
   *
   *   - `AggregationBuilderFn`'s typed arms never claim it, and the `customAggregation` handler of
-  *     the 8.x/9.x two-argument `SearchBodyBuilderFn.apply` IS consulted for it (the typed
-  *     `case agg: ExtendedStatsAggregation` arm runs BEFORE that handler, which is why the handler
-  *     cannot key on the library type). The ES 8 / ES 9 client modules render it with its script.
+  *     the 8.x/9.x two-argument `SearchBodyBuilderFn.apply` IS consulted for it (the typed `case
+  *     agg: ExtendedStatsAggregation` arm runs BEFORE that handler, which is why the handler cannot
+  *     key on the library type). The ES 8 / ES 9 client modules render it with its script.
   *   - the one-argument builders (elastic4s 6.x / 7.x, and the 8.x/9.x default handler) throw a
   *     `NotImplementedError` on it -- the request can never leave as silently-wrong JSON.
   *     [[SearchBodySerializer.Default]] refuses it earlier, with a named message; the ES 6 / ES 7
