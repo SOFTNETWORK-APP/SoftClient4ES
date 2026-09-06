@@ -2116,11 +2116,15 @@ trait WindowFunctionSpec
   // ========================================================================
   // ISSUE #222 (story BIDC-3) — STDDEV / VARIANCE over a TRANSFORMED expression
   //
-  // Elasticsearch 8 / 9: the statistic is computed over the transform (the emitted extended_stats
-  // carries its script); the oracle is computed from the fixture itself and sits ten orders of
-  // magnitude away from the statistic of the raw `hire_date` millis the query used to compute
-  // silently. Elasticsearch 6 / 7: the query is REFUSED with a named 400 -- never executed against
-  // the raw field. An execution-success assertion is explicitly insufficient here (issue #222).
+  // Elasticsearch 7, 8 and 9: the statistic is computed over the transform (the emitted
+  // extended_stats carries its script); the oracle is computed from the fixture itself and sits ten
+  // orders of magnitude away from the statistic of the raw `hire_date` millis the query used to
+  // compute silently. ES 8 / 9 render the script through elastic4s's `customAggregation` seam;
+  // ES 7 (elastic4s 7.17.26+, backport elastic4s#4105) unwraps the bridge's marker and lets the
+  // stock builder emit it — different mechanism, same answer, so the same oracle applies.
+  // Elasticsearch 6: the query is REFUSED with a named 400 -- never executed against the raw field
+  // (dead elastic4s line, no upstream path). An execution-success assertion is explicitly
+  // insufficient here (issue #222).
   // ========================================================================
 
   def elasticsearchMajor: Int =
@@ -2129,6 +2133,14 @@ trait WindowFunctionSpec
       case ElasticFailure(error) =>
         fail(s"Failed to retrieve Elasticsearch version: ${error.message}")
     }
+
+  /** Whether this client computes `STDDEV` / `VARIANCE` over a TRANSFORMED expression (issue #222).
+    *
+    * True from Elasticsearch 7: the ES 7 module moved to elastic4s 7.17.26, whose builder emits the
+    * aggregation script (elastic4s#4105), and unwraps the bridge marker to reach it. False on ES 6
+    * alone — its elastic4s line is dead, so the query is refused rather than answered wrongly.
+    */
+  def computesTransformedStats: Boolean = elasticsearchMajor >= 7
 
   /** The hire YEARS per department, read from the fixture rows -- the oracle's input. */
   private def hireYearsByDepartment: Map[String, Seq[Int]] =
@@ -2167,7 +2179,7 @@ trait WindowFunctionSpec
       |FROM emp
       |LIMIT 100""".stripMargin
 
-  /** ES 6 / 7: the same statement is refused on the gateway route (REPL / JDBC / Arrow -- an honest
+  /** ES 6: the same statement is refused on the gateway route (REPL / JDBC / Arrow -- an honest
     * 400 naming the major) AND on the direct client API (the same `ElasticError`, thrown).
     */
   private def assertRefusedOnThisMajor(sql: String): Unit = {
@@ -2189,8 +2201,8 @@ trait WindowFunctionSpec
     direct.message should include(s"Elasticsearch $major")
   }
 
-  "STDDEV / VARIANCE over a transformed expression" should "compute the statistic over the transform on ES 8+ and refuse loudly on ES 6/7 (issue #222)" in {
-    if (elasticsearchMajor >= 8) {
+  "STDDEV / VARIANCE over a transformed expression" should "compute the statistic over the transform on ES 7+ and refuse loudly on ES 6 (issue #222)" in {
+    if (computesTransformedStats) {
       val years = hireYearsByDepartment
       client.searchAs[DepartmentYearStats](
         """SELECT department,
@@ -2233,8 +2245,8 @@ trait WindowFunctionSpec
     }
   }
 
-  it should "compute the WINDOWED statistic over the transform on ES 8+ and refuse loudly on ES 6/7 (issue #222)" in {
-    if (elasticsearchMajor >= 8) {
+  it should "compute the WINDOWED statistic over the transform on ES 7+ and refuse loudly on ES 6 (issue #222)" in {
+    if (computesTransformedStats) {
       val years = hireYearsByDepartment
       client.searchAs[EmployeeYearStats](
         """SELECT department, name, hire_date,

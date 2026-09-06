@@ -30,7 +30,11 @@ object Versions {
 
   val es7 = "7.17.29"
 
-  val elastic74s = "7.17.4"
+  // 7.17.26 (issue #222): the FIRST 7.x release whose `ExtendedStatsAggregationBuilder` emits
+  // `agg.script` -- elastic4s#4105, the series/7.x backport of #4100. Published ONLY under
+  // `nl.gn0s1s`: the `com.sksamuel.elastic4s` line stops at 7.17.4, so moving past it is a fork
+  // migration, not a version bump (see SoftClient4es.elastic4sDependencies case 7).
+  val elastic74s = "7.17.26"
 
   val es8 = "8.18.3"
 

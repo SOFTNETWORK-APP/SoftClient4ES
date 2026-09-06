@@ -1093,9 +1093,9 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
 
   /** Issue #222 -- the search-body serializer every `SingleSearch` conversion made from this trait
     * picks up (implicit scope of the bridge's `requestToElasticSearchRequest` /
-    * `sqlQueryToAggregations`): elastic4s 7.17.x cannot render an `extended_stats` over a
-    * transformed expression with its script, so the request is REFUSED with a named `ElasticError`
-    * before any JSON exists -- never executed against the raw field. See
+    * `sqlQueryToAggregations`): since elastic4s 7.17.26 the stock builder emits an
+    * `extended_stats` script itself, so this module UNWRAPS the bridge's marker and lets it --
+    * the statistic is computed over the transform, as on ES 8 / ES 9. See
     * [[RestHighLevelClientSearchBodySerializer]].
     */
   implicit def searchBodySerializer: SearchBodySerializer = RestHighLevelClientSearchBodySerializer
