@@ -450,6 +450,38 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     untouched("SELECT id FROM events WHERE label = '2026-06-04 00:00:00'", table)
   }
 
+  it should "resolve the schema through an index alias over exactly one index, not over several" in {
+    // `GET /<alias>` answers with the concrete index documents keyed by THEIR names (lead ruling on
+    // review R4-5). One document: the alias resolves to it (the schema keeps the alias name); two
+    // documents: ambiguous -- no mapping, so nothing is a candidate and the caller reports not found.
+    val events =
+      """{"aliases":{"events_alias":{},"multi_alias":{}},"mappings":{"properties":{
+        |  "id":{"type":"keyword"},"event_ts":{"type":"date"},"label":{"type":"keyword"}}},
+        |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
+    val archive =
+      """{"aliases":{"multi_alias":{}},"mappings":{"properties":{
+        |  "id":{"type":"keyword"},"event_ts":{"type":"date","format":"yyyy-MM-dd HH:mm:ss"}}},
+        |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
+    val single = Index("events_alias", s"""{"events":$events}""")
+    single.name shouldBe "events_alias"
+    single.schema.find("event_ts").map(_.dataType) shouldBe Some(SQLTypes.Date)
+    whereSql(
+      resolved("SELECT id FROM events_alias WHERE event_ts >= '2026-06-04 00:00:00'", single.schema)
+    ) shouldBe "WHERE event_ts >= '2026-06-04T00:00:00'"
+
+    val multiRoot: com.fasterxml.jackson.databind.JsonNode =
+      new com.fasterxml.jackson.databind.ObjectMapper()
+        .readTree(s"""{"events":$events,"archive":$archive}""")
+    Index.indexDocuments(multiRoot).map(_._1) shouldBe Seq("events", "archive")
+    val multi = Index("multi_alias", multiRoot)
+    multi.schema.columns shouldBe empty
+    untouched("SELECT id FROM multi_alias WHERE event_ts >= '2026-06-04 00:00:00'", multi.schema)
+
+    // a concrete index keyed by its own name is untouched by the rule
+    Index("events", s"""{"events":$events}""").schema.find("event_ts").map(_.dataType) shouldBe
+    Some(SQLTypes.Date)
+  }
+
   it should "walk into an UNNEST nested criteria" in {
     val json =
       """{"events":{"aliases":{},"mappings":{"properties":{

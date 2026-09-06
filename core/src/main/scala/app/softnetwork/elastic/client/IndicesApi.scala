@@ -357,7 +357,20 @@ trait IndicesApi extends ElasticClientHelpers {
   }
 
   private def loadIndexAsSchema(index: String, json: String): ElasticResult[Option[Index]] = {
-    var tempIndex = Index(index, json)
+    val root = mapper.readTree(json)
+    // Issue #276 -- `index` may be an ALIAS. `Index.apply` resolves an alias over exactly ONE
+    // index; an alias over several is ambiguous (which mapping?) and is reported as NOT FOUND
+    // rather than as an empty schema, on every client alike.
+    if (!root.has(index) && !root.has("mappings")) {
+      val members = Index.indexDocuments(root)
+      if (members.size > 1) {
+        logger.warn(
+          s"⚠️ '$index' is an alias over ${members.size} indices (${members.map(_._1).mkString(", ")}); its schema cannot be resolved"
+        )
+        return ElasticSuccess(None)
+      }
+    }
+    var tempIndex = Index(index, root)
     tempIndex.defaultIngestPipelineName match {
       case Some(pipeline) =>
         logger.info(

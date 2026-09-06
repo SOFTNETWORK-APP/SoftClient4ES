@@ -227,6 +227,40 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     fromJune4
   }
 
+  // ---- Aliases (lead ruling on review R4-5) ---------------------------------------------------------
+
+  private val singleAlias = "temporal_literal_alias"
+
+  private val multiAlias = "temporal_literal_multi_alias"
+
+  "a query through an alias over one index" should "match the same rows for every spelling" in {
+    client.addAlias(defaultIndex, singleAlias).get shouldBe true
+    Seq("2026-06-04 00:00:00.000000", "2026-06-04 00:00:00", "2026-06-04T00:00:00").foreach {
+      literal =>
+        withClue(literal) {
+          searchIds(s"SELECT id FROM $singleAlias WHERE event_ts >= '$literal'") shouldBe fromJune4
+        }
+    }
+    gatewayIds(s"SELECT id FROM $singleAlias WHERE event_ts >= '2026-06-04 00:00:00'") shouldBe
+    fromJune4
+  }
+
+  "a query through an alias over several indices" should "forward the literal verbatim (not our rejection)" in {
+    client.addAlias(defaultIndex, multiAlias).get shouldBe true
+    client.addAlias(customIndex, multiAlias).get shouldBe true
+    // the alias itself is queryable (a non-temporal predicate: the two members' `date` formats
+    // differ, so a date literal would be judged by each member's own mapping)
+    searchIds(s"SELECT id FROM $multiAlias WHERE amount = 8") shouldBe Set("e8")
+    // the space form is neither rewritten nor rejected by us -- the ambiguous mapping is not
+    // resolved, so Elasticsearch's own answer comes back (a raw parse failure on the default index)
+    client.search(
+      SelectStatement(s"SELECT id FROM $multiAlias WHERE event_ts >= '2026-06-04 00:00:00'")
+    ) match {
+      case ElasticFailure(error) => error.message should not include "Cannot parse '"
+      case ElasticSuccess(_)     => // a lenient cluster may answer rows; the point is no named 400
+    }
+  }
+
   // ---- DML: the same WHERE, the same rows (review R4-4) --------------------------------------------
 
   private def runDml(sql: String): Unit =

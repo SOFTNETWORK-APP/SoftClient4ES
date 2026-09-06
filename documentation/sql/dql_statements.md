@@ -316,11 +316,12 @@ WHERE event_ts >= '2026-06-04T00:00:00'          -- what Elasticsearch's default
   `date_nanos` columns, columns qualified with a `JOIN` alias (the FROM table's own columns are
   resolved) and `HAVING` conditions are never touched.
 - The resolution needs the index mapping, loaded through the schema cache (one lookup per index
-  every 5 minutes, and only for statements whose `WHERE` compares a string literal to a column). It
-  does not apply when the statement reads several indices or a wildcard, or when the mapping cannot
-  be loaded -- in particular **through an index alias**, whose mapping the client cannot resolve
-  today: there the literal is forwarded verbatim as in previous releases, and a failed mapping
-  lookup is remembered for 5 minutes so it is not retried on every statement.
+  every 5 minutes, and only for statements whose `WHERE` compares a string literal to a column). An
+  **index alias over exactly one index** resolves to that index's mapping (`SHOW TABLE` /
+  `DESCRIBE` through such an alias resolve the same way); an alias over **several** indices is
+  ambiguous and is treated as unresolvable. When the statement reads several indices or a wildcard,
+  or the mapping cannot be loaded, the literal is forwarded verbatim as in previous releases, and a
+  failed mapping lookup is remembered for 5 minutes so it is not retried on every statement.
 
 ---
 

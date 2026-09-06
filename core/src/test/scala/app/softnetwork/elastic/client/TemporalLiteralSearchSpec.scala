@@ -200,6 +200,34 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     flooding.temporalLiteralSchemaMissCount should be <= 1024
   }
 
+  it should "resolve the schema through an alias over one index, and treat an alias over several as unknown" in {
+    val events =
+      """{"aliases":{"events_alias":{},"multi_alias":{}},"mappings":{"properties":{
+        |  "id":{"type":"keyword"},"event_ts":{"type":"date"}}},
+        |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
+    val archive = events.replace("\"events_alias\":{},", "")
+    val client = new RecordingClient {
+      // what `GET /<alias>` answers: the concrete index documents keyed by THEIR names
+      override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+        index match {
+          case "events_alias" => ElasticResult.success(Some(s"""{"events":$events}"""))
+          case "multi_alias" =>
+            ElasticResult.success(Some(s"""{"events":$events,"archive":$archive}"""))
+          case _ => ElasticResult.success(None)
+        }
+    }
+    client.search(
+      SelectStatement(s"SELECT id FROM events_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
+    )
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
+    client.temporalLiteralSchemaMissCount shouldBe 0 // a resolved alias is never a miss
+    client.getIndex("multi_alias") shouldBe ElasticSuccess(None) // ambiguous: not found
+    client.search(
+      SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
+    )
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
+  }
+
   it should "not look the schema up at all when the WHERE carries no candidate literal" in {
     val client = seeded()
     client.search(SelectStatement("SELECT id FROM events WHERE amount > 10 LIMIT 5"))

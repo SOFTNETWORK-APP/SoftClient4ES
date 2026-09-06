@@ -563,10 +563,34 @@ package object schema {
       apply(name, root)
     }
 
+    /** The index documents a GET-index response holds: `{"<index>": {"mappings": ..., ...}}` for a
+      * concrete index, and -- for `GET /<alias>` -- one such entry PER INDEX behind the alias, each
+      * keyed by the index's own name (never by the alias).
+      */
+    def indexDocuments(root: JsonNode): Seq[(String, JsonNode)] =
+      if (root != null && root.isObject)
+        root
+          .properties()
+          .asScala
+          .toSeq
+          .collect {
+            case entry if entry.getValue.isObject && entry.getValue.has("mappings") =>
+              entry.getKey -> entry.getValue
+          }
+      else Seq.empty
+
     def apply(name: String, root: JsonNode): Index = {
       if (root.has(name)) {
         val indexNode = root.path(name)
         return apply(name, indexNode)
+      }
+      // Issue #276 -- `name` is an ALIAS: `GET /<alias>` answers with the concrete index/indices
+      // keyed by THEIR names. An alias over exactly one index resolves to that index's document
+      // (the schema keeps the alias as its name); an alias over several is ambiguous and falls
+      // through to the mapping-less shape below -- callers detect it with [[indexDocuments]].
+      indexDocuments(root) match {
+        case Seq((_, single)) => return apply(name, single)
+        case _                =>
       }
       val mappings = root.path("mappings")
       val settings = root.path("settings")
