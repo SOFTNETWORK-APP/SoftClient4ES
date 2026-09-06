@@ -1260,7 +1260,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     )
   }
 
-  it should "reject an aggregate in WHERE instead of silently dropping it (lead to confirm)" in {
+  it should "reject an aggregate in WHERE instead of silently dropping it (lead-confirmed 2026-09-06)" in {
     val sql =
       """SELECT city FROM having_naming
         |WHERE COUNT(name) > 1
@@ -1273,7 +1273,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     )
   }
 
-  it should "reject an aggregate in a DELETE or UPDATE WHERE and touch nothing (S2-2, lead to confirm)" in {
+  it should "reject an aggregate in a DELETE or UPDATE WHERE and touch nothing (S2-2, lead-confirmed 2026-09-06)" in {
     // Before: the predicate became `match_all` -- the DELETE wiped the index, the UPDATE hit every
     // document. The count and the ages must be exactly what they were.
     val snapshot =

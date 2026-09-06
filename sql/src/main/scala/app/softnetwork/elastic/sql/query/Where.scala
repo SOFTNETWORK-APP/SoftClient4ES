@@ -16,7 +16,14 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.{SQLAny, SQLTemporal, SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{
+  SQLAny,
+  SQLArray,
+  SQLTemporal,
+  SQLType,
+  SQLTypeUtils,
+  SQLTypes
+}
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
 import app.softnetwork.elastic.sql.function.geo.Distance
@@ -818,6 +825,28 @@ case class InExpr[R, +T <: Value[R]](
 
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
+  // `<expr> IN (v1, v2)` compares the element with the list's ELEMENT type. The shared
+  // Expression.validate compared `identifier.out` with the list's ARRAY type, which rejected
+  // `COUNT(x) IN (1, 2)` (`BIGINT` vs `ARRAY<BIGINT>`) while the untyped `MAX(x) IN (…)` passed
+  // through `Any` -- loud, but misleading.
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- identifier.validate()
+      _ <- values.validate()
+      _ <- {
+        val elementType = values.out match {
+          case a: SQLArray => a.elementType
+          case other       => other
+        }
+        Validator
+          .validateTypesMatching(identifier.out, elementType)
+          .left
+          .map(_ =>
+            s"Type mismatch: '${identifier.out.typeId}' is not compatible with '${elementType.typeId}' in expression: $this"
+          )
+      }
+    } yield ()
+
   override def painless(context: Option[PainlessContext]): String = {
     if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
     s"$painlessNot${identifier.painless(context)}$painlessOp(${painlessValue(context)})"
@@ -1076,8 +1105,9 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
       // An aggregate has no document-level query form: the bridge rendered it as `match_all` and
       // the predicate was silently DROPPED -- a wrong group set for a SELECT, EVERY document for a
       // DELETE or UPDATE (#280 family). Checked here, not in SingleSearch.validate(), so every
-      // statement kind that carries a WHERE is covered. Lead to confirm the product choice (reject,
-      // as here, vs rewrite as HAVING under a GROUP BY).
+      // statement kind that carries a WHERE is covered: SELECT, DELETE, UPDATE and CREATE ENRICH
+      // POLICY's source WHERE. Lead-confirmed 2026-09-06 (reject, rather than rewriting it as a
+      // HAVING under a GROUP BY).
       c.extractAggregationFields.headOption match {
         case Some(f) =>
           Left(

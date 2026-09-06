@@ -29,7 +29,7 @@ class HavingAggregateResolutionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "an aggregate in WHERE" should "be rejected, naming HAVING (lead to confirm the product choice)" in {
+  "an aggregate in WHERE" should "be rejected, naming HAVING (lead-confirmed 2026-09-06)" in {
     // It used to parse, create the aggregation and silently DROP the predicate (`match_all`).
     val msg = rejection("SELECT id FROM t WHERE COUNT(x) > 5 GROUP BY id")
     msg should include("Aggregate functions are not allowed in WHERE")
@@ -70,6 +70,43 @@ class HavingAggregateResolutionSpec extends AnyFlatSpec with Matchers {
     val msg = rejection("SELECT id, MIN(x) AS max_x FROM t GROUP BY id HAVING MAX(x) > 3")
     msg should include("Alias 'max_x'")
     msg should include("rename one of them")
+    msg should not startWith Parser.InternalParseFailure
+  }
+
+  "an aggregate in the source WHERE of CREATE ENRICH POLICY" should "be rejected (third look)" in {
+    // CreateEnrichPolicy.validate() never validated its WHERE: the aggregate was dropped and the
+    // policy enriched from EVERY source document (match_all).
+    val msg = rejection(
+      "CREATE ENRICH POLICY p FROM users ON user_id ENRICH name, email WHERE COUNT(orders) > 5"
+    )
+    msg should include("Aggregate functions are not allowed in WHERE")
+    msg should include("COUNT(orders)")
+    msg should not startWith Parser.InternalParseFailure
+    // The document-level WHERE is untouched.
+    Parser(
+      "CREATE ENRICH POLICY p FROM users ON user_id ENRICH name, email WHERE status = 'active'"
+    ).isRight shouldBe true
+  }
+
+  "an aggregate IN (…) in HAVING" should "type-check against the list's element type (third look)" in {
+    // `COUNT(x) IN (1, 2)` used to be rejected as `BIGINT` vs `ARRAY<BIGINT>` while the untyped
+    // `MAX(x) IN (…)` passed -- the element is compared with the element type now.
+    Seq(
+      "SELECT id, COUNT(x) FROM t GROUP BY id HAVING COUNT(x) IN (1, 2)",
+      "SELECT id FROM t GROUP BY id HAVING COUNT(x) NOT IN (1, 2)",
+      "SELECT id, MAX(x) FROM t GROUP BY id HAVING MAX(x) IN (40, 50)",
+      "SELECT id, MAX(name) FROM t GROUP BY id HAVING MAX(name) IN ('a', 'b')",
+      // a typed document-level element gets the same comparison
+      "SELECT id FROM t WHERE YEAR(createdAt) IN (2020, 2021)"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        Parser(sql).isRight shouldBe true
+      }
+    }
+    // A genuine mismatch stays loud, and names the ELEMENT types.
+    val msg = rejection("SELECT id FROM t GROUP BY id HAVING COUNT(x) IN ('a', 'b')")
+    msg should include("Type mismatch")
+    msg should include("'BIGINT' is not compatible with 'VARCHAR'")
     msg should not startWith Parser.InternalParseFailure
   }
 }

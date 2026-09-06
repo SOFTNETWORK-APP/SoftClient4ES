@@ -1517,7 +1517,9 @@ package object query {
       } else if (enrichFields.isEmpty) {
         Left("Enrich fields cannot be empty")
       } else {
-        Right(())
+        // The source WHERE is a document-level filter: an aggregate in it is dropped by
+        // ElasticCriteria and the policy would enrich from EVERY source document (match_all).
+        where.map(_.validate()).getOrElse(Right(()))
       }
     }
   }
