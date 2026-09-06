@@ -222,10 +222,45 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
     client.temporalLiteralSchemaMissCount shouldBe 0 // a resolved alias is never a miss
     client.getIndex("multi_alias") shouldBe ElasticSuccess(None) // ambiguous: not found
+    val before = client.schemaLookups
     client.search(
       SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
     )
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
+    client.schemaLookups shouldBe (before + 1)
+    client.temporalLiteralSchemaMissCount shouldBe 1
+    // R4-19: the ambiguous alias is BOUNDED -- a second statement costs no further lookup
+    client.search(
+      SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts < '$spaceForm' LIMIT 5")
+    )
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
+    client.schemaLookups shouldBe (before + 1)
+  }
+
+  it should "drop a cached alias schema when the concrete index it resolved from is invalidated" in {
+    // R4-21: without this an ALTER TABLE on the concrete index would leave a stale mapping (hence
+    // a stale date `format`) reachable through the alias for the rest of the TTL.
+    val events =
+      """{"aliases":{"events_alias":{}},"mappings":{"properties":{
+        |  "id":{"type":"keyword"},"event_ts":{"type":"date"}}},
+        |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
+    var fetches = 0
+    val client = new RecordingClient {
+      override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+        if (index == "events_alias") {
+          fetches += 1
+          ElasticResult.success(Some(s"""{"events":$events}"""))
+        } else ElasticResult.success(None)
+    }
+    val statement =
+      SelectStatement(s"SELECT id FROM events_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
+    client.search(statement)
+    client.search(statement)
+    fetches shouldBe 1 // cached
+    client.invalidateSchema("events") // the CONCRETE index, not the alias
+    client.search(statement)
+    fetches shouldBe 2 // the alias entry went with it
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
   }
 
   it should "not look the schema up at all when the WHERE carries no candidate literal" in {

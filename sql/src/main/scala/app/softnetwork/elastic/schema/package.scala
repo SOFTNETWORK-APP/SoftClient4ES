@@ -452,7 +452,12 @@ package object schema {
     settings: JsonNode,
     aliases: Map[String, JsonNode] = Map.empty,
     defaultPipeline: Option[JsonNode] = None,
-    finalPipeline: Option[JsonNode] = None
+    finalPipeline: Option[JsonNode] = None,
+    /** Set when [[name]] is an ALIAS this index was resolved from: the concrete index name (issue
+      * #276). The caller uses it to invalidate the alias entry when the concrete index's schema
+      * changes.
+      */
+    resolvedFrom: Option[String] = None
   ) {
 
     lazy val defaultIngestPipelineName: Option[String] = esSettings.options.get("index") match {
@@ -563,21 +568,30 @@ package object schema {
       apply(name, root)
     }
 
-    /** The index documents a GET-index response holds: `{"<index>": {"mappings": ..., ...}}` for a
-      * concrete index, and -- for `GET /<alias>` -- one such entry PER INDEX behind the alias, each
-      * keyed by the index's own name (never by the alias).
+    /** Top-level keys of an index-document MAP: what `GET /<alias>` answers, one entry per index
+      * behind the alias, each keyed by the index's own name (never by the alias).
+      *
+      * Returns EVERY object-valued entry -- not only the ones carrying `mappings` -- so an alias
+      * over several indices is detected as ambiguous even when a member has no mapping at all
+      * (counting mapping-bearing documents would let such an alias resolve silently to the other
+      * member: review R4-18).
+      *
+      * Empty when `root` is itself ONE index document (`{"mappings": …, "settings": …}`, what a
+      * typed client returns for a concrete index). The discriminator is a top-level `mappings` /
+      * `settings` / `aliases` key; an alias over an index literally NAMED one of those three would
+      * be misread, which no real deployment does.
       */
     def indexDocuments(root: JsonNode): Seq[(String, JsonNode)] =
-      if (root != null && root.isObject)
+      if (
+        root == null || !root.isObject ||
+        root.has("mappings") || root.has("settings") || root.has("aliases")
+      ) Seq.empty
+      else
         root
           .properties()
           .asScala
           .toSeq
-          .collect {
-            case entry if entry.getValue.isObject && entry.getValue.has("mappings") =>
-              entry.getKey -> entry.getValue
-          }
-      else Seq.empty
+          .collect { case entry if entry.getValue.isObject => entry.getKey -> entry.getValue }
 
     def apply(name: String, root: JsonNode): Index = {
       if (root.has(name)) {
@@ -589,8 +603,12 @@ package object schema {
       // (the schema keeps the alias as its name); an alias over several is ambiguous and falls
       // through to the mapping-less shape below -- callers detect it with [[indexDocuments]].
       indexDocuments(root) match {
-        case Seq((_, single)) => return apply(name, single)
-        case _                =>
+        case Seq((concrete, single)) =>
+          val resolved = apply(name, single)
+          // `name` is an alias OF `concrete`, not of itself: dropping the self-entry keeps
+          // `SHOW CREATE TABLE <alias>` from rendering the alias among its own ALIASES (R4-17).
+          return resolved.copy(aliases = resolved.aliases - name, resolvedFrom = Some(concrete))
+        case _ =>
       }
       val mappings = root.path("mappings")
       val settings = root.path("settings")

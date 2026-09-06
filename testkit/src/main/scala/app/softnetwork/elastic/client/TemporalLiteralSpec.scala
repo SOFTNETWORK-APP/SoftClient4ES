@@ -64,6 +64,12 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
   /** Mutated by the DML cases (UPDATE then DELETE), so it gets its own copy of the rows. */
   private val dmlIndex = "temporal_literal_dml"
 
+  /** Second custom-format index: the multi-index alias spans two members whose `date` format
+    * AGREES, so the ambiguous-alias query reaches Elasticsearch and its emitted body can be
+    * asserted verbatim (review R4-20).
+    */
+  private val customIndex2 = "temporal_literal_custom_b"
+
   /** Eight timestamps (UTC), ids `e1`..`e8`; `>= 2026-06-04T00:00:00` selects `e4`..`e8`. */
   private val timestamps: Seq[String] = Seq(
     "2026-06-01T00:00:00",
@@ -108,6 +114,8 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     client.setMapping(customIndex, customMapping).get shouldBe true
     client.createIndex(dmlIndex, settings = settings).get shouldBe true
     client.setMapping(dmlIndex, defaultMapping).get shouldBe true
+    client.createIndex(customIndex2, settings = settings).get shouldBe true
+    client.setMapping(customIndex2, customMapping).get shouldBe true
 
     val defaultDocs = timestamps.zipWithIndex.map { case (ts, i) =>
       // `label` holds the SQL spelling of the same instant: the keyword negative control
@@ -135,17 +143,25 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     load(defaultIndex, defaultDocs)
     load(customIndex, customDocs)
     load(dmlIndex, defaultDocs)
+    load(customIndex2, customDocs)
   }
 
   override def afterAll(): Unit = {
     client.deleteIndex(defaultIndex)
     client.deleteIndex(customIndex)
     client.deleteIndex(dmlIndex)
+    client.deleteIndex(customIndex2)
     super.afterAll()
   }
 
   private def ids(rows: Seq[ListMap[String, Any]]): Set[String] =
     rows.flatMap(_.get("id").map(_.toString)).toSet
+
+  private def searchResponse(sql: String): ElasticResponse =
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) => response
+      case ElasticFailure(error)    => fail(s"Query failed: ${error.message}\n$sql")
+    }
 
   /** Client venue: `SearchApi.search`. */
   private def searchIds(sql: String): Set[String] =
@@ -245,19 +261,27 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     fromJune4
   }
 
-  "a query through an alias over several indices" should "forward the literal verbatim (not our rejection)" in {
-    client.addAlias(defaultIndex, multiAlias).get shouldBe true
+  "a query through an alias over several indices" should "forward the literal verbatim" in {
+    // Both members carry `format: "yyyy-MM-dd HH:mm:ss"`, so Elasticsearch itself accepts the space
+    // form and the emitted body can be asserted: an ambiguous alias must reach ES UNCHANGED --
+    // neither rewritten to the `T` form nor rejected by us (review R4-20).
     client.addAlias(customIndex, multiAlias).get shouldBe true
-    // the alias itself is queryable (a non-temporal predicate: the two members' `date` formats
-    // differ, so a date literal would be judged by each member's own mapping)
-    searchIds(s"SELECT id FROM $multiAlias WHERE amount = 8") shouldBe Set("e8")
-    // the space form is neither rewritten nor rejected by us -- the ambiguous mapping is not
-    // resolved, so Elasticsearch's own answer comes back (a raw parse failure on the default index)
+    client.addAlias(customIndex2, multiAlias).get shouldBe true
+    searchIds(s"SELECT id FROM $multiAlias WHERE amount = 8") shouldBe Set("e8") // the alias works
+
+    val response = searchResponse(
+      s"SELECT id FROM $multiAlias WHERE event_ts >= '2026-06-04 00:00:00'"
+    )
+    response.query should include("2026-06-04 00:00:00")
+    response.query should not include "2026-06-04T00:00:00"
+    ids(response.results) shouldBe fromJune4
+
+    // and an unparseable literal is Elasticsearch's to judge there, never our named 400
     client.search(
-      SelectStatement(s"SELECT id FROM $multiAlias WHERE event_ts >= '2026-06-04 00:00:00'")
+      SelectStatement(s"SELECT id FROM $multiAlias WHERE event_ts >= 'not-a-date'")
     ) match {
       case ElasticFailure(error) => error.message should not include "Cannot parse '"
-      case ElasticSuccess(_)     => // a lenient cluster may answer rows; the point is no named 400
+      case ElasticSuccess(_)     => // a lenient member may match nothing; the point is no named 400
     }
   }
 

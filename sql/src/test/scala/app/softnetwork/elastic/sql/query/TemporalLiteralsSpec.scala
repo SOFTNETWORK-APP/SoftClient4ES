@@ -480,6 +480,21 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     // a concrete index keyed by its own name is untouched by the rule
     Index("events", s"""{"events":$events}""").schema.find("event_ts").map(_.dataType) shouldBe
     Some(SQLTypes.Date)
+
+    // R4-18: a member WITHOUT mappings still counts -- otherwise a two-index alias would resolve
+    // silently to the other member (the silent-wrong-answer mode this story removes)
+    val mappingless =
+      """{"aliases":{"partial_alias":{}},"settings":{"index":{"number_of_shards":"1"}}}"""
+    val partialRoot: com.fasterxml.jackson.databind.JsonNode =
+      new com.fasterxml.jackson.databind.ObjectMapper()
+        .readTree(s"""{"events":$events,"no_mappings":$mappingless}""")
+    Index.indexDocuments(partialRoot).map(_._1) shouldBe Seq("events", "no_mappings")
+    Index("partial_alias", partialRoot).schema.columns shouldBe empty
+
+    // R4-17: a resolved alias is not an alias of itself
+    single.schema.aliases.keySet should not contain "events_alias"
+    single.resolvedFrom shouldBe Some("events")
+    Index("events", s"""{"events":$events}""").resolvedFrom shouldBe None
   }
 
   it should "walk into an UNNEST nested criteria" in {

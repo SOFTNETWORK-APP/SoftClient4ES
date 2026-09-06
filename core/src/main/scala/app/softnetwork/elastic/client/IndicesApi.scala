@@ -60,6 +60,12 @@ trait IndicesApi extends ElasticClientHelpers {
 
   private val schemaCache = new ConcurrentHashMap[String, (Schema, Long)]()
 
+  /** Alias -> the CONCRETE index its cached schema was resolved from (issue #276). Without it an
+    * `ALTER TABLE <index>` would leave a stale mapping -- and therefore a stale date `format` --
+    * reachable through the alias for the rest of the TTL (review R4-21).
+    */
+  private val schemaAliasTargets = new ConcurrentHashMap[String, String]()
+
   // ========================================================================
   // PUBLIC METHODS
   // ========================================================================
@@ -231,8 +237,22 @@ trait IndicesApi extends ElasticClientHelpers {
     }
   }
 
+  /** Drop every cached ALIAS schema resolved from `index` (#276 / review R4-21). */
+  private def invalidateAliasesOf(index: String): Unit =
+    schemaAliasTargets
+      .entrySet()
+      .asScala
+      .collect { case e if e.getValue == index => e.getKey }
+      .toList
+      .foreach { alias =>
+        schemaCache.remove(alias)
+        schemaAliasTargets.remove(alias)
+        logger.debug(s"📦 Schema cache invalidated for alias '$alias' (target '$index')")
+      }
+
   def updateSchema(index: String, schema: Schema): Unit = {
     schemaCache.put(index, (schema, System.currentTimeMillis()))
+    invalidateAliasesOf(index)
     // #238 — ALTER TABLE may have reindexed into a different shard count
     invalidateShardCounts(Some(index))
     logger.debug(s"📦 Schema cache updated for '$index'")
@@ -240,12 +260,15 @@ trait IndicesApi extends ElasticClientHelpers {
 
   def invalidateSchema(index: String): Unit = {
     schemaCache.remove(index)
+    val _ = schemaAliasTargets.remove(index)
+    invalidateAliasesOf(index)
     invalidateShardCounts(Some(index)) // #238 — the sliced-paging shard counts follow the schema
     logger.info(s"🗑️ Schema cache invalidated for '$index'")
   }
 
   def invalidateAllSchemas(): Unit = {
     schemaCache.clear()
+    schemaAliasTargets.clear()
     invalidateShardCounts()
     logger.info("🗑️ All schema caches invalidated")
   }
@@ -253,6 +276,12 @@ trait IndicesApi extends ElasticClientHelpers {
   private def fetchSchemaFromES(index: String): ElasticResult[Schema] = {
     getIndex(index) match {
       case ElasticSuccess(Some(idx)) =>
+        // #276 -- remember which concrete index an ALIAS resolved to, so invalidating that index
+        // also drops the alias entry.
+        idx.resolvedFrom.filter(_ != index) match {
+          case Some(concrete) => val _ = schemaAliasTargets.put(index, concrete)
+          case None           => val _ = schemaAliasTargets.remove(index)
+        }
         ElasticSuccess(idx.schema)
       case ElasticSuccess(None) =>
         logger.warn(s"Index '$index' not found for schema loading")
@@ -361,7 +390,7 @@ trait IndicesApi extends ElasticClientHelpers {
     // Issue #276 -- `index` may be an ALIAS. `Index.apply` resolves an alias over exactly ONE
     // index; an alias over several is ambiguous (which mapping?) and is reported as NOT FOUND
     // rather than as an empty schema, on every client alike.
-    if (!root.has(index) && !root.has("mappings")) {
+    if (!root.has(index)) {
       val members = Index.indexDocuments(root)
       if (members.size > 1) {
         logger.warn(
