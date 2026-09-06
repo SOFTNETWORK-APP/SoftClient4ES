@@ -28,6 +28,8 @@ import org.slf4j.Logger
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
+import java.util.ServiceLoader
+import scala.jdk.CollectionConverters._
 
 /** Pins the ONE property that makes [[TestLoggingConfigurator]] safe to ship in a test tree that
   * every es{N} test classpath inherits: it must step aside whenever a logback XML configuration is
@@ -64,6 +66,16 @@ class TestLoggingConfiguratorSpec extends AnyFlatSpec with Matchers with BeforeA
   }
 
   behavior of "TestLoggingConfigurator"
+
+  it should "be discovered by logback as a Configurator service on this test classpath" in {
+    // Pins the META-INF/services registration itself: a typo there would degrade silently to
+    // BasicConfigurator (root DEBUG, console flood) with every other test still green.
+    ServiceLoader
+      .load(classOf[Configurator], getClass.getClassLoader)
+      .iterator()
+      .asScala
+      .exists(_.isInstanceOf[TestLoggingConfigurator]) shouldBe true
+  }
 
   it should "configure the root logger at WARN with one console appender when no XML configuration is visible" in {
     assertNoXmlConfigurationOnThisClasspath()

@@ -34,13 +34,20 @@ object LogbackCapture {
 
   final case class Captured(level: String, message: String)
 
-  /** Run `body` while capturing every event logged through `loggerName` at `level` or above; the
-    * logger's level is raised for the window and restored afterwards. Returns the body's result and
-    * the captured events in order. A `body` that throws propagates its exception and the events are
-    * discarded with the appender - wrap a throwing body in `Try` INSIDE `body` if its log matters.
+  /** Run `body` while capturing every event logged through `loggerName` at `level` or above BY THE
+    * CALLING THREAD; the logger's level is raised for the window and restored afterwards. Returns
+    * the body's result and the captured events in order.
+    *
+    * The thread filter is what keeps an exact-count assertion honest in a module whose suites run
+    * in parallel (`licensing` does): the redefined objects under test log on the spec's own thread,
+    * while the REAL object of the same name - hence the same logger - may log from another suite's
+    * thread at any moment. Events from other threads are dropped. A `body` that throws propagates
+    * its exception and the events are discarded with the appender - wrap a throwing body in `Try`
+    * INSIDE `body` if its log matters.
     */
   def capture[A](loggerName: String, level: Level)(body: => A): (A, Seq[Captured]) = {
     val logger = logbackLogger(loggerName)
+    val capturingThread = Thread.currentThread().getName
     val appender = new ListAppender[ILoggingEvent]()
     appender.start()
     val previousLevel = logger.getLevel
@@ -51,6 +58,7 @@ object LogbackCapture {
       logger.detachAppender(appender)
       val events = appender.synchronized(
         appender.list.asScala
+          .filter(_.getThreadName == capturingThread)
           .map(e => Captured(e.getLevel.toString, e.getFormattedMessage))
           .toVector
       )

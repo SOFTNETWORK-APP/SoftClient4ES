@@ -81,7 +81,15 @@ object ElasticClientFactory {
           .map(_.client(config))
           .toSeq
           .headOption
-          .getOrElse(throw new IllegalStateException("No ElasticClientSpi implementation found"))
+          .getOrElse(
+            // The leading substring is pinned by the jdbc/arrow isolation specs - append, never replace.
+            throw new IllegalStateException(
+              "No ElasticClientSpi implementation found through " +
+              s"${classOf[ElasticClientSpi].getClassLoader}: the client jar must be on the same " +
+              "classpath as softclient4es-core - providers are resolved against the classloader that " +
+              "loaded softclient4es-core, never the thread context classloader (#258)"
+            )
+          )
       }
     )
   }

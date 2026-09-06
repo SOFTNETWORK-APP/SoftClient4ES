@@ -83,9 +83,10 @@ object ClassLoaderIsolation {
     out.toByteArray
   }
 
-  /** Parent-first loader that DEFINES AFRESH a chosen set of classes from the parent's bytecode and
-    * delegates every other class to the parent. A class defined here is a distinct `Class` object
-    * with its own static state, so an `object` in the set runs its initialiser again on first use.
+  /** Parent-first loader with a CHILD-DEFINED name set: the classes named in `redefine` are defined
+    * afresh here from the parent's bytecode, every other class is delegated to the parent. A class
+    * defined here is a distinct `Class` object with its own static state, so an `object` in the set
+    * runs its initialiser again on first use.
     *
     * @param parent
     *   the loader whose classpath supplies every class, including the bytes of the redefined ones

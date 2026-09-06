@@ -126,6 +126,37 @@ class ElasticClientFactoryIsolationSpec extends AnyFlatSpec with Matchers with B
     }
   }
 
+  it should "name the interface's classloader and the remedy when no provider is visible to it" in {
+    val parent = getClass.getClassLoader
+    // The interface belongs to the isolating loader, which hides its registration; the context
+    // classloader is deliberately left alone - post-fix it must not matter (AD-S5-1).
+    val isolating = new RedefiningClassLoader(
+      parent,
+      Seq(factoryObject, spiName),
+      Set(servicesResource),
+      Array.empty[URL]
+    )
+    isolating.loadClass(spiName).getClassLoader shouldBe theSameInstanceAs(isolating)
+    isolating.getResources(servicesResource).hasMoreElements shouldBe false
+
+    val factory = ClassLoaderIsolation.moduleOf(isolating, factoryObject)
+    val outcome =
+      try Try(factory.getClass.getMethod("create", classOf[Config]).invoke(factory, config))
+      finally removeShutdownHook(factory)
+
+    outcome match {
+      case Failure(e: InvocationTargetException) =>
+        val cause = e.getCause
+        cause shouldBe an[IllegalStateException]
+        // the substring the jdbc/arrow ContextClassLoaderIsolationSpecs pin - kept, appended to
+        cause.getMessage should include("No ElasticClientSpi implementation found")
+        cause.getMessage should include(isolating.toString)
+        cause.getMessage should include("#258")
+      case other =>
+        fail(s"expected create() to fail on an empty provider list, got $other")
+    }
+  }
+
   /** Every fresh copy of the factory registers its own JVM shutdown hook in its initialiser; remove
     * it so a test run does not accumulate hooks in the long-lived sbt JVM.
     */
