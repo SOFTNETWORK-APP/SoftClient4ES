@@ -3,6 +3,7 @@ package app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query._
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.sksamuel.elastic4s.searches.aggs.{AbstractAggregation, Aggregation}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -515,25 +516,65 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
   "no emitted Painless" should "dereference or compare a possibly-null value unguarded (AC 4b)" in {
     shapes.foreach { sql =>
       withClue(s"[$sql] ") {
-        scriptsOf(mapper.readTree(queryOf(sql))).foreach { script =>
-          withClue(s"script [$script] ") {
-            // (a) A `( ... ? null : ... )` group must not be dereferenced: `(cond ? null : v).m()`
-            //     invokes `m` on null whenever `cond` holds -- the doubled `.get(ChronoField.YEAR)`.
-            nullTernaryGroupEnds(script).foreach { end =>
-              if (end + 1 < script.length) script.charAt(end + 1) should not be '.'
-            }
-            // (b) A `def` bound to such a group is nullable: any later `name.` dereference must be
-            //     preceded by a `name == null` / `name != null` test.
-            nullableDefs(script).foreach { name =>
-              val afterDef = script.substring(script.indexOf(s"def $name") + 4 + name.length)
-              if (afterDef.contains(s"$name."))
-                assert(
-                  afterDef.contains(s"$name == null") || afterDef.contains(s"$name != null"),
-                  s"'$name.' is dereferenced without a null test"
-                )
-            }
-          }
-        }
+        scriptsOf(mapper.readTree(queryOf(sql))).foreach(assertNullSafe)
+      }
+    }
+  }
+
+  /** The null-safety rule (lead directive 2026-09-06) on ONE Painless script. */
+  private def assertNullSafe(script: String): Unit =
+    withClue(s"script [$script] ") {
+      // (a) A `( ... ? null : ... )` group must not be dereferenced: `(cond ? null : v).m()`
+      //     invokes `m` on null whenever `cond` holds -- the doubled `.get(ChronoField.YEAR)`.
+      nullTernaryGroupEnds(script).foreach { end =>
+        if (end + 1 < script.length) script.charAt(end + 1) should not be '.'
+      }
+      // (b) A `def` bound to such a group is nullable: any later `name.` dereference must be
+      //     preceded by a `name == null` / `name != null` test.
+      nullableDefs(script).foreach { name =>
+        val afterDef = script.substring(script.indexOf(s"def $name") + 4 + name.length)
+        if (afterDef.contains(s"$name."))
+          assert(
+            afterDef.contains(s"$name == null") || afterDef.contains(s"$name != null"),
+            s"'$name.' is dereferenced without a null test"
+          )
+      }
+    }
+
+  // ---------------------------------------------------------------------------------------------
+  // Issue #222 (story BIDC-3) -- extended_stats over a transform. The metric scripts these shapes
+  // make reach Elasticsearch 8 / 9 for the first time are held to the same rule. The Default
+  // serializer refuses to render them (it would drop the script), so they are read off the built
+  // request's aggregation tree -- the ScriptedExtendedStatsAggregation marker -- not off JSON.
+  // ---------------------------------------------------------------------------------------------
+
+  private val transformExtendedStatsShapes: Seq[String] = Seq(
+    "SELECT id, STDDEV(YEAR(createdAt)) AS s FROM t GROUP BY id",
+    "SELECT id, STDDEV(ABS(salary)) AS s FROM t GROUP BY id",
+    "SELECT id, VARIANCE(ABS(salary)) AS v FROM t GROUP BY id",
+    "SELECT id, STDDEV_POP(DATE_TRUNC(createdAt, MINUTE)) AS s FROM t GROUP BY id",
+    "SELECT id, VAR_SAMP(YEAR(createdAt)) AS a, VAR_POP(YEAR(createdAt)) AS b FROM t GROUP BY id",
+    "SELECT id, STDDEV(YEAR(createdAt)) AS s FROM t GROUP BY id HAVING COUNT(x) > 1",
+    "SELECT id, name, STDDEV(YEAR(createdAt)) OVER (PARTITION BY id) AS s FROM t",
+    "SELECT id, name, VARIANCE(ABS(salary)) OVER (PARTITION BY id) AS v FROM t",
+    "SELECT id, name, STDDEV_SAMP(YEAR(createdAt)) OVER (PARTITION BY id) AS s FROM t"
+  )
+
+  private def markerScriptsOf(aggs: Iterable[AbstractAggregation]): Seq[String] =
+    aggs.toSeq.flatMap {
+      case m: ScriptedExtendedStatsAggregation => m.inner.script.map(_.script).toSeq
+      case a: Aggregation                      => markerScriptsOf(a.subaggs)
+      case _                                   => Seq.empty
+    }
+
+  "an extended_stats over a transform" should "carry a null-safe metric script, plain and windowed (issue #222)" in {
+    transformExtendedStatsShapes.foreach { sql =>
+      withClue(s"[$sql] ") {
+        val request: ElasticSearchRequest = SelectStatement(sql)
+        request.hasTransformExtendedStats shouldBe true
+        val scripts = markerScriptsOf(request.search.aggs)
+        scripts should not be empty
+        scripts.foreach(assertNullSafe)
       }
     }
   }

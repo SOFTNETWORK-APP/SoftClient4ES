@@ -30,7 +30,16 @@ object Versions {
 
   val es7 = "7.17.29"
 
-  val elastic74s = "7.17.4"
+  // 🔴 FLOOR, do not lower: 7.17.26 is the FIRST 7.x release whose `ExtendedStatsAggregationBuilder`
+  // emits `agg.script` (elastic4s#4105, the series/7.x backport of #4100). The ES 7 client UNWRAPS
+  // the bridge's `ScriptedExtendedStatsAggregation` UNCONDITIONALLY (AD-S3-4) and hands the result
+  // to the stock one-argument builder, so on any 7.x BELOW this version the script would be dropped
+  // again -- silently reinstating issue #222 (a STDDEV/VARIANCE computed over the RAW field) with
+  // the old safe refusal gone. Downgrading this pin therefore requires restoring the refusal.
+  // Published ONLY under `nl.gn0s1s`: the `com.sksamuel.elastic4s` line stops at 7.17.4, so moving
+  // past it was a fork migration, not a version bump (see SoftClient4es.elastic4sDependencies
+  // case 7, whose Jackson exclusion is equally load-bearing).
+  val elastic74s = "7.17.26"
 
   val es8 = "8.18.3"
 

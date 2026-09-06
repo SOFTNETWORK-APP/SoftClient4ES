@@ -1931,6 +1931,37 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
     implicit val ec: ExecutionContext = system.dispatcher
 
+    // A client module may REFUSE a statement while translating it to Elasticsearch, by throwing a
+    // status-bearing `ElasticError` (issue #222: STDDEV / VARIANCE over a transformed expression on
+    // ES 6 / ES 7, where the library cannot emit the aggregation script). This ONE boundary, at the
+    // front door every route converges on -- executor OR extension (`CoreDqlExtension`'s
+    // quota-capped scroll calls `client.scroll` directly and never enters an executor) -- turns
+    // that deliberate refusal into the `ElasticFailure` every other error is, so the REPL, JDBC and
+    // Arrow see an honest 400 instead of a raw exception.
+    //
+    // BOTH halves are needed for the contract "a refusal is answered by `run`, on every route" to
+    // hold: `catch` covers a translation that runs SYNCHRONOUSLY (every in-tree route -- the
+    // executors, and `CoreDqlExtension`), `recover` covers one an extension defers into its own
+    // Future. Anything OTHER than an `ElasticError` keeps its current route -- a `NonFatal`
+    // totality boundary for the whole translation layer is #250's shape and a separate change.
+    def refused(refusal: ElasticError): ElasticResult[QueryResult] = {
+      logger.error(s"❌ ${refusal.message}")
+      val operation = statement match {
+        case _: DqlStatement => Some("dql") // the relabel every DQL executor failure carries
+        case _               => refusal.operation
+      }
+      ElasticFailure(refusal.copy(operation = operation))
+    }
+
+    try dispatch(statement).recover { case refusal: ElasticError => refused(refusal) } catch {
+      case refusal: ElasticError => Future.successful(refused(refusal))
+    }
+  }
+
+  private def dispatch(
+    statement: Statement
+  )(implicit system: ActorSystem, ec: ExecutionContext): Future[ElasticResult[QueryResult]] = {
+
     // ✅ TRY EXTENSIONS FIRST
     extensionRegistry.findHandler(statement) match {
       case Some(extension) =>

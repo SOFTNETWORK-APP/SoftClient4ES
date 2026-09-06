@@ -107,6 +107,17 @@ Quoted column names and aliases work in both spellings — see
   is deliberate: when the dot was allowed to float, `ORDER BY b. DESC` silently parsed as a column
   named `b.DESC` sorted *ascending*.
 
+## `STDDEV` / `VARIANCE` over a transformed expression — Elasticsearch 6 refuses it
+
+`STDDEV(YEAR(hire_date))`, `VARIANCE(ABS(salary))` and the rest of the `extended_stats` family over
+a transformed operand (plain or `OVER (PARTITION BY …)`) compute correctly on **Elasticsearch 7, 8
+and 9**. On **Elasticsearch 6** the query is refused with a `400` — *"STDDEV/VARIANCE over a
+transformed expression is not supported on Elasticsearch 6 …"* — because the client library the
+driver builds on drops the aggregation script on that line (elastic4s#4100) and the 6.x line is
+unmaintained, so the fix cannot reach it; until this rule, the query silently returned the statistic
+of the **raw** field. Aggregate over a raw field there, or use Elasticsearch 7+. That refusal is
+permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev--variance-family).
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).

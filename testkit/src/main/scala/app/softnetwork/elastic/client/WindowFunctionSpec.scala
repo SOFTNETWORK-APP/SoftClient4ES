@@ -22,6 +22,7 @@ import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.model.window._
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
+import app.softnetwork.elastic.sql.query.SelectStatement
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -2109,6 +2110,174 @@ trait WindowFunctionSpec
 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  // ========================================================================
+  // ISSUE #222 (story BIDC-3) — STDDEV / VARIANCE over a TRANSFORMED expression
+  //
+  // Elasticsearch 7, 8 and 9: the statistic is computed over the transform (the emitted
+  // extended_stats carries its script); the oracle is computed from the fixture itself and sits ten
+  // orders of magnitude away from the statistic of the raw `hire_date` millis the query used to
+  // compute silently. ES 8 / 9 render the script through elastic4s's `customAggregation` seam;
+  // ES 7 (elastic4s 7.17.26+, backport elastic4s#4105) unwraps the bridge's marker and lets the
+  // stock builder emit it — different mechanism, same answer, so the same oracle applies.
+  // Elasticsearch 6: the query is REFUSED with a named 400 -- never executed against the raw field
+  // (dead elastic4s line, no upstream path). An execution-success assertion is explicitly
+  // insufficient here (issue #222).
+  // ========================================================================
+
+  def elasticsearchMajor: Int =
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => v.split("\\.").head.toInt
+      case ElasticFailure(error) =>
+        fail(s"Failed to retrieve Elasticsearch version: ${error.message}")
+    }
+
+  /** Whether this client computes `STDDEV` / `VARIANCE` over a TRANSFORMED expression (issue #222).
+    *
+    * True from Elasticsearch 7: the ES 7 module unwraps the bridge marker and lets the elastic4s
+    * builder emit the aggregation script. False on ES 6 alone — its elastic4s line is dead, so the
+    * query is refused rather than answered wrongly.
+    *
+    * 🔴 This keys on the ES SERVER major, but the capability actually belongs to the CLIENT
+    * LIBRARY: it holds only while `Versions.elastic74s` is **>= 7.17.26**, the first 7.x release
+    * carrying elastic4s#4105. The unwrap is unconditional, so pinning an older 7.x elastic4s would
+    * silently restore #222's original defect — a statistic computed over the RAW field — with the
+    * refusal that used to guard it gone, and this predicate would still answer `true`. That floor
+    * is stated beside the pin; do not lower it without restoring the ES 7 refusal.
+    */
+  def computesTransformedStats: Boolean = elasticsearchMajor >= 7
+
+  /** The hire YEARS per department, read from the fixture rows -- the oracle's input. */
+  private def hireYearsByDepartment: Map[String, Seq[Int]] =
+    client.searchAs[Employee](
+      "SELECT name, department, location, salary, hire_date, level, skills, id FROM emp LIMIT 100"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.groupBy(_.department).map { case (dept, emps) =>
+          dept -> emps.map(_.hire_date.take(4).toInt)
+        }
+      case ElasticFailure(error) => fail(s"Fixture read failed: ${error.message}")
+    }
+
+  private def populationVariance(xs: Seq[Int]): Double = {
+    val mean = xs.sum.toDouble / xs.size
+    xs.map(x => (x - mean) * (x - mean)).sum / xs.size
+  }
+
+  private def sampleVariance(xs: Seq[Int]): Double = {
+    val mean = xs.sum.toDouble / xs.size
+    xs.map(x => (x - mean) * (x - mean)).sum / (xs.size - 1)
+  }
+
+  private val transformedStatsSql =
+    """SELECT department,
+      |       STDDEV(YEAR(hire_date))     AS sd_year,
+      |       VAR_SAMP(YEAR(hire_date))   AS vs_year,
+      |       VAR_POP(YEAR(hire_date))    AS vp_year,
+      |       STDDEV_POP(YEAR(hire_date)) AS sdp_year
+      |FROM emp
+      |GROUP BY department""".stripMargin
+
+  private val windowedTransformedStatsSql =
+    """SELECT department, name, hire_date,
+      |       STDDEV(YEAR(hire_date)) OVER (PARTITION BY department) AS sd_year
+      |FROM emp
+      |LIMIT 100""".stripMargin
+
+  /** ES 6: the same statement is refused on the gateway route (REPL / JDBC / Arrow -- an honest 400
+    * naming the major) AND on the direct client API (the same `ElasticError`, thrown).
+    */
+  private def assertRefusedOnThisMajor(sql: String): Unit = {
+    val major = elasticsearchMajor
+    Await.result(client.run(sql), 30.seconds) match {
+      case ElasticFailure(error) =>
+        error.statusCode shouldBe Some(400)
+        error.message should include(s"Elasticsearch $major")
+        error.message should include("elastic4s#4100")
+        error.message should include("transformed expression")
+        log.info(s"  ✓ ES $major refused: ${error.message}")
+      case other =>
+        fail(s"a transform-bearing STDDEV must be refused on Elasticsearch $major, got $other")
+    }
+    val direct = intercept[app.softnetwork.elastic.client.result.ElasticError](
+      client.searchAsUnchecked[DepartmentYearStats](SelectStatement(sql))
+    )
+    direct.statusCode shouldBe Some(400)
+    direct.message should include(s"Elasticsearch $major")
+  }
+
+  "STDDEV / VARIANCE over a transformed expression" should "compute the statistic over the transform on ES 7+ and refuse loudly on ES 6 (issue #222)" in {
+    if (computesTransformedStats) {
+      val years = hireYearsByDepartment
+      client.searchAs[DepartmentYearStats](
+        """SELECT department,
+          |       STDDEV(YEAR(hire_date))     AS sd_year,
+          |       VAR_SAMP(YEAR(hire_date))   AS vs_year,
+          |       VAR_POP(YEAR(hire_date))    AS vp_year,
+          |       STDDEV_POP(YEAR(hire_date)) AS sdp_year
+          |FROM emp
+          |GROUP BY department""".stripMargin
+      ) match {
+        case ElasticSuccess(rows) =>
+          rows.map(_.department).toSet shouldBe years.keySet
+          rows.foreach { r =>
+            val xs = years(r.department)
+            withClue(s"${r.department} years=$xs ") {
+              r.vp_year.get shouldBe populationVariance(xs) +- 1e-6
+              r.sdp_year.get shouldBe math.sqrt(populationVariance(xs)) +- 1e-6
+              r.vs_year.get shouldBe sampleVariance(xs) +- 1e-6
+              r.sd_year.get shouldBe math.sqrt(sampleVariance(xs)) +- 1e-6
+              // The statistic of the RAW field is over epoch millis (~1e10): never this.
+              r.sd_year.get should be < 100.0
+              log.info(
+                f"${r.department}%-12s  sd=${r.sd_year.get}%8.4f  vs=${r.vs_year.get}%8.4f  " +
+                f"vp=${r.vp_year.get}%8.4f  sdp=${r.sdp_year.get}%8.4f  (years=$xs)"
+              )
+            }
+          }
+          // Engineering hire years: 2019, 2018, 2020, 2017, 2021, 2016, 2015 -> mean 2018, SS 28.
+          val eng = rows.find(_.department == "Engineering").getOrElse(fail("no Engineering row"))
+          eng.vp_year.get shouldBe 4.0 +- 1e-6
+          eng.sdp_year.get shouldBe 2.0 +- 1e-6
+          eng.vs_year.get shouldBe 28.0 / 6 +- 1e-6
+          eng.sd_year.get shouldBe math.sqrt(28.0 / 6) +- 1e-6
+
+        case ElasticFailure(error) =>
+          fail(s"Query failed: ${error.message}")
+      }
+    } else {
+      assertRefusedOnThisMajor(transformedStatsSql)
+    }
+  }
+
+  it should "compute the WINDOWED statistic over the transform on ES 7+ and refuse loudly on ES 6 (issue #222)" in {
+    if (computesTransformedStats) {
+      val years = hireYearsByDepartment
+      client.searchAs[EmployeeYearStats](
+        """SELECT department, name, hire_date,
+          |       STDDEV(YEAR(hire_date)) OVER (PARTITION BY department) AS sd_year
+          |FROM emp
+          |LIMIT 100""".stripMargin
+      ) match {
+        case ElasticSuccess(rows) =>
+          rows should have size 20
+          rows.groupBy(_.department).foreach { case (dept, emps) =>
+            val values = emps.flatMap(_.sd_year).distinct
+            withClue(s"$dept years=${years(dept)} ") {
+              values should have size 1
+              values.head shouldBe math.sqrt(sampleVariance(years(dept))) +- 1e-6
+              values.head should be < 100.0
+              log.info(f"  ✓ $dept%-12s  windowed sd(YEAR(hire_date)) = ${values.head}%8.4f")
+            }
+          }
+
+        case ElasticFailure(error) =>
+          fail(s"Query failed: ${error.message}")
+      }
+    } else {
+      assertRefusedOnThisMajor(windowedTransformedStatsSql)
     }
   }
 

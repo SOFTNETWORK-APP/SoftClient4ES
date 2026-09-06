@@ -1091,6 +1091,15 @@ trait RestHighLevelClientGetApi extends GetApi with RestHighLevelClientHelpers {
 trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHelpers {
   _: ElasticConversion with RestHighLevelClientCompanion =>
 
+  /** Issue #222 -- the search-body serializer every `SingleSearch` conversion made from this trait
+    * picks up (implicit scope of the bridge's `requestToElasticSearchRequest` /
+    * `sqlQueryToAggregations`): since elastic4s 7.17.26 the stock builder emits an `extended_stats`
+    * script itself, so this module UNWRAPS the bridge's marker and lets it -- the statistic is
+    * computed over the transform, as on ES 8 / ES 9. See
+    * [[RestHighLevelClientSearchBodySerializer]].
+    */
+  implicit def searchBodySerializer: SearchBodySerializer = RestHighLevelClientSearchBodySerializer
+
   override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query

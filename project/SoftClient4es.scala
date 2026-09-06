@@ -98,7 +98,22 @@ trait SoftClient4es {
         )
       case 7 =>
         Seq(
-          "com.sksamuel.elastic4s" %% "elastic4s-core" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
+          // `nl.gn0s1s`, not `com.sksamuel.elastic4s` (issue #222): the sksamuel 7.x line stops at
+          // 7.17.4, and the fix for the dropped `extended_stats` script (elastic4s#4105) ships in
+          // 7.17.26, which exists only under the fork. Same package names, so no source change.
+          //
+          // 🔴 The Jackson exclusion is NOT cosmetic and is unique to this arm. 7.17.26 is a RECENT
+          // release of an OLD line, so it declares a modern Jackson (databind/core/annotations
+          // 2.22.2) while this build curates its own coherent set per ES major
+          // (`jacksonDependencies`). Left in, 2.22.2 wins over the curated `jackson-module-scala`,
+          // which validates its databind at class-init and dies:
+          // "Scala module 2.19.0 requires Jackson Databind version >= 2.19.0 and < 2.20.0 - Found
+          // jackson-databind version 2.22.2" — an ExceptionInInitializerError on the FIRST
+          // `XContentBuilder.string`, i.e. on every emitted query. Excluding Jackson here is what
+          // `elasticDependencies` already does for `org.elasticsearch:elasticsearch`: the module's
+          // curated Jackson governs, and elastic4s uses it.
+          ("nl.gn0s1s" %% "elastic4s-core" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"))
+            .excludeAll(jacksonExclusions *)
           // (#168 / jdbc#33 / arrow#167) log4j-api arrives transitively — see elasticDependencies.
         )
       case 8 =>
@@ -124,7 +139,9 @@ trait SoftClient4es {
         )
       case 7 =>
         Seq(
-          "com.sksamuel.elastic4s" %% "elastic4s-testkit" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api")
+          // `nl.gn0s1s` + the Jackson exclusion -- see elastic4sDependencies case 7 (issue #222).
+          ("nl.gn0s1s" %% "elastic4s-testkit" % Versions.elastic74s exclude ("org.elasticsearch", "elasticsearch") exclude ("org.slf4j", "slf4j-api"))
+            .excludeAll(jacksonExclusions *)
         )
       case 8 =>
         Seq(

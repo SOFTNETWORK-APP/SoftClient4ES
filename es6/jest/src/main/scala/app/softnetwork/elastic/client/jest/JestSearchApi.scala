@@ -26,7 +26,7 @@ import app.softnetwork.elastic.client.{
 import com.fasterxml.jackson.databind.JsonNode
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.PainlessContextType
-import app.softnetwork.elastic.sql.bridge.ElasticSearchRequest
+import app.softnetwork.elastic.sql.bridge.{ElasticSearchRequest, SearchBodySerializer}
 import app.softnetwork.elastic.sql.query.SingleSearch
 import io.searchbox.core.{MultiSearch, Search, SearchResult}
 import org.json4s.Formats
@@ -62,6 +62,14 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
         .toList
     }
   }
+
+  /** Issue #222 -- the search-body serializer every `SingleSearch` conversion made from this trait
+    * picks up (implicit scope of the bridge's `requestToElasticSearchRequest` /
+    * `sqlQueryToAggregations`): elastic4s 6.x cannot render an `extended_stats` over a transformed
+    * expression with its script, so the request is REFUSED with a named `ElasticError` before any
+    * JSON exists -- never executed against the raw field. See [[JestSearchBodySerializer]].
+    */
+  implicit def searchBodySerializer: SearchBodySerializer = JestSearchBodySerializer
 
   private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: SingleSearch

@@ -89,11 +89,23 @@ case class ElasticAggregation(
 
   // CHECK if it is a "global" metric (cardinality, etc.) or a bucket metric (avg, sum, etc.)
   val isGlobalMetric: Boolean = agg match {
-    case _: CardinalityAggregation   => true
-    case _: StatsAggregation         => true
-    case _: ExtendedStatsAggregation => true
-    case _                           => false
+    case _: CardinalityAggregation           => true
+    case _: StatsAggregation                 => true
+    case _: ExtendedStatsAggregation         => true
+    case _: ScriptedExtendedStatsAggregation => true
+    case _                                   => false
   }
+
+  /** True when this aggregation is `STDDEV` / `VARIANCE` (any of the `extended_stats` family) over
+    * a TRANSFORMED expression -- the shape a client module must either render with its script or
+    * refuse (issue #222).
+    *
+    * Nothing in the emission path consults this: on both doors the decision is taken by the
+    * injected [[SearchBodySerializer]], off the `SearchRequest` it is handed. This is the
+    * per-aggregation view of the same predicate, for a caller holding an [[ElasticAggregation]] --
+    * the client-module tests assert it on the `sqlQueryToAggregations` door.
+    */
+  def hasTransformExtendedStats: Boolean = ScriptedExtendedStatsAggregation.existsIn(Seq(agg))
 }
 
 object ElasticAggregation {
@@ -197,7 +209,11 @@ object ElasticAggregation {
         case STDDEV | STDDEV_SAMP | STDDEV_POP | VARIANCE | VAR_SAMP | VAR_POP =>
           aggWithFieldOrScript(
             extendedStatsAgg,
-            (name, s) => extendedStatsAgg(name, sourceField).script(s)
+            // Issue #222 -- a transform-bearing extended_stats is bound to the bridge's own marker:
+            // elastic4s's ExtendedStatsAggregationBuilder drops `script`, so the library type
+            // would serialise as the statistic of the raw field. See ScriptedExtendedStatsAggregation.
+            (name, s) =>
+              ScriptedExtendedStatsAggregation(extendedStatsAgg(name, sourceField).script(s))
           )
         case th: WindowFunction =>
           th.window match {
@@ -223,7 +239,11 @@ object ElasticAggregation {
             case STDDEV | STDDEV_SAMP | STDDEV_POP | VARIANCE | VAR_SAMP | VAR_POP =>
               aggWithFieldOrScript(
                 extendedStatsAgg,
-                (name, s) => extendedStatsAgg(name, sourceField).script(s)
+                // Issue #222 -- a transform-bearing extended_stats is bound to the bridge's own marker:
+                // elastic4s's ExtendedStatsAggregationBuilder drops `script`, so the library type
+                // would serialise as the statistic of the raw field. See ScriptedExtendedStatsAggregation.
+                (name, s) =>
+                  ScriptedExtendedStatsAggregation(extendedStatsAgg(name, sourceField).script(s))
               )
             case PERCENTILE_CONT | PERCENTILE_DISC =>
               // Both map to ES `percentiles` (TDigest). One call → one percent;

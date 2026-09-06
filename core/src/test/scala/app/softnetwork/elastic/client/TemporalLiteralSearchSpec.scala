@@ -339,12 +339,24 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery shouldBe None
   }
 
-  "scroll" should "fail the stream with the same 400 for an unparseable literal" in {
+  /** RETARGETED, not deleted (issue #222 D-1, lead ruling 2026-09-06). This pinned the CONTRACT "an
+    * unparseable literal is a 400 that reaches the caller", through the lens of the day: a
+    * `Source.failed`, observable only by materialising the stream. That lens was the defect — BOTH
+    * consumers of `scroll` wrap the Source into an `ElasticSuccess`, so `GatewayApi.run` answered
+    * SUCCESS on the un-LIMITed row route and the rejection surfaced only if somebody ran the
+    * stream. `scroll` now THROWS the same `ElasticError`, exactly as a client module's
+    * extended-stats refusal does, and `run` reports `ElasticFailure(400)` (see
+    * `GatewayRefusalBoundarySpec`). The contract is unchanged and now holds one hop earlier.
+    */
+  "scroll" should "throw the same 400 for an unparseable literal, before any stream exists" in {
     val client = seeded()
-    val stream = client.scroll(SelectStatement("SELECT id FROM events WHERE event_ts >= 'nope'"))
-    val error = the[ElasticError] thrownBy Await.result(stream.runWith(Sink.seq), 10.seconds)
+    val error = the[ElasticError] thrownBy client.scroll(
+      SelectStatement("SELECT id FROM events WHERE event_ts >= 'nope'")
+    )
     error.statusCode shouldBe Some(400)
     error.message should include("'nope'")
     error.message should include("'event_ts'")
+    // The rejection is pre-execution: nothing was sent.
+    client.lastQuery shouldBe None
   }
 }
