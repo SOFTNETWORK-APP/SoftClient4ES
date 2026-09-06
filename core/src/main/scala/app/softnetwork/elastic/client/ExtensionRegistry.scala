@@ -36,9 +36,22 @@ class ExtensionRegistry(
     */
   lazy val extensions: Seq[ExtensionSpi] = {
     val scanStart = System.nanoTime()
-    val loader = ServiceLoader.load(classOf[ExtensionSpi])
+    // #258: resolve providers against the classloader that loaded this library, never the thread
+    // context classloader - under a host-owned blind loader a single-arg load found nothing and the
+    // registry silently ran with no extension at all (#157's silent-wrong-answer mode).
+    val spiClass = classOf[ExtensionSpi]
+    val discovered = ServiceLoader.load(spiClass, spiClass.getClassLoader).iterator().asScala.toList
+    if (discovered.isEmpty) {
+      logger.warn(
+        s"No ${spiClass.getName} provider found through ${spiClass.getClassLoader}: no SQL " +
+        "extension will be available - not even the core DDL/DQL extensions shipped in " +
+        "softclient4es-core, let alone cross-index JOIN or materialized views. Providers are " +
+        "resolved against the classloader that loaded softclient4es-core, never the thread context " +
+        "classloader: the extension jars must be on that same classpath (#258)."
+      )
+    }
 
-    val loaded = loader.iterator().asScala.toSeq.flatMap { ext =>
+    val loaded = discovered.flatMap { ext =>
       logger.info(
         s"🔌 Discovered extension: ${ext.extensionName} v${ext.version} (priority: ${ext.priority})"
       )
