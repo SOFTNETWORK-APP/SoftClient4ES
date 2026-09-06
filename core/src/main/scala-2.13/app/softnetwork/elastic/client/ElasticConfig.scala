@@ -59,9 +59,18 @@ case class ElasticConfig(
 )
 
 object ElasticConfig extends StrictLogging {
+
+  /** The `elastic.*` defaults shipped in this jar (`softnetwork-elastic.conf`), resolved against
+    * the classloader that loaded this class rather than the thread context classloader: under a
+    * host-owned blind TCCL `ConfigFactory.load(name)` finds nothing and every client creation fails
+    * on configuration before it can even look for a provider (#258).
+    */
+  private def defaults: Config =
+    ConfigFactory.load(classOf[ElasticConfig].getClassLoader, "softnetwork-elastic.conf")
+
   def apply(config: Config): ElasticConfig = {
     ConfigReader[ElasticConfig]
-      .read(config.withFallback(ConfigFactory.load("softnetwork-elastic.conf")), "elastic")
+      .read(config.withFallback(defaults), "elastic")
       .toEither match {
       case Left(configError) =>
         logger.error(s"Something went wrong with the provided arguments $configError")

@@ -25,6 +25,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.util.ServiceLoader
 import java.util.concurrent.ConcurrentHashMap
 import scala.jdk.CollectionConverters._
+import scala.sys.ShutdownHookThread
 import scala.util.control.NonFatal
 
 /** Factory for creating Elasticsearch clients with optional metrics and monitoring.
@@ -39,16 +40,22 @@ object ElasticClientFactory {
 
   private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+  // #258: resolve providers against the classloader that loaded this library, never the thread
+  // context classloader. This val is latched at class initialisation, so a single-arg load froze
+  // whichever TCCL the first caller happened to carry - under a host-owned blind loader (Tableau,
+  // plugin containers, app servers) that meant a permanent and misleading "No ElasticClientSpi
+  // implementation found" although the provider sat right beside this class on the classpath.
   private[this] val factories: ServiceLoader[ElasticClientSpi] =
-    ServiceLoader.load(classOf[ElasticClientSpi])
+    ServiceLoader.load(classOf[ElasticClientSpi], classOf[ElasticClientSpi].getClassLoader)
 
   // Use String key (URL) instead of Config for reliable caching
   private[this] val clientsByUrl = new ConcurrentHashMap[String, ElasticClientApi]()
   private[this] val metricsClientsByUrl = new ConcurrentHashMap[String, MetricsElasticClient]()
   private[this] val monitoredClientsByUrl = new ConcurrentHashMap[String, MonitoredElasticClient]()
 
-  // Shutdown hook to close all clients
-  sys.addShutdownHook {
+  // Shutdown hook to close all clients. Named so that a test which defines a fresh copy of this
+  // object (ElasticClientFactoryIsolationSpec, #258) can remove the hook that copy registered.
+  private[spi] val shutdownHook: ShutdownHookThread = sys.addShutdownHook {
     logger.info("JVM shutdown detected, closing all Elasticsearch clients")
     shutdown()
   }
@@ -74,7 +81,15 @@ object ElasticClientFactory {
           .map(_.client(config))
           .toSeq
           .headOption
-          .getOrElse(throw new IllegalStateException("No ElasticClientSpi implementation found"))
+          .getOrElse(
+            // The leading substring is pinned by the jdbc/arrow isolation specs - append, never replace.
+            throw new IllegalStateException(
+              "No ElasticClientSpi implementation found through " +
+              s"${classOf[ElasticClientSpi].getClassLoader}: the client jar must be on the same " +
+              "classpath as softclient4es-core - providers are resolved against the classloader that " +
+              "loaded softclient4es-core, never the thread context classloader (#258)"
+            )
+          )
       }
     )
   }

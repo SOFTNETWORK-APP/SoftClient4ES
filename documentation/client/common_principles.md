@@ -132,6 +132,28 @@ class RestHighLevelClientSpi extends ElasticClientSpi {
 - app.softnetwork.elastic.client.spi.RestHighLevelClientSpi (`softclient4es6-rest-client`, `softclient4es7-rest-client`)
 - app.softnetwork.elastic.client.spi.JavaClientSpi (`softclient4es8-java-client`, `softclient4es9-java-client`)
 
+### Classloader resolution
+
+Since 0.23.0, every SPI lookup in the library (`ElasticClientSpi`, `ExtensionSpi` and the licensing
+`LicenseManagerSpi`) resolves its providers against the **classloader that loaded the SPI
+interface** (the one holding `softclient4es-core` and `softclient4es-licensing`), never the thread
+context classloader. The client factory's built-in `elastic.*` defaults (`ElasticConfig`, read from
+`softnetwork-elastic.conf`) are resolved the same way. This is what lets the library run inside
+hosts that own the context classloader (Tableau, plugin containers, application servers) without a
+provider silently going missing.
+
+Consequences:
+
+- Ship the client, extension and licensing jars on the **same classpath** as the core jar - a flat
+  classpath (`-cp core.jar:lib/*`) or a single shaded jar both qualify.
+- A provider visible **only** through the thread context classloader (for example an extension jar
+  placed on a child classloader with the context classloader pointing at it) is no longer discovered.
+- An empty provider list is reported with a **WARN naming the SPI interface** at the two sites that
+  used to degrade silently (`ExtensionRegistry`, `LicenseRefreshStrategyFactory`);
+  `ElasticClientFactory` fails loudly instead, with
+  `No ElasticClientSpi implementation found through <classloader>: the client jar must be on the
+  same classpath as softclient4es-core ...`.
+
 ---
 
 ## Client Factory
