@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
@@ -233,9 +249,11 @@ class ExtendedStatsEmissionSpec extends AnyFlatSpec with Matchers {
 /** Test-side serializers for the shared template tree. */
 object TestSerializers {
 
-  /** The library's one-argument builder WITHOUT the Default's refusal -- reaches elastic4s's own
-    * behaviour on a marker (a `NotImplementedError`), so a test can build the aggregations of a
-    * transform-bearing statement on the sqlQueryToAggregations door and inspect them.
+  /** The library's one-argument builder for everything it CAN render, and a sentinel instead of the
+    * Default's refusal for a marker -- so a test can build the aggregations of a transform-bearing
+    * statement on the `sqlQueryToAggregations` door and inspect them. It never asks elastic4s to
+    * render a marker (that would raise `NotImplementedError`); the sentinel is asserted, so the
+    * substitution cannot pass unnoticed.
     */
   object RawDefault extends SearchBodySerializer {
     override def serialize(search: SearchRequest): String =

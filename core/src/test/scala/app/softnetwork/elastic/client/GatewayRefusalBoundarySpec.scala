@@ -1,9 +1,26 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.sql.PainlessContextType
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{SingleSearch, Statement}
+import com.typesafe.config.ConfigFactory
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpec
@@ -11,6 +28,7 @@ import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.concurrent.duration._
+import scala.concurrent.Future
 
 /** Issue #222 (story BIDC-3) -- the ONE core boundary the per-major refusal relies on.
   *
@@ -98,6 +116,44 @@ class GatewayRefusalBoundarySpec
         .run("SELECT id, name, STDDEV(YEAR(createdAt)) OVER (PARTITION BY id) AS s FROM t")
         .futureValue
     )
+  }
+
+  it should "surface a refusal an EXTENSION defers into its own Future (R3-8)" in {
+    // Every in-tree route translates synchronously, so `catch` alone covered them. An extension is
+    // third-party code: it may translate inside its own Future, and then the refusal arrives as a
+    // FAILED future, not a throw. Without `recover` on `dispatch` the caller would get the raw
+    // exception -- and the documented contract ("answered at `run`, on every route") would be false
+    // for exactly the callers the SPI exists to serve.
+    val deferring = new ExtensionSpi {
+      override def extensionId: String = "deferring-refusal-test"
+      override def extensionName: String = "Deferring refusal (test double)"
+      override def version: String = "test"
+      override def priority: Int = 1 // ahead of CoreDqlExtension (100)
+      override def initialize(
+        config: com.typesafe.config.Config,
+        licenseRefreshStrategy: app.softnetwork.elastic.licensing.LicenseRefreshStrategy
+      ): Either[String, Unit] = Right(())
+      override def canHandle(statement: Statement): Boolean = true
+      override def execute(statement: Statement, client: ElasticClientApi)(implicit
+        system: ActorSystem
+      ): Future[ElasticResult[QueryResult]] =
+        Future(
+          throw ElasticError(refusalMessage, statusCode = Some(400), operation = Some("search"))
+        )(
+          system.dispatcher
+        )
+      override def supportedSyntax: Seq[String] = Seq.empty
+    }
+
+    val client = new NopeClientApi {
+      override protected def logger: Logger = LoggerFactory.getLogger(getClass)
+      override lazy val extensionRegistry: ExtensionRegistry =
+        new ExtensionRegistry(ConfigFactory.load(), licenseRefreshStrategy) {
+          override lazy val extensions: Seq[ExtensionSpi] = Seq(deferring)
+        }
+    }
+
+    assertRefused(client.run("SELECT id, name FROM t LIMIT 5").futureValue)
   }
 
   it should "not manufacture a refusal for a client that does not refuse" in {

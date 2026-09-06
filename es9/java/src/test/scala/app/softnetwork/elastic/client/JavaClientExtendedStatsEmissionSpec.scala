@@ -182,5 +182,22 @@ class JavaClientExtendedStatsEmissionSpec extends AnyWordSpec with Matchers {
     "be the serializer the client injects" in {
       client.searchBodySerializer shouldBe JavaClientSearchBodySerializer
     }
+
+    "keep elastic4s's own diagnostic for an aggregation NEITHER it nor we can build (R3-1)" in {
+      // The custom handler REPLACES `defaultCustomAggregationHandler`, whose only job is to fail an
+      // unknown aggregation with a NotImplementedError naming the class. A one-case handler would
+      // raise a bare MatchError instead -- strictly worse for anyone debugging a missing builder.
+      val unknown = new Aggregation {
+        type T = Aggregation
+        override def name: String = "unknown"
+        override def metadata: Map[String, AnyRef] = Map.empty
+        override def subaggs: Seq[AbstractAggregation] = Seq.empty
+        override def subAggregations(aggs: Iterable[AbstractAggregation]): T = this
+        override def metadata(map: Map[String, AnyRef]): T = this
+      }
+      val request = com.sksamuel.elastic4s.ElasticApi.search("t").aggregations(unknown)
+      val thrown = intercept[NotImplementedError](JavaClientSearchBodySerializer.serialize(request))
+      thrown.getMessage should include(unknown.getClass.getName)
+    }
   }
 }

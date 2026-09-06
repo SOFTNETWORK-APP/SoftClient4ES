@@ -98,7 +98,12 @@ case class ElasticAggregation(
 
   /** True when this aggregation is `STDDEV` / `VARIANCE` (any of the `extended_stats` family) over
     * a TRANSFORMED expression -- the shape a client module must either render with its script or
-    * refuse (issue #222). The second serialisation door (`sqlQueryToAggregations`) reads it.
+    * refuse (issue #222).
+    *
+    * Nothing in the emission path consults this: on both doors the decision is taken by the
+    * injected [[SearchBodySerializer]], off the `SearchRequest` it is handed. This is the
+    * per-aggregation view of the same predicate, for a caller holding an [[ElasticAggregation]] --
+    * the client-module tests assert it on the `sqlQueryToAggregations` door.
     */
   def hasTransformExtendedStats: Boolean = ScriptedExtendedStatsAggregation.existsIn(Seq(agg))
 }

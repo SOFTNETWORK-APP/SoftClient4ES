@@ -24,7 +24,11 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{
   AggMetaDataFn,
   SubAggsBuilderFn
 }
-import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
+import com.sksamuel.elastic4s.requests.searches.{
+  defaultCustomAggregationHandler,
+  SearchBodyBuilderFn,
+  SearchRequest
+}
 
 /** The ES 8 / ES 9 search-body serializer (issue #222): elastic4s's two-argument
   * `SearchBodyBuilderFn.apply(request, customAggregation)` with a handler for the bridge's
@@ -49,9 +53,20 @@ import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequ
   */
 object JavaClientSearchBodySerializer extends SearchBodySerializer {
 
-  private val handler: PartialFunction[AbstractAggregation, XContentBuilder] = {
+  private val scriptedExtendedStats: PartialFunction[AbstractAggregation, XContentBuilder] = {
     case agg: ScriptedExtendedStatsAggregation => extendedStatsWithScript(agg)
   }
+
+  /** Our one case, then elastic4s's own fallback. The `orElse` is not decoration: this partial
+    * function REPLACES `defaultCustomAggregationHandler`, whose only job is to fail an unknown
+    * aggregation with a `NotImplementedError` naming the class. Ours alone would raise a bare
+    * `MatchError` instead -- a strictly worse diagnostic for anything the library cannot build.
+    *
+    * Declared AFTER `scriptedExtendedStats`: a `val` reading a `val` defined below it sees `null`,
+    * and the object's initialiser then dies with `ExceptionInInitializerError` on first use.
+    */
+  private val handler: PartialFunction[AbstractAggregation, XContentBuilder] =
+    scriptedExtendedStats orElse defaultCustomAggregationHandler
 
   private def extendedStatsWithScript(agg: ScriptedExtendedStatsAggregation): XContentBuilder = {
     val inner = agg.inner
