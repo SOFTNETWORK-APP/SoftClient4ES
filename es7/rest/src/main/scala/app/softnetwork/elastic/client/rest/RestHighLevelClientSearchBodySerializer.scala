@@ -62,6 +62,13 @@ object RestHighLevelClientSearchBodySerializer extends SearchBodySerializer {
 
   private def unwrapAll(aggs: Iterable[AbstractAggregation]): Seq[AbstractAggregation] =
     aggs.toSeq.map {
+      // The marker arm recurses too. An `extended_stats` never carries sub-aggregations in this
+      // bridge, so a marker below a marker is unreachable today -- but "unreachable" is a property
+      // of the emitter, not of this function, and if it ever changed the survivor would reach the
+      // one-argument builder as a `NotImplementedError`. Recursing costs one call and removes the
+      // invariant from the reader's head.
+      case marker: ScriptedExtendedStatsAggregation if marker.inner.subaggs.nonEmpty =>
+        marker.inner.subAggregations(unwrapAll(marker.inner.subaggs))
       case marker: ScriptedExtendedStatsAggregation => marker.inner
       case agg: Aggregation if agg.subaggs.nonEmpty => agg.subAggregations(unwrapAll(agg.subaggs))
       case other                                    => other

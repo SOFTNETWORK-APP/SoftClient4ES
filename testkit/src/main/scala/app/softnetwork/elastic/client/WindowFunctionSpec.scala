@@ -2136,9 +2136,16 @@ trait WindowFunctionSpec
 
   /** Whether this client computes `STDDEV` / `VARIANCE` over a TRANSFORMED expression (issue #222).
     *
-    * True from Elasticsearch 7: the ES 7 module moved to elastic4s 7.17.26, whose builder emits the
-    * aggregation script (elastic4s#4105), and unwraps the bridge marker to reach it. False on ES 6
-    * alone — its elastic4s line is dead, so the query is refused rather than answered wrongly.
+    * True from Elasticsearch 7: the ES 7 module unwraps the bridge marker and lets the elastic4s
+    * builder emit the aggregation script. False on ES 6 alone — its elastic4s line is dead, so the
+    * query is refused rather than answered wrongly.
+    *
+    * 🔴 This keys on the ES SERVER major, but the capability actually belongs to the CLIENT
+    * LIBRARY: it holds only while `Versions.elastic74s` is **>= 7.17.26**, the first 7.x release
+    * carrying elastic4s#4105. The unwrap is unconditional, so pinning an older 7.x elastic4s would
+    * silently restore #222's original defect — a statistic computed over the RAW field — with the
+    * refusal that used to guard it gone, and this predicate would still answer `true`. That floor
+    * is stated beside the pin; do not lower it without restoring the ES 7 refusal.
     */
   def computesTransformedStats: Boolean = elasticsearchMajor >= 7
 
