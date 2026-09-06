@@ -109,7 +109,11 @@ object LicenseRefreshStrategyFactory extends LazyLogging {
       case Some(s) => s
       case None =>
         val mode = resolveMode(config)
-        val loader = ServiceLoader.load(classOf[LicenseManagerSpi])
+        // #258: resolve providers against the classloader that loaded this library, never the
+        // thread context classloader - under a host-owned blind loader a single-arg load found
+        // nothing and the JVM silently ran with license refresh disabled.
+        val spiClass = classOf[LicenseManagerSpi]
+        val loader = ServiceLoader.load(spiClass, spiClass.getClassLoader)
         val spis = loader.iterator().asScala.toSeq.sortBy(_.priority)
         val strategy = spis.headOption
           .map { spi =>
@@ -122,6 +126,13 @@ object LicenseRefreshStrategyFactory extends LazyLogging {
             s
           }
           .getOrElse {
+            logger.warn(
+              s"No ${spiClass.getName} provider found through ${spiClass.getClassLoader}: falling " +
+              s"back to ${classOf[NopRefreshStrategy].getSimpleName} (Community license, refresh " +
+              "disabled for this JVM). Providers are resolved against the classloader that loaded " +
+              "softclient4es-licensing, never the thread context classloader: the licensing jars " +
+              "must be on that same classpath (#258)."
+            )
             val fallback = new NopRefreshStrategy()
             fallback.initialize()
             fallback

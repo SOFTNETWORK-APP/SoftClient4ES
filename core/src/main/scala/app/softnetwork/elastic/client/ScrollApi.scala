@@ -274,7 +274,13 @@ trait ScrollApi extends ElasticClientHelpers {
         }
 
       // Single search
-      case single: SingleSearch =>
+      case parsed: SingleSearch =>
+        // #276 -- resolve temporal literals against the mapped `date` columns before ANY branch
+        // renders the query (the window-enrichment branch derives its queries from `single`).
+        val single = resolveTemporalLiterals(parsed) match {
+          case ElasticSuccess(resolved) => resolved
+          case ElasticFailure(error)    => return Source.failed(error)
+        }
         // #238 — an explicit LIMIT keeps the sequential PIT path on EVERY branch, including the
         // window-enrichment branch below (createBaseQuery keeps the LIMIT — AC 6).
         val config0 = if (single.limit.isDefined) config.copy(maxSlices = Some(1)) else config

@@ -65,7 +65,13 @@ libraryDependencies ++= akka ++ typesafeConfig ++ http ++
 json4s ++ mockito ++ avro ++ cloudConnectors ++ repl :+ "com.google.code.gson" % "gson" % Versions.gson :+
 "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging :+
 "io.delta" %% "delta-standalone" % Versions.delta :+
-"org.scalatest" %% "scalatest" % Versions.scalatest % Test
+"org.scalatest" %% "scalatest" % Versions.scalatest % Test :+
+// #258: the isolation specs capture the empty-provider-list WARN through logback's ListAppender
+// (house pattern: SlicedScrollCompletenessSpec). Test scope only - the published module carries no
+// logging backend. Declared here rather than inherited from `licensing % "test->test"`; test logging
+// (root WARN) comes from licensing's TestLoggingConfigurator, a logback Configurator SPI that applies
+// only where no logback XML config exists - see its scaladoc for why it is not a logback-test.xml.
+"ch.qos.logback" % "logback-classic" % Versions.logback % Test
 
 // Issue #183: run the very same test suite on an arbitrary JDK without changing the compile JDK.
 //   sbt -Dtest.jdk.home=/Library/Java/JavaVirtualMachines/zulu-25.jdk/Contents/Home \

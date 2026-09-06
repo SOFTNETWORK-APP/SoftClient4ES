@@ -267,10 +267,20 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
           new GetIndexRequest.Builder().index(index).build()
         )
     )(response => {
-      val valueOpt = response.indices().asScala.get(index)
-      valueOpt match {
-        case Some(value) => Some(convertToJson(value))
-        case None        => None
+      val indices = response.indices().asScala
+      indices.get(index) match {
+        case Some(value)              => Some(convertToJson(value))
+        case None if indices.nonEmpty =>
+          // Issue #276 -- `index` is an ALIAS: the response is keyed by the CONCRETE index names.
+          // Hand the whole map to core, whose `Index.apply` resolves an alias over one index and
+          // reports an alias over several as not found.
+          val root = mapper.createObjectNode()
+          indices.foreach { case (name, value) =>
+            root.set[JsonNode](name, mapper.readTree(convertToJson(value)))
+            ()
+          }
+          Some(root.toString)
+        case None => None
       }
     })
   }
