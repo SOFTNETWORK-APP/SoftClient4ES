@@ -277,9 +277,20 @@ trait ScrollApi extends ElasticClientHelpers {
       case parsed: SingleSearch =>
         // #276 -- resolve temporal literals against the mapped `date` columns before ANY branch
         // renders the query (the window-enrichment branch derives its queries from `single`).
+        //
+        // The rejection is THROWN, not returned as `Source.failed` (#222 / D-1). Both consumers of
+        // this method wrap the Source they receive into a SUCCESS -- `SearchExecutor`'s scroll arm
+        // and `CoreDqlExtension.cappedScroll` -- so a failed Source made `run` answer
+        // `ElasticSuccess` carrying a stream that only died when somebody materialised it, on the
+        // plain-projection route every BI tool takes. Thrown, it takes the same path as the
+        // extended-stats refusal the ES 6 client raises during translation and comes back from
+        // `GatewayApi.run` as the `ElasticFailure(400)` it always was. `ElasticError extends
+        // Throwable`, and every `SearchApi` call site of `resolveTemporalLiterals` already returns
+        // `ElasticResult.failure(error)` -- this is the one place that could not, because it must
+        // return a `Source`.
         val single = resolveTemporalLiterals(parsed) match {
           case ElasticSuccess(resolved) => resolved
-          case ElasticFailure(error)    => return Source.failed(error)
+          case ElasticFailure(error)    => throw error
         }
         // #238 — an explicit LIMIT keeps the sequential PIT path on EVERY branch, including the
         // window-enrichment branch below (createBaseQuery keeps the LIMIT — AC 6).

@@ -156,6 +156,67 @@ class GatewayRefusalBoundarySpec
     assertRefused(client.run("SELECT id, name FROM t LIMIT 5").futureValue)
   }
 
+  // ── The SECOND pre-execution rejection kind: BIDC-4's temporal literals (#276), fixed here (D-1).
+  //    It must be answered exactly like the extended-stats refusal — the two are the same shape:
+  //    a rejection KNOWN AT TRANSLATION TIME, before any request leaves the JVM.
+
+  private val temporalMessage =
+    "Temporal literal '2024-13-45' cannot be parsed for column ts (test double)"
+
+  /** A client whose temporal-literal resolution rejects — the `ScrollApi` branch that used to
+    * return `Source.failed(error)` and is now a throw.
+    */
+  private class TemporalRejectingClient extends NopeClientApi {
+    override protected def logger: Logger = LoggerFactory.getLogger(getClass)
+
+    override private[client] def resolveTemporalLiterals(
+      single: SingleSearch
+    ): ElasticResult[SingleSearch] =
+      ElasticFailure(
+        ElasticError(temporalMessage, statusCode = Some(400), operation = Some("search"))
+      )
+  }
+
+  private def assertTemporalRefused(result: ElasticResult[QueryResult]): Unit =
+    result match {
+      case ElasticFailure(error) =>
+        error.message shouldBe temporalMessage
+        error.statusCode shouldBe Some(400)
+      case other =>
+        fail(s"a temporal-literal rejection must be an ElasticFailure at `run`, got $other")
+    }
+
+  it should "surface a TEMPORAL-LITERAL rejection on the un-LIMITed row route (#276 / D-1)" in {
+    // THE regression: this route is `CoreDqlExtension.cappedScroll` -> `client.scroll`, which
+    // wraps the Source it gets into an ElasticSuccess. With `Source.failed(error)` the caller got
+    // a success carrying a stream that died only at materialisation — on the plain projection
+    // every BI tool issues. It is now the same ElasticFailure(400) the other kinds produce.
+    assertTemporalRefused(new TemporalRejectingClient().run("SELECT id, name FROM t").futureValue)
+  }
+
+  it should "surface a TEMPORAL-LITERAL rejection on the one-shot and windowed routes too" in {
+    val client = new TemporalRejectingClient
+    // Explicit LIMIT -> SearchExecutor/searchAsync; windowed un-LIMITed -> the window-enrichment
+    // scroll branch, which derives its queries from the same resolved statement.
+    assertTemporalRefused(client.run("SELECT id, name FROM t LIMIT 5").futureValue)
+    assertTemporalRefused(
+      client
+        .run("SELECT id, name, STDDEV(YEAR(createdAt)) OVER (PARTITION BY id) AS s FROM t")
+        .futureValue
+    )
+  }
+
+  it should "answer BOTH pre-execution rejection kinds identically (the contract, both refusals)" in {
+    // The point of D-1: one rule, not two. Same statement, two client-layer rejections, one shape.
+    val sql = "SELECT id, name FROM t"
+    val extendedStats = client.run(sql).futureValue
+    val temporal = new TemporalRejectingClient().run(sql).futureValue
+    Seq(extendedStats, temporal).foreach {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(400)
+      case other                 => fail(s"expected an ElasticFailure, got $other")
+    }
+  }
+
   it should "not manufacture a refusal for a client that does not refuse" in {
     // NopeClientApi answers a search with no response body, which core reports as an ordinary
     // execution failure -- proving the boundary only relabels a refusal the client raised.
