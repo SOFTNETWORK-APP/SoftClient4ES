@@ -109,13 +109,13 @@ package object aggregate {
 
     override def update(request: SingleSearch): BucketScriptAggregation = {
       val identifiers = FunctionUtils.funIdentifiers(identifier)
-      val params = identifiers.flatMap {
-        case identifier: Identifier =>
-          val name = identifier.metricName.getOrElse(identifier.aliasOrName)
-          Some(
-            name -> request.fieldAliases.getOrElse(identifier.identifierName, name)
-          ) // TODO may be be a path
-        case _ => None
+      // Only the AGGREGATE operands are metrics. `funIdentifiers` also yields the script's own
+      // identifier (the arithmetic wrapper, no metricName), which used to register itself through
+      // its alias (`d -> d`) -- a self-referencing buckets_path entry (issue #54).
+      val params = identifiers.flatMap { operand =>
+        operand.metricName.map { name =>
+          name -> request.fieldAliases.getOrElse(operand.identifierName, name)
+        } // TODO may be be a path
       }.toMap
       this.copy(params = params)
     }

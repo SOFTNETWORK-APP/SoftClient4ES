@@ -513,6 +513,15 @@ ORDER BY COUNT(*) DESC;
 - `GROUP BY` supports nested fields (`profile.city`).
 - `HAVING` filters groups based on aggregate conditions.
 - Translated to Elasticsearch aggregations.
+- An aggregate referenced only in `HAVING` or `ORDER BY` needs no alias and no `SELECT` item: it is
+  computed for the filter or the sort and kept out of the result columns. Distinct aggregates over
+  the same column stay distinct (`HAVING COUNT(age) >= 1 AND MAX(age) > 45`), and the aggregate may
+  wrap a transform (`HAVING MAX(YEAR(birthdate)) > 1990`, `ORDER BY MAX(ABS(age)) DESC`).
+- Arithmetic over aggregates is computed per group (`MAX(price) - MIN(price) AS price_range`); the
+  operands are computed as hidden aggregations of the group.
+- A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
+  all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
+  script null-checks every metric before comparing it.
 
 ---
 

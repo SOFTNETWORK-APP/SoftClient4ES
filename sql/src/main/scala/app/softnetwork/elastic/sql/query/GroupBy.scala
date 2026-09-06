@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.{
   Expr,
@@ -177,21 +177,13 @@ object MetricSelectorScript {
     case _: MultiMatchCriteria => "1 == 1"
 
     case e: Expression if e.isAggregation =>
-      // NO FILTERING: the script is generated for all metrics
-      val painless = e.painless(None)
-      e.maybeValue match {
-        case Some(value) if e.operator.isInstanceOf[ComparisonOperator] =>
-          value.out match {
-            case SQLTypes.Date =>
-              s"$painless.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()"
-            case SQLTypes.Time if e.operator.isInstanceOf[ComparisonOperator] =>
-              s"$painless.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli()"
-            case SQLTypes.DateTime if e.operator.isInstanceOf[ComparisonOperator] =>
-              s"$painless.toInstant().toEpochMilli()"
-            case _ => painless
-          }
-        case _ => painless
-      }
+      // NO FILTERING: the script is generated for all metrics. The context-free rendering of an
+      // aggregate predicate IS the bucket-pipeline rendering (`Expression.bucketPipelinePainless`):
+      // `params.<metric>` reads, null-guarded, one parenthesised expression, temporal literal
+      // already converted to epoch millis. It used to be converted HERE by appending
+      // `.toInstant().toEpochMilli()` to the rendered predicate -- which only reached the literal
+      // because the predicate happened to end with it.
+      e.painless(None)
     case _ => "1 == 1"
   }
 }

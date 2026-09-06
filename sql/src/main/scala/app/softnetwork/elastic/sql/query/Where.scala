@@ -460,66 +460,104 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     SQLTypeUtils.coerce(identifier, targetedType, context)
   }
 
-  protected def check(context: Option[PainlessContext], param: String): String = {
+  protected def check(context: Option[PainlessContext], param: String): String =
+    check(context, param, painlessValue(context))
+
+  /** `param <operator> value` in the operator's Painless spelling. `value` is the already-rendered
+    * right-hand side, so a caller may adapt it first (the bucket-pipeline rendering converts a
+    * temporal literal to epoch millis, the unit a date metric arrives in).
+    */
+  protected def check(context: Option[PainlessContext], param: String, value: String): String = {
     operator match {
       case comparison: ComparisonOperator =>
         comparison match {
           case LT =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
-                return s"$param.compareTo(${painlessValue(context)}) < 0"
+                return s"$param.compareTo($value) < 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
-                return s"$param.isBefore(${painlessValue(context)})"
+                return s"$param.isBefore($value)"
               case _ =>
             }
           case GT =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
-                return s"$param.compareTo(${painlessValue(context)}) > 0"
+                return s"$param.compareTo($value) > 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
-                return s"$param.isAfter(${painlessValue(context)})"
+                return s"$param.isAfter($value)"
               case _ =>
             }
           case EQ =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
-                return s"$param.compareTo(${painlessValue(context)}) == 0"
+                return s"$param.compareTo($value) == 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
-                return s"$param.isEqual(${painlessValue(context)})"
+                return s"$param.isEqual($value)"
               case _ =>
             }
           case NE | DIFF =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
-                return s"$param.compareTo(${painlessValue(context)}) != 0"
+                return s"$param.compareTo($value) != 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
-                return s"$param.isEqual(${painlessValue(context)}) == false"
+                return s"$param.isEqual($value) == false"
               case _ =>
             }
           case GE =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
-                return s"$param.compareTo(${painlessValue(context)}) >= 0"
+                return s"$param.compareTo($value) >= 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
-                return s"$param.isBefore(${painlessValue(context)}) == false"
+                return s"$param.isBefore($value) == false"
               case _ =>
             }
           case LE =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
               case SQLTypes.Varchar =>
-                return s"$param.compareTo(${painlessValue(context)}) <= 0"
+                return s"$param.compareTo($value) <= 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
-                return s"$param.isAfter(${painlessValue(context)}) == false"
+                return s"$param.isAfter($value) == false"
               case _ =>
             }
           case _ =>
         }
-        s"$param $painlessOp ${painlessValue(context)}"
-      case _ => s"$param$painlessOp(${painlessValue(context)})"
+        s"$param $painlessOp $value"
+      case _ => s"$param$painlessOp($value)"
     }
   }
 
+  /** The rendering of an aggregate predicate for a bucket pipeline (`bucket_selector` for HAVING).
+    * There is no document here, only the metrics Elasticsearch already computed, read as
+    * `params.<metricName>` (issue #223: the old rendering read `doc[...]` and re-applied the
+    * transform the metric aggregation had already applied). The whole predicate is ONE
+    * parenthesised expression whose first act is to null-guard every metric it compares -- lead
+    * directive, BIDC-2 AC 4b: no emitted Painless compares a possibly-null value unguarded. An
+    * expression (not a `def left = ...;` statement) is what composes under the `&&` / `||` the
+    * HAVING tree is joined with: `? :` binds looser than `||`, so an unparenthesised guard would
+    * swallow the right-hand side of an OR. A temporal literal on the right is converted to epoch
+    * millis, which is what a date metric arrives in.
+    */
+  private def bucketPipelinePainless: String = {
+    val metrics: Seq[Identifier] =
+      identifier +: maybeValue.collect { case id: Identifier if id.isAggregation => id }.toSeq
+    val rhs = painlessValue(None)
+    val value = maybeValue match {
+      case Some(v) if operator.isInstanceOf[ComparisonOperator] && !v.isAggregation =>
+        v.out match {
+          case SQLTypes.Date => s"$rhs.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()"
+          case SQLTypes.Time => s"$rhs.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli()"
+          case SQLTypes.DateTime => s"$rhs.toInstant().toEpochMilli()"
+          case _                 => rhs
+        }
+      case _ => rhs
+    }
+    val guard = metrics.map(id => s"${id.metricParam} == null").mkString(" || ")
+    s"($guard ? false : $painlessNot(${check(None, identifier.metricParam, value)}))"
+  }
+
   override def painless(context: Option[PainlessContext]): String = {
+    // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
+    if (context.isEmpty && identifier.isAggregation) return bucketPipelinePainless
     val innerLeft = left(context)
     context match {
       case Some(ctx) =>

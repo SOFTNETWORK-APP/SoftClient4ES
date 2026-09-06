@@ -32,6 +32,7 @@ import app.softnetwork.elastic.sql.schema.{
   Table => Schema,
   TableType
 }
+import app.softnetwork.elastic.sql.function.FunctionUtils
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -279,14 +280,27 @@ package object query {
       val orderByAggs = orderBy
         .map(_.sorts.flatMap(_.extractAggregationFields))
         .getOrElse(Seq.empty)
-      (havingAggs ++ whereAggs ++ orderByAggs)
+      // Aggregates nested inside a SELECT bucket script (`MAX(x) - MIN(x) AS d`): the script reads
+      // each as `params.<metricName>`, so each must exist as its own aggregation. None was ever
+      // created -- the bucket_script shipped with a self-referencing buckets_path and its operands
+      // collapsed onto one name (issue #54). The wrapper identifier itself (its head is the
+      // arithmetic expression, not an aggregate) is excluded by `isAggregation`; an operand that is
+      // also a SELECT item is excluded below like any other auxiliary candidate.
+      val bucketScriptAggs = selectAggs
+        .filter(_.isBucketScript)
+        .flatMap(f => FunctionUtils.funIdentifiers(f.identifier))
+        .filter(_.isAggregation)
+        .flatMap(id => id.metricName.map(name => Field(id, Some(Alias(name)))))
+      // Dedup by name, keeping the first occurrence IN ORDER -- a `groupBy` here hashed the order,
+      // so the emitted `aggs` shuffled between runs and could not be pinned.
+      (havingAggs ++ whereAggs ++ orderByAggs ++ bucketScriptAggs)
         .filterNot(f =>
           f.fieldAlias.exists(a => selectAggNames.contains(a.alias)) ||
           selectAggNames.contains(f.identifier.identifierName)
         )
-        .groupBy(_.fieldAlias.map(_.alias))
-        .map(_._2.head)
-        .toSeq
+        .foldLeft(Seq.empty[Field]) { (acc, f) =>
+          if (acc.exists(_.fieldAlias.map(_.alias) == f.fieldAlias.map(_.alias))) acc else acc :+ f
+        }
     }
 
     lazy val aggregates: Seq[Field] = selectAggs ++ auxiliaryAggs

@@ -1,6 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.Identifier
+import app.softnetwork.elastic.sql.{Identifier, PainlessContext}
 import app.softnetwork.elastic.sql.query.{AlterTable, CreateTable, SingleSearch}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -168,7 +168,19 @@ class ScriptFunctionParenSpec extends AnyFlatSpec with Matchers {
     // window function — so `YEAR` vanished and the aggregation was scripted without it.
     val id = identifierOf("SELECT MAX(YEAR(DATE_TRUNC(createdAt, MINUTE))) AS m FROM t GROUP BY id")
     id.functions.map(_.getClass.getSimpleName) should contain allOf ("Year", "DateTrunc")
-    id.painless(None) should (include("ChronoField.YEAR") and include("truncatedTo"))
+    // The METRIC script is the context-bearing rendering — the bridge emits `s"$ctx$expr"`, and the
+    // transforms land in the context's `def param1 = ...` preamble. The context-free rendering of an
+    // aggregate is the bucket-pipeline form (`params.<metricName>`, BIDC-2 / issue #223) and carries
+    // no transform by design.
+    val ctx = PainlessContext()
+    val expr = id.painless(Some(ctx)) // renders first: it is what fills the context's preamble
+    val metricScript = s"$ctx$expr"
+    metricScript should (include("ChronoField.YEAR") and include("truncatedTo"))
+    // The bucket form reads the metric and nothing else (which exact name it reads is the naming
+    // rule's business, pinned in AggregationNamingSpec).
+    val bucketForm = id.painless(None)
+    bucketForm should startWith("params.")
+    bucketForm should (not include "doc[" and not include "ChronoField" and not include "truncatedTo")
     // And it is now the same aggregate the plain form produces — the two used to differ only
     // because one argument happened to be parenthesis-balanced and the other was not.
     id.functions.head.getClass shouldBe

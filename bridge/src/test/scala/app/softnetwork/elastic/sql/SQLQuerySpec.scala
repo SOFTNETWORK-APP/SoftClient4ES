@@ -563,7 +563,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "cnt": "cnt"
         |                },
         |                "script": {
-        |                  "source": "params.cnt > 1"
+        |                  "source": "(params.cnt == null ? false : (params.cnt > 1))"
         |                }
         |              }
         |            }
@@ -577,6 +577,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "perform complex query" in {
@@ -821,7 +822,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                      "max_price": "max_price"
         |                    },
         |                    "script": {
-        |                      "source": "params.min_price > 5.0 && params.max_price < 50.0"
+        |                      "source": "(params.min_price == null ? false : (params.min_price > 5.0)) && (params.max_price == null ? false : (params.max_price < 50.0))"
         |                    }
         |                  }
         |                }
@@ -838,6 +839,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll("<(\\d)", " < $1")
       .replaceAll(">(\\d)", " > $1")
+      .replaceAll("\\?false:", " ? false : ")
 
   }
 
@@ -1033,7 +1035,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "lastSeen": "lastSeen"
         |            },
         |            "script": {
-        |              "source": "params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+        |              "source": "(params.lastSeen == null ? false : (params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
         |              "params": {
         |                "__now__": 1767139200000
         |              }
@@ -1045,11 +1047,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replaceAll("==", " == ")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "handle group by with having and date time functions" in {
@@ -1101,7 +1105,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "lastSeen": "lastSeen"
         |                },
         |                "script": {
-        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+        |                  "source": "(params.cnt == null ? false : (params.cnt > 1)) && (params.lastSeen == null ? false : (params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
         |                  "params": {
         |                    "__now__": 1767139200000
         |                  }
@@ -1121,6 +1125,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "handle group by index" in {
@@ -1174,7 +1179,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "lastSeen": "lastSeen"
         |                },
         |                "script": {
-        |                  "source": "params.cnt > 1 && params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()",
+        |                  "source": "(params.cnt == null ? false : (params.cnt > 1)) && (params.lastSeen == null ? false : (params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
         |                  "params": {
         |                    "__now__": 1767139200000
         |                  }
@@ -1194,6 +1199,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "handle date_parse function" in {
@@ -3974,7 +3980,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                  "__c3": "__c3"
         |                },
         |                "script": {
-        |                  "source": "params.__c3 > 1"
+        |                  "source": "(params.__c3 == null ? false : (params.__c3 > 1))"
         |                }
         |              }
         |            }
@@ -3988,6 +3994,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "handle HAVING COUNT(*) without alias combined with aliased aggregation" in {
@@ -4031,7 +4038,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "avg_age": "avg_age"
         |            },
         |            "script": {
-        |              "source": "params.__c2 >= 1 && params.avg_age > 25"
+        |              "source": "(params.__c2 == null ? false : (params.__c2 >= 1)) && (params.avg_age == null ? false : (params.avg_age > 25))"
         |            }
         |          }
         |        }
@@ -4044,6 +4051,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll(">=", " >= ")
       .replaceAll("(?<!>)>(?!=)", " > ")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "handle HAVING COUNT(*) only in HAVING clause not in SELECT" in {
@@ -4086,7 +4094,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "count_all": "count_all"
         |            },
         |            "script": {
-        |              "source": "params.count_all > 1"
+        |              "source": "(params.count_all == null ? false : (params.count_all > 1))"
         |            }
         |          }
         |        }
@@ -4098,6 +4106,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   // === Issue #52: ORDER BY on aggregation alias ===
@@ -4224,7 +4233,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "__c2": "__c2"
         |            },
         |            "script": {
-        |              "source": "params.__c2 > 1"
+        |              "source": "(params.__c2 == null ? false : (params.__c2 > 1))"
         |            }
         |          }
         |        }
@@ -4236,6 +4245,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   it should "handle HAVING COUNT(DISTINCT *) only in HAVING clause not in SELECT" in {
@@ -4278,7 +4288,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "count_distinct_all": "count_distinct_all"
         |            },
         |            "script": {
-        |              "source": "params.count_distinct_all > 1"
+        |              "source": "(params.count_distinct_all == null ? false : (params.count_distinct_all > 1))"
         |            }
         |          }
         |        }
@@ -4290,6 +4300,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
+      .replaceAll("\\?false:", " ? false : ")
   }
 
   // === Story 14.1: NULLS FIRST / NULLS LAST on ORDER BY ===

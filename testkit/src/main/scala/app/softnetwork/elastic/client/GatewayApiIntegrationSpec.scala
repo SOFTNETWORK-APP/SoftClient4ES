@@ -1055,6 +1055,156 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   // ---------------------------------------------------------------------------
+  // Issues #54 / #223 (BIDC-2) — buckets_path and aggregation naming, bucket-pipeline scripts.
+  // A dedicated table: `Nice` has a single user with NO age, so every MAX/MIN over `age` is
+  // missing for that bucket — the null-metric contract (AC 4b) needs such a bucket, and adding it
+  // to `dql_users` would move every 4-row oracle above.
+  // ---------------------------------------------------------------------------
+
+  it should "prepare the aggregation-naming test data (issues #54 / #223)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS having_naming (
+        |  id INT NOT NULL,
+        |  city KEYWORD,
+        |  name KEYWORD,
+        |  age INT,
+        |  birthdate DATE
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val insert =
+      """INSERT INTO having_naming (id, city, name, age, birthdate) VALUES
+        |  (1, 'Paris',     'Alice', 30, '1994-01-01'),
+        |  (2, 'Lyon',      'Bob',   40, '1984-05-10'),
+        |  (3, 'Paris',     'Chloe', 25, '1999-07-20'),
+        |  (4, 'Marseille', 'David', 50, '1974-03-15');""".stripMargin
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
+
+    val insertNoAge =
+      """INSERT INTO having_naming (id, city, name, birthdate) VALUES
+        |  (5, 'Nice', 'Eve', '2000-01-01');""".stripMargin
+    assertDml(System.nanoTime(), client.run(insertNoAge).futureValue, Some(DmlResult(inserted = 1)))
+  }
+
+  it should "filter on an un-aliased HAVING COUNT(field) exactly like the aliased form (issue #54)" in {
+    val expected = Seq(Map("city" -> "Paris", "cnt" -> 2))
+    val aliased =
+      """SELECT city, COUNT(name) AS cnt FROM having_naming
+        |GROUP BY city HAVING cnt > 1;""".stripMargin
+    assertSelectResult(System.nanoTime(), client.run(aliased).futureValue, expected)
+
+    val unaliased =
+      """SELECT city, COUNT(name) AS cnt FROM having_naming
+        |GROUP BY city HAVING COUNT(name) > 1;""".stripMargin
+    assertSelectResult(System.nanoTime(), client.run(unaliased).futureValue, expected)
+
+    // The aggregate exists only in HAVING: it is created for the filter and hidden from the rows.
+    val havingOnly =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING COUNT(name) > 1;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(havingOnly).futureValue,
+      Seq(Map("city" -> "Paris"))
+    )
+  }
+
+  it should "keep two aggregates over the same field apart in HAVING (issue #54)" in {
+    // COUNT(age) >= 1 holds for every city but Nice; only Marseille has MAX(age) > 45. Before the
+    // fix both aggregates were named `age`, the second was dropped, and the count stood in for the
+    // max — `1 >= 1 && 1 > 45` — so no city qualified.
+    val sql =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING COUNT(age) >= 1 AND MAX(age) > 45;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(sql).futureValue,
+      Seq(Map("city" -> "Marseille"))
+    )
+  }
+
+  it should "filter on HAVING over a transformed aggregate (issue #223)" in {
+    // MAX(YEAR(birthdate)): Paris 1999, Lyon 1984, Marseille 1974, Nice 2000.
+    val year =
+      """SELECT city, COUNT(*) AS cnt FROM having_naming
+        |GROUP BY city HAVING MAX(YEAR(birthdate)) > 1990;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(year).futureValue,
+      Seq(Map("city" -> "Paris", "cnt" -> 2), Map("city" -> "Nice", "cnt" -> 1))
+    )
+
+    // OR across a transformed aggregate and a count: Paris by count, Marseille by MAX(ABS(age));
+    // Nice has no age, so its MAX(ABS(age)) is missing and its count is 1 — it must NOT pass.
+    val or =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING MAX(ABS(age)) > 45 OR COUNT(*) > 1;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(or).futureValue,
+      Seq(Map("city" -> "Paris"), Map("city" -> "Marseille"))
+    )
+  }
+
+  it should "sort buckets by an aggregate over a transform (issue #223)" in {
+    // MAX(ABS(age)): Marseille 50, Lyon 40, Paris 30 — distinct values, so the order is exact;
+    // Nice's is missing and sorts last.
+    val sql =
+      """SELECT city FROM having_naming
+        |GROUP BY city ORDER BY MAX(ABS(age)) DESC;""".stripMargin
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.map(_("city")) shouldBe Seq("Marseille", "Lyon", "Paris", "Nice")
+  }
+
+  it should "never let a bucket whose compared metric is missing pass a HAVING comparison (AC 4b)" in {
+    // Nice's MAX(age) has no value. Whatever the runtime hands the bucket_selector for it, the
+    // guarded script yields false: the bucket is dropped by BOTH directions of the comparison, and
+    // the request does not fail.
+    val expected = Seq(Map("city" -> "Paris"), Map("city" -> "Lyon"), Map("city" -> "Marseille"))
+    val above =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING MAX(age) > 0;""".stripMargin
+    assertSelectResult(System.nanoTime(), client.run(above).futureValue, expected)
+    val below =
+      """SELECT city FROM having_naming
+        |GROUP BY city HAVING MAX(age) < 1000;""".stripMargin
+    assertSelectResult(System.nanoTime(), client.run(below).futureValue, expected)
+  }
+
+  it should "compute arithmetic over aggregates as a bucket_script (issue #54)" in {
+    // The operands are created as their own (hidden) aggregations and read as params; the value is
+    // a double, as every bucket_script result is.
+    val range =
+      """SELECT city, MAX(age) - MIN(age) AS age_range FROM having_naming
+        |WHERE age IS NOT NULL
+        |GROUP BY city ORDER BY city ASC;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(range).futureValue,
+      Seq(
+        Map("city" -> "Lyon", "age_range"      -> 0.0),
+        Map("city" -> "Marseille", "age_range" -> 0.0),
+        Map("city" -> "Paris", "age_range"     -> 5.0)
+      )
+    )
+
+    // An operand that is also a SELECT item resolves to that item's alias — one aggregation, two uses.
+    val shared =
+      """SELECT city, MAX(age) AS oldest, MAX(age) - MIN(age) AS age_range FROM having_naming
+        |WHERE age IS NOT NULL
+        |GROUP BY city ORDER BY city ASC;""".stripMargin
+    assertSelectResult(
+      System.nanoTime(),
+      client.run(shared).futureValue,
+      Seq(
+        Map("city" -> "Lyon", "oldest"      -> 40.0, "age_range" -> 0.0),
+        Map("city" -> "Marseille", "oldest" -> 50.0, "age_range" -> 0.0),
+        Map("city" -> "Paris", "oldest"     -> 30.0, "age_range" -> 5.0)
+      )
+    )
+  }
+
+  // ---------------------------------------------------------------------------
   // Arithmetic, IN, BETWEEN, IS NULL, LIKE, RLIKE
   // ---------------------------------------------------------------------------
 
