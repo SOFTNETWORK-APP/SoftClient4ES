@@ -1379,20 +1379,39 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
   protected def executeWindowAggregations(
     request: SingleSearch
   )(implicit timestamp: Long, context: ConversionContext): ElasticResult[WindowCache] = {
+    val (aggRequest, elasticQuery) = windowAggregationQuery(request)
+    executeWindowAggregations(request, aggRequest, elasticQuery)
+  }
 
-    // Build aggregation request
+  /** The window-aggregation request of `request` and its TRANSLATION to an Elasticsearch body.
+    *
+    * Kept separate from the execution (issue #222): the translation is where a client module may
+    * REFUSE the statement (a status-bearing `ElasticError`, e.g. STDDEV / VARIANCE over a
+    * transformed expression on ES 6 / ES 7), and a refusal known at translation time must be
+    * answered at `GatewayApi.run` -- so a caller that executes asynchronously translates here
+    * FIRST, on the calling thread, and only then schedules the execution.
+    */
+  private[client] def windowAggregationQuery(
+    request: SingleSearch
+  )(implicit timestamp: Long): (SingleSearch, ElasticQuery) = {
     val aggRequest = buildWindowAggregationRequest(request)
-    val sql = aggRequest.sql
-
-    logger.info(
-      s"🔍 Executing window aggregation query:\n$sql"
-    )
-
-    // Execute aggregation using existing search infrastructure
     val elasticQuery = ElasticQuery(
       aggRequest,
       collection.immutable.Seq(aggRequest.sources: _*),
-      sql = Some(sql)
+      sql = Some(aggRequest.sql)
+    )
+    (aggRequest, elasticQuery)
+  }
+
+  /** Execute an already-translated window-aggregation request -- see [[windowAggregationQuery]]. */
+  private[client] def executeWindowAggregations(
+    request: SingleSearch,
+    aggRequest: SingleSearch,
+    elasticQuery: ElasticQuery
+  )(implicit context: ConversionContext): ElasticResult[WindowCache] = {
+
+    logger.info(
+      s"🔍 Executing window aggregation query:\n${aggRequest.sql}"
     )
 
     for {

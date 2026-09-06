@@ -23,5 +23,11 @@ case class ElasticMultiSearchRequest(
   requests: Seq[ElasticSearchRequest],
   multiSearch: MultiSearchRequest
 ) {
+  // Not routed through SearchBodySerializer (issue #222): no production path serialises a
+  // multi-search here -- core builds `_msearch` bodies from each request's own
+  // `singleSearchToJsonQuery` (`ElasticQueries.multiQuery`). A transform-bearing extended_stats
+  // inside this body still fails LOUDLY (elastic4s's aggregation builder throws
+  // `NotImplementedError` on the ScriptedExtendedStatsAggregation marker); it can never leave as
+  // the statistic of the wrong field.
   def query: String = MultiSearchBuilderFn(multiSearch).replace("\"version\":true,", "") /*FIXME*/
 }
